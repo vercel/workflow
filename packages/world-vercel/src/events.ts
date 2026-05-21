@@ -1,104 +1,70 @@
+/**
+ * world-vercel event functions — v4 wire format throughout.
+ *
+ * This module replaces the previous v2/v3 implementation. The v4 wire
+ * format moves structured event metadata into `x-wf-*` HTTP headers and
+ * treats payloads as opaque user-data bytes streamed end-to-end. See
+ * workflow-server/lib/handlers/v4/ for the matching server-side handlers
+ * and ../events-v4.ts for the wire-level client.
+ *
+ * Key shape changes vs. v2/v3:
+ *
+ *   - POST event response carries the materialized EventResult
+ *     (event/run/step/hook/wait/events/cursor/hasMore) as a CBOR-encoded
+ *     body — the server resolved-refs path is still respected via the
+ *     `remoteRefBehavior` header.
+ *   - GET single event returns metadata in headers + the user payload
+ *     bytes in the response body.
+ *   - LIST events returns a length-prefixed binary frame stream
+ *     (application/vnd.workflow.v4-frames) — one frame per event with
+ *     CBOR metadata + raw payload bytes. The old per-event `/refs`
+ *     round-trip is eliminated.
+ *
+ * Public function signatures are unchanged: storage.ts continues to
+ * wire these as `Storage['events']` and the workflow runtime sees the
+ * same EventResult / Event / PaginatedResponse<Event> shapes it did on
+ * the v3 path.
+ */
+
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   type CreateEventParams,
   type Event,
   type EventResult,
-  EventSchema,
-  EventTypeSchema,
   type GetEventParams,
-  HookSchema,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
-  PaginatedResponseSchema,
   stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
-  WorkflowRunSchema,
 } from '@workflow/world';
-import z from 'zod';
+import { decode, encode } from 'cbor-x';
 import {
-  isRefDescriptor,
-  type RefDescriptor,
-  type RefWithRunId,
-  resolveRefDescriptors,
-} from './refs.js';
-import {
-  cancelWorkflowRunV1,
-  createWorkflowRunV1,
-  WorkflowRunWireBaseSchema,
-} from './runs.js';
-import { deserializeStep, StepWireSchema } from './steps.js';
-import { trace } from './telemetry.js';
-import type { APIConfig } from './utils.js';
+  createWorkflowRunEventV4,
+  getEventV4,
+  getWorkflowRunEventsV4,
+  type ListedEventV4,
+} from './events-v4.js';
+import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
+import { deserializeStep } from './steps.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
+  type APIConfig,
   deserializeError,
-  makeRequest,
 } from './utils.js';
 
-// Wraps stripEventDataRefs to also strip the legacy eventDataRef field,
-// since the server always returns lazy refs and callers with
-// resolveData='none' should not see them.
-function stripEventAndLegacyRefs(
-  event: any,
-  resolveData: 'none' | 'all'
-): Event {
-  if (resolveData !== 'none') return event;
-  const { eventDataRef: _eventDataRef, ...withoutLegacyRef } = event;
-  return stripEventDataRefs(withoutLegacyRef, resolveData);
-}
-
-// Schema for EventResult wire format returned by events.create.
-// Uses wire format schemas for step to handle field name mapping.
-// Two variants are used depending on `remoteRefBehavior`:
-// - 'resolve': the server returns fully resolved data, so we validate the run
-//   with the strict WorkflowRunSchema discriminated union (e.g. status:'failed'
-//   requires error to be present).
-// - 'lazy': the server may omit resolved fields (error may be a string or
-//   undefined), so we use the looser WorkflowRunWireBaseSchema and normalize
-//   the error via deserializeError() afterward.
-const EventResultResolveWireSchema = z.object({
-  event: EventSchema.optional(),
-  run: WorkflowRunSchema.optional(),
-  step: StepWireSchema.optional(),
-  hook: HookSchema.optional(),
-  events: z.array(EventSchema).optional(),
-  cursor: z.string().nullable().optional(),
-  hasMore: z.boolean().optional(),
-});
-
-const EventResultLazyWireSchema = z.object({
-  event: EventSchema.optional(),
-  run: WorkflowRunWireBaseSchema.optional(),
-  step: StepWireSchema.optional(),
-  hook: HookSchema.optional(),
-  events: z.array(EventSchema).optional(),
-  cursor: z.string().nullable().optional(),
-  hasMore: z.boolean().optional(),
-});
-
-// Schema for events returned with `remoteRefBehavior=lazy`.
-// Includes both `eventDataRef` (legacy, specVersion=1) and `eventData`
-// (v2, specVersion=2 — may contain nested RefDescriptor values).
-// specVersion defaults to 1 (legacy) when parsing responses from storage.
-const EventWithRefsSchema = z.object({
-  eventId: z.string(),
-  runId: z.string(),
-  eventType: EventTypeSchema,
-  correlationId: z.string().optional(),
-  eventDataRef: z.any().optional(),
-  eventData: z.any().optional(),
-  createdAt: z.coerce.date(),
-  specVersion: z.number().default(1),
-});
-
 /**
- * Maps event types to the field name within `eventData` that may contain
- * a ref descriptor. Mirrors the server-side `resolveEventDataRefs()` mapping.
+ * Per-event-type map of the field within `eventData` that holds the user
+ * payload. Same convention used on the server side
+ * (workflow-server/lib/handlers/v4/events.ts PAYLOAD_FIELD_BY_EVENT_TYPE).
+ *
+ * The v4 wire encoding picks this field out of `eventData`, CBOR-encodes
+ * its value, and ships it as the request body. Everything else in
+ * `eventData` becomes a `x-wf-*` header.
  */
-const eventDataRefFieldMap: Record<string, string> = {
+const PAYLOAD_FIELD_BY_EVENT_TYPE: Record<string, string> = {
   run_created: 'input',
   run_completed: 'output',
   run_failed: 'error',
@@ -110,150 +76,162 @@ const eventDataRefFieldMap: Record<string, string> = {
   hook_received: 'payload',
 };
 
-// Events where the client uses the response entity data need 'resolve' (default).
-// Events where the client discards the response can use 'lazy' to skip expensive
-// S3 ref resolution on the server, saving ~200-460ms per event.
-const eventsNeedingResolve = new Set([
-  'run_created', // client reads result.run.runId
-  'run_started', // client reads result.run (checks startedAt, status)
-  'step_started', // client reads result.step (checks attempt, state)
+// Events whose POST response the workflow runtime reads immediately
+// (so the materialized entity must come back fully resolved).
+const eventsNeedingResolve = new Set<string>([
+  'run_created', // runtime reads result.run.runId
+  'run_started', // runtime reads result.run (checks startedAt, status)
+  'step_started', // runtime reads result.step (checks attempt, state)
 ]);
 
-/**
- * Collect all ref descriptors from a list of lazy-loaded events.
- * Returns a flat array of { eventIndex, refType, fieldName?, descriptor }
- * entries that can be resolved in bulk.
- */
-interface PendingRef {
-  eventIndex: number;
-  /**
-   * 'entity' = top-level eventDataRef (legacy specVersion=1 events)
-   * 'nested' = nested ref descriptor within eventData (v2 events)
-   */
-  refType: 'entity' | 'nested';
-  /** The field name within eventData containing the ref (only for 'nested') */
-  fieldName?: string;
-  descriptor: RefDescriptor;
+// Hook events that 404 when the hook is already disposed or never existed —
+// translate to a typed HookNotFoundError so the runtime can branch on it.
+const hookEventsRequiringExistence = new Set<string>([
+  'hook_disposed',
+  'hook_received',
+]);
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+interface SplitEventData {
+  /** Encoded payload bytes (undefined when the event has no user payload). */
+  payload?: Uint8Array;
+  /** Metadata fields that ride in v4 request headers. */
+  meta: {
+    deploymentId?: string;
+    workflowName?: string;
+    stepName?: string;
+    attempt?: number;
+    resumeAt?: string;
+    hookToken?: string;
+    hookIsWebhook?: boolean;
+    hookIsSystem?: boolean;
+    errorCode?: string;
+    /** Pre-encoded base64 CBOR of executionContext (or undefined). */
+    executionContextB64?: string;
+  };
 }
 
-function collectPendingRefs(events: any[]): PendingRef[] {
-  const pending: PendingRef[] = [];
+/**
+ * Split an AnyEventRequest's `eventData` into (a) the payload bytes that
+ * become the v4 request body and (b) the metadata fields that become
+ * v4 request headers.
+ */
+function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
+  // Some event types in the AnyEventRequest discriminated union (e.g.
+  // run_cancelled) have no eventData. Cast through unknown so this
+  // helper can read it defensively without TS narrowing per branch.
+  const eventData = ((
+    data as unknown as { eventData?: Record<string, unknown> }
+  ).eventData ?? {}) as Record<string, unknown>;
+  const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[data.eventType];
+  const meta: SplitEventData['meta'] = {};
 
-  for (let i = 0; i < events.length; i++) {
-    const event = events[i];
+  if (typeof eventData.deploymentId === 'string') {
+    meta.deploymentId = eventData.deploymentId;
+  }
+  if (typeof eventData.workflowName === 'string') {
+    meta.workflowName = eventData.workflowName;
+  }
+  if (typeof eventData.stepName === 'string') {
+    meta.stepName = eventData.stepName;
+  }
+  if (typeof eventData.attempt === 'number') {
+    meta.attempt = eventData.attempt;
+  }
+  if (typeof eventData.resumeAt === 'string') {
+    meta.resumeAt = eventData.resumeAt;
+  } else if (eventData.resumeAt instanceof Date) {
+    meta.resumeAt = eventData.resumeAt.toISOString();
+  }
+  if (typeof eventData.hookToken === 'string') {
+    meta.hookToken = eventData.hookToken;
+  }
+  if (typeof eventData.isWebhook === 'boolean') {
+    meta.hookIsWebhook = eventData.isWebhook;
+  }
+  if (typeof eventData.isSystem === 'boolean') {
+    meta.hookIsSystem = eventData.isSystem;
+  }
+  if (typeof eventData.errorCode === 'string') {
+    meta.errorCode = eventData.errorCode;
+  }
+  if (
+    eventData.executionContext !== undefined &&
+    eventData.executionContext !== null
+  ) {
+    const cbor = encode(eventData.executionContext);
+    meta.executionContextB64 = Buffer.from(cbor).toString('base64');
+  }
 
-    // Legacy events (specVersion=1): eventDataRef is a RefDescriptor
-    if (event.eventDataRef && isRefDescriptor(event.eventDataRef)) {
-      pending.push({
-        eventIndex: i,
-        refType: 'entity',
-        descriptor: event.eventDataRef,
-      });
+  let payload: Uint8Array | undefined;
+  if (payloadField && payloadField in eventData) {
+    const value = eventData[payloadField];
+    if (value instanceof Uint8Array) {
+      payload = value;
+    } else if (value !== undefined) {
+      // CBOR-encode arbitrary JS values. The server treats the bytes as
+      // opaque; the SDK reverses this at decode time so the wire layer
+      // doesn't know about CBOR.
+      payload = new Uint8Array(encode(value));
     }
+  }
 
-    // V2 events: eventData may contain a nested RefDescriptor
-    if (event.eventData && typeof event.eventData === 'object') {
-      const fieldName = eventDataRefFieldMap[event.eventType as string];
-      if (fieldName) {
-        const fieldValue = event.eventData[fieldName];
-        if (isRefDescriptor(fieldValue)) {
-          pending.push({
-            eventIndex: i,
-            refType: 'nested',
-            fieldName,
-            descriptor: fieldValue,
-          });
-        }
+  return { payload, meta };
+}
+
+/**
+ * Turn a v4 single-event response (metadata in headers + opaque body
+ * bytes) into the Event shape the workflow runtime expects.
+ *
+ * Reconstructs `eventData` from header fields and places the CBOR-decoded
+ * payload value (if any) under the appropriate per-event-type field.
+ */
+function buildEventFromV4(
+  meta: Omit<ListedEventV4, 'body'>,
+  body: Uint8Array,
+  resolveData: 'none' | 'all'
+): Event {
+  const eventData: Record<string, unknown> = {};
+  if (meta.workflowName) eventData.workflowName = meta.workflowName;
+  if (meta.stepName) eventData.stepName = meta.stepName;
+  if (meta.attempt !== undefined) eventData.attempt = meta.attempt;
+  if (meta.deploymentId) eventData.deploymentId = meta.deploymentId;
+  if (meta.errorCode) eventData.errorCode = meta.errorCode;
+
+  if (resolveData === 'all' && body.byteLength > 0) {
+    const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[meta.eventType];
+    if (payloadField) {
+      try {
+        eventData[payloadField] = decode(body);
+      } catch {
+        // CBOR decode failure — fall back to the raw bytes so callers
+        // can still inspect the payload if they know its format.
+        eventData[payloadField] = body;
       }
     }
   }
 
-  return pending;
+  const event = {
+    eventId: meta.eventId,
+    runId: meta.runId,
+    eventType: meta.eventType,
+    createdAt: new Date(meta.createdAt),
+    ...(meta.correlationId ? { correlationId: meta.correlationId } : {}),
+    eventData,
+  } as unknown as Event;
+
+  // For resolveData='none', strip eventData entirely. Use the existing
+  // world-side helper so behavior stays in sync with other backends.
+  return resolveData === 'none' ? stripEventDataRefs(event, 'none') : event;
 }
 
-/**
- * Hydrate lazy-loaded events by resolving all ref descriptors client-side.
- * For entity-level refs (eventDataRef), the resolved value becomes eventData.
- * For nested refs (eventData[field]), the resolved value replaces the descriptor.
- *
- * Events are shallow-cloned before mutation to avoid corrupting any upstream
- * caches (SWR, React cache, etc.) that might hold references to the originals.
- */
-async function hydrateEventRefs(
-  events: any[],
-  config?: APIConfig,
-  refResolveConcurrency?: number
-): Promise<any[]> {
-  const pending = collectPendingRefs(events);
-  if (pending.length === 0) return events;
+// =============================================================================
+// Public API
+// =============================================================================
 
-  return trace('world.refs.hydrate', async (span) => {
-    span?.setAttribute('workflow.refs.hydrated_count', pending.length);
-
-    // Deduplicate descriptors by _ref key to avoid redundant resolutions.
-    // Multiple events may reference the same ref (e.g., shared input).
-    const uniqueRefs = new Map<string, RefWithRunId>();
-    for (const p of pending) {
-      if (!uniqueRefs.has(p.descriptor._ref)) {
-        const eventRunId = events[p.eventIndex].runId as string;
-        uniqueRefs.set(p.descriptor._ref, {
-          descriptor: p.descriptor,
-          runId: eventRunId,
-        });
-      }
-    }
-    const deduped = Array.from(uniqueRefs.values());
-
-    // Resolve unique descriptors in parallel with bounded concurrency
-    const dedupedResults = await resolveRefDescriptors(
-      deduped,
-      config,
-      refResolveConcurrency
-    ).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
-      );
-    });
-
-    // Build a map from ref key → resolved value for fast lookup
-    const resolvedMap = new Map<string, unknown>();
-    const dedupedKeys = Array.from(uniqueRefs.keys());
-    for (let i = 0; i < dedupedKeys.length; i++) {
-      resolvedMap.set(dedupedKeys[i], dedupedResults[i]);
-    }
-
-    // Shallow-clone events that need modification, then apply resolved values
-    const result = [...events];
-    for (let i = 0; i < pending.length; i++) {
-      const { eventIndex, refType, fieldName, descriptor } = pending[i];
-      const resolved = resolvedMap.get(descriptor._ref);
-
-      // Shallow-clone the event (and eventData if nested) before mutating
-      if (result[eventIndex] === events[eventIndex]) {
-        result[eventIndex] = { ...events[eventIndex] };
-      }
-      const event = result[eventIndex];
-
-      if (refType === 'entity') {
-        // Legacy: eventDataRef → eventData, remove the ref field
-        event.eventData = resolved;
-        delete event.eventDataRef;
-      } else if (refType === 'nested' && fieldName) {
-        // Shallow-clone eventData before mutating if not yet cloned
-        if (event.eventData === events[eventIndex].eventData) {
-          event.eventData = { ...event.eventData };
-        }
-        // V2: replace the nested ref descriptor with resolved value
-        event.eventData[fieldName] = resolved;
-      }
-    }
-
-    return result;
-  });
-}
-
-// Functions
 export async function getEvent(
   runId: string,
   eventId: string,
@@ -261,122 +239,49 @@ export async function getEvent(
   config?: APIConfig
 ): Promise<Event> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
-
-  const searchParams = new URLSearchParams();
-  searchParams.set('remoteRefBehavior', remoteRefBehavior);
-
-  const queryString = searchParams.toString();
-  const endpoint = `/v3/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
-
-  const event = await makeRequest({
-    endpoint,
-    options: { method: 'GET' },
-    config,
-    schema: (resolveData === 'none' ? EventWithRefsSchema : EventSchema) as any,
-  });
-
-  return stripEventAndLegacyRefs(event as any, resolveData);
+  const result = await getEventV4(runId, eventId, config);
+  const { body, ...meta } = result;
+  return buildEventFromV4(meta, body, resolveData);
 }
 
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
-  const searchParams = new URLSearchParams();
-
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
-  let runId: string | undefined;
-  let correlationId: string | undefined;
-  if ('runId' in params) {
-    runId = params.runId;
-  } else {
-    correlationId = params.correlationId;
-  }
-
-  if (!runId && !correlationId) {
-    throw new Error('Either runId or correlationId must be provided');
-  }
-
-  if (pagination?.limit) searchParams.set('limit', pagination.limit.toString());
-  if (pagination?.cursor) searchParams.set('cursor', pagination.cursor);
-  if (pagination?.sortOrder)
-    searchParams.set('sortOrder', pagination.sortOrder);
-  if (correlationId) searchParams.set('correlationId', correlationId);
-
-  // Always send 'lazy' to the server to avoid memory pressure from resolving
-  // all refs in memory. When resolveData is 'all', we hydrate refs client-side
-  // via individual ref resolution requests.
-  searchParams.set('remoteRefBehavior', 'lazy');
-
-  const queryString = searchParams.toString();
-  const query = queryString ? `?${queryString}` : '';
-  const endpoint = correlationId
-    ? `/v2/events${query}`
-    : `/v3/runs/${encodeURIComponent(runId!)}/events${query}`;
-
-  let refResolveConcurrency: number | undefined;
-  const response = (await makeRequest({
-    endpoint,
-    options: { method: 'GET' },
-    config,
-    schema: PaginatedResponseSchema(EventWithRefsSchema),
-    onResponse: (res) => {
-      const header = res.headers.get('x-ref-resolve-concurrency');
-      if (header) {
-        const parsed = parseInt(header, 10);
-        if (!Number.isNaN(parsed) && parsed > 0) {
-          refResolveConcurrency = parsed;
-        }
-      }
-    },
-  })) as PaginatedResponse<Event>;
-
-  if (resolveData === 'all') {
-    // Hydrate refs client-side: resolve all ref descriptors in parallel
-    const hydratedEvents = await hydrateEventRefs(
-      response.data,
-      config,
-      refResolveConcurrency
+  if ('correlationId' in params) {
+    // v4 has no list-by-correlation-id endpoint yet. Throw a clear error
+    // until a server-side endpoint lands — callers that hit this path
+    // historically used the by-correlation-id query for hook lookup and
+    // can be migrated to direct hook fetches.
+    throw new Error(
+      'world-vercel v4: listEventsByCorrelationId is not yet implemented. ' +
+        'Fetch the hook directly via storage.hooks.getByToken or use ' +
+        'storage.events.list(runId) on a known run.'
     );
-
-    // Re-parse hydrated events through EventSchema to apply type coercions
-    // (e.g., z.coerce.date() for resumeAt) that EventWithRefsSchema skips.
-    // Use safeParse to gracefully handle any events that don't match a known
-    // type — pass them through as-is rather than failing the entire request.
-    let coercionFailures = 0;
-    const validatedEvents = hydratedEvents.map((event: any) => {
-      const result = EventSchema.safeParse(event);
-      if (!result.success) coercionFailures++;
-      return result.success ? result.data : event;
-    });
-    if (coercionFailures > 0) {
-      console.warn(
-        `[world-vercel] EventSchema coercion failed for ${coercionFailures}/${hydratedEvents.length} events`
-      );
-    }
-
-    return {
-      ...response,
-      data: validatedEvents,
-    };
   }
 
-  // resolveData === 'none': strip eventData and eventDataRef
-  return {
-    ...response,
-    data: response.data.map((event: any) =>
-      stripEventAndLegacyRefs(event, resolveData)
-    ),
-  };
-}
+  const result = await getWorkflowRunEventsV4(
+    params.runId,
+    {
+      cursor: pagination?.cursor ?? undefined,
+      limit: pagination?.limit,
+      sortOrder: pagination?.sortOrder,
+    },
+    config
+  );
 
-// Event types that require the hook to already exist — a 404 on these
-// means the hook was already disposed or never created.
-const hookEventsRequiringExistence = new Set([
-  'hook_disposed',
-  'hook_received',
-]);
+  const events = result.events.map((listed) => {
+    const { body, ...meta } = listed;
+    return buildEventFromV4(meta, body, resolveData);
+  });
+
+  return {
+    data: events,
+    cursor: result.next ?? null,
+    hasMore: Boolean(result.next),
+  } as PaginatedResponse<Event>;
+}
 
 export async function createWorkflowRunEvent(
   id: string | null,
@@ -387,10 +292,7 @@ export async function createWorkflowRunEvent(
   try {
     return await createWorkflowRunEventInner(id, data, params, config);
   } catch (err) {
-    // Translate 404 to HookNotFoundError for hook-related events.
-    // makeRequest() throws a generic WorkflowWorldError for all 404s;
-    // on the hook_disposed / hook_received path a 404 means the hook
-    // was already disposed or never created.
+    // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
       hookEventsRequiringExistence.has(data.eventType) &&
       WorkflowWorldError.is(err) &&
@@ -409,99 +311,77 @@ async function createWorkflowRunEventInner(
   params?: CreateEventParams,
   config?: APIConfig
 ): Promise<EventResult> {
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-
-  const v1Compat = params?.v1Compat ?? false;
-  if (v1Compat) {
+  // v1Compat: caller wants the legacy entity-mutation endpoints (used
+  // for migrating SDKs that haven't switched to event sourcing yet).
+  // Keep this on v1 routes — the v4 protocol does not cover it.
+  if (params?.v1Compat) {
     if (data.eventType === 'run_cancelled' && id) {
       const run = await cancelWorkflowRunV1(id, params, config);
       return { run: run as WorkflowRun };
-    } else if (data.eventType === 'run_created') {
+    }
+    if (data.eventType === 'run_created') {
       const run = await createWorkflowRunV1(data.eventData, config);
       return { run };
     }
-    const wireResult = await makeRequest({
-      endpoint: `/v1/runs/${encodeURIComponent(id!)}/events`,
-      options: { method: 'POST' },
-      data,
-      config,
-      schema: EventSchema,
-    });
-
-    return { event: wireResult };
+    throw new Error(
+      `world-vercel: v1Compat=true is only supported for run_created ` +
+        `and run_cancelled, not ${data.eventType}`
+    );
   }
 
-  // Validate client-provided runId timestamp is within acceptable threshold
-  if (data.eventType === 'run_created' && id) {
+  if (id === null) {
+    throw new WorkflowWorldError(
+      'world-vercel v4: createWorkflowRunEvent requires a client-generated ' +
+        'runId for run_created (the runId is part of the S3 ref key). ' +
+        'Generate a wrun_ ULID before calling.',
+      { status: 400 }
+    );
+  }
+
+  // Defensive check for client-generated run_created IDs that ride too
+  // far ahead of wall-clock time — same threshold the v3 path enforced.
+  if (data.eventType === 'run_created') {
     const validationError = validateUlidTimestamp(id, 'wrun_');
     if (validationError) {
       throw new WorkflowWorldError(validationError, { status: 400 });
     }
   }
 
-  // For run_created events, runId may be client-provided or null
-  const runIdPath = id === null ? 'null' : encodeURIComponent(id);
-
   const remoteRefBehavior = eventsNeedingResolve.has(data.eventType)
     ? 'resolve'
     : 'lazy';
 
-  // Use the strict schema when the server resolves all refs (preserves the
-  // WorkflowRunSchema discriminated union), and the loose wire schema when
-  // the server returns lazy refs (error may be a string or undefined).
-  if (remoteRefBehavior === 'resolve') {
-    const wireResult = await makeRequest({
-      endpoint: `/v3/runs/${runIdPath}/events`,
-      options: { method: 'POST' },
-      data: {
-        ...data,
-        remoteRefBehavior,
-        ...(params?.requestId ? { vercelId: params.requestId } : {}),
-      },
-      config,
-      schema: EventResultResolveWireSchema,
-    });
+  const { payload, meta } = splitEventDataForV4(data);
 
-    return {
-      event: wireResult.event
-        ? stripEventAndLegacyRefs(wireResult.event, resolveData)
-        : undefined,
-      run: wireResult.run,
-      step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
-      hook: wireResult.hook,
-      events: wireResult.events,
-      cursor: wireResult.cursor,
-      hasMore: wireResult.hasMore,
-    };
-  }
-
-  const wireResult = await makeRequest({
-    endpoint: `/v3/runs/${runIdPath}/events`,
-    options: { method: 'POST' },
-    data: {
-      ...data,
-      remoteRefBehavior,
+  const result = await createWorkflowRunEventV4(
+    {
+      runId: id,
+      eventType: data.eventType,
+      specVersion: data.specVersion ?? 2,
+      ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      remoteRefBehavior,
+      payload,
+      ...meta,
     },
-    config,
-    schema: EventResultLazyWireSchema,
-  });
+    config
+  );
 
-  // Transform wire format to interface format. In the current event-sourced
-  // model, the run/step error fields are SerializedData (Uint8Array) — the
-  // deserializeError/deserializeStep helpers are pass-throughs that handle
-  // any legacy wire-format variants.
+  // The server already CBOR-decoded into result.body — just thread the
+  // fields through. Step has a wire-format adapter; runs use the
+  // pass-through deserializeError helper.
+  const body = result.body;
   return {
-    event: wireResult.event
-      ? stripEventAndLegacyRefs(wireResult.event, resolveData)
+    event: body.event as Event | undefined,
+    run: body.run
+      ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
       : undefined,
-    run: wireResult.run
-      ? deserializeError<WorkflowRun>(wireResult.run)
+    step: body.step
+      ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
       : undefined,
-    step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
-    hook: wireResult.hook,
-    events: wireResult.events,
-    cursor: wireResult.cursor,
-    hasMore: wireResult.hasMore,
+    hook: body.hook as EventResult['hook'],
+    events: body.events as EventResult['events'],
+    cursor: body.cursor ?? undefined,
+    hasMore: body.hasMore,
   };
 }

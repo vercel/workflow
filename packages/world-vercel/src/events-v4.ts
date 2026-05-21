@@ -22,6 +22,7 @@
  */
 
 import { getVercelOidcToken } from '@vercel/oidc';
+import { decode } from 'cbor-x';
 import { request } from 'undici';
 import { decodeFrames, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getDispatcher } from './http-client.js';
@@ -81,6 +82,23 @@ export interface CreateEventV4Result {
   eventId: string;
   runId: string;
   createdAt: string;
+  /**
+   * Materialized-entity bag — CBOR-decoded from the response body. The
+   * server hands back the same shape v2/v3 use for EventResult so the
+   * adapter layer can drop these fields into its return value unchanged.
+   * Keys are unset when the event type doesn't materialize that entity
+   * kind.
+   */
+  body: {
+    event?: unknown;
+    run?: unknown;
+    step?: unknown;
+    hook?: unknown;
+    wait?: unknown;
+    events?: unknown[];
+    cursor?: string | null;
+    hasMore?: boolean;
+  };
 }
 
 /** Apply structured fields onto a Headers object. Non-ASCII string fields
@@ -176,8 +194,6 @@ export async function createWorkflowRunEventV4(
       `v4 createEvent failed: ${response.statusCode} ${errorBody}`
     );
   }
-  // Discard the response body (204 No Content).
-  await response.body.text();
 
   const eventId = response.headers[V4_HEADERS.eventId];
   const runId = response.headers[V4_HEADERS.runId];
@@ -189,7 +205,17 @@ export async function createWorkflowRunEventV4(
   ) {
     throw new Error('v4 createEvent: response missing required x-wf-* headers');
   }
-  return { eventId, runId, createdAt };
+
+  // Decode the materialized-entity bag from the response body. The server
+  // always returns a CBOR body now (was 204 in an earlier iteration —
+  // see workflow-server PR #439 for the corresponding handler change).
+  const bodyBytes = new Uint8Array(await response.body.arrayBuffer());
+  const body =
+    bodyBytes.byteLength > 0
+      ? (decode(bodyBytes) as CreateEventV4Result['body'])
+      : {};
+
+  return { eventId, runId, createdAt, body };
 }
 
 export interface GetEventV4Result {
