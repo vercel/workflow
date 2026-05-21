@@ -1,10 +1,6 @@
 import { z } from 'zod';
 import { SerializedDataSchema } from './serialization.js';
-import type {
-  PaginatedResponse,
-  PaginationOptions,
-  ResolveData,
-} from './shared.js';
+import type { PaginationOptions, ResolveData } from './shared.js';
 
 /**
  * Fields within eventData that hold ref/payload data per event type.
@@ -100,6 +96,7 @@ const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),
   eventData: z.object({
+    stepName: z.string().optional(),
     result: SerializedDataSchema,
   }),
 });
@@ -108,6 +105,7 @@ const StepFailedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_failed'),
   correlationId: z.string(),
   eventData: z.object({
+    stepName: z.string().optional(),
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
@@ -123,6 +121,7 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_retrying'),
   correlationId: z.string(),
   eventData: z.object({
+    stepName: z.string().optional(),
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
@@ -135,6 +134,7 @@ const StepStartedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z
     .object({
+      stepName: z.string().optional(),
       attempt: z.number().optional(),
     })
     .optional(),
@@ -172,6 +172,7 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_received'),
   correlationId: z.string(),
   eventData: z.object({
+    token: z.string().optional(),
     payload: SerializedDataSchema,
   }),
 });
@@ -179,6 +180,11 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
 const HookDisposedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_disposed'),
   correlationId: z.string(),
+  eventData: z
+    .object({
+      token: z.string().optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -211,6 +217,11 @@ const WaitCreatedEventSchema = BaseEventSchema.extend({
 const WaitCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('wait_completed'),
   correlationId: z.string(),
+  eventData: z
+    .object({
+      resumeAt: z.coerce.date().optional(),
+    })
+    .optional(),
 });
 
 // =============================================================================
@@ -405,6 +416,10 @@ export interface EventResult {
    * initial events.list call and reduce TTFB.
    */
   events?: Event[];
+  /** Pagination cursor for `events`, matching events.list semantics. */
+  cursor?: string | null;
+  /** Whether additional event pages are available for `events`. */
+  hasMore?: boolean;
 }
 
 export interface GetEventParams {
@@ -415,40 +430,10 @@ export interface ListEventsParams {
   runId: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
-  /**
-   * When true, the returned page may carry `refsResolution` — a Promise that
-   * resolves to the same events with refs hydrated. The world is then free to
-   * return the page metadata (and unresolved descriptors) immediately so the
-   * caller can issue the next page request in parallel with the current
-   * page's ref resolution.
-   *
-   * Worlds that resolve refs in-process (e.g. world-local, world-postgres)
-   * may ignore this flag and return events with refs already resolved and
-   * `refsResolution` undefined.
-   */
-  deferRefs?: boolean;
 }
 
 export interface ListEventsByCorrelationIdParams {
   correlationId: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
-  /** See {@link ListEventsParams.deferRefs}. */
-  deferRefs?: boolean;
-}
-
-/**
- * Result of a list-events call. Extends {@link PaginatedResponse} with an
- * optional `refsResolution` promise that the caller can await when
- * `deferRefs: true` was passed in.
- */
-export interface PaginatedEventResponse extends PaginatedResponse<Event> {
-  /**
-   * Present when `deferRefs: true` was requested AND the world supports
-   * deferred resolution. Resolves to a **new** array of events with refs
-   * hydrated — callers MUST await this and read the resolved value rather
-   * than reading `data` directly. Treat `data` as opaque (the descriptor
-   * shape is private to the world implementation) when this field is set.
-   */
-  refsResolution?: Promise<Event[]>;
 }

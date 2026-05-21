@@ -329,83 +329,41 @@ export async function loadWorkflowRunEvents(
         ...Attribute.WorkflowRunId(runId),
       });
 
-      // Page metadata accumulates in order; ref-resolution promises run in
-      // parallel with subsequent page fetches. The page metadata loop is
-      // strictly serial (each page's cursor depends on the previous one),
-      // but hydrating page N's refs no longer blocks page N+1's request.
-      // For a 100-event run loaded 20 at a time, this collapses the
-      // critical path from `5 × (fetch + resolve)` to `5 × fetch + max(resolve)`.
-      const pages: Array<{
-        data: Event[];
-        refsResolution?: Promise<Event[]>;
-      }> = [];
+      const loadedEvents: Event[] = [];
       let cursor: string | null = afterCursor ?? null;
       let hasMore = true;
       let pagesLoaded = 0;
-      let eventsSoFar = 0;
 
       const world = await getWorldLazy();
       const loadStart = Date.now();
-      try {
-        while (hasMore) {
-          const pageStart = Date.now();
-          const response = await world.events.list({
-            runId,
-            pagination: {
-              sortOrder: 'asc',
-              cursor: cursor ?? undefined,
-            },
-            deferRefs: true,
-          });
+      while (hasMore) {
+        // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
+        // to lazyload the data from the world instead so that we can optimize and make the event log loading
+        // much faster and memory efficient
+        const pageStart = Date.now();
+        const response = await world.events.list({
+          runId,
+          pagination: {
+            sortOrder: 'asc',
+            cursor: cursor ?? undefined,
+          },
+        });
 
-          // Attach a no-op catch immediately so an in-flight refsResolution
-          // that rejects before we reach the Promise.all below doesn't escape
-          // as an unhandled rejection (e.g. if a later page throws and we
-          // bail out of the loop). The Promise.all below still sees and
-          // re-throws the original rejection — `.catch` only suppresses the
-          // "no handler" warning, it doesn't swallow the error.
-          response.refsResolution?.catch(() => {});
+        loadedEvents.push(...response.data);
+        hasMore = response.hasMore;
+        cursor = response.cursor;
+        pagesLoaded++;
 
-          pages.push({
-            data: response.data,
-            refsResolution: response.refsResolution,
-          });
-          hasMore = response.hasMore;
-          cursor = response.cursor;
-          pagesLoaded++;
-          eventsSoFar += response.data.length;
-
-          runtimeLogger.debug('Loaded event page', {
-            workflowRunId: runId,
-            incremental,
-            page: pagesLoaded,
-            pageEvents: response.data.length,
-            // Running total across pages — useful for triaging slow replays
-            // from the log line alone (without summing prior pageEvents).
-            totalEvents: eventsSoFar,
-            hasMore,
-            pageMs: Date.now() - pageStart,
-          });
-        }
-      } catch (loopError) {
-        // The loop bailed (e.g. world.events.list threw on a later page).
-        // Drain any in-flight refsResolution promises so their rejections
-        // don't escape after we re-throw — Promise.allSettled never rejects.
-        await Promise.allSettled(
-          pages
-            .map((p) => p.refsResolution)
-            .filter((p): p is Promise<Event[]> => p !== undefined)
-        );
-        throw loopError;
+        runtimeLogger.debug('Loaded event page', {
+          workflowRunId: runId,
+          incremental,
+          page: pagesLoaded,
+          pageEvents: response.data.length,
+          totalEvents: loadedEvents.length,
+          hasMore,
+          pageMs: Date.now() - pageStart,
+        });
       }
-
-      // Await all in-flight ref resolutions in parallel. For worlds that
-      // don't defer (refsResolution undefined), the page's `data` is
-      // already resolved.
-      const resolvedPages = await Promise.all(
-        pages.map((p) => p.refsResolution ?? Promise.resolve(p.data))
-      );
-      const loadedEvents: Event[] = resolvedPages.flat();
 
       runtimeLogger.debug('Event load complete', {
         workflowRunId: runId,
