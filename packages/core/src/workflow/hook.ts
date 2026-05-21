@@ -151,7 +151,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           payloadsQueue.push(event);
         }
 
-        return EventConsumerResult.Consumed;
+        // Even when no hook promise is waiting yet, this event may become the
+        // next Promise.race winner after a previous step/wait completion resumes
+        // workflow code. Yield so replay does not scan into future events before
+        // that continuation can subscribe follow-up operations.
+        return EventConsumerResult.ConsumedAndYield;
       }
 
       if (event.eventType === 'hook_disposed') {
