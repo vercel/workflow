@@ -929,12 +929,19 @@ describe('e2e', () => {
 
   // A WritableStream passed as a workflow argument to start() should
   // land raw bytes on the parent's output stream when the child step
-  // writes to it.
-  test('writableForwardedToChildWorkflow', { timeout: 120_000 }, async () => {
+  // writes to it. Covered for both:
+  // - `writableForwardedFromWorkflowWorkflow`: parent calls
+  //   `getWritable()` in workflow context (fake handle revived in the
+  //   intermediary step).
+  // - `writableForwardedFromStepWorkflow`: parent calls `getWritable()`
+  //   in step context (real `serialize.writable` passed straight to
+  //   `start()`).
+  test.each([
+    'writableForwardedFromWorkflowWorkflow',
+    'writableForwardedFromStepWorkflow',
+  ] as const)('%s', { timeout: 120_000 }, async (workflowName) => {
     const payload = `hello-from-child-${Date.now()}\n`;
-    const run = await start(await e2e('writableForwardedToChildWorkflow'), [
-      payload,
-    ]);
+    const run = await start(await e2e(workflowName), [payload]);
 
     const reader = run.getReadable().getReader();
     // `fatal: true` makes the decoder throw on any invalid UTF-8
@@ -954,8 +961,8 @@ describe('e2e', () => {
     expect(value.byteLength).toBe(expectedBytes.byteLength);
     expect(decoder.decode(value)).toBe(payload);
 
-    // Default stream should close cleanly after the parent's
-    // stepCloseOutputStream call.
+    // Default stream should close cleanly after the parent closes its
+    // writable.
     expect((await reader.read()).done).toBe(true);
 
     const returnValue = await run.returnValue;
