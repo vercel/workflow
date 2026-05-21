@@ -71,11 +71,12 @@ export function getWritable<W = any>(
   pollWritableLock(serialize.writable, state);
 
   // Tag the writable with its underlying `(runId, name)` so downstream
-  // reducers can recognize it. Without this, calling
-  // `start(child, [args, theWritable])` from the same step would install
-  // a second serialize transform on top of this one and double-frame
-  // every chunk the child writes. See `getStepRevivers.WritableStream`
-  // for the matching rationale on revived writables.
+  // reducers can recognize that it's already backed by a workflow
+  // server stream. Calling `start(child, [args, theWritable])` from
+  // the same step uses these tags to emit `{ name, runId }` in the
+  // dehydrated descriptor, so the child's reviver can open the
+  // writable against the original `(runId, name)` directly — no
+  // in-process bridge tied to this step's lifetime.
   Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
     value: name,
     writable: false,

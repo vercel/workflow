@@ -9,13 +9,17 @@ export const STREAM_TYPE_SYMBOL = Symbol.for('WORKFLOW_STREAM_TYPE');
 /**
  * Stamped on a real `WritableStream` (the user-visible `serialize.writable`
  * returned from a step-side reviver or step-context `getWritable()`) to
- * record the `(runId, name)` of the underlying `WorkflowServerWritableStream`
- * that the writable's chunks ultimately land on. Downstream reducers (most
- * importantly `getExternalReducers.WritableStream`, which `start()` uses to
- * dehydrate workflow arguments) consult this symbol so they can bridge to
- * the original server stream without piping through the user's
- * already-installed serialize transform — that's what previously produced
- * a second devalue framing layer on every chunk the child wrote.
+ * record the `runId` of the workflow run that owns the underlying server
+ * stream. Used together with `STREAM_NAME_SYMBOL`.
+ *
+ * When `getExternalReducers.WritableStream` (the dehydration path used by
+ * `start()`) sees both symbols on a writable, it includes the `runId` in
+ * the descriptor it emits. The child run's step-side reviver then opens
+ * a server writable against the original `(runId, name)` and resolves
+ * that run's encryption key directly — so the child's writes land on
+ * the parent's stream as-is, with no client process in the loop. That
+ * keeps the forwarding alive for the full lifetime of the child run,
+ * not just for the parent step that initiated `start()`.
  */
 export const STREAM_SERVER_RUN_ID_SYMBOL = Symbol.for(
   'WORKFLOW_STREAM_SERVER_RUN_ID'

@@ -1,6 +1,6 @@
 ---
-"@workflow/core": patch
-"workflow": patch
+"@workflow/core": minor
+"workflow": minor
 ---
 
-Fix double-framing when a `WritableStream` is forwarded across `start()`. A workflow's `getWritable()` handle (or a step-context `getWritable()`) can now be passed as a workflow argument to a child workflow; the child's writes land on the parent's stream as raw chunks instead of devalue-encoded frames.
+Support forwarding a `WritableStream` (from a workflow's `getWritable()`) as an argument to a child workflow via `start()`. The child run's writes land on the parent run's stream directly — encrypted with the parent run's key — for the full lifetime of the child run, with no in-process bridge tied to the parent step that invoked `start()`.
