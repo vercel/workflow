@@ -42,7 +42,7 @@ jobs:
 
       - name: Waiting for the Tarballs Vercel deployment
         id: waitForTarballsDeployment
-        uses: ./.github/actions/wait-for-vercel-project
+        uses: vercel/wait-for-deployment-action@593ea7dfb974467fcc5973ba5e99441ede58eb05
         with:
           project-slug: workflow-tarballs
           timeout: 1000
