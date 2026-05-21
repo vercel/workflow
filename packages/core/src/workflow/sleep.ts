@@ -5,6 +5,7 @@ import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import {
   scheduleWhenIdle,
+  trackVmDelivery,
   type WorkflowOrchestratorContext,
 } from '../private.js';
 
@@ -86,9 +87,11 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         // Remove this wait from the invocations queue (O(1) delete using Map)
         ctx.invocationsQueue.delete(correlationId);
 
-        // Wait has elapsed - chain through promiseQueue to ensure
-        // deterministic ordering of all promise resolutions.
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        // Wait has elapsed — deliver the resolve through `trackVmDelivery`
+        // so it runs in event-log order AND `pendingVmWork` covers the
+        // body's reaction window (e.g. a `for await` over a hook that
+        // races a sleep).
+        trackVmDelivery(ctx, async () => {
           resolve();
         });
         return EventConsumerResult.Finished;
