@@ -83,6 +83,8 @@ const REPLAY_TIMEOUT_HINT =
   'The workflow replay took too long. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work between step boundaries.';
 const MAX_DELIVERIES_HINT =
   'The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.';
+const WORLD_CONTRACT_HINT =
+  'The workflow backend returned data that violated the SDK contract. This is not retryable; please report it with the stack trace and runId.';
 
 function normalizeErrorCode(code: string | undefined): RunErrorCode {
   // Values read back from persisted events are `string | undefined` — we
@@ -133,6 +135,13 @@ export function describeRunError(
       attribution: 'sdk',
       errorCode,
       hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+  if (errorCode === RUN_ERROR_CODES.WORLD_CONTRACT_ERROR) {
+    return {
+      attribution: 'sdk',
+      errorCode,
+      hint: WORLD_CONTRACT_HINT,
     };
   }
   if (name === 'WorkflowRuntimeError' || name === 'StepNotRegisteredError') {
@@ -224,6 +233,14 @@ export function describeError(
       attribution: 'sdk',
       errorCode: effectiveCode,
       hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+
+  if (effectiveCode === RUN_ERROR_CODES.WORLD_CONTRACT_ERROR) {
+    return {
+      attribution: 'sdk',
+      errorCode: effectiveCode,
+      hint: WORLD_CONTRACT_HINT,
     };
   }
 
