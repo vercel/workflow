@@ -48,6 +48,28 @@ describe('classifyRunError', () => {
     ).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 
+  it('classifies world schema validation failures as WORLD_CONTRACT_ERROR', () => {
+    expect(
+      classifyRunError(
+        new WorkflowWorldError(
+          'Schema validation failed for POST /v3/runs/wrun/events',
+          { code: 'SCHEMA_VALIDATION' }
+        )
+      )
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  });
+
+  it('classifies world response parse failures as WORLD_CONTRACT_ERROR', () => {
+    expect(
+      classifyRunError(
+        new WorkflowWorldError(
+          'Failed to parse response body for GET /v3/runs/wrun/events',
+          { code: 'PARSE_ERROR' }
+        )
+      )
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  });
+
   it('classifies string throw as USER_ERROR', () => {
     expect(classifyRunError('string error')).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
