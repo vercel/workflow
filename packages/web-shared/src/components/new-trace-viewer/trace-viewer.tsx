@@ -521,7 +521,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       >
         <SplitPane
           startHeader={
-            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center px-2 gap-1.5">
+            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
               <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
               <input
                 id="trace-viewer-search"
@@ -607,7 +607,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       {activeSpan && sidebar ? (
         <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
           {/* Panel header */}
-          <div className="flex items-center justify-between gap-2 shrink-0 px-3 pt-3 pb-3">
+          <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
             <span className="text-label-14 font-medium text-gray-1000 truncate block">
               {selectedSpanName}
             </span>

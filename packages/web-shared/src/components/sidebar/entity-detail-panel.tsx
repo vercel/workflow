@@ -353,7 +353,7 @@ export function EntityDetailPanel({
           onDecrypt ? { onDecrypt, isDecrypting, hasEncryptedData } : undefined
         }
       >
-        <div className="flex-1 overflow-y-auto px-3 pb-8">
+        <div className="flex-1 overflow-y-auto px-4 pb-8">
           {hasPendingActions && (
             <div
               className="mb-4 rounded-lg border p-2"

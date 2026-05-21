@@ -3,13 +3,11 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
-import { Button } from '../ui/button';
 import {
   DecryptClickContext,
   RunClickContext,
@@ -21,7 +19,6 @@ import {
   isStructuredErrorWithStack,
 } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
-import { Spinner } from '../ui/spinner';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { CopyButton } from '../new-trace-viewer/components/copy-button';
 import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
@@ -180,33 +177,11 @@ function ConversationWithTabs({
 }
 
 /**
- * Compact Decrypt action rendered in a section header's trailing slot
- * (replacing the chevron) when the field's value is an encrypted marker.
+ * Render a value with the shared DataInspector (ObjectInspector with
+ * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
  */
-function DecryptTrailing() {
-  const ctx = useContext(DecryptClickContext);
-  if (!ctx) {
-    return (
-      <span
-        className="flex items-center gap-1 text-[11px] font-medium"
-        style={{ color: 'var(--ds-gray-700)' }}
-      >
-        <Lock className="h-3 w-3" />
-        Encrypted
-      </span>
-    );
-  }
-  return (
-    <Button
-      onClick={ctx.onDecrypt}
-      disabled={ctx.isDecrypting}
-      size="xs"
-      className="gap-x-1"
-    >
-      {ctx.isDecrypting ? <Spinner size={10} /> : <Lock className="h-3 w-3" />}
-      <span>Decrypt</span>
-    </Button>
-  );
+function EncryptedFieldBlock() {
+  return <EncryptedDataBlock />;
 }
 
 /**
@@ -459,7 +434,11 @@ const attributeToDisplayFn: Record<
   },
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
-      return <DetailCard summary="Input" trailing={<DecryptTrailing />} />;
+      return (
+        <DetailCard summary="Input">
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     // Check if input has args + closure vars structure
@@ -541,7 +520,11 @@ const attributeToDisplayFn: Record<
   },
   output: (value: unknown) => {
     if (isEncryptedMarker(value)) {
-      return <DetailCard summary="Output" trailing={<DecryptTrailing />} />;
+      return (
+        <DetailCard summary="Output">
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
     }
     if (!hasDisplayContent(value)) return null;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
@@ -549,7 +532,11 @@ const attributeToDisplayFn: Record<
   },
   error: (value: unknown) => {
     if (isEncryptedMarker(value)) {
-      return <DetailCard summary="Error" trailing={<DecryptTrailing />} />;
+      return (
+        <DetailCard summary="Error" defaultOpen>
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
@@ -572,7 +559,11 @@ const attributeToDisplayFn: Record<
   },
   eventData: (value: unknown) => {
     if (isEncryptedMarker(value)) {
-      return <DetailCard summary="Event Data" trailing={<DecryptTrailing />} />;
+      return (
+        <DetailCard summary="Event Data" defaultOpen>
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
@@ -651,7 +642,11 @@ export const AttributeBlock = ({
           ? 'Output'
           : 'Input';
     if (decryptCtx?.hasEncryptedData) {
-      return <DetailCard summary={label} trailing={<DecryptTrailing />} />;
+      return (
+        <DetailCard summary={label} defaultOpen={attribute === 'eventData'}>
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
     }
     return <DetailCard summary={label} />;
   }

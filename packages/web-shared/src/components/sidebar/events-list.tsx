@@ -290,11 +290,11 @@ export function EventsList({
   return (
     <DetailCard summary="Events" contentClassName="mb-0" defaultOpen>
       {isLoading ? (
-        <div className="flex flex-col -mx-3">
+        <div className="flex flex-col -mx-4">
           {[0, 1, 2].map((i) => (
             <div
               key={i}
-              className="flex items-center justify-between gap-3 bg-background-200 px-3 py-2"
+              className="flex items-center justify-between gap-3 bg-background-200 px-4 py-2"
             >
               <Skeleton className="h-4 w-32 rounded" />
               <Skeleton className="h-3 w-16 rounded" />
@@ -302,7 +302,7 @@ export function EventsList({
           ))}
         </div>
       ) : (
-        <div className="flex flex-col -mx-3">
+        <div className="flex flex-col -mx-4">
           {sortedEvents.map((event) => (
             <EventItem
               key={event.eventId}
