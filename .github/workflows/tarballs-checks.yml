@@ -21,6 +21,7 @@ jobs:
     permissions:
       contents: read
       deployments: read
+      statuses: read
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
