@@ -28,6 +28,8 @@ outputs:
     description: 'The URL of the ready deployment (e.g. https://my-project-abc123.vercel.app).'
   deployment-id:
     description: 'The Vercel deployment ID (dpl_xxx), resolved from the matching commit status. Empty string if it could not be resolved.'
+  deployment-state:
+    description: 'The GitHub Deployment status state that made the deployment terminal-ready, such as success or inactive.'
 
 runs:
   using: 'node20'

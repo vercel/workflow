@@ -1,4 +1,5 @@
 import {
+  CorruptedEventLogError,
   RUN_ERROR_CODES,
   type RunErrorCode,
   SerializationError,
@@ -76,6 +77,8 @@ const CONTEXT_ERROR_HINT =
   'A workflow-only or step-only API was called from the wrong context. The error message includes the exact API and how to move the call.';
 const RUNTIME_ERROR_HINT =
   'This is an internal workflow SDK error, not a bug in your code. If it keeps happening, please report it with the stack trace and the runId.';
+const CORRUPTED_EVENT_LOG_HINT =
+  'The workflow event log contains orphaned or mismatched events and cannot be replayed. This is an internal workflow SDK error; please report it with the runId.';
 const REPLAY_TIMEOUT_HINT =
   'The workflow replay took too long. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work between step boundaries.';
 const MAX_DELIVERIES_HINT =
@@ -100,8 +103,11 @@ function normalizeErrorCode(code: string | undefined): RunErrorCode {
 export function describeRunError(
   signal: PersistedErrorSignal
 ): ErrorDescription {
-  const errorCode = normalizeErrorCode(signal.errorCode);
   const name = signal.errorName;
+  const errorCode =
+    name === 'CorruptedEventLogError'
+      ? RUN_ERROR_CODES.CORRUPTED_EVENT_LOG
+      : normalizeErrorCode(signal.errorCode);
 
   if (name === 'SerializationError') {
     return { attribution: 'user', errorCode, hint: SERIALIZATION_ERROR_HINT };
@@ -109,14 +115,28 @@ export function describeRunError(
   if (name && CONTEXT_ERROR_NAMES.has(name)) {
     return { attribution: 'user', errorCode, hint: CONTEXT_ERROR_HINT };
   }
-  if (name === 'WorkflowRuntimeError' || name === 'StepNotRegisteredError') {
-    return { attribution: 'sdk', errorCode, hint: RUNTIME_ERROR_HINT };
+  if (name === 'CorruptedEventLogError') {
+    return {
+      attribution: 'sdk',
+      errorCode,
+      hint: CORRUPTED_EVENT_LOG_HINT,
+    };
   }
   if (errorCode === RUN_ERROR_CODES.REPLAY_TIMEOUT) {
     return { attribution: 'sdk', errorCode, hint: REPLAY_TIMEOUT_HINT };
   }
   if (errorCode === RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED) {
     return { attribution: 'sdk', errorCode, hint: MAX_DELIVERIES_HINT };
+  }
+  if (errorCode === RUN_ERROR_CODES.CORRUPTED_EVENT_LOG) {
+    return {
+      attribution: 'sdk',
+      errorCode,
+      hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+  if (name === 'WorkflowRuntimeError' || name === 'StepNotRegisteredError') {
+    return { attribution: 'sdk', errorCode, hint: RUNTIME_ERROR_HINT };
   }
   if (errorCode === RUN_ERROR_CODES.RUNTIME_ERROR) {
     return { attribution: 'sdk', errorCode, hint: RUNTIME_ERROR_HINT };
@@ -167,6 +187,14 @@ export function describeError(
     };
   }
 
+  if (CorruptedEventLogError.is(err)) {
+    return {
+      attribution: 'sdk',
+      errorCode: effectiveCode,
+      hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+
   if (err instanceof WorkflowRuntimeError) {
     return {
       attribution: 'sdk',
@@ -188,6 +216,14 @@ export function describeError(
       attribution: 'sdk',
       errorCode: effectiveCode,
       hint: MAX_DELIVERIES_HINT,
+    };
+  }
+
+  if (effectiveCode === RUN_ERROR_CODES.CORRUPTED_EVENT_LOG) {
+    return {
+      attribution: 'sdk',
+      errorCode: effectiveCode,
+      hint: CORRUPTED_EVENT_LOG_HINT,
     };
   }
 

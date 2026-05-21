@@ -1,4 +1,5 @@
 import {
+  CorruptedEventLogError,
   RUN_ERROR_CODES,
   SerializationError,
   StepNotRegisteredError,
@@ -61,6 +62,15 @@ describe('describeError', () => {
     expect(result.attribution).toBe('sdk');
     expect(result.errorCode).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
     expect(result.hint).toContain('internal workflow SDK error');
+  });
+
+  test('CorruptedEventLogError is attributed to the SDK with a distinct code', () => {
+    const result = describeError(
+      new CorruptedEventLogError('corrupted event log')
+    );
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+    expect(result.hint).toContain('event log contains');
   });
 
   test('StepNotRegisteredError (subclass of WorkflowRuntimeError) is attributed to the SDK', () => {
@@ -144,6 +154,23 @@ describe('describeRunError', () => {
     expect(result.hint).toContain('replay took too long');
   });
 
+  test('CORRUPTED_EVENT_LOG errorCode is attributed to the SDK', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.CORRUPTED_EVENT_LOG,
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.hint).toContain('event log contains');
+  });
+
+  test('CorruptedEventLogError name restores the distinct code', () => {
+    const result = describeRunError({
+      errorName: 'CorruptedEventLogError',
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+    expect(result.hint).toContain('event log contains');
+  });
+
   test('MAX_DELIVERIES_EXCEEDED errorCode is attributed to the SDK', () => {
     const result = describeRunError({
       errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
@@ -222,6 +249,18 @@ describe('describeError — payload shape snapshots', () => {
           "attribution": "sdk",
           "errorCode": "RUNTIME_ERROR",
           "hint": "This is an internal workflow SDK error, not a bug in your code. If it keeps happening, please report it with the stack trace and the runId.",
+        }
+      `);
+  });
+
+  test('CorruptedEventLogError payload', () => {
+    expect(
+      describeError(new CorruptedEventLogError('event mismatch'))
+    ).toMatchInlineSnapshot(`
+        {
+          "attribution": "sdk",
+          "errorCode": "CORRUPTED_EVENT_LOG",
+          "hint": "The workflow event log contains orphaned or mismatched events and cannot be replayed. This is an internal workflow SDK error; please report it with the runId.",
         }
       `);
   });
