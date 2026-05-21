@@ -187,6 +187,44 @@ describe('createCreateHook', () => {
     await expect(hook).resolves.toEqual({ message: 'buffered' });
   });
 
+  it('should synchronously subscribe when iterator.next() is called', async () => {
+    const ops: Promise<any>[] = [];
+    const payload = await dehydrateStepReturnValue(
+      { message: 'buffered' },
+      'wrun_test',
+      undefined,
+      ops
+    );
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'test-token' });
+    const hookConsumer = ctx.eventsConsumer.callbacks[0];
+    if (!hookConsumer) {
+      throw new Error('expected hook consumer to be registered');
+    }
+
+    hookConsumer({
+      eventId: 'evnt_0',
+      runId: 'wrun_123',
+      eventType: 'hook_received',
+      correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+      eventData: {
+        token: 'test-token',
+        payload,
+      },
+      createdAt: new Date(),
+    });
+
+    const iterator = hook[Symbol.asyncIterator]();
+    const next = iterator.next();
+
+    expect(ctx.pendingDeliveries).toBe(1);
+    await expect(next).resolves.toEqual({
+      done: false,
+      value: { message: 'buffered' },
+    });
+  });
+
   it('should invoke workflow error handler when hook_created token mismatches the hook', async () => {
     const ctx = setupWorkflowContext([
       {

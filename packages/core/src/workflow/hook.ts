@@ -269,11 +269,27 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return createHookPromise().then(onfulfilled, onrejected);
       },
 
-      // Support `for await (const payload of hook) { … }` syntax
-      async *[Symbol.asyncIterator]() {
-        while (!isDisposed) {
-          yield await this;
-        }
+      // Support `for await (const payload of hook) { … }` syntax.
+      //
+      // Keep `next()` eager: workflow code frequently uses
+      // `Promise.race([iterator.next(), sleep(...)])`, and the hook must
+      // subscribe synchronously before the competing sleep is created.
+      [Symbol.asyncIterator](): AsyncIterator<T> {
+        return {
+          next(): Promise<IteratorResult<T>> {
+            if (isDisposed) {
+              return Promise.resolve({
+                done: true,
+                value: undefined,
+              } as IteratorReturnResult<undefined>);
+            }
+
+            return createHookPromise().then((value) => ({
+              done: false,
+              value,
+            }));
+          },
+        };
       },
 
       dispose: disposeHook,
