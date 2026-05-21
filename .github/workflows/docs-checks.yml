@@ -72,7 +72,7 @@ jobs:
 
       - name: Waiting for the Docs Vercel deployment
         id: waitForDocsDeployment
-        uses: vercel/wait-for-deployment-action@04d46eff1a408e53e695e658eba5898e3c848e40
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: workflow-docs
           timeout: 1000
