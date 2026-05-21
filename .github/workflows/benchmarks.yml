@@ -396,7 +396,7 @@ jobs:
 
       - name: Wait for Vercel deployment
         id: waitForDeployment
-        uses: vercel/wait-for-deployment-action@593ea7dfb974467fcc5973ba5e99441ede58eb05
+        uses: vercel/wait-for-deployment-action@04d46eff1a408e53e695e658eba5898e3c848e40
         with:
           project-slug: ${{ matrix.app.project-slug }}
           timeout: 1000
