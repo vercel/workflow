@@ -1,5 +1,6 @@
 import { runInContext } from 'node:vm';
 import {
+  CorruptedEventLogError,
   ERROR_SLUGS,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
@@ -160,9 +161,8 @@ export async function runWorkflow(
     const eventsConsumer = new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
-          new WorkflowRuntimeError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`,
-            { slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG }
+          new CorruptedEventLogError(
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
           )
         );
       },

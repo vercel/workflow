@@ -107,6 +107,7 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
+            stepName,
             error: await dehydrateStepError(
               new FatalError(errorMessage),
               workflowRunId,
@@ -140,6 +141,7 @@ export async function executeStep(
         eventType: 'step_started',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: stepId,
+        eventData: { stepName },
       });
 
       if (!startResult.step) {
@@ -239,6 +241,7 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
+            stepName,
             error: await dehydrateStepError(
               wrappedError,
               workflowRunId,
@@ -382,6 +385,7 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
+            stepName,
             result: result as Uint8Array,
           },
         })
@@ -468,6 +472,7 @@ export async function executeStep(
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {
+              stepName,
               error: await dehydrateStepError(
                 err,
                 workflowRunId,
@@ -532,6 +537,7 @@ export async function executeStep(
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {
+              stepName,
               error: await dehydrateStepError(
                 wrappedError,
                 workflowRunId,
@@ -590,6 +596,7 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
+            stepName,
             error: await dehydrateStepError(
               err,
               workflowRunId,
