@@ -7,7 +7,7 @@ import { Button } from '../ui/button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 import { Spinner } from '../ui/spinner';
 
-const fakeEncryptedJson = `{
+const encryptedPlaceholderPreview = `{
   "input": "[encrypted]",
   "result": "[encrypted]"
 }`;
@@ -21,7 +21,7 @@ export function EncryptedDataBlock() {
         aria-hidden="true"
         className="pointer-events-none m-0 select-none p-3 font-mono text-label-12 text-gray-900 blur-xs"
       >
-        {fakeEncryptedJson}
+        {encryptedPlaceholderPreview}
       </pre>
       <div className="absolute inset-0 flex items-center justify-center">
         {ctx ? (

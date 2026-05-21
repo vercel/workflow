@@ -19,7 +19,7 @@ interface EventStyle {
 const eventStyles: Record<string, EventStyle> = {
   run: { icon: WorkflowIcon, className: 'text-blue-900' },
   step: { icon: StepForwardIcon, className: 'text-green-900' },
-  hook: { icon: WebhookIcon, className: 'text-yellow-900' },
+  hook: { icon: WebhookIcon, className: 'text-gray-900' },
   sleep: { icon: SleepIcon, className: 'text-gray-900' },
 };
 

@@ -10,7 +10,11 @@
  */
 
 import { types } from 'node:util';
-import { FatalError, RetryableError } from '@workflow/errors';
+import {
+  FatalError,
+  HookConflictError,
+  RetryableError,
+} from '@workflow/errors';
 import type { Reducers, Revivers, SerializableSpecial } from '../types.js';
 
 // ---- Base64 helpers ----
@@ -210,6 +214,19 @@ export function getCommonReducers(
     // See `makeErrorSubclassReducer` for implementation details.
     EvalError: makeErrorSubclassReducer('EvalError'),
     FatalError: makeErrorSubclassReducer('FatalError'),
+    HookConflictError: (value) => {
+      const base = reduceNamedErrorSubclassBase('HookConflictError', value);
+      if (!base) return false;
+      const error = value as HookConflictError;
+      const reduced: SerializableSpecial['HookConflictError'] = {
+        ...base,
+        token: error.token,
+      };
+      if (error.conflictingRunId !== undefined) {
+        reduced.conflictingRunId = error.conflictingRunId;
+      }
+      return reduced;
+    },
     RangeError: makeErrorSubclassReducer('RangeError'),
     ReferenceError: makeErrorSubclassReducer('ReferenceError'),
     // RetryableError carries an extra `retryAfter` Date that we serialize as
@@ -359,6 +376,18 @@ export function getCommonRevivers(
       const error = new Ctor(value.message);
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) error.cause = value.cause;
+      return error;
+    },
+    HookConflictError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//HookConflictError')
+        ] as typeof HookConflictError | undefined) ?? HookConflictError;
+      const error = new Ctor(value.token, value.conflictingRunId);
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) {
+        (error as Error & { cause?: unknown }).cause = value.cause;
+      }
       return error;
     },
     RangeError: makeErrorSubclassReviver(global, 'RangeError'),

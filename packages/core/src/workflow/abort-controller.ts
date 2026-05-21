@@ -1,3 +1,4 @@
+import { WorkflowRuntimeError } from '@workflow/errors';
 import { EventConsumerResult } from '../events-consumer.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
@@ -135,6 +136,25 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
+        const eventToken =
+          'eventData' in event && event.eventData && 'token' in event.eventData
+            ? event.eventData.token
+            : undefined;
+
+        if (
+          typeof eventToken === 'string' &&
+          eventToken !== this[ABORT_HOOK_TOKEN]
+        ) {
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+            ctx.onWorkflowError(
+              new WorkflowRuntimeError(
+                `Corrupted event log: abort hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current abort hook expects "${this[ABORT_HOOK_TOKEN]}"`
+              )
+            );
+          });
+          return EventConsumerResult.Finished;
+        }
+
         if (event.eventType === 'hook_created') {
           const queueItem = ctx.invocationsQueue.get(correlationId);
           if (queueItem && queueItem.type === 'hook') {
@@ -158,7 +178,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // ends up undefined on replay.
           const rawPayload = event.eventData?.payload;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
-            let reason: unknown = undefined;
+            let reason: unknown;
             if (rawPayload !== undefined) {
               try {
                 const hydrated = (await hydrateStepReturnValue(

@@ -18,16 +18,14 @@ const SEGMENT_CONFIG: Record<
   SegmentStatus,
   { className?: string; style?: React.CSSProperties }
 > = {
-  queued: { className: 'bg-gray-500' },
-  retrying: {
-    className: 'box-border bg-gray-500',
-  },
-  waiting: { className: 'bg-gray-500' },
-  running: { className: 'bg-blue-700' },
-  failed: { className: 'bg-red-700' },
-  succeeded: { className: 'bg-green-700' },
-  sleeping: { className: 'bg-gray-500' },
-  received: { className: 'bg-blue-700' },
+  queued: { className: 'bg-gray-400 border border-gray-500' },
+  retrying: { className: 'box-border bg-gray-400 border border-gray-500' },
+  waiting: { className: 'bg-gray-400 border border-gray-500' },
+  running: { className: 'bg-blue-200 border border-blue-500' },
+  failed: { className: 'bg-red-200 border border-red-500' },
+  succeeded: { className: 'bg-green-200 border border-green-500' },
+  sleeping: { className: 'bg-gray-400 border border-gray-500' },
+  received: { className: 'bg-blue-200 border border-blue-500' },
 };
 
 const BAR_HEIGHT_PX = 24;
@@ -117,14 +115,14 @@ const TimelineBar = memo(function TimelineBar({
     ?.status as string | undefined;
   const isErrored = span.status.code === 2 || workflowStatus === 'failed';
   const colors = getResourceColor(span.resource);
-  const fallbackColor = isErrored
-    ? (colors.errorBar ?? 'var(--ds-red-700)')
-    : colors.bar;
+  const fallbackBg = isErrored
+    ? (colors.errorBg ?? 'var(--ds-red-200)')
+    : colors.bg;
+  const fallbackBorder = isErrored
+    ? (colors.errorBorder ?? 'var(--ds-red-500)')
+    : colors.border;
   const renderDurationLabel = (label: string) => (
-    <span
-      className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-white tabular-nums"
-      style={{ textShadow: '0 1px 1px rgba(0, 0, 0, 0.45)' }}
-    >
+    <span className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-gray-1000 tabular-nums">
       {label}
     </span>
   );
@@ -143,8 +141,8 @@ const TimelineBar = memo(function TimelineBar({
     </div>
   ) : isTinyBar ? (
     <div
-      className="h-6 rounded-[0.25rem]"
-      style={{ background: fallbackColor }}
+      className="h-6 rounded-[0.25rem] border"
+      style={{ background: fallbackBg, borderColor: fallbackBorder }}
     />
   ) : segments.length > 0 ? (
     <div className="relative h-6 w-full">
@@ -159,7 +157,10 @@ const TimelineBar = memo(function TimelineBar({
           segPixelWidth >= getMinDurationLabelWidthPx(segDurationLabel);
         const segStyle =
           seg.status === 'queued' && segPixelWidth < 20
-            ? { background: 'var(--ds-gray-500)' }
+            ? {
+                background: 'var(--ds-gray-400)',
+                borderColor: 'var(--ds-gray-500)',
+              }
             : SEGMENT_CONFIG[seg.status].style;
 
         return (
@@ -185,11 +186,12 @@ const TimelineBar = memo(function TimelineBar({
     </div>
   ) : (
     <div
-      className="relative h-6 rounded-[0.25rem]"
+      className="relative h-6 rounded-[0.25rem] border"
       style={{
         width: '100%',
         minWidth: 4,
-        background: fallbackColor,
+        background: fallbackBg,
+        borderColor: fallbackBorder,
       }}
     >
       {showBarDurationLabel ? renderDurationLabel(totalDurationLabel) : null}
@@ -341,7 +343,7 @@ export function Timeline({
           }}
         >
           <div
-            className="absolute top-0 bottom-0 w-px bg-gray-alpha-400"
+            className="absolute top-0 bottom-0 w-px bg-gray-alpha-500"
             style={{ left: `${hoverFraction * 100}%` }}
           />
         </div>

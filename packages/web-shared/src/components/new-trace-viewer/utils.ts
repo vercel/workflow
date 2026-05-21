@@ -130,18 +130,50 @@ export function computeSpanGaps(
 
 export const RESOURCE_COLORS: Record<
   string,
-  { bar: string; errorBar?: string }
+  {
+    bg: string;
+    border: string;
+    errorBg?: string;
+    errorBorder?: string;
+  }
 > = {
-  run: { bar: 'var(--ds-blue-700)', errorBar: 'var(--ds-red-700)' },
-  step: { bar: 'var(--ds-green-700)', errorBar: 'var(--ds-red-700)' },
-  hook: { bar: 'var(--ds-amber-700)', errorBar: 'var(--ds-red-700)' },
-  sleep: { bar: 'var(--ds-purple-700)', errorBar: 'var(--ds-red-700)' },
-  default: { bar: 'var(--ds-gray-500)', errorBar: 'var(--ds-red-700)' },
+  run: {
+    bg: 'var(--ds-blue-200)',
+    border: 'var(--ds-blue-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
+  },
+  step: {
+    bg: 'var(--ds-green-200)',
+    border: 'var(--ds-green-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
+  },
+  hook: {
+    bg: 'var(--ds-amber-200)',
+    border: 'var(--ds-amber-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
+  },
+  sleep: {
+    bg: 'var(--ds-purple-200)',
+    border: 'var(--ds-purple-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
+  },
+  default: {
+    bg: 'var(--ds-gray-200)',
+    border: 'var(--ds-gray-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
+  },
 };
 
 export function getResourceColor(resource: string): {
-  bar: string;
-  errorBar?: string;
+  bg: string;
+  border: string;
+  errorBg?: string;
+  errorBorder?: string;
 } {
   return RESOURCE_COLORS[resource] ?? RESOURCE_COLORS.default;
 }

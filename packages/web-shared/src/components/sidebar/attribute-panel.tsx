@@ -428,7 +428,7 @@ const attributeToDisplayFn: Record<
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) return <EncryptedDataBlock />;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return JsonBlock(value);
   },
