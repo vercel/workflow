@@ -23,6 +23,7 @@
   "updateInternalDependencies": "patch",
   "ignore": [
     "docs",
+    "tarballs",
     "nextjs-turbopack",
     "nextjs-webpack",
     "workflow-sdk-compiler-playground",

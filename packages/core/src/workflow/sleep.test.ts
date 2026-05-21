@@ -1,4 +1,4 @@
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { CorruptedEventLogError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -26,7 +26,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         ctx.onWorkflowError(
-          new WorkflowRuntimeError(
+          new CorruptedEventLogError(
             `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
           )
         );
@@ -63,7 +63,9 @@ describe('createSleep', () => {
         runId: 'wrun_123',
         eventType: 'wait_completed',
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
         createdAt: new Date(),
       },
     ]);
@@ -73,6 +75,107 @@ describe('createSleep', () => {
 
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
     expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
+  it('should resolve old wait_completed events without eventData', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        createdAt: new Date(),
+      },
+    ]);
+
+    const sleep = createSleep(ctx);
+    await sleep('1s');
+
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+    expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
+  it('should invoke workflow error handler when wait_completed resumeAt mismatches the wait', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:02.000Z'),
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const sleep = createSleep(ctx);
+    void sleep('1s');
+
+    const workflowError = await errorReceived.promise;
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError?.message).toContain('wait_completed');
+    expect(workflowError?.message).toContain('resumeAt');
+    expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
+  });
+
+  it('should invoke workflow error handler when wait_completed resumeAt is invalid', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date(Number.NaN),
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const sleep = createSleep(ctx);
+    void sleep('1s');
+
+    const workflowError = await errorReceived.promise;
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError?.message).toContain('wait_completed');
+    expect(workflowError?.message).toContain('Invalid Date');
   });
 
   it('should throw WorkflowSuspension when no events are available', async () => {
@@ -90,7 +193,7 @@ describe('createSleep', () => {
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
   });
 
-  it('should invoke workflow error handler with WorkflowRuntimeError for unexpected event type', async () => {
+  it('should invoke workflow error handler with CorruptedEventLogError for unexpected event type', async () => {
     // Simulate a corrupted event log where a sleep/wait receives an unexpected event type
     // (e.g., a step_completed event when expecting wait_created/wait_completed)
     const ctx = setupWorkflowContext([
@@ -100,6 +203,7 @@ describe('createSleep', () => {
         eventType: 'step_completed', // Wrong event type for a wait!
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'unexpectedStep',
           result: ['test'],
         },
         createdAt: new Date(),
@@ -115,7 +219,7 @@ describe('createSleep', () => {
     const sleepPromise = sleep('1s');
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('Unexpected event type for wait');
     expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
     expect(workflowError?.message).toContain('step_completed');
@@ -168,6 +272,7 @@ describe('createSleep', () => {
         eventType: 'hook_received', // Wrong event type for a wait!
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          token: 'test-token',
           payload: { data: 'test' },
         },
         createdAt: new Date(),
@@ -181,7 +286,7 @@ describe('createSleep', () => {
     const sleepPromise = sleep('1s');
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('Unexpected event type for wait');
     expect(workflowError?.message).toContain('hook_received');
   });
@@ -237,7 +342,9 @@ describe('createSleep', () => {
         runId: 'wrun_123',
         eventType: 'wait_completed',
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
         createdAt: new Date(),
       },
     ]);
@@ -254,11 +361,11 @@ describe('createSleep', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should raise WorkflowRuntimeError when duplicate wait_completed events exist in the event log', async () => {
+  it('should raise CorruptedEventLogError when duplicate wait_completed events exist in the event log', async () => {
     // When the event log has 2 wait_completed for a single wait_created,
     // the first wait_completed removes the callback (Finished), but the second
     // wait_completed has no consumer. The onUnconsumedEvent callback should
-    // trigger a WorkflowRuntimeError via onWorkflowError.
+    // trigger a CorruptedEventLogError via onWorkflowError.
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -275,7 +382,9 @@ describe('createSleep', () => {
         runId: 'wrun_123',
         eventType: 'wait_completed',
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
         createdAt: new Date(),
       },
       {
@@ -283,7 +392,9 @@ describe('createSleep', () => {
         runId: 'wrun_123',
         eventType: 'wait_completed', // Duplicate!
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
         createdAt: new Date(),
       },
     ]);
@@ -296,18 +407,31 @@ describe('createSleep', () => {
 
     // The duplicate wait_completed at index 2 is orphaned and triggers the error
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('evnt_2');
   });
 
   it('should resolve with void when wait_completed', async () => {
+    const resumeAt = new Date('2024-01-01T00:00:01.000Z');
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
         runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt,
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
         eventType: 'wait_completed',
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          resumeAt,
+        },
         createdAt: new Date(),
       },
     ]);

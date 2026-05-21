@@ -66,6 +66,30 @@ export type LocalQueue = Queue & {
   ): void;
 };
 
+const DETACHED_ARRAYBUFFER_ERROR =
+  'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer';
+const PROXY_HANDLER_DOCS_URL =
+  'https://workflow-sdk.dev/docs/getting-started/next#configure-proxy-handler';
+
+function isDetachedArrayBufferQueueError(error: unknown): boolean {
+  let current = error;
+  const visited = new Set<unknown>();
+
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    if (
+      'message' in current &&
+      typeof current.message === 'string' &&
+      current.message.includes(DETACHED_ARRAYBUFFER_ERROR)
+    ) {
+      return true;
+    }
+    current = 'cause' in current ? current.cause : undefined;
+  }
+
+  return false;
+}
+
 function getQueueRoute(queueName: ValidQueueName): {
   pathname: 'flow' | 'step';
   prefix: '__wkf_step_' | '__wkf_workflow_';
@@ -240,7 +264,23 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         const isAbortError =
           err?.name === 'AbortError' || err?.name === 'ResponseAborted';
         if (!isAbortError) {
-          console.error('[local world] Queue operation failed:', err);
+          if (isDetachedArrayBufferQueueError(err)) {
+            console.error(
+              `[local world] Queue operation failed: detected "${DETACHED_ARRAYBUFFER_ERROR}". ` +
+                "This usually means a Next.js proxy/middleware consumed Workflow's internal " +
+                'request before the executor could read it. Exclude `/.well-known/workflow/*` ' +
+                `from your matcher. See ${PROXY_HANDLER_DOCS_URL}`,
+              {
+                queueName,
+                messageId,
+                ...(runId && { runId }),
+                ...(stepId && { stepId }),
+                originalError: err,
+              }
+            );
+          } else {
+            console.error('[local world] Queue operation failed:', err);
+          }
         }
       })
       .finally(() => {

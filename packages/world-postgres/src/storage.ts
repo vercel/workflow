@@ -648,7 +648,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // for concurrent invocations: replay is deterministic, so letting
         // multiple callers proceed with the same run is safe.  We skip
         // preloaded events here because this is a rare race-condition path
-        // — the runtime falls back to getAllWorkflowRunEvents().
+        // — the runtime falls back to loading events separately.
         if (currentRun?.status === 'running') {
           const [fullRun] = await drizzle
             .select()
@@ -1275,6 +1275,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
       let allEvents: Event[] | undefined;
+      let cursor: string | null | undefined;
+      let hasMore: boolean | undefined;
       if (data.eventType === 'run_started' && run) {
         const eventRows = await drizzle
           .select()
@@ -1286,6 +1288,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
+        cursor = allEvents.at(-1)?.eventId ?? null;
+        hasMore = false;
       }
 
       return {
@@ -1295,6 +1299,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         hook,
         wait,
         events: allEvents,
+        cursor,
+        hasMore,
       };
     },
     async get(

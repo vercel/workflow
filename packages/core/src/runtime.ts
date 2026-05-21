@@ -21,8 +21,8 @@ import {
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
 import {
-  getAllWorkflowRunEvents,
   getQueueOverhead,
+  getWorkflowRunEvents,
   handleHealthCheckMessage,
   parseHealthCheckPayload,
   withHealthCheck,
@@ -258,6 +258,7 @@ export function workflowEntrypoint(
                 // Pre-loaded events from the run_started response.
                 // When present, we skip the events.list call.
                 let preloadedEvents: Event[] | undefined;
+                let preloadedEventsCursor: string | null | undefined;
 
                 // --- Infrastructure: prepare the run state ---
                 // Always call run_started directly — this both transitions
@@ -305,8 +306,13 @@ export function workflowEntrypoint(
 
                   // If the response includes events, use them to skip
                   // the initial events.list call and reduce TTFB.
-                  if (result.events && result.events.length > 0) {
+                  if (
+                    result.events &&
+                    result.events.length > 0 &&
+                    result.hasMore !== true
+                  ) {
                     preloadedEvents = result.events;
+                    preloadedEventsCursor = result.cursor;
                   }
 
                   if (!workflowRun.startedAt) {
@@ -391,9 +397,18 @@ export function workflowEntrypoint(
                 // Load all events into memory before running.
                 // If we got pre-loaded events from the run_started response,
                 // skip the events.list round-trip to reduce TTFB.
-                const events =
-                  preloadedEvents ??
-                  (await getAllWorkflowRunEvents(workflowRun.runId));
+                let events: Event[];
+                let eventsCursor: string | null | undefined;
+                if (preloadedEvents) {
+                  events = preloadedEvents;
+                  eventsCursor = preloadedEventsCursor;
+                } else {
+                  const loadedEvents = await getWorkflowRunEvents(
+                    workflowRun.runId
+                  );
+                  events = loadedEvents.events;
+                  eventsCursor = loadedEvents.cursor;
+                }
 
                 // Check for any elapsed waits and create wait_completed events
                 const now = Date.now();
@@ -408,7 +423,11 @@ export function workflowEntrypoint(
                 // Collect all waits that need completion
                 const waitsToComplete = events
                   .filter(
-                    (e): e is typeof e & { correlationId: string } =>
+                    (
+                      e
+                    ): e is Extract<Event, { eventType: 'wait_created' }> & {
+                      correlationId: string;
+                    } =>
                       e.eventType === 'wait_created' &&
                       e.correlationId !== undefined &&
                       !completedWaitIds.has(e.correlationId) &&
@@ -418,16 +437,17 @@ export function workflowEntrypoint(
                     eventType: 'wait_completed' as const,
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: e.correlationId,
+                    eventData: {
+                      resumeAt: e.eventData.resumeAt,
+                    },
                   }));
 
                 // Create all wait_completed events
                 for (const waitEvent of waitsToComplete) {
                   try {
-                    const result = await world.events.create(runId, waitEvent, {
+                    await world.events.create(runId, waitEvent, {
                       requestId,
                     });
-                    // Add the event to the events array so the workflow can see it
-                    events.push(result.event!);
                   } catch (err) {
                     if (EntityConflictError.is(err)) {
                       runtimeLogger.info('Wait already completed, skipping', {
@@ -437,6 +457,44 @@ export function workflowEntrypoint(
                       continue;
                     }
                     throw err;
+                  }
+                }
+
+                if (waitsToComplete.length > 0) {
+                  // The event list above may be stale by the time an elapsed
+                  // wait is committed. Load only events after the original
+                  // snapshot cursor so concurrent durable events, such as
+                  // hook_received, keep their ordering relative to
+                  // wait_completed. Fall back to a full reload for older worlds
+                  // that cannot give us a stable cursor.
+                  if (eventsCursor) {
+                    const newEvents = await getWorkflowRunEvents(
+                      workflowRun.runId,
+                      eventsCursor
+                    );
+                    const completedWaitIdsAfterCursor = new Set(
+                      newEvents.events
+                        .filter((e) => e.eventType === 'wait_completed')
+                        .map((e) => e.correlationId)
+                    );
+                    const sawAllWaitCompletions = waitsToComplete.every(
+                      (waitEvent) =>
+                        completedWaitIdsAfterCursor.has(waitEvent.correlationId)
+                    );
+
+                    if (sawAllWaitCompletions) {
+                      events.push(...newEvents.events);
+                    } else {
+                      const loadedEvents = await getWorkflowRunEvents(
+                        workflowRun.runId
+                      );
+                      events = loadedEvents.events;
+                    }
+                  } else {
+                    const loadedEvents = await getWorkflowRunEvents(
+                      workflowRun.runId
+                    );
+                    events = loadedEvents.events;
                   }
                 }
 
@@ -522,9 +580,9 @@ export function workflowEntrypoint(
                     );
                   }
 
-                  // Classify the error: WorkflowRuntimeError indicates an
-                  // internal issue (corrupted event log, missing data);
-                  // everything else is a user code error.
+                  // Classify the error: WorkflowRuntimeError indicates
+                  // an SDK/runtime issue, and selected subclasses use
+                  // more specific codes for backend tracking.
                   const errorCode = classifyRunError(err);
 
                   runtimeLogger.error('Error while running workflow', {

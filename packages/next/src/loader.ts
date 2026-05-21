@@ -38,6 +38,39 @@ type SocketCredentials = {
   authToken: string;
 };
 
+/**
+ * Wrap a TCP connect failure with context about where the connection was
+ * attempted, where the credentials came from, and which source file was
+ * being processed when it failed. ECONNREFUSED is the common case here, and
+ * the message points the user at the most likely root cause (stale
+ * socket-info file).
+ */
+function annotateConnectionError(
+  originalError: unknown,
+  credentials: SocketCredentials
+): Error {
+  const errorCode =
+    originalError instanceof Error &&
+    'code' in originalError &&
+    typeof (originalError as { code?: unknown }).code === 'string'
+      ? ((originalError as { code: string }).code as string)
+      : undefined;
+  const errorMessage =
+    originalError instanceof Error
+      ? originalError.message
+      : String(originalError);
+
+  const lines = [
+    `Workflow discovery socket connect failed: ${errorCode ?? errorMessage} (127.0.0.1:${credentials.port})`,
+  ];
+
+  const annotated = new Error(lines.join('\n'));
+  if (originalError instanceof Error) {
+    (annotated as { cause?: unknown }).cause = originalError;
+  }
+  return annotated;
+}
+
 function registerFileDependency(
   loaderContext: WorkflowLoaderContext,
   dependencyPath: string
@@ -226,12 +259,17 @@ async function getSocketClient(): Promise<Socket | null> {
           };
           const onError = (error: Error) => {
             cleanup();
-            reject(error);
+            reject(annotateConnectionError(error, socketCredentials));
           };
           const timeout = setTimeout(() => {
             cleanup();
             socket.destroy();
-            reject(new Error('Socket connection timeout'));
+            reject(
+              annotateConnectionError(
+                new Error('Socket connection timeout'),
+                socketCredentials
+              )
+            );
           }, 1000);
           const cleanup = () => {
             clearTimeout(timeout);

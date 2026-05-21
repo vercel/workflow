@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   NORMALIZE_REQUEST_CODE,
+  replaceGeneratedRouteExport,
   type SvelteKitConfig,
 } from '@workflow/builders';
 
@@ -121,13 +122,18 @@ export class SvelteKitBuilder extends BaseBuilder {
     let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
 
     // Replace the default export with SvelteKit-compatible handler
-    stepsRouteContent = stepsRouteContent.replace(
-      /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
+    stepsRouteContent = replaceGeneratedRouteExport(
+      stepsRouteContent,
+      /export\s*\{\s*stepEntrypoint\w*\s+as\s+HEAD\s*,\s*stepEntrypoint\w*\s+as\s+POST\s*\}\s*;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleStepRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return stepEntrypoint(normalRequest);
-}`
+};
+
+export const HEAD = handleStepRequest;
+export const POST = handleStepRequest;`,
+      'Failed to wrap generated SvelteKit step route'
     );
 
     await writeFile(stepsRouteFile, stepsRouteContent);
@@ -160,13 +166,18 @@ export const POST = async ({request}) => {
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
 
     // Replace the default export with SvelteKit-compatible handler
-    workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
+    workflowsRouteContent = replaceGeneratedRouteExport(
+      workflowsRouteContent,
+      /const handler = workflowEntrypoint\(workflowCode\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleWorkflowRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
-}`
+};
+
+export const HEAD = handleWorkflowRequest;
+export const POST = handleWorkflowRequest;`,
+      'Failed to wrap generated SvelteKit workflow route'
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
