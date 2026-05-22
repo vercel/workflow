@@ -4,7 +4,8 @@ import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createVercelWorld } from '@workflow/world-vercel';
-import { onTestFailed } from 'vitest';
+import { onTestFailed, onTestFinished } from 'vitest';
+import { getCurrentTest } from 'vitest/suite';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import { parseEnvironmentFlag } from '../../next/src/environment-flag.js';
 import type { Run } from '../src/runtime';
@@ -460,8 +461,28 @@ interface TrackedRun {
   workflowFn?: string;
 }
 
-// Per-test tracked runs — reset between tests via setupRunTracking()
-let trackedRuns: TrackedRun[] = [];
+interface PerTaskState {
+  testName: string;
+  trackedRuns: TrackedRun[];
+}
+
+// Keyed by vitest task id so concurrent tests get isolated state.
+// Stored on a module-level Map (rather than a `let` slot) because
+// `describe.concurrent` interleaves beforeEach/test/onTestFailed across
+// tasks — a shared `let` gets clobbered by whichever task last entered
+// beforeEach, surfacing the wrong run's diagnostics on the failing test.
+const perTaskState = new Map<string, PerTaskState>();
+
+function currentTaskState(): PerTaskState | undefined {
+  const task = getCurrentTest();
+  if (!task) return undefined;
+  let state = perTaskState.get(task.id);
+  if (!state) {
+    state = { testName: task.name, trackedRuns: [] };
+    perTaskState.set(task.id, state);
+  }
+  return state;
+}
 
 // Global list of run IDs collected for metadata (observability links)
 const globalCollectedRunIds: {
@@ -492,17 +513,24 @@ export function trackRun<T>(
     workflowFn?: string;
   }
 ): Run<T> {
-  const testName = options?.testName ?? currentTestName;
-  trackedRuns.push({
-    run,
-    workflowFile: options?.workflowFile,
-    workflowFn: options?.workflowFn,
-  });
+  const state = currentTaskState();
+  const testName = options?.testName ?? state?.testName ?? 'unknown';
+  if (state) {
+    state.trackedRuns.push({
+      run,
+      workflowFile: options?.workflowFile,
+      workflowFn: options?.workflowFn,
+    });
+  }
   globalCollectedRunIds.push({
     testName,
     runId: run.runId,
     timestamp: new Date().toISOString(),
   });
+  // Unconditionally log run-id <-> test correlation so that if diagnostics
+  // fail to fetch (or the test hangs past the timeout), we can still trace
+  // back from CI stdout which workflow run belongs to which test.
+  console.log(`[trackRun] ${testName} → ${run.runId}`);
   return run;
 }
 
@@ -661,13 +689,27 @@ function emitGitHubAnnotation(
  *   beforeEach((ctx) => { setupRunTracking(ctx.task.name); });
  */
 export function setupRunTracking(testName: string) {
-  currentTestName = testName;
-  trackedRuns = [];
+  const task = getCurrentTest();
+  if (!task) {
+    // Outside of a test context — nothing to wire up.
+    return;
+  }
+  const state: PerTaskState = { testName, trackedRuns: [] };
+  perTaskState.set(task.id, state);
+
   onTestFailed(
     async (result) => {
       const errorMessage = result.errors?.[0]?.message || 'Test failed';
 
-      for (const tracked of trackedRuns) {
+      if (state.trackedRuns.length === 0) {
+        // Make the absence of tracked runs explicit: helps distinguish "test
+        // failed before start()" from "diagnostics infrastructure is broken".
+        console.error(
+          `[diagnostics] ${testName}: no tracked runs for this test`
+        );
+      }
+
+      for (const tracked of state.trackedRuns) {
         try {
           const diagnostics = await getRunDiagnostics(tracked);
           console.error(diagnostics);
@@ -681,10 +723,12 @@ export function setupRunTracking(testName: string) {
     },
     30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
   );
-}
 
-// Current test name for auto-tracking
-let currentTestName = 'unknown';
+  // Drop the per-task slot after the test settles to keep the Map bounded.
+  onTestFinished(() => {
+    perTaskState.delete(task.id);
+  });
+}
 
 /**
  * Write diagnostics sidecar file with per-test run info for the aggregation script.
