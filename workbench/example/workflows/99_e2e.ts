@@ -1727,18 +1727,36 @@ async function abortFromStep(
 /**
  * Step that uses fetch with an AbortSignal.
  * Uses a URL that intentionally delays, so the abort cancels it.
+ *
+ * Also reports `status` and `elapsedMs` to make flaky failures of the
+ * abort-fetch tests actionable: when the upstream slow endpoint (e.g.
+ * httpbin.org/delay/N) returns early — sometimes in well under a second
+ * from GitHub Actions runners — the diagnostic surfaces the actual HTTP
+ * status and timing instead of leaving us guessing why the race winner
+ * was `fetch` instead of `timeout`.
  */
 async function fetchWithSignal(
   url: string,
   signal: AbortSignal
-): Promise<{ ok: boolean; aborted: boolean }> {
+): Promise<{
+  ok: boolean;
+  aborted: boolean;
+  status?: number;
+  elapsedMs: number;
+}> {
   'use step';
+  const startedAt = Date.now();
   try {
     const response = await globalThis.fetch(url, { signal });
-    return { ok: response.ok, aborted: false };
+    return {
+      ok: response.ok,
+      aborted: false,
+      status: response.status,
+      elapsedMs: Date.now() - startedAt,
+    };
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      return { ok: false, aborted: true };
+      return { ok: false, aborted: true, elapsedMs: Date.now() - startedAt };
     }
     throw err;
   }

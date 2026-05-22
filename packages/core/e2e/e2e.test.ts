@@ -3016,11 +3016,16 @@ describe('e2e', () => {
         const run = await start(await e2e('abortFetchInFlightWorkflow'), []);
         const returnValue = await run.returnValue;
 
-        expect(returnValue.winner).toBe('timeout');
+        // Include the full returnValue (status + elapsedMs from the step) in
+        // the assertion message so a flaky failure surfaces *why* fetch won
+        // the race — e.g. httpbin returning a 5xx in <1s — instead of just
+        // "expected 'fetch' to be 'timeout'".
+        const summary = JSON.stringify(returnValue);
+        expect(returnValue.winner, summary).toBe('timeout');
         // The step's catch path returned aborted=true (fetch threw AbortError),
         // not the natural-completion path (which would set ok=true,aborted=false).
-        expect(returnValue.fetchResult.aborted).toBe(true);
-        expect(returnValue.fetchResult.ok).toBe(false);
+        expect(returnValue.fetchResult.aborted, summary).toBe(true);
+        expect(returnValue.fetchResult.ok, summary).toBe(false);
       }
     );
 
@@ -3041,8 +3046,12 @@ describe('e2e', () => {
         const run = await start(await e2e('abortVoidSleepTimeoutWorkflow'), []);
         const returnValue = await run.returnValue;
 
-        expect(returnValue.aborted).toBe(true);
-        expect(returnValue.ok).toBe(false);
+        // Same diagnostic treatment as abortFetchInFlightWorkflow: when the
+        // slow upstream returns early the step result includes status and
+        // elapsedMs, which are what we'll need to triage the next flake.
+        const summary = JSON.stringify(returnValue);
+        expect(returnValue.aborted, summary).toBe(true);
+        expect(returnValue.ok, summary).toBe(false);
       }
     );
 
