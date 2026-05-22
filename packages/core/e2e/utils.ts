@@ -11,7 +11,8 @@ import { getWorld, setWorld } from '../src/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
-  process.env.WORKFLOW_E2E_CLI_TIMEOUT_MS ?? '20000'
+  process.env.WORKFLOW_E2E_CLI_TIMEOUT_MS ??
+    (process.env.WORKFLOW_VERCEL_ENV ? '90000' : '20000')
 );
 
 function splitArgs(raw: string): string[] {

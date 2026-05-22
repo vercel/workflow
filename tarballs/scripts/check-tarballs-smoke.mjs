@@ -60,6 +60,26 @@ const assertHtmlResponse = async (path) => {
   }
 };
 
+const assertCatalogJson = async (path) => {
+  const res = await fetch(`${BASE_URL}${path}`);
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data || !Array.isArray(data.packages) || data.packages.length === 0) {
+    throw new Error(`${path} did not return a catalog with packages`);
+  }
+  const workflow = data.packages.find((p) => p.name === 'workflow');
+  if (!workflow) {
+    throw new Error(`${path} catalog is missing the 'workflow' package`);
+  }
+  if (!workflow.fileCount || workflow.fileCount < 5) {
+    throw new Error(
+      `'workflow' tarball only has ${workflow.fileCount} files — packages probably weren't built before pack`
+    );
+  }
+};
+
 const checks = [
   {
     name: 'Deployment protection',
@@ -68,6 +88,10 @@ const checks = [
   {
     name: 'Index page',
     run: () => assertHtmlResponse('/'),
+  },
+  {
+    name: 'Catalog JSON',
+    run: () => assertCatalogJson('/catalog.json'),
   },
   {
     name: 'Tarball - workflow',

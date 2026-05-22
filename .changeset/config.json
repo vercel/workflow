@@ -1,7 +1,7 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": [
-    "@changesets/changelog-github",
+    "./changelog.mjs",
     {
       "repo": "vercel/workflow"
     }
@@ -23,6 +23,7 @@
   "updateInternalDependencies": "patch",
   "ignore": [
     "docs",
+    "tarballs",
     "nextjs-turbopack",
     "nextjs-webpack",
     "workflow-sdk-compiler-playground",

@@ -2,6 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "pnpm turbo build --filter=tarballs",
   "installCommand": "pnpm install --frozen-lockfile",
-  "outputDirectory": "public",
+  "outputDirectory": "dist",
   "framework": null
 }

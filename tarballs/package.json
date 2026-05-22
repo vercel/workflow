@@ -5,7 +5,8 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
-    "build": "node scripts/pack.ts",
+    "build": "node scripts/pack.ts && vite build",
+    "dev": "node scripts/pack.ts && vite",
     "test:smoke": "node ./scripts/check-tarballs-smoke.mjs"
   },
   "dependencies": {
@@ -35,5 +36,12 @@
     "@workflow/world-testing": "workspace:*",
     "@workflow/world-vercel": "workspace:*",
     "workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.1",
+    "@types/node": "^22.10.0",
+    "preact": "^10.25.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.3.2"
   }
 }

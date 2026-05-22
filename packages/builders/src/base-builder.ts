@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { pluralize, usesVercelWorld } from '@workflow/utils';
@@ -18,10 +19,12 @@ import { getImportPath } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import { detectWorkflowPatterns } from './transform-utils.js';
 import type { WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
+const require = createRequire(import.meta.url);
 
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
@@ -45,10 +48,12 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
   );
 }
 
+export type DiscoveredEntryCollection = string[] | Set<string>;
+
 export interface DiscoveredEntries {
-  discoveredSteps: string[];
-  discoveredWorkflows: string[];
-  discoveredSerdeFiles: string[];
+  discoveredSteps: DiscoveredEntryCollection;
+  discoveredWorkflows: DiscoveredEntryCollection;
+  discoveredSerdeFiles: DiscoveredEntryCollection;
 }
 
 /**
@@ -59,6 +64,12 @@ export interface DiscoveredEntries {
  */
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
+
+  /**
+   * Tracks which external packages have already been warned about
+   * to avoid duplicate warnings across multiple discoverEntries() calls.
+   */
+  private warnedExternalPackages = new Set<string>();
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -187,14 +198,116 @@ export abstract class BaseBuilder {
    * This cache is invalidated automatically when the inputs array reference changes
    * (e.g., when files are added/removed during watch mode).
    */
-  private discoveredEntries: WeakMap<
-    string[],
-    {
-      discoveredSteps: string[];
-      discoveredWorkflows: string[];
-      discoveredSerdeFiles: string[];
+  private discoveredEntries: WeakMap<string[], DiscoveredEntries> =
+    new WeakMap();
+
+  /**
+   * Pseudo-packages that should not be checked for workflow patterns.
+   */
+  private static readonly PSEUDO_PACKAGES = new Set([
+    'server-only',
+    'client-only',
+  ]);
+
+  /**
+   * Checks each package in externalPackages for workflow patterns and emits
+   * warnings if any contain "use step", "use workflow" directives, or
+   * serialization classes. These patterns will not be transformed by the
+   * workflow compiler when the package is externalized.
+   */
+  private async warnAboutExternalWorkflowPackages(): Promise<void> {
+    const externalPackages = this.config.externalPackages;
+    if (!externalPackages?.length) return;
+
+    for (const pkg of externalPackages) {
+      if (BaseBuilder.PSEUDO_PACKAGES.has(pkg)) continue;
+      if (this.warnedExternalPackages.has(pkg)) continue;
+
+      if (
+        pkg.startsWith('.') ||
+        pkg.startsWith('/') ||
+        pkg.startsWith('$') ||
+        pkg.includes('*') ||
+        pkg.includes(':')
+      ) {
+        continue;
+      }
+
+      try {
+        // Check package.json dependencies for @workflow/serde (fast path)
+        let hasWorkflowSerdeDep = false;
+        try {
+          const pkgJsonPath = require.resolve(`${pkg}/package.json`, {
+            paths: [this.config.workingDir],
+          });
+          const pkgJsonSource = await readFile(pkgJsonPath, 'utf-8');
+          const pkgJson = JSON.parse(pkgJsonSource) as {
+            dependencies?: unknown;
+            peerDependencies?: unknown;
+          };
+          const dependencies =
+            typeof pkgJson.dependencies === 'object' &&
+            pkgJson.dependencies !== null &&
+            !Array.isArray(pkgJson.dependencies)
+              ? (pkgJson.dependencies as Record<string, unknown>)
+              : {};
+          const peerDependencies =
+            typeof pkgJson.peerDependencies === 'object' &&
+            pkgJson.peerDependencies !== null &&
+            !Array.isArray(pkgJson.peerDependencies)
+              ? (pkgJson.peerDependencies as Record<string, unknown>)
+              : {};
+          hasWorkflowSerdeDep =
+            Object.hasOwn(dependencies, '@workflow/serde') ||
+            Object.hasOwn(peerDependencies, '@workflow/serde');
+        } catch {
+          // package.json not resolvable - continue to source check
+        }
+
+        // Check source patterns (thorough path).
+        // Note: require.resolve only inspects the package's main entry point.
+        // If workflow constructs live in sub-paths (e.g. `my-pkg/workflows`),
+        // they won't be detected here. The @workflow/serde dep check above
+        // partially covers serde cases. This is acceptable as a best-effort
+        // heuristic — the primary fix is auto-removal in withWorkflow().
+        let hasUseStep = false;
+        let hasUseWorkflow = false;
+        let hasSerde = hasWorkflowSerdeDep;
+        try {
+          const entryPath = require.resolve(pkg, {
+            paths: [this.config.workingDir],
+          });
+          const source = await readFile(entryPath, 'utf-8');
+          const patterns = detectWorkflowPatterns(source);
+          hasUseStep = patterns.hasUseStep;
+          hasUseWorkflow = patterns.hasUseWorkflow;
+          if (!hasSerde) {
+            hasSerde = patterns.hasSerde;
+          }
+        } catch {
+          // Entry file not resolvable or not readable - use what we have
+        }
+
+        if (!hasUseStep && !hasUseWorkflow && !hasSerde) continue;
+
+        // Build a specific description of what was found
+        const issues: string[] = [];
+        if (hasUseWorkflow) issues.push('"use workflow" functions');
+        if (hasUseStep) issues.push('"use step" functions');
+        if (hasSerde) issues.push('serialization classes');
+
+        this.warnedExternalPackages.add(pkg);
+
+        console.warn(
+          `\n${chalk.yellow('⚠')} Warning: ${chalk.bold(`"${pkg}"`)} is listed in ${chalk.bold('externalPackages')} (${chalk.bold('serverExternalPackages')} in Next.js) but contains workflow code (${issues.join(', ')}).` +
+            `\n  This code will ${chalk.bold('not')} be transformed by the workflow compiler, which can cause runtime failures.` +
+            `\n  Remove ${chalk.bold(`"${pkg}"`)} from ${chalk.bold('externalPackages')} (${chalk.bold('serverExternalPackages')} in Next.js) to fix this.\n`
+        );
+      } catch {
+        // Best-effort: if anything goes wrong, skip this package silently
+      }
     }
-  > = new WeakMap();
+  }
 
   protected async discoverEntries(
     inputs: string[],
@@ -206,14 +319,10 @@ export abstract class BaseBuilder {
     if (previousResult) {
       return previousResult;
     }
-    const state: {
-      discoveredSteps: string[];
-      discoveredWorkflows: string[];
-      discoveredSerdeFiles: string[];
-    } = {
-      discoveredSteps: [],
-      discoveredWorkflows: [],
-      discoveredSerdeFiles: [],
+    const state: DiscoveredEntries = {
+      discoveredSteps: new Set(),
+      discoveredWorkflows: new Set(),
+      discoveredSerdeFiles: new Set(),
     };
 
     const discoverStart = Date.now();
@@ -246,6 +355,9 @@ export abstract class BaseBuilder {
       `Discovering workflow directives`,
       `${Date.now() - discoverStart}ms`
     );
+
+    // Warn about external packages that contain workflow code
+    await this.warnAboutExternalWorkflowPackages();
 
     this.discoveredEntries.set(inputs, state);
     return state;
@@ -373,6 +485,7 @@ export abstract class BaseBuilder {
    * Steps have full Node.js runtime access and handle side effects, API calls, etc.
    *
    * @param externalizeNonSteps - If true, only bundles step entry points and externalizes other code
+   * @param bundleTransitiveLocalStepDependencies - If true, also bundles project-local files imported by step entries for direct runtime loading
    * @returns Build context (for watch mode) and the collected workflow manifest
    */
   protected async createStepsBundle({
@@ -380,6 +493,7 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     externalizeNonSteps,
+    bundleTransitiveLocalStepDependencies,
     rewriteTsExtensions,
     tsconfigPath,
     discoveredEntries,
@@ -389,6 +503,7 @@ export abstract class BaseBuilder {
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
+    bundleTransitiveLocalStepDependencies?: boolean;
     rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
@@ -483,7 +598,7 @@ export abstract class BaseBuilder {
     // Serde files for cross-context class registration
     ${serdeImports}
     // API entrypoint
-    export { stepEntrypoint as POST } from 'workflow/runtime';`;
+    export { stepEntrypoint as HEAD, stepEntrypoint as POST } from 'workflow/runtime';`;
 
     // Bundle with esbuild and our custom SWC plugin
     const entriesToBundle = externalizeNonSteps
@@ -558,6 +673,7 @@ export abstract class BaseBuilder {
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
           workflowManifest,
+          bundleTransitiveLocalStepDependencies,
           rewriteTsExtensions,
           sideEffectEntries: normalizedSideEffectEntries,
         }),
@@ -886,7 +1002,10 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+const handler = workflowEntrypoint(workflowCode);
+
+export const HEAD = handler;
+export const POST = handler;`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {
@@ -1012,7 +1131,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     const inputFilesNormalized = new Set(
       inputFiles.map((f) => f.replace(/\\/g, '/'))
     );
-    const serdeOnlyFiles = discoveredSerdeFiles.filter(
+    const serdeOnlyFiles = [...discoveredSerdeFiles].filter(
       (f) => !inputFilesNormalized.has(f)
     );
 

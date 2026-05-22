@@ -94,6 +94,12 @@ export function createDevTests(config?: DevTestConfig) {
       await Promise.all([
         fetchWithTimeout('/').catch(() => {}),
         fetchWithTimeout('/api/chat').catch(() => {}),
+        fetchWithTimeout('/.well-known/workflow/v1/flow?__health').catch(
+          () => {}
+        ),
+        fetchWithTimeout('/.well-known/workflow/v1/step?__health').catch(
+          () => {}
+        ),
       ]);
     };
 
@@ -137,21 +143,23 @@ export function createDevTests(config?: DevTestConfig) {
     });
 
     afterEach(async () => {
-      // Restore file contents before deleting any files. If a deletion races
-      // ahead of an api-file restore, the dev server briefly sees an import
-      // pointing at a missing module and fails compilation. On Windows that
-      // failure can stick — Turbopack leaves stale imports in the generated
-      // step route bundle — and every subsequent step request returns 500.
+      // Restore file contents before clearing any added files. Dev servers can
+      // keep generated imports alive briefly after a rebuild. Next's generated
+      // step route imports deferred copies, so added workflow files need to keep
+      // their real contents until shutdown. Other builders can use empty
+      // placeholders to drop workflow directives while avoiding missing imports.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
-      const toDelete = restoreFiles.filter((item) => item.content === '');
+      const toClear = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
         toRestore.map((item) => fs.writeFile(item.path, item.content))
       );
-      if (toDelete.length > 0) {
+      if (toClear.length > 0) {
         await prewarm();
+        if (!supportsDeferredStepCopies) {
+          await Promise.all(toClear.map((item) => fs.writeFile(item.path, '')));
+          await prewarm();
+        }
       }
-      await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
-      await prewarm();
       restoreFiles.length = 0;
     });
 

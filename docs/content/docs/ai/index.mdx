@@ -120,16 +120,17 @@ The core code that makes all of this happen is quite simple. Here's a breakdown 
 
 <Tab value="API Route">
 
-Our API route makes a simple call to [AI SDK's `Agent` class](https://ai-sdk.dev/docs/agents/overview), which is a simple wrapper around [AI SDK's `streamText` function](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#streamtext). This is also where we pass tools to the agent.
+Our API route makes a simple call to [AI SDK's `ToolLoopAgent` class](https://ai-sdk.dev/docs/agents/overview), which encapsulates the LLM call, tool execution loop, and stopping conditions on top of [AI SDK's `streamText` function](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#streamtext). This is also where we pass tools to the agent.
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
-import { Experimental_Agent as Agent } from "ai";
-import type { LanguageModel } from "ai";
+import { ToolLoopAgent } from "ai";
+import type { UIMessage } from "ai";
+import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
-  const agent = new Agent({ // [!code highlight]
-    model: gateway("bedrock/claude-4-5-haiku-20251001-v1"),
+  const agent = new ToolLoopAgent({ // [!code highlight]
+    model: "bedrock/claude-4-5-haiku-20251001-v1",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
