@@ -154,6 +154,50 @@ export function pollWritableLock(
 }
 
 /**
+ * Like {@link pollWritableLock}, but watches an external "shared" pipe's
+ * state while resolving an independent `guard` state.
+ *
+ * Used when multiple callers share a single background pipe (e.g. repeat
+ * `getWritable()` calls within the same step) and each caller needs its own
+ * "I'm done" signal that fires after the lock is released and the shared
+ * pipe has drained, without ending the shared pipe.
+ */
+export function pollSharedWritableLock(
+  writable: WritableStream,
+  sharedState: FlushableStreamState,
+  guard: FlushableStreamState
+): void {
+  if (guard.writablePollingInterval !== undefined) {
+    return;
+  }
+
+  const intervalId = setInterval(() => {
+    if (guard.doneResolved) {
+      clearInterval(intervalId);
+      guard.writablePollingInterval = undefined;
+      return;
+    }
+
+    if (sharedState.streamEnded) {
+      clearInterval(intervalId);
+      guard.writablePollingInterval = undefined;
+      guard.doneResolved = true;
+      sharedState.promise.then(guard.resolve, guard.reject);
+      return;
+    }
+
+    if (isWritableUnlockedNotClosed(writable) && sharedState.pendingOps === 0) {
+      guard.doneResolved = true;
+      guard.resolve();
+      clearInterval(intervalId);
+      guard.writablePollingInterval = undefined;
+    }
+  }, LOCK_POLL_INTERVAL_MS);
+
+  guard.writablePollingInterval = intervalId;
+}
+
+/**
  * Polls a ReadableStream to check if the user has released their lock.
  * Resolves the done promise when lock is released and no pending ops remain.
  *
