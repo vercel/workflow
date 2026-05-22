@@ -1,5 +1,16 @@
 # @workflow/nitro
 
+## 4.0.6
+
+### Patch Changes
+
+- Updated dependencies [[`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d), [`8407c1e`](https://github.com/vercel/workflow/commit/8407c1e9a408bd60b1f3cd0367222d4f1d5d878d), [`7487430`](https://github.com/vercel/workflow/commit/74874309cb416c239c53fe24742fb2739d010c2b), [`c347509`](https://github.com/vercel/workflow/commit/c3475096e9811b2d20fc0b5bc65e0e24d1b58b49), [`478a9c7`](https://github.com/vercel/workflow/commit/478a9c76183b925e44439b7a5d1f849174804b64), [`066c157`](https://github.com/vercel/workflow/commit/066c157a2b5053196995e8636af7e0357ea6e58a), [`a9cc1d5`](https://github.com/vercel/workflow/commit/a9cc1d5ac1bdbb9055373e38b82dfc4046fc2bc9), [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8), [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc), [`6aabd6f`](https://github.com/vercel/workflow/commit/6aabd6fd2ef407c3a57835b2c51ceb881a77935f), [`6aabd6f`](https://github.com/vercel/workflow/commit/6aabd6fd2ef407c3a57835b2c51ceb881a77935f), [`6aabd6f`](https://github.com/vercel/workflow/commit/6aabd6fd2ef407c3a57835b2c51ceb881a77935f), [`14326ad`](https://github.com/vercel/workflow/commit/14326adcf9b8f5dce753a739555e162cd03dc19f)]:
+  - @workflow/core@4.2.5
+  - @workflow/builders@4.0.6
+  - @workflow/swc-plugin@4.1.1
+  - @workflow/rollup@4.0.5
+  - @workflow/vite@4.0.5
+
 ## 4.0.5
 
 ### Patch Changes
