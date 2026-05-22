@@ -6,7 +6,6 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPortLazy } from './runtime/get-port-lazy.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -16,9 +15,10 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import type { WorkflowOrchestratorContext } from './private.js';
+import { getPortLazy } from './runtime/get-port-lazy.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
-import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -36,12 +36,12 @@ import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
-import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
-import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import {
   createAbortSignalStatics,
   createCreateAbortController,
 } from './workflow/abort-controller.js';
+import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
+import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
@@ -107,13 +107,19 @@ async function drainPendingQueueItems(
   }
 }
 
+interface RunWorkflowOptions {
+  drainPendingQueueItems?: boolean;
+}
+
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined
+  encryptionKey: CryptoKey | undefined,
+  options: RunWorkflowOptions = {}
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
+    const shouldDrainPendingQueueItems = options.drainPendingQueueItems ?? true;
     span?.setAttributes({
       ...Attribute.WorkflowName(workflowRun.workflowName),
       ...Attribute.WorkflowRunId(workflowRun.runId),
@@ -797,13 +803,15 @@ export async function runWorkflow(
         ...Attribute.WorkflowResultType(typeof result),
       });
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'completed'
-      );
+      if (shouldDrainPendingQueueItems) {
+        await drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'completed'
+        );
+      }
 
       return dehydrated;
     } catch (err) {
@@ -812,13 +820,15 @@ export async function runWorkflow(
         throw err;
       }
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'failed'
-      );
+      if (shouldDrainPendingQueueItems) {
+        await drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'failed'
+        );
+      }
 
       throw err;
     }
