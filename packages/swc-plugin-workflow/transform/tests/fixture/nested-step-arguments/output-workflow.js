@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"outer":{"workflowId":"workflow//./input//outer"}}},"steps":{"input.js":{"step":{"stepId":"step//./input//step"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"outer":{"workflowId":"workflow//./input//outer"}}},"steps":{"input.js":{"step":{"stepId":"step//./input//outer/step"}}}}*/;
 // `arguments` inside a nested `function`-form step body must NOT be treated
 // as a closure variable — it's a per-function intrinsic binding that
 // reflects the positional args the runtime passes via `stepFn.apply(thisVal,
