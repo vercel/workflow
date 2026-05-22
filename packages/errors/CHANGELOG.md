@@ -1,5 +1,13 @@
 # @workflow/errors
 
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- [#2046](https://github.com/vercel/workflow/pull/2046) [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51) Thanks [@pranaygp](https://github.com/pranaygp)! - Report corrupted event logs with a distinct `CorruptedEventLogError` type and `CORRUPTED_EVENT_LOG` run error code.
+
+- [#2060](https://github.com/vercel/workflow/pull/2060) [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b) Thanks [@pranaygp](https://github.com/pranaygp)! - Record fatal world response contract failures as non-retryable workflow errors.
+
 ## 5.0.0-beta.3
 
 ### Patch Changes

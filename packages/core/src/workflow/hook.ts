@@ -1,4 +1,4 @@
-import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import { CorruptedEventLogError, HookConflictError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
@@ -64,6 +64,22 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (event.correlationId !== correlationId) {
         // We're not interested in this event - the correlationId belongs to a different entity
         return EventConsumerResult.NotConsumed;
+      }
+
+      const eventToken =
+        'eventData' in event && event.eventData && 'token' in event.eventData
+          ? event.eventData.token
+          : undefined;
+
+      if (typeof eventToken === 'string' && eventToken !== token) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          ctx.onWorkflowError(
+            new CorruptedEventLogError(
+              `Corrupted event log: hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current hook consumer expects "${token}"`
+            )
+          );
+        });
+        return EventConsumerResult.Finished;
       }
 
       // Check for hook_created event to mark this hook as already created
@@ -150,7 +166,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
       ctx.promiseQueue = ctx.promiseQueue.then(() => {
         ctx.onWorkflowError(
-          new WorkflowRuntimeError(
+          new CorruptedEventLogError(
             `Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`
           )
         );

@@ -351,7 +351,15 @@ export async function loadWorkflowRunEvents(
 
         loadedEvents.push(...response.data);
         hasMore = response.hasMore;
-        cursor = response.cursor;
+        // Preserve the last non-null cursor across pages. A World may
+        // legitimately return `{ data: [], cursor: null, hasMore: false }`
+        // on a trailing empty page — for example when the previous page's
+        // underlying DynamoDB query hit `Limit` exactly and returned a
+        // `LastEvaluatedKey` "just in case". Overwriting with that null
+        // would lose the position past the last real event we loaded and
+        // force the runtime into the "no cursor after initial load" full-
+        // reload fallback on every subsequent replay iteration.
+        cursor = response.cursor ?? cursor;
         pagesLoaded++;
 
         runtimeLogger.debug('Loaded event page', {

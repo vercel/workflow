@@ -1,4 +1,8 @@
-import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  CorruptedEventLogError,
+  FatalError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -74,6 +78,7 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'add',
           result: await dehydrateStepReturnValue(3, 'wrun_test', undefined),
         },
         createdAt: new Date(),
@@ -99,6 +104,7 @@ describe('createUseStep', () => {
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'add',
           error: serializedError,
         },
         createdAt: new Date(),
@@ -230,6 +236,7 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'step//input.js//my_step_function',
           result: await dehydrateStepReturnValue(
             undefined,
             'wrun_test',
@@ -433,6 +440,36 @@ describe('createUseStep', () => {
     });
   });
 
+  it('should fail when step_created has the right correlationId but wrong stepName', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_created',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          stepName: 'subtract',
+          input: new Uint8Array(),
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const useStep = createUseStep(ctx);
+    const add = useStep('add');
+    void add(1, 2);
+
+    const workflowError = await errorReceived.promise;
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError.message).toContain('Corrupted event log');
+    expect(workflowError.message).toContain('step_created');
+    expect(workflowError.message).toContain('subtract');
+    expect(workflowError.message).toContain('add');
+  });
+
   it('should consume step_started without removing from queue', async () => {
     // step_started is consumed but item stays in queue for potential re-enqueue
     const ctx = setupWorkflowContext([
@@ -441,7 +478,9 @@ describe('createUseStep', () => {
         runId: 'wrun_123',
         eventType: 'step_started',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          stepName: 'add',
+        },
         createdAt: new Date(),
       },
     ]);
@@ -480,6 +519,7 @@ describe('createUseStep', () => {
         eventType: 'step_retrying',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'add',
           error: new Uint8Array(),
         },
         createdAt: new Date(),
@@ -509,6 +549,37 @@ describe('createUseStep', () => {
     expect(ctx.invocationsQueue.size).toBe(1);
   });
 
+  it('should fail when step_completed has the right correlationId but wrong stepName', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_completed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          stepName: 'subtract',
+          result: await dehydrateStepReturnValue(42, 'wrun_test', undefined),
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const useStep = createUseStep(ctx);
+    const add = useStep('add');
+    void add(1, 2);
+
+    const workflowError = await errorReceived.promise;
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError.message).toContain('Corrupted event log');
+    expect(workflowError.message).toContain('step_completed');
+    expect(workflowError.message).toContain('subtract');
+    expect(workflowError.message).toContain('add');
+    expect(ctx.invocationsQueue.size).toBe(1);
+  });
+
   it('should remove queue item when step_completed (terminal state)', async () => {
     const ctx = setupWorkflowContext([
       {
@@ -517,6 +588,7 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'add',
           result: await dehydrateStepReturnValue(42, 'wrun_test', undefined),
         },
         createdAt: new Date(),
@@ -533,6 +605,42 @@ describe('createUseStep', () => {
     expect(ctx.invocationsQueue.size).toBe(0);
   });
 
+  it('should fail when step_failed has the right correlationId but wrong stepName', async () => {
+    const serializedError = await dehydrateStepError(
+      new FatalError('test error'),
+      'wrun_test',
+      undefined
+    );
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_failed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          stepName: 'subtract',
+          error: serializedError,
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const useStep = createUseStep(ctx);
+    const add = useStep('add');
+    void add(1, 2);
+
+    const workflowError = await errorReceived.promise;
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError.message).toContain('Corrupted event log');
+    expect(workflowError.message).toContain('step_failed');
+    expect(workflowError.message).toContain('subtract');
+    expect(workflowError.message).toContain('add');
+    expect(ctx.invocationsQueue.size).toBe(1);
+  });
+
   it('should remove queue item when step_failed (terminal state)', async () => {
     const serializedError = await dehydrateStepError(
       new FatalError('test error'),
@@ -546,6 +654,7 @@ describe('createUseStep', () => {
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'add',
           error: serializedError,
         },
         createdAt: new Date(),
@@ -586,6 +695,7 @@ describe('createUseStep', () => {
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'add',
           error: serializedError,
         },
         createdAt: new Date(),
@@ -626,6 +736,7 @@ describe('createUseStep', () => {
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
+          stepName: 'add',
           error: serializedError,
         },
         createdAt: new Date(),
@@ -646,7 +757,7 @@ describe('createUseStep', () => {
     expect(error?.message).toBe('Plain error message');
   });
 
-  it('should invoke workflow error handler with WorkflowRuntimeError for unexpected event type', async () => {
+  it('should invoke workflow error handler with CorruptedEventLogError for unexpected event type', async () => {
     // Simulate a corrupted event log where a step receives an unexpected event type
     // (e.g., a wait_completed event when expecting step_completed/step_failed)
     const ctx = setupWorkflowContext([
@@ -655,6 +766,9 @@ describe('createUseStep', () => {
         runId: 'wrun_123',
         eventType: 'wait_completed', // Wrong event type for a step!
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date(),
+        },
         createdAt: new Date(),
       },
     ]);
@@ -669,7 +783,7 @@ describe('createUseStep', () => {
     const stepPromise = add(1, 2);
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('Unexpected event type for step');
     expect(workflowError?.message).toContain('step_01K11TFZ62YS0YYFDQ3E8B9YCV');
     expect(workflowError?.message).toContain('add');
@@ -802,7 +916,9 @@ describe('AbortController hook integration', () => {
           runId: 'wrun_test',
           eventType: 'hook_created',
           correlationId,
-          eventData: {},
+          eventData: {
+            token: ABORT_HOOK_TOKEN,
+          },
           createdAt: new Date(),
         },
         {
@@ -810,7 +926,10 @@ describe('AbortController hook integration', () => {
           runId: 'wrun_test',
           eventType: 'hook_received',
           correlationId,
-          eventData: { payload: dehydratedPayload as any },
+          eventData: {
+            token: ABORT_HOOK_TOKEN,
+            payload: dehydratedPayload as any,
+          },
           createdAt: new Date(),
         },
       ]);
@@ -847,7 +966,9 @@ describe('AbortController hook integration', () => {
           runId: 'wrun_test',
           eventType: 'hook_created',
           correlationId,
-          eventData: {},
+          eventData: {
+            token: ABORT_HOOK_TOKEN,
+          },
           createdAt: new Date(),
         },
       ]);

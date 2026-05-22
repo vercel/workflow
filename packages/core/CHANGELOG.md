@@ -1,5 +1,31 @@
 # @workflow/core
 
+## 5.0.0-beta.7
+
+### Minor Changes
+
+- [#2059](https://github.com/vercel/workflow/pull/2059) [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335) Thanks [@TooTallNate](https://github.com/TooTallNate)! - A `WritableStream` from a workflow's `getWritable()` can now be passed as an argument to a child workflow via `start()`; the child's writes land on the parent run's stream directly for the full lifetime of the child run.
+
+### Patch Changes
+
+- [#2038](https://github.com/vercel/workflow/pull/2038) [`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Refresh workflow events after completing elapsed waits so concurrent hook events preserve deterministic replay order.
+
+- [#2046](https://github.com/vercel/workflow/pull/2046) [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51) Thanks [@pranaygp](https://github.com/pranaygp)! - Report corrupted event logs with a distinct `CorruptedEventLogError` type and `CORRUPTED_EVENT_LOG` run error code.
+
+- [#2056](https://github.com/vercel/workflow/pull/2056) [`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix spurious "Event cursor missing after initial load" warning
+
+- [#2030](https://github.com/vercel/workflow/pull/2030) [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59) Thanks [@pranaygp](https://github.com/pranaygp)! - Validate step, wait, and hook lifecycle events against replay ownership metadata.
+
+- [#2013](https://github.com/vercel/workflow/pull/2013) [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Exclude inline step execution from the workflow replay timeout. Long-running steps no longer hit `REPLAY_TIMEOUT` (fixes #2009). Adds a `WORKFLOW_REPLAY_TIMEOUT_MS` env var override and a new optional `World.processExitTriggersQueueRedelivery` capability used to gate the runtime's `process.exit(1)` failure path.
+
+- [#2060](https://github.com/vercel/workflow/pull/2060) [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b) Thanks [@pranaygp](https://github.com/pranaygp)! - Record fatal world response contract failures as non-retryable workflow errors.
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b)]:
+  - @workflow/world@5.0.0-beta.4
+  - @workflow/world-local@5.0.0-beta.6
+  - @workflow/world-vercel@5.0.0-beta.6
+  - @workflow/errors@5.0.0-beta.4
+
 ## 5.0.0-beta.6
 
 ### Patch Changes

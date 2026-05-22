@@ -46,10 +46,13 @@ const flowInvocationCounts = new Map<string, number>();
 
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {
-    // Clone the request to read the body for tracking without consuming it
+    // Clone the request to read the body for tracking without consuming it.
+    // We must increment the invocation counter *before* awaiting flowPOST,
+    // otherwise the workflow may complete (and the test may observe the
+    // completed status) before the counter is bumped, producing a flaky
+    // `expected 0 to be 1` failure when the test immediately queries
+    // /_flow-invocations after seeing the run as completed.
     const cloned = ctx.req.raw.clone();
-    const response = await flowPOST(ctx.req.raw);
-    // Extract runId from the request body (queue message payload)
     try {
       const body = (await cloned.json()) as Record<string, unknown>;
       const runId =
@@ -68,7 +71,7 @@ const app = new Hono()
     } catch {
       // Health check or non-JSON messages — ignore
     }
-    return response;
+    return flowPOST(ctx.req.raw);
   })
   .get('/_flow-invocations/:runId', (ctx) => {
     const count = flowInvocationCounts.get(ctx.req.param('runId')) ?? 0;

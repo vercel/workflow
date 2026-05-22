@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { ErrorBoundary } from '../error-boundary';
 import {
   EntityDetailPanel,
@@ -51,6 +52,7 @@ function useAnimatedViewport(initial: Viewport) {
   } | null>(null);
   const currentRef = useRef(initial);
   currentRef.current = viewport;
+  const reducedMotion = useReducedMotion();
 
   const cancel = useCallback(() => {
     if (animRef.current) {
@@ -62,6 +64,13 @@ function useAnimatedViewport(initial: Viewport) {
   const animateTo = useCallback(
     (target: Viewport) => {
       cancel();
+
+      if (reducedMotion) {
+        currentRef.current = target;
+        setViewportState(target);
+        return;
+      }
+
       const from = currentRef.current;
       const anim = { raf: 0, from, to: target, start: performance.now() };
 
@@ -79,7 +88,7 @@ function useAnimatedViewport(initial: Viewport) {
       animRef.current = anim;
       anim.raf = requestAnimationFrame(tick);
     },
-    [cancel]
+    [cancel, reducedMotion]
   );
 
   const setViewport = useCallback(
@@ -587,9 +596,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                             ? 'bg-green-200 text-green-900'
                             : selectedResource === 'run'
                               ? 'bg-blue-200 text-blue-900'
-                              : selectedResource === 'hook'
-                                ? 'bg-yellow-200 text-yellow-900'
-                                : 'bg-gray-200 text-gray-900'
+                              : 'bg-gray-200 text-gray-900'
                         }`}
                       >
                         {selectedResource.charAt(0).toUpperCase() +
