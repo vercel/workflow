@@ -8,10 +8,11 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
+import type { SerializedData } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
+
 import {
   ErrorType,
   getSpanKind,
@@ -53,15 +54,34 @@ function httpLog(
     );
   }
 }
-
 /**
- * Hard-coded workflow-server URL override for testing.
- * Set this to test against a different workflow-server version.
- * Leave empty string for production (uses default vercel-workflow.com).
- *
- * Example: 'https://workflow-server-git-branch-name.vercel.sh'
+ * Inline workflow-server URL override. Must remain an empty string on
+ * `main` — rewritten by external CI for branch-deployment testing.
+ * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
 const WORKFLOW_SERVER_URL_OVERRIDE = '';
+
+/**
+ * Per-request timeout for HTTP calls to workflow-server (in ms).
+ *
+ * Without this, a hung workflow-server response would keep the caller
+ * blocked until the platform's `maxDuration` SIGTERM — burning compute
+ * and defeating upstream timeout handlers (e.g. the replay timeout).
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * Effective workflow-server URL override. The inline constant wins when
+ * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
+ *
+ * When set, requests bypass the default production host
+ * (`https://vercel-workflow.com`). When using the proxy
+ * (`api.vercel.com/v1/workflow`), this value is forwarded via the
+ * `x-vercel-workflow-api-url` header so the proxy routes the request to
+ * the override URL.
+ */
+const getWorkflowServerUrlOverride = (): string =>
+  WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
 
 export interface APIConfig {
   token?: string;
@@ -79,101 +99,31 @@ export interface APIConfig {
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
 
 /**
- * Helper to serialize error into a JSON string in the error field.
- * The error field can be either:
- * - A plain string (legacy format, just the error message)
- * - A JSON string with { message, stack, code } (new format)
+ * Pass-through helper that preserves the wire-format error field as-is.
+ *
+ * In the current event-sourced model (specVersion >= 2), the `error` field
+ * on run/step entities is `SerializedData` (a Uint8Array) produced by
+ * `dehydrateStepError` / `dehydrateRunError`. Consumers hydrate it via
+ * `hydrateStepError` / `hydrateRunError` to reconstruct the original
+ * thrown value.
+ *
+ * This helper exists for backward compatibility with the old API that
+ * expected a domain-level transformation. New code should treat the
+ * `error` field as opaque `SerializedData`.
  */
-export function serializeError<T extends { error?: StructuredError }>(
-  data: T
-): Omit<T, 'error'> & { error?: string } {
-  const { error, ...rest } = data;
-
-  // If we have an error, serialize as JSON string
-  if (error !== undefined) {
-    return {
-      ...rest,
-      error: JSON.stringify({
-        message: error.message,
-        stack: error.stack,
-        code: error.code,
-      }),
-    } as Omit<T, 'error'> & { error: string };
-  }
-
-  return data as Omit<T, 'error'>;
+export function deserializeError<T extends Record<string, any>>(obj: any): T {
+  return obj as T;
 }
 
 /**
- * Helper to deserialize error field from the backend into a StructuredError object.
- * Handles multiple formats from the backend:
- * - If error is already a structured object → validate and use directly
- * - If error is a JSON string with {message, stack, code} → parse into StructuredError
- * - If error is a plain string → treat as error message with no stack
- * - If no error → undefined
- *
- * This function transforms objects from wire format (where error may be a JSON string
- * or already structured) to domain format (where error is a StructuredError object).
- * The generic type parameter should be the expected output type (WorkflowRun or Step).
- *
- * Note: The type assertion is necessary because the wire format types from Zod schemas
- * have `error?: string | StructuredError` while the domain types have complex error types
- * (e.g., discriminated unions with `error: void` or `error: StructuredError` depending on
- * status), but the transformation preserves all other fields correctly.
+ * Pass-through helper for outgoing update requests. In the current
+ * event-sourced model, the `error` field on `UpdateStepRequest` is
+ * `SerializedData` (Uint8Array) and does not need transformation.
  */
-export function deserializeError<T extends Record<string, any>>(obj: any): T {
-  const { error, errorCode, ...rest } = obj;
-
-  if (!error) {
-    return obj as T;
-  }
-
-  // errorCode is stored as a separate inline field on the run entity (not
-  // inside errorRef). Merge it into StructuredError.code so consumers see it.
-  // If the error already has a code from the ref, errorCode takes precedence.
-
-  // If error is already an object (new format), validate and use directly
-  if (typeof error === 'object' && error !== null) {
-    const result = StructuredErrorSchema.safeParse(error);
-    if (result.success) {
-      return {
-        ...rest,
-        error: {
-          message: result.data.message,
-          stack: result.data.stack,
-          code: errorCode ?? result.data.code,
-        },
-      } as T;
-    }
-    // Fall through to treat as unknown format
-  }
-
-  // If error is a string, try to parse as structured error JSON
-  if (typeof error === 'string') {
-    try {
-      const parsed = StructuredErrorSchema.parse(JSON.parse(error));
-      return {
-        ...rest,
-        error: {
-          message: parsed.message,
-          stack: parsed.stack,
-          code: errorCode ?? parsed.code,
-        },
-      } as T;
-    } catch {
-      // Backwards compatibility: error is just a plain string
-      return {
-        ...rest,
-        error: {
-          message: error,
-          code: errorCode,
-        },
-      } as T;
-    }
-  }
-
-  // Unknown format - return as-is and let downstream handle it
-  return obj as T;
+export function serializeError<T extends { error?: SerializedData }>(
+  data: T
+): T {
+  return data;
 }
 
 const getUserAgent = () => {
@@ -195,7 +145,7 @@ export const getHttpUrl = (
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
   const defaultHost =
-    WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    getWorkflowServerUrlOverride() || 'https://vercel-workflow.com';
   const customProxyUrl = process.env.WORKFLOW_VERCEL_BACKEND_URL;
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
@@ -230,8 +180,9 @@ export const getHeaders = (
   // Only set workflow-api-url header when using the proxy, since the proxy
   // forwards it to the workflow-server. When not using proxy, requests go
   // directly to the workflow-server so this header has no effect.
-  if (WORKFLOW_SERVER_URL_OVERRIDE && options.usingProxy) {
-    headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
+  const workflowServerUrlOverride = getWorkflowServerUrlOverride();
+  if (workflowServerUrlOverride && options.usingProxy) {
+    headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
   return headers;
 };
@@ -239,10 +190,40 @@ export const getHeaders = (
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
-  const token = config?.token ?? (await getVercelOidcToken());
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
+
+  if (usingProxy) {
+    // The api-workflow proxy authenticates the caller with a regular Vercel
+    // auth token; it does not accept OIDC. Fail loudly instead of letting
+    // an opaque 401 bubble up at request time.
+    if (!config?.token) {
+      throw new Error(
+        'world-vercel: api-workflow proxy requested ' +
+          `(${baseUrl}) but no Vercel auth token was provided. ` +
+          'Pass one as `config.token` (the SDK reads it from ' +
+          '`WORKFLOW_VERCEL_AUTH_TOKEN`).'
+      );
+    }
+    headers.set('Authorization', `Bearer ${config.token}`);
+  } else {
+    // Direct workflow-server path. The bearer prefers an explicit
+    // config.token (CLI / GitHub Actions runner / local dev) and falls
+    // back to the per-request Vercel OIDC token. The trusted-sources
+    // bypass header always uses the per-request OIDC token.
+    let oidcToken: string | undefined;
+    try {
+      oidcToken = await getVercelOidcToken();
+    } catch {
+      // No OIDC available outside a Vercel function context.
+    }
+    const authToken = config?.token ?? oidcToken;
+    if (authToken) {
+      headers.set('Authorization', `Bearer ${authToken}`);
+    }
+    if (oidcToken) {
+      headers.set('x-vercel-trusted-oidc-idp-token', oidcToken);
+    }
   }
+
   return { baseUrl, headers, usingProxy };
 }
 
@@ -312,16 +293,44 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
+      // Compose user-passed abort signal (unused at time of writing)
+      // with the max request timeout
+      const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      const signal = options.signal
+        ? AbortSignal.any([options.signal, timeoutSignal])
+        : timeoutSignal;
       const request = new Request(url, {
         ...options,
         body,
         headers,
+        signal,
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
       const fetchStart = Date.now();
-      const response = await fetch(request, {
-        dispatcher: getDispatcher(),
-      } as any);
+      let response: Response;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+        response = await fetch(request, {
+          dispatcher: getDispatcher(),
+        } as any);
+      } catch (error) {
+        const elapsed = Date.now() - fetchStart;
+        // AbortSignal.timeout() surfaces as a DOMException with name
+        // 'TimeoutError'. Map to WorkflowWorldError so existing catch
+        // sites treat it like any other world transport failure.
+        if (
+          error instanceof Error &&
+          (error.name === 'TimeoutError' || error.name === 'AbortError')
+        ) {
+          const timeoutError = new WorkflowWorldError(
+            `${method} ${endpoint} timed out after ${elapsed}ms`,
+            { url, cause: error }
+          );
+          span?.setAttributes({ ...ErrorType('TIMEOUT') });
+          span?.recordException?.(timeoutError);
+          throw timeoutError;
+        }
+        throw error;
+      }
       const fetchMs = Date.now() - fetchStart;
 
       httpLog(method, endpoint, response.status, fetchMs);
@@ -414,7 +423,7 @@ export async function makeRequest<T>({
         const contentType = response.headers.get('Content-Type') || 'unknown';
         throw new WorkflowWorldError(
           `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
-          { url, cause: error }
+          { url, code: 'PARSE_ERROR', cause: error }
         );
       }
 
@@ -433,7 +442,7 @@ export async function makeRequest<T>({
             : '';
           throw new WorkflowWorldError(
             `Schema validation failed for ${method} ${endpoint}:\n${issues}${debugContext}`,
-            { url, cause: validationResult.error }
+            { url, code: 'SCHEMA_VALIDATION', cause: validationResult.error }
           );
         }
         return validationResult.data;

@@ -8,6 +8,7 @@ export type {
 } from '@workflow/core/runtime';
 
 export { Run } from '@workflow/core/runtime/run';
+export { start } from '@workflow/core/runtime/start';
 
 const workflowStub = (item: string) => {
   throw new Error(
@@ -20,4 +21,3 @@ export const getHookByToken = () => workflowStub('getHookByToken');
 export const resumeHook = () => workflowStub('resumeHook');
 export const resumeWebhook = () => workflowStub('resumeWebhook');
 export const runStep = () => workflowStub('runStep');
-export const start = () => workflowStub('start');

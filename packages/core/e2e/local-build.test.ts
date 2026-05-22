@@ -3,7 +3,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { usesVercelWorld } from '../../utils/src/world-target';
-import { getWorkbenchAppPath } from './utils';
+import {
+  getWorkbenchAppPath,
+  isNextLazyDiscoveryEnabledForTest,
+} from './utils';
 
 interface CommandResult {
   stdout: string;
@@ -83,6 +86,12 @@ const ESM_STEP_BUNDLE_PROJECTS: Record<string, string> = {
     '.vercel/output/functions/.well-known/workflow/v1/step.func/index.mjs',
 };
 
+const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {
+  example: '.vercel/output/diagnostics/workflows-manifest.json',
+  'nextjs-webpack': '.next/diagnostics/workflows-manifest.json',
+  'nextjs-turbopack': '.next/diagnostics/workflows-manifest.json',
+};
+
 const DEFERRED_BUILD_MODE_PROJECTS = new Set([
   'nextjs-webpack',
   'nextjs-turbopack',
@@ -104,6 +113,7 @@ describe.each([
   'fastify',
   'nest',
   'astro',
+  'tanstack-start',
 ])('e2e', (project) => {
   test('builds without errors', { timeout: 180_000 }, async () => {
     // skip if we're targeting specific app to test
@@ -119,7 +129,10 @@ describe.each([
 
     expect(result.output).not.toContain('Error:');
 
-    if (DEFERRED_BUILD_MODE_PROJECTS.has(project)) {
+    if (
+      DEFERRED_BUILD_MODE_PROJECTS.has(project) &&
+      isNextLazyDiscoveryEnabledForTest()
+    ) {
       const deferredBuildSupported = !result.output.includes(
         DEFERRED_BUILD_UNSUPPORTED_WARNING
       );
@@ -128,12 +141,15 @@ describe.each([
       }
     }
 
-    if (usesVercelWorld()) {
-      const diagnosticsManifestPath = path.join(
+    const diagnosticsManifestPath = usesVercelWorld()
+      ? '.vercel/output/diagnostics/workflows-manifest.json'
+      : DIAGNOSTICS_MANIFEST_PATHS[project];
+    if (diagnosticsManifestPath) {
+      const resolvedDiagnosticsManifestPath = path.join(
         getWorkbenchAppPath(project),
-        '.vercel/output/diagnostics/workflows-manifest.json'
+        diagnosticsManifestPath
       );
-      await fs.access(diagnosticsManifestPath);
+      await fs.access(resolvedDiagnosticsManifestPath);
     }
 
     // Verify ESM step bundles use native import.meta (no CJS polyfill needed)

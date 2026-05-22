@@ -2,9 +2,28 @@ import { reactRouter } from '@react-router/dev/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
+// When `true`, we're building the `packages/web` project for deployment to
+// Vercel itself (as opposed to local development, publishing to npm, or being
+// packed as a tarball by the `docs` deployment — all of which produce the
+// standard self-hosted layout that `server.js` expects).
+const isVercelWebDeployment = process.env.WORKFLOW_WEB_VERCEL_BUILD === '1';
+
 export default defineConfig(({ command, isSsrBuild }) => ({
   build: {
-    rollupOptions: isSsrBuild ? { input: './server/app.ts' } : undefined,
+    // Use Express server entry for self-hosting (node server.js).
+    // On the web Vercel deployment, the React Router preset handles the
+    // server entry.
+    rollupOptions:
+      isSsrBuild && !isVercelWebDeployment
+        ? { input: './server/app.ts' }
+        : undefined,
+    // Disable minification so the published npm package contains readable
+    // code. Without this, Vite's esbuild minifier produces single-line
+    // mega-bundles that supply-chain security scanners (e.g. Socket) flag
+    // as "obfuscated code". The app is a self-hosted observability tool
+    // where the unminified size difference is negligible — gzip/brotli at
+    // the serving layer compresses the wire payload regardless.
+    minify: false,
   },
   // Bundle all dependencies into the server build so that @workflow/web
   // can be installed and run without needing any of the UI dependencies
@@ -17,7 +36,7 @@ export default defineConfig(({ command, isSsrBuild }) => ({
   // noExternal for dev so dependencies are loaded natively by Node.js.
   ssr: {
     noExternal: command === 'build' ? true : undefined,
-    external: ['express'],
+    external: isVercelWebDeployment ? undefined : ['express'],
   },
   plugins: [tailwindcss(), reactRouter()],
   resolve: {

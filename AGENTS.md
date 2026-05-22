@@ -73,7 +73,8 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 # Note: Use nextjs-turbopack for local e2e testing (not example app - it has no dev server)
 
 # Step 1: Start the dev server in background
-cd workbench/nextjs-turbopack && pnpm dev > /tmp/nextjs-dev.log 2>&1 &
+# NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
+cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
 # Step 2: Wait for server to be ready (usually 15-20 seconds)
 sleep 15
@@ -87,14 +88,43 @@ pkill -f "pnpm dev"
 # To run specific tests, use the -t flag:
 DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest run packages/core/e2e/e2e.test.ts -t "sleeping"
 
-# For production testing against deployed Vercel app:
-# See .github/workflows/tests.yml for required environment variables:
-# - DEPLOYMENT_URL: URL of deployed app
-# - APP_NAME: App name (example, nextjs-turbopack, nextjs-webpack, nitro)
-# - WORKFLOW_VERCEL_ENV: Environment (production or preview)
-# - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token
-# - WORKFLOW_VERCEL_TEAM: Vercel team ID
-# - WORKFLOW_VERCEL_PROJECT: Vercel project ID
+# For running E2E locally against a deployed Vercel preview/production app:
+# The test matrix in .github/workflows/tests.yml is the source of truth —
+# each app entry defines the project-id / project-slug needed below.
+#
+# Required environment variables (matches the CI `e2e-vercel-prod` job):
+# - DEPLOYMENT_URL: Full URL of the deployed app (e.g. a preview deployment URL)
+# - VERCEL_DEPLOYMENT_ID: The dpl_... ID of the deployment (get via `vercel inspect <url>`)
+# - APP_NAME: App name (example, nextjs-turbopack, nextjs-webpack, nitro, vite,
+#             nuxt, sveltekit, hono, express, fastify, astro)
+# - WORKFLOW_VERCEL_ENV: "preview" or "production"
+# - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token with access to the team
+# - WORKFLOW_VERCEL_TEAM: Vercel team ID (CI uses team_nO2mCG4W8IxPIeKoSsqwAxxB for labs)
+# - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
+# - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
+# - VERCEL_OIDC_TOKEN:         Short-lived OIDC token used to bypass
+#                              deployment protection via Trusted Sources.
+#                              In CI this is auto-minted from the GitHub
+#                              Actions runner. Locally, run
+#                              `vercel env pull` from any workbench app's
+#                              directory and the resulting `.env.local`
+#                              will contain a `VERCEL_OIDC_TOKEN` value
+#                              that all workbench projects accept (they
+#                              are configured to trust each other under
+#                              `trustedSources.projects`).
+#
+# Example (nextjs-turbopack preview deployment):
+NODE_OPTIONS="--enable-source-maps" \
+DEPLOYMENT_URL="https://example-nextjs-workflow-turbopack-<hash>.labs.vercel.dev" \
+VERCEL_DEPLOYMENT_ID="dpl_..." \
+APP_NAME="nextjs-turbopack" \
+WORKFLOW_VERCEL_ENV="preview" \
+WORKFLOW_VERCEL_AUTH_TOKEN="<vercel_labs_token>" \
+WORKFLOW_VERCEL_TEAM="team_nO2mCG4W8IxPIeKoSsqwAxxB" \
+WORKFLOW_VERCEL_PROJECT="prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi" \
+WORKFLOW_VERCEL_PROJECT_SLUG="example-nextjs-workflow-turbopack" \
+VERCEL_OIDC_TOKEN="$(grep VERCEL_OIDC_TOKEN workbench/nextjs-turbopack/.env.local | cut -d= -f2-)" \
+pnpm run test:e2e
 ```
 
 ### Example App Development
@@ -173,6 +203,13 @@ This repository uses a dual-branch release model with [changesets](https://githu
 
 Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
 
+**Important:** Some directories are not fully maintained on the `stable` branch:
+
+- **`docs/`**: Only `docs/content/` is actively maintained on `stable` — the rest of the docs app is a minimal placeholder (documentation is deployed only from `main`). `docs/content/` is kept on `stable` because the markdown files are bundled into npm packages via `prepack` scripts.
+- **`skills/`**: Not maintained on `stable` at all. Skill files are unrelated to npm packaging, so there is no reason to keep them in sync on the release branch.
+
+When backporting changes to `stable`, any conflicts involving docs app files (outside of `docs/content/`) or `skills/` files should be resolved by keeping the `stable` branch version (discarding the incoming change from `main`). Conflicts in `docs/content/` should be resolved normally. The backport GitHub Action handles this automatically.
+
 ### Changesets
 
 - `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy — they always have the same version number
@@ -184,13 +221,27 @@ Both branches trigger the release workflow (`.github/workflows/release.yml`) on 
   - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
-- When writing changesets, use the `pnpm changeset` command from the root of the repo. Keep the changesets terse (see existing changesets for examples). Try to make changesets that are specific to each modified package so they are targeted. Ensure that any breaking changes are marked as "**BREAKING CHANGE**"
+- When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse — one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
 
 ### Backporting to `stable`
 
-To backport a change from `main` to `stable`, add the `backport-stable` label to the PR on `main`. A GitHub Action (`.github/workflows/backport.yml`) will automatically cherry-pick the squashed commit to `stable`. The label can be added before or after merging — the action triggers on both merge and label events. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
+Backports are handled by a GitHub Action (`.github/workflows/backport.yml`) that runs on every push to `main`. For each commit, AI analyzes the change and decides whether to recommend a backport. The action **always opens a PR** against `stable` for human review — it never pushes directly. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
 
-If the cherry-pick fails due to conflicts, the action will comment on the original PR with instructions for manual resolution.
+**Decision criteria.** AI is instructed to recommend a backport for any commit that doesn't specifically build on `main`-only behavior, including:
+
+- Bug fixes to existing functionality that at least partially exists on `stable`
+- Added test cases or edge-case fixes that may also apply on `stable`
+- Self-contained minor feature additions
+- Documentation fixes for content already on `stable`
+- Dependency bumps and infrastructure/CI changes
+
+When in doubt, AI is told to lean toward recommending a backport — a human reviews the resulting PR and can close it if it isn't worth merging. AI is told NOT to recommend backports for changes that build on `main`-only APIs, major breaking changes for the next major release, changes confined to directories not maintained on `stable` (the `docs/` app outside `docs/content/`, and `skills/`), or release plumbing like changeset/version-bump commits.
+
+**Manual override.** The workflow can be run manually from the GitHub Actions UI via `workflow_dispatch`, which accepts an optional `ref` input (a commit SHA on `main`; defaults to `main` HEAD) and an optional `model` input (the AI model used for AI-assisted decisions and conflict resolution, in `<provider>/<model>` form — defaults to the workflow's current default). Manual dispatch always forces a backport (skipping AI analysis). Use this when AI declined a backport that you want to ship to `stable`.
+
+**No-backport notification.** When AI decides against a backport, it leaves a comment on the source PR (if one is associated with the commit) explaining its reasoning, with instructions for forcing a backport via `workflow_dispatch`.
+
+**Conflict handling.** If the cherry-pick fails due to conflicts, the action first auto-resolves conflicts in directories that are not maintained on `stable` (docs app files under `docs/` except `docs/content/`, and any files under `skills/`) by keeping the `stable` branch version. It also auto-resolves `pnpm-lock.yaml` conflicts by re-running `pnpm install`. Any remaining conflicts are resolved using [opencode](https://opencode.ai) (AI-powered conflict resolution); the resulting backport PR notes that conflicts were AI-resolved and must be reviewed carefully. If AI cannot resolve the conflicts, the action comments on the original PR with instructions for manual resolution.
 
 ### Pre-release Lifecycle
 

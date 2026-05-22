@@ -96,6 +96,7 @@ const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),
   eventData: z.object({
+    stepName: z.string().optional(),
     result: SerializedDataSchema,
   }),
 });
@@ -104,8 +105,10 @@ const StepFailedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_failed'),
   correlationId: z.string(),
   eventData: z.object({
-    error: z.any(),
-    stack: z.string().optional(),
+    stepName: z.string().optional(),
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
   }),
 });
 
@@ -118,8 +121,10 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_retrying'),
   correlationId: z.string(),
   eventData: z.object({
-    error: z.any(),
-    stack: z.string().optional(),
+    stepName: z.string().optional(),
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
     retryAfter: z.coerce.date().optional(),
   }),
 });
@@ -129,6 +134,7 @@ const StepStartedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z
     .object({
+      stepName: z.string().optional(),
       attempt: z.number().optional(),
     })
     .optional(),
@@ -157,6 +163,8 @@ const HookCreatedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     token: z.string(),
     metadata: SerializedDataSchema.optional(),
+    isWebhook: z.boolean().optional(),
+    isSystem: z.boolean().optional(),
   }),
 });
 
@@ -164,6 +172,7 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_received'),
   correlationId: z.string(),
   eventData: z.object({
+    token: z.string().optional(),
     payload: SerializedDataSchema,
   }),
 });
@@ -171,6 +180,11 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
 const HookDisposedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_disposed'),
   correlationId: z.string(),
+  eventData: z
+    .object({
+      token: z.string().optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -186,6 +200,9 @@ const HookConflictEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     token: z.string(),
+    // TODO: Make this required once all persisted hook_conflict events and
+    // remote World implementations always include the active hook owner's run ID.
+    conflictingRunId: z.string().optional(),
   }),
 });
 
@@ -200,6 +217,11 @@ const WaitCreatedEventSchema = BaseEventSchema.extend({
 const WaitCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('wait_completed'),
   correlationId: z.string(),
+  eventData: z
+    .object({
+      resumeAt: z.coerce.date().optional(),
+    })
+    .optional(),
 });
 
 // =============================================================================
@@ -259,7 +281,13 @@ const RunCompletedEventSchema = BaseEventSchema.extend({
 const RunFailedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_failed'),
   eventData: z.object({
-    error: z.any(),
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
+    // The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) used
+    // for routing and classification. Kept as plaintext metadata so
+    // observability tools can filter/categorize without needing to decrypt
+    // the full error payload.
     errorCode: z.string().optional(),
   }),
 });
@@ -388,6 +416,10 @@ export interface EventResult {
    * initial events.list call and reduce TTFB.
    */
   events?: Event[];
+  /** Pagination cursor for `events`, matching events.list semantics. */
+  cursor?: string | null;
+  /** Whether additional event pages are available for `events`. */
+  hasMore?: boolean;
 }
 
 export interface GetEventParams {

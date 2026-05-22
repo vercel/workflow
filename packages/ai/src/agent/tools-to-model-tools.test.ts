@@ -8,7 +8,7 @@ describe('toolsToModelTools', () => {
     const tools = {
       weather: tool({
         description: 'Get the weather',
-        parameters: z.object({ city: z.string() }),
+        inputSchema: z.object({ city: z.string() }),
         execute: async ({ city }) => `Weather in ${city}: sunny`,
       }),
     };
@@ -61,7 +61,7 @@ describe('toolsToModelTools', () => {
     const tools = {
       weather: tool({
         description: 'Get the weather',
-        parameters: z.object({ city: z.string() }),
+        inputSchema: z.object({ city: z.string() }),
         execute: async ({ city }) => `Weather in ${city}: sunny`,
       }),
       webSearch: providerTool,
@@ -102,5 +102,120 @@ describe('toolsToModelTools', () => {
       name: 'codeExec',
       args: {},
     });
+  });
+
+  it('forwards strict: true', async () => {
+    const tools = {
+      weather: tool({
+        description: 'Get weather',
+        inputSchema: z.object({ location: z.string() }),
+        execute: async () => 'sunny',
+        strict: true,
+      }),
+    };
+
+    const result = await toolsToModelTools(tools);
+
+    expect(result[0]).toMatchObject({ strict: true });
+  });
+
+  it('forwards strict: false', async () => {
+    const tools = {
+      weather: tool({
+        description: 'Get weather',
+        inputSchema: z.object({ location: z.string() }),
+        execute: async () => 'sunny',
+        strict: false,
+      }),
+    };
+
+    const result = await toolsToModelTools(tools);
+
+    expect(result[0]).toMatchObject({ strict: false });
+  });
+
+  it('omits strict key when not set', async () => {
+    const tools = {
+      weather: tool({
+        description: 'Get weather',
+        inputSchema: z.object({ location: z.string() }),
+        execute: async () => 'sunny',
+      }),
+    };
+
+    const result = await toolsToModelTools(tools);
+
+    expect(result[0]).not.toHaveProperty('strict');
+  });
+
+  it('forwards inputExamples', async () => {
+    const examples = [{ input: { location: 'Tokyo' } }];
+    const tools = {
+      weather: tool({
+        description: 'Get weather',
+        inputSchema: z.object({ location: z.string() }),
+        execute: async () => 'sunny',
+        inputExamples: examples,
+      }),
+    };
+
+    const result = await toolsToModelTools(tools);
+
+    expect(result[0]).toMatchObject({ inputExamples: examples });
+  });
+
+  it('omits inputExamples key when not set', async () => {
+    const tools = {
+      weather: tool({
+        description: 'Get weather',
+        inputSchema: z.object({ location: z.string() }),
+        execute: async () => 'sunny',
+      }),
+    };
+
+    const result = await toolsToModelTools(tools);
+
+    expect(result[0]).not.toHaveProperty('inputExamples');
+  });
+
+  it('forwards providerOptions', async () => {
+    const providerOptions = { openai: { parallel_tool_calls: false } };
+    const tools = {
+      weather: tool({
+        description: 'Get weather',
+        inputSchema: z.object({ location: z.string() }),
+        execute: async () => 'sunny',
+        providerOptions,
+      }),
+    };
+
+    const result = await toolsToModelTools(tools);
+
+    expect(result[0]).toMatchObject({ providerOptions });
+  });
+
+  it('handles tools with type: "dynamic" as function tools', async () => {
+    const tools = {
+      dynamic: {
+        type: 'dynamic' as const,
+        description: 'A dynamic tool',
+        inputSchema: z.object({ input: z.string() }),
+        execute: async () => 'result',
+      },
+    };
+
+    const result = await toolsToModelTools(tools as any);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      type: 'function',
+      name: 'dynamic',
+      description: 'A dynamic tool',
+    });
+  });
+
+  it('returns empty array for empty tools', async () => {
+    const result = await toolsToModelTools({});
+    expect(result).toEqual([]);
   });
 });

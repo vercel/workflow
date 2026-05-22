@@ -7,8 +7,10 @@ type TrackMdRequestParams = {
   userAgent: string | null;
   referer: string | null;
   acceptHeader: string | null;
-  /** How the markdown was requested: 'md-url' for direct .md URLs, 'header-negotiated' for Accept header */
-  requestType?: 'md-url' | 'header-negotiated';
+  /** How the markdown was requested. */
+  requestType?: 'md-url' | 'header-negotiated' | 'agent-rewrite';
+  /** Which AI-agent detection signal triggered the rewrite. */
+  detectionMethod?: 'ua-match' | 'signature-agent' | 'heuristic' | null;
 };
 
 /**

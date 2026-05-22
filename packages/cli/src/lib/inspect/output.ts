@@ -276,7 +276,7 @@ const formatIdField = (
   return idStr;
 };
 
-const formatTableValue = (
+export const formatTableValue = (
   prop: string,
   value: unknown,
   opts: InspectCLIOptions = {},
@@ -318,8 +318,12 @@ const formatTableValue = (
   }
 
   if (prop === 'output' || prop === 'input' || prop === 'error') {
-    // Check if data has expired
-    if (item && 'expiredAt' in item && item.expiredAt != null) {
+    if (
+      item &&
+      'expiredAt' in item &&
+      item.expiredAt != null &&
+      new Date(item.expiredAt as string | number | Date) < new Date()
+    ) {
       return EXPIRED_DATA_MESSAGE;
     }
     return inlineFormatIO(value);
@@ -490,10 +494,15 @@ const showInspectInfoBox = (resource: string) => {
 const EXPIRED_DATA_MESSAGE = chalk.gray('<data expired>');
 
 /**
- * Checks if a run has expired data storage (run-level expiredAt field)
+ * Checks if a run has expired data storage (run-level expiredAt field).
+ * Only returns true when `expiredAt` is in the past.
  */
-const hasExpiredData = (run: WorkflowRun): boolean => {
-  return 'expiredAt' in run && run.expiredAt != null;
+export const hasExpiredData = (run: WorkflowRun): boolean => {
+  return (
+    'expiredAt' in run &&
+    run.expiredAt != null &&
+    new Date(run.expiredAt) < new Date()
+  );
 };
 
 /**

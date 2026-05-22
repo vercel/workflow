@@ -1,6 +1,14 @@
 import type { Event } from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
+/**
+ * Delay before firing the deferred unconsumed-event check after the promise
+ * queue has drained. Must be long enough for cross-VM microtask chains to
+ * propagate (resolve in host → workflow code in VM → subscribe call back
+ * in host). Any subscribe() arriving during this window cancels the check.
+ */
+export const DEFERRED_CHECK_DELAY_MS = 100;
+
 export enum EventConsumerResult {
   /**
    * Callback consumed the event, but should not be removed from the callbacks list
@@ -114,23 +122,32 @@ export class EventsConsumer {
     // is still unconsumed after the queue drains, it's truly orphaned.
     if (currentEvent !== null) {
       const checkVersion = ++this.unconsumedCheckVersion;
-      this.pendingUnconsumedCheck = this.getPromiseQueue().then(() => {
-        // Use a delayed setTimeout after the queue drains. The delay must be
-        // long enough for promise chains to propagate across the VM boundary
-        // (from resolve() in the host context through to the workflow code
-        // calling subscribe() in the VM context). Node.js does not guarantee
-        // that setTimeout(0) fires after all cross-context microtasks settle,
-        // so we use a small but non-zero delay. Any subscribe() call that
-        // arrives during this window will cancel the check via version
-        // invalidation + clearTimeout.
-        this.pendingUnconsumedTimeout = setTimeout(() => {
-          this.pendingUnconsumedTimeout = null;
-          if (this.unconsumedCheckVersion === checkVersion) {
-            this.pendingUnconsumedCheck = null;
-            this.onUnconsumedEvent(currentEvent);
-          }
-        }, 100);
-      });
+      this.pendingUnconsumedCheck = this.getPromiseQueue()
+        .then(
+          // Yield once after the first queue drain so promise chains resumed by
+          // that drain can run across the VM boundary and append any follow-up
+          // async work (for example: step_completed resolves -> for-await loop
+          // resumes -> the next hook payload starts hydrating).
+          () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+        )
+        .then(() => this.getPromiseQueue())
+        .then(() => {
+          // Use a delayed setTimeout after the queue drains. The delay must be
+          // long enough for promise chains to propagate across the VM boundary
+          // (from resolve() in the host context through to the workflow code
+          // calling subscribe() in the VM context). Node.js does not guarantee
+          // that setTimeout(0) fires after all cross-context microtasks settle,
+          // so we use a small but non-zero delay. Any subscribe() call that
+          // arrives during this window will cancel the check via version
+          // invalidation + clearTimeout.
+          this.pendingUnconsumedTimeout = setTimeout(() => {
+            this.pendingUnconsumedTimeout = null;
+            if (this.unconsumedCheckVersion === checkVersion) {
+              this.pendingUnconsumedCheck = null;
+              this.onUnconsumedEvent(currentEvent);
+            }
+          }, DEFERRED_CHECK_DELAY_MS);
+        });
     }
   };
 }

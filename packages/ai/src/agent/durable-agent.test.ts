@@ -2446,6 +2446,92 @@ describe('DurableAgent', () => {
         })
       );
     });
+
+    it('should patch repaired tool-call input back into the conversation prompt', async () => {
+      const repairFn: ToolCallRepairFunction<ToolSet> = vi
+        .fn()
+        .mockReturnValue({
+          toolCallId: 'test-call-id',
+          toolName: 'testTool',
+          input: '{"name":"repaired"}',
+        });
+
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({ name: z.string() }),
+          execute: async () => ({ result: 'success' }),
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const mockMessages: LanguageModelV3Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'test-call-id',
+              toolName: 'testTool',
+              input: 'invalid json',
+            },
+          ],
+        },
+      ];
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: 'invalid json',
+                } as LanguageModelV3ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        experimental_repairToolCall: repairFn,
+      });
+
+      expect(mockMessages[1]).toMatchObject({
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'test-call-id',
+            toolName: 'testTool',
+            input: { name: 'repaired' },
+          },
+        ],
+      });
+    });
   });
 
   describe('includeRawChunks', () => {

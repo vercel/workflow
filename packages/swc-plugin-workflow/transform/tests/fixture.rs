@@ -56,25 +56,3 @@ fn workflow_mode(input: PathBuf) {
         },
     );
 }
-
-#[testing::fixture("tests/fixture/**/input.js")]
-#[testing::fixture("tests/fixture/**/input.ts")]
-fn client_mode(input: PathBuf) {
-    let client_output = input.parent().unwrap().join("output-client.js");
-    test_fixture(
-        syntax_for(&input),
-        &|_| {
-            visit_mut_pass(StepTransform::new(
-                TransformMode::Client,
-                input.file_name().unwrap().to_string_lossy().to_string(),
-                None,
-            ))
-        },
-        &input,
-        &client_output,
-        FixtureTestConfig {
-            module: Some(true),
-            ..Default::default()
-        },
-    );
-}

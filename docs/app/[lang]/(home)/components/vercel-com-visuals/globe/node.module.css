@@ -1,0 +1,21 @@
+.nodeGroup:hover {
+  cursor: pointer;
+
+  & .node {
+    stroke: var(--ds-gray-500);
+  }
+}
+
+.dot {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .dot {
+    display: block;
+  }
+
+  .icon {
+    display: none;
+  }
+}

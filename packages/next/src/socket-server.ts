@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 
@@ -54,8 +54,41 @@ export interface SocketIO {
   getAuthToken(): string;
 }
 
+/**
+ * Filename for the socket-info file.
+ */
+export const SOCKET_INFO_FILENAME = 'workflow-socket.json';
+
+/**
+ * Previous filesystem location for the socket-info file. This file lives
+ * inside `.next/cache/`, which Vercel and Turborepo preserve across builds —
+ * a stale file from a prior build would cause the loader to attempt to
+ * connect to a dead port (ECONNREFUSED). The current location is a sibling
+ * of `cache/` so it isn't preserved.
+ *
+ * Exported so the builders can unlink the legacy path at boot, cleaning up
+ * any leftover file written by older versions of the SDK.
+ */
+export const LEGACY_SOCKET_INFO_RELATIVE_PATH = join(
+  'cache',
+  SOCKET_INFO_FILENAME
+);
+
 function getDefaultSocketInfoFilePath(): string {
-  return join(process.cwd(), '.next', 'cache', 'workflow-socket.json');
+  return join(process.cwd(), '.next', SOCKET_INFO_FILENAME);
+}
+
+/**
+ * Remove any stale socket-info files at boot.
+ * @param distDir absolute path to the project's `.next` directory.
+ */
+export async function cleanupStaleSocketInfoFiles(
+  distDir: string
+): Promise<void> {
+  await Promise.all([
+    rm(join(distDir, SOCKET_INFO_FILENAME), { force: true }),
+    rm(join(distDir, LEGACY_SOCKET_INFO_RELATIVE_PATH), { force: true }),
+  ]);
 }
 
 /**

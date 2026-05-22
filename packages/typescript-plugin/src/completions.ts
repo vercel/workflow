@@ -1,4 +1,4 @@
-import ts from 'typescript/lib/tsserverlibrary';
+import type ts from 'typescript/lib/tsserverlibrary';
 import { getDirective, WORKFLOW_HOOKS } from './utils';
 
 export function enhanceCompletions(
@@ -6,7 +6,7 @@ export function enhanceCompletions(
   position: number,
   prior: ts.WithMetadata<ts.CompletionInfo> | undefined,
   program: ts.Program,
-  ts: typeof import('typescript/lib/tsserverlibrary')
+  tsLib: typeof import('typescript/lib/tsserverlibrary')
 ): ts.WithMetadata<ts.CompletionInfo> | undefined {
   if (!prior) return prior;
 
@@ -14,20 +14,20 @@ export function enhanceCompletions(
   if (!sourceFile) return prior;
 
   // Find the enclosing function
-  const node = findNodeAtPosition(sourceFile, position);
+  const node = findNodeAtPosition(sourceFile, position, tsLib);
   if (!node) return prior;
 
-  const enclosingFunction = findEnclosingFunction(node);
+  const enclosingFunction = findEnclosingFunction(node, tsLib);
   if (!enclosingFunction) return prior;
 
-  const directive = getDirective(enclosingFunction, sourceFile, ts);
+  const directive = getDirective(enclosingFunction, sourceFile, tsLib);
 
   // If we're in a workflow function, add workflow hooks to completions
   if (directive === 'use workflow') {
     const workflowCompletions: ts.CompletionEntry[] = WORKFLOW_HOOKS.map(
       (hookName) => ({
         name: hookName,
-        kind: ts.ScriptElementKind.functionElement,
+        kind: tsLib.ScriptElementKind.functionElement,
         kindModifiers: '',
         sortText: '0', // Sort to top
         insertText: hookName,
@@ -46,11 +46,12 @@ export function enhanceCompletions(
 
 function findNodeAtPosition(
   sourceFile: ts.SourceFile,
-  position: number
+  position: number,
+  tsLib: typeof import('typescript/lib/tsserverlibrary')
 ): ts.Node | undefined {
   function find(node: ts.Node): ts.Node | undefined {
     if (position >= node.getStart() && position < node.getEnd()) {
-      return ts.forEachChild(node, find) || node;
+      return tsLib.forEachChild(node, find) || node;
     }
     return undefined;
   }
@@ -58,14 +59,15 @@ function findNodeAtPosition(
 }
 
 function findEnclosingFunction(
-  node: ts.Node
+  node: ts.Node,
+  tsLib: typeof import('typescript/lib/tsserverlibrary')
 ): ts.FunctionLikeDeclaration | undefined {
   let current: ts.Node | undefined = node;
   while (current) {
     if (
-      ts.isFunctionDeclaration(current) ||
-      ts.isArrowFunction(current) ||
-      ts.isFunctionExpression(current)
+      tsLib.isFunctionDeclaration(current) ||
+      tsLib.isArrowFunction(current) ||
+      tsLib.isFunctionExpression(current)
     ) {
       return current;
     }

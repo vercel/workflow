@@ -1,8 +1,8 @@
 <div align="center">
-  <a href="https://useworkflow.dev">
+  <a href="https://workflow-sdk.dev">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://useworkflow.dev/workflow-circle-symbol-dark.svg">
-      <img alt="Workflow SDK logo" src="https://useworkflow.dev/workflow-circle-symbol-light.svg" height="128">
+      <source media="(prefers-color-scheme: dark)" srcset="https://workflow-sdk.dev/workflow-circle-symbol-dark.svg">
+      <img alt="Workflow SDK logo" src="https://workflow-sdk.dev/workflow-circle-symbol-light.svg" height="128">
     </picture>
   </a>
   <h1>Workflow SDK</h1>
@@ -18,7 +18,7 @@
 
 The **Workflow SDK** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
 
-Visit [https://useworkflow.dev](https://useworkflow.dev) to view the full documentation.
+Visit [https://workflow-sdk.dev](https://workflow-sdk.dev) to view the full documentation.
 
 ## Community
 

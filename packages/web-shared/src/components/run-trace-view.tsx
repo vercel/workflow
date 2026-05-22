@@ -24,6 +24,7 @@ interface RunTraceViewProps {
   ) => Promise<void>;
   onCancelRun?: (runId: string) => Promise<void>;
   onStreamClick?: (streamId: string) => void;
+  onRunClick?: (runId: string) => void;
   onSpanSelect?: (info: SpanSelectionInfo) => void;
   onLoadMoreSpans?: () => void | Promise<void>;
   hasMoreSpans?: boolean;
@@ -42,6 +43,7 @@ export function RunTraceView({
   onResolveHook,
   onCancelRun,
   onStreamClick,
+  onRunClick,
   onSpanSelect,
   onLoadMoreSpans,
   hasMoreSpans,
@@ -71,6 +73,7 @@ export function RunTraceView({
         onResolveHook={onResolveHook}
         onCancelRun={onCancelRun}
         onStreamClick={onStreamClick}
+        onRunClick={onRunClick}
         onSpanSelect={onSpanSelect}
         onLoadMoreSpans={onLoadMoreSpans}
         hasMoreSpans={hasMoreSpans}

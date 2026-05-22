@@ -1,0 +1,72 @@
+---
+title: WorkflowRunFailedError
+description: Thrown when awaiting the return value of a failed workflow run.
+type: reference
+summary: Catch WorkflowRunFailedError when awaiting run.returnValue on a run that encountered a fatal error.
+related:
+  - /docs/api-reference/workflow/fatal-error
+  - /docs/api-reference/workflow-errors/workflow-run-cancelled-error
+  - /docs/api-reference/workflow-errors/workflow-run-not-found-error
+---
+
+`WorkflowRunFailedError` is thrown when awaiting `run.returnValue` on a workflow run whose status is `'failed'`. This indicates that the workflow encountered a fatal error during execution and cannot produce a return value.
+
+The `cause` property holds the original thrown value, hydrated through the workflow serialization pipeline so its type identity (e.g. `FatalError`, `RetryableError`, custom `Error` subclasses), `cause` chain, and custom properties are preserved. Because any JavaScript value can be thrown, `cause` is typed as `unknown` — narrow it with `instanceof Error` (or a more specific check) before accessing fields like `message`. The high-level error classification is exposed as the top-level `errorCode` property.
+
+```typescript lineNumbers
+import { WorkflowRunFailedError } from "workflow/errors"
+declare const run: { status: Promise<string>; returnValue: Promise<any> }; // @setup
+
+try {
+  const result = await run.returnValue;
+} catch (error) {
+  if (WorkflowRunFailedError.is(error)) { // [!code highlight]
+    if (error.cause instanceof Error) {
+      console.error(`Run ${error.runId} failed:`, error.cause.message);
+    }
+    if (error.errorCode) {
+      console.error("Error code:", error.errorCode);
+    }
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowRunFailedError {
+  /** The ID of the failed run. */
+  runId: string;
+  /**
+   * The original thrown value from the failed workflow run, hydrated through
+   * the workflow serialization pipeline. Preserves the original type identity
+   * (Error subclasses, FatalError, custom classes with WORKFLOW_SERIALIZE,
+   * etc.) and custom properties. Typed as \`unknown\` because any value can
+   * be thrown — narrow with \`instanceof Error\` before accessing fields.
+   */
+  cause: unknown;
+  /** The high-level error category (e.g. \`USER_ERROR\`, \`RUNTIME_ERROR\`). */
+  errorCode?: string;
+  /** The error message. */
+  message: string;
+}
+export default WorkflowRunFailedError;`}
+/>
+
+### Static Methods
+
+#### `WorkflowRunFailedError.is(value)`
+
+Type-safe check for `WorkflowRunFailedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { WorkflowRunFailedError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (WorkflowRunFailedError.is(error)) {
+  // error is typed as WorkflowRunFailedError
+}
+```

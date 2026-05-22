@@ -1,5 +1,53 @@
 # @workflow/web
 
+## 5.0.0-beta.7
+
+## 5.0.0-beta.6
+
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#1955](https://github.com/vercel/workflow/pull/1955) [`f20c706`](https://github.com/vercel/workflow/commit/f20c70672e4f9c4aad60779ba9624521a5403cc7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show hook name on trace viewer + no toast on decrypt
+
+- [#1815](https://github.com/vercel/workflow/pull/1815) [`45d1eb2`](https://github.com/vercel/workflow/commit/45d1eb23402f034faf1c5a8a8e8925f9ca7e910d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Configure `vercelPreset()` from `@vercel/react-router/vite` in `react-router.config.ts` when building the `packages/web` project for the Vercel deployment, enabling per-route bundle splitting, function-level configuration, and an accurate Deployment Summary.
+
+  The preset is gated on a new `WORKFLOW_WEB_VERCEL_BUILD` environment variable (rather than the ambient `VERCEL` var) so that the standard build layout consumed by `server.js` (self-hosted deployments and the CLI's in-process server via `@workflow/web/server`) is still produced when the package is packed as a tarball by the `docs` Vercel deployment. Set `WORKFLOW_WEB_VERCEL_BUILD=1` in the web Vercel project's environment variables to enable the preset there. The existing `VERCEL`-based checks in `vite.config.ts` have been migrated to this same variable for consistency.
+
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- [#1883](https://github.com/vercel/workflow/pull/1883) [`640a050`](https://github.com/vercel/workflow/commit/640a0505b88ff5499994155fd7360179cb9abf4f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Polish the new trace viewer: add detail pane, middle-truncate component, timeline tweaks, and various UI cleanups.
+
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1852](https://github.com/vercel/workflow/pull/1852) [`9ea1254`](https://github.com/vercel/workflow/commit/9ea125427f4d96acf142b8b8deca0594e7ee1e7b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decode UTF-8 typed array stream chunks in the web stream viewer.
+
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1732](https://github.com/vercel/workflow/pull/1732) [`c57eeff`](https://github.com/vercel/workflow/commit/c57eeff0ce37c86f58dad5c35c433b36fc9d3952) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Support standalone deploy to vercel
+
+- [#1768](https://github.com/vercel/workflow/pull/1768) [`bcf818c`](https://github.com/vercel/workflow/commit/bcf818c2c7fc3f6650b2a9ad925bcbc0530e6ebb) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Disable Vite minification so the published build contains readable code, reducing false-positive obfuscation flags from supply chain security scanners (Socket).
+
+- [#1716](https://github.com/vercel/workflow/pull/1716) [`df115fd`](https://github.com/vercel/workflow/commit/df115fde8cb4baa9a02477db043bf3d6d97259c8) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Make encrypted markers clickable to trigger decryption and detect encryption at run level before span selection. Persist `features.encryption` flag in `executionContext` at run creation so the UI can detect encryption without a probe fetch.
+
+- [#1681](https://github.com/vercel/workflow/pull/1681) [`ac09f40`](https://github.com/vercel/workflow/commit/ac09f407719413671b6feea4dca2360ebda9a51f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add clickable Run reference rendering in observability UI
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+## 5.0.0-beta.1
+
+### Major Changes
+
+- [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **BREAKING CHANGE**: Restructure stream methods on World interface to use `world.streams.*` namespace with `runId` as the first parameter. `writeToStream(name, runId, chunk)` → `streams.write(runId, name, chunk)`, `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get(runId, name, startIndex?)`, `listStreamsByRunId` → `streams.list(runId)`.
+
+- [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Require `runId` argument for `world.steps.get`.
+
 ## 5.0.0-beta.0
 
 ### Major Changes

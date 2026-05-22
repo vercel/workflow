@@ -39,8 +39,8 @@ export const setupCliWorld = async (
 
   const withAnsiLinks = flags.json ? false : true;
   const docsUrl = withAnsiLinks
-    ? terminalLink('https://useworkflow.dev/', 'https://useworkflow.dev/')
-    : 'https://useworkflow.dev/';
+    ? terminalLink('https://workflow-sdk.dev/', 'https://workflow-sdk.dev/')
+    : 'https://workflow-sdk.dev/';
 
   // Prepare showBox lines
   const boxLines = [

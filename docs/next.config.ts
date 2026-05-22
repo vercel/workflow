@@ -18,12 +18,11 @@ const config: NextConfig = {
   },
 
   async rewrites() {
+    const markdownAcceptHeader =
+      '(?=.*(?:text/plain|text/markdown))(?!.*text/html.*(?:text/plain|text/markdown)).*';
+
     return {
       beforeFiles: [
-        {
-          source: '/sitemap.xml',
-          destination: 'https://crawled-sitemap.vercel.sh/useworkflow.dev-.xml',
-        },
         {
           source: '/docs/:path*',
           destination: '/llms.mdx/:path*',
@@ -31,10 +30,29 @@ const config: NextConfig = {
             {
               type: 'header',
               key: 'Accept',
-              // Have text/markdown or text/plain but before any text/html
-              // Note, that Claude Code currently requests text/plain
-              value:
-                '(?=.*(?:text/plain|text/markdown))(?!.*text/html.*(?:text/plain|text/markdown)).*',
+              value: markdownAcceptHeader,
+            },
+          ],
+        },
+        {
+          source: '/cookbook',
+          destination: '/llms.mdx/cookbook',
+          has: [
+            {
+              type: 'header',
+              key: 'Accept',
+              value: markdownAcceptHeader,
+            },
+          ],
+        },
+        {
+          source: '/cookbook/:path*',
+          destination: '/llms.mdx/cookbook/:path*',
+          has: [
+            {
+              type: 'header',
+              key: 'Accept',
+              value: markdownAcceptHeader,
             },
           ],
         },
@@ -47,6 +65,31 @@ const config: NextConfig = {
       {
         source: '/docs',
         destination: '/docs/getting-started',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs',
+        destination: '/v5/docs/getting-started',
+        permanent: false,
+      },
+      {
+        source: '/docs/cookbook',
+        destination: '/cookbook',
+        permanent: true,
+      },
+      {
+        source: '/docs/cookbook/:path*',
+        destination: '/cookbook/:path*',
+        permanent: true,
+      },
+      {
+        source: '/cookbooks',
+        destination: '/cookbook',
+        permanent: true,
+      },
+      {
+        source: '/cookbooks/:path*',
+        destination: '/cookbook/:path*',
         permanent: true,
       },
       {
@@ -75,10 +118,52 @@ const config: NextConfig = {
         destination: '/worlds',
         permanent: true,
       },
-      // Redirect old control-flow-patterns to common-patterns
+      // Foundations "Common Patterns" page was retired in favor of dedicated
+      // cookbook recipes. Path-level redirect lands visitors on the cookbook
+      // overview where each pattern (Sequential & Parallel, Workflow
+      // Composition, Timeouts, etc.) has its own page. Note: anchor fragments
+      // from old links (#timeout-pattern, #direct-await-flattening, etc.) are
+      // dropped on redirect — Next.js redirects() does not match anchors.
+      {
+        source: '/docs/foundations/common-patterns',
+        destination: '/cookbook',
+        permanent: true,
+      },
       {
         source: '/docs/foundations/control-flow-patterns',
-        destination: '/docs/foundations/common-patterns',
+        destination: '/cookbook',
+        permanent: true,
+      },
+      // Cookbook: child-workflows and distributed-abort-controller moved
+      // from common-patterns (now "Reliability Patterns") to advanced
+      {
+        source: '/cookbook/common-patterns/child-workflows',
+        destination: '/cookbook/advanced/child-workflows',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/distributed-abort-controller',
+        destination: '/cookbook/advanced/distributed-abort-controller',
+        permanent: true,
+      },
+      // Cookbook: stop-workflow → agent-stop-signal → agent-cancellation.
+      // The page now covers both Hard Cancellation (run.cancel()) and Stop
+      // Signal (hook + Promise.race) as named patterns, so the broader
+      // "Agent Cancellation" title fits both. Both prior URLs land directly
+      // on the current page (no redirect chains).
+      {
+        source: '/cookbook/agent-patterns/stop-workflow',
+        destination: '/cookbook/agent-patterns/agent-cancellation',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/agent-patterns/agent-stop-signal',
+        destination: '/cookbook/agent-patterns/agent-cancellation',
+        permanent: true,
+      },
+      {
+        source: '/python',
+        destination: '/docs/getting-started/python',
         permanent: true,
       },
     ];

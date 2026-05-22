@@ -1,0 +1,9 @@
+{
+  "title": "Advanced",
+  "pages": [
+    "child-workflows",
+    "distributed-abort-controller",
+    "serializable-steps",
+    "publishing-libraries"
+  ]
+}

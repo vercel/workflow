@@ -1,6 +1,6 @@
 # @workflow/ai
 
-[Workflow SDK](https://useworkflow.dev) compatible helper library for the [AI SDK](https://ai-sdk.dev/).
+[Workflow SDK](https://workflow-sdk.dev) compatible helper library for the [AI SDK](https://ai-sdk.dev/).
 
 ## Installation
 
@@ -43,4 +43,4 @@ npm install ai@5 @ai-sdk/openai@2
 
 ## Documentation
 
-For usage examples and full documentation, see the [API reference](https://useworkflow.dev/docs/api-reference/workflow-ai/).
+For usage examples and full documentation, see the [API reference](https://workflow-sdk.dev/docs/api-reference/workflow-ai/).

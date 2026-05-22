@@ -4,7 +4,7 @@ import type { UIMessage } from '@ai-sdk/react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { ChevronRightIcon, MessagesSquareIcon, Trash } from 'lucide-react';
+import { ChevronRightIcon, Trash } from 'lucide-react';
 import { Portal } from 'radix-ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -135,10 +135,10 @@ export const useChatPersistence = () => {
   };
 };
 
-type ChatProps = {
+interface ChatProps {
   basePath: string | undefined;
   suggestions: string[];
-};
+}
 
 type ChatInnerProps = ChatProps & {
   isOpen: boolean;
@@ -299,8 +299,10 @@ const ChatInner = ({ basePath, suggestions, isOpen }: ChatInnerProps) => {
               />
               {message.parts
                 .filter((part) => part.type === 'text')
-                .map((part, index) => (
-                  <MessageContent key={`${message.id}-${part.type}-${index}`}>
+                .map((part) => (
+                  <MessageContent
+                    key={`${message.id}-${part.type}-${part.text}`}
+                  >
                     <MessageResponse className="text-wrap">
                       {part.text}
                     </MessageResponse>
@@ -409,8 +411,7 @@ export const Chat = ({ basePath, suggestions }: ChatProps) => {
         size="sm"
         variant="outline"
       >
-        <MessagesSquareIcon className="size-3.5 text-muted-foreground" />
-        <span>Ask AI</span>
+        Ask AI
       </Button>
 
       <Portal.Root className="hidden md:block">
@@ -436,7 +437,6 @@ export const Chat = ({ basePath, suggestions }: ChatProps) => {
         >
           <DrawerTrigger asChild>
             <Button className="shadow-none" size="sm" variant="outline">
-              <MessagesSquareIcon className="size-3.5 text-muted-foreground" />
               Ask AI
             </Button>
           </DrawerTrigger>

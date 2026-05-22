@@ -1,5 +1,53 @@
 # @workflow/ai
 
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- Updated dependencies [[`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6), [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335)]:
+  - workflow@5.0.0-beta.7
+
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- Updated dependencies [[`aee5699`](https://github.com/vercel/workflow/commit/aee56993c777e6fc8d40af8d90ec3d4fbd86cdfe), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`72911f7`](https://github.com/vercel/workflow/commit/72911f7356238b0ef803455641f8ef5c9dd1545c)]:
+  - workflow@5.0.0-beta.5
+
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1544](https://github.com/vercel/workflow/pull/1544) [`3f6d98f`](https://github.com/vercel/workflow/commit/3f6d98f3f0b1e18af47a7665fa210d87f99ff979) Thanks [@iNishant](https://github.com/iNishant)! - Forward `strict`, `inputExamples`, and `providerOptions` tool properties to language model providers, and handle `type: 'dynamic'` tools
+
+- Updated dependencies [[`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
+  - workflow@5.0.0-beta.3
+
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1707](https://github.com/vercel/workflow/pull/1707) [`86ebe9f`](https://github.com/vercel/workflow/commit/86ebe9fe9f17d36819bafef427a51f81e6045307) Thanks [@craze3](https://github.com/craze3)! - Preserve malformed streamed tool-call input until repair hooks can run
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- Updated dependencies [[`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/serde@5.0.0-beta.1
+  - workflow@5.0.0-beta.2
+
+## 5.0.0-beta.1
+
+### Patch Changes
+
+- [#1663](https://github.com/vercel/workflow/pull/1663) [`4d31619`](https://github.com/vercel/workflow/commit/4d31619eb724bf243b9775ef71a34f20668a9e2a) Thanks [@gr2m](https://github.com/gr2m)! - fix(ai): preserve provider tool identity across step boundaries
+
+  Provider tools (e.g. `anthropic.tools.webSearch`) were being converted to plain function tools in `toolsToModelTools`, stripping `type: 'provider'`, `id`, and `args`. This caused providers like Anthropic Gateway to not recognize them as provider-executed tools.
+
+- Updated dependencies [[`c6b630f`](https://github.com/vercel/workflow/commit/c6b630fc07335e1439752fc4f1122625515d17ce), [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d)]:
+  - workflow@5.0.0-beta.1
+
 ## 5.0.0-beta.0
 
 ### Major Changes

@@ -1,0 +1,84 @@
+---
+title: Local World
+description: Zero-config world bundled with Workflow for local development. No external services required.
+type: integration
+summary: Set up the Local World for zero-config workflow development on your machine.
+prerequisites:
+  - /docs/deploying
+related:
+  - /docs/deploying/world/postgres-world
+  - /docs/deploying/world/vercel-world
+---
+
+The Local World is bundled with `workflow` and used automatically during local development. No installation or configuration required.
+
+To explicitly use the local world in any environment, set the environment variable:
+
+```bash
+WORKFLOW_TARGET_WORLD=local
+```
+
+## Observability
+
+The `workflow` CLI uses the local world by default. Running these commands inside your workflow project will show your local development workflows:
+
+```bash
+# List recent workflow runs
+npx workflow inspect runs
+
+# Launch the web UI
+npx workflow web
+```
+
+Learn more in the [Observability](/docs/observability) documentation.
+
+## Testing & Compatibility
+
+<WorldTestingPerformance />
+
+## Configuration
+
+The local world works with zero configuration, but you can customize behavior through environment variables or programmatically via `createLocalWorld()`.
+
+### `WORKFLOW_LOCAL_DATA_DIR`
+
+Directory for storing workflow data as JSON files. Default: `.workflow-data/`
+
+### `PORT`
+
+The application dev server port. Used to enqueue steps and workflows. Default: auto-detected
+
+### `WORKFLOW_LOCAL_BASE_URL`
+
+Full base URL override for HTTPS or custom hostnames. Default: `http://localhost:{port}`
+
+Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
+
+### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
+
+Maximum number of concurrent queue workers. Default: `100`
+
+### Programmatic configuration
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript title="workflow.config.ts" lineNumbers
+import { createLocalWorld } from "@workflow/world-local";
+
+const world = createLocalWorld({
+  dataDir: "./custom-workflow-data",
+  port: 5173,
+  // baseUrl overrides port if set
+  baseUrl: "https://local.example.com:3000",
+});
+```
+
+## Limitations
+
+The local world is designed for development, not production:
+
+- **In-memory queue** - Steps are queued in memory and do not persist across server restarts
+- **Filesystem storage** - Data is stored in local JSON files
+- **Single instance** - Cannot handle distributed deployments
+- **No authentication** - Suitable only for local development
+
+For production deployments, use the [Vercel World](/worlds/vercel) or [Postgres World](/worlds/postgres).

@@ -7,7 +7,7 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true,
-    "inlineSources": false,
+    "inlineSources": true,
     "isolatedModules": true,
     "moduleResolution": "node16",
     "noUnusedLocals": true,

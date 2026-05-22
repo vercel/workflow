@@ -5,7 +5,7 @@ export function DocsLink() {
   return (
     <Button asChild variant="outline" size="sm">
       <a
-        href="https://useworkflow.dev/docs/observability"
+        href="https://workflow-sdk.dev/docs/observability"
         target="_blank"
         rel="noopener noreferrer"
         className="gap-1"

@@ -1,7 +1,6 @@
 export interface TransformResult {
   workflow: { code: string; error?: string };
   step: { code: string; error?: string };
-  client: { code: string; error?: string };
 }
 
 // ── Serde analysis types and helpers ──────────────────────────────────────

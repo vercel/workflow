@@ -25,7 +25,7 @@ export function workflowTransformPlugin(
   return {
     name: 'workflow:transform',
     // This transform applies the "use workflow"/"use step"
-    // client transformation
+    // step transformation
     async transform(code: string, id: string) {
       // Skip generated workflow route files to avoid re-processing them
       if (isGeneratedWorkflowFile(id)) {
@@ -116,7 +116,7 @@ export function workflowTransformPlugin(
           },
           target: 'es2022',
           experimental: {
-            plugins: [[swcPlugin, { mode: 'client', moduleSpecifier }]],
+            plugins: [[swcPlugin, { mode: 'step', moduleSpecifier }]],
           },
           transform: {
             react: {

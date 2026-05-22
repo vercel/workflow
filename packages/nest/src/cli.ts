@@ -36,7 +36,7 @@ function generateSwcrc(
         decoratorMetadata: true,
       },
       experimental: {
-        plugins: [[pluginPath, { mode: 'client' }]],
+        plugins: [[pluginPath, { mode: 'step' }]],
       },
     },
     module: {
@@ -62,7 +62,7 @@ Options:
   --force          Overwrite existing .swcrc file
 
 This command generates a .swcrc file configured with the Workflow SWC plugin
-for client-mode transformations. The plugin path is resolved from the
+for step-mode transformations. The plugin path is resolved from the
 @workflow/nest package, so no additional hoisting configuration is needed.
 `);
 }

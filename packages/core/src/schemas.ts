@@ -26,6 +26,7 @@ export type Serializable =
   | BigUint64Array
   | Date
   | DOMException
+  | Error
   | Float32Array
   | Float64Array
   | Headers
@@ -44,4 +45,6 @@ export type Serializable =
   | Uint16Array
   | Uint32Array
   | WritableStream<Uint8Array>
+  | AbortController
+  | AbortSignal
   | ((...args: Serializable[]) => Promise<Serializable>); // Step function

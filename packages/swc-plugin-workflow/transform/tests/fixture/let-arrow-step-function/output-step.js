@@ -6,6 +6,10 @@ let stepArrow = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "stepArrow",
+        configurable: true
+    });
 })(stepArrow, "step//./input//stepArrow");
 export let exportedStepArrow = async ()=>{
     return 2;
@@ -14,6 +18,10 @@ export let exportedStepArrow = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "exportedStepArrow",
+        configurable: true
+    });
 })(exportedStepArrow, "step//./input//exportedStepArrow");
 export async function normalStep() {
     return 3;
@@ -22,4 +30,8 @@ export async function normalStep() {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "normalStep",
+        configurable: true
+    });
 })(normalStep, "step//./input//normalStep");

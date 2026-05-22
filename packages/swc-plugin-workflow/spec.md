@@ -2,7 +2,7 @@
 
 The `"use step"` and `"use workflow"` directives work similarly to `"use server"` in React. A function marked with `"use step"` represents a durable step that executes on the server. A function marked with `"use workflow"` represents a durable workflow that orchestrates steps.
 
-The SWC plugin has 4 modes: **Step mode**, **Workflow mode**, **Client mode**, and **Detect mode**.
+The SWC plugin has 3 modes: **Step mode**, **Workflow mode**, and **Detect mode**.
 
 ## Directive Placement
 
@@ -90,6 +90,10 @@ Note: File extensions are stripped from local paths for cleaner IDs.
 ## Step Mode
 
 In step mode, step function bodies are kept intact and registered using an inline IIFE that stores them in a global registry via `Symbol.for("@workflow/core//registeredSteps")`, with no module imports. Workflow functions throw an error if called directly (since they should only run in the workflow runtime).
+
+After the step-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are preserved (unlike workflow mode where they are replaced with proxies), imports, helper functions, and other declarations referenced from step bodies are also preserved. However, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed.
+
+Object property step functions are hoisted to module-level variables and the original call site is replaced with a reference to the hoisted variable, making `.stepId` accessible at the call site.
 
 ### Basic Step Function
 
@@ -249,24 +253,7 @@ export const vade = agent({
 });
 ```
 
-Output (Client Mode):
-```javascript
-import { agent } from "experimental-agent";
-/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
-var vade$tools$VercelRequest$execute = async function(input, ctx) {
-    return 1 + 1;
-};
-export const vade = agent({
-    tools: {
-        VercelRequest: {
-            execute: vade$tools$VercelRequest$execute
-        }
-    }
-});
-vade$tools$VercelRequest$execute.stepId = "step//./input//vade/tools/VercelRequest/execute";
-```
-
-Note: In client mode, nested object property step functions are hoisted and have `stepId` set directly via inline property assignment. Step mode also uses inline registration (no import) via a self-contained IIFE. The original call site is replaced with a reference to the hoisted variable in both modes.
+Note: In step mode, nested object property step functions are hoisted and registered via a self-contained IIFE (no imports). The original call site is replaced with a reference to the hoisted variable.
 
 Note: The step ID includes the full path through nested objects (`vade/tools/VercelRequest/execute`), while the hoisted variable name uses `$` as the separator (`vade$tools$VercelRequest$execute`) to create a valid JavaScript identifier.
 
@@ -451,7 +438,7 @@ export async function subtract(a, b) {
 
 In workflow mode, step function bodies are replaced with a `globalThis[Symbol.for("WORKFLOW_USE_STEP")]` call. Workflow functions keep their bodies and are registered with `globalThis.__private_workflows.set()`.
 
-After the workflow-mode rewrite, the transform also runs a dead code elimination (DCE) pass. This pruning only affects the emitted workflow/client outputs, not step-mode output. In workflow mode, because step bodies are replaced with step proxies, imports, helper functions, nested steps, and other pure statements that were only referenced from those original step bodies become eligible for removal. Exports and any identifiers still referenced by the transformed workflow code are preserved.
+After the workflow-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are replaced with step proxies, imports, helper functions, nested steps, and other pure statements that were only referenced from those original step bodies become eligible for removal. Exports and any identifiers still referenced by the transformed workflow code are preserved.
 
 ### Step Functions
 
@@ -525,98 +512,6 @@ globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 ```
 
 ---
-
-## Client Mode
-
-In client mode, step function bodies are preserved as-is (allowing local testing/execution), and step functions have their `stepId` property set so they can be properly serialized when passed across boundaries (e.g., as arguments to `start()` or returned from other step functions). Workflow functions throw an error and have `workflowId` attached for use with `start()`.
-
-Like step mode, client mode also uses inline property assignments with no imports. The `stepId` property is set directly on the function, similar to how `workflowId` is set on workflow functions. The difference is that client mode uses a simple property assignment, while step mode uses an inline IIFE that also adds the function to the global step registry.
-
-Client mode also runs the same DCE pass after transform. The key difference from workflow mode is that module-level step bodies are still preserved and executable, so any imports, local helpers, or other declarations that are referenced only from those step bodies must also be preserved. By contrast, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed.
-
-Note: Step functions nested inside other functions (whether workflow functions or regular functions) do NOT get `stepId` assignments in client mode because they are not accessible at module level. In practice, nested steps and helpers that are only reachable from a workflow body are often pruned by the client-mode DCE pass once that workflow body has been replaced.
-
-### Step Functions
-
-Input:
-```javascript
-export async function add(a, b) {
-  "use step";
-  return a + b;
-}
-```
-
-Output:
-```javascript
-/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"}}}}*/;
-export async function add(a, b) {
-    return a + b;
-}
-add.stepId = "step//./input//add";
-```
-
-### Workflow Functions
-
-Input:
-```javascript
-export async function myWorkflow(data) {
-  "use workflow";
-  return await processData(data);
-}
-```
-
-Output:
-```javascript
-/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//./input//myWorkflow"}}}}*/;
-export async function myWorkflow(data) {
-    throw new Error("You attempted to execute workflow myWorkflow function directly. To start a workflow, use start(myWorkflow) from workflow/api");
-}
-myWorkflow.workflowId = "workflow//./input//myWorkflow";
-```
-
-### Custom Serialization in Client Mode
-
-Classes with custom serialization methods are also registered in client mode so that they can be properly serialized when passed to `start(workflow)`:
-
-Input:
-```javascript
-export class Point {
-  constructor(x, y) {
-    this.x = x;
-    this.y = y;
-  }
-
-  static [Symbol.for("workflow-serialize")](instance) {
-    return { x: instance.x, y: instance.y };
-  }
-
-  static [Symbol.for("workflow-deserialize")](data) {
-    return new Point(data.x, data.y);
-  }
-}
-```
-
-Output (Client Mode):
-```javascript
-/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//./input//Point"}}}}*/;
-export class Point {
-    constructor(x, y) {
-        this.x = x;
-        this.y = y;
-    }
-    static [Symbol.for("workflow-serialize")](instance) {
-        return { x: instance.x, y: instance.y };
-    }
-    static [Symbol.for("workflow-deserialize")](data) {
-        return new Point(data.x, data.y);
-    }
-}
-(function(__wf_cls, __wf_id) {
-    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-    __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
-})(Point, "class//./input//Point");
-```
 
 ---
 
@@ -1009,21 +904,18 @@ This allows serialization classes to be defined in separate files (such as Next.
 
 ### Cross-Context Class Registration
 
-Classes with custom serialization are automatically included in **all bundle contexts** (step, workflow, client) to ensure they can be properly serialized and deserialized when crossing execution boundaries:
+Classes with custom serialization are automatically included in **all bundle contexts** (step and workflow) to ensure they can be properly serialized and deserialized when crossing execution boundaries:
 
 | Boundary | Serializer | Deserializer | Example |
 |----------|------------|--------------|---------|
-| Client → Workflow | Client mode | Workflow mode | Passing a `Point` instance to `start(workflow)` |
 | Workflow → Step | Workflow mode | Step mode | Passing a `Point` instance as step argument |
 | Step → Workflow | Step mode | Workflow mode | Returning a `Point` instance from a step |
-| Workflow → Client | Workflow mode | Client mode | Returning a `Point` instance from a workflow |
 
 The build system automatically discovers all files containing serializable classes and includes them in each bundle, regardless of where the class is originally defined. This ensures the class registry has all necessary classes for any serialization boundary the data may cross.
 
 For example, if a class `Point` is defined in `models/point.ts` and only used in step code:
 - The **step bundle** includes `Point` because the step file imports it
 - The **workflow bundle** also includes `Point` so it can deserialize step return values
-- The **client bundle** also includes `Point` so it can deserialize workflow return values
 
 This cross-registration happens automatically during the build process - no manual configuration is required.
 
@@ -1124,8 +1016,6 @@ Object.defineProperty(ClassName.prototype, "prop", {
 });
 ```
 
-**Client mode**: The getter is preserved with the directive stripped (no registration).
-
 ### Static getter transformation
 
 Same as instance getters but targets `ClassName` instead of `ClassName.prototype`, and uses `.` separator in the step ID (same as static methods).
@@ -1161,8 +1051,6 @@ const obj = {
   get prop() { return __step_varName$prop(); }
 };
 ```
-
-**Client mode**: Same as step mode — the getter body is hoisted for `stepId` assignment, original getter preserved.
 
 ### Private member dead code elimination
 
@@ -1270,10 +1158,90 @@ The plugin detects this pattern and correctly identifies the directive inside th
 
 ---
 
+## Lexical `this` Capture in Nested Arrow Steps
+
+When a nested arrow-function step references `this` from an enclosing
+function/method scope, the plugin captures that `this` so the workflow
+runtime can rebind it inside the executing step body. This makes the
+following pattern work — the user's class is responsible for providing
+custom serialization (`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`) so the
+captured `this` can survive the workflow→step boundary:
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
+
+export class ReadFileTool {
+  static [WORKFLOW_SERIALIZE](instance) {
+    return { service: instance.service };
+  }
+  static [WORKFLOW_DESERIALIZE](data) {
+    return new ReadFileTool(data.service);
+  }
+  constructor(service) {
+    this.service = service;
+  }
+  createTool(context) {
+    return tool({
+      execute: async (input) => {
+        'use step';
+        return this.service.readFileContent(input, context);
+      },
+    });
+  }
+}
+```
+
+Output (Workflow Mode) — the proxy reference is wrapped with `.bind(this)`
+so the runtime's step proxy captures the caller's `this` as `thisVal` on the
+invocation queue item:
+```javascript
+createTool(context) {
+  return tool({
+    execute: globalThis[Symbol.for("WORKFLOW_USE_STEP")](
+      "step//./input//_anonymousStep0",
+      () => ({ context })
+    ).bind(this),
+  });
+}
+```
+
+Output (Step Mode) — the step body is hoisted as a regular `function` (not
+an arrow) so the runtime's `stepFn.apply(thisVal, args)` can rebind `this`
+to the value that was captured at call time:
+```javascript
+async function _anonymousStep0(input) {
+  const { context } = (function() { /* closure-var IIFE */ })();
+  return this.service.readFileContent(input, context);
+}
+```
+
+Detection rules:
+- Only `this` references that are **lexically captured by an arrow** count.
+  An arrow function inherits `this` from its enclosing scope; a nested
+  `function`/method/getter/setter introduces its own `this` and is therefore
+  not traversed by the detector.
+- The detector only flags arrows that are themselves step functions. A
+  `this` reference inside a non-step nested arrow inside a step does still
+  count, because the inner arrow inherits `this` from the step function
+  body, which in turn inherits from the enclosing function.
+
+Caveat: capturing `this` only works at runtime if the captured value is
+serializable across the workflow→step boundary. Classes registered with
+`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE` work; ordinary class
+instances without custom serialization will fail at proxy-invocation time.
+
+---
+
 ## Notes
 
 - Arguments and return values must be serializable (JSON-compatible or using custom serialization)
-- The `this` keyword and `arguments` object are not allowed in step functions
+- `this` is syntactically allowed inside step bodies, but it only carries a meaningful value in two shapes that both flow through the runtime's `thisVal` plumbing:
+  1. **Instance-method steps** on a class with custom serialization (e.g. `Counter#add`). Calling `instance.add(...)` captures `instance` as `thisVal` so the step body sees `this === instance`.
+  2. **Nested arrow steps that lexically capture `this`** (see "Lexical `this` Capture in Nested Arrow Steps" above). The compiler emits `.bind(this)` on the proxy in workflow mode and hoists the body as a regular `function` in step mode so `stepFn.apply(thisVal, args)` rebinds correctly.
+
+  Other shapes (a top-level `async function` step that references `this`, an arrow step assigned to a module-level variable, etc.) compile without error but `this` will be whatever the caller of the step proxy passes — typically `null`/`undefined` — so referencing it is rarely useful.
+- `arguments` is allowed inside `function`-form step bodies (it reflects the positional arguments the runtime passes via `stepFn.apply(thisVal, args)`). It does **not** work inside arrow-form steps — arrows don't have their own `arguments` binding, and the compiler doesn't capture the enclosing scope's `arguments` the way it does for `this`. Use rest parameters (`...args`) instead if you need that pattern in an arrow step.
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
 - Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available directly in the step bundle and should not be serialized as closure values

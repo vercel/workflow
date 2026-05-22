@@ -1,5 +1,6 @@
 import type { MetadataRoute } from 'next';
 
+import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
 import { source } from '@/lib/geistdocs/source';
 
 const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
@@ -13,11 +14,13 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const pages: MetadataRoute.Sitemap = [];
 
   for (const page of source.getPages()) {
+    // Exclude internal/preview-only pages from sitemap
+    if (page.url.includes('/internal')) continue;
     pages.push({
       changeFrequency: 'weekly' as const,
       lastModified: undefined,
       priority: 0.5,
-      url: url(page.url),
+      url: url(rewriteCookbookUrl(page.url)),
     });
   }
 

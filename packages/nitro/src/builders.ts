@@ -7,6 +7,26 @@ import {
 import type { Nitro } from 'nitro/types';
 import { join } from 'pathe';
 
+/**
+ * Forward string entries from Nitro's `externals.external` config to the
+ * workflow builder's esbuild `external` option. RegExp and function entries
+ * are skipped since esbuild's `external` only supports literal strings.
+ *
+ * Note: `externals.external` is on Nitro v2's options shape — v3 dropped it
+ * in favour of `noExternals`. Reading it through a v2-shaped view lets us
+ * still pick it up on v2 setups; on v3 the chained optional access just
+ * returns undefined.
+ */
+type NitroV2ExternalsOptions = { externals?: { external?: unknown[] } };
+function getNitroStringExternals(nitro: Nitro): string[] | undefined {
+  const external = (nitro.options as NitroV2ExternalsOptions).externals
+    ?.external;
+  const strings = external?.filter(
+    (entry): entry is string => typeof entry === 'string'
+  );
+  return strings && strings.length > 0 ? strings : undefined;
+}
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
@@ -14,6 +34,8 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         workingDir: nitro.options.rootDir,
         dirs: ['.'], // Different apps that use nitro have different directories
         runtime: nitro.options.workflow?.runtime,
+        sourcemap: nitro.options.workflow?.sourcemap,
+        externalPackages: getNitroStringExternals(nitro),
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -40,43 +62,59 @@ export class LocalBuilder extends BaseBuilder {
         workingDir: nitro.options.rootDir,
         watch: nitro.options.dev,
         dirs: ['.'], // Different apps that use nitro have different directories
+        sourcemap: nitro.options.workflow?.sourcemap,
+        externalPackages: getNitroStringExternals(nitro),
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });
     this.#outDir = outDir;
   }
 
-  override async build(): Promise<void> {
+  // Serialize concurrent build() calls so overlapping dev rebuilds don't
+  // stomp on each other's temp files or partially overwrite output.
+  #buildQueue: Promise<void> = Promise.resolve();
+
+  override build(): Promise<void> {
+    const next = this.#buildQueue.then(
+      () => this.#buildOnce(),
+      () => this.#buildOnce()
+    );
+    // Swallow rejections on the queue itself so a failed build doesn't
+    // permanently reject all subsequent builds; each caller still sees
+    // its own rejection via the returned promise.
+    this.#buildQueue = next.catch(() => {});
+    return next;
+  }
+
+  async #buildOnce(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
+    // V2: The combined bundle's flow route references the steps file by
+    // name in its import statement, so we build directly to final names.
+    // (The V1 atomic tmp-file pattern doesn't work here because renaming
+    // the steps file would leave the flow route's import stale.)
+    const { manifest } = await this.createCombinedBundle({
+      inputFiles,
+      stepsOutfile: join(this.#outDir, 'steps.mjs'),
+      flowOutfile: join(this.#outDir, 'workflows.mjs'),
+      format: 'esm',
+      // bundleFinalOutput: false — Nitro externalizes the workflow build dir
+      // during dev, and its own rollup pipeline handles bundling for prod.
+      // Using true causes "Dynamic require of X is not supported" errors
+      // because esbuild wraps CJS require() calls in ESM output.
       bundleFinalOutput: false,
-      format: 'esm',
-      inputFiles,
-    });
-
-    const { manifest: stepsManifest } = await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
-      format: 'esm',
-      inputFiles,
+      // In dev, Nitro dynamically imports the generated workflow files from
+      // disk, so there is no later Rollup pass to resolve externalized local
+      // TypeScript imports. In prod, Nitro/Rollup handles those imports.
+      bundleTransitiveLocalStepDependencies: this.config.watch,
     });
-
-    const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
 
     await this.createWebhookBundle({
-      outfile: webhookRouteFile,
+      outfile: join(this.#outDir, 'webhook.mjs'),
       bundle: false,
     });
-
-    // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
 
     // Generate manifest
     const workflowBundlePath = join(this.#outDir, 'workflows.mjs');

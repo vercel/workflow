@@ -8,14 +8,15 @@ import {
 } from '@/components/geistdocs/sidebar';
 import { i18n } from '@/lib/geistdocs/i18n';
 
-type DocsLayoutProps = {
-  tree: ComponentProps<typeof FumadocsDocsLayout>['tree'];
+interface DocsLayoutProps {
   children: ReactNode;
-};
+  tree: ComponentProps<typeof FumadocsDocsLayout>['tree'];
+}
 
 export const DocsLayout = ({ tree, children }: DocsLayoutProps) => (
   <FumadocsDocsLayout
     containerProps={{
+      className: 'bg-background-100 max-w-[1448px] mx-auto',
       style: {
         '--fd-docs-row-1': '4rem',
       } as CSSProperties,

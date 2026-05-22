@@ -1,18 +1,14 @@
 /**
- * Copies the WASM build artifacts from packages/swc-playground-wasm/pkg/
+ * Copies the WASM build artifacts from wasm/pkg/
  * into public/wasm/ so they can be served as static assets.
  */
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 
-const pkgDir = new URL(
-  '../../../packages/swc-playground-wasm/pkg/',
-  import.meta.url
-);
+const pkgDir = new URL('../wasm/pkg/', import.meta.url);
 
 if (!existsSync(pkgDir)) {
   console.error(
-    `WASM package not found at ${pkgDir}.\n` +
-      'Run "pnpm build" in packages/swc-playground-wasm first.'
+    `WASM package not found at ${pkgDir}.\n` + 'Run "pnpm build:wasm" first.'
   );
   process.exit(1);
 }

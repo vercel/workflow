@@ -1,5 +1,48 @@
 # @workflow/swc-plugin
 
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- [#1944](https://github.com/vercel/workflow/pull/1944) [`1d4f83a`](https://github.com/vercel/workflow/commit/1d4f83a29acc974fd4bbafe7a6ff64f8936219de) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix three bugs affecting nested step functions that get hoisted out of an enclosing function (workflows in any declaration form, plus regular factory-style functions returning objects with step methods):
+  1. Module-level imports referenced only by hoisted step bodies were stripped by dead-code elimination, causing a `ReferenceError` at runtime.
+  2. The step ID generated for nested anonymous steps inside a non-exported workflow declared as `const foo = async () => {}` or `const foo = async function() {}` was not namespaced under the workflow name in step mode, so it did not match the ID looked up by the workflow-mode proxy and caused a runtime "step not found" failure. Steps inside `async function foo()` workflows were already namespaced correctly; this brings the const-arrow and const-fn-expression forms into agreement.
+  3. The `__internal_workflows` manifest comment reported nested anonymous step IDs without the workflow-name prefix even though the runtime registration and proxy lookup used the prefixed form, so downstream tooling (e.g. builders consuming the manifest) saw the wrong step ID.
+
+- [#1935](https://github.com/vercel/workflow/pull/1935) [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `arguments` being incorrectly captured as a closure variable in nested `function`-form step bodies, which previously produced invalid output.
+
+- [#1935](https://github.com/vercel/workflow/pull/1935) [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Support `this` references inside nested arrow `"use step"` functions. Requires the enclosing class to have custom serialization.
+
+## 5.0.0-beta.3
+
+### Major Changes
+
+- [#1686](https://github.com/vercel/workflow/pull/1686) [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `client` transform mode from SWC plugin. The `client` and `step` modes were nearly identical — both preserved step function bodies, replaced workflow bodies with throw stubs, and emitted the same JSON manifest. The only differences were the step registration mechanism (simple property assignment vs. IIFE) and whether DCE ran. Step mode now absorbs all client-mode behaviors: hoisted variable references for object property steps (so `.stepId` is accessible), and dead code elimination. All integrations that previously used `mode: 'client'` now use `mode: 'step'`.
+
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1743](https://github.com/vercel/workflow/pull/1743) [`136bd35`](https://github.com/vercel/workflow/commit/136bd35a98a40a5dc55b2fbf838924c0af001ba7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Preserve original step function names in stack traces by setting `Object.defineProperty(fn, "name", ...)` in the IIFE registration
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+## 5.0.0-beta.1
+
+### Major Changes
+
+- [#1632](https://github.com/vercel/workflow/pull/1632) [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Inline all step registrations as self-contained IIFEs instead of generating `import { registerStepFunction } from "workflow/internal/private"`. Closure variable access is also inlined. This eliminates the dependency on the `workflow` package being available in `node_modules`, enabling 3rd-party packages to define step functions. Registrations are now placed immediately after each function definition instead of being batched at the bottom of the file.
+
+### Minor Changes
+
+- [#1633](https://github.com/vercel/workflow/pull/1633) [`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Allow synchronous functions to use `"use step"` directive. This enables using `"use step"` as a mechanism to strip Node.js-dependent code from the workflow VM bundle without requiring the function to be async.
+
+### Patch Changes
+
+- [#1671](https://github.com/vercel/workflow/pull/1671) [`66585fd`](https://github.com/vercel/workflow/commit/66585fd46723604a632d08b6c973d5a95582b1af) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Eliminate unreferenced private class members in workflow mode after `"use step"` stripping
+
+- [#1664](https://github.com/vercel/workflow/pull/1664) [`ebb0a4a`](https://github.com/vercel/workflow/commit/ebb0a4a4e366eb1be1d385bf1eedbbe27371c9a9) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Restore export validation for file-level `"use step"` files: only function exports (sync or async) are allowed; non-function exports (constants, classes, re-exports) emit an error
+
 ## 5.0.0-beta.0
 
 ### Major Changes

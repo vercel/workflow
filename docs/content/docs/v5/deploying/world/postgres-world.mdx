@@ -1,0 +1,224 @@
+---
+title: Postgres World
+description: Production-ready, self-hosted world using PostgreSQL for storage and graphile-worker for job processing.
+type: integration
+summary: Deploy workflows to your own infrastructure using PostgreSQL and graphile-worker.
+prerequisites:
+  - /docs/deploying
+related:
+  - /docs/deploying/world/local-world
+  - /docs/deploying/world/vercel-world
+---
+
+The Postgres World is a production-ready backend for self-hosted deployments. It uses PostgreSQL for durable storage and [graphile-worker](https://github.com/graphile/worker) for reliable job processing.
+
+Use the Postgres World when you need to deploy workflows on your own infrastructure outside of Vercel - such as a Docker container, Kubernetes cluster, or any cloud that supports long-running servers.
+
+## Installation
+
+Install the Postgres World package in your workflow project:
+
+```package-install
+@workflow/world-postgres
+```
+
+Configure the required environment variables to use the world and point it to your PostgreSQL database:
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+WORKFLOW_POSTGRES_URL="postgres://user:password@host:5432/database"
+```
+
+Run the migration script to create the necessary tables in your database. Ensure `WORKFLOW_POSTGRES_URL` is set when running this command:
+
+```bash
+npx workflow-postgres-setup
+```
+
+<Callout type="info">
+The migration is idempotent and can safely be run as a post-deployment lifecycle script.
+</Callout>
+
+## Starting the World
+
+To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
+
+<Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
+
+<Tab value="Next.js">
+
+Create an `instrumentation.ts` file in your project root:
+
+```ts title="instrumentation.ts" lineNumbers
+export async function register() {
+  if (process.env.NEXT_RUNTIME !== "edge") {
+    const { getWorld } = await import("workflow/runtime");
+    const world = await getWorld();
+    await world.start?.();
+  }
+}
+```
+
+<Callout type="info">
+Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
+</Callout>
+
+</Tab>
+
+<Tab value="SvelteKit">
+
+Create a `src/hooks.server.ts` file:
+
+```ts title="src/hooks.server.ts" lineNumbers
+import type { ServerInit } from "@sveltejs/kit";
+
+export const init: ServerInit = async () => {
+  const { getWorld } = await import("workflow/runtime");
+  const world = await getWorld();
+  await world.start?.();
+};
+```
+
+<Callout type="info">
+Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
+</Callout>
+
+</Tab>
+
+<Tab value="Nitro">
+
+Create a plugin to start the world on server initialization:
+
+```ts title="plugins/start-pg-world.ts" lineNumbers
+import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
+
+export default defineNitroPlugin(async () => {
+  const { getWorld } = await import("workflow/runtime");
+  const world = await getWorld();
+  await world.start?.();
+});
+```
+
+Register the plugin in your config:
+
+```ts title="nitro.config.ts"
+import { defineNitroConfig } from "nitropack";
+
+export default defineNitroConfig({
+  modules: ["workflow/nitro"],
+  plugins: ["plugins/start-pg-world.ts"],
+});
+```
+
+<Callout type="info">
+Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
+</Callout>
+
+</Tab>
+
+</Tabs>
+
+<Callout type="info">
+The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
+</Callout>
+
+## Observability
+
+Use the `workflow` CLI to inspect workflows stored in PostgreSQL:
+
+```bash
+# Set your database URL
+export WORKFLOW_POSTGRES_URL="postgres://user:password@host:5432/database"
+
+# List workflow runs
+npx workflow inspect runs --backend @workflow/world-postgres
+
+# Launch the web UI
+npx workflow web --backend @workflow/world-postgres
+```
+
+If `WORKFLOW_POSTGRES_URL` is not set, the CLI defaults to `postgres://world:world@localhost:5432/world`.
+
+Learn more in the [Observability](/docs/observability) documentation.
+
+## Testing & Compatibility
+
+<WorldTestingPerformance />
+
+## Configuration
+
+All configuration options can be set via environment variables or programmatically via `createWorld()`.
+
+### `WORKFLOW_POSTGRES_URL` (required)
+
+PostgreSQL connection string. Falls back to `DATABASE_URL` if not set.
+
+Default: `postgres://world:world@localhost:5432/world`
+
+### `WORKFLOW_POSTGRES_JOB_PREFIX`
+
+Prefix for graphile-worker queue job names. Useful when sharing a database between multiple applications.
+
+### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
+
+Number of concurrent workers polling for jobs. Default: `50`.
+
+This value also bounds how many parent→child workflow polls can be in flight simultaneously. Every `await childRun.returnValue` inside a workflow holds a worker slot until the child run terminates — if you expect recursive or highly-fanned-out parent/child workflows, raise this ceiling above the peak number of concurrent polls. With the default of 50, the included `fibonacciWorkflow` e2e test (fib(6), ~24 concurrent polls at peak) passes; deeper recursion or larger fanouts need a correspondingly larger setting.
+
+### `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
+
+Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool. Default: `10`
+
+For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
+
+### Programmatic configuration
+
+{/*@skip-typecheck: incomplete code sample*/}
+
+```typescript title="workflow.config.ts" lineNumbers
+import { createWorld } from "@workflow/world-postgres";
+
+const world = createWorld({
+  connectionString: "postgres://user:password@host:5432/database",
+  jobPrefix: "myapp_",
+  queueConcurrency: 50,
+  maxPoolSize: 52, // overrides WORKFLOW_POSTGRES_MAX_POOL_SIZE
+});
+```
+
+## How It Works
+
+The Postgres World uses PostgreSQL as a durable backend:
+
+- **Storage** - Workflow runs, events, steps, and hooks are stored in PostgreSQL tables
+- **Job Queue** - [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries
+- **Streaming** - PostgreSQL NOTIFY/LISTEN enables real-time event distribution
+
+This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).
+
+## Deployment
+
+Deploy your application to any cloud that supports long-running servers:
+
+- Docker containers
+- Kubernetes clusters
+- Virtual machines
+- Platform-as-a-Service providers (Railway, Render, Fly.io, etc.)
+
+Ensure your deployment has:
+
+1. Network access to your PostgreSQL database
+2. Environment variables configured correctly
+3. The `start()` function called on server initialization
+
+<Callout type="info">
+The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
+</Callout>
+
+## Limitations
+
+- **Requires long-running process** - Must call `start()` on server initialization; not compatible with serverless platforms
+- **PostgreSQL infrastructure** - Requires a PostgreSQL database (self-hosted or managed)
+- **Not compatible with Vercel** - Use the [Vercel World](/worlds/vercel) for Vercel deployments
+
+For local development, use the [Local World](/worlds/local) which requires no external services.

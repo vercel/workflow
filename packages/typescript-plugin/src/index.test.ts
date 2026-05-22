@@ -21,6 +21,37 @@ describe('TypeScript Plugin', () => {
   });
 
   describe('Plugin Initialization', () => {
+    it('logs a friendly error when TypeScript is unavailable', () => {
+      const factory = plugin({} as any);
+
+      const mockLanguageService = {
+        getSemanticDiagnostics: vi.fn(() => []),
+      };
+
+      const mockLogger = {
+        info: vi.fn(),
+        msg: vi.fn(),
+      };
+
+      const info: any = {
+        languageService: mockLanguageService,
+        languageServiceHost: {},
+        project: {
+          projectService: {
+            logger: mockLogger,
+          },
+        },
+        config: {},
+      };
+
+      const result = factory.create(info);
+
+      expect(result).toBe(mockLanguageService);
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        expect.stringContaining('Install "typescript@>=5.0.0"')
+      );
+    });
+
     it('creates a language service proxy', () => {
       const factory = plugin({ typescript: ts });
 

@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "5.0.0-beta.0",
+  "version": "5.0.0-beta.7",
   "type": "module",
   "private": false,
   "files": [
@@ -54,6 +54,7 @@
     "@react-router/dev": "7.13.1",
     "@react-router/express": "7.13.1",
     "@react-router/node": "7.13.1",
+    "@vercel/react-router": "1.2.6",
     "@tailwindcss/vite": "4",
     "@types/express": "^5",
     "@types/node": "catalog:",

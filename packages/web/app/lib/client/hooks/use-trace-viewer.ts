@@ -1,4 +1,4 @@
-import { hydrateResourceIO } from '@workflow/web-shared';
+import { hasEncryptedFields, hydrateResourceIO } from '@workflow/web-shared';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
@@ -31,8 +31,10 @@ export function useWorkflowTraceViewerData(
   const [eventsCursor, setEventsCursor] = useState<string | undefined>();
   const [eventsHasMore, setEventsHasMore] = useState(false);
   const [isLoadingMoreTraceData, setIsLoadingMoreTraceData] = useState(false);
+  const [hasEncryptedData, setHasEncryptedData] = useState(false);
 
   const isFetchingRef = useRef(false);
+  const mountedRef = useRef(true);
   const [initialLoadCompleted, setInitialLoadCompleted] = useState(false);
 
   // Fetch Run + first page of Events. These are the only two resources
@@ -83,6 +85,40 @@ export function useWorkflowTraceViewerData(
 
     if (!runResult.error && eventsResult.error) {
       setError(eventsResult.error);
+    }
+
+    // Detect encryption: newer runs store a flag in executionContext.
+    // For older runs that lack the flag, fall back to a probe fetch.
+    if (!runResult.error) {
+      const ctx = runResult.result.executionContext as
+        | Record<string, unknown>
+        | undefined;
+      if (
+        ctx?.features &&
+        (ctx.features as Record<string, unknown>).encryption
+      ) {
+        setHasEncryptedData(true);
+      } else {
+        unwrapServerActionResult(
+          fetchEvents(env, runId, {
+            sortOrder: 'asc',
+            limit: 1,
+            withData: true,
+          })
+        )
+          .then((probeResult) => {
+            if (
+              mountedRef.current &&
+              !probeResult.error &&
+              probeResult.result.data.some((e) =>
+                hasEncryptedFields(hydrateResourceIO(e))
+              )
+            ) {
+              setHasEncryptedData(true);
+            }
+          })
+          .catch(() => {});
+      }
     }
   }, [env, runId]);
 
@@ -196,6 +232,14 @@ export function useWorkflowTraceViewerData(
     fetchAllData();
   }, [fetchAllData]);
 
+  // Cleanup: mark unmounted so fire-and-forget probes don't update state.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   // Live polling
   useEffect(() => {
     if (!live || !initialLoadCompleted || run?.completedAt) {
@@ -220,5 +264,6 @@ export function useWorkflowTraceViewerData(
     loadMoreTraceData,
     hasMoreTraceData: eventsHasMore,
     isLoadingMoreTraceData,
+    hasEncryptedData,
   };
 }

@@ -22,7 +22,7 @@ import { waitedUntil } from '../util.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { Run } from './run.js';
-import { getWorld } from './world.js';
+import { getWorldLazy } from './get-world-lazy.js';
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -119,6 +119,7 @@ export async function start<TArgs extends unknown[], TResult>(
   argsOrOptions?: TArgs | StartOptions,
   options?: StartOptions
 ) {
+  'use step';
   return await waitedUntil(() => {
     // @ts-expect-error this field is added by our client transform
     const workflowName = workflow?.workflowId;
@@ -148,7 +149,7 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
-      const world = opts?.world ?? (await getWorld());
+      const world = opts?.world ?? (await getWorldLazy());
       let deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
 
       // When 'latest' is requested, resolve the actual latest deployment ID
@@ -206,7 +207,11 @@ export async function start<TArgs extends unknown[], TResult>(
         v1Compat
       );
 
-      const executionContext = { traceCarrier, workflowCoreVersion };
+      const executionContext = {
+        traceCarrier,
+        workflowCoreVersion,
+        features: { encryption: !!encryptionKey },
+      };
 
       // Call events.create (run_created) and queue in parallel.
       // If events.create fails with 429/5xx, the run was still accepted

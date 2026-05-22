@@ -27,12 +27,12 @@ export const UseCasesClient = ({ useCases }: { useCases: UseCase[] }) => {
   };
 
   return (
-    <div className="grid sm:grid-cols-3 sm:divide-x p-8 sm:p-0 gap-12 sm:gap-0">
+    <div className="grid sm:grid-cols-3 sm:divide-x px-4 py-8 sm:p-0 gap-12 sm:gap-0">
       <div className="text-balance flex flex-col gap-2 sm:p-12">
-        <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl">
+        <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl flex flex-wrap sm:block items-center gap-x-2">
           Build anything with
           <Select value={selectedCase} onValueChange={handleCaseChange}>
-            <SelectTrigger className="font-semibold bg-background text-xl tracking-tight sm:text-2xl md:text-3xl mt-1.5 data-[size=default]:h-auto py-1.5 -ml-3">
+            <SelectTrigger className="font-semibold bg-background text-xl tracking-tight sm:text-2xl md:text-3xl data-[size=default]:h-auto py-1.5 w-auto sm:mt-1.5 sm:-ml-3">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

@@ -1,0 +1,36 @@
+{
+  "name": "@workflow/example-tanstack-start",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "scripts": {
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js",
+    "predev": "pnpm generate:workflows",
+    "prebuild": "pnpm generate:workflows",
+    "dev": "vite dev",
+    "build": "vite build",
+    "start": "node .output/server/index.mjs"
+  },
+  "dependencies": {
+    "@node-rs/xxhash": "1.7.6",
+    "@tanstack/react-router": "^1.140.1",
+    "@tanstack/react-start": "^1.140.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "@vitejs/plugin-react": "^5.1.2",
+    "@workflow/ai": "workspace:*",
+    "@workflow/world-postgres": "workspace:*",
+    "ai": "catalog:",
+    "lodash.chunk": "^4.2.0",
+    "nitro": "catalog:",
+    "openai": "^6.1.0",
+    "vite": "^7.3.2",
+    "workflow": "workspace:*",
+    "zod": "catalog:"
+  }
+}
