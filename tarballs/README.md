@@ -2,7 +2,7 @@
 
 Static Vercel project that builds and serves preview tarballs for every public package in `packages/*`.
 
-For each public package, `scripts/pack.ts`:
+For each public package, `scripts/pack.mjs`:
 
 1. Rewrites the package version to `<version>-<git-sha>`, updates generated version files to match, and rewrites every workspace dependency to a tarball URL on the current Vercel deployment (`https://$VERCEL_URL/<escaped-name>.tgz`).
 2. Runs `pnpm pack` and writes the result to `public/<escaped-name>.tgz`.

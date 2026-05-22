@@ -1,7 +1,7 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
@@ -27,6 +27,21 @@ import {
 } from './serialization.js';
 import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
+
+vi.mock('./runtime/world.js', () => ({
+  getWorld: () => ({
+    readFromStream: async () =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.close();
+        },
+      }),
+    writeToStream: async () => {},
+    writeToStreamMulti: async () => {},
+    closeStream: async () => {},
+    streamFlushIntervalMs: 0,
+  }),
+}));
 
 const mockRunId = 'wrun_mockidnumber0001';
 const noEncryptionKey = undefined;

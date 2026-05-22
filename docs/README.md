@@ -7,7 +7,7 @@ The purpose of the stub is twofold:
 
 1. Keep the `Vercel – workflow-docs` deploy check green on PRs targeting
    `stable` (the Vercel project has `docs/` as its root directory).
-2. Keep the `prebuild` pack script (`scripts/pack.ts`), which publishes
+2. Keep the `prebuild` pack script (`scripts/pack.mjs`), which publishes
    per-deployment package tarballs under the preview URL so that pre-release
    builds of the SDK can be installed against backport PRs for testing.
 

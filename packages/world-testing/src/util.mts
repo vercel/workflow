@@ -21,10 +21,14 @@ type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
 
 export async function startServer(opts: { world: string }) {
-  let serverPath = new URL('./server.mts', import.meta.url);
+  let serverPath = new URL('./server.mjs', import.meta.url);
 
   if (!existsSync(serverPath)) {
-    serverPath = new URL('./server.mjs', import.meta.url);
+    serverPath = new URL('../dist/src/server.mjs', import.meta.url);
+  }
+
+  if (!existsSync(serverPath)) {
+    serverPath = new URL('./server.mts', import.meta.url);
   }
 
   const proc = cp.spawn('node', [fileURLToPath(serverPath)], {
