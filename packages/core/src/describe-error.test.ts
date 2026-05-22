@@ -83,7 +83,9 @@ describe('describeError', () => {
     const result = describeError(undefined, RUN_ERROR_CODES.REPLAY_TIMEOUT);
     expect(result.attribution).toBe('sdk');
     expect(result.errorCode).toBe(RUN_ERROR_CODES.REPLAY_TIMEOUT);
-    expect(result.hint).toContain('replay took too long');
+    expect(result.hint).toContain(
+      'replay between step boundaries took too long'
+    );
   });
 
   test('MAX_DELIVERIES_EXCEEDED via precomputed errorCode is attributed to the SDK', () => {
@@ -161,7 +163,9 @@ describe('describeRunError', () => {
       errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
     });
     expect(result.attribution).toBe('sdk');
-    expect(result.hint).toContain('replay took too long');
+    expect(result.hint).toContain(
+      'replay between step boundaries took too long'
+    );
   });
 
   test('CORRUPTED_EVENT_LOG errorCode is attributed to the SDK', () => {
@@ -290,7 +294,7 @@ describe('describeError — payload shape snapshots', () => {
         {
           "attribution": "sdk",
           "errorCode": "REPLAY_TIMEOUT",
-          "hint": "The workflow replay took too long. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work between step boundaries.",
+          "hint": "The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (\`"use step"\` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. Override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var if needed.",
         }
       `);
   });

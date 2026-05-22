@@ -21,6 +21,7 @@ jobs:
     permissions:
       contents: read
       deployments: read
+      statuses: read
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -42,7 +43,7 @@ jobs:
 
       - name: Waiting for the Tarballs Vercel deployment
         id: waitForTarballsDeployment
-        uses: ./.github/actions/wait-for-vercel-project
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: workflow-tarballs
           timeout: 1000
