@@ -357,34 +357,26 @@ export async function readJSON<T>(
   filePath: string,
   decoder: z.ZodType<T>
 ): Promise<T | null> {
+  let content: string;
   try {
-    const content = await fs.readFile(filePath, 'utf-8');
-    if (content.length === 0) {
-      // An empty file here means a write path produced zero bytes without
-      // the atomic tmp+rename guard, or that a reader caught the file
-      // briefly empty during creation. Surface enough state to pin it down
-      // from CI logs.
-      const stat = await fs.stat(filePath).catch(() => null);
-      throw new Error(
-        `readJSON: empty file at ${filePath} (size=${stat?.size ?? '?'}, mtime=${stat?.mtimeMs ?? '?'})`
-      );
-    }
-    return decoder.parse(JSON.parse(content, jsonReviver));
+    content = await fs.readFile(filePath, 'utf-8');
   } catch (error) {
     if ((error as any).code === 'ENOENT') return null;
+    throw error;
+  }
+  try {
+    return decoder.parse(JSON.parse(content, jsonReviver));
+  } catch (error) {
     if (error instanceof SyntaxError) {
-      // Attach the file path + size so the SyntaxError isn't anonymous
-      // when it bubbles up to a test. Without this we can't tell which
-      // entity (run / event / hook / etc.) the corruption was on.
+      // Annotate the SyntaxError with the file path, size, and a snippet of
+      // the (possibly empty / partial) content. Some writers — notably
+      // `writeExclusive` — are atomic for file *creation* but not for the
+      // data write that follows, so a concurrent reader can briefly observe
+      // a half-written file. Preserve the SyntaxError type so callers like
+      // `readHookTokenClaim` that intentionally swallow it via
+      // `error instanceof SyntaxError` continue to work.
       const stat = await fs.stat(filePath).catch(() => null);
-      const content = await fs.readFile(filePath, 'utf-8').catch(() => null);
-      throw new Error(
-        `readJSON: ${error.message} parsing ${filePath} (size=${stat?.size ?? '?'}, content=${
-          content === null
-            ? '<unreadable>'
-            : JSON.stringify(content.slice(0, 200))
-        })`
-      );
+      error.message = `${error.message} (parsing ${filePath}, size=${stat?.size ?? '?'}, content=${JSON.stringify(content.slice(0, 200))})`;
     }
     throw error;
   }
@@ -404,23 +396,47 @@ export async function deleteJSON(filePath: string): Promise<void> {
 }
 
 /**
- * Atomically create a file using O_CREAT | O_EXCL flags.
- * Returns true if the file was created, false if it already exists.
- * This is atomic at the OS level, safe for concurrent access.
+ * Atomically create a file containing `data`, failing if the target already
+ * exists. Returns true on successful claim, false if the file is already
+ * present.
+ *
+ * The naive `fs.writeFile(path, data, { flag: 'wx' })` form is atomic for the
+ * file *creation* (`O_CREAT | O_EXCL`) but the subsequent content write is
+ * not — a concurrent reader can observe the file with partial bytes (e.g.
+ * just `{`) before the writer's content has been flushed. Callers that
+ * combine `writeExclusive` for claim-style exclusion with a follow-up read
+ * of the claim payload would intermittently see a `SyntaxError` instead of
+ * the claim data.
+ *
+ * Use a two-step atomic pattern instead: write the full content to a temp
+ * file first, then `link(2)` it into place. POSIX guarantees `link` is
+ * atomic and fails with `EEXIST` if the target already exists. The reader
+ * either sees nothing (ENOENT) or the fully-populated linked inode — never
+ * a half-written file.
  */
 export async function writeExclusive(
   filePath: string,
   data: string
 ): Promise<boolean> {
   await ensureDir(path.dirname(filePath));
+  const tempPath = `${filePath}.tmp.${ulid()}`;
+  let tempCreated = false;
   try {
-    await fs.writeFile(filePath, data, { flag: 'wx' });
+    await fs.writeFile(tempPath, data);
+    tempCreated = true;
+    await withWindowsRetry(() => fs.link(tempPath, filePath));
     return true;
   } catch (error: any) {
     if (error.code === 'EEXIST') {
       return false;
     }
     throw error;
+  } finally {
+    if (tempCreated) {
+      // Best-effort cleanup of the temp inode regardless of whether the
+      // link succeeded — leaving it behind would leak files in the data dir.
+      await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
+    }
   }
 }
 
