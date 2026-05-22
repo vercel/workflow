@@ -199,6 +199,165 @@ describe('rewriteTsImportsInContent', () => {
     expect(result).toContain('require("../../dist/a.js")');
     expect(result).toContain('require("../../dist/b.js")');
   });
+
+  it('handles a leading shebang line', () => {
+    const content = [
+      '#!/usr/bin/env node',
+      'import { foo } from "../../src/services/helper.ts";',
+      'const x = foo;',
+    ].join('\n');
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toBe(
+      [
+        '#!/usr/bin/env node',
+        'const { foo } = require("../../dist/services/helper.js");',
+        'const x = foo;',
+      ].join('\n')
+    );
+  });
+
+  it('handles a shebang followed by a leading comment', () => {
+    const content = [
+      '#!/usr/bin/env node',
+      '// banner',
+      'import { foo } from "../../src/services/helper.ts";',
+    ].join('\n');
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toBe(
+      [
+        '#!/usr/bin/env node',
+        '// banner',
+        'const { foo } = require("../../dist/services/helper.js");',
+      ].join('\n')
+    );
+  });
+
+  it('handles a UTF-8 BOM at the start of the file', () => {
+    const content = '﻿import { foo } from "../../src/services/helper.ts";';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toBe(
+      '﻿const { foo } = require("../../dist/services/helper.js");'
+    );
+  });
+
+  it('handles CRLF line endings', () => {
+    const content =
+      '// banner\r\nimport { foo } from "../../src/services/helper.ts";\r\nconst x = foo;';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toBe(
+      '// banner\r\nconst { foo } = require("../../dist/services/helper.js");\r\nconst x = foo;'
+    );
+  });
+
+  it('does not rewrite dynamic imports', () => {
+    const content = 'const m = import("../../src/dynamic.ts");';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(0);
+    expect(result).toBe(content);
+  });
+
+  it('rewrites empty named imports as a side-effect require', () => {
+    const content = 'import {} from "../../src/setup.ts";';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toContain('require("../../dist/setup.js")');
+  });
+
+  it('rewrites a `default as` named import', () => {
+    const content =
+      'import { default as helper } from "../../src/services/helper.ts";';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toContain(
+      'const { default: helper } = require("../../dist/services/helper.js");'
+    );
+  });
+
+  it('rewrites combined default + namespace imports', () => {
+    const content =
+      'import helper, * as helperNs from "../../src/services/helper.ts";';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toContain(
+      'const __workflow_cjs_import_0 = require("../../dist/services/helper.js");'
+    );
+    expect(result).toContain(
+      'const helper = __workflow_cjs_import_0 != null && Object.prototype.hasOwnProperty.call(__workflow_cjs_import_0, "default") ? __workflow_cjs_import_0.default : __workflow_cjs_import_0;'
+    );
+    expect(result).toContain('const helperNs = __workflow_cjs_import_0;');
+  });
+
+  it('rewrites two imports of the same module without name collisions', () => {
+    const content = [
+      'import a from "../../src/x.ts";',
+      'import b from "../../src/x.ts";',
+    ].join('\n');
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(2);
+    expect(result).toContain('__workflow_cjs_import_0');
+    expect(result).toContain('__workflow_cjs_import_1');
+  });
+
+  it('does not rewrite an import-shaped substring inside a template literal', () => {
+    const content = 'const s = `import { foo } from "../../src/x.ts";`;';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(0);
+    expect(result).toBe(content);
+  });
 });
 
 describe('mapSourceToDistPath', () => {

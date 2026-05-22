@@ -26,10 +26,24 @@ export function rewriteTsImportsInContent(
 
   if (module.body.length === 0) return { content: stepsContent, matchCount: 0 };
 
-  // SWC spans are global across parse calls and skip leading comments.
+  // SWC's `span.start` is a 1-based UTF-8 byte offset into a global counter
+  // shared across all parseSync calls in the process (each parse leaves the
+  // cursor at the end of the previous source). For a freshly-parsed source,
+  // `module.span.start` points to the first byte SWC considers part of the
+  // module's text — which empirically:
+  //   • starts BEFORE leading line/block comments and a leading BOM
+  //     (SWC skips those out of `module.span`), but
+  //   • starts AT a leading shebang line (SWC keeps the shebang inside the
+  //     module span and exposes its text via `module.interpreter`).
+  // We want a base such that for any token, `token.span.start - base - 1`
+  // equals the local UTF-8 byte offset of that token within `stepsContent`.
+  // Subtracting the byte-length of leading comments/BOM (but NOT the
+  // shebang) from `module.span.start` gives us the SWC position
+  // corresponding to source byte 0, and the trailing `- 1` converts the
+  // 1-based offset into a 0-based base.
   const toStringIndex = createBytePositionMapper(
     stepsContent,
-    module.span.start - getLeadingSyntaxByteOffset(stepsContent) - 1
+    module.span.start - getLeadingCommentByteOffset(stepsContent) - 1
   );
 
   const replacements = module.body.flatMap((item, index) => {
@@ -271,8 +285,16 @@ function createBytePositionMapper(
   };
 }
 
-function getLeadingSyntaxByteOffset(source: string): number {
-  let index = source.startsWith('#!') ? skipLineComment(source, 0) : 0;
+/**
+ * Compute the UTF-8 byte length of any leading content that SWC excludes from
+ * `module.span` — leading whitespace (including a BOM), `//` line comments,
+ * and `/* … *\/` block comments.
+ *
+ * A leading shebang line is intentionally NOT skipped: SWC keeps the shebang
+ * inside `module.span`, so this helper must return 0 for it.
+ */
+function getLeadingCommentByteOffset(source: string): number {
+  let index = 0;
 
   while (index < source.length) {
     if (/\s/.test(source[index])) {
