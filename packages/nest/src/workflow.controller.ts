@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { All, Controller, Get, Post, Req, Res } from '@nestjs/common';
+import { All, Controller, Get, Head, Post, Req, Res } from '@nestjs/common';
 import { join } from 'pathe';
 
 // Module-level state for configuration
@@ -88,23 +88,36 @@ function getOutDir(): string {
 export class WorkflowController {
   @Post('step')
   async handleStep(@Req() req: any, @Res() res: any) {
-    const outDir = getOutDir();
-    const { POST } = await import(
-      pathToFileURL(join(outDir, 'steps.mjs')).href
-    );
-    const webRequest = toWebRequest(req);
-    const webResponse = await POST(webRequest);
-    await sendWebResponse(res, webResponse);
+    await this.handleGeneratedEndpoint(req, res, 'steps.mjs');
+  }
+
+  @Head('step')
+  async handleStepHead(@Req() req: any, @Res() res: any) {
+    await this.handleGeneratedEndpoint(req, res, 'steps.mjs');
   }
 
   @Post('flow')
   async handleFlow(@Req() req: any, @Res() res: any) {
+    await this.handleGeneratedEndpoint(req, res, 'workflows.mjs');
+  }
+
+  @Head('flow')
+  async handleFlowHead(@Req() req: any, @Res() res: any) {
+    await this.handleGeneratedEndpoint(req, res, 'workflows.mjs');
+  }
+
+  private async handleGeneratedEndpoint(
+    req: any,
+    res: any,
+    bundleFileName: 'steps.mjs' | 'workflows.mjs'
+  ) {
     const outDir = getOutDir();
-    const { POST } = await import(
-      pathToFileURL(join(outDir, 'workflows.mjs')).href
+    const { HEAD, POST } = await import(
+      pathToFileURL(join(outDir, bundleFileName)).href
     );
     const webRequest = toWebRequest(req);
-    const webResponse = await POST(webRequest);
+    const handler = req.method === 'HEAD' && HEAD ? HEAD : POST;
+    const webResponse = await handler(webRequest);
     await sendWebResponse(res, webResponse);
   }
 

@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import {
@@ -5,6 +6,175 @@ import {
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
+
+const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
+const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
+const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
+const workflowSerdeSymbolPattern =
+  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
+const workflowSerdeComputedPropertyPattern =
+  /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
+
+const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
+const warnedAutoRemovedServerExternalPackages = new Set<string>();
+
+interface WorkflowPatternMatch {
+  hasUseWorkflow: boolean;
+  hasUseStep: boolean;
+  hasSerde: boolean;
+}
+
+interface DetectedServerExternalPackage {
+  packageName: string;
+  hasUseWorkflow: boolean;
+  hasUseStep: boolean;
+  hasSerde: boolean;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isResolvablePackageSpecifier(specifier: string): boolean {
+  if (specifier.startsWith('.') || specifier.startsWith('/')) {
+    return false;
+  }
+  if (specifier.startsWith('$')) {
+    return false;
+  }
+  if (specifier.includes('*') || specifier.includes(':')) {
+    return false;
+  }
+
+  return true;
+}
+
+function detectWorkflowPatterns(source: string): WorkflowPatternMatch {
+  const hasUseWorkflow = useWorkflowPattern.test(source);
+  const hasUseStep = useStepPattern.test(source);
+  const hasSerdeImport = workflowSerdeImportPattern.test(source);
+  const hasSerdeSymbol = workflowSerdeSymbolPattern.test(source);
+  const hasSerdeComputedProperty =
+    workflowSerdeComputedPropertyPattern.test(source);
+
+  return {
+    hasUseWorkflow,
+    hasUseStep,
+    hasSerde: hasSerdeImport || hasSerdeSymbol || hasSerdeComputedProperty,
+  };
+}
+
+function getIssueLabels(detected: DetectedServerExternalPackage): string[] {
+  const issues: string[] = [];
+  if (detected.hasUseWorkflow) {
+    issues.push('"use workflow" functions');
+  }
+  if (detected.hasUseStep) {
+    issues.push('"use step" functions');
+  }
+  if (detected.hasSerde) {
+    issues.push('serialization classes');
+  }
+  return issues;
+}
+
+function hasWorkflowSerdeDependency(packageJson: unknown): boolean {
+  if (!isPlainObject(packageJson)) {
+    return false;
+  }
+
+  const dependencies = isPlainObject(packageJson.dependencies)
+    ? packageJson.dependencies
+    : {};
+  const peerDependencies = isPlainObject(packageJson.peerDependencies)
+    ? packageJson.peerDependencies
+    : {};
+
+  return (
+    Object.hasOwn(dependencies, '@workflow/serde') ||
+    Object.hasOwn(peerDependencies, '@workflow/serde')
+  );
+}
+
+async function detectServerExternalPackage(
+  packageName: string,
+  workingDir: string
+): Promise<DetectedServerExternalPackage | null> {
+  if (!isResolvablePackageSpecifier(packageName)) {
+    return null;
+  }
+
+  let hasUseWorkflow = false;
+  let hasUseStep = false;
+  let hasSerde = false;
+
+  try {
+    const packageJsonPath = require.resolve(`${packageName}/package.json`, {
+      paths: [workingDir],
+    });
+    const packageJsonSource = await readFile(packageJsonPath, 'utf-8');
+    const packageJson = JSON.parse(packageJsonSource) as unknown;
+    hasSerde = hasWorkflowSerdeDependency(packageJson);
+  } catch {
+    // Best-effort only. Continue to source scanning.
+  }
+
+  try {
+    const entryPath = require.resolve(packageName, {
+      paths: [workingDir],
+    });
+    const source = await readFile(entryPath, 'utf-8');
+    const patterns = detectWorkflowPatterns(source);
+    hasUseWorkflow = patterns.hasUseWorkflow;
+    hasUseStep = patterns.hasUseStep;
+    hasSerde ||= patterns.hasSerde;
+  } catch {
+    // Best-effort only. Use whichever signal we already have.
+  }
+
+  if (!hasUseWorkflow && !hasUseStep && !hasSerde) {
+    return null;
+  }
+
+  return {
+    packageName,
+    hasUseWorkflow,
+    hasUseStep,
+    hasSerde,
+  };
+}
+
+function warnAboutAutoRemovedServerExternalPackages(
+  detectedPackages: DetectedServerExternalPackage[]
+): void {
+  const newlyDetectedPackages = detectedPackages.filter(({ packageName }) => {
+    return !warnedAutoRemovedServerExternalPackages.has(packageName);
+  });
+
+  if (newlyDetectedPackages.length === 0) {
+    return;
+  }
+
+  for (const { packageName } of newlyDetectedPackages) {
+    warnedAutoRemovedServerExternalPackages.add(packageName);
+  }
+
+  const packageDescriptions = newlyDetectedPackages
+    .map(
+      (detected) =>
+        `"${detected.packageName}" (${getIssueLabels(detected).join(', ')})`
+    )
+    .join(', ');
+  const packageNames = newlyDetectedPackages
+    .map((detected) => `"${detected.packageName}"`)
+    .join(', ');
+
+  console.warn(
+    `\n⚠ Workflow removed ${packageDescriptions} from serverExternalPackages for this build.` +
+      `\n  These packages contain workflow code and must be transformed by the workflow compiler.` +
+      `\n  Remove ${packageNames} from serverExternalPackages in next.config to silence this warning.\n`
+  );
+}
 
 function resolveNextVersion(workingDir: string): string {
   const fallbackVersion = require('next/package.json').version as string;
@@ -78,6 +248,46 @@ export function withWorkflow(
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
 
+    const configuredServerExternalPackages = Array.isArray(
+      nextConfig.serverExternalPackages
+    )
+      ? nextConfig.serverExternalPackages
+      : [];
+    let effectiveServerExternalPackages = configuredServerExternalPackages;
+
+    if (configuredServerExternalPackages.length > 0) {
+      const detectedWorkflowPackages: DetectedServerExternalPackage[] = [];
+      for (const packageName of configuredServerExternalPackages) {
+        if (PSEUDO_EXTERNAL_PACKAGES.has(packageName)) {
+          continue;
+        }
+
+        try {
+          const detected = await detectServerExternalPackage(
+            packageName,
+            process.cwd()
+          );
+          if (detected) {
+            detectedWorkflowPackages.push(detected);
+          }
+        } catch {
+          // Best-effort only. Never block config generation.
+        }
+      }
+
+      if (detectedWorkflowPackages.length > 0) {
+        const removedPackages = new Set(
+          detectedWorkflowPackages.map((detected) => detected.packageName)
+        );
+        effectiveServerExternalPackages =
+          configuredServerExternalPackages.filter(
+            (packageName) => !removedPackages.has(packageName)
+          );
+        nextConfig.serverExternalPackages = effectiveServerExternalPackages;
+        warnAboutAutoRemovedServerExternalPackages(detectedWorkflowPackages);
+      }
+    }
+
     // configure the loader if turbopack is being used
     if (!nextConfig.turbopack) {
       nextConfig.turbopack = {};
@@ -123,7 +333,7 @@ export function withWorkflow(
               // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
               'server-only',
               'client-only',
-              ...(nextConfig.serverExternalPackages || []),
+              ...effectiveServerExternalPackages,
             ],
           });
         })();

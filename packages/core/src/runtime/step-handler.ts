@@ -12,7 +12,11 @@ import {
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
-import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  type Step,
+  StepInvokePayloadSchema,
+} from '@workflow/world';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -71,6 +75,7 @@ const stepHandler = createQueueHandler(
       requestedAt,
     } = StepInvokePayloadSchema.parse(message_);
     const { requestId } = metadata;
+    const stepNameFromQueue = metadata.queueName.slice('__wkf_step_'.length);
 
     // --- Max delivery check ---
     // Enforce max delivery limit before any infrastructure calls.
@@ -85,7 +90,7 @@ const stepHandler = createQueueHandler(
         {
           workflowRunId,
           stepId,
-          stepName: metadata.queueName.slice('__wkf_step_'.length),
+          stepName: stepNameFromQueue,
           attempt: metadata.attempt,
         }
       );
@@ -98,6 +103,7 @@ const stepHandler = createQueueHandler(
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {
+              stepName: stepNameFromQueue,
               error: `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
             },
           },
@@ -178,7 +184,7 @@ const stepHandler = createQueueHandler(
           // - Step not in terminal state (returns 409)
           // - retryAfter timestamp reached (returns 425 with Retry-After header)
           // - Workflow still active (returns 410 if completed)
-          let step;
+          let step: Step;
           try {
             const startResult = await world.events.create(
               workflowRunId,
@@ -186,6 +192,7 @@ const stepHandler = createQueueHandler(
                 eventType: 'step_started',
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: stepId,
+                eventData: { stepName },
               },
               { requestId }
             );
@@ -305,6 +312,7 @@ const stepHandler = createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
+                    stepName,
                     error: err.message,
                     stack: err.stack,
                   },
@@ -371,6 +379,7 @@ const stepHandler = createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
+                    stepName,
                     error: errorMessage,
                     stack: step.error?.stack,
                   },
@@ -432,6 +441,7 @@ const stepHandler = createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
+                    stepName,
                     error: errorMessage,
                     stack: new Error(errorMessage).stack ?? '',
                   },
@@ -596,6 +606,7 @@ const stepHandler = createQueueHandler(
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: normalizedError.message,
                       stack: normalizedStack,
                     },
@@ -656,6 +667,7 @@ const stepHandler = createQueueHandler(
                       specVersion: SPEC_VERSION_CURRENT,
                       correlationId: stepId,
                       eventData: {
+                        stepName,
                         error: errorMessage,
                         stack: normalizedStack,
                       },
@@ -712,6 +724,7 @@ const stepHandler = createQueueHandler(
                       specVersion: SPEC_VERSION_CURRENT,
                       correlationId: stepId,
                       eventData: {
+                        stepName,
                         error: normalizedError.message,
                         stack: normalizedStack,
                         ...(RetryableError.is(err) && {
@@ -780,12 +793,14 @@ const stepHandler = createQueueHandler(
           // The workflow runtime must be resilient to the below code not executing on a failed step
           result = await trace('step.dehydrate', {}, async (dehydrateSpan) => {
             const startTime = Date.now();
+            const returnValueOpsStart = ops.length;
             const dehydrated = await dehydrateStepReturnValue(
               result,
               workflowRunId,
               encryptionKey,
               ops
             );
+            await Promise.all(ops.slice(returnValueOpsStart));
             const durationMs = Date.now() - startTime;
             dehydrateSpan?.setAttributes({
               ...Attribute.QueueSerializeTimeMs(durationMs),
@@ -815,6 +830,7 @@ const stepHandler = createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
+                    stepName,
                     result: result as Uint8Array,
                   },
                 },
