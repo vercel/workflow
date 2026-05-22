@@ -30,6 +30,14 @@ jobs:
     # backport), or manually via `workflow_dispatch` (always forces a
     # backport). To force a backport after the fact, re-run this workflow
     # via `workflow_dispatch` with the relevant commit SHA.
+    #
+    # Skip "Version Packages" merge commits from the changesets bot — those
+    # PRs only contain changeset + version-bump churn (they're not allowed to
+    # carry new code), so they're never worth backporting and the AI decision
+    # step would just burn a call. `workflow_dispatch` still forces a run.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      !(github.event.head_commit.author.username == 'github-actions[bot]' && startsWith(github.event.head_commit.message, 'Version Packages'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
