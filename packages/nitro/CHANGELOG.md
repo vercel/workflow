@@ -1,5 +1,17 @@
 # @workflow/nitro
 
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- [#1575](https://github.com/vercel/workflow/pull/1575) [`c1242e8`](https://github.com/vercel/workflow/commit/c1242e8dc5db42748ae2739c7d24f964b39b7232) Thanks [@RihanArfan](https://github.com/RihanArfan)! - Match the webhook `functionRules` key (`:token`) to the handler route on Nitro v3 Vercel deploys so the runtime override is applied to the real `webhook/[token].func` instead of generating a duplicate `webhook/[...].func`. Also propagate `workflow.runtime` to the public manifest route for consistency.
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b), [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335)]:
+  - @workflow/core@5.0.0-beta.7
+  - @workflow/builders@5.0.0-beta.7
+  - @workflow/rollup@5.0.0-beta.7
+  - @workflow/vite@5.0.0-beta.7
+
 ## 5.0.0-beta.6
 
 ### Patch Changes

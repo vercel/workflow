@@ -1,5 +1,19 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- [#2036](https://github.com/vercel/workflow/pull/2036) [`753e39e`](https://github.com/vercel/workflow/commit/753e39e3bb4544021d3d47c537650396d36a7541) Thanks [@mitul-s](https://github.com/mitul-s)! - trace viewer bug fix + file cleanup
+
+- [#2022](https://github.com/vercel/workflow/pull/2022) [`5a393a6`](https://github.com/vercel/workflow/commit/5a393a6ffc87dcee7d68ca94db6b006e07c836a3) Thanks [@mitul-s](https://github.com/mitul-s)! - updated colours on the trace viewer
+
+- [#2045](https://github.com/vercel/workflow/pull/2045) [`366f9cc`](https://github.com/vercel/workflow/commit/366f9cc967db9184a6929bb99525bacc24f940e0) Thanks [@mitul-s](https://github.com/mitul-s)! - Add reduced motion for the trace viewer
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b), [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335)]:
+  - @workflow/core@5.0.0-beta.7
+  - @workflow/world@5.0.0-beta.4
+
 ## 5.0.0-beta.6
 
 ### Patch Changes
