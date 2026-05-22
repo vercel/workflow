@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.6
+
+### Patch Changes
+
+- [#1955](https://github.com/vercel/workflow/pull/1955) [`73e0c4d`](https://github.com/vercel/workflow/commit/73e0c4dc0e6b666c88487852ddf0f309526be6cd) Thanks [@mitul-s](https://github.com/mitul-s)! - Show hook name on trace viewer + no toast on decrypt
+
 ## 4.1.5
 
 ## 4.1.4

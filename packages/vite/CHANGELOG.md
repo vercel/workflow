@@ -1,5 +1,12 @@
 # @workflow/vite
 
+## 4.0.5
+
+### Patch Changes
+
+- Updated dependencies [[`478a9c7`](https://github.com/vercel/workflow/commit/478a9c76183b925e44439b7a5d1f849174804b64), [`066c157`](https://github.com/vercel/workflow/commit/066c157a2b5053196995e8636af7e0357ea6e58a), [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc), [`14326ad`](https://github.com/vercel/workflow/commit/14326adcf9b8f5dce753a739555e162cd03dc19f)]:
+  - @workflow/builders@4.0.6
+
 ## 4.0.4
 
 ### Patch Changes
