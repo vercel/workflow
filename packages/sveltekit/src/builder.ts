@@ -109,6 +109,9 @@ export const POST = async ({request}) => {
         'static/.well-known/workflow/v1'
       );
       await mkdir(staticManifestDir, { recursive: true });
+      if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
+        await writeFile(join(staticManifestDir, '.gitignore'), '*');
+      }
       await copyFile(
         join(workflowGeneratedDir, 'manifest.json'),
         join(staticManifestDir, 'manifest.json')

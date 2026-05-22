@@ -170,7 +170,9 @@ describe('queue timeout re-enqueue', () => {
   });
 
   it('logs actionable guidance for detached ArrayBuffer proxy failures', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
     const fetchError = new TypeError('fetch failed');
     (fetchError as TypeError & { cause?: unknown }).cause = new TypeError(
       'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer'
