@@ -138,14 +138,16 @@ export function createEventsStorage(
       // attacks where a client supplies runId / correlationId values like
       // "../../../package" to read or write files outside the storage root.
       // Run before taking the per-step mutex so malformed inputs fail fast.
+      //
+      // Empty `correlationId` values are also rejected here: the event
+      // schemas only require `z.string()`, so without this check a
+      // step_created / hook_created / wait_created request with
+      // `correlationId: ''` would silently be written under a malformed
+      // composite key like `${runId}-`.
       if (runId != null && runId !== '') {
         assertSafeEntityId('runId', runId);
       }
-      if (
-        'correlationId' in data &&
-        typeof data.correlationId === 'string' &&
-        data.correlationId.length > 0
-      ) {
+      if ('correlationId' in data && typeof data.correlationId === 'string') {
         assertSafeEntityId('correlationId', data.correlationId);
       }
 
@@ -1104,19 +1106,24 @@ export function createEventsStorage(
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);
 
-        // For run_started: include all events so the runtime can skip
-        // the initial events.list call and reduce TTFB.
+        // For run_started: preload one page of events so the runtime can skip
+        // the initial events.list call when hasMore is false.
         let events: Event[] | undefined;
+        let cursor: string | null | undefined;
+        let hasMore: boolean | undefined;
         if (data.eventType === 'run_started' && run) {
           const allEvents = await paginatedFileSystemQuery({
             directory: path.join(basedir, 'events'),
             schema: EventSchema,
             filePrefix: `${effectiveRunId}-`,
             sortOrder: 'asc',
+            limit: 1000,
             getCreatedAt: getObjectCreatedAt('evnt'),
             getId: (e) => e.eventId,
           });
           events = allEvents.data;
+          cursor = allEvents.cursor;
+          hasMore = allEvents.hasMore;
         }
 
         // Return EventResult with event and any created/updated entity
@@ -1127,6 +1134,8 @@ export function createEventsStorage(
           hook,
           wait,
           events,
+          cursor,
+          hasMore,
         };
       } // end createImpl
     },

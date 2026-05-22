@@ -927,6 +927,50 @@ describe('e2e', () => {
     expect(await run.returnValue).toEqual('done');
   });
 
+  // A WritableStream passed as a workflow argument to start() should
+  // land raw bytes on the parent's output stream when the child step
+  // writes to it. Covered for both:
+  // - `writableForwardedFromWorkflowWorkflow`: parent calls
+  //   `getWritable()` in workflow context (fake handle revived in the
+  //   intermediary step).
+  // - `writableForwardedFromStepWorkflow`: parent calls `getWritable()`
+  //   in step context (real `serialize.writable` passed straight to
+  //   `start()`).
+  test.each([
+    'writableForwardedFromWorkflowWorkflow',
+    'writableForwardedFromStepWorkflow',
+  ] as const)('%s', { timeout: 120_000 }, async (workflowName) => {
+    const payload = `hello-from-child-${Date.now()}\n`;
+    const run = await start(await e2e(workflowName), [payload]);
+
+    const reader = run.getReadable().getReader();
+    // `fatal: true` makes the decoder throw on any invalid UTF-8
+    // sequence, so a successful decode is itself a round-trip
+    // assertion that the bytes survived intact.
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+
+    // The child step performs exactly one write of `payload` as
+    // UTF-8 bytes, so we should receive a single chunk containing
+    // exactly those bytes before the stream closes.
+    const { value, done } = await reader.read();
+    expect(done).toBeFalsy();
+    assert(value);
+    assert(value instanceof Uint8Array);
+
+    const expectedBytes = new TextEncoder().encode(payload);
+    expect(value.byteLength).toBe(expectedBytes.byteLength);
+    expect(decoder.decode(value)).toBe(payload);
+
+    // Default stream should close cleanly after the parent closes its
+    // writable.
+    expect((await reader.read()).done).toBe(true);
+
+    const returnValue = await run.returnValue;
+    expect(returnValue).toMatchObject({
+      childRunId: expect.stringMatching(/^wrun_/),
+    });
+  });
+
   test('fetchWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('fetchWorkflow'), []);
     const returnValue = await run.returnValue;
@@ -2972,11 +3016,16 @@ describe('e2e', () => {
         const run = await start(await e2e('abortFetchInFlightWorkflow'), []);
         const returnValue = await run.returnValue;
 
-        expect(returnValue.winner).toBe('timeout');
+        // Include the full returnValue (status + elapsedMs from the step) in
+        // the assertion message so a flaky failure surfaces *why* fetch won
+        // the race — e.g. httpbin returning a 5xx in <1s — instead of just
+        // "expected 'fetch' to be 'timeout'".
+        const summary = JSON.stringify(returnValue);
+        expect(returnValue.winner, summary).toBe('timeout');
         // The step's catch path returned aborted=true (fetch threw AbortError),
         // not the natural-completion path (which would set ok=true,aborted=false).
-        expect(returnValue.fetchResult.aborted).toBe(true);
-        expect(returnValue.fetchResult.ok).toBe(false);
+        expect(returnValue.fetchResult.aborted, summary).toBe(true);
+        expect(returnValue.fetchResult.ok, summary).toBe(false);
       }
     );
 
@@ -2997,8 +3046,12 @@ describe('e2e', () => {
         const run = await start(await e2e('abortVoidSleepTimeoutWorkflow'), []);
         const returnValue = await run.returnValue;
 
-        expect(returnValue.aborted).toBe(true);
-        expect(returnValue.ok).toBe(false);
+        // Same diagnostic treatment as abortFetchInFlightWorkflow: when the
+        // slow upstream returns early the step result includes status and
+        // elapsedMs, which are what we'll need to triage the next flake.
+        const summary = JSON.stringify(returnValue);
+        expect(returnValue.aborted, summary).toBe(true);
+        expect(returnValue.ok, summary).toBe(false);
       }
     );
 

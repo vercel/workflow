@@ -23,7 +23,7 @@ export function shouldUseDeferredBuilder(nextVersion: string): boolean {
   if (flagEnabled && !versionCompatible && !warnedAboutFlagAndVersion) {
     warnedAboutFlagAndVersion = true;
     console.warn(
-      `Enabled lazyDiscovery but Next.js version is not compatible, needs ${DEFERRED_BUILDER_MIN_VERSION} have ${nextVersion}`
+      `lazyDiscovery requires Next.js >= ${DEFERRED_BUILDER_MIN_VERSION} (found ${nextVersion}); falling back to eager workflow discovery.`
     );
   }
 

@@ -1,5 +1,7 @@
 # @workflow/web
 
+## 5.0.0-beta.7
+
 ## 5.0.0-beta.6
 
 ## 5.0.0-beta.5

@@ -861,11 +861,11 @@ describe('fs utilities', () => {
       'vitest-0', // tag
       'strm_01ARZ3_user', // stream id with underscores
       'strm_01ARZ3_user_bmFtZXNwYWNl', // stream id with base64url namespace
-      'wrun_ABC.vitest-0', // tagged file id
       'a', // minimal valid value
     ];
 
-    // Values that should be rejected: real-world path traversal attempts.
+    // Values that should be rejected: real-world path traversal attempts
+    // plus dotted inputs that would confuse stripTag()/getObjectCreatedAt().
     const unsafeIds = [
       '',
       '.',
@@ -883,6 +883,14 @@ describe('fs utilities', () => {
       'foo\0bar', // null byte
       'a/../b',
       'a\\..\\b',
+      // Dots in entity IDs would be misparsed by stripTag(), which strips
+      // a trailing `.[tag]` suffix from filenames. A runId like
+      // `wrun_123.foo` would be silently mangled to `wrun_123` during
+      // listing/pagination, breaking lookups for tagged file handling.
+      'wrun_ABC.vitest-0',
+      'wrun_123.foo',
+      'foo.bar',
+      'wrun_ABC.',
     ];
 
     for (const id of safeIds) {
