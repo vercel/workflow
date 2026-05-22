@@ -78,7 +78,7 @@ Add `attributes?: Record<string, string>` to `WorkflowRunBaseSchema` in `package
 `world-vercel` calls into a remote endpoint to persist attributes:
 
 ```
-POST /v3/runs/:runId/attributes
+POST /v2/runs/:runId/attributes
 
 {
   "changes": [
@@ -90,7 +90,7 @@ POST /v3/runs/:runId/attributes
 
 Response: `{ "attributes": { "phase": "done", "tenant": "t1" } }`.
 
-The body shape **deliberately mirrors** the eventual `attr_set` event's `eventData.changes`. When the full feature ships, this endpoint goes away — the same body shape is posted to `POST /v3/runs/:id/events` with `eventType: 'attr_set'` (plus a `writer` discriminator). No SDK signature change, no client-side migration.
+The body shape **deliberately mirrors** the eventual `attr_set` event's `eventData.changes`. When the full feature ships, this endpoint goes away — the same body shape is posted to `POST /v2/runs/:id/events` with `eventType: 'attr_set'` (plus a `writer` discriminator). No SDK signature change, no client-side migration.
 
 ### 3. `@workflow/core` — SDK surface
 
@@ -221,7 +221,53 @@ When the full attributes feature ships:
 
 - `setAttributes` (SDK) — unchanged signature, new dispatch path
 - `runs.experimentalSetAttributes` (world interface) — deprecated, then removed; replaced by `events.create(runId, { eventType: 'attr_set', eventData: { changes, writer } })`
-- Wire endpoint — `POST /v3/runs/:runId/attributes` removed; the same body shape posts to `POST /v3/runs/:id/events`
+- Wire endpoint — `POST /v2/runs/:runId/attributes` removed; the same body shape posts to `POST /v2/runs/:id/events`
 - Pre-existing attribute values on MVP-era runs remain on the run entity but are not represented in the event log
 
 Skew protection means workflows started under the MVP will continue to run with the MVP dispatch path on their original deployment. New deployments use the new path. No in-place data migration is needed.
+
+## Implementation notes (decisions made during the MVP build-out)
+
+This section records concrete decisions taken while landing the MVP that weren't in the original plan, so the next iteration has them in one place.
+
+### Endpoint lives under `v2`, not a fresh namespace
+
+The initial draft placed the new endpoint at `POST /v3/runs/:runId/attributes`, on the assumption that introducing a new wire feature warranted a major namespace bump. In practice `world-vercel` mixes `/v1/...` and `/v2/...` endpoints already, and creating a `v3Api` subrouter just for a single endpoint would have required duplicating the auth / flags / rate-limit middleware stack. The MVP endpoint is therefore mounted under the existing `v2Api`. The wire body shape is unchanged, so the migration path described above (rerouting from `/v2/runs/:runId/attributes` to `/v2/runs/:id/events`) still holds — just within the same namespace.
+
+### Concurrent writes: read-modify-write, not per-key atomic
+
+The plan called for per-key atomic `UpdateExpression` updates (`SET #attrs.#k = :v` / `REMOVE #attrs.#k`) in the `world-vercel` backing store, on the basis that it eliminates the read-modify-write race. The MVP ships with the simpler read-modify-write path instead:
+
+- **In `world-postgres`** the SQL-side `jsonb_set` / `-` chain *is* used and is genuinely atomic on the run row, so the only race is the cap check (a separate `SELECT`). Documented as LWW-by-arrival for the cap; the merge itself is atomic.
+- **In the `world-vercel` backing service** the attributes column is laid out as a native key-addressable map so the atomic `UpdateItem` variant can be enabled later without a data migration. The MVP commits the merged map via the existing entity update path. Two concurrent writers therefore race; whichever lands second wins on shared keys, and any write to a non-overlapping key is preserved.
+- **In `world-local`** an in-process per-run mutex serializes the read-merge-write sequence so parallel `setAttributes` calls from concurrent steps do not lose writes within a single process. There is a corresponding test that exercises 20 parallel writes to the same run.
+
+This is consistent with the original "concurrent writes are LWW by arrival" caveat. Promoting to per-key atomic writes is a no-API-break change once the event-sourced path lands.
+
+### `WORKFLOW_ATTRIBUTES` usage-fact schema: not introduced
+
+The plan called for a dedicated `WORKFLOW_ATTRIBUTES` usage fact carrying the post-merge snapshot. Landing that schema would have required a coordinated change to the shared usage-facts package (used by `world-vercel`'s backing service) plus an ingest-side update before the endpoint could ship.
+
+For the MVP the endpoint reuses the existing `WORKFLOW_EVENT` fact with `eventType: 'attr_set'`. That mirrors how other run-lifecycle events are reported, and it's enough for "did an attribute mutation happen" debugging without adding an analytics dependency to the critical path. A dedicated fact carrying the full snapshot can land alongside the event-sourced path without touching the SDK wire contract.
+
+### Validation rules are shared between SDK and world
+
+Validation lives in a single helper exported from `@workflow/world` (`validateAttributeChanges`, `validateAttributeKey`, `validateAttributeValue`). Both the SDK `setAttributes` helper and the `world-local` / `world-postgres` implementations call it; the `world-vercel` backing service applies the same rules independently. The shared module is the authoritative spec for the limits (256-char keys, 256-byte values, max 64 attributes per run, `$`-prefixed keys reserved) — any future change goes through one file.
+
+### Run row reconstruction had to thread `attributes` through
+
+`world-local`'s events storage rebuilds the run row on every lifecycle event (`run_started`, `run_completed`, `run_failed`, `run_cancelled`) by explicitly listing fields rather than spreading. Without forwarding `attributes: currentRun.attributes` through each branch, any attribute set before the run completed would be silently dropped by the next lifecycle event. The fix was local to the four reconstruction sites — the field is otherwise untouched by event-sourced code. A subtler race remains: a `setAttributes` write landing in the same async window as a `run_completed` event read can be clobbered, but that's the same LWW-by-arrival semantic documented above.
+
+### Optional world method: feature-detect, warn once
+
+`runs.experimentalSetAttributes` is optional on the `World` interface so community worlds (Redis, MongoDB, Turso, etc.) continue to build and run without adopting the experimental API. The SDK helper feature-detects the method's presence on first dispatch; if absent, it logs a single `console.warn` for the lifetime of the process and resolves silently for that call and all subsequent calls. Users do not need to feature-detect in their own code — calling `setAttributes` against an unsupporting world is safe but ineffective.
+
+### Tests
+
+- **`@workflow/world`** — 18 unit tests covering validation rules (key length, reserved prefix, value byte cap, batch cap, duplicate keys) and the `applyAttributeChanges` merge helper.
+- **`@workflow/core`** — 10 unit tests covering context detection (workflow body / step body / neither), undefined-to-null normalization, empty-record no-op, validation surface (throws `FatalError`), and feature-detect-with-single-warning when the world lacks support.
+- **`@workflow/world-local`** — 10 integration tests covering upsert, merge across calls, unset via null, set-and-unset in a single batch, not-found errors, all four validation flavors, and concurrent writes (per-run mutex prevents lost writes).
+- **`@workflow/world-postgres`** — 3 integration tests added under the existing Postgres container suite covering upsert, merge across calls, and unset via null. The SQL-side merge (`jsonb_set` / `-`) is exercised through these.
+
+End-to-end coverage in the workbench app is intentionally deferred — running through the full SWC plugin + workflow VM path can land once the workflow-server preview deployment carrying the endpoint is live.
+

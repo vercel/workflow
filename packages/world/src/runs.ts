@@ -63,6 +63,19 @@ export const WorkflowRunBaseSchema = z.object({
    * without needing to decrypt the full error payload.
    */
   errorCode: z.string().optional(),
+  /**
+   * Plaintext string-string metadata attached to the run via
+   * `setAttributes()` (or, in the future, materialized from `attr_set`
+   * events). Stored unencrypted alongside other plaintext fields so
+   * observability surfaces can read it without going through the
+   * decryption pipeline.
+   *
+   * EXPERIMENTAL (MVP): runs created before this field landed read as
+   * `undefined`. The full Workflow Attributes feature replaces the
+   * direct-mutation MVP path with an event-sourced model — see the
+   * V5 attributes-mvp changelog entry.
+   */
+  attributes: z.record(z.string(), z.string()).optional(),
   expiredAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),

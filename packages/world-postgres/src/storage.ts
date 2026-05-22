@@ -8,8 +8,10 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AttributeChange,
   Event,
   EventResult,
+  ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
   ListEventsParams,
@@ -25,6 +27,7 @@ import type {
   WorkflowRunWithoutData,
 } from '@workflow/world';
 import {
+  AttributeValidationError,
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
@@ -32,6 +35,7 @@ import {
   SPEC_VERSION_CURRENT,
   StepSchema,
   stripEventDataRefs,
+  validateAttributeChanges,
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -140,6 +144,62 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
         cursor: values.at(-1)?.runId ?? null,
       };
     }) as Storage['runs']['list'],
+
+    experimentalSetAttributes: async (
+      runId: string,
+      changes: AttributeChange[]
+    ): Promise<ExperimentalSetAttributesResult> => {
+      // Load existing attributes for the per-run cap check. Postgres
+      // applies the merge atomically via the UPDATE below, but the
+      // count cap requires knowing the existing size — fetch it first.
+      // The narrow window between this read and the UPDATE is
+      // documented as last-write-wins by arrival (concurrent writes
+      // limitation in the MVP changelog).
+      const [existing] = await drizzle
+        .select({ attributes: runs.attributes })
+        .from(runs)
+        .where(eq(runs.runId, runId))
+        .limit(1);
+      if (!existing) {
+        throw new WorkflowRunNotFoundError(runId);
+      }
+
+      try {
+        validateAttributeChanges(changes, {
+          existingCount: Object.keys(existing.attributes ?? {}).length,
+        });
+      } catch (err) {
+        if (err instanceof AttributeValidationError) throw err;
+        throw err;
+      }
+
+      // Build a single SQL expression that applies all changes atomically.
+      // Sets fold into nested `jsonb_set` calls; removes fold into
+      // chained `-` (delete) operators. Returns the post-merge map.
+      let expr = sql`COALESCE(${runs.attributes}, '{}'::jsonb)`;
+      for (const { key, value } of changes) {
+        if (value === null) {
+          expr = sql`${expr} - ${key}`;
+        } else {
+          expr = sql`jsonb_set(${expr}, ARRAY[${key}]::text[], to_jsonb(${value}::text), true)`;
+        }
+      }
+
+      const [updated] = await drizzle
+        .update(runs)
+        .set({
+          attributes: expr as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(runs.runId, runId))
+        .returning({ attributes: runs.attributes });
+
+      if (!updated) {
+        throw new WorkflowRunNotFoundError(runId);
+      }
+
+      return { attributes: updated.attributes ?? {} };
+    },
   };
 }
 

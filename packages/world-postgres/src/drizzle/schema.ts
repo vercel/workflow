@@ -95,6 +95,17 @@ export const runs = schema.table(
      * decryption or hydration.
      */
     errorCode: varchar('error_code'),
+    /**
+     * Plaintext string-string metadata attached to the run via
+     * `setAttributes()`. EXPERIMENTAL MVP: stored as JSONB to allow
+     * SQL-side merge (`jsonb_set` / `jsonb_strip_nulls`) without a
+     * read-modify-write cycle. Defaults to `{}` so existing rows
+     * (pre-migration) read as the empty map.
+     */
+    attributes: jsonb('attributes')
+      .$type<Record<string, string>>()
+      .default({})
+      .notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()

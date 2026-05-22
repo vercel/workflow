@@ -554,6 +554,7 @@ export function createEventsStorage(
               completedAt: undefined,
               startedAt: currentRun.startedAt ?? now,
               updatedAt: now,
+              attributes: currentRun.attributes,
             };
             await writeJSON(
               taggedPath(basedir, 'runs', effectiveRunId, tag),
@@ -580,6 +581,7 @@ export function createEventsStorage(
               error: undefined,
               completedAt: now,
               updatedAt: now,
+              attributes: currentRun.attributes,
             };
             await writeJSON(
               taggedPath(basedir, 'runs', effectiveRunId, tag),
@@ -617,6 +619,7 @@ export function createEventsStorage(
               errorCode: failedData.errorCode,
               completedAt: now,
               updatedAt: now,
+              attributes: currentRun.attributes,
             };
             await writeJSON(
               taggedPath(basedir, 'runs', effectiveRunId, tag),
@@ -646,6 +649,7 @@ export function createEventsStorage(
               error: undefined,
               completedAt: now,
               updatedAt: now,
+              attributes: currentRun.attributes,
             };
             await writeJSON(
               taggedPath(basedir, 'runs', effectiveRunId, tag),
