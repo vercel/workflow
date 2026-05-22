@@ -6,7 +6,7 @@
  *
  * @example
  * ```ts
- * import { getWorld } from 'workflow/api';
+ * import { getWorld } from 'workflow/runtime';
  * import { hydrateResourceIO, observabilityRevivers } from 'workflow/observability';
  *
  * const world = await getWorld();

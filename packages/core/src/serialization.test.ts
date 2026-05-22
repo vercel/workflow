@@ -1,6 +1,10 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
-import { FatalError, RetryableError } from '@workflow/errors';
+import {
+  FatalError,
+  HookConflictError,
+  RetryableError,
+} from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
@@ -37,6 +41,7 @@ import {
   ABORT_STREAM_NAME,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
 
@@ -492,6 +497,44 @@ describe('workflow arguments', () => {
     expect(hydrated).toBeInstanceOf(OurWritableStream);
     const streamName = hydrated[STREAM_NAME_SYMBOL];
     expect(streamName).toMatch(/^strm_[0-9A-Z]{26}$/);
+  });
+
+  // When a user writable is already backed by a workflow server
+  // stream (because it was hydrated by a step-side reviver or created
+  // via step-context `getWritable()`), forwarding it across a
+  // `start()` boundary must emit the original `(runId, name)` in the
+  // dehydrated descriptor and MUST NOT install any pipe through the
+  // user's writable. The child run's step-side reviver then opens a
+  // server writable against the original `(runId, name)` directly,
+  // so writes survive for the full lifetime of the child run — not
+  // just for the dehydrating step's process.
+  it('forwards original (runId, name) for a tagged WritableStream', async () => {
+    const userWritable = new WritableStream();
+    Object.defineProperty(userWritable, STREAM_NAME_SYMBOL, {
+      value: 'strm_parentstreamname',
+      writable: false,
+    });
+    Object.defineProperty(userWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      value: 'wrun_parent',
+      writable: false,
+    });
+
+    expect(userWritable.locked).toBe(false);
+    const serialized = await dehydrateWorkflowArguments(
+      userWritable,
+      'wrun_child',
+      noEncryptionKey,
+      []
+    );
+    // If the reducer had piped through the user's writable, the lock
+    // would be acquired here.
+    expect(userWritable.locked).toBe(false);
+    // The dehydrated descriptor should carry both the original name
+    // and the original runId so the child's reviver can open the
+    // writable against the parent's server stream directly.
+    const text = new TextDecoder().decode(serialized as Uint8Array);
+    expect(text).toContain('strm_parentstreamname');
+    expect(text).toContain('wrun_parent');
   });
 
   it('should work with ReadableStream', async () => {
@@ -3697,8 +3740,8 @@ describe('DOMException serialization', () => {
   });
 });
 
-describe('FatalError and RetryableError serialization', () => {
-  // FatalError and RetryableError are first-class serialization targets
+describe('Workflow error serialization', () => {
+  // FatalError, RetryableError, and HookConflictError are first-class serialization targets
   // (handled by dedicated reducers/revivers in the common reducers module),
   // so unlike user-defined classes they round-trip without any
   // `registerSerializationClass` setup. This is what makes them usable
@@ -3790,6 +3833,31 @@ describe('FatalError and RetryableError serialization', () => {
     // See note on the FatalError variant above: assert on the devalue
     // marker `["KeyName",N]` to prove the dedicated reducer matched.
     expect(str).toContain('["RetryableError",');
+    expect(str).not.toContain('["Error",');
+    expect(str).not.toContain('Instance');
+  });
+
+  it('should round-trip HookConflictError preserving token and conflicting run id', async () => {
+    const error = new HookConflictError('approval-token', 'wrun_conflicting');
+    const hydrated = (await roundTrip(error)) as HookConflictError;
+    expect(hydrated).toBeInstanceOf(HookConflictError);
+    expect(HookConflictError.is(hydrated)).toBe(true);
+    expect(hydrated.token).toBe('approval-token');
+    expect(hydrated.conflictingRunId).toBe('wrun_conflicting');
+    expect(hydrated.message).toContain('wrun_conflicting');
+  });
+
+  it('should serialize HookConflictError using its dedicated reducer key', async () => {
+    const error = new HookConflictError('approval-token', 'wrun_conflicting');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('["HookConflictError",');
     expect(str).not.toContain('["Error",');
     expect(str).not.toContain('Instance');
   });

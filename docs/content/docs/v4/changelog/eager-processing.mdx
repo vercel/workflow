@@ -534,7 +534,7 @@ Additional changes for Turbopack compatibility:
 
 ### Run#returnValue Worker Deadlock in V2 Inline Execution
 
-When a workflow calls `start()` to spawn child workflows (e.g., `fibonacciWorkflow`), the parent's `Run#returnValue` step polls the child's completion status in a blocking loop (`while (true) { ... sleep(1000) ... }`). In V2, this step is executed inline by the step executor, holding a worker thread slot. If the child workflow's queue message is waiting for the same worker pool, the parent blocks the child from starting — a classic deadlock.
+When a workflow uses a step-wrapped `start()` helper to spawn child workflows (e.g., `fibonacciWorkflow`), the parent's `Run#returnValue` step polls the child's completion status in a blocking loop (`while (true) { ... sleep(1000) ... }`). In V2, this step is executed inline by the step executor, holding a worker thread slot. If the child workflow's queue message is waiting for the same worker pool, the parent blocks the child from starting — a classic deadlock.
 
 **Fix**: `Run#pollReturnValue()` detects whether it's running inside a step executor (via `contextStorage.getStore()`) and, if so, throws `TooEarlyError` instead of polling in a blocking loop. `TooEarlyError` is handled specially by the step executor — it returns `{ type: 'retry', timeoutSeconds }` which re-queues the step with a 1-second delay, freeing the worker to process child workflows. Unlike `RetryableError`, `TooEarlyError` does NOT count against `maxRetries`, so polling steps can retry indefinitely until the child completes.
 

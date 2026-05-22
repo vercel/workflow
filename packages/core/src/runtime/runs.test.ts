@@ -177,6 +177,9 @@ describe('Run.wakeUp', () => {
       'wrun_123',
       expect.objectContaining({
         eventType: 'wait_completed',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
         correlationId: 'wait_abc',
       }),
       expect.anything()
@@ -216,6 +219,9 @@ describe('Run.wakeUp', () => {
       'wrun_123',
       expect.objectContaining({
         eventType: 'wait_completed',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
         correlationId: 'wait_abc',
       }),
       expect.anything()

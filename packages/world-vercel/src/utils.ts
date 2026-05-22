@@ -423,7 +423,7 @@ export async function makeRequest<T>({
         const contentType = response.headers.get('Content-Type') || 'unknown';
         throw new WorkflowWorldError(
           `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
-          { url, cause: error }
+          { url, code: 'PARSE_ERROR', cause: error }
         );
       }
 
@@ -442,7 +442,7 @@ export async function makeRequest<T>({
             : '';
           throw new WorkflowWorldError(
             `Schema validation failed for ${method} ${endpoint}:\n${issues}${debugContext}`,
-            { url, cause: validationResult.error }
+            { url, code: 'SCHEMA_VALIDATION', cause: validationResult.error }
           );
         }
         return validationResult.data;

@@ -1,0 +1,280 @@
+---
+title: Versioning
+description: Understand how workflow runs are pinned to deployments, how to recover runs after a fix, and how to opt in to newer code explicitly.
+type: guide
+summary: Keep in-flight runs stable by default, then choose explicit upgrade boundaries when you need them.
+prerequisites:
+  - /docs/foundations/starting-workflows
+related:
+  - /docs/api-reference/workflow-api/start
+  - /cookbook/common-patterns/workflow-composition
+---
+
+Workflow runs are pinned to the deployment that starts them. When a run begins, Workflow SDK records the deployment for that run and continues executing the run on that same copy of your code.
+
+That default is intentional. Durable workflows can pause for minutes, days, or months. If the code underneath a paused run changed every time you deployed, an in-flight run could resume into a different function body, different step names, or different input types than the ones it started with. That can make type safety fragile and can break long-running work in hard-to-debug ways.
+
+With Workflow SDK, you can keep shipping. New runs use new deployments, while existing runs keep the version they already understand.
+
+## Default behavior
+
+Start a workflow normally:
+
+```typescript title="app/api/orders/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { fulfillOrder } from "@/workflows/fulfill-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+
+  const run = await start(fulfillOrder, [orderId]); // [!code highlight]
+
+  return Response.json({ runId: run.runId });
+}
+```
+
+The run is tied to the deployment that handled this request. If you deploy a new version while the workflow is [sleeping](/docs/api-reference/workflow/sleep), [waiting on a hook](/docs/foundations/hooks), [retrying a step](/docs/foundations/errors-and-retries), or processing later queue messages, that existing run still resumes on the original deployment.
+
+```typescript title="workflows/fulfill-order.ts" lineNumbers
+import { sleep } from "workflow";
+
+export async function fulfillOrder(orderId: string) {
+  "use workflow";
+
+  await reserveInventory(orderId);
+  await sleep("2d");
+  await chargeCustomer(orderId);
+  await shipOrder(orderId);
+}
+
+async function reserveInventory(orderId: string) {
+  "use step";
+  // ...
+}
+
+async function chargeCustomer(orderId: string) {
+  "use step";
+  // ...
+}
+
+async function shipOrder(orderId: string) {
+  "use step";
+  // ...
+}
+```
+
+If you deploy a change to `chargeCustomer()` while a run is in the two-day sleep, the existing run does not suddenly resume into the new implementation. It continues on the deployment it started on. The next order starts on the latest deployment and uses the new code from the beginning.
+
+## Fixing in-flight runs
+
+Sometimes you deploy because the old code had a bug. The safest fix is usually explicit:
+
+1. Deploy the fixed code.
+2. Find the affected runs in [observability](/docs/observability) or with the CLI.
+3. Cancel the old runs if they are still running.
+4. Rerun them on the latest deployment with the same inputs.
+
+This keeps the version boundary visible. The old run ends as cancelled or failed, and the replacement run starts fresh on the fixed deployment. This is a good fit for one-off, ad-hoc upgrades where you explicitly opt in to moving affected runs onto a new version.
+
+```bash
+# Inspect affected runs and copy the exact workflowName value.
+npx workflow inspect runs \
+  --backend vercel \
+  --status running
+
+# Cancel one run.
+npx workflow cancel <run-id> \
+  --backend vercel
+
+# Or bulk-cancel matching running runs.
+npx workflow cancel \
+  --status running \
+  --workflowName "workflow//./workflows/fulfill-order//fulfillOrder" \
+  --backend vercel
+```
+
+The `--workflowName` filter expects the generated workflow ID, not only the exported function's short name. Use the `workflowName` value from `workflow inspect runs`, and use [`parseWorkflowName()`](/docs/api-reference/workflow-api/world/observability) when you need display-friendly names.
+
+In the [observability UI](/docs/observability), use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
+
+If you are writing your own recovery route, call `start()` with the same arguments and `deploymentId: "latest"`:
+
+```typescript title="app/api/orders/rerun/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { fulfillOrder } from "@/workflows/fulfill-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+
+  const run = await start(fulfillOrder, [orderId], {
+    deploymentId: "latest", // [!code highlight]
+  });
+
+  return Response.json({ runId: run.runId });
+}
+```
+
+<Callout type="warn">
+`deploymentId: "latest"` is currently a Vercel-specific feature. Other Worlds may implement this option differently to match their own deployment runtimes, and the World spec may rename it from `deploymentId` to `version` in a future SDK version. On Vercel, `"latest"` resolves to the most recent deployment matching your current environment. Because the caller and target deployment can be different, keep the [workflow function name and file path](/docs/errors/workflow-not-registered), arguments, and return value backward-compatible across the deployments you plan to bridge.
+</Callout>
+
+## Self upgrading workflows
+
+Some workflows are expected to run for a very long time. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.
+
+Model those as a sequence of runs. Each run does a bounded piece of work, then starts the next run on the latest deployment and exits. This is similar to `continueAsNew` in other durable execution systems, but in Workflow SDK it is just [explicit recursion through `start()`](/cookbook/common-patterns/workflow-composition).
+
+```typescript title="workflows/daily-digest.ts" lineNumbers
+import { sleep } from "workflow";
+import { start } from "workflow/api";
+
+type DigestState = {
+  userId: string;
+  lastSentAt?: string;
+};
+
+export async function dailyDigest(state: DigestState) {
+  "use workflow";
+
+  const sentAt = await sendDigest(state.userId);
+  await sleep("1d");
+
+  const nextRunId = await continueDigest({
+    ...state,
+    lastSentAt: sentAt,
+  });
+
+  return { continuedAs: nextRunId };
+}
+
+async function continueDigest(state: DigestState) {
+  "use step";
+
+  const run = await start(dailyDigest, [state], {
+    deploymentId: "latest", // [!code highlight]
+  });
+
+  return run.runId;
+}
+
+async function sendDigest(userId: string) {
+  "use step";
+  // ...
+  return new Date().toISOString();
+}
+```
+
+This pattern gives every run a clear lifecycle:
+
+- The current run stays on its original deployment.
+- The next run starts on the latest deployment.
+- The [serialized `state`](/docs/foundations/serialization) is the migration boundary between versions.
+- Observability can link parent and child runs when a workflow starts another run.
+
+## Carrying context forward
+
+Anything that is [serializable by Workflow SDK](/docs/foundations/serialization) can be passed from one run to the next as an argument. That includes plain state objects, `ReadableStream`, `WritableStream`, and other supported serialized values.
+
+For example, a long export can register its [output stream](/docs/foundations/streaming) once, write progress from each run, and pass the same stream plus updated state into the next run:
+
+```typescript title="workflows/export-report.ts" lineNumbers
+import { getWritable } from "workflow";
+import { start } from "workflow/api";
+
+type ExportState = {
+  exportId: string;
+  page: number;
+};
+
+export async function exportReport(
+  state: ExportState,
+  progress?: WritableStream<string>
+) {
+  "use workflow";
+
+  // Register the stream once. Continuation runs receive this same stream
+  // as an argument and keep writing to it.
+  const stream =
+    progress !== undefined ? progress : getWritable<string>();
+
+  const hasMore = await exportPage(state, stream);
+
+  if (!hasMore) {
+    await writeProgress(stream, { type: "done", totalPages: state.page });
+    return { totalPages: state.page };
+  }
+
+  const nextRunId = await continueExportOnLatest(
+    { ...state, page: state.page + 1 },
+    stream
+  );
+
+  return { continuedAs: nextRunId };
+}
+
+async function continueExportOnLatest(
+  state: ExportState,
+  stream: WritableStream<string>
+) {
+  "use step";
+
+  const run = await start(exportReport, [state, stream], {
+    deploymentId: "latest", // [!code highlight]
+  });
+
+  return run.runId;
+}
+
+async function exportPage(
+  state: ExportState,
+  stream: WritableStream<string>
+) {
+  "use step";
+
+  // Do work for this version boundary.
+  const hasMore = state.page < 10;
+  const writer = stream.getWriter();
+
+  try {
+    await writer.write(
+      JSON.stringify({ type: "page", page: state.page }) + "\n"
+    );
+    return hasMore;
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function writeProgress(
+  stream: WritableStream<string>,
+  event: { type: "done"; totalPages: number }
+) {
+  "use step";
+
+  const writer = stream.getWriter();
+  try {
+    await writer.write(JSON.stringify(event) + "\n");
+  } finally {
+    writer.releaseLock();
+  }
+}
+```
+
+```typescript title="app/api/export/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { exportReport } from "@/workflows/export-report";
+
+export async function POST(request: Request) {
+  const { exportId } = await request.json();
+
+  const run = await start(exportReport, [{ exportId, page: 1 }]);
+
+  // Linked continuation runs keep writing to the stream registered by
+  // the parent run, because that stream is passed forward as an argument.
+  return new Response(run.readable, {
+    headers: { "Content-Type": "application/jsonl" },
+  });
+}
+```
+
+Each run still has one clear version boundary: the current run stays on its original deployment, the next run starts on the latest deployment, and only the explicit state and stream handle are carried forward.

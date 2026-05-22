@@ -361,7 +361,7 @@ async function pollWithRetries(
 - **Set a max iteration count on polling loops** to prevent runaway workflows. Calculate the count from your expected max duration and poll interval.
 - **Use chunked spawning for large batches.** Spawning 500 children in a single step can time out. Break it into chunks of 10-50.
 - **Each child has its own retry semantics.** Steps inside child workflows retry independently. The parent only sees the child's final status.
-- **Use `deploymentId: "latest"`** if children should run on the most recent deployment. See the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
+- **Use `deploymentId: "latest"`** if children should run on the most recent deployment. See [Versioning](/docs/foundations/versioning) for the full model and the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
 
 ## Key APIs
 

@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -7,6 +8,22 @@ import { LocalBuilder, VercelBuilder } from './builders.js';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
+
+/**
+ * Detect whether the Nitro instance is v2.
+ * Newer Nitro releases (both v2 and v3) expose `nitro.meta.majorVersion`.
+ * Fall back to `!nitro.routing` (only present in v3+) for older Nitro v2
+ * versions that don't have `majorVersion` yet (e.g. Nuxt users on an older
+ * nitropack).
+ */
+function isNitroV2(nitro: Nitro): boolean {
+  const majorVersion = (nitro as { meta?: { majorVersion?: number } }).meta
+    ?.majorVersion;
+  if (majorVersion != null) {
+    return majorVersion === 2;
+  }
+  return !nitro.routing;
+}
 
 export default {
   name: 'workflow/nitro',
@@ -74,41 +91,53 @@ export default {
         (_nitro: Nitro, config: RollupConfig) => {
           (config.plugins as Array<unknown>).unshift({
             name: 'workflow:force-inline',
-            async resolveId(
-              this: { resolve: Function },
-              source: string,
-              importer: string | undefined,
-              options: { skipSelf?: boolean }
-            ) {
-              if (!importer) return null;
-              // Let other plugins resolve first to get the file path
-              const resolved = await this.resolve(source, importer, {
-                ...options,
-                skipSelf: true,
-              });
-              if (!resolved) return null;
-              if (!resolved.external) return null;
-              // Force workflow packages and their internal imports
-              // to be bundled (not external). We match both the
-              // package specifier (e.g., `@workflow/core/runtime`)
-              // and resolved file paths within workflow packages.
-              const isWorkflowPkg =
-                /^@?workflow(\/|$)/.test(source) ||
-                /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|web|web-shared|astro|sveltekit|nest)[\\/]/.test(
-                  resolved.id
-                );
-              if (isWorkflowPkg) {
-                // Strip file:// protocol if present — Rollup needs
-                // a plain filesystem path to load the module.
-                // `fileURLToPath` correctly handles Windows paths
-                // (e.g., file:///C:/... -> C:\...) and percent-decoding.
+            // `order: 'pre'` is required: Nitro's `nitro:externals` plugin
+            // uses `order: 'pre'` for its resolveId hook and spreads our
+            // resolution result while forcing `external: true`. Without
+            // `pre` here, our `external: false` decision gets overwritten
+            // and `@workflow/*` imports end up externalized in the dev
+            // bundle — which means the SWC-injected `static classId` IIFE
+            // in (e.g.) `@workflow/core/dist/runtime/run.js` is never
+            // applied, and step return values that include `Run`
+            // instances fail to serialize at runtime.
+            resolveId: {
+              order: 'pre',
+              async handler(
+                this: { resolve: Function },
+                source: string,
+                importer: string | undefined,
+                options: { skipSelf?: boolean }
+              ) {
+                if (!importer) return null;
+                // Match workflow package specifiers OR direct paths into
+                // packages/<name>/. Bail out early on non-workflow imports
+                // so we don't intercept the rest of the resolution chain.
+                const isWorkflowPkg =
+                  /^@?workflow(\/|$)/.test(source) ||
+                  /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|web|web-shared|astro|sveltekit|nest)[\\/]/.test(
+                    source
+                  );
+                if (!isWorkflowPkg) return null;
+                // Resolve via other resolvers, skipping ourselves so we
+                // get a path. We don't gate on `resolved.external` because
+                // `nitro:externals` spreads our result and overrides
+                // `external: true` regardless of what we return — we want
+                // to win that race by returning first under `order: 'pre'`.
+                const resolved = await this.resolve(source, importer, {
+                  ...options,
+                  skipSelf: true,
+                });
+                if (!resolved) return null;
                 let resolvedId = resolved.id;
+                // Strip file:// protocol if present — Rollup needs a plain
+                // filesystem path to load the module. `fileURLToPath`
+                // correctly handles Windows paths (e.g., file:///C:/...
+                // -> C:\...) and percent-decoding.
                 if (resolvedId.startsWith('file://')) {
                   resolvedId = fileURLToPath(resolvedId);
                 }
                 return { id: resolvedId, external: false };
-              }
-              return null;
+              },
             },
           });
         }
@@ -125,15 +154,25 @@ export default {
       });
     }
 
-    // Generate functions for vercel build
-    if (isVercelDeploy) {
+    // Nitro v2 Vercel deploy: keep the legacy Build Output API path that
+    // builds the workflow functions standalone and stitches the routes into
+    // `.vercel/output/config.json`. This path is independent of nitro's own
+    // bundle and is only used for nitropack v2 (e.g. Nuxt 4 still uses it).
+    const useLegacyVercelBuild = isVercelDeploy && isNitroV2(nitro);
+
+    if (useLegacyVercelBuild) {
       nitro.hooks.hook('compiled', async () => {
         await new VercelBuilder(nitro).build();
       });
     }
 
-    // Generate local bundles for dev and local prod
-    if (!isVercelDeploy) {
+    // Local dev/prod and Nitro v3 Vercel deploy share the same path:
+    // bundle the workflow routes into nitro itself via virtual handlers.
+    // For Vercel v3 we additionally configure `functionRules` so the
+    // routes get queue triggers + extended maxDuration via the nitro
+    // vercel preset. This lets workflow handlers use nitro features
+    // (storage, database, runtime config, virtual imports, etc.).
+    if (!useLegacyVercelBuild) {
       const builder = new LocalBuilder(nitro);
       let isInitialBuild = true;
 
@@ -184,6 +223,47 @@ export default {
         '/.well-known/workflow/v1/flow',
         'workflow/workflows.mjs'
       );
+
+      // Nitro v3+ Vercel deploy: configure function rules for the combined
+      // flow handler so it gets the queue triggers + max duration that the
+      // workflow runtime needs. Workflow-required fields (`maxDuration`,
+      // `experimentalTriggers`, `runtime` when set) take precedence over
+      // user-provided values for these routes; unrelated fields the user
+      // sets (e.g. `memory`) pass through untouched.
+      //
+      // Pattern keys must match the route patterns the handlers are
+      // registered with so nitro reuses the same function directory.
+      // Using a `webhook/**` catch-all here would create a second
+      // `webhook/[...].func` next to the `webhook/[token].func` that
+      // `addVirtualHandler` produces.
+      if (isVercelDeploy) {
+        nitro.options.vercel ??= {};
+        nitro.options.vercel.functionRules ??= {};
+
+        const runtime = nitro.options.workflow?.runtime;
+        const rules = nitro.options.vercel.functionRules;
+
+        const flowPath = '/.well-known/workflow/v1/flow';
+        rules[flowPath] = {
+          ...rules[flowPath],
+          ...(runtime && { runtime }),
+          maxDuration: 'max',
+          // V2 combined: a single trigger covers both `__wkf_workflow_*`
+          // (workflow orchestration) and `__wkf_step_*` (step execution),
+          // since the same handler dispatches both.
+          experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+        };
+
+        if (runtime) {
+          const webhookPath = '/.well-known/workflow/v1/webhook/:token';
+          rules[webhookPath] = { ...rules[webhookPath], runtime };
+
+          if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
+            const manifestPath = '/.well-known/workflow/v1/manifest.json';
+            rules[manifestPath] = { ...rules[manifestPath], runtime };
+          }
+        }
+      }
 
       // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
       if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {

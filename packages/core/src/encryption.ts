@@ -33,19 +33,34 @@ const KEY_LENGTH = 32; // bytes (AES-256)
  * Callers should call this once per run (after `getEncryptionKeyForRun()`)
  * and pass the resulting `CryptoKey` to all subsequent encrypt/decrypt calls.
  *
+ * Pass `usages: ['encrypt']` (or `['decrypt']`) for cross-run scenarios
+ * where the caller should not be able to perform the inverse operation
+ * with the key — for example a child workflow writing into a parent
+ * run's forwarded WritableStream only needs to encrypt, never decrypt.
+ *
  * @param raw - Raw 32-byte AES-256 key (from World.getEncryptionKeyForRun)
+ * @param usages - Key usages. Defaults to `['encrypt', 'decrypt']`.
  * @returns CryptoKey ready for AES-GCM operations
  */
-export async function importKey(raw: Uint8Array) {
+export async function importKey(
+  raw: Uint8Array,
+  usages: ReadonlyArray<'encrypt' | 'decrypt'> = ['encrypt', 'decrypt']
+) {
   if (raw.byteLength !== KEY_LENGTH) {
     throw new WorkflowRuntimeError(
       `Encryption key must be exactly ${KEY_LENGTH} bytes, got ${raw.byteLength}`
     );
   }
-  return globalThis.crypto.subtle.importKey('raw', raw, 'AES-GCM', false, [
-    'encrypt',
-    'decrypt',
-  ]);
+  return globalThis.crypto.subtle.importKey(
+    'raw',
+    raw,
+    'AES-GCM',
+    false,
+    // `KeyUsage` is a DOM-lib type that's not in scope under `es2022`.
+    // The `ReadonlyArray<'encrypt' | 'decrypt'>` parameter type matches
+    // a strict subset of `KeyUsage[]`, so this cast is sound.
+    usages as ('encrypt' | 'decrypt')[]
+  );
 }
 
 /**

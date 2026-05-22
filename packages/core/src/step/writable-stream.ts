@@ -9,6 +9,7 @@ import {
   getSerializeStream,
   WorkflowServerWritableStream,
 } from '../serialization.js';
+import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { contextStorage } from './context-storage.js';
 
@@ -68,6 +69,22 @@ export function getWritable<W = any>(
   });
 
   pollWritableLock(serialize.writable, state);
+
+  // Tag the writable with its underlying `(runId, name)` so downstream
+  // reducers can recognize that it's already backed by a workflow
+  // server stream. Calling `start(child, [args, theWritable])` from
+  // the same step uses these tags to emit `{ name, runId }` in the
+  // dehydrated descriptor, so the child's reviver can open the
+  // writable against the original `(runId, name)` directly — no
+  // in-process bridge tied to this step's lifetime.
+  Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+    value: name,
+    writable: false,
+  });
+  Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+    value: runId,
+    writable: false,
+  });
 
   // Return the writable side of the transform stream
   return serialize.writable;
