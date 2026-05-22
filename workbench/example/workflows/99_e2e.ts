@@ -3037,3 +3037,84 @@ export class DistributedAbortController {
     })();
   }
 }
+
+//////////////////////////////////////////////////////////
+// WritableStream passed as argument to start()
+//
+// A parent workflow gets a WritableStream from getWritable() (its own
+// output stream), and passes it through `start()` to a child
+// workflow. The child workflow receives the WritableStream as a
+// workflow argument and forwards it into a step, which writes raw
+// Uint8Array bytes to it.
+//
+// The external reader on `parentRun.getReadable()` should observe the
+// exact bytes the child step wrote.
+
+async function writeBytesToWritable(
+  writable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use step';
+  const writer = writable.getWriter();
+  await writer.write(new TextEncoder().encode(payload));
+  writer.releaseLock();
+}
+
+export async function writableForwardedChildWorkflow(
+  parentWritable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use workflow';
+  await writeBytesToWritable(parentWritable, payload);
+  return 'child-done';
+}
+
+// Variant 1: the parent calls `getWritable()` in the workflow body
+// (workflow-context handle), passes the resulting fake handle through
+// `start()`. The intermediary step that calls `start()` only exists
+// because `start()` cannot be invoked from workflow code directly.
+async function startChildWithWorkflowWritable(
+  parentWritable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use step';
+  const childRun = await start(writableForwardedChildWorkflow, [
+    parentWritable,
+    payload,
+  ]);
+  // Wait for the child to finish writing before letting the parent
+  // close its own writable.
+  await childRun.returnValue;
+  return childRun.runId;
+}
+
+export async function writableForwardedFromWorkflowWorkflow(payload: string) {
+  'use workflow';
+  const writable = getWritable<Uint8Array>();
+  const childRunId = await startChildWithWorkflowWritable(writable, payload);
+  await stepCloseOutputStream(writable);
+  return { childRunId };
+}
+
+// Variant 2: the parent's `getWritable()` is called inside the step
+// that also calls `start()`, so the writable handed to the child is
+// the real step-context `serialize.writable` (not a workflow-context
+// fake handle that's later revived by a step). This exercises the
+// step-side `getWritable()` tagging path directly.
+async function startChildWithStepWritable(payload: string) {
+  'use step';
+  const writable = getWritable<Uint8Array>();
+  const childRun = await start(writableForwardedChildWorkflow, [
+    writable,
+    payload,
+  ]);
+  await childRun.returnValue;
+  await writable.close();
+  return childRun.runId;
+}
+
+export async function writableForwardedFromStepWorkflow(payload: string) {
+  'use workflow';
+  const childRunId = await startChildWithStepWritable(payload);
+  return { childRunId };
+}

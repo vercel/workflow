@@ -90,7 +90,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: resultA },
+        eventData: {
+          stepName: 'stepA',
+          result: resultA,
+        },
         createdAt: new Date(),
       },
       {
@@ -98,7 +101,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { result: resultB },
+        eventData: {
+          stepName: 'stepB',
+          result: resultB,
+        },
         createdAt: new Date(),
       },
     ]);
@@ -160,7 +166,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: results[0] },
+        eventData: {
+          stepName: 'step1',
+          result: results[0],
+        },
         createdAt: new Date(),
       },
       {
@@ -168,7 +177,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { result: results[1] },
+        eventData: {
+          stepName: 'step2',
+          result: results[1],
+        },
         createdAt: new Date(),
       },
       {
@@ -176,7 +188,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
-        eventData: { result: results[2] },
+        eventData: {
+          stepName: 'step3',
+          result: results[2],
+        },
         createdAt: new Date(),
       },
     ]);
@@ -246,7 +261,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'hook_received',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { payload: payloadA },
+        eventData: {
+          token: 'test-token',
+          payload: payloadA,
+        },
         createdAt: new Date(),
       },
       {
@@ -254,7 +272,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'hook_received',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { payload: payloadB },
+        eventData: {
+          token: 'test-token',
+          payload: payloadB,
+        },
         createdAt: new Date(),
       },
       {
@@ -262,6 +283,9 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'hook_disposed',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'test-token',
+        },
         createdAt: new Date(),
       },
     ]);
@@ -282,7 +306,7 @@ describe('async deserialization ordering', () => {
     );
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook();
+    const hook = createHook({ token: 'test-token' });
 
     // Await two payloads from the hook
     const resolveOrder: string[] = [];
@@ -329,7 +353,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: resultA },
+        eventData: {
+          stepName: 'stepA',
+          result: resultA,
+        },
         createdAt: new Date(),
       },
       {
@@ -337,7 +364,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { error: errorB },
+        eventData: {
+          stepName: 'stepB',
+          error: errorB,
+        },
         createdAt: new Date(),
       },
       {
@@ -345,7 +375,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
-        eventData: { result: resultC },
+        eventData: {
+          stepName: 'stepC',
+          result: resultC,
+        },
         createdAt: new Date(),
       },
     ]);
@@ -481,7 +514,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: resultA },
+        eventData: {
+          stepName: 'stepA',
+          result: resultA,
+        },
         createdAt: new Date(),
       },
       {
@@ -497,6 +533,9 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'wait_completed',
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCW',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:05.000Z'),
+        },
         createdAt: new Date(),
       },
       {
@@ -504,7 +543,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
-        eventData: { result: resultC },
+        eventData: {
+          stepName: 'stepC',
+          result: resultC,
+        },
         createdAt: new Date(),
       },
     ]);
@@ -567,7 +609,9 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_started',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          stepName: 'stepA',
+        },
         createdAt: new Date(),
       },
       {
@@ -575,7 +619,9 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_started',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: {},
+        eventData: {
+          stepName: 'stepB',
+        },
         createdAt: new Date(),
       },
       {
@@ -583,7 +629,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: resultA },
+        eventData: {
+          stepName: 'stepA',
+          result: resultA,
+        },
         createdAt: new Date(),
       },
       {
@@ -591,7 +640,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { result: resultB },
+        eventData: {
+          stepName: 'stepB',
+          result: resultB,
+        },
         createdAt: new Date(),
       },
     ]);
