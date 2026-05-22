@@ -48,10 +48,12 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
   );
 }
 
+export type DiscoveredEntryCollection = string[] | Set<string>;
+
 export interface DiscoveredEntries {
-  discoveredSteps: string[];
-  discoveredWorkflows: string[];
-  discoveredSerdeFiles: string[];
+  discoveredSteps: DiscoveredEntryCollection;
+  discoveredWorkflows: DiscoveredEntryCollection;
+  discoveredSerdeFiles: DiscoveredEntryCollection;
 }
 
 /**
@@ -196,14 +198,8 @@ export abstract class BaseBuilder {
    * This cache is invalidated automatically when the inputs array reference changes
    * (e.g., when files are added/removed during watch mode).
    */
-  private discoveredEntries: WeakMap<
-    string[],
-    {
-      discoveredSteps: string[];
-      discoveredWorkflows: string[];
-      discoveredSerdeFiles: string[];
-    }
-  > = new WeakMap();
+  private discoveredEntries: WeakMap<string[], DiscoveredEntries> =
+    new WeakMap();
 
   /**
    * Pseudo-packages that should not be checked for workflow patterns.
@@ -323,14 +319,10 @@ export abstract class BaseBuilder {
     if (previousResult) {
       return previousResult;
     }
-    const state: {
-      discoveredSteps: string[];
-      discoveredWorkflows: string[];
-      discoveredSerdeFiles: string[];
-    } = {
-      discoveredSteps: [],
-      discoveredWorkflows: [],
-      discoveredSerdeFiles: [],
+    const state: DiscoveredEntries = {
+      discoveredSteps: new Set(),
+      discoveredWorkflows: new Set(),
+      discoveredSerdeFiles: new Set(),
     };
 
     const discoverStart = Date.now();
@@ -493,6 +485,7 @@ export abstract class BaseBuilder {
    * Steps have full Node.js runtime access and handle side effects, API calls, etc.
    *
    * @param externalizeNonSteps - If true, only bundles step entry points and externalizes other code
+   * @param bundleTransitiveLocalStepDependencies - If true, also bundles project-local files imported by step entries for direct runtime loading
    * @returns Build context (for watch mode) and the collected workflow manifest
    */
   protected async createStepsBundle({
@@ -500,6 +493,7 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     externalizeNonSteps,
+    bundleTransitiveLocalStepDependencies,
     rewriteTsExtensions,
     tsconfigPath,
     discoveredEntries,
@@ -509,6 +503,7 @@ export abstract class BaseBuilder {
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
+    bundleTransitiveLocalStepDependencies?: boolean;
     rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
@@ -678,6 +673,7 @@ export abstract class BaseBuilder {
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
           workflowManifest,
+          bundleTransitiveLocalStepDependencies,
           rewriteTsExtensions,
           sideEffectEntries: normalizedSideEffectEntries,
         }),
@@ -1135,7 +1131,7 @@ export const POST = handler;`;
     const inputFilesNormalized = new Set(
       inputFiles.map((f) => f.replace(/\\/g, '/'))
     );
-    const serdeOnlyFiles = discoveredSerdeFiles.filter(
+    const serdeOnlyFiles = [...discoveredSerdeFiles].filter(
       (f) => !inputFilesNormalized.has(f)
     );
 
