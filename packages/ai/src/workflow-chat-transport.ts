@@ -11,6 +11,75 @@ import {
 import { getErrorMessage } from './get-error-message.js';
 import { iteratorToStream, streamToIterator } from './stream-iterator.js';
 
+/**
+ * Tracks `*-start` chunks the client has accepted so we can drop deltas/ends
+ * that refer to a part whose start was emitted before the resume cursor.
+ *
+ * AI SDK's UI stream processor throws on `text-delta`/`reasoning-delta`/
+ * `tool-input-delta` (and the matching `*-end`) when the start chunk for that
+ * id was never observed. A negative `startIndex` on a flat chunk stream can
+ * easily land mid-part, so without this guard the client crashes on resume.
+ *
+ * This is a best-effort safety net — it preserves only the parts that the
+ * resumed window includes a `*-start` for. Server-side rewinding to a step
+ * boundary is the proper fix when you want the full message preserved.
+ */
+type OrphanFilter = {
+  shouldDrop: (chunk: UIMessageChunk) => boolean;
+};
+
+function createOrphanFilter(): OrphanFilter {
+  const seenStartedIds = new Set<string>();
+  const seenStartedToolCallIds = new Set<string>();
+  let warnedOnce = false;
+
+  function warnOnce(orphanKind: string, orphanRef: string) {
+    if (warnedOnce) return;
+    warnedOnce = true;
+    console.warn(
+      '[WorkflowChatTransport] Dropping orphan UI chunk ' +
+        `(${orphanKind} for id "${orphanRef}") on resume — ` +
+        'the resume position landed mid-part. The dropped chunk(s) ' +
+        "reference a part whose start chunk wasn't in the resumed " +
+        'window. To preserve the full message, configure your ' +
+        'stream endpoint to rewind to a step boundary before ' +
+        'returning the readable. See: ' +
+        'https://workflow.dev/docs/ai/resumable-streams#mid-part-resumes'
+    );
+  }
+
+  function shouldDrop(chunk: UIMessageChunk): boolean {
+    switch (chunk.type) {
+      case 'text-start':
+      case 'reasoning-start':
+        seenStartedIds.add(chunk.id);
+        return false;
+      case 'tool-input-start':
+        seenStartedToolCallIds.add(chunk.toolCallId);
+        return false;
+      case 'text-delta':
+      case 'text-end':
+      case 'reasoning-delta':
+      case 'reasoning-end':
+        if (seenStartedIds.has(chunk.id)) return false;
+        warnOnce(chunk.type, chunk.id);
+        return true;
+      case 'tool-input-delta':
+      case 'tool-input-available':
+      case 'tool-input-error':
+      case 'tool-output-available':
+      case 'tool-output-error':
+        if (seenStartedToolCallIds.has(chunk.toolCallId)) return false;
+        warnOnce(chunk.type, chunk.toolCallId);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  return { shouldDrop };
+}
+
 export interface SendMessagesOptions<UI_MESSAGE extends UIMessage> {
   trigger: 'submit-message' | 'regenerate-message';
   chatId: string;
@@ -333,6 +402,17 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     // the incremental chunkIndex which would be wrong.
     let replayFromStart = false;
 
+    // When resuming with a negative startIndex, the resolved chunk can land in
+    // the middle of a `*-start` / `*-delta` / `*-end` sequence, which crashes
+    // the AI SDK UI stream processor. The orphan filter drops chunks whose
+    // start chunk was emitted before the resume window. Only activated for
+    // negative resumes — non-negative startIndex is the caller's explicit
+    // choice and we trust them. See: https://github.com/vercel/workflow/issues/1835
+    const orphanFilter =
+      useExplicitStartIndex && explicitStartIndex < 0
+        ? createOrphanFilter()
+        : null;
+
     while (!gotFinish) {
       const startIndex = useExplicitStartIndex
         ? explicitStartIndex
@@ -390,6 +470,8 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
           }
 
           chunkIndex++;
+
+          if (orphanFilter?.shouldDrop(chunk.value)) continue;
 
           yield chunk.value;
 
