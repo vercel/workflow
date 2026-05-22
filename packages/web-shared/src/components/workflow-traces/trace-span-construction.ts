@@ -296,7 +296,7 @@ export function hookToSpan(hookEvents: Event[], maxEndTime: Date): Span | null {
 
   return {
     spanId: String(hook.hookId),
-    name: String(hook.hookId),
+    name: hook.token ?? String(hook.hookId),
     kind: 1, // INTERNAL span kind
     resource: 'hook',
     library: WORKFLOW_LIBRARY,
