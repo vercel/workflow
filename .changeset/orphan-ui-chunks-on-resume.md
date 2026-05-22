@@ -2,4 +2,4 @@
 "@workflow/ai": patch
 ---
 
-`WorkflowChatTransport` now drops orphan UI chunks (deltas/ends with no matching `*-start` in the resumed window) when reconnecting with a negative `initialStartIndex`, instead of crashing the AI SDK client. A one-time warning links to docs on rewinding to a step boundary server-side.
+`WorkflowChatTransport` now drops orphan UI chunks (deltas/ends with no matching `*-start` in the resumed window) when reconnecting with an `initialStartIndex` not matching a UI chunk boundary, instead of throwing.
