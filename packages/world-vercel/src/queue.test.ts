@@ -353,7 +353,61 @@ describe('createQueue', () => {
       queue.createQueueHandler('__wkf_workflow_', async () => undefined);
 
       expect(mockHandleCallback).toHaveBeenCalledTimes(1);
-      expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function), {
+        retry: expect.any(Function),
+      });
+    });
+
+    it('should ask VQS to retry handler errors with bounded backoff', () => {
+      mockHandleCallback.mockReturnValue(async () => new Response('ok'));
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+
+      try {
+        const queue = createQueue();
+        queue.createQueueHandler('__wkf_workflow_', async () => undefined);
+
+        const options = mockHandleCallback.mock.calls[0][1];
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 1,
+          })
+        ).toEqual({ afterSeconds: 1 });
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 2,
+          })
+        ).toEqual({ afterSeconds: 2 });
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 4,
+          })
+        ).toEqual({ afterSeconds: 8 });
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 8,
+          })
+        ).toEqual({ afterSeconds: 60 });
+
+        randomSpy.mockReturnValue(0.999);
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 4,
+          })
+        ).toEqual({ afterSeconds: 6 });
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 8,
+          })
+        ).toEqual({ afterSeconds: 45 });
+      } finally {
+        randomSpy.mockRestore();
+      }
     });
 
     it('should send new message with delaySeconds when handler returns timeoutSeconds', async () => {

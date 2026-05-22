@@ -27,6 +27,15 @@ const workflowConfig = {}
 export default withWorkflow(nextConfig, workflowConfig); // [!code highlight]
 ```
 
+<Callout type="warn">
+If a package in `serverExternalPackages` contains workflow code (`"use step"`,
+`"use workflow"`, or serialization classes), `withWorkflow()` automatically
+removes it from `serverExternalPackages` for the current build and prints a
+warning. This ensures the package still gets transformed by the Workflow
+compiler. Remove that package from `serverExternalPackages` in your
+`next.config` to silence the warning.
+</Callout>
+
 ### Monorepos and Workspace Imports
 
 By default, Next.js detects the correct workspace root automatically. If your Next.js app lives in a subdirectory such as `apps/web` and workspace resolution is not working correctly, you can set `outputFileTracingRoot` as a workaround:
@@ -77,6 +86,7 @@ The `workflows.local` options only affect local development. When deployed to Ve
 </Callout>
 
 ## Exporting a Function
+
 
 If you are exporting a function in your `next.config` you will need to ensure you call the function returned from `withWorkflow`.
 

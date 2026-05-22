@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { SvelteKitBuilder } from './builder.js';
+import { stripWorkflowQueueTriggers } from './vc-config.js';
 
 const builder = new SvelteKitBuilder();
 
@@ -47,21 +48,24 @@ process.on('beforeExit', () => {
       },
     },
   ]) {
+    const funcDir = path.dirname(file);
+    if (!fs.existsSync(funcDir)) {
+      continue;
+    }
+
+    const sourceFuncDir = path.join(
+      funcDir.replace(/\.func$/, ''),
+      '__data.json.func'
+    );
+
     // Un-symlink these as they can't be shared due to different
     // experimental triggers config
-    const toCopy = fs.readdirSync(path.dirname(file));
-    fs.removeSync(path.dirname(file));
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const toCopy = fs.readdirSync(funcDir);
+    fs.removeSync(funcDir);
+    fs.mkdirSync(funcDir, { recursive: true });
 
     for (const item of toCopy) {
-      fs.copySync(
-        path.join(
-          path.dirname(file).replace(/\.func$/, ''),
-          '__data.json.func',
-          item
-        ),
-        path.join(path.dirname(file), item)
-      );
+      fs.copySync(path.join(sourceFuncDir, item), path.join(funcDir, item));
     }
 
     // Update .vc-config.json with the new experimental triggers config
@@ -73,6 +77,10 @@ process.on('beforeExit', () => {
         ...config,
       })
     );
+
+    // The source function may be a shared catchall. It must not keep stale
+    // workflow queue triggers after the dedicated function is copied out.
+    stripWorkflowQueueTriggers(path.join(sourceFuncDir, '.vc-config.json'));
   }
 });
 

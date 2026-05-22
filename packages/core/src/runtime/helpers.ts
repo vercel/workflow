@@ -143,6 +143,56 @@ const HEALTH_CHECK_POLL_INTERVAL = 100;
 // (which doesn't work across processes)
 const HEALTH_CHECK_READ_TIMEOUT = 500;
 
+class HealthCheckTimeoutError extends Error {
+  constructor(timeout: number) {
+    super(`Health check timed out after ${timeout}ms`);
+  }
+}
+
+function getHealthCheckTimeRemaining(startTime: number, timeout: number) {
+  return timeout - (Date.now() - startTime);
+}
+
+async function withHealthCheckTimeout<T>(
+  promise: Promise<T>,
+  startTime: number,
+  timeout: number
+): Promise<T> {
+  const remaining = getHealthCheckTimeRemaining(startTime, timeout);
+  if (remaining <= 0) {
+    throw new HealthCheckTimeoutError(timeout);
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new HealthCheckTimeoutError(timeout)),
+          remaining
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForNextHealthCheckPoll(startTime: number, timeout: number) {
+  const remaining = getHealthCheckTimeRemaining(startTime, timeout);
+  if (remaining <= 0) {
+    return;
+  }
+  await wait(Math.min(HEALTH_CHECK_POLL_INTERVAL, remaining));
+}
+
 /**
  * Read chunks from a stream with a timeout per read operation.
  * Returns { chunks, timedOut } where timedOut indicates if a read timed out.
@@ -223,6 +273,32 @@ function parseHealthCheckResponse(
   return parsed;
 }
 
+async function readHealthCheckResponse(
+  world: World,
+  streamName: string,
+  startTime: number,
+  timeout: number
+): Promise<{ healthy: boolean } | null> {
+  const stream = await withHealthCheckTimeout(
+    world.readFromStream(streamName),
+    startTime,
+    timeout
+  );
+  const reader = stream.getReader();
+  const readTimeout = Math.min(
+    HEALTH_CHECK_READ_TIMEOUT,
+    Math.max(1, getHealthCheckTimeRemaining(startTime, timeout))
+  );
+  const { chunks, timedOut } = await readStreamWithTimeout(reader, readTimeout);
+
+  if (timedOut) {
+    await reader.cancel().catch(() => {});
+    return null;
+  }
+
+  return parseHealthCheckResponse(chunks);
+}
+
 export async function healthCheck(
   world: World,
   endpoint: HealthCheckEndpoint,
@@ -240,54 +316,41 @@ export async function healthCheck(
   const startTime = Date.now();
 
   try {
-    await world.queue(
-      queueName,
-      { __healthCheck: true, correlationId },
-      {
-        // Use JSON transport so the health check works against both
-        // old (JSON-only) and new (dual) deployments.
-        specVersion: SPEC_VERSION_LEGACY,
-        deploymentId: options?.deploymentId,
-      }
+    await withHealthCheckTimeout(
+      world.queue(
+        queueName,
+        { __healthCheck: true, correlationId },
+        {
+          // Use JSON transport so the health check works against both
+          // old (JSON-only) and new (dual) deployments.
+          specVersion: SPEC_VERSION_LEGACY,
+          deploymentId: options?.deploymentId,
+        }
+      ),
+      startTime,
+      timeout
     );
 
-    while (Date.now() - startTime < timeout) {
+    while (getHealthCheckTimeRemaining(startTime, timeout) > 0) {
       try {
-        const stream = await world.readFromStream(streamName);
-        const reader = stream.getReader();
-        const { chunks, timedOut } = await readStreamWithTimeout(
-          reader,
-          HEALTH_CHECK_READ_TIMEOUT
+        const response = await readHealthCheckResponse(
+          world,
+          streamName,
+          startTime,
+          timeout
         );
-
-        if (timedOut) {
-          try {
-            reader.cancel();
-          } catch {
-            // Ignore cancel errors
-          }
-          await new Promise((resolve) =>
-            setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-          );
-          continue;
-        }
-
-        const response = parseHealthCheckResponse(chunks);
         if (response) {
           return {
             ...response,
             latencyMs: Date.now() - startTime,
           };
         }
-
-        await new Promise((resolve) =>
-          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-        );
-      } catch {
-        await new Promise((resolve) =>
-          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-        );
+      } catch (error) {
+        if (error instanceof HealthCheckTimeoutError) {
+          throw error;
+        }
       }
+      await waitForNextHealthCheckPoll(startTime, timeout);
     }
     return {
       healthy: false,
@@ -301,19 +364,27 @@ export async function healthCheck(
   }
 }
 
+export interface LoadedWorkflowRunEvents {
+  events: Event[];
+  cursor: string | null;
+}
+
 /**
- * Loads all workflow run events by iterating through all pages of paginated results.
- * This ensures that *all* events are loaded into memory before running the workflow.
+ * Loads workflow run events by iterating through all pages of paginated results.
+ * When a cursor is provided, only events after that cursor are loaded.
  * Events must be in chronological order (ascending) for proper workflow replay.
  */
-export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
+export async function getWorkflowRunEvents(
+  runId: string,
+  cursor?: string
+): Promise<LoadedWorkflowRunEvents> {
   return trace('workflow.loadEvents', async (span) => {
     span?.setAttributes({
       ...Attribute.WorkflowRunId(runId),
     });
 
     const allEvents: Event[] = [];
-    let cursor: string | null = null;
+    let nextCursor: string | null = cursor ?? null;
     let hasMore = true;
     let pagesLoaded = 0;
 
@@ -328,13 +399,13 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
         runId,
         pagination: {
           sortOrder: 'asc', // Required: events must be in chronological order for replay
-          cursor: cursor ?? undefined,
+          cursor: nextCursor ?? undefined,
         },
       });
 
       allEvents.push(...response.data);
       hasMore = response.hasMore;
-      cursor = response.cursor;
+      nextCursor = response.cursor;
       pagesLoaded++;
 
       runtimeLogger.debug('Loaded event page', {
@@ -359,8 +430,18 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
     });
 
-    return allEvents;
+    return { events: allEvents, cursor: nextCursor };
   });
+}
+
+/**
+ * Loads all workflow run events by iterating through all pages of paginated results.
+ * This ensures that *all* events are loaded into memory before running the workflow.
+ * Events must be in chronological order (ascending) for proper workflow replay.
+ */
+export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
+  const { events } = await getWorkflowRunEvents(runId);
+  return events;
 }
 
 /**
@@ -389,6 +470,12 @@ export function withHealthCheck(
       if (req.method === 'OPTIONS') {
         return new Response(null, {
           status: 204,
+          headers: HEALTH_CHECK_CORS_HEADERS,
+        });
+      }
+      if (req.method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
           headers: HEALTH_CHECK_CORS_HEADERS,
         });
       }

@@ -226,6 +226,32 @@ describe('writeToStreamMulti pagination', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('adds an abort signal to stream writes', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
+
+    const streamer = await getStreamer();
+
+    await streamer.writeToStream('s', 'run-1', new Uint8Array([1]));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('adds an abort signal to stream closes', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
+
+    const streamer = await getStreamer();
+
+    await streamer.closeStream('s', 'run-1');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it('paginates into multiple requests when chunks > MAX_CHUNKS_PER_REQUEST', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
