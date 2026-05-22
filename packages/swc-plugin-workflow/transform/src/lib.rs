@@ -364,6 +364,15 @@ pub struct StepTransform {
     // Track object properties that need to be converted to initializer calls in workflow mode
     // (parent_var_name, prop_name, step_id)
     object_property_workflow_conversions: Vec<(String, String, String)>,
+    // Map from a step's bare name (e.g. "_anonymousStep0") to the full
+    // namespaced step name used to compute its registered step ID
+    // (e.g. "myWorkflow/_anonymousStep0"). Steps not present in this map
+    // use their bare name (which produces the same ID as the registered
+    // one). Populated when a nested step is hoisted out of a workflow
+    // function so that the `__internal_workflows` manifest comment matches
+    // the actual runtime step ID used by both the step-mode registration
+    // and the workflow-mode `WORKFLOW_USE_STEP` proxy lookup.
+    nested_step_full_names: HashMap<String, String>,
     // Current context: variable name being processed when visiting object properties
     #[allow(dead_code)]
     current_var_context: Option<String>,
@@ -1394,13 +1403,12 @@ impl StepTransform {
                                 }
                                 TransformMode::Workflow => {
                                     // Include parent workflow name in step ID
-                                    let step_fn_name = if let Some(parent) =
-                                        &self.current_workflow_function_name
-                                    {
-                                        format!("{}/{}", parent, fn_name)
-                                    } else {
-                                        fn_name.clone()
-                                    };
+                                    let parent_workflow = self
+                                        .current_workflow_function_name
+                                        .clone()
+                                        .unwrap_or_default();
+                                    let step_fn_name =
+                                        self.record_nested_step_name(&fn_name, &parent_workflow);
                                     let step_id = self.create_id(
                                         Some(&step_fn_name),
                                         fn_decl.function.span,
@@ -1661,6 +1669,7 @@ impl StepTransform {
             nested_step_functions: Vec::new(),
             anonymous_fn_counter: 0,
             object_property_workflow_conversions: Vec::new(),
+            nested_step_full_names: HashMap::new(),
             current_var_context: None,
             module_imports: HashSet::new(),
             current_class_name: None,
@@ -1685,6 +1694,28 @@ impl StepTransform {
 
     // Create an identifier by combining module path and function name or line number
     // with appropriate prefix based on function type
+    /// Compute the namespaced step name for a nested step extracted from a
+    /// workflow function, and record the mapping so that the
+    /// `__internal_workflows` manifest emits the same step ID that is
+    /// registered at runtime in step mode and looked up by the
+    /// `WORKFLOW_USE_STEP` proxy in workflow mode.
+    ///
+    /// `fn_name` is the bare step name (e.g. `_anonymousStep0`).
+    /// `parent_workflow_name` is the enclosing workflow function's name
+    /// (empty if there is no enclosing workflow). When `parent_workflow_name`
+    /// is non-empty, the returned name is `parent/fn_name`; otherwise it is
+    /// just `fn_name`. The mapping is recorded only when a prefix is added.
+    fn record_nested_step_name(&mut self, fn_name: &str, parent_workflow_name: &str) -> String {
+        if parent_workflow_name.is_empty() {
+            fn_name.to_string()
+        } else {
+            let full = format!("{}/{}", parent_workflow_name, fn_name);
+            self.nested_step_full_names
+                .insert(fn_name.to_string(), full.clone());
+            full
+        }
+    }
+
     fn create_id(
         &self,
         fn_name: Option<&str>,
@@ -4525,7 +4556,18 @@ impl StepTransform {
                 .step_function_names
                 .iter()
                 .map(|fn_name| {
-                    let step_id = self.create_id(Some(fn_name), DUMMY_SP, false);
+                    // If this step was hoisted out of a workflow function it
+                    // is registered (and looked up) under a namespaced name
+                    // like "myWorkflow/_anonymousStep0". The manifest must
+                    // report the same step ID so downstream tooling (e.g.
+                    // builders consuming `__internal_workflows`) sees the
+                    // correct ID.
+                    let id_name = self
+                        .nested_step_full_names
+                        .get(fn_name)
+                        .map(|s| s.as_str())
+                        .unwrap_or(fn_name.as_str());
+                    let step_id = self.create_id(Some(id_name), DUMMY_SP, false);
                     format!("\"{}\":{{\"stepId\":\"{}\"}}", fn_name, step_id)
                 })
                 .collect();
@@ -5017,11 +5059,8 @@ impl VisitMut for StepTransform {
                         current_insert_pos += 1;
 
                         // Create a registration call or stepId assignment with parent workflow name in the step ID
-                        let step_fn_name = if parent_workflow_name.is_empty() {
-                            fn_name.clone()
-                        } else {
-                            format!("{}/{}", parent_workflow_name, fn_name)
-                        };
+                        let step_fn_name =
+                            self.record_nested_step_name(&fn_name, &parent_workflow_name);
                         let step_id = self.create_id(Some(&step_fn_name), span, false);
 
                         if self.mode == TransformMode::Client {
@@ -5630,6 +5669,14 @@ impl VisitMut for StepTransform {
                 }
 
                 // Note: workflowId assignments are now handled in visit_mut_module_items
+
+                // Run dead-code elimination after nested step functions have
+                // been hoisted to the module top level. Running DCE earlier
+                // (e.g. inside `visit_mut_module_items`) would incorrectly
+                // strip imports referenced only by hoisted step bodies — such
+                // as a step nested inside a workflow function that references
+                // a module-level import.
+                self.remove_dead_code(&mut module.body);
 
                 // Add metadata comment at the beginning of the file
                 let metadata_comment = self.generate_metadata_comment();
@@ -6702,8 +6749,10 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // Perform dead code elimination in workflow and client mode
-        self.remove_dead_code(items);
+        // Note: dead-code elimination runs once at the end of
+        // `visit_mut_program` (after nested step functions have been hoisted
+        // to the module top level). Running it here would prematurely strip
+        // imports referenced only by hoisted step bodies.
     }
 
     fn visit_mut_fn_decl(&mut self, fn_decl: &mut FnDecl) {
@@ -6771,12 +6820,24 @@ impl VisitMut for StepTransform {
 
         // Track parent function name for nested step hoisting
         let old_parent_name = self.current_parent_function_name.clone();
-        self.current_parent_function_name = Some(fn_name);
+        self.current_parent_function_name = Some(fn_name.clone());
+
+        // For non-exported workflow functions, set current_workflow_function_name
+        // so that nested step IDs are namespaced under the workflow name. Exported
+        // workflow functions set this in `visit_mut_export_decl`. Without this,
+        // step IDs registered in step mode (via `visit_mut_object_lit`) would not
+        // match the IDs looked up in workflow mode (via `WORKFLOW_USE_STEP`),
+        // producing a runtime "step not found" failure.
+        let old_workflow_name = self.current_workflow_function_name.clone();
+        if self.workflow_function_names.contains(&fn_name) {
+            self.current_workflow_function_name = Some(fn_name);
+        }
 
         fn_decl.visit_mut_children_with(self);
 
         // Restore parent function name
         self.current_parent_function_name = old_parent_name;
+        self.current_workflow_function_name = old_workflow_name;
     }
 
     fn visit_mut_stmt(&mut self, stmt: &mut Stmt) {
@@ -7482,6 +7543,29 @@ impl VisitMut for StepTransform {
                                     // It's valid - proceed with transformation
                                     self.workflow_function_names.insert(name.clone());
 
+                                    // Visit the function body with workflow context so that
+                                    // any nested steps (including those inside callback
+                                    // object literals) are extracted and namespaced under
+                                    // this workflow's name. This must happen before the
+                                    // body is replaced (in step mode) or the directive is
+                                    // removed (in workflow mode).
+                                    let old_in_workflow = self.in_workflow_function;
+                                    let old_workflow_name =
+                                        self.current_workflow_function_name.clone();
+                                    let old_parent_name = self.current_parent_function_name.clone();
+                                    let old_in_module = self.in_module_level;
+                                    self.in_workflow_function = true;
+                                    self.current_workflow_function_name = Some(name.clone());
+                                    self.current_parent_function_name = Some(name.clone());
+                                    self.in_module_level = false;
+                                    if let Some(body) = &mut fn_expr.function.body {
+                                        body.visit_mut_with(self);
+                                    }
+                                    self.in_workflow_function = old_in_workflow;
+                                    self.current_workflow_function_name = old_workflow_name;
+                                    self.current_parent_function_name = old_parent_name;
+                                    self.in_module_level = old_in_module;
+
                                     match self.mode {
                                         TransformMode::Step => {
                                             // In step mode, transform workflow function with throw error
@@ -7683,13 +7767,14 @@ impl VisitMut for StepTransform {
                                             TransformMode::Workflow => {
                                                 // Replace with proxy reference (not a function call)
                                                 // Include parent workflow name in step ID
-                                                let step_fn_name = if let Some(parent) =
-                                                    &self.current_workflow_function_name
-                                                {
-                                                    format!("{}/{}", parent, name)
-                                                } else {
-                                                    name.clone()
-                                                };
+                                                let parent_workflow = self
+                                                    .current_workflow_function_name
+                                                    .clone()
+                                                    .unwrap_or_default();
+                                                let step_fn_name = self.record_nested_step_name(
+                                                    &name,
+                                                    &parent_workflow,
+                                                );
                                                 let step_id = self.create_id(
                                                     Some(&step_fn_name),
                                                     arrow_expr.span,
@@ -7785,6 +7870,28 @@ impl VisitMut for StepTransform {
                                 } else {
                                     // It's valid - proceed with transformation
                                     self.workflow_function_names.insert(name.clone());
+
+                                    // Visit the arrow body with workflow context so that any
+                                    // nested steps (including those inside callback object
+                                    // literals like `tools: () => ({ exec: async () => {
+                                    // 'use step'; ... } })`) are extracted and namespaced
+                                    // under this workflow's name. This must happen before
+                                    // the body is replaced (in step mode) or the directive
+                                    // is removed (in workflow mode).
+                                    let old_in_workflow = self.in_workflow_function;
+                                    let old_workflow_name =
+                                        self.current_workflow_function_name.clone();
+                                    let old_parent_name = self.current_parent_function_name.clone();
+                                    let old_in_module = self.in_module_level;
+                                    self.in_workflow_function = true;
+                                    self.current_workflow_function_name = Some(name.clone());
+                                    self.current_parent_function_name = Some(name.clone());
+                                    self.in_module_level = false;
+                                    arrow_expr.body.visit_mut_with(self);
+                                    self.in_workflow_function = old_in_workflow;
+                                    self.current_workflow_function_name = old_workflow_name;
+                                    self.current_parent_function_name = old_parent_name;
+                                    self.in_module_level = old_in_module;
 
                                     match self.mode {
                                         TransformMode::Step => {
@@ -8496,16 +8603,12 @@ impl VisitMut for StepTransform {
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
                                 // Use current_parent_function_name to match step mode's ID generation
+                                let parent_workflow = self
+                                    .current_parent_function_name
+                                    .clone()
+                                    .unwrap_or_default();
                                 let step_fn_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}/{}", parent, name)
-                                        } else {
-                                            name.clone()
-                                        }
-                                    } else {
-                                        name.clone()
-                                    };
+                                    self.record_nested_step_name(&name, &parent_workflow);
                                 let step_id = self.create_id(
                                     Some(&step_fn_name),
                                     fn_expr.function.span,
@@ -8618,16 +8721,12 @@ impl VisitMut for StepTransform {
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
                                 // Use current_parent_function_name to match step mode's ID generation
+                                let parent_workflow = self
+                                    .current_parent_function_name
+                                    .clone()
+                                    .unwrap_or_default();
                                 let step_fn_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}/{}", parent, name)
-                                        } else {
-                                            name.clone()
-                                        }
-                                    } else {
-                                        name.clone()
-                                    };
+                                    self.record_nested_step_name(&name, &parent_workflow);
                                 let step_id =
                                     self.create_id(Some(&step_fn_name), arrow_expr.span, false);
 
@@ -9234,13 +9333,15 @@ impl VisitMut for StepTransform {
                                                             &mut arrow_expr.body,
                                                         );
                                                         // Include parent workflow name in step ID
-                                                        let step_fn_name = if let Some(parent) =
-                                                            &self.current_workflow_function_name
-                                                        {
-                                                            format!("{}/{}", parent, generated_name)
-                                                        } else {
-                                                            generated_name.clone()
-                                                        };
+                                                        let parent_workflow = self
+                                                            .current_workflow_function_name
+                                                            .clone()
+                                                            .unwrap_or_default();
+                                                        let step_fn_name = self
+                                                            .record_nested_step_name(
+                                                                &generated_name,
+                                                                &parent_workflow,
+                                                            );
                                                         let step_id = self.create_id(
                                                             Some(&step_fn_name),
                                                             arrow_expr.span,
@@ -9326,13 +9427,15 @@ impl VisitMut for StepTransform {
                                                             &mut fn_expr.function.body,
                                                         );
                                                         // Include parent workflow name in step ID
-                                                        let step_fn_name = if let Some(parent) =
-                                                            &self.current_workflow_function_name
-                                                        {
-                                                            format!("{}/{}", parent, generated_name)
-                                                        } else {
-                                                            generated_name.clone()
-                                                        };
+                                                        let parent_workflow = self
+                                                            .current_workflow_function_name
+                                                            .clone()
+                                                            .unwrap_or_default();
+                                                        let step_fn_name = self
+                                                            .record_nested_step_name(
+                                                                &generated_name,
+                                                                &parent_workflow,
+                                                            );
                                                         let step_id = self.create_id(
                                                             Some(&step_fn_name),
                                                             fn_expr.function.span,
@@ -9425,13 +9528,14 @@ impl VisitMut for StepTransform {
                                                     &mut method_prop.function.body,
                                                 );
                                                 // Include parent workflow name in step ID
-                                                let step_fn_name = if let Some(parent) =
-                                                    &self.current_workflow_function_name
-                                                {
-                                                    format!("{}/{}", parent, generated_name)
-                                                } else {
-                                                    generated_name.clone()
-                                                };
+                                                let parent_workflow = self
+                                                    .current_workflow_function_name
+                                                    .clone()
+                                                    .unwrap_or_default();
+                                                let step_fn_name = self.record_nested_step_name(
+                                                    &generated_name,
+                                                    &parent_workflow,
+                                                );
                                                 let step_id = self.create_id(
                                                     Some(&step_fn_name),
                                                     method_prop.function.span,
