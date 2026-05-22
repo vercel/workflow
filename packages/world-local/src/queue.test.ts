@@ -48,6 +48,8 @@ describe('queue timeout re-enqueue', () => {
 
   afterEach(async () => {
     await localQueue.close();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('createQueueHandler returns 200 with timeoutSeconds in the body', async () => {
@@ -165,5 +167,30 @@ describe('queue timeout re-enqueue', () => {
 
     // setTimeout should NOT have been called for timeoutSeconds: 0
     expect(mockSetTimeout).not.toHaveBeenCalled();
+  });
+
+  it('logs actionable guidance for detached ArrayBuffer proxy failures', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fetchError = new TypeError('fetch failed');
+    (fetchError as TypeError & { cause?: unknown }).cause = new TypeError(
+      'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer'
+    );
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchError));
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining(
+          '[local world] Queue operation failed: detected "Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer"'
+        ),
+        expect.objectContaining({
+          queueName: '__wkf_step_test',
+          runId: 'run_01ABC',
+          stepId: 'step_01ABC',
+          originalError: fetchError,
+        })
+      );
+    });
   });
 });

@@ -5,6 +5,7 @@ import {
   BaseBuilder,
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  replaceGeneratedRouteExport,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 
@@ -119,15 +120,20 @@ export const prerender = false;\n`
     let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
 
     // Normalize request, needed for preserving request through astro
-    stepsRouteContent = stepsRouteContent.replace(
-      /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
+    stepsRouteContent = replaceGeneratedRouteExport(
+      stepsRouteContent,
+      /export\s*\{\s*stepEntrypoint\w*\s+as\s+HEAD\s*,\s*stepEntrypoint\w*\s+as\s+POST\s*\}\s*;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleStepRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return stepEntrypoint(normalRequest);
-}
+};
 
-export const prerender = false;`
+export const HEAD = handleStepRequest;
+export const POST = handleStepRequest;
+
+export const prerender = false;`,
+      'Failed to wrap generated Astro step route'
     );
     await writeFile(stepsRouteFile, stepsRouteContent);
 
@@ -156,15 +162,20 @@ export const prerender = false;`
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
 
     // Normalize request, needed for preserving request through astro
-    workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
+    workflowsRouteContent = replaceGeneratedRouteExport(
+      workflowsRouteContent,
+      /const handler = workflowEntrypoint\(workflowCode\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleWorkflowRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
-}
+};
 
-export const prerender = false;`
+export const HEAD = handleWorkflowRequest;
+export const POST = handleWorkflowRequest;
+
+export const prerender = false;`,
+      'Failed to wrap generated Astro workflow route'
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
