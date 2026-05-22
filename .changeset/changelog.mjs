@@ -66,6 +66,14 @@ function readEnv() {
 const commitLookupCache = new Map();
 const prLookupCache = new Map();
 
+// Defensive error formatter — we don't want a non-Error throw (e.g.
+// `throw null`, or a non-conforming Error from a transport polyfill) to
+// turn a benign GitHub lookup failure into a hard crash inside the catch
+// block itself.
+function formatError(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
 async function githubGraphql(query) {
   const { GITHUB_GRAPHQL_URL, GITHUB_TOKEN } = readEnv();
   if (!GITHUB_TOKEN) {
@@ -77,7 +85,7 @@ async function githubGraphql(query) {
   const res = await fetch(GITHUB_GRAPHQL_URL, {
     method: 'POST',
     headers: {
-      Authorization: `Token ${GITHUB_TOKEN}`,
+      Authorization: `Bearer ${GITHUB_TOKEN}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ query }),
@@ -143,7 +151,7 @@ function lookupCommitPR(repo, commit) {
           return merged[0];
         } catch (err) {
           console.warn(
-            `[changelog] failed to look up associated PR for ${commit}: ${err.message}`,
+            `[changelog] failed to look up associated PR for ${commit}: ${formatError(err)}`,
           );
           return null;
         }
@@ -178,7 +186,7 @@ function lookupPR(repo, prNumber) {
           return data?.repository?.pullRequest ?? null;
         } catch (err) {
           console.warn(
-            `[changelog] failed to look up PR #${prNumber}: ${err.message}`,
+            `[changelog] failed to look up PR #${prNumber}: ${formatError(err)}`,
           );
           return null;
         }
