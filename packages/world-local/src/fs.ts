@@ -359,9 +359,33 @@ export async function readJSON<T>(
 ): Promise<T | null> {
   try {
     const content = await fs.readFile(filePath, 'utf-8');
+    if (content.length === 0) {
+      // An empty file here means a write path produced zero bytes without
+      // the atomic tmp+rename guard, or that a reader caught the file
+      // briefly empty during creation. Surface enough state to pin it down
+      // from CI logs.
+      const stat = await fs.stat(filePath).catch(() => null);
+      throw new Error(
+        `readJSON: empty file at ${filePath} (size=${stat?.size ?? '?'}, mtime=${stat?.mtimeMs ?? '?'})`
+      );
+    }
     return decoder.parse(JSON.parse(content, jsonReviver));
   } catch (error) {
     if ((error as any).code === 'ENOENT') return null;
+    if (error instanceof SyntaxError) {
+      // Attach the file path + size so the SyntaxError isn't anonymous
+      // when it bubbles up to a test. Without this we can't tell which
+      // entity (run / event / hook / etc.) the corruption was on.
+      const stat = await fs.stat(filePath).catch(() => null);
+      const content = await fs.readFile(filePath, 'utf-8').catch(() => null);
+      throw new Error(
+        `readJSON: ${error.message} parsing ${filePath} (size=${stat?.size ?? '?'}, content=${
+          content === null
+            ? '<unreadable>'
+            : JSON.stringify(content.slice(0, 200))
+        })`
+      );
+    }
     throw error;
   }
 }
