@@ -202,7 +202,7 @@ describe('step-level getWritable', () => {
     expect(decoded).toEqual(chunks);
   });
 
-  it('does not push a single pipe state.promise for every call (per-call guards)', async () => {
+  it('registers exactly one pipe per (runId, namespace), regardless of call count', async () => {
     const { contextStorage } = await import('./context-storage.js');
 
     const ctx = makeStepCtx();
@@ -213,10 +213,10 @@ describe('step-level getWritable', () => {
       getWritable<string>();
       getWritable<string>();
       getWritable<string>();
+      // A distinct namespace gets its own pipe.
+      getWritable<string>({ namespace: 'other' });
     });
 
-    // Each call registers its own guard so the step waits for every
-    // caller's writes to flush, even though the underlying pipe is shared.
-    expect(ops).toHaveLength(3);
+    expect(ops).toHaveLength(2);
   });
 });
