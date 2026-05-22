@@ -6,7 +6,7 @@ use swc_core::{
     common::{errors::HANDLER, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
-        visit::{noop_visit_mut_type, VisitMut, VisitMutWith},
+        visit::{noop_visit_mut_type, noop_visit_type, Visit, VisitMut, VisitMutWith, VisitWith},
     },
 };
 
@@ -341,7 +341,14 @@ pub struct StepTransform {
     object_property_step_functions:
         Vec<(String, String, FnExpr, swc_core::common::Span, String, bool)>,
     // Track nested step functions inside workflow functions for hoisting in step mode
-    // (fn_name, fn_expr, span, closure_vars, was_arrow, parent_workflow_name)
+    // (fn_name, fn_expr, span, closure_vars, was_arrow, parent_workflow_name, references_lexical_this)
+    //
+    // `references_lexical_this` is set when the original step function was an
+    // arrow whose body references the enclosing `this`. In step mode such a
+    // step is hoisted as a regular `function` (not an arrow) so the runtime
+    // can rebind `this` via `stepFn.apply(thisVal, args)`. In workflow mode
+    // the proxy reference is wrapped with `.bind(this)` so the step proxy
+    // captures the caller's `this` and forwards it as `thisVal`.
     nested_step_functions: Vec<(
         String,
         FnExpr,
@@ -349,6 +356,7 @@ pub struct StepTransform {
         Vec<String>,
         bool,
         String,
+        bool,
     )>,
     // Counter for anonymous function names
     #[allow(dead_code)]
@@ -1093,7 +1101,15 @@ impl ClosureVariableCollector {
 fn is_global_identifier(name: &str) -> bool {
     matches!(
         name,
-        "console"
+        // `arguments` is a per-function intrinsic binding, not a closure
+        // variable. Treat it as a global so the closure-variable collector
+        // doesn't try to serialize it and the hoisted body doesn't end up
+        // with `const { arguments } = ...` (which is a syntax error in
+        // strict mode anyway). Hoisted `function`-form steps see their own
+        // `arguments` reflecting the positional args passed via
+        // `stepFn.apply(thisVal, args)`.
+        "arguments"
+            | "console"
             | "process"
             | "global"
             | "globalThis"
@@ -1227,6 +1243,99 @@ impl VisitMut for ClosureVariableNormalizer {
     noop_visit_mut_type!();
 }
 
+// Visitor that detects whether an arrow-function body references its lexical
+// `this` (i.e. a `this` whose binding comes from an enclosing function/method).
+//
+// Arrow functions inherit `this` lexically; regular `function` expressions and
+// methods introduce their own `this` binding. So when scanning an arrow body
+// we recurse into nested arrows but stop at non-arrow function/method/class
+// member boundaries (a `this` inside one of those is bound by the inner
+// function, not by the outer scope).
+//
+// Class bodies are also boundaries: `this` inside class property initializers,
+// methods, getters/setters, constructors, and static blocks is bound to the
+// class instance/static class, not to the enclosing arrow. We still traverse
+// `extends` expressions and computed-key expressions because those are
+// evaluated in the surrounding scope.
+struct LexicalThisDetector {
+    found: bool,
+}
+
+impl LexicalThisDetector {
+    fn new() -> Self {
+        Self { found: false }
+    }
+
+    fn detect_in_arrow(arrow: &ArrowExpr) -> bool {
+        let mut detector = Self::new();
+        // Walk both params (default values, destructuring initializers can
+        // contain `this`, e.g. `(x = this.foo) => ...`) and the body.
+        for param in &arrow.params {
+            param.visit_with(&mut detector);
+        }
+        arrow.body.visit_with(&mut detector);
+        detector.found
+    }
+}
+
+impl Visit for LexicalThisDetector {
+    noop_visit_type!();
+
+    fn visit_this_expr(&mut self, _: &ThisExpr) {
+        self.found = true;
+    }
+
+    // Do not descend into nested non-arrow functions / methods / getters /
+    // setters / constructors / class static blocks — those introduce their
+    // own `this` binding.
+    fn visit_function(&mut self, _: &Function) {}
+    fn visit_constructor(&mut self, _: &Constructor) {}
+    fn visit_getter_prop(&mut self, _: &GetterProp) {}
+    fn visit_setter_prop(&mut self, _: &SetterProp) {}
+    fn visit_method_prop(&mut self, _: &MethodProp) {}
+    fn visit_class_method(&mut self, _: &ClassMethod) {}
+    fn visit_private_method(&mut self, _: &PrivateMethod) {}
+    fn visit_static_block(&mut self, _: &StaticBlock) {}
+
+    // Class declarations / expressions: `this` inside a class body member is
+    // bound to the class instance/static class, not the enclosing arrow. We
+    // still need to visit `extends` clauses and computed property keys
+    // because those are evaluated in the outer scope.
+    fn visit_class(&mut self, class: &Class) {
+        if let Some(super_class) = &class.super_class {
+            super_class.visit_with(self);
+        }
+        for member in &class.body {
+            // For each member, only walk the parts evaluated in the outer
+            // scope (computed keys); the value/body is evaluated with `this`
+            // bound to the class.
+            match member {
+                ClassMember::ClassProp(p) => {
+                    if let PropName::Computed(computed) = &p.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::PrivateProp(_) => { /* private name keys are not expressions */ }
+                ClassMember::Method(m) => {
+                    if let PropName::Computed(computed) = &m.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::PrivateMethod(_) => { /* private name keys are not expressions */ }
+                ClassMember::Constructor(c) => {
+                    if let PropName::Computed(computed) = &c.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::StaticBlock(_) => { /* `this` inside is class itself */ }
+                ClassMember::Empty(_)
+                | ClassMember::TsIndexSignature(_)
+                | ClassMember::AutoAccessor(_) => {}
+            }
+        }
+    }
+}
+
 impl StepTransform {
     fn process_stmt(&mut self, stmt: &mut Stmt) {
         match stmt {
@@ -1274,6 +1383,7 @@ impl StepTransform {
                                         self.current_parent_function_name
                                             .clone()
                                             .unwrap_or_default(),
+                                        false, // Regular functions have their own `this`
                                     ));
 
                                     // Keep the original function declaration with the directive stripped,
@@ -3198,6 +3308,503 @@ impl StepTransform {
         })
     }
 
+    // Create an inline step function registration statement (step mode).
+    // Instead of importing registerStepFunction from "workflow/internal/private",
+    // we inline the registration logic as a self-contained IIFE that has zero module dependencies.
+    // This is critical for 3rd-party packages that define step functions but don't depend
+    // on the "workflow" package directly.
+    //
+    // Generates:
+    //   (function(__wf_fn, __wf_id) {
+    //     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"),
+    //         __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    //     __wf_reg.set(__wf_id, __wf_fn);
+    //     __wf_fn.stepId = __wf_id;
+    //   })(fnRef, "step//module_path//fnName");
+    #[allow(dead_code)]
+    fn create_inline_step_registration(&self, step_id: &str, fn_ref: Expr, fn_name: &str) -> Stmt {
+        // Helper to create an identifier
+        let ident =
+            |name: &str| -> Ident { Ident::new(name.into(), DUMMY_SP, SyntaxContext::empty()) };
+
+        // Helper to create an identifier expression
+        let ident_expr = |name: &str| -> Box<Expr> { Box::new(Expr::Ident(ident(name))) };
+
+        // var __wf_sym = Symbol.for("@workflow/core//registeredSteps"),
+        //     __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+        let sym_decl = VarDeclarator {
+            span: DUMMY_SP,
+            name: Pat::Ident(BindingIdent {
+                id: ident("__wf_sym"),
+                type_ann: None,
+            }),
+            init: Some(Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("Symbol"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "for".into(),
+                    }),
+                }))),
+                args: vec![ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(Expr::Lit(Lit::Str(Str {
+                        span: DUMMY_SP,
+                        value: "@workflow/core//registeredSteps".into(),
+                        raw: None,
+                    }))),
+                }],
+                type_args: None,
+            }))),
+            definite: false,
+        };
+
+        let global_sym_access = Box::new(Expr::Member(MemberExpr {
+            span: DUMMY_SP,
+            obj: ident_expr("globalThis"),
+            prop: MemberProp::Computed(ComputedPropName {
+                span: DUMMY_SP,
+                expr: ident_expr("__wf_sym"),
+            }),
+        }));
+
+        let reg_decl = VarDeclarator {
+            span: DUMMY_SP,
+            name: Pat::Ident(BindingIdent {
+                id: ident("__wf_reg"),
+                type_ann: None,
+            }),
+            init: Some(Box::new(Expr::Bin(BinExpr {
+                span: DUMMY_SP,
+                op: BinaryOp::LogicalOr,
+                left: global_sym_access.clone(),
+                right: Box::new(Expr::Paren(ParenExpr {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Assign(AssignExpr {
+                        span: DUMMY_SP,
+                        op: AssignOp::Assign,
+                        left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
+                            span: DUMMY_SP,
+                            obj: ident_expr("globalThis"),
+                            prop: MemberProp::Computed(ComputedPropName {
+                                span: DUMMY_SP,
+                                expr: ident_expr("__wf_sym"),
+                            }),
+                        })),
+                        right: Box::new(Expr::New(NewExpr {
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            callee: ident_expr("Map"),
+                            args: Some(vec![]),
+                            type_args: None,
+                        })),
+                    })),
+                })),
+            }))),
+            definite: false,
+        };
+
+        // __wf_reg.set(__wf_id, __wf_fn);
+        let set_call = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("__wf_reg"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "set".into(),
+                    }),
+                }))),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_id"),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_fn"),
+                    },
+                ],
+                type_args: None,
+            })),
+        });
+
+        // __wf_fn.stepId = __wf_id;
+        let step_id_assignment = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Assign(AssignExpr {
+                span: DUMMY_SP,
+                op: AssignOp::Assign,
+                left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("__wf_fn"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "stepId".into(),
+                    }),
+                })),
+                right: ident_expr("__wf_id"),
+            })),
+        });
+
+        // Object.defineProperty(__wf_fn, "name", { value: "originalName", configurable: true })
+        // This preserves the original function name in stack traces even after bundler minification.
+        let define_name = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("Object"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "defineProperty".into(),
+                    }),
+                }))),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_fn"),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: "name".into(),
+                            raw: None,
+                        }))),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Object(ObjectLit {
+                            span: DUMMY_SP,
+                            props: vec![
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "value".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Str(Str {
+                                        span: DUMMY_SP,
+                                        value: fn_name.into(),
+                                        raw: None,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "configurable".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: true,
+                                    }))),
+                                }))),
+                            ],
+                        })),
+                    },
+                ],
+                type_args: None,
+            })),
+        });
+
+        // The function body: var decls + set + stepId assignment + name preservation
+        let function_body = BlockStmt {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            stmts: vec![
+                Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    kind: VarDeclKind::Var,
+                    declare: false,
+                    decls: vec![sym_decl, reg_decl],
+                }))),
+                set_call,
+                step_id_assignment,
+                define_name,
+            ],
+        };
+
+        // The IIFE: (function(__wf_fn, __wf_id) { ... })(fnRef, "step_id");
+        Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Paren(ParenExpr {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Fn(FnExpr {
+                        ident: None,
+                        function: Box::new(Function {
+                            params: vec![
+                                Param {
+                                    span: DUMMY_SP,
+                                    decorators: vec![],
+                                    pat: Pat::Ident(BindingIdent {
+                                        id: ident("__wf_fn"),
+                                        type_ann: None,
+                                    }),
+                                },
+                                Param {
+                                    span: DUMMY_SP,
+                                    decorators: vec![],
+                                    pat: Pat::Ident(BindingIdent {
+                                        id: ident("__wf_id"),
+                                        type_ann: None,
+                                    }),
+                                },
+                            ],
+                            decorators: vec![],
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            body: Some(function_body),
+                            is_generator: false,
+                            is_async: false,
+                            type_params: None,
+                            return_type: None,
+                        }),
+                    })),
+                }))),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(fn_ref),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: step_id.into(),
+                            raw: None,
+                        }))),
+                    },
+                ],
+                type_args: None,
+            })),
+        })
+    }
+
+    // Create an inline closure variable access expression (step mode).
+    // Instead of importing __private_getClosureVars from "workflow/internal/private",
+    // we inline the access as a self-contained IIFE that reads from the global
+    // AsyncLocalStorage context.
+    //
+    // Generates:
+    //   (function() {
+    //     var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")],
+    //         __wf_store = __wf_ctx && __wf_ctx.getStore();
+    //     if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+    //     return __wf_store.closureVars || {};
+    //   })()
+    #[allow(dead_code)]
+    fn create_inline_get_closure_vars(&self) -> Expr {
+        let ident =
+            |name: &str| -> Ident { Ident::new(name.into(), DUMMY_SP, SyntaxContext::empty()) };
+        let ident_expr = |name: &str| -> Box<Expr> { Box::new(Expr::Ident(ident(name))) };
+
+        // var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")]
+        let ctx_decl = VarDeclarator {
+            span: DUMMY_SP,
+            name: Pat::Ident(BindingIdent {
+                id: ident("__wf_ctx"),
+                type_ann: None,
+            }),
+            init: Some(Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: ident_expr("globalThis"),
+                prop: MemberProp::Computed(ComputedPropName {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Call(CallExpr {
+                        span: DUMMY_SP,
+                        ctxt: SyntaxContext::empty(),
+                        callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                            span: DUMMY_SP,
+                            obj: ident_expr("Symbol"),
+                            prop: MemberProp::Ident(IdentName {
+                                span: DUMMY_SP,
+                                sym: "for".into(),
+                            }),
+                        }))),
+                        args: vec![ExprOrSpread {
+                            spread: None,
+                            expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                span: DUMMY_SP,
+                                value: "WORKFLOW_STEP_CONTEXT_STORAGE".into(),
+                                raw: None,
+                            }))),
+                        }],
+                        type_args: None,
+                    })),
+                }),
+            }))),
+            definite: false,
+        };
+
+        // __wf_store = __wf_ctx && __wf_ctx.getStore()
+        let store_decl = VarDeclarator {
+            span: DUMMY_SP,
+            name: Pat::Ident(BindingIdent {
+                id: ident("__wf_store"),
+                type_ann: None,
+            }),
+            init: Some(Box::new(Expr::Bin(BinExpr {
+                span: DUMMY_SP,
+                op: BinaryOp::LogicalAnd,
+                left: ident_expr("__wf_ctx"),
+                right: Box::new(Expr::Call(CallExpr {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                        span: DUMMY_SP,
+                        obj: ident_expr("__wf_ctx"),
+                        prop: MemberProp::Ident(IdentName {
+                            span: DUMMY_SP,
+                            sym: "getStore".into(),
+                        }),
+                    }))),
+                    args: vec![],
+                    type_args: None,
+                })),
+            }))),
+            definite: false,
+        };
+
+        // if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        // return __wf_store.closureVars || {};
+        let throw_if_missing = Stmt::If(IfStmt {
+            span: DUMMY_SP,
+            test: Box::new(Expr::Unary(UnaryExpr {
+                span: DUMMY_SP,
+                op: UnaryOp::Bang,
+                arg: ident_expr("__wf_store"),
+            })),
+            cons: Box::new(Stmt::Throw(ThrowStmt {
+                span: DUMMY_SP,
+                arg: Box::new(Expr::New(NewExpr {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    callee: ident_expr("Error"),
+                    args: Some(vec![ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: "Closure variables can only be accessed inside a step function"
+                                .into(),
+                            raw: None,
+                        }))),
+                    }]),
+                    type_args: None,
+                })),
+            })),
+            alt: None,
+        });
+
+        let return_stmt = Stmt::Return(ReturnStmt {
+            span: DUMMY_SP,
+            arg: Some(Box::new(Expr::Bin(BinExpr {
+                span: DUMMY_SP,
+                op: BinaryOp::LogicalOr,
+                left: Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("__wf_store"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "closureVars".into(),
+                    }),
+                })),
+                right: Box::new(Expr::Object(ObjectLit {
+                    span: DUMMY_SP,
+                    props: vec![],
+                })),
+            }))),
+        });
+
+        let function_body = BlockStmt {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            stmts: vec![
+                Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    kind: VarDeclKind::Var,
+                    declare: false,
+                    decls: vec![ctx_decl, store_decl],
+                }))),
+                throw_if_missing,
+                return_stmt,
+            ],
+        };
+
+        // (function() { ... })()
+        Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Box::new(Expr::Paren(ParenExpr {
+                span: DUMMY_SP,
+                expr: Box::new(Expr::Fn(FnExpr {
+                    ident: None,
+                    function: Box::new(Function {
+                        params: vec![],
+                        decorators: vec![],
+                        span: DUMMY_SP,
+                        ctxt: SyntaxContext::empty(),
+                        body: Some(function_body),
+                        is_generator: false,
+                        is_async: false,
+                        type_params: None,
+                        return_type: None,
+                    }),
+                })),
+            }))),
+            args: vec![],
+            type_args: None,
+        })
+    }
+
+    // Wrap an expression with `.bind(this)` so the resulting proxy captures
+    // the caller's lexical `this`. Used when the original step was an arrow
+    // function whose body referenced the enclosing function's `this`.
+    fn wrap_with_bind_this(expr: Expr) -> Expr {
+        Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(expr),
+                prop: MemberProp::Ident(IdentName::new("bind".into(), DUMMY_SP)),
+            }))),
+            args: vec![ExprOrSpread {
+                spread: None,
+                expr: Box::new(Expr::This(ThisExpr { span: DUMMY_SP })),
+            }],
+            type_args: None,
+        })
+    }
+
+    // Same as `create_step_proxy_reference` but wrapped with `.bind(this)`
+    // when `bind_this` is true.
+    fn create_step_proxy_reference_maybe_bound(
+        &self,
+        step_id: &str,
+        closure_vars: &[String],
+        bind_this: bool,
+    ) -> Expr {
+        let proxy = self.create_step_proxy_reference(step_id, closure_vars);
+        if bind_this {
+            Self::wrap_with_bind_this(proxy)
+        } else {
+            proxy
+        }
+    }
+
     // Create a proxy reference: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id", closure_fn) (workflow mode)
     fn create_step_proxy_reference(&self, step_id: &str, closure_vars: &[String]) -> Expr {
         let mut args = vec![ExprOrSpread {
@@ -4247,7 +4854,7 @@ impl VisitMut for StepTransform {
                         let needs_closure_import = self
                             .nested_step_functions
                             .iter()
-                            .any(|(_, _, _, closure_vars, _, _)| !closure_vars.is_empty());
+                            .any(|(_, _, _, closure_vars, _, _, _)| !closure_vars.is_empty());
 
                         if needs_register_import || needs_closure_import {
                             imports_to_add.push(self.create_private_imports(
@@ -4292,6 +4899,7 @@ impl VisitMut for StepTransform {
                         closure_vars,
                         was_arrow,
                         parent_workflow_name,
+                        references_lexical_this,
                     ) in nested_functions
                     {
                         // Generate hoisted name including parent workflow function name
@@ -4363,8 +4971,13 @@ impl VisitMut for StepTransform {
                             }
                         }
 
-                        // Create the appropriate hoisted declaration based on original function type
-                        let hoisted_decl = if was_arrow {
+                        // Create the appropriate hoisted declaration based on original function type.
+                        //
+                        // If the original arrow body referenced lexical `this`, we
+                        // hoist as a regular `function` (not an arrow) so that the
+                        // workflow runtime's `stepFn.apply(thisVal, args)` can
+                        // rebind `this` to the value captured at call time.
+                        let hoisted_decl = if was_arrow && !references_lexical_this {
                             // Convert back to arrow function: var name = async () => { ... };
                             let arrow_expr = self.convert_fn_expr_to_arrow(&fn_expr);
                             ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
@@ -5185,23 +5798,18 @@ impl VisitMut for StepTransform {
         self.in_module_level = old_in_module;
     }
 
-    // Add forbidden expression checks
-    fn visit_mut_this_expr(&mut self, expr: &mut ThisExpr) {
-        if self.in_step_function {
-            emit_error(WorkflowErrorKind::ForbiddenExpression {
-                span: expr.span,
-                expr: "this",
-                directive: "use step",
-            });
-        } else if self.in_workflow_function {
-            emit_error(WorkflowErrorKind::ForbiddenExpression {
-                span: expr.span,
-                expr: "this",
-                directive: "use workflow",
-            });
-        }
-    }
-
+    // Forbidden-expression check for `super` inside step/workflow bodies.
+    //
+    // Note: corresponding checks for `this` and `arguments` were removed
+    // because they were dead in practice (the `'use step'` / `'use workflow'`
+    // directives are stripped during the module-level traversal before this
+    // visitor runs over function bodies, so `in_step_function` /
+    // `in_workflow_function` are never observed as `true` here for those
+    // expressions). The existing `step-with-this-arguments-super` fixture
+    // documents that `this`, `arguments`, and `super` are allowed in step
+    // bodies. `super` is left flagged here for now — the same caveat applies
+    // — but the wording in `spec.md` reflects the actual runtime behavior
+    // for the other two.
     fn visit_mut_super(&mut self, sup: &mut Super) {
         if self.in_step_function {
             emit_error(WorkflowErrorKind::ForbiddenExpression {
@@ -5215,24 +5823,6 @@ impl VisitMut for StepTransform {
                 expr: "super",
                 directive: "use workflow",
             });
-        }
-    }
-
-    fn visit_mut_ident(&mut self, ident: &mut Ident) {
-        if ident.sym == *"arguments" {
-            if self.in_step_function {
-                emit_error(WorkflowErrorKind::ForbiddenExpression {
-                    span: ident.span,
-                    expr: "arguments",
-                    directive: "use step",
-                });
-            } else if self.in_workflow_function {
-                emit_error(WorkflowErrorKind::ForbiddenExpression {
-                    span: ident.span,
-                    expr: "arguments",
-                    directive: "use workflow",
-                });
-            }
         }
     }
 
@@ -7004,6 +7594,13 @@ impl VisitMut for StepTransform {
 
                                     // Check if we're inside any function (nested), not just workflow functions
                                     if !self.in_module_level {
+                                        // Detect whether the arrow body references the
+                                        // enclosing function's `this`. If so, we need to
+                                        // hoist as a regular function (so `apply(thisVal,
+                                        // args)` rebinds) and `.bind(this)` the workflow-
+                                        // mode proxy reference.
+                                        let references_lexical_this =
+                                            LexicalThisDetector::detect_in_arrow(arrow_expr);
                                         match self.mode {
                                             TransformMode::Step => {
                                                 // Hoist arrow function to module scope
@@ -7073,6 +7670,7 @@ impl VisitMut for StepTransform {
                                                     self.current_parent_function_name
                                                         .clone()
                                                         .unwrap_or_default(),
+                                                    references_lexical_this,
                                                 ));
 
                                                 // Keep the original arrow with the directive stripped,
@@ -7100,10 +7698,13 @@ impl VisitMut for StepTransform {
 
                                                 // Collect closure variables
                                                 let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
-                                                *init = Box::new(self.create_step_proxy_reference(
-                                                    &step_id,
-                                                    &closure_vars,
-                                                ));
+                                                *init = Box::new(
+                                                    self.create_step_proxy_reference_maybe_bound(
+                                                        &step_id,
+                                                        &closure_vars,
+                                                        references_lexical_this,
+                                                    ),
+                                                );
                                             }
                                             TransformMode::Client => {
                                                 // In client mode for nested step functions, just remove directive
@@ -7883,6 +8484,7 @@ impl VisitMut for StepTransform {
                                     self.current_parent_function_name
                                         .clone()
                                         .unwrap_or_default(),
+                                    false, // Regular functions have their own `this`
                                 ));
 
                                 // Keep the original function with the directive stripped,
@@ -7938,6 +8540,11 @@ impl VisitMut for StepTransform {
                         let name = format!("_anonymousStep{}", self.anonymous_fn_counter);
                         self.anonymous_fn_counter += 1;
                         self.step_function_names.insert(name.clone());
+
+                        // Detect whether the arrow body references the
+                        // enclosing function's `this` (lexical capture).
+                        let references_lexical_this =
+                            LexicalThisDetector::detect_in_arrow(arrow_expr);
 
                         match self.mode {
                             TransformMode::Step => {
@@ -7999,6 +8606,7 @@ impl VisitMut for StepTransform {
                                     self.current_parent_function_name
                                         .clone()
                                         .unwrap_or_default(),
+                                    references_lexical_this,
                                 ));
 
                                 // Keep the original arrow with the directive stripped,
@@ -8029,7 +8637,11 @@ impl VisitMut for StepTransform {
                                         &self.module_imports,
                                         &self.declared_identifiers,
                                     );
-                                *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
+                                *expr = self.create_step_proxy_reference_maybe_bound(
+                                    &step_id,
+                                    &closure_vars,
+                                    references_lexical_this,
+                                );
                                 return; // Don't visit children since we replaced the expr
                             }
                             TransformMode::Client => {
@@ -8524,6 +9136,15 @@ impl VisitMut for StepTransform {
                                                 self.step_function_names
                                                     .insert(generated_name.clone());
 
+                                                // Detect lexical `this` capture so we
+                                                // can hoist as a regular function (step
+                                                // mode) and `.bind(this)` the proxy
+                                                // (workflow mode).
+                                                let references_lexical_this =
+                                                    LexicalThisDetector::detect_in_arrow(
+                                                        arrow_expr,
+                                                    );
+
                                                 match self.mode {
                                                     TransformMode::Step => {
                                                         // Hoist to module scope
@@ -8599,6 +9220,7 @@ impl VisitMut for StepTransform {
                                                             self.current_workflow_function_name
                                                                 .clone()
                                                                 .unwrap_or_default(),
+                                                            references_lexical_this,
                                                         ));
 
                                                         // Keep the original arrow with the directive stripped
@@ -8628,9 +9250,10 @@ impl VisitMut for StepTransform {
                                                         // Collect closure variables
                                                         let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
                                                         *kv_prop.value = self
-                                                            .create_step_proxy_reference(
+                                                            .create_step_proxy_reference_maybe_bound(
                                                                 &step_id,
                                                                 &closure_vars,
+                                                                references_lexical_this,
                                                             );
                                                     }
                                                     TransformMode::Client => {
@@ -8689,6 +9312,7 @@ impl VisitMut for StepTransform {
                                                             self.current_workflow_function_name
                                                                 .clone()
                                                                 .unwrap_or_default(),
+                                                            false, // Regular functions have their own `this`
                                                         ));
 
                                                         // Keep the original function with the directive stripped
@@ -8787,6 +9411,7 @@ impl VisitMut for StepTransform {
                                                     self.current_workflow_function_name
                                                         .clone()
                                                         .unwrap_or_default(),
+                                                    false, // Methods have their own `this`
                                                 ));
 
                                                 // Keep the original method with the directive stripped

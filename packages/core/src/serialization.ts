@@ -643,6 +643,8 @@ export interface SerializableSpecial {
   StepFunction: {
     stepId: string;
     closureVars?: Record<string, any>;
+    boundThis?: unknown;
+    boundArgs?: unknown[];
   };
   URL: string;
   URLSearchParams: string;
@@ -816,14 +818,35 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
 
       // Check if the step function has closure variables
       const closureVarsFn = (value as any).__closureVarsFn;
-      if (closureVarsFn && typeof closureVarsFn === 'function') {
-        // Invoke the closure variables function and serialize along with stepId
-        const closureVars = closureVarsFn();
-        return { stepId, closureVars };
+      const closureVars =
+        closureVarsFn && typeof closureVarsFn === 'function'
+          ? closureVarsFn()
+          : undefined;
+
+      // `__boundThis` / `__boundArgs` are marker properties added by the
+      // step proxy's overridden `.bind` (see step.ts) to record the
+      // bound receiver and any prefilled arguments. Use `in` for
+      // `__boundThis` so we round-trip even when the bound `this` is
+      // `undefined`/`null`. `__boundArgs` is only set when the user
+      // actually supplied prefilled args, so a missing property means
+      // "no prefilled args".
+      const hasBoundThis = '__boundThis' in (value as any);
+      const boundThis = hasBoundThis ? (value as any).__boundThis : undefined;
+      const boundArgs = (value as any).__boundArgs as unknown[] | undefined;
+
+      const payload: {
+        stepId: string;
+        closureVars?: Record<string, any>;
+        boundThis?: unknown;
+        boundArgs?: unknown[];
+      } = { stepId };
+      if (closureVars !== undefined) payload.closureVars = closureVars;
+      if (hasBoundThis) payload.boundThis = boundThis;
+      if (Array.isArray(boundArgs) && boundArgs.length > 0) {
+        payload.boundArgs = boundArgs;
       }
 
-      // No closure variables - return object with just stepId
-      return { stepId };
+      return payload;
     },
     URL: (value) => value instanceof global.URL && value.href,
     URLSearchParams: (value) => {
@@ -1313,11 +1336,20 @@ export function getWorkflowRevivers(
         );
       }
 
-      if (closureVars) {
-        // For step functions with closure variables, create a wrapper that provides them
-        return useStep(stepId, () => closureVars);
+      const proxy = closureVars
+        ? useStep(stepId, () => closureVars)
+        : useStep(stepId);
+
+      // If the serialized payload includes `boundThis` (and optionally
+      // `boundArgs`), re-bind the freshly-created proxy so a step proxy
+      // that was constructed with `.bind(this, …)` in the workflow
+      // bundle continues to carry that receiver and any prefilled
+      // arguments after being deserialized in another bundle.
+      if ('boundThis' in value) {
+        const boundArgs = Array.isArray(value.boundArgs) ? value.boundArgs : [];
+        return (proxy as any).bind(value.boundThis, ...boundArgs);
       }
-      return useStep(stepId);
+      return proxy;
     },
     Request: (value) => {
       Object.setPrototypeOf(value, global.Request.prototype);
@@ -1391,10 +1423,29 @@ function getStepRevivers(
     ...getCommonRevivers(global),
 
     // StepFunction reviver for step context - returns raw step function
-    // with closure variable support via AsyncLocalStorage
+    // with closure variable support via AsyncLocalStorage.
+    //
+    // Handles four independent flags from the serialized payload:
+    //   - `closureVars`: invoke the body inside an AsyncLocalStorage frame
+    //     so the SWC-emitted `WORKFLOW_STEP_CONTEXT_STORAGE` IIFE in the
+    //     hoisted body can pull the closure variables back out.
+    //   - `boundThis`:   a `this` value captured by
+    //     `useStep(...).bind(this)` in the workflow bundle (lexical-`this`
+    //     arrow steps). The wrapper invokes the body via
+    //     `stepFn.apply(boundThis, args)` so the body sees the same
+    //     `this` it would have had in the workflow bundle. Property
+    //     presence — not truthiness — is significant because
+    //     `bind(null)` and `bind(undefined)` are both legal and should
+    //     round-trip faithfully.
+    //   - `boundArgs`:   prefilled args from
+    //     `useStep(...).bind(thisArg, x, y)`. Prepended to the call args
+    //     so partial application survives serialization.
     StepFunction: (value) => {
       const stepId = value.stepId;
       const closureVars = value.closureVars;
+      const hasBoundThis = 'boundThis' in value;
+      const boundThis = hasBoundThis ? value.boundThis : undefined;
+      const boundArgs = Array.isArray(value.boundArgs) ? value.boundArgs : [];
 
       const stepFn = getStepFunction(stepId);
       if (!stepFn) {
@@ -1403,47 +1454,47 @@ function getStepRevivers(
         );
       }
 
-      // If closure variables were serialized, return a wrapper function
-      // that sets up AsyncLocalStorage context when invoked
-      if (closureVars) {
-        const wrappedStepFn = ((...args: any[]) => {
-          // Get the current context from AsyncLocalStorage
-          const currentContext = contextStorage.getStore();
+      // Fast path: nothing to wrap.
+      if (!closureVars && !hasBoundThis && boundArgs.length === 0) {
+        return stepFn;
+      }
 
+      const wrappedStepFn = function (this: unknown, ...args: any[]) {
+        const callThis = hasBoundThis ? boundThis : this;
+        const callArgs = boundArgs.length > 0 ? [...boundArgs, ...args] : args;
+        if (closureVars) {
+          const currentContext = contextStorage.getStore();
           if (!currentContext) {
             throw new Error(
               'Cannot call step function with closure variables outside step context'
             );
           }
-
-          // Create a new context with the closure variables merged in
           const newContext = {
             ...currentContext,
             closureVars,
           };
-
-          // Run the step function with the new context that includes closure vars
-          return contextStorage.run(newContext, () => stepFn(...args));
-        }) as any;
-
-        // Copy properties from original step function
-        Object.defineProperty(wrappedStepFn, 'name', {
-          value: stepFn.name,
-        });
-        Object.defineProperty(wrappedStepFn, 'stepId', {
-          value: stepId,
-          writable: false,
-          enumerable: false,
-          configurable: false,
-        });
-        if (stepFn.maxRetries !== undefined) {
-          wrappedStepFn.maxRetries = stepFn.maxRetries;
+          return contextStorage.run(newContext, () =>
+            stepFn.apply(callThis, callArgs)
+          );
         }
+        return stepFn.apply(callThis, callArgs);
+      } as any;
 
-        return wrappedStepFn;
+      // Copy properties from original step function
+      Object.defineProperty(wrappedStepFn, 'name', {
+        value: stepFn.name,
+      });
+      Object.defineProperty(wrappedStepFn, 'stepId', {
+        value: stepId,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      });
+      if (stepFn.maxRetries !== undefined) {
+        wrappedStepFn.maxRetries = stepFn.maxRetries;
       }
 
-      return stepFn;
+      return wrappedStepFn;
     },
 
     Request: (value) => {
