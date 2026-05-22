@@ -1,0 +1,376 @@
+---
+title: Serialization
+description: Understand how workflow data is serialized and persisted across suspensions and resumptions.
+type: conceptual
+summary: Learn which types can be passed between workflow and step functions.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/errors/serialization-failed
+---
+
+All function arguments and return values passed between workflow and step functions must be serializable. Workflow SDK uses a custom serialization system built on top of [devalue](https://github.com/sveltejs/devalue). This system supports standard JSON types, as well as a few additional popular Web API types.
+
+<Callout type="info">
+The serialization system ensures that all data persists correctly across workflow suspensions and resumptions, enabling durable execution.
+</Callout>
+
+## Supported Serializable Types
+
+The following types can be serialized and passed through workflow functions:
+
+**Standard JSON Types:**
+
+- `string`
+- `number`
+- `boolean`
+- `null`
+- Arrays of serializable values
+- Objects with string keys and serializable values
+
+**Extended Types:**
+
+- `undefined`
+- `bigint`
+- `ArrayBuffer`
+- `BigInt64Array`, `BigUint64Array`
+- `Date`
+- `Float32Array`, `Float64Array`
+- `Int8Array`, `Int16Array`, `Int32Array`
+- `Map<Serializable, Serializable>`
+- `RegExp`
+- `Set<Serializable>`
+- `URL`
+- `URLSearchParams`
+- `Uint8Array`, `Uint8ClampedArray`, `Uint16Array`, `Uint32Array`
+
+**Notable:**
+
+<Callout type="info">
+These types have special handling and are explained in detail in the sections below.
+</Callout>
+
+- `Headers`
+- `Request`
+- `Response`
+- `ReadableStream<Serializable>`
+- `WritableStream<Serializable>`
+
+## Pass-by-Value Semantics
+
+**Parameters are passed by value, not by reference.** Steps receive deserialized copies of data. Mutations inside a step won't affect the original in the workflow.
+
+**Incorrect:**
+
+```typescript title="workflows/incorrect-mutation.ts" lineNumbers
+export async function updateUserWorkflow(userId: string) {
+  "use workflow";
+
+  let user = { id: userId, name: "John", email: "john@example.com" };
+  await updateUserStep(user);
+
+  // user.email is still "john@example.com" // [!code highlight]
+  console.log(user.email); // [!code highlight]
+}
+
+async function updateUserStep(user: { id: string; name: string; email: string }) {
+  "use step";
+  user.email = "newemail@example.com"; // Changes are lost // [!code highlight]
+}
+```
+
+**Correct - return the modified data:**
+
+```typescript title="workflows/correct-mutation.ts" lineNumbers
+export async function updateUserWorkflow(userId: string) {
+  "use workflow";
+
+  let user = { id: userId, name: "John", email: "john@example.com" };
+  user = await updateUserStep(user); // Reassign the return value // [!code highlight]
+
+  console.log(user.email); // "newemail@example.com"
+}
+
+async function updateUserStep(user: { id: string; name: string; email: string }) {
+  "use step";
+  user.email = "newemail@example.com";
+  return user; // [!code highlight]
+}
+```
+
+**Custom Classes:**
+
+- Class instances that implement [`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`](#custom-class-serialization)
+
+## Streaming
+
+`ReadableStream` and `WritableStream` are supported as serializable types with special handling. These streams can be passed between workflow and step functions while maintaining their streaming capabilities.
+
+For complete information about using streams in workflows, including patterns for AI streaming, file processing, and progress updates, see the [Streaming Guide](/docs/foundations/streaming).
+
+## Request & Response
+
+The Web API [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) and [`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response) APIs are supported by the serialization system,
+and can be passed around between workflow and step functions similarly to other data types.
+
+As a convenience, these two APIs are treated slightly differently when used
+within a workflow function: calling the `text()` / `json()` / `arrayBuffer()` instance
+methods is automatically treated as a step function invocation. This allows you to consume
+the body directly in the workflow context while maintaining proper serialization and caching.
+
+For example, consider how receiving a webhook request provides the entire `Request`
+instance into the workflow context. You may consume the body of that request directly
+in the workflow, which will be cached as a step result for future resumptions of the workflow:
+
+```typescript title="workflows/webhook.ts" lineNumbers
+import { createWebhook } from "workflow";
+
+export async function handleWebhookWorkflow() {
+  "use workflow";
+
+  const webhook = createWebhook();
+  const request = await webhook;
+
+  // The body of the request will only be consumed once // [!code highlight]
+  const body = await request.json(); // [!code highlight]
+
+  // …
+}
+```
+
+### Using `fetch` in Workflows
+
+Because `Request` and `Response` are serializable, Workflow SDK provides a `fetch` function that can be used directly in workflow functions:
+
+```typescript title="workflows/api-call.ts" lineNumbers
+import { fetch } from "workflow"; // [!code highlight]
+
+export async function apiWorkflow() {
+  "use workflow";
+
+  // fetch can be called directly in workflows // [!code highlight]
+  const response = await fetch("https://api.example.com/data"); // [!code highlight]
+  const data = await response.json();
+
+  return data;
+}
+```
+
+The implementation is straightforward - `fetch` from workflow is a step function that wraps the standard `fetch`:
+
+```typescript title="Implementation" lineNumbers
+export async function fetch(...args: Parameters<typeof globalThis.fetch>) {
+  "use step";
+  return globalThis.fetch(...args);
+}
+```
+
+This allows you to make HTTP requests directly in workflow functions while maintaining deterministic replay behavior through automatic caching.
+
+## Custom Class Serialization
+
+By default, custom class instances cannot be serialized because the serialization system doesn't know how to reconstruct them. You can make your classes serializable by implementing two static methods using special symbols from the `@workflow/serde` package.
+
+### Basic Example
+
+{/* @expect-error:2351 */}
+
+```typescript title="workflows/custom-class.ts" lineNumbers
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde"; // [!code highlight]
+
+class Point {
+  constructor(
+    public x: number,
+    public y: number
+  ) {}
+
+  // Define how to serialize an instance to plain data
+  static [WORKFLOW_SERIALIZE](instance: Point) { // [!code highlight]
+    return { x: instance.x, y: instance.y }; // [!code highlight]
+  } // [!code highlight]
+
+  // Define how to reconstruct an instance from plain data
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) { // [!code highlight]
+    return new Point(data.x, data.y); // [!code highlight]
+  } // [!code highlight]
+}
+```
+
+Once you've implemented these methods, instances of your class can be passed between workflow and step functions:
+
+{/* @expect-error:2351 */}
+
+```typescript title="workflows/geometry.ts" lineNumbers
+import { Point } from "./custom-class";
+
+export async function geometryWorkflow() {
+  "use workflow";
+
+  const point = new Point(10, 20);
+  // Point is serialized automatically
+  const doubled = await doublePoint(point); // [!code highlight]
+
+  console.log(doubled.x, doubled.y); // 20, 40
+  return doubled;
+}
+
+async function doublePoint(point: Point) {
+  "use step";
+  // Returns a new Point instance
+  return new Point(point.x * 2, point.y * 2); // [!code highlight]
+}
+```
+
+### How It Works
+
+1. **`WORKFLOW_SERIALIZE`**: A static method that receives a class instance and returns serializable data (primitives, plain objects, arrays, etc.)
+
+2. **`WORKFLOW_DESERIALIZE`**: A static method that receives the serialized data and returns a new class instance
+
+3. **Automatic Registration**: The SWC compiler plugin automatically detects classes that implement these symbols and registers them for serialization. Each class receives a deterministic `classId` derived from its file path and class name, and is registered into the global `Symbol.for("workflow-class-registry")` registry at build time — no manual registration step is required
+
+### Requirements
+
+<Callout type="warn">
+`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented as **static** methods on the class. Defining them as instance methods is not supported.
+</Callout>
+
+- The data returned by `WORKFLOW_SERIALIZE` must itself be serializable (see [Supported Serializable Types](#supported-serializable-types))
+- Both symbols must be implemented together - a class with only one will not be serializable
+
+<Callout type="warn">
+The `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` methods run inside the workflow context and are subject to the same constraints as `"use workflow"` functions. This means:
+- No Node.js-specific APIs (like `fs`, `path`, `crypto`, etc.)
+- No non-deterministic operations (like `Math.random()` or `Date.now()`)
+- No external network calls
+
+Keep these methods simple and focused on data transformation only.
+</Callout>
+
+### Instance Methods as Steps
+
+In practice, many classes have methods that need Node.js APIs, perform network calls, or interact with databases — operations that are not allowed in the `"use workflow"` execution context. You can make these methods workflow-compatible by adding `"use step"` to them. The SWC compiler will strip the method bodies from the workflow bundle and replace them with proxy functions that invoke the method as a step — with full Node.js runtime access. The `this` context (the class instance) is automatically serialized and deserialized across the workflow/step boundary.
+
+This requires the class to implement `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`, so that the instance can be passed to the step execution context.
+
+{/* @expect-error:2351 */}
+
+```typescript title="workflows/order.ts" lineNumbers
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde"; // [!code highlight]
+import { db } from "../lib/db";
+
+class Order {
+  constructor(
+    public id: string,
+    public items: Map<string, number>,
+    public createdAt: Date
+  ) {}
+
+  // Custom serialization — data must be serializable types
+  static [WORKFLOW_SERIALIZE](instance: Order) { // [!code highlight]
+    return { // [!code highlight]
+      id: instance.id, // [!code highlight]
+      items: instance.items, // Map is serializable // [!code highlight]
+      createdAt: instance.createdAt, // Date is serializable // [!code highlight]
+    }; // [!code highlight]
+  } // [!code highlight]
+
+  static [WORKFLOW_DESERIALIZE](data: { // [!code highlight]
+    id: string; // [!code highlight]
+    items: Map<string, number>; // [!code highlight]
+    createdAt: Date; // [!code highlight]
+  }) { // [!code highlight]
+    return new Order(data.id, data.items, data.createdAt); // [!code highlight]
+  } // [!code highlight]
+
+  // Methods without "use step" run in the workflow context
+  // and must follow the same constraints as workflow functions
+  total(): number {
+    let sum = 0;
+    for (const quantity of this.items.values()) {
+      sum += quantity;
+    }
+    return sum;
+  }
+
+  // Instance methods with "use step" run as step functions
+  // with full Node.js access — `this` is automatically serialized
+  async save(): Promise<void> {
+    "use step"; // [!code highlight]
+    await db.orders.insert({ // [!code highlight]
+      id: this.id, // [!code highlight]
+      items: Object.fromEntries(this.items), // [!code highlight]
+      createdAt: this.createdAt, // [!code highlight]
+    }); // [!code highlight]
+  }
+
+  async sendConfirmation(email: string): Promise<string> {
+    "use step"; // [!code highlight]
+    const res = await fetch("https://api.example.com/email", { // [!code highlight]
+      method: "POST", // [!code highlight]
+      body: JSON.stringify({ // [!code highlight]
+        to: email, // [!code highlight]
+        orderId: this.id, // [!code highlight]
+        itemCount: this.items.size, // [!code highlight]
+      }), // [!code highlight]
+    }); // [!code highlight]
+    const { messageId } = await res.json();
+    return messageId;
+  }
+}
+```
+
+The class can then be used naturally inside a workflow function. Instance methods marked with `"use step"` are each executed as a step — with automatic caching, retry semantics, and full Node.js runtime access. Methods _without_ `"use step"` run directly in the workflow context, so they must follow the same constraints as workflow functions:
+
+{/* @expect-error:2693 */}
+
+```typescript title="workflows/process-order.ts" lineNumbers
+export async function processOrderWorkflow(
+  orderId: string,
+  items: Map<string, number>,
+  email: string
+) {
+  "use workflow";
+
+  const order = new Order(orderId, items, new Date()); // [!code highlight]
+
+  // Runs in the workflow context — no "use step" needed
+  const itemCount = order.total(); // [!code highlight]
+
+  // Each "use step" instance method call runs as a separate step
+  await order.save(); // [!code highlight]
+  const messageId = await order.sendConfirmation(email); // [!code highlight]
+
+  return { orderId, itemCount, messageId };
+}
+```
+
+Note that [pass-by-value semantics](#pass-by-value-semantics) also apply to the `this` context of `"use step"` instance methods. Modifying instance properties inside a step method will not affect the original instance in the workflow. If you need to update instance state, return `this` from the step method and re-assign the variable in the workflow:
+
+{/* @expect-error:2351 */}
+
+```typescript title="workflows/order.ts" lineNumbers
+export class Order {
+  // ...
+
+  async addItem(name: string, quantity: number): Promise<Order> {
+    "use step";
+    this.items.set(name, quantity);
+    return this; // [!code highlight]
+  }
+}
+```
+
+{/* @expect-error:2693,2552,2304 */}
+
+```typescript title="workflows/process-order.ts" lineNumbers
+export async function processOrderWorkflow() {
+  "use workflow";
+
+  let order = new Order(orderId, items, new Date());
+
+  // Re-assign to capture the updated instance
+  order = await order.addItem("Widget", 3); // [!code highlight]
+}
+```
+

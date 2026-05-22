@@ -1,7 +1,8 @@
 import Image from 'next/image';
 import Link from 'next/link';
-import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { examplesRepositoryUrl } from '@/geistdocs';
+import { cn } from '@/lib/utils';
 import Flight from './flight-v2.png';
 import FlightDark from './flight-v2-dark.png';
 import Storytime from './storytime-v2.png';
@@ -46,7 +47,7 @@ export const Templates = () => (
         See Workflow SDK in action with one of the example templates.
       </p>
       <Button asChild size="lg" className="rounded-full h-10 px-6 w-fit mt-2">
-        <Link href="/docs/examples">All examples</Link>
+        <Link href={examplesRepositoryUrl}>All examples</Link>
       </Button>
     </div>
     <div className="grid sm:grid-cols-2 gap-8 px-4 py-8 sm:py-12 sm:px-12">

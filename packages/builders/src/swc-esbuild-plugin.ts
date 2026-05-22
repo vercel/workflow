@@ -11,6 +11,7 @@ import {
   jsTsRegex,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+import { resolveModuleSpecifier } from './module-specifier.js';
 import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
 export interface SwcPluginOptions {
@@ -31,6 +32,15 @@ export interface SwcPluginOptions {
    * breaks them because the .js file doesn't exist on disk.
    */
   rewriteTsExtensions?: boolean;
+  /**
+   * Bundle project-local files that are transitively imported by step entries.
+   *
+   * Keep this disabled when a downstream bundler consumes the generated step
+   * bundle because that bundler can resolve the externalized local imports.
+   * Enable it for direct runtime loading, where Node imports the generated step
+   * bundle from disk without a later bundling pass.
+   */
+  bundleTransitiveLocalStepDependencies?: boolean;
   /**
    * Absolute file paths of discovered workflow/step/serde entries whose
    * imports must be treated as side-effectful.
@@ -78,6 +88,10 @@ const NODE_ESM_RESOLVE_OPTIONS = {
   dependencyType: 'esm',
   conditionNames: ['node', 'import'],
 };
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/');
+}
 
 export function createSwcPlugin(options: SwcPluginOptions): Plugin {
   return {
@@ -194,7 +208,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           if (!resolvedPath) return null;
 
           // Normalize to forward slashes for cross-platform comparison
-          const normalizedResolvedPath = resolvedPath.replace(/\\/g, '/');
+          const normalizedResolvedPath = normalizePath(resolvedPath);
+          const workingDir =
+            build.initialOptions.absWorkingDir || process.cwd();
+          const projectRoot = options.projectRoot || workingDir;
 
           if (
             options.entriesToBundle &&
@@ -228,6 +245,20 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               // to be bundled then it needs to also be bundled so
               // that the child can have our transform applied
               if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
+                shouldBundle = true;
+                break;
+              }
+
+              // Bundle project-local source files that are imported by a
+              // step/serde entry so direct runtime loaders do not see raw TS
+              // extensionless imports. Keep package dependencies external
+              // unless they are themselves in entriesToBundle or are parents
+              // of a discovered workflow/step/serde file via the check above.
+              if (
+                options.bundleTransitiveLocalStepDependencies &&
+                isProjectLocalFile(normalizedResolvedPath, projectRoot) &&
+                parentHasChild(normalizedEntry, normalizedResolvedPath)
+              ) {
                 shouldBundle = true;
                 break;
               }
@@ -419,4 +450,14 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
       });
     },
   };
+}
+
+function isProjectLocalFile(filePath: string, projectRoot: string): boolean {
+  if (normalizePath(filePath).includes('/node_modules/')) {
+    return false;
+  }
+
+  return (
+    resolveModuleSpecifier(filePath, projectRoot).moduleSpecifier === undefined
+  );
 }

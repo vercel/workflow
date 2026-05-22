@@ -1,0 +1,156 @@
+---
+title: Agent Cancellation
+description: Cancel a running agent from the outside using AbortSignal — a hook fires the abort, the agent step bails out of the model stream, and the client gets a clean stop notification.
+type: guide
+summary: Cancel a running agent cooperatively with AbortController. A stop hook fires controller.abort(), the signal propagates into the agent step to cancel the model stream, and a data-stopped part is emitted to streaming clients before the workflow returns.
+---
+
+Cancel a running agent from the outside — for example, a "Stop" button in a chat UI, an admin cancellation endpoint, or a timeout fallback.
+
+## Pattern
+
+Create an `AbortController` in the workflow and race the agent (passing its signal) against a stop hook. When the hook fires, `controller.abort()` is called — the signal propagates into the agent step and cancels the underlying model stream. Before returning, a `data-stopped` part is written to the stream so any streaming clients can render a clean end state.
+
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { defineHook, getWritable, getWorkflowMetadata } from "workflow";
+import { z } from "zod";
+import type { ModelMessage, UIMessageChunk } from "ai";
+
+export const stopHook = defineHook({
+  schema: z.object({ reason: z.string().optional() }),
+});
+
+async function searchWeb({ query }: { query: string }) {
+  "use step";
+  await new Promise((r) => setTimeout(r, 1500));
+  return { results: [{ title: `${query} - Wikipedia`, snippet: `Overview of ${query}...` }] };
+}
+
+async function analyzeData({ topic }: { topic: string }) {
+  "use step";
+  await new Promise((r) => setTimeout(r, 1200));
+  return { summary: `Analysis of ${topic}: significant developments found.`, confidence: 0.85 };
+}
+
+async function emitStopSignal(details: { reason?: string }) {
+  "use step";
+  const writer = getWritable<UIMessageChunk>().getWriter();
+  try {
+    await writer.write({ type: "data-stopped", id: "stop-signal", data: details } as UIMessageChunk);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+export async function stoppableAgent(messages: ModelMessage[]) {
+  "use workflow";
+
+  const { workflowRunId } = getWorkflowMetadata();
+  const controller = new AbortController(); // [!code highlight]
+  const hook = stopHook.create({ token: `stop:${workflowRunId}` });
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    instructions: "You are a research assistant. Search and analyze data as needed.",
+    tools: {
+      searchWeb: {
+        description: "Search the web for information",
+        inputSchema: z.object({ query: z.string() }),
+        execute: searchWeb,
+      },
+      analyzeData: {
+        description: "Analyze a piece of data",
+        inputSchema: z.object({ topic: z.string() }),
+        execute: analyzeData,
+      },
+    },
+  });
+
+  const result = await Promise.race([
+    agent
+      .stream({
+        messages,
+        writable: getWritable<UIMessageChunk>(),
+        abortSignal: controller.signal, // [!code highlight]
+        maxSteps: 15,
+      })
+      .then((r) => ({ type: "complete" as const, messages: r.messages })),
+    hook.then(({ reason }) => {
+      controller.abort(reason); // [!code highlight]
+      return { type: "stopped" as const, reason };
+    }),
+  ]);
+
+  if (result.type === "stopped") {
+    await emitStopSignal({ reason: result.reason });
+  }
+
+  return result;
+}
+```
+
+### API Route to Trigger Stop
+
+```typescript lineNumbers
+import { stopHook } from "@/workflows/stoppable-agent";
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ runId: string }> }
+) {
+  const { runId } = await params;
+  const { reason } = await request.json();
+
+  await stopHook.resume(`stop:${runId}`, {
+    reason: reason || "User requested stop",
+  });
+
+  return Response.json({ success: true });
+}
+```
+
+### Client Stop Button
+
+```tsx lineNumbers
+"use client";
+
+export function StopButton({ runId }: { runId: string }) {
+  const handleStop = async () => {
+    await fetch(`/api/chat/${runId}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "User clicked stop" }),
+    });
+  };
+
+  return (
+    <button type="button" onClick={handleStop}>
+      Stop Agent
+    </button>
+  );
+}
+```
+
+## How it works
+
+1. An `AbortController` is created at the start of the workflow
+2. A hook is created with token `stop:${workflowRunId}`
+3. `Promise.race` runs the agent stream and the stop hook concurrently
+4. The agent receives `controller.signal` — when aborted, the underlying model stream is cancelled
+5. When the stop API resumes the hook, `controller.abort()` is called — the race resolves and the workflow exits
+6. `emitStopSignal` writes a `data-stopped` part to the stream so the client renders a clean stop state
+
+## Adapting this
+
+* **Add a timeout** — race a third `sleep()` promise to auto-stop after a deadline
+* **Audit logging** — include a `reason` field in the stop schema to record who stopped and why
+* **Cross-process** — the hook token is deterministic, so any process can call `stopHook.resume()` with the run ID
+* **Step limits** — combine with `maxSteps` on the agent to cap execution even without manual stop
+
+## Key APIs
+
+* [`defineHook()`](/docs/api-reference/workflow/define-hook) — type-safe hook for the stop signal
+* [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) — access the run ID for deterministic hook tokens
+* [`getWritable()`](/docs/api-reference/workflow/get-writable) — stream output and the stop notification to the client
+* [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — the agent that respects the abort signal via its `signal` option

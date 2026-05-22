@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { ErrorBoundary } from '../error-boundary';
 import {
   EntityDetailPanel,
@@ -51,6 +52,7 @@ function useAnimatedViewport(initial: Viewport) {
   } | null>(null);
   const currentRef = useRef(initial);
   currentRef.current = viewport;
+  const reducedMotion = useReducedMotion();
 
   const cancel = useCallback(() => {
     if (animRef.current) {
@@ -62,6 +64,13 @@ function useAnimatedViewport(initial: Viewport) {
   const animateTo = useCallback(
     (target: Viewport) => {
       cancel();
+
+      if (reducedMotion) {
+        currentRef.current = target;
+        setViewportState(target);
+        return;
+      }
+
       const from = currentRef.current;
       const anim = { raf: 0, from, to: target, start: performance.now() };
 
@@ -79,7 +88,7 @@ function useAnimatedViewport(initial: Viewport) {
       animRef.current = anim;
       anim.raf = requestAnimationFrame(tick);
     },
-    [cancel]
+    [cancel, reducedMotion]
   );
 
   const setViewport = useCallback(
@@ -443,6 +452,10 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const selectedSpanName = useMemo(() => {
     if (!selectedSpan?.data) return 'Details';
     const data = selectedSpan.data as Record<string, unknown>;
+    if (selectedSpan.resource === 'hook') {
+      return (data.token as string | undefined) ?? (data.hookId as string);
+    }
+
     const stepName = data.stepName as string | undefined;
     const workflowName = data.workflowName as string | undefined;
     return (
@@ -453,19 +466,23 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       (data.hookId as string) ??
       'Details'
     );
-  }, [selectedSpan?.data]);
+  }, [selectedSpan?.data, selectedSpan?.resource]);
 
   const selectedResource = selectedSpan?.resource as string | undefined;
   const selectedResourceId = useMemo(() => {
     if (!selectedSpan?.data) return undefined;
     const data = selectedSpan.data as Record<string, unknown>;
+    if (selectedSpan.resource === 'hook') {
+      return (data.hookId as string | undefined) ?? selectedSpan.spanId;
+    }
+
     return (
       (data.stepId as string) ??
       (data.runId as string) ??
       (data.hookId as string) ??
       selectedSpan.spanId
     );
-  }, [selectedSpan?.data, selectedSpan?.spanId]);
+  }, [selectedSpan?.data, selectedSpan?.resource, selectedSpan?.spanId]);
 
   return (
     <div
@@ -535,7 +552,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         <div className="absolute right-3 bottom-3 z-[5] flex items-center border border-gray-alpha-400 rounded-lg bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
           <button
             type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
             onClick={zoomOut}
             aria-label="Zoom out"
           >
@@ -543,7 +560,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           </button>
           <button
             type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
             onClick={resetZoom}
             aria-label="Reset zoom"
           >
@@ -551,7 +568,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           </button>
           <button
             type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
             onClick={zoomIn}
             aria-label="Zoom in"
           >
@@ -579,9 +596,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                             ? 'bg-green-200 text-green-900'
                             : selectedResource === 'run'
                               ? 'bg-blue-200 text-blue-900'
-                              : selectedResource === 'hook'
-                                ? 'bg-yellow-200 text-yellow-900'
-                                : 'bg-gray-200 text-gray-900'
+                              : 'bg-gray-200 text-gray-900'
                         }`}
                       >
                         {selectedResource.charAt(0).toUpperCase() +

@@ -1,46 +1,7 @@
-import type { Node, Root } from 'fumadocs-core/page-tree';
+import type { Root } from 'fumadocs-core/page-tree';
 import { getDocsTreeWithoutCookbook } from './cookbook-source';
-import { source } from './source';
 import type { DocsVersion } from './versions';
 import { PRE_RELEASE_VERSION } from './versions';
-
-type FolderNode = Extract<Node, { type: 'folder' }>;
-type PageNode = Extract<Node, { type: 'page' }>;
-
-function isPreReleaseUrl(url: string | undefined): boolean {
-  if (!url) return false;
-  const page = source.getPageByHref(url);
-  return page?.page.data.preRelease === true;
-}
-
-function isPreReleasePage(node: PageNode): boolean {
-  return isPreReleaseUrl(node.url);
-}
-
-function filterPreReleaseFromNodes(nodes: Node[]): Node[] {
-  const result: Node[] = [];
-  for (const node of nodes) {
-    if (node.type === 'page') {
-      if (!isPreReleasePage(node)) result.push(node);
-      continue;
-    }
-    if (node.type === 'folder') {
-      const children = filterPreReleaseFromNodes(node.children);
-      // Drop empty folders that become empty only because of filtering.
-      if (children.length === 0 && node.children.length > 0) continue;
-      const folder: FolderNode = { ...(node as FolderNode), children };
-      // If the folder's index page is itself preRelease, drop the index
-      // reference so we don't render a broken link.
-      if (folder.index && isPreReleasePage(folder.index as PageNode)) {
-        delete folder.index;
-      }
-      result.push(folder);
-      continue;
-    }
-    result.push(node);
-  }
-  return result;
-}
 
 function rewriteUrl(
   url: string | undefined,
@@ -52,21 +13,27 @@ function rewriteUrl(
   return `${prefix}${url}`;
 }
 
-function rewriteNodeUrls(nodes: Node[], prefix: string): Node[] {
+function rewriteNodeUrls(
+  nodes: Root['children'],
+  prefix: string
+): Root['children'] {
   return nodes.map((node) => {
     if (node.type === 'page') {
-      return { ...node, url: rewriteUrl(node.url, prefix) } as PageNode;
+      return { ...node, url: rewriteUrl(node.url, prefix) };
     }
     if (node.type === 'folder') {
-      const folder = { ...(node as FolderNode) };
-      folder.children = rewriteNodeUrls(folder.children, prefix);
-      if (folder.index) {
-        folder.index = {
-          ...folder.index,
-          url: rewriteUrl(folder.index.url, prefix),
-        } as PageNode;
-      }
-      return folder;
+      return {
+        ...node,
+        children: rewriteNodeUrls(node.children, prefix),
+        ...(node.index
+          ? {
+              index: {
+                ...node.index,
+                url: rewriteUrl(node.index.url, prefix),
+              },
+            }
+          : {}),
+      };
     }
     return node;
   });
@@ -75,30 +42,25 @@ function rewriteNodeUrls(nodes: Node[], prefix: string): Node[] {
 /**
  * Build the sidebar tree for a given docs version.
  *
- * - v4 (latest): excludes pages marked `preRelease: true`.
- * - v5 (pre-release): includes every page, with URLs rewritten to the
- *   `/v5/docs/...` namespace so sidebar links stay inside the v5 view.
+ * - v4 (latest): returns the v4 source tree (content/docs/v4) with cookbook
+ *   nodes stripped. No filtering needed — v4 simply doesn't contain v5-only
+ *   pages.
+ * - v5 (pre-release): returns the v5 source tree (content/docs/v5) with
+ *   cookbook nodes stripped and URLs rewritten to the `/v5/docs/...` namespace
+ *   so sidebar links stay inside the v5 view.
  */
 export function getDocsTreeForVersion(
   lang: string,
   version: DocsVersion
 ): Root {
-  const base = getDocsTreeWithoutCookbook(lang);
   if (version.preRelease) {
+    const base = getDocsTreeWithoutCookbook(lang, 'v5');
     return {
       ...base,
       children: rewriteNodeUrls(base.children, version.prefix),
     };
   }
-  return {
-    ...base,
-    children: filterPreReleaseFromNodes(base.children),
-  };
-}
-
-export function isPagePreRelease(slug: string[] | undefined): boolean {
-  const page = source.getPage(slug ?? []);
-  return page?.data.preRelease === true;
+  return getDocsTreeWithoutCookbook(lang, 'v4');
 }
 
 export { PRE_RELEASE_VERSION };

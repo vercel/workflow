@@ -1,0 +1,36 @@
+---
+title: "workflow/api"
+description: Runtime functions to inspect runs, start workflows, and access world data.
+type: overview
+summary: Explore runtime functions for starting workflows, inspecting runs, and managing hooks.
+---
+
+API reference for runtime functions from the `workflow/api` package.
+
+## Functions
+
+The API package is for access and introspection of workflow data to inspect runs, start new runs, or access anything else directly accessible by the world.
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-api/start" title="start()">
+        Start/enqueue a new workflow run.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/resume-hook" title="resumeHook()">
+        Resume a workflow by sending a payload to a hook.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/resume-webhook" title="resumeWebhook()">
+        Resume a workflow by sending a `Request` to a webhook.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/get-hook-by-token" title="getHookByToken()">
+        Get hook details and metadata by its token.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/get-run" title="getRun()">
+        Get workflow run status and metadata without waiting for completion.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/get-world" title="getWorld()">
+        Async: resolve the World instance for storage, queuing, and streaming backends.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world" title="World SDK">
+        Low-level API for inspecting runs, steps, events, hooks, streams, and queues.
+    </Card>
+</Cards>

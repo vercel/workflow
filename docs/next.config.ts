@@ -161,6 +161,11 @@ const config: NextConfig = {
         destination: '/cookbook/agent-patterns/agent-cancellation',
         permanent: true,
       },
+      {
+        source: '/python',
+        destination: '/docs/getting-started/python',
+        permanent: true,
+      },
     ];
   },
 };

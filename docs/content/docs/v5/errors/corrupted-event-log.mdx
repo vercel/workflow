@@ -1,0 +1,73 @@
+---
+title: corrupted-event-log
+description: The workflow's event log contains an event that no consumer can process, indicating corruption or invalid state.
+type: troubleshooting
+summary: Resolve corrupted event log errors caused by duplicate or orphaned events.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/errors-and-retries
+---
+
+This error occurs when the Workflow runtime encounters an event in the event log that no registered consumer can process. This means the event log is in an invalid state — typically due to duplicate or orphaned events.
+
+This is a **workflow-level fatal error**. It cannot be caught or handled inside your workflow code. A corrupted event log immediately fails the entire run without executing any more user code. The run must be retried from outside the workflow.
+
+## Error Message
+
+```
+Unconsumed event in event log: eventType=<type>, correlationId=<id>, eventId=<id>. This indicates a corrupted or invalid event log.
+```
+
+## Why This Happens
+
+Workflows persist their progress as an ordered event log. During replay, the runtime processes each event in sequence — every event must be consumed by a matching callback (e.g., a step or sleep waiting for its result). When an event has no matching consumer, the runtime cannot advance past it, which would block all subsequent events and hang the workflow indefinitely.
+
+Instead of silently hanging, the runtime raises a `WorkflowRuntimeError` to fail the workflow fast and surface the problem.
+
+Common scenarios that produce this error:
+
+1. **Duplicate completion events** — Two `wait_completed` events for a single `wait_created`, or two `step_completed` events for the same step. The first is consumed normally, but the second has no consumer.
+2. **Orphaned events** — A `step_completed` or `wait_completed` event whose `correlationId` doesn't match any step or sleep in the workflow code.
+3. **Events after terminal state** — An event that arrives after its corresponding step or wait has already reached a terminal state (e.g., `step_retrying` after `step_completed`).
+
+## What To Do
+
+This error indicates a bug in the Workflow SDK or Workflow server — not in your workflow code. Your workflow code does not need to change. Follow these steps to resolve the issue:
+
+### 1. Upgrade to the latest `workflow` package
+
+The bug that caused the corrupted event log may have already been identified and fixed in a newer version. Update to the latest version:
+
+```bash
+npm install workflow@latest
+```
+
+### 2. Retry the failed run
+
+Since this is a fatal error, the run is automatically marked as `failed`. You can re-run it using the **Re-run** button in the Workflow Dashboard.
+
+### 3. Report the issue
+
+If the error persists after upgrading, please [open an issue on GitHub](https://github.com/vercel/workflow/issues/new) so we can investigate and fix the underlying bug. Include the following details to help us diagnose the problem:
+
+- The version of the `workflow` package you are using
+- The run ID(s) of the affected workflow run(s)
+- The error message (including `eventType`, `correlationId`, and `eventId`)
+- Any details about the event log or the workflow that triggered the error
+
+## This Error Cannot Be Caught
+
+Unlike other workflow errors, a corrupted event log error is **not catchable** inside your workflow function. Because the event log itself is invalid, the runtime cannot safely continue executing any user code. The entire run fails immediately and is marked as `failed`.
+
+To handle this programmatically from outside the workflow, you can check the run status:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+const run = getRun("wrun_abc123");
+const status = await run.status;
+if (status === "failed") {
+  console.error("Run failed");
+}
+```

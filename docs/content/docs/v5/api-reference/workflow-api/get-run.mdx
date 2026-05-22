@@ -1,0 +1,169 @@
+---
+title: getRun
+description: Retrieve workflow run metadata and status without waiting for completion.
+type: reference
+summary: Use getRun to check a workflow run's status and metadata without blocking on completion.
+prerequisites:
+  - /docs/foundations/starting-workflows
+---
+
+Retrieves the workflow run metadata and status information for a given run ID. This function provides immediate access to workflow run details without waiting for completion, making it ideal for status checking and monitoring.
+
+Use this function when you need to check workflow status, get timing information, or access workflow metadata without blocking on workflow completion.
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+const run = getRun("my-run-id");
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { getRun } from "workflow/api";
+export default getRun;`}
+showSections={["parameters"]}
+/>
+
+### Returns
+
+Returns a `Run` object:
+
+<TSDoc
+definition={`
+import { Run } from "workflow/api";
+export default Run;`}
+showSections={["returns"]}
+/>
+
+#### WorkflowReadableStream
+
+`run.getReadable()` returns a `WorkflowReadableStream` — a standard `ReadableStream` extended with a `getTailIndex()` helper:
+
+<TSDoc
+definition={`
+import type { WorkflowReadableStream } from "workflow/api";
+export default WorkflowReadableStream;`}
+/>
+
+`getTailIndex()` returns the index of the last known chunk (0-based), or `-1` when no chunks have been written. This is useful when building [reconnection endpoints](/docs/ai/resumable-streams) that need to inform clients where the stream starts.
+
+#### WorkflowReadableStreamOptions
+
+<TSDoc
+definition={`
+import type { WorkflowReadableStreamOptions } from "workflow/api";
+export default WorkflowReadableStreamOptions;`}
+/>
+
+#### StopSleepOptions
+
+<TSDoc
+definition={`
+import type { StopSleepOptions } from "workflow/api";
+export default StopSleepOptions;`}
+/>
+
+#### StopSleepResult
+
+<TSDoc
+definition={`
+import type { StopSleepResult } from "workflow/api";
+export default StopSleepResult;`}
+/>
+
+## Examples
+
+### Check if a Run Exists
+
+Use the `exists` getter to check whether a workflow run exists without throwing when the run is not found:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "No runId provided" }, { status: 400 });
+  }
+
+  const run = getRun(runId);
+
+  if (!(await run.exists)) { // [!code highlight]
+    return Response.json(
+      { error: "Workflow run not found" },
+      { status: 404 }
+    );
+  }
+
+  const status = await run.status;
+  return Response.json({ status });
+}
+```
+
+### Basic Status Check
+
+Check the current status of a workflow run:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "No runId provided" }, { status: 400 });
+  }
+
+  try {
+    const run = getRun(runId); // [!code highlight]
+    const status = await run.status;
+
+    return Response.json({ status });
+  } catch (error) {
+    return Response.json(
+      { error: "Workflow run not found" },
+      { status: 404 }
+    );
+  }
+}
+```
+
+### Wake Up a Sleeping Workflow
+
+Interrupt pending `sleep()` calls to resume a workflow early. This is useful for testing workflows or building custom UIs that let users skip wait periods:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function POST(req: Request) {
+  const { runId } = await req.json();
+  const run = getRun(runId);
+
+  // Wake up all pending sleep calls
+  const { stoppedCount } = await run.wakeUp(); // [!code highlight]
+
+  return Response.json({ stoppedCount });
+}
+```
+
+You can also target specific sleep calls by correlation ID:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+const run = getRun("my-run-id"); // @setup
+const { stoppedCount } = await run.wakeUp({
+  correlationIds: ["wait_abc123"],
+});
+```
+
+## Related Functions
+
+- [`start()`](/docs/api-reference/workflow-api/start) - Start a new workflow and get its run ID.

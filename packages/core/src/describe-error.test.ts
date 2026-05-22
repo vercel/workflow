@@ -1,4 +1,5 @@
 import {
+  CorruptedEventLogError,
   RUN_ERROR_CODES,
   SerializationError,
   StepNotRegisteredError,
@@ -63,6 +64,15 @@ describe('describeError', () => {
     expect(result.hint).toContain('internal workflow SDK error');
   });
 
+  test('CorruptedEventLogError is attributed to the SDK with a distinct code', () => {
+    const result = describeError(
+      new CorruptedEventLogError('corrupted event log')
+    );
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+    expect(result.hint).toContain('event log contains');
+  });
+
   test('StepNotRegisteredError (subclass of WorkflowRuntimeError) is attributed to the SDK', () => {
     const result = describeError(new StepNotRegisteredError('missingStep'));
     expect(result.attribution).toBe('sdk');
@@ -73,7 +83,9 @@ describe('describeError', () => {
     const result = describeError(undefined, RUN_ERROR_CODES.REPLAY_TIMEOUT);
     expect(result.attribution).toBe('sdk');
     expect(result.errorCode).toBe(RUN_ERROR_CODES.REPLAY_TIMEOUT);
-    expect(result.hint).toContain('replay took too long');
+    expect(result.hint).toContain(
+      'replay between step boundaries took too long'
+    );
   });
 
   test('MAX_DELIVERIES_EXCEEDED via precomputed errorCode is attributed to the SDK', () => {
@@ -84,6 +96,16 @@ describe('describeError', () => {
     expect(result.attribution).toBe('sdk');
     expect(result.errorCode).toBe(RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED);
     expect(result.hint).toContain('max-delivery budget');
+  });
+
+  test('WORLD_CONTRACT_ERROR via precomputed errorCode is attributed to the SDK', () => {
+    const result = describeError(
+      undefined,
+      RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
+    );
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+    expect(result.hint).toContain('SDK contract');
   });
 
   test('precomputed errorCode wins over classifyRunError when both are provided', () => {
@@ -141,7 +163,26 @@ describe('describeRunError', () => {
       errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
     });
     expect(result.attribution).toBe('sdk');
-    expect(result.hint).toContain('replay took too long');
+    expect(result.hint).toContain(
+      'replay between step boundaries took too long'
+    );
+  });
+
+  test('CORRUPTED_EVENT_LOG errorCode is attributed to the SDK', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.CORRUPTED_EVENT_LOG,
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.hint).toContain('event log contains');
+  });
+
+  test('CorruptedEventLogError name restores the distinct code', () => {
+    const result = describeRunError({
+      errorName: 'CorruptedEventLogError',
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+    expect(result.hint).toContain('event log contains');
   });
 
   test('MAX_DELIVERIES_EXCEEDED errorCode is attributed to the SDK', () => {
@@ -150,6 +191,14 @@ describe('describeRunError', () => {
     });
     expect(result.attribution).toBe('sdk');
     expect(result.hint).toContain('max-delivery budget');
+  });
+
+  test('WORLD_CONTRACT_ERROR errorCode is attributed to the SDK', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.hint).toContain('SDK contract');
   });
 
   test('RUNTIME_ERROR code without errorName still lands as SDK', () => {
@@ -226,6 +275,18 @@ describe('describeError — payload shape snapshots', () => {
       `);
   });
 
+  test('CorruptedEventLogError payload', () => {
+    expect(
+      describeError(new CorruptedEventLogError('event mismatch'))
+    ).toMatchInlineSnapshot(`
+        {
+          "attribution": "sdk",
+          "errorCode": "CORRUPTED_EVENT_LOG",
+          "hint": "The workflow event log contains orphaned or mismatched events and cannot be replayed. This is an internal workflow SDK error; please report it with the runId.",
+        }
+      `);
+  });
+
   test('REPLAY_TIMEOUT via precomputed errorCode payload', () => {
     expect(
       describeError(undefined, RUN_ERROR_CODES.REPLAY_TIMEOUT)
@@ -233,7 +294,7 @@ describe('describeError — payload shape snapshots', () => {
         {
           "attribution": "sdk",
           "errorCode": "REPLAY_TIMEOUT",
-          "hint": "The workflow replay took too long. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work between step boundaries.",
+          "hint": "The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (\`"use step"\` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. Override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var if needed.",
         }
       `);
   });
@@ -246,6 +307,18 @@ describe('describeError — payload shape snapshots', () => {
         "attribution": "sdk",
         "errorCode": "MAX_DELIVERIES_EXCEEDED",
         "hint": "The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.",
+      }
+    `);
+  });
+
+  test('WORLD_CONTRACT_ERROR via precomputed errorCode payload', () => {
+    expect(
+      describeError(undefined, RUN_ERROR_CODES.WORLD_CONTRACT_ERROR)
+    ).toMatchInlineSnapshot(`
+      {
+        "attribution": "sdk",
+        "errorCode": "WORLD_CONTRACT_ERROR",
+        "hint": "The workflow backend returned data that violated the SDK contract. This is not retryable; please report it with the stack trace and runId.",
       }
     `);
   });

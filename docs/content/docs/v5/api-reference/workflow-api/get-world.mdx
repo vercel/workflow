@@ -1,0 +1,123 @@
+---
+title: getWorld
+description: Async function that resolves the World instance for low-level storage, queuing, and streaming operations.
+type: reference
+summary: Async function that resolves the World instance for low-level workflow storage, queuing, and streaming backends.
+prerequisites:
+  - /docs/deploying
+---
+
+Retrieves the World instance for direct access to workflow storage, queuing, and streaming backends. This async function returns a `Promise<World>` which provides low-level access to manage workflow runs, steps, events, and hooks.
+
+Use this function when you need direct access to the underlying workflow infrastructure, such as listing all runs, querying events, or implementing custom workflow management logic.
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = await getWorld(); // [!code highlight]
+```
+
+## API Signature
+
+### Parameters
+
+This function does not accept any parameters.
+
+### Returns
+
+Returns a `Promise<World>` object:
+
+<TSDoc
+definition={`
+import type { World } from "@workflow/world";
+export default World;`}
+showSections={["returns"]}
+/>
+
+## World SDK
+
+The World object provides access to several entity interfaces. See the [World SDK](/docs/api-reference/workflow-api/world) reference for complete documentation:
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-api/world/storage" title="Storage">
+        Query runs, steps, hooks, and the underlying event log.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/streams" title="Streams">
+        Read, write, and manage data streams.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/queue" title="Queue">
+        Low-level queue dispatch (internal SDK infrastructure).
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/observability" title="Observability">
+        Hydrate step I/O, parse display names, decrypt data.
+    </Card>
+</Cards>
+
+## Data Hydration
+
+Step and run data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. Use `workflow/observability` to hydrate it for display:
+
+```typescript lineNumbers
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+
+const step = await world.steps.get(runId, stepId);
+const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+```
+
+See [Observability Utilities](/docs/api-reference/workflow-api/world/observability) for the full hydration, parsing, and encryption API.
+
+### List Workflow Runs (Display Names)
+
+List workflow runs and derive human-readable names from the `workflowName` field:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { parseWorkflowName } from "@workflow/utils/parse-name"; // [!code highlight]
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const cursor = url.searchParams.get("cursor") ?? undefined;
+
+  try {
+    const world = await getWorld(); // [!code highlight]
+    const runs = await world.runs.list({
+      pagination: { cursor },
+      resolveData: "none",
+    });
+
+    return Response.json({
+      data: runs.data.map((run) => {
+        const parsed = parseWorkflowName(run.workflowName); // [!code highlight]
+
+        return {
+          runId: run.runId,
+          // Use shortName for UI display (e.g., "processOrder") // [!code highlight]
+          displayName: parsed?.shortName ?? run.workflowName, // [!code highlight]
+          // Module info available for debugging // [!code highlight]
+          module: parsed?.moduleSpecifier, // [!code highlight]
+          status: run.status,
+          startedAt: run.startedAt,
+          completedAt: run.completedAt,
+        };
+      }),
+      cursor: runs.cursor,
+    });
+  } catch (error) {
+    return Response.json(
+      { error: "Failed to list workflow runs" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+<Callout type="info">
+  The `workflowName` field contains a machine-readable identifier like `workflow//./src/workflows/order//processOrder`.
+  Use `parseWorkflowName()` from `@workflow/utils/parse-name` to extract the `shortName` (e.g., `"processOrder"`)
+  and `moduleSpecifier` for display in your UI.
+</Callout>
+
+## Related Functions
+
+- [`getRun()`](/docs/api-reference/workflow-api/get-run) - Higher-level API for working with individual runs by ID.
+- [`start()`](/docs/api-reference/workflow-api/start) - Start a new workflow run.

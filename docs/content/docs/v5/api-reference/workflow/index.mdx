@@ -1,0 +1,63 @@
+---
+title: "workflow"
+description: Core workflow primitives for steps, streaming, webhooks, and error handling.
+type: overview
+summary: Explore the core workflow package for steps, streaming, hooks, and error handling.
+related:
+  - /docs/foundations/workflows-and-steps
+  - /docs/foundations/hooks
+  - /docs/foundations/streaming
+  - /docs/foundations/errors-and-retries
+---
+
+Core workflow primitives including steps, context management, streaming, webhooks, and error handling.
+
+## Installation
+
+```package-install
+npm i workflow
+```
+
+## Functions
+
+Workflow SDK contains the following functions you can use inside your workflow functions:
+
+<Cards>
+    <Card href="/docs/api-reference/workflow/get-workflow-metadata" title="getWorkflowMetadata()">
+        A function that returns context about the current workflow execution.
+    </Card>
+    <Card href="/docs/api-reference/workflow/get-step-metadata" title="getStepMetadata()">
+        A function that returns context about the current step execution.
+    </Card>
+    <Card href="/docs/api-reference/workflow/sleep" title="sleep()">
+        Sleeping workflows for a specified duration. Deterministic and replay-safe.
+    </Card>
+    <Card href="/docs/api-reference/workflow/fetch" title="fetch()">
+        Make HTTP requests from within a workflow with automatic retry semantics.
+    </Card>
+    <Card href="/docs/api-reference/workflow/create-hook" title="createHook()">
+        Create a low-level hook to receive arbitrary payloads from external systems.
+    </Card>
+    <Card href="/docs/api-reference/workflow/define-hook" title="defineHook()">
+        Type-safe hook helper for consistent payload types.
+    </Card>
+    <Card href="/docs/api-reference/workflow/create-webhook" title="createWebhook()">
+        Create a webhook that suspends the workflow until an HTTP request is received.
+    </Card>
+    <Card href="/docs/api-reference/workflow/get-writable" title="getWritable()">
+        Access the current workflow run's default stream.
+    </Card>
+</Cards>
+
+## Error Classes
+
+Workflow SDK includes error classes that can be thrown in a workflow or step to change the error exit strategy of a workflow.
+
+<Cards>
+    <Card href="/docs/api-reference/workflow/fatal-error" title="FatalError()">
+        When thrown, marks a step as failed and the step is not retried.
+    </Card>
+    <Card href="/docs/api-reference/workflow/retryable-error" title="RetryableError()">
+        When thrown, marks a step as retryable with an optional parameter.
+    </Card>
+</Cards>

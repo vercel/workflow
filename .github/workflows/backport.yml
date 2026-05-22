@@ -3,9 +3,6 @@ name: Backport to stable
 on:
   push:
     branches: [main]
-  pull_request_target:
-    types: [labeled]
-    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -29,14 +26,10 @@ env:
 jobs:
   backport:
     name: Backport to stable
-    # Run on every push to main, OR when the `backport-stable` label is added
-    # to a merged PR (manual override / re-trigger), OR on manual dispatch.
-    if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request_target' &&
-       github.event.pull_request.merged == true &&
-       github.event.label.name == 'backport-stable')
+    # Runs automatically on every push to `main` (AI decides whether to
+    # backport), or manually via `workflow_dispatch` (always forces a
+    # backport). To force a backport after the fact, re-run this workflow
+    # via `workflow_dispatch` with the relevant commit SHA.
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -49,7 +42,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           PUSH_SHA: ${{ github.event.after }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           DISPATCH_REF: ${{ inputs.ref }}
         run: |
           # On push, we only consider the head commit of the push
@@ -58,8 +50,8 @@ jobs:
           # `main` are forbidden by AGENTS.md. Multi-commit pushes (e.g. an
           # accidental rebase merge) would only have their head commit
           # considered for backport — those edge cases can be handled by
-          # adding the `backport-stable` label to the relevant PRs to
-          # re-trigger this workflow against each one.
+          # re-running this workflow via `workflow_dispatch` with the
+          # relevant commit SHA.
           #
           # On manual `workflow_dispatch`, the `ref` input may specify a
           # particular SHA on `main` (or any commit-ish that resolves to a
@@ -86,8 +78,8 @@ jobs:
               echo "trigger=dispatch" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              SHA="$MERGE_SHA"
-              echo "trigger=label" >> "$GITHUB_OUTPUT"
+              echo "::error::Unexpected event name '$EVENT_NAME'. This workflow only supports 'push' and 'workflow_dispatch'."
+              exit 1
               ;;
           esac
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
@@ -105,10 +97,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ steps.resolve.outputs.sha }}
           TRIGGER: ${{ steps.resolve.outputs.trigger }}
-          LABEL_PR_NUMBER: ${{ github.event.pull_request.number }}
-          LABEL_PR_TITLE: ${{ github.event.pull_request.title }}
-          LABEL_PR_BODY: ${{ github.event.pull_request.body }}
-          LABEL_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           # Helper: write a multiline value to $GITHUB_OUTPUT using a random
           # delimiter so user-controlled content (PR title, body, AI reasoning)
@@ -125,19 +113,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
-          # When triggered by a label event, we already have the PR context.
-          if [ "$TRIGGER" = "label" ]; then
-            echo "pr_number=$LABEL_PR_NUMBER" >> "$GITHUB_OUTPUT"
-            write_multiline_output "pr_title" "$LABEL_PR_TITLE"
-            write_multiline_output "pr_body" "$LABEL_PR_BODY"
-            # Label trigger always forces a backport (explicit user intent).
-            echo "force_backport=true" >> "$GITHUB_OUTPUT"
-            echo "Triggered by label on PR #$LABEL_PR_NUMBER"
-            exit 0
-          fi
-
-          # Push or workflow_dispatch trigger: look up PR associated with
-          # this commit (if any).
+          # Look up PR associated with this commit (if any).
           PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" --jq '.[0] // empty')
 
           if [ -z "$PR_JSON" ]; then
@@ -158,14 +134,13 @@ jobs:
           PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
           PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
           PR_BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
-          HAS_LABEL=$(echo "$PR_JSON" | jq -r '[.labels[].name] | index("backport-stable") != null')
 
-          echo "Found PR #$PR_NUMBER (backport-stable label: $HAS_LABEL)"
+          echo "Found PR #$PR_NUMBER"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           write_multiline_output "pr_title" "$PR_TITLE"
           write_multiline_output "pr_body" "$PR_BODY"
-          # Manual dispatch always forces; otherwise honor the label.
-          if [ "$TRIGGER" = "dispatch" ] || [ "$HAS_LABEL" = "true" ]; then
+          # Manual dispatch always forces a backport (explicit user intent).
+          if [ "$TRIGGER" = "dispatch" ]; then
             echo "force_backport=true" >> "$GITHUB_OUTPUT"
           else
             echo "force_backport=false" >> "$GITHUB_OUTPUT"
@@ -201,7 +176,7 @@ jobs:
 
       - name: Setup pnpm
         if: steps.existing-pr.outputs.exists != 'true'
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
 
       - name: Setup Node.js
         if: steps.existing-pr.outputs.exists != 'true'
@@ -243,12 +218,11 @@ jobs:
           # as a "no backport" decision.
           set -euo pipefail
 
-          # Explicit override: backport-stable label was applied (or label
-          # event triggered this run). Skip AI analysis.
+          # Explicit override: manual workflow_dispatch run. Skip AI analysis.
           if [ "$FORCE_BACKPORT" = "true" ]; then
-            echo "Label override: forcing backport (skipping AI analysis)."
+            echo "Manual dispatch: forcing backport (skipping AI analysis)."
             echo "decision=yes" >> "$GITHUB_OUTPUT"
-            echo "reasoning=The \`backport-stable\` label was applied, forcing this commit to be backported." >> "$GITHUB_OUTPUT"
+            echo "reasoning=This workflow was triggered manually via \`workflow_dispatch\`, forcing this commit to be backported." >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -291,7 +265,9 @@ jobs:
             echo "Recommend AGAINST backport for:"
             echo "- Changes that explicitly build on or require new APIs/behavior introduced only on \`main\`"
             echo "- Major breaking changes intended exclusively for the next major release"
-            echo "- Changes to files/directories that are not maintained on \`stable\` (the \`docs/\` app outside of \`docs/content/\`, and anything under \`skills/\`)"
+            echo "- Changes confined to files/directories that are not maintained on \`stable\`. **This list is exhaustive** — only the following paths qualify; assume every other path IS actively maintained on \`stable\` unless you verify otherwise (see below):"
+            echo "  - the \`docs/\` app outside of \`docs/content/\` (i.e. \`docs/content/\` IS maintained on \`stable\`, the rest of the docs app is not)"
+            echo "  - anything under \`skills/\`"
             echo "- Changesets-only commits, version bump commits (\"Version Packages\"), and similar release plumbing"
             echo "- Commits that revert something that only exists on \`main\`"
             echo ""
@@ -300,6 +276,8 @@ jobs:
             echo "Analyze the commit below and decide whether to recommend a backport."
             echo ""
             echo "When in doubt, lean toward recommending a backport — humans review the resulting PR and can close it if it's not worth merging."
+            echo ""
+            echo "**Important:** before recommending AGAINST a backport on the grounds that a file or directory is not maintained on \`stable\`, you MUST verify your claim. The exhaustive list above is the only set of paths you may assume are absent or stubbed on \`stable\` without checking. For any other path, use the \`bash\` tool to run \`git ls-tree origin/stable -- <path>\` (or \`git show origin/stable:<path>\`) and confirm the path is actually absent or a stub on \`stable\` before citing it as a reason against backport. Do not guess based on file/directory names — for example, names containing words like \"docs\", \"preview\", \"tarball\", or \"workflow\" do not imply a path is main-only."
             echo ""
             echo "## Output format"
             echo ""
@@ -349,10 +327,10 @@ jobs:
           # code alone — but with `set -e` above, any non-zero exit will also
           # fail the job. The real signal is whether the decision file was
           # produced.
-          opencode run --model "vercel/${AI_MODEL}" "$(cat .backport-decision-prompt.txt)"
+          opencode run --model "vercel/${AI_MODEL}" < .backport-decision-prompt.txt
 
           if [ ! -f "$DECISION_FILE" ]; then
-            echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, add the \`backport-stable\` label to the source PR."
+            echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, re-run this workflow via \`workflow_dispatch\` with the relevant commit SHA."
             exit 1
           fi
 
@@ -397,18 +375,29 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const reasoning = process.env.REASONING;
-            const sha = process.env.SHA.slice(0, 7);
+            const fullSha = process.env.SHA;
+            const shortSha = fullSha.slice(0, 7);
             const prNumber = Number(process.env.PR_NUMBER);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const workflowUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/backport.yml`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
-                `**No backport to \`stable\`** for ${sha} (AI decision).`,
+                `**No backport to \`stable\`** for ${shortSha} ([AI decision](${runUrl})).`,
                 '',
                 reasoning,
                 '',
-                'To override, add the `backport-stable` label to this PR.'
+                // GitHub Actions doesn't support prefilling workflow_dispatch
+                // inputs via URL query params (community/community#51159), so
+                // we paste the full SHA here for easy copy-paste into the
+                // "Commit SHA" input on the workflow run page.
+                `To override, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` and paste this commit SHA into the \`ref\` input:`,
+                '',
+                '```',
+                fullSha,
+                '```'
               ].join('\n')
             });
 
@@ -561,7 +550,7 @@ jobs:
           # rejected tool calls). The outcome-file presence + `set -e` on
           # this step's exit are what we rely on to distinguish infra vs.
           # AI-said-no.
-          opencode run --model "vercel/${AI_MODEL}" "$(cat .backport-conflict-prompt.txt)"
+          opencode run --model "vercel/${AI_MODEL}" < .backport-conflict-prompt.txt
 
           if [ ! -f "$OUTCOME_FILE" ]; then
             echo "::error::AI conflict resolution did not produce ${OUTCOME_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, rejected tool call, opencode crash) — check the step output above. To resolve manually, see the source PR for instructions."
@@ -844,6 +833,7 @@ jobs:
           CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
           AI_REASONING: ${{ steps.decide.outputs.reasoning }}
           TRIGGER: ${{ steps.resolve.outputs.trigger }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # Build the PR title.
           if [ -n "$PR_NUMBER" ]; then
@@ -856,16 +846,13 @@ jobs:
           # Build the PR body.
           {
             if [ -n "$PR_NUMBER" ]; then
-              echo "Automated backport of #${PR_NUMBER} to \`stable\`."
+              echo "Automated backport of #${PR_NUMBER} to \`stable\` ([backport job run](${RUN_URL}))."
             else
-              echo "Automated backport of ${SHA} to \`stable\`."
+              echo "Automated backport of ${SHA} to \`stable\` ([backport job run](${RUN_URL}))."
             fi
             echo ""
 
             case "$TRIGGER" in
-              label)
-                echo "Triggered by the \`backport-stable\` label."
-                ;;
               dispatch)
                 echo "Triggered manually via \`workflow_dispatch\`."
                 ;;
@@ -911,6 +898,7 @@ jobs:
             const cherryPickStatus = process.env.CHERRY_PICK_STATUS;
             const prUrl = process.env.PR_URL;
             const prNumber = Number(process.env.PR_NUMBER);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const conflictNote = cherryPickStatus === 'conflict'
               ? ' Merge conflicts were resolved by AI — please review carefully.'
               : '';
@@ -918,7 +906,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: `Backport PR opened against \`stable\`: ${prUrl}.${conflictNote}`
+              body: `Backport PR opened against \`stable\`: ${prUrl}.${conflictNote} ([backport job run](${runUrl}))`
             });
 
       - name: Comment on conflict failure
@@ -942,12 +930,13 @@ jobs:
             const sha = process.env.SHA;
             const prNumber = Number(process.env.PR_NUMBER);
             const shortSha = sha.slice(0, 12);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
-                '**Backport to `stable` failed** — the cherry-pick had conflicts that could not be resolved automatically.',
+                `**Backport to \`stable\` failed** — the cherry-pick had conflicts that could not be resolved automatically ([backport job run](${runUrl})).`,
                 '',
                 'To resolve manually, push a backport branch and open a PR against `stable` (the workflow never pushes directly to `stable`). Note: this repository requires verified signatures on every branch, so your local commits must be signed (`git config commit.gpgsign true` with a configured GPG/SSH signing key, or `git cherry-pick -S`).',
                 '```bash',
