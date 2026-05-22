@@ -5,8 +5,8 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
-    "build": "node scripts/pack.mjs && vite build",
-    "dev": "node scripts/pack.mjs && vite",
+    "build": "node scripts/pack.ts && vite build",
+    "dev": "node scripts/pack.ts && vite",
     "test:smoke": "node ./scripts/check-tarballs-smoke.mjs"
   },
   "dependencies": {

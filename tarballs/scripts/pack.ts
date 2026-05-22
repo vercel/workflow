@@ -7,6 +7,51 @@ import zlib from 'node:zlib';
 
 const exec = promisify(cp.exec);
 
+interface PackageJson {
+  name: string;
+  version: string;
+  private?: boolean;
+  description?: string;
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+}
+
+export interface TarballFile {
+  path: string;
+  size: number;
+}
+
+export interface PackedPackage {
+  name: string;
+  escapedName: string;
+  version: string;
+  description?: string;
+  tarballSizeBytes: number;
+  unpackedSizeBytes: number;
+  fileCount: number;
+  files: TarballFile[];
+  url: string;
+}
+
+export interface BuildContext {
+  fullSha: string;
+  shortSha: string;
+  branch?: string;
+  pr?: string;
+  repoUrl?: string;
+  commitUrl?: string;
+  branchUrl?: string;
+  prUrl?: string;
+  builtAt: string;
+}
+
+export interface Catalog {
+  build: BuildContext;
+  packages: PackedPackage[];
+}
+
 const rootDir = fileURLToPath(new URL('../../', import.meta.url));
 const packagesDir = path.join(rootDir, 'packages');
 const outDir = fileURLToPath(new URL('../public', import.meta.url));
@@ -16,6 +61,11 @@ const generatedVersionFiles = [
   'dist/version.d.ts',
 ];
 
+interface FileSnapshot {
+  path: string;
+  content: string;
+}
+
 async function main() {
   const sha = await getSha();
   const localBranch = await getLocalBranch();
@@ -23,7 +73,12 @@ async function main() {
   await fs.mkdir(outDir, { recursive: true });
 
   const packageDirs = await fs.readdir(packagesDir);
-  const packages = [];
+  const packages: Array<{
+    name: string;
+    dir: string;
+    packageJson: PackageJson;
+    originalContent: string;
+  }> = [];
 
   for (const packageDir of packageDirs) {
     const dir = path.join(packagesDir, packageDir);
@@ -37,7 +92,7 @@ async function main() {
     }
 
     const originalContent = await fs.readFile(packageJsonPath, 'utf8');
-    const packageJson = JSON.parse(originalContent);
+    const packageJson: PackageJson = JSON.parse(originalContent);
 
     if (packageJson.private) continue;
 
@@ -53,16 +108,18 @@ async function main() {
   const baseUrl = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : '';
-  const packed = [];
+  const packed: PackedPackage[] = [];
 
   for (const { name, dir, packageJson, originalContent } of packages) {
     const packageJsonPath = path.join(dir, 'package.json');
 
-    const modifiedPackageJson = JSON.parse(JSON.stringify(packageJson));
+    const modifiedPackageJson: PackageJson = JSON.parse(
+      JSON.stringify(packageJson)
+    );
     const previewVersion = `${packageJson.version}-${sha}`;
     modifiedPackageJson.version = previewVersion;
 
-    const updateDeps = (deps) => {
+    const updateDeps = (deps: Record<string, string> | undefined) => {
       if (!deps) return;
       for (const depName of Object.keys(deps)) {
         if (packageNames.has(depName)) {
@@ -77,7 +134,7 @@ async function main() {
     updateDeps(modifiedPackageJson.devDependencies);
     updateDeps(modifiedPackageJson.peerDependencies);
 
-    const versionFileSnapshots = [];
+    const versionFileSnapshots: FileSnapshot[] = [];
 
     try {
       await fs.writeFile(
@@ -110,7 +167,7 @@ async function main() {
         url: `${baseUrl}/${escapedName}.tgz`,
       });
       console.log(
-        `Packed ${name} (${formatBytes(stat.size)} -> ${formatBytes(unpackedSizeBytes)} unpacked, ${files.length} files)`
+        `Packed ${name} (${formatBytes(stat.size)} → ${formatBytes(unpackedSizeBytes)} unpacked, ${files.length} files)`
       );
     } finally {
       await restoreFiles(versionFileSnapshots);
@@ -118,7 +175,7 @@ async function main() {
     }
   }
 
-  const catalog = {
+  const catalog: Catalog = {
     build: getBuildContext(sha, localBranch),
     packages: packed,
   };
@@ -133,29 +190,29 @@ async function main() {
   );
 }
 
-function formatBytes(bytes) {
+function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
 }
 
 async function updateGeneratedVersionFiles(
-  packageDir,
-  packageJson,
-  version,
-  snapshots
-) {
+  packageDir: string,
+  packageJson: PackageJson,
+  version: string,
+  snapshots: FileSnapshot[]
+): Promise<void> {
   if (!usesGeneratedVersionFile(packageJson)) {
     return;
   }
 
   for (const relativePath of generatedVersionFiles) {
     const filePath = path.join(packageDir, relativePath);
-    let content;
+    let content: string;
     try {
       content = await fs.readFile(filePath, 'utf8');
     } catch (error) {
-      if (error.code === 'ENOENT') continue;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw error;
     }
 
@@ -164,21 +221,21 @@ async function updateGeneratedVersionFiles(
   }
 }
 
-function usesGeneratedVersionFile(packageJson) {
+function usesGeneratedVersionFile(packageJson: PackageJson): boolean {
   return Object.values(packageJson.scripts ?? {}).some(
     (script) =>
       script.includes('genversion') && script.includes('src/version.ts')
   );
 }
 
-function renderGeneratedVersionFile(filePath, version) {
+function renderGeneratedVersionFile(filePath: string, version: string): string {
   if (filePath.endsWith('.d.ts')) {
     return `export declare const version: ${JSON.stringify(version)};\n`;
   }
   return `export const version = ${JSON.stringify(version)};\n`;
 }
 
-async function restoreFiles(snapshots) {
+async function restoreFiles(snapshots: FileSnapshot[]): Promise<void> {
   for (const snapshot of snapshots.slice().reverse()) {
     await fs.writeFile(snapshot.path, snapshot.content);
   }
@@ -187,8 +244,8 @@ async function restoreFiles(snapshots) {
 /**
  * List regular files inside a `.tgz` tarball, returning `{path, size}` for
  * each entry. Implemented as an in-process tar reader so the result is
- * identical on macOS (BSD tar) and Linux (GNU tar); `tar -tvzf` formats its
- * verbose output differently on each, and parsing it is fragile.
+ * identical on macOS (BSD tar) and Linux (GNU tar) — `tar -tvzf` formats
+ * its verbose output differently on each, and parsing it is fragile.
  *
  * We unzip the whole tarball into memory (npm pack outputs are small) and
  * walk 512-byte blocks. Each entry is one 512-byte ustar header followed
@@ -196,12 +253,12 @@ async function restoreFiles(snapshots) {
  * (typeflag `0` or NUL); directories, symlinks, and pax/long-name
  * extension entries are consumed but not emitted.
  */
-async function listTarballFiles(tgzPath) {
+async function listTarballFiles(tgzPath: string): Promise<TarballFile[]> {
   const compressed = await fs.readFile(tgzPath);
   const buf = zlib.gunzipSync(compressed);
-  const files = [];
+  const files: TarballFile[] = [];
   let offset = 0;
-  let pendingLongName;
+  let pendingLongName: string | undefined;
 
   while (offset + 512 <= buf.length) {
     const header = buf.subarray(offset, offset + 512);
@@ -229,7 +286,7 @@ async function listTarballFiles(tgzPath) {
     }
 
     if (typeflag === 'x' || typeflag === 'g') {
-      // pax extended / global headers; skip.
+      // pax extended / global headers — skip.
       offset += contentBlocks * 512;
       continue;
     }
@@ -249,13 +306,17 @@ async function listTarballFiles(tgzPath) {
   return files;
 }
 
-function readNullTerminatedString(buf, offset, len) {
+function readNullTerminatedString(
+  buf: Buffer,
+  offset: number,
+  len: number
+): string {
   const slice = buf.subarray(offset, offset + len);
   const end = slice.indexOf(0);
   return slice.subarray(0, end === -1 ? len : end).toString('utf8');
 }
 
-function getBuildContext(sha, localBranch) {
+function getBuildContext(sha: string, localBranch?: string): BuildContext {
   const fullSha = process.env.VERCEL_GIT_COMMIT_SHA || sha;
   const shortSha = fullSha.slice(0, 7);
   const branch = process.env.VERCEL_GIT_COMMIT_REF || localBranch;
@@ -264,10 +325,10 @@ function getBuildContext(sha, localBranch) {
   const slug = process.env.VERCEL_GIT_REPO_SLUG;
   const provider = process.env.VERCEL_GIT_PROVIDER;
 
-  let repoUrl;
-  let commitUrl;
-  let prUrl;
-  let branchUrl;
+  let repoUrl: string | undefined;
+  let commitUrl: string | undefined;
+  let prUrl: string | undefined;
+  let branchUrl: string | undefined;
 
   if (owner && slug && (!provider || provider === 'github')) {
     repoUrl = `https://github.com/${owner}/${slug}`;
@@ -289,7 +350,7 @@ function getBuildContext(sha, localBranch) {
   };
 }
 
-async function getLocalBranch() {
+async function getLocalBranch(): Promise<string | undefined> {
   try {
     const { stdout } = await exec('git rev-parse --abbrev-ref HEAD', {
       cwd: rootDir,
@@ -301,7 +362,7 @@ async function getLocalBranch() {
   }
 }
 
-async function getSha() {
+async function getSha(): Promise<string> {
   try {
     const { stdout } = await exec('git rev-parse --short HEAD', {
       cwd: rootDir,
