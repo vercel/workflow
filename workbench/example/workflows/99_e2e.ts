@@ -1727,22 +1727,77 @@ async function abortFromStep(
 /**
  * Step that uses fetch with an AbortSignal.
  * Uses a URL that intentionally delays, so the abort cancels it.
+ *
+ * Accepts a list of URLs and tries them in order, falling back to the
+ * next on 5xx (or non-AbortError network failure) so a single bad upstream
+ * doesn't flake the abort-fetch tests. Empirically, httpbin.org returns
+ * 502 from GH Actions runners often enough to dominate CI flakiness;
+ * pairing it with a second slow endpoint gives both belt and suspenders.
+ *
+ * Reports `status`, `elapsedMs`, and the `url` that resolved so that when
+ * the abort-fetch tests do fail, the assertion message shows exactly what
+ * the upstream(s) returned instead of leaving us guessing why the race
+ * winner was `fetch` instead of `timeout`.
  */
 async function fetchWithSignal(
-  url: string,
+  urls: readonly string[],
   signal: AbortSignal
-): Promise<{ ok: boolean; aborted: boolean }> {
+): Promise<{
+  ok: boolean;
+  aborted: boolean;
+  status?: number;
+  url?: string;
+  elapsedMs: number;
+  attempts: { url: string; status?: number; error?: string }[];
+}> {
   'use step';
-  try {
-    const response = await globalThis.fetch(url, { signal });
-    return { ok: response.ok, aborted: false };
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      return { ok: false, aborted: true };
+  const startedAt = Date.now();
+  const attempts: { url: string; status?: number; error?: string }[] = [];
+  for (const url of urls) {
+    try {
+      const response = await globalThis.fetch(url, { signal });
+      attempts.push({ url, status: response.status });
+      if (response.ok) {
+        return {
+          ok: true,
+          aborted: false,
+          status: response.status,
+          url,
+          elapsedMs: Date.now() - startedAt,
+          attempts,
+        };
+      }
+      // Non-2xx — fall through and try the next URL.
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        attempts.push({ url, error: 'AbortError' });
+        return {
+          ok: false,
+          aborted: true,
+          elapsedMs: Date.now() - startedAt,
+          attempts,
+        };
+      }
+      attempts.push({ url, error: err?.message ?? String(err) });
+      // Network error — fall through and try the next URL.
     }
-    throw err;
   }
+  return {
+    ok: false,
+    aborted: false,
+    elapsedMs: Date.now() - startedAt,
+    attempts,
+  };
 }
+
+// Slow endpoints used by the abort-fetch e2e tests. Tried in order; postman-
+// echo first because httpbin.org has historically returned 502s from GH
+// Actions. Both cap at /delay/10 in practice, which is comfortably longer
+// than the 2s race threshold these tests use.
+const SLOW_FETCH_URLS = [
+  'https://postman-echo.com/delay/10',
+  'https://httpbin.org/delay/10',
+] as const;
 
 /**
  * E2E: Basic timeout cancellation.
@@ -2194,15 +2249,14 @@ export async function abortFetchInFlightWorkflow() {
   'use workflow';
 
   const controller = new AbortController();
-  // httpbin.org/delay/N holds the response open for N seconds — used here
-  // as a slow endpoint that the abort can cancel mid-flight. Same external-
-  // service pattern as other e2e workflows in this file (jsonplaceholder,
-  // example.com). Avoids needing a per-workbench /api/delay route, which
-  // would only exist on the one workbench it was added to.
-  const fetchPromise = fetchWithSignal(
-    'https://httpbin.org/delay/30',
-    controller.signal
-  );
+  // SLOW_FETCH_URLS holds the response open for ~10s — used here as a slow
+  // endpoint that the abort can cancel mid-flight. Same external-service
+  // pattern as other e2e workflows in this file (jsonplaceholder, example.com).
+  // Avoids needing a per-workbench /api/delay route, which would only exist
+  // on the one workbench it was added to. The step falls back to the second
+  // URL only if the first returns a 5xx or non-AbortError network failure,
+  // so a transient outage on one upstream doesn't flake the test.
+  const fetchPromise = fetchWithSignal(SLOW_FETCH_URLS, controller.signal);
 
   // Race the fetch against a 2s sleep. Sleep wins; abort fires.
   const winner = await Promise.race([
@@ -2245,10 +2299,7 @@ export async function abortVoidSleepTimeoutWorkflow() {
   const controller = new AbortController();
   void sleep('2s').then(() => controller.abort());
 
-  return await fetchWithSignal(
-    'https://httpbin.org/delay/30',
-    controller.signal
-  );
+  return await fetchWithSignal(SLOW_FETCH_URLS, controller.signal);
 }
 
 /**
