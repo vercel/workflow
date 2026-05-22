@@ -735,16 +735,13 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       // Note: "." is to avoid returning a falsy value when the date is invalid
       return valid ? value.toISOString() : '.';
     },
-    // DOMException is a special case: it has a unique constructor signature
+    // DOMException is a special case: in Node.js it passes isNativeError()
+    // and instanceof Error, but has a unique constructor signature
     // (message, name) and a read-only numeric `code` property derived from
-    // `name`. It must be checked before the generic Error reducer, and it
-    // cannot rely on util.types.isNativeError() because Node versions differ
-    // on whether DOMException is tagged as a native Error.
+    // `name`. It must be checked before the generic Error reducer.
     DOMException: (value) => {
-      if (value === null || typeof value !== 'object') return false;
+      if (!types.isNativeError(value)) return false;
       if (value.constructor?.name !== 'DOMException') return false;
-      if (typeof value.message !== 'string') return false;
-      if (typeof value.name !== 'string') return false;
       const reduced: SerializableSpecial['DOMException'] = {
         message: value.message,
         name: value.name,
