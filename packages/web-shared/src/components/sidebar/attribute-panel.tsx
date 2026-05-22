@@ -318,8 +318,29 @@ const sortByAttributeOrder = (a: string, b: string): number => {
  * Display names for attributes that should render differently from their key.
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
+  moduleSpecifier: 'Module',
+  workflowName: 'Workflow Name',
+  stepName: 'Step Name',
+  stepId: 'Step ID',
+  hookId: 'Hook ID',
+  attempt: 'Attempts',
+  eventId: 'Event ID',
+  runId: 'Run ID',
+  eventType: 'Event Type',
+  correlationId: 'Correlation ID',
+  deploymentId: 'Deployment ID',
+  specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
-  receivedCount: 'times resolved',
+  createdAt: 'Created',
+  startedAt: 'Started',
+  updatedAt: 'Updated',
+  completedAt: 'Completed',
+  expiredAt: 'Expired',
+  retryAfter: 'Retry After',
+  resumeAt: 'Resume',
+  lastReceivedAt: 'Last Received',
+  disposedAt: 'Disposed',
+  receivedCount: 'Times Resolved',
 };
 
 /**
@@ -406,22 +427,21 @@ const attributeToDisplayFn: Record<
   (value: unknown, context?: DisplayContext) => null | string | ReactNode
 > = {
   // Names that need pretty-printing
-  workflowName: (value: unknown) =>
-    parseWorkflowName(String(value))?.shortName ?? '?',
+  workflowName: (_value: unknown) => null,
   moduleSpecifier: (value: unknown) => getModuleSpecifierFromName(value),
-  stepName: (value: unknown) =>
-    parseStepName(String(value))?.shortName ?? String(value),
+  stepName: (_value: unknown) => null,
   // IDs
-  runId: (value: unknown) => String(value),
-  stepId: (value: unknown) => String(value),
+  runId: (_value: unknown) => null,
+  stepId: (_value: unknown) => null,
   hookId: (value: unknown) => String(value),
   eventId: (value: unknown) => String(value),
   // Run/step details
-  status: (value: unknown) => String(value),
+  status: (_value: unknown) => null,
   attempt: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
   isWebhook: (value: unknown) => String(value),
+  isSystem: (value: unknown) => String(value),
   receivedCount: (value: unknown) => String(value),
   lastReceivedAt: localMillisecondTimeOrNull,
   disposedAt: localMillisecondTimeOrNull,
@@ -440,9 +460,9 @@ const attributeToDisplayFn: Record<
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
-  updatedAt: timestampWithTooltipOrNull,
+  updatedAt: (_value: unknown) => null,
   completedAt: timestampWithTooltipOrNull,
-  expiredAt: timestampWithTooltipOrNull,
+  expiredAt: (_value: unknown) => null,
   retryAfter: timestampWithTooltipOrNull,
   resumeAt: timestampWithTooltipOrNull,
   // Resolved attributes, won't actually use this function
@@ -496,7 +516,7 @@ const attributeToDisplayFn: Record<
           <DetailCard
             summary="Input (no data)"
             disabled
-            summaryClassName="text-base py-2"
+            summaryClassName="text-label-14 font-medium py-2"
           />
         );
       }
@@ -505,7 +525,7 @@ const attributeToDisplayFn: Record<
         <>
           <DetailCard
             summary={`Input (${argCount} ${argLabel})`}
-            summaryClassName="text-base py-2"
+            summaryClassName="text-label-14 font-medium py-2"
             contentClassName="mt-0"
           >
             {Array.isArray(args)
@@ -536,14 +556,14 @@ const attributeToDisplayFn: Record<
         <DetailCard
           summary="Input (no data)"
           disabled
-          summaryClassName="text-base py-2"
+          summaryClassName="text-label-14 font-medium py-2"
         />
       );
     }
     return (
       <DetailCard
         summary={`Input (${argCount} ${argLabel})`}
-        summaryClassName="text-base py-2"
+        summaryClassName="text-label-14 font-medium py-2"
         contentClassName="mt-0"
       >
         {Array.isArray(value)
@@ -563,7 +583,7 @@ const attributeToDisplayFn: Record<
     return (
       <DetailCard
         summary="Output"
-        summaryClassName="text-base py-2"
+        summaryClassName="text-label-14 font-medium py-2"
         contentClassName="mt-0"
       >
         {JsonBlock(value)}
@@ -581,7 +601,7 @@ const attributeToDisplayFn: Record<
       return (
         <DetailCard
           summary="Error"
-          summaryClassName="text-base py-2"
+          summaryClassName="text-label-14 font-medium py-2"
           contentClassName="mt-0"
         >
           <ErrorStackBlock value={value} />
@@ -592,7 +612,7 @@ const attributeToDisplayFn: Record<
     return (
       <DetailCard
         summary="Error"
-        summaryClassName="text-base py-2"
+        summaryClassName="text-label-14 font-medium py-2"
         contentClassName="mt-0"
       >
         {JsonBlock(value)}
@@ -604,6 +624,10 @@ const attributeToDisplayFn: Record<
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
+  },
+  errorCode: (value: unknown) => {
+    if (typeof value !== 'string' || value.length === 0) return null;
+    return String(value);
   },
 };
 
@@ -642,18 +666,13 @@ export const AttributeBlock = ({
   context?: DisplayContext;
 }) => {
   const isExpandableLoadingTarget =
-    attribute === 'input' ||
-    attribute === 'output' ||
-    attribute === 'eventData';
+    attribute === 'input' || attribute === 'eventData';
   if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
     return (
       <div
-        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
+        className={`my-2 flex flex-col ${attribute === 'input' ? 'gap-2 my-3.5' : 'gap-0'}`}
       >
-        <span
-          className={`${attribute === 'input' || attribute === 'output' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
         <Skeleton className="h-9 w-full rounded-md" />
@@ -701,10 +720,7 @@ export const AttributeBlock = ({
         key={attribute}
         className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'gap-2 my-3.5' : 'gap-0'}`}
       >
-        <span
-          className={`${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
         <span className="text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
@@ -773,9 +789,9 @@ export const AttributePanel = ({
 
     if (!isLoading) return present;
 
-    // During loading, ensure input/output appear so their skeletons render
+    // During loading, ensure input appears so its skeleton renders
     // in the correct position (above the events section).
-    const loadingDefaults = ['input', 'output'];
+    const loadingDefaults = ['input'];
     for (const key of loadingDefaults) {
       if (!present.includes(key)) {
         present.push(key);
@@ -848,7 +864,7 @@ export const AttributePanel = ({
             {/* Basic attributes in a vertical layout with border */}
             {visibleBasicAttributes.length > 0 && (
               <div
-                className="mb-3 flex flex-col overflow-hidden rounded-lg border"
+                className="mb-3 flex flex-col overflow-hidden rounded-md border"
                 style={{
                   borderColor: 'var(--ds-gray-300)',
                 }}

@@ -1,3 +1,6 @@
+import { copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import {
@@ -5,6 +8,188 @@ import {
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
+import { parseEnvironmentFlag } from './environment-flag.js';
+
+const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
+const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
+  '@vercel/queue',
+  '@vercel/oidc',
+  '@vercel/cli-auth',
+  '@napi-rs/keyring',
+];
+const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
+  VERCEL_WORLD_PACKAGE,
+  ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
+];
+
+const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
+const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
+const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
+const workflowSerdeSymbolPattern =
+  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
+const workflowSerdeComputedPropertyPattern =
+  /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
+
+const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
+const warnedAutoRemovedServerExternalPackages = new Set<string>();
+
+interface WorkflowPatternMatch {
+  hasUseWorkflow: boolean;
+  hasUseStep: boolean;
+  hasSerde: boolean;
+}
+
+interface DetectedServerExternalPackage {
+  packageName: string;
+  hasUseWorkflow: boolean;
+  hasUseStep: boolean;
+  hasSerde: boolean;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isResolvablePackageSpecifier(specifier: string): boolean {
+  if (specifier.startsWith('.') || specifier.startsWith('/')) {
+    return false;
+  }
+  if (specifier.startsWith('$')) {
+    return false;
+  }
+  if (specifier.includes('*') || specifier.includes(':')) {
+    return false;
+  }
+
+  return true;
+}
+
+function detectWorkflowPatterns(source: string): WorkflowPatternMatch {
+  const hasUseWorkflow = useWorkflowPattern.test(source);
+  const hasUseStep = useStepPattern.test(source);
+  const hasSerdeImport = workflowSerdeImportPattern.test(source);
+  const hasSerdeSymbol = workflowSerdeSymbolPattern.test(source);
+  const hasSerdeComputedProperty =
+    workflowSerdeComputedPropertyPattern.test(source);
+
+  return {
+    hasUseWorkflow,
+    hasUseStep,
+    hasSerde: hasSerdeImport || hasSerdeSymbol || hasSerdeComputedProperty,
+  };
+}
+
+function getIssueLabels(detected: DetectedServerExternalPackage): string[] {
+  const issues: string[] = [];
+  if (detected.hasUseWorkflow) {
+    issues.push('"use workflow" functions');
+  }
+  if (detected.hasUseStep) {
+    issues.push('"use step" functions');
+  }
+  if (detected.hasSerde) {
+    issues.push('serialization classes');
+  }
+  return issues;
+}
+
+function hasWorkflowSerdeDependency(packageJson: unknown): boolean {
+  if (!isPlainObject(packageJson)) {
+    return false;
+  }
+
+  const dependencies = isPlainObject(packageJson.dependencies)
+    ? packageJson.dependencies
+    : {};
+  const peerDependencies = isPlainObject(packageJson.peerDependencies)
+    ? packageJson.peerDependencies
+    : {};
+
+  return (
+    Object.hasOwn(dependencies, '@workflow/serde') ||
+    Object.hasOwn(peerDependencies, '@workflow/serde')
+  );
+}
+
+async function detectServerExternalPackage(
+  packageName: string,
+  workingDir: string
+): Promise<DetectedServerExternalPackage | null> {
+  if (!isResolvablePackageSpecifier(packageName)) {
+    return null;
+  }
+
+  let hasUseWorkflow = false;
+  let hasUseStep = false;
+  let hasSerde = false;
+
+  try {
+    const packageJsonPath = require.resolve(`${packageName}/package.json`, {
+      paths: [workingDir],
+    });
+    const packageJsonSource = await readFile(packageJsonPath, 'utf-8');
+    const packageJson = JSON.parse(packageJsonSource) as unknown;
+    hasSerde = hasWorkflowSerdeDependency(packageJson);
+  } catch {
+    // Best-effort only. Continue to source scanning.
+  }
+
+  try {
+    const entryPath = require.resolve(packageName, {
+      paths: [workingDir],
+    });
+    const source = await readFile(entryPath, 'utf-8');
+    const patterns = detectWorkflowPatterns(source);
+    hasUseWorkflow = patterns.hasUseWorkflow;
+    hasUseStep = patterns.hasUseStep;
+    hasSerde ||= patterns.hasSerde;
+  } catch {
+    // Best-effort only. Use whichever signal we already have.
+  }
+
+  if (!hasUseWorkflow && !hasUseStep && !hasSerde) {
+    return null;
+  }
+
+  return {
+    packageName,
+    hasUseWorkflow,
+    hasUseStep,
+    hasSerde,
+  };
+}
+
+function warnAboutAutoRemovedServerExternalPackages(
+  detectedPackages: DetectedServerExternalPackage[]
+): void {
+  const newlyDetectedPackages = detectedPackages.filter(({ packageName }) => {
+    return !warnedAutoRemovedServerExternalPackages.has(packageName);
+  });
+
+  if (newlyDetectedPackages.length === 0) {
+    return;
+  }
+
+  for (const { packageName } of newlyDetectedPackages) {
+    warnedAutoRemovedServerExternalPackages.add(packageName);
+  }
+
+  const packageDescriptions = newlyDetectedPackages
+    .map(
+      (detected) =>
+        `"${detected.packageName}" (${getIssueLabels(detected).join(', ')})`
+    )
+    .join(', ');
+  const packageNames = newlyDetectedPackages
+    .map((detected) => `"${detected.packageName}"`)
+    .join(', ');
+
+  console.warn(
+    `\n⚠ Workflow removed ${packageDescriptions} from serverExternalPackages for this build.` +
+      `\n  These packages contain workflow code and must be transformed by the workflow compiler.` +
+      `\n  Remove ${packageNames} from serverExternalPackages in next.config to silence this warning.\n`
+  );
+}
 
 function resolveNextVersion(workingDir: string): string {
   const errors: unknown[] = [];
@@ -43,6 +228,93 @@ function resolveNextVersion(workingDir: string): string {
   );
 }
 
+function fileExists(path: string): boolean {
+  try {
+    const stats = statSync(path);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+function getWorkflowManifestCopyPaths({
+  projectDir,
+  distDir,
+}: {
+  projectDir: string;
+  distDir: string;
+}): { manifestPath: string; diagnosticsManifestPath: string } | undefined {
+  const manifestCandidates = [
+    join(projectDir, 'app/.well-known/workflow/v1/manifest.json'),
+    join(projectDir, 'src/app/.well-known/workflow/v1/manifest.json'),
+    join(projectDir, 'public/.well-known/workflow/v1/manifest.json'),
+  ];
+  const manifestPath = manifestCandidates.find(fileExists);
+
+  if (!manifestPath) {
+    return;
+  }
+
+  const resolvedDistDir = isAbsolute(distDir)
+    ? distDir
+    : join(projectDir, distDir);
+  const diagnosticsManifestPath = join(
+    resolvedDistDir,
+    'diagnostics',
+    'workflows-manifest.json'
+  );
+  return { manifestPath, diagnosticsManifestPath };
+}
+
+async function copyWorkflowDiagnosticsManifest(metadata: {
+  projectDir: string;
+  distDir: string;
+}): Promise<void> {
+  const paths = getWorkflowManifestCopyPaths(metadata);
+  if (!paths) {
+    return;
+  }
+
+  const { manifestPath, diagnosticsManifestPath } = paths;
+  await mkdir(dirname(diagnosticsManifestPath), { recursive: true });
+  await copyFile(manifestPath, diagnosticsManifestPath);
+}
+
+function copyWorkflowDiagnosticsManifestSync(metadata: {
+  projectDir: string;
+  distDir: string;
+}): void {
+  const paths = getWorkflowManifestCopyPaths(metadata);
+  if (!paths) {
+    return;
+  }
+
+  const { manifestPath, diagnosticsManifestPath } = paths;
+  mkdirSync(dirname(diagnosticsManifestPath), { recursive: true });
+  copyFileSync(manifestPath, diagnosticsManifestPath);
+}
+
+function registerWorkflowDiagnosticsManifestCopy(metadata: {
+  projectDir: string;
+  distDir: string;
+}): void {
+  const marker = '__workflowDiagnosticsManifestCopies';
+  const globalWithMarker = globalThis as typeof globalThis & {
+    [marker]?: Array<{ projectDir: string; distDir: string }>;
+  };
+
+  if (!globalWithMarker[marker]) {
+    globalWithMarker[marker] = [];
+    process.once('exit', () => {
+      for (const copyMetadata of globalWithMarker[marker] || []) {
+        copyWorkflowDiagnosticsManifestSync(copyMetadata);
+      }
+    });
+  }
+
+  globalWithMarker[marker].push(metadata);
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -58,11 +330,28 @@ export function withWorkflow(
       local?: {
         port?: number;
       };
+      /**
+       * Controls how source maps are emitted for workflow bundles. Accepts
+       * the same values as esbuild's `sourcemap` option: `true`/`'inline'`
+       * (default), `'linked'`, `'external'`, `'both'`, or `false` to omit
+       * source maps. Can also be set via the `WORKFLOW_SOURCEMAP`
+       * environment variable.
+       */
+      sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
     };
   } = {}
 ) {
-  if (workflows?.lazyDiscovery) {
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
+  const lazyDiscoveryOverride = parseEnvironmentFlag(
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY
+  );
+  if (lazyDiscoveryOverride === undefined) {
+    if (workflows?.lazyDiscovery) {
+      process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
+    }
+  } else {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = lazyDiscoveryOverride
+      ? '1'
+      : '0';
   }
 
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
@@ -96,6 +385,64 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    nextConfig.serverExternalPackages = [
+      ...new Set([
+        ...(nextConfig.serverExternalPackages || []),
+        // Keep the Vercel world and its native-prone dependencies external so
+        // local builds do not try to parse @vercel/queue's keyring dependency
+        // tree.
+        ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
+      ]),
+    ];
+    const existingCompiler = nextConfig.compiler ?? {};
+    const existingRunAfterProductionCompile = (
+      existingCompiler as {
+        runAfterProductionCompile?: (metadata: {
+          projectDir: string;
+          distDir: string;
+        }) => Promise<void>;
+      }
+    ).runAfterProductionCompile;
+
+    const configuredServerExternalPackages = Array.isArray(
+      nextConfig.serverExternalPackages
+    )
+      ? nextConfig.serverExternalPackages
+      : [];
+    let effectiveServerExternalPackages = configuredServerExternalPackages;
+
+    if (configuredServerExternalPackages.length > 0) {
+      const detectedWorkflowPackages: DetectedServerExternalPackage[] = [];
+      for (const packageName of configuredServerExternalPackages) {
+        if (PSEUDO_EXTERNAL_PACKAGES.has(packageName)) {
+          continue;
+        }
+
+        try {
+          const detected = await detectServerExternalPackage(
+            packageName,
+            process.cwd()
+          );
+          if (detected) {
+            detectedWorkflowPackages.push(detected);
+          }
+        } catch {
+          // Best-effort only. Never block config generation.
+        }
+      }
+
+      if (detectedWorkflowPackages.length > 0) {
+        const removedPackages = new Set(
+          detectedWorkflowPackages.map((detected) => detected.packageName)
+        );
+        effectiveServerExternalPackages =
+          configuredServerExternalPackages.filter(
+            (packageName) => !removedPackages.has(packageName)
+          );
+        nextConfig.serverExternalPackages = effectiveServerExternalPackages;
+        warnAboutAutoRemovedServerExternalPackages(detectedWorkflowPackages);
+      }
+    }
 
     // configure the loader if turbopack is being used
     if (!nextConfig.turbopack) {
@@ -117,6 +464,17 @@ export function withWorkflow(
     let workflowBuilderPromise: Promise<any> | undefined;
     const distDir = nextConfig.distDir || '.next';
 
+    nextConfig.compiler = {
+      ...existingCompiler,
+      runAfterProductionCompile: async (metadata) => {
+        if (existingRunAfterProductionCompile) {
+          await existingRunAfterProductionCompile(metadata);
+        }
+        await copyWorkflowDiagnosticsManifest(metadata);
+        registerWorkflowDiagnosticsManifestCopy(metadata);
+      },
+    };
+
     const getWorkflowBuilder = async () => {
       if (!workflowBuilderPromise) {
         workflowBuilderPromise = (async () => {
@@ -133,6 +491,7 @@ export function withWorkflow(
             workflowsBundlePath: '', // not used in base
             stepsBundlePath: '', // not used in base
             webhookBundlePath: '', // node used in base
+            sourcemap: workflows?.sourcemap,
             suppressCreateWorkflowsBundleLogs: useDeferredBuilder,
             suppressCreateWorkflowsBundleWarnings: useDeferredBuilder,
             suppressCreateWebhookBundleLogs: useDeferredBuilder,
@@ -144,7 +503,7 @@ export function withWorkflow(
               // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
               'server-only',
               'client-only',
-              ...(nextConfig.serverExternalPackages || []),
+              ...effectiveServerExternalPackages,
             ],
           });
         })();
@@ -249,7 +608,7 @@ export function withWorkflow(
       });
 
       return existingWebpackModify
-        ? existingWebpackModify(...args)
+        ? (existingWebpackModify(...args) ?? webpackConfig)
         : webpackConfig;
     };
     // only run this in the main process so it only runs once

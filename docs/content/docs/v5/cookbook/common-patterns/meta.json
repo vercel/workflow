@@ -1,0 +1,15 @@
+{
+  "title": "Common Patterns",
+  "defaultOpen": true,
+  "pages": [
+    "sequential-and-parallel",
+    "workflow-composition",
+    "saga",
+    "batching",
+    "rate-limiting",
+    "scheduling",
+    "timeouts",
+    "idempotency",
+    "webhooks"
+  ]
+}

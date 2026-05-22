@@ -26,6 +26,12 @@ export function createVercelWorld(config?: APIConfig): World {
 
   return {
     specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+    // On Vercel the platform fails the function invocation when the
+    // process exits non-zero, and VQS redelivers the queue message via a
+    // fresh invocation. The core runtime uses this to decide whether
+    // `process.exit(1)` is an acceptable response to an exhausted replay
+    // budget.
+    processExitTriggersQueueRedelivery: true,
     ...createQueue(config),
     ...createStorage(config),
     ...instrumentObject('world.streams', createStreamer(config)),

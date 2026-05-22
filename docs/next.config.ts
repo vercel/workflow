@@ -68,6 +68,11 @@ const config: NextConfig = {
         permanent: true,
       },
       {
+        source: '/v5/docs',
+        destination: '/v5/docs/getting-started',
+        permanent: false,
+      },
+      {
         source: '/docs/cookbook',
         destination: '/cookbook',
         permanent: true,
@@ -154,6 +159,11 @@ const config: NextConfig = {
       {
         source: '/cookbook/agent-patterns/agent-stop-signal',
         destination: '/cookbook/agent-patterns/agent-cancellation',
+        permanent: true,
+      },
+      {
+        source: '/python',
+        destination: '/docs/getting-started/python',
         permanent: true,
       },
     ];

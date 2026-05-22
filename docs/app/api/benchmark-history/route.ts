@@ -151,9 +151,7 @@ interface SnapshotEntry {
  * Only the `worlds` map (metric numbers per world) is retained in each entry
  * so the total payload stays small enough for unstable_cache.
  */
-async function _buildSnapshotMap(): Promise<
-  Record<string, SnapshotEntry>
-> {
+async function _buildSnapshotMap(): Promise<Record<string, SnapshotEntry>> {
   const snapshots: Record<string, SnapshotEntry> = {};
 
   // Paginate through gh-pages commits that modified the benchmark file.
@@ -188,7 +186,9 @@ async function _buildSnapshotMap(): Promise<
   }
 
   if (ghPagesCommits.length >= MAX_SNAPSHOTS) {
-    console.warn(`Benchmark history: hit pagination cap at ${MAX_SNAPSHOTS} gh-pages commits — older snapshots may be missing`);
+    console.warn(
+      `Benchmark history: hit pagination cap at ${MAX_SNAPSHOTS} gh-pages commits — older snapshots may be missing`
+    );
   }
 
   // Fetch benchmark data for each gh-pages commit in batches

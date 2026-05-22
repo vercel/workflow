@@ -9,7 +9,24 @@ import {
   isGeneratedWorkflowFile,
 } from './transform-utils.js';
 
-const enhancedResolve = promisify(enhancedResolveOriginal);
+const enhancedResolve = promisify(
+  enhancedResolveOriginal.create({
+    extensions: [
+      '.ts',
+      '.tsx',
+      '.mts',
+      '.cts',
+      '.js',
+      '.jsx',
+      '.mjs',
+      '.cjs',
+      '.json',
+      '.node',
+    ],
+    fullySpecified: false,
+    conditionNames: ['node', 'import', 'require'],
+  })
+);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 

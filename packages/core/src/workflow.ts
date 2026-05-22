@@ -1,11 +1,12 @@
 import { runInContext } from 'node:vm';
 import {
+  CorruptedEventLogError,
   ERROR_SLUGS,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
+import { getPortLazy } from './runtime/get-port-lazy.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -15,6 +16,8 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import { handleSuspension } from './runtime/suspension-handler.js';
+import { getWorld } from './runtime/world.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -35,45 +38,73 @@ import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
+import {
+  createAbortSignalStatics,
+  createCreateAbortController,
+} from './workflow/abort-controller.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
- * Logs a warning when a workflow run completes or fails with uncommitted
- * operations still in the invocations queue. This typically indicates the
- * user forgot to `await` a step, hook, or sleep call.
+ * Drain pending queue items at workflow completion (success or failure).
+ *
+ * Treats end-of-run like a final suspension: any operation the workflow code
+ * spawned but didn't `await` — abort hook resumes, hook creations/disposals,
+ * sleep waits, step queueings — gets committed to the event log via the
+ * suspension handler before the run is marked terminal.
+ *
+ * This matches normal JS semantics where `setTimeout(fn, ...)` etc. continue
+ * running after the surrounding function returns. Most importantly, it ensures
+ * `controller.abort()` called as the last statement of a workflow actually
+ * propagates to in-flight steps on other compute instances — without this,
+ * the abort hook is created but never resumed and the cancellation never
+ * reaches the running step.
+ *
+ * Drain failures are swallowed: the workflow's own outcome (the user's return
+ * value or thrown error) is the source of truth; secondary cleanup that fails
+ * shouldn't change the run's terminal state.
  */
-function warnPendingQueueItems(
+async function drainPendingQueueItems(
   runId: string,
   pendingQueue: Map<string, QueueItem>,
+  vmGlobalThis: typeof globalThis,
+  workflowRun: WorkflowRun,
   outcome: 'completed' | 'failed'
-): void {
-  // Filter out hooks that are either already created (alive, waiting for payloads)
-  // or explicitly disposed — both are benign since the backend auto-disposes
-  // all hooks when a run reaches a terminal state
-  const items = [...pendingQueue.values()].filter(
-    (item) => !(item.type === 'hook' && (item.hasCreatedEvent || item.disposed))
-  );
-  if (items.length === 0) return;
-
-  const details = items.map((item) => {
-    switch (item.type) {
-      case 'step':
-        return `step "${item.stepName}"`;
-      case 'hook':
-        return `hook "${item.token}"`;
-      case 'wait':
-        return 'sleep';
-      default:
-        return `unknown (${(item as { type: string }).type})`;
+): Promise<void> {
+  if (pendingQueue.size === 0) return;
+  // Implicitly dispose any abort hooks (system hooks) that are still alive at
+  // workflow completion so they don't leak rows in the hooks table for the
+  // run's lifetime. Skip hooks that already have an abort in flight — those
+  // will emit hook_received via the abort processing path. User hooks
+  // (isSystem !== true) are intentionally left alone: their lifetime is
+  // managed by the user's code, not the runtime.
+  for (const item of pendingQueue.values()) {
+    if (
+      item.type === 'hook' &&
+      item.isSystem &&
+      !item.disposed &&
+      !item.abortRequested
+    ) {
+      item.disposed = true;
     }
-  });
-
-  runtimeLogger.warn(
-    `Workflow run ${outcome} with ${items.length} uncommitted operation(s): ${details.join(', ')}. ` +
-      'Did you forget to `await` a step, hook, or sleep call?',
-    { workflowRunId: runId }
-  );
+  }
+  try {
+    const world = await getWorld();
+    const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
+    await handleSuspension({
+      suspension: synthesized,
+      world,
+      run: workflowRun,
+    });
+  } catch (err) {
+    runtimeLogger.warn(
+      `Failed to drain pending queue items for ${outcome} workflow run`,
+      {
+        workflowRunId: runId,
+        message: err instanceof Error ? err.message : String(err),
+      }
+    );
+  }
 }
 
 export async function runWorkflow(
@@ -92,7 +123,7 @@ export async function runWorkflow(
 
     const startedAt = workflowRun.startedAt;
     if (!startedAt) {
-      throw new Error(
+      throw new WorkflowRuntimeError(
         `Workflow run "${workflowRun.runId}" has no "startedAt" timestamp (should not happen)`
       );
     }
@@ -100,7 +131,11 @@ export async function runWorkflow(
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
-    const port = isVercel ? undefined : await getPort();
+    // Load getPort lazily to prevent Turbopack from tracing get-port's
+    // fs ops (readdir, readFile) into the flow route bundle.
+    // Uses globalThis.__wkf_getPort as a lazy-initialized cache to avoid
+    // bundler static analysis while staying compatible with CJS/ESM/VM.
+    const port = isVercel ? undefined : await getPortLazy();
 
     const {
       context,
@@ -126,9 +161,8 @@ export async function runWorkflow(
     const eventsConsumer = new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
-          new WorkflowRuntimeError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`,
-            { slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG }
+          new CorruptedEventLogError(
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
           )
         );
       },
@@ -263,6 +297,18 @@ export async function runWorkflow(
       throw new WorkflowRuntimeError(timeoutErrorMessage, {
         slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
       });
+    };
+
+    // `AbortController` and `AbortSignal` in the workflow VM are hook-backed
+    // for deterministic replay. The controller's abort() queues a hook resumption,
+    // and signal.aborted is updated when the hook event is processed during replay.
+    (vmGlobalThis as any).AbortController =
+      createCreateAbortController(workflowContext);
+    const abortSignalStatics = createAbortSignalStatics();
+    (vmGlobalThis as any).AbortSignal = {
+      abort: abortSignalStatics.abort,
+      any: abortSignalStatics.any,
+      timeout: abortSignalStatics.timeout,
     };
 
     // `Request` and `Response` are special built-in classes that invoke steps
@@ -751,9 +797,11 @@ export async function runWorkflow(
         ...Attribute.WorkflowResultType(typeof result),
       });
 
-      warnPendingQueueItems(
+      await drainPendingQueueItems(
         workflowRun.runId,
         workflowContext.invocationsQueue,
+        vmGlobalThis,
+        workflowRun,
         'completed'
       );
 
@@ -764,9 +812,11 @@ export async function runWorkflow(
         throw err;
       }
 
-      warnPendingQueueItems(
+      await drainPendingQueueItems(
         workflowRun.runId,
         workflowContext.invocationsQueue,
+        vmGlobalThis,
+        workflowRun,
         'failed'
       );
 

@@ -14,6 +14,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const pages: MetadataRoute.Sitemap = [];
 
   for (const page of source.getPages()) {
+    // Exclude internal/preview-only pages from sitemap
+    if (page.url.includes('/internal')) continue;
     pages.push({
       changeFrequency: 'weekly' as const,
       lastModified: undefined,

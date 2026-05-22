@@ -1,0 +1,95 @@
+---
+title: Deploying
+icon: Rocket
+description: Deploy workflows locally, on Vercel, or anywhere using pluggable World adapters.
+type: overview
+summary: Learn how to deploy workflows to different environments using World adapters.
+related:
+  - /docs/deploying/world/local-world
+  - /docs/deploying/world/postgres-world
+  - /docs/deploying/world/vercel-world
+  - /docs/deploying/building-a-world
+---
+
+Workflows are designed to be highly portable. The same workflow code can run locally during development, on Vercel with zero configuration, or on any infrastructure using **Worlds** — pluggable adapters that handle storage, queuing, and communication.
+
+## Local Development
+
+During local development, workflows automatically use the **Local World** — no configuration required. The Local World stores workflow data in a `.workflow-data/` directory and processes steps synchronously, making it perfect for development and testing.
+
+```bash
+# Just run your dev server - workflows work out of the box
+npm run dev
+```
+
+You can inspect local workflow data using the CLI:
+
+```bash
+npx workflow inspect runs
+```
+
+<Callout>
+  Learn more about the [Local World](/worlds/local) configuration and internals.
+</Callout>
+
+## Deploying to Vercel
+
+The easiest way to deploy workflows to production is on Vercel. When you deploy to Vercel, workflows automatically use the **Vercel World** — again, with zero configuration.
+
+The Vercel World provides:
+
+- **Durable storage** - Workflow state persists across function invocations
+- **Managed queuing** - Steps are processed reliably with automatic retries
+- **Automatic scaling** - Workflows scale with your application
+- **Built-in observability** - View workflow runs in the Vercel dashboard
+
+Simply deploy your application:
+
+```bash
+vercel deploy
+```
+
+<FluidComputeCallout />
+
+<Callout>
+  Learn more about the [Vercel World](/worlds/vercel) and its capabilities.
+</Callout>
+
+## Self-Hosting & Other Providers
+
+For self-hosting or deploying to other cloud providers, you can use community-maintained Worlds or build your own.
+
+<Cards>
+  <Card title="Explore Worlds" href="/worlds">
+    Browse official and community World implementations with compatibility status and performance benchmarks.
+  </Card>
+  <Card title="Build Your Own" href="/docs/deploying/building-a-world">
+    Learn how to implement a custom World for your infrastructure.
+  </Card>
+</Cards>
+
+### Using a Third-Party World
+
+To use a different World implementation, set the `WORKFLOW_TARGET_WORLD` environment variable:
+
+```bash
+export WORKFLOW_TARGET_WORLD=@workflow/world-postgres
+# Plus any world-specific configuration
+export DATABASE_URL=postgres://...
+```
+
+Each World may have its own configuration requirements — refer to the specific World's documentation for details.
+
+## Observability
+
+The [Observability tools](/docs/observability) work with any World backend. By default they connect to your local environment, but can be configured to inspect remote deployments:
+
+```bash
+# Inspect local workflows
+npx workflow inspect runs
+
+# Inspect remote workflows
+npx workflow inspect runs --backend @workflow/world-postgres
+```
+
+Learn more about [Observability](/docs/observability) tools.

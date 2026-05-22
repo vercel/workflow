@@ -40,6 +40,13 @@ export interface NestBuilderOptions {
    * @default 'dist'
    */
   distDir?: string;
+  /**
+   * Controls how source maps are emitted for workflow bundles. Accepts the
+   * same values as esbuild's `sourcemap` option: `true`/`'inline'` (default),
+   * `'linked'`, `'external'`, `'both'`, or `false` to omit source maps.
+   * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
+   */
+  sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
 }
 
 export class NestLocalBuilder extends BaseBuilder {
@@ -58,6 +65,7 @@ export class NestLocalBuilder extends BaseBuilder {
         workingDir,
         watch: options.watch ?? false,
         dirs,
+        sourcemap: options.sourcemap,
       }),
       // Use 'standalone' as base target - we handle the specific bundling ourselves
       buildTarget: 'standalone',
@@ -80,18 +88,13 @@ export class NestLocalBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
+    const { manifest } = await this.createCombinedBundle({
+      inputFiles,
+      stepsOutfile: join(this.#outDir, 'steps.mjs'),
+      flowOutfile: join(this.#outDir, 'workflows.mjs'),
+      format: 'esm',
       bundleFinalOutput: false,
-      format: 'esm',
-      inputFiles,
-    });
-
-    const { manifest: stepsManifest } = await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
-      format: 'esm',
-      inputFiles,
     });
 
     // When the NestJS project compiles to CJS via SWC, the ESM steps bundle
@@ -106,13 +109,6 @@ export class NestLocalBuilder extends BaseBuilder {
       outfile: join(this.#outDir, 'webhook.mjs'),
       bundle: false,
     });
-
-    // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
 
     // Generate manifest
     await this.createManifest({

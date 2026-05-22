@@ -6,7 +6,7 @@
  */
 
 import { inspect } from 'node:util';
-import { maybeDecrypt } from '@workflow/core/serialization';
+import { getCommonRevivers, maybeDecrypt } from '@workflow/core/serialization';
 import {
   ClassInstanceRef,
   extractClassName,
@@ -140,33 +140,107 @@ export function isExpiredRef(value: unknown): value is ExpiredDataRef {
 // CLI revivers (Node.js, uses Buffer)
 // ---------------------------------------------------------------------------
 
-export function getCLIRevivers(): Revivers {
-  function reviveArrayBuffer(value: string): ArrayBuffer {
-    const base64 = value === '.' ? '' : value;
-    const buffer = Buffer.from(base64, 'base64');
-    const arrayBuffer = new ArrayBuffer(buffer.length);
-    const uint8Array = new Uint8Array(arrayBuffer);
-    uint8Array.set(buffer);
-    return arrayBuffer;
-  }
+/**
+ * The set of reducer keys whose `getCommonRevivers()` output produces a
+ * native `Error` instance. We wrap each of these with an additional
+ * `toJSON` attachment in CLI mode (see `wrapErrorReviverWithToJSON`).
+ */
+const ERROR_REVIVER_KEYS = [
+  'AggregateError',
+  'DOMException',
+  'Error',
+  'EvalError',
+  'FatalError',
+  'RangeError',
+  'ReferenceError',
+  'RetryableError',
+  'SyntaxError',
+  'TypeError',
+  'URIError',
+] as const;
 
+/**
+ * Wraps a runtime Error reviver so that the produced instance carries a
+ * non-enumerable `toJSON` method. The runtime revivers return real `Error`
+ * instances (good for `util.inspect`, `instanceof`, `toString`, etc.), but
+ * `Error.prototype`'s `name` / `message` / `stack` / `cause` are
+ * non-enumerable and would be dropped by `JSON.stringify` — which is how
+ * the CLI emits its `--json` output. Adding `toJSON` (which `JSON.stringify`
+ * calls but `util.inspect` ignores) gives us the best of both worlds:
+ * round-tripped errors render cleanly in both modes without the
+ * data-versus-display tradeoff that plain-object revivers would force.
+ *
+ * Subclass-specific enumerable fields (e.g. `RetryableError.retryAfter`,
+ * `AggregateError.errors`, `FatalError.fatal`) are picked up automatically
+ * via `Object.assign` after the base fields, so we don't have to enumerate
+ * them per-subclass.
+ */
+function wrapErrorReviverWithToJSON(
+  reviver: (value: any) => unknown
+): (value: any) => unknown {
+  return (value) => {
+    const result = reviver(value);
+    if (!(result instanceof Error)) return result;
+    Object.defineProperty(result, 'toJSON', {
+      value: function (this: Error) {
+        const json: Record<string, unknown> = {
+          name: this.name,
+          message: this.message,
+          stack: this.stack,
+        };
+        if ('cause' in this) {
+          json.cause = (this as { cause: unknown }).cause;
+        }
+        // Pick up subclass-specific enumerable fields (e.g. FatalError.fatal,
+        // RetryableError.retryAfter, AggregateError.errors).
+        Object.assign(json, this);
+        return json;
+      },
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    return result;
+  };
+}
+
+/**
+ * The set of revivers used by CLI inspect output.
+ *
+ * Built on top of `getCommonRevivers()` from `@workflow/core` so that the
+ * CLI stays in sync with the runtime's reviver set automatically. Without
+ * this, every new reviver added to core (e.g. `FatalError`,
+ * `RetryableError`, the built-in `Error` subclasses) would silently
+ * disappear from CLI output: devalue throws "Unknown type X" for
+ * unrecognized reduced types, and `hydrateResourceIO` swallows that error
+ * and surfaces the raw `Uint8Array` payload to consumers — which then
+ * shows up as `step.error` / `run.error` byte dumps instead of usable
+ * `{ message, stack, … }` objects.
+ *
+ * On top of the common set we layer:
+ *   - A `toJSON` shim on each Error reviver so non-enumerable
+ *     `Error.prototype` fields survive `JSON.stringify` for `--json` output
+ *     while leaving `util.inspect` rendering untouched
+ *   - `observabilityRevivers` for streams / step+workflow function refs
+ *   - CLI-specific overrides that produce display-friendly placeholders
+ *     for `Class` / `Instance` (the runtime versions need full class
+ *     identity which the CLI doesn't have access to)
+ */
+export function getCLIRevivers(): Revivers {
+  const baseRevivers = getCommonRevivers(globalThis);
+  const errorRevivers = Object.fromEntries(
+    ERROR_REVIVER_KEYS.flatMap((key) => {
+      const reviver = (baseRevivers as Revivers)[key];
+      return reviver ? [[key, wrapErrorReviverWithToJSON(reviver)]] : [];
+    })
+  );
   return {
-    ArrayBuffer: reviveArrayBuffer,
-    BigInt: (value: string) => BigInt(value),
-    BigInt64Array: (value: string) =>
-      new BigInt64Array(reviveArrayBuffer(value)),
-    BigUint64Array: (value: string) =>
-      new BigUint64Array(reviveArrayBuffer(value)),
-    Date: (value) => new Date(value),
-    Error: (value) => {
-      const error = new Error(value.message);
-      error.name = value.name;
-      error.stack = value.stack;
-      return error;
-    },
-    Float32Array: (value: string) => new Float32Array(reviveArrayBuffer(value)),
-    Float64Array: (value: string) => new Float64Array(reviveArrayBuffer(value)),
-    Headers: (value) => new Headers(value),
+    ...baseRevivers,
+    ...errorRevivers,
+    // O11y-specific revivers (streams, step functions → display objects).
+    ...observabilityRevivers,
+    // Node `Request` / `Response` revivers that don't rely on running an
+    // actual fetch handler — used to render request/response IO inline.
     Request: (value) => {
       // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
       const ctor = { Request: function () {} }.Request!;
@@ -198,14 +272,6 @@ export function getCLIRevivers(): Revivers {
       });
       return obj;
     },
-    Int8Array: (value: string) => new Int8Array(reviveArrayBuffer(value)),
-    Int16Array: (value: string) => new Int16Array(reviveArrayBuffer(value)),
-    Int32Array: (value: string) => new Int32Array(reviveArrayBuffer(value)),
-    Map: (value) => new Map(value),
-    RegExp: (value) => new RegExp(value.source, value.flags),
-    // O11y-specific revivers (streams, step functions → display objects).
-    // Spread FIRST so CLI-specific overrides below take precedence.
-    ...observabilityRevivers,
     // CLI-specific overrides for class instances with inspect.custom
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) => {
@@ -220,14 +286,6 @@ export function getCLIRevivers(): Revivers {
         value.data
       );
     },
-    Set: (value) => new Set(value),
-    URL: (value) => new URL(value),
-    URLSearchParams: (value) => new URLSearchParams(value === '.' ? '' : value),
-    Uint8Array: (value: string) => new Uint8Array(reviveArrayBuffer(value)),
-    Uint8ClampedArray: (value: string) =>
-      new Uint8ClampedArray(reviveArrayBuffer(value)),
-    Uint16Array: (value: string) => new Uint16Array(reviveArrayBuffer(value)),
-    Uint32Array: (value: string) => new Uint32Array(reviveArrayBuffer(value)),
   };
 }
 

@@ -102,14 +102,9 @@ describe('defineHook', () => {
         comment: string;
       })
     ).rejects.toThrowErrorMatchingInlineSnapshot(`
-      [Error: [
-        {
-          "message": "Invalid input: expected boolean at \\"approved\\""
-        },
-        {
-          "message": "Invalid input: expected string at \\"comment\\""
-        }
-      ]]
+      [Error: Hook payload did not match the defined schema:
+        Invalid input: expected boolean at "approved"
+        Invalid input: expected string at "comment"]
     `);
   });
 });

@@ -1,14 +1,15 @@
 import {
   type Event,
   type Hook,
+  type SerializedData,
   type Step,
   StepStatusSchema,
-  type StructuredError,
   type Wait,
   WaitStatusSchema,
   type WorkflowRun,
   WorkflowRunStatusSchema,
 } from '@workflow/world';
+import { sql } from 'drizzle-orm';
 import {
   boolean,
   customType,
@@ -21,6 +22,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from 'drizzle-orm/pg-core';
 import { Cbor, type Cborized } from './cbor.js';
@@ -79,9 +81,20 @@ export const runs = schema.table(
     /** @deprecated */
     inputJson: jsonb('input').$type<SerializedContent>(),
     input: Cbor<SerializedContent>()('input_cbor'),
-    /** @deprecated - use error instead */
+    /** @deprecated - use error instead (legacy JSON-stringified StructuredError) */
     errorJson: text('error'),
-    error: Cbor<StructuredError>()('error_cbor'),
+    /**
+     * The thrown value from a run_failed event, serialized via the workflow
+     * serialization pipeline (dehydrateRunError). Stored as a Uint8Array and
+     * wrapped in CBOR for transport.
+     */
+    error: Cbor<SerializedData>()('error_cbor'),
+    /**
+     * The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) from
+     * a run_failed event. Plaintext metadata for routing — does not require
+     * decryption or hydration.
+     */
+    errorCode: varchar('error_code'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -114,7 +127,21 @@ export const events = schema.table(
   } satisfies DrizzlishOfType<
     Cborized<Event & { eventData?: undefined }, 'eventData'>
   >,
-  (tb) => [index().on(tb.runId), index().on(tb.correlationId)]
+  (tb) => [
+    index().on(tb.runId),
+    index().on(tb.correlationId),
+    // Entity-creating events must be unique per (run, correlation) — without
+    // this, two concurrent invocations producing identical correlationIds
+    // (e.g. the snapshot runtime's deterministic ULIDs across replays) can
+    // both insert events, causing duplicate steps/hooks/waits in the log.
+    // The unique violation is caught in events.create and translated to
+    // EntityConflictError, matching the runtime's expected dedup contract.
+    uniqueIndex('workflow_events_entity_creation_unique')
+      .on(tb.runId, tb.correlationId, tb.eventType)
+      .where(
+        sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created')`
+      ),
+  ]
 );
 
 export const steps = schema.table(
@@ -130,9 +157,14 @@ export const steps = schema.table(
     /** @deprecated we stream binary data */
     outputJson: jsonb('output').$type<SerializedContent>(),
     output: Cbor<SerializedContent>()('output_cbor'),
-    /** @deprecated - use error instead */
+    /** @deprecated - use error instead (legacy JSON-stringified StructuredError) */
     errorJson: text('error'),
-    error: Cbor<StructuredError>()('error_cbor'),
+    /**
+     * The thrown value from a step_failed / step_retrying event, serialized
+     * via the workflow serialization pipeline (dehydrateStepError). Stored
+     * as a Uint8Array and wrapped in CBOR for transport.
+     */
+    error: Cbor<SerializedData>()('error_cbor'),
     attempt: integer('attempt').notNull(),
     /** Maps to startedAt in Step interface */
     startedAt: timestamp('started_at'),
@@ -170,6 +202,7 @@ export const hooks = schema.table(
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
     specVersion: integer('spec_version'),
     isWebhook: boolean('is_webhook').default(true),
+    isSystem: boolean('is_system').default(false),
   } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );

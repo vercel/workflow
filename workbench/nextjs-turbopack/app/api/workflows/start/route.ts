@@ -1,5 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
+import { WorkflowRunFailedError } from 'workflow/errors';
 import { start } from 'workflow/api';
 import { allWorkflows } from '@/_workflows';
 import { WORKFLOW_DEFINITIONS } from '@/app/workflows/definitions';
@@ -87,6 +88,16 @@ export async function POST(request: NextRequest) {
           reader.releaseLock();
           controller.close();
         } catch (error) {
+          // A failed workflow run rejects via run.returnValue. The SDK
+          // already logged the failure via stepLogger / runLogger above,
+          // and the run is queryable via the X-Workflow-Run-Id header,
+          // so re-logging from this stream wrapper just produces noise
+          // (and `controller.error()` triggers Next.js's `failed to pipe
+          // response` overlay). Close the stream cleanly instead.
+          if (WorkflowRunFailedError.is(error)) {
+            controller.close();
+            return;
+          }
           console.error('Error in workflow stream:', error);
           controller.error(error);
         }

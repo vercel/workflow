@@ -38,5 +38,8 @@ export const generateStaticParams = async ({
 }: RouteContext<'/[lang]/llms.mdx/[[...slug]]'>) => {
   const { lang } = await params;
 
-  return source.generateParams(lang);
+  // Exclude internal/preview-only pages from LLM scraping
+  return source
+    .generateParams(lang)
+    .filter((p) => !p.slug?.includes('internal'));
 };

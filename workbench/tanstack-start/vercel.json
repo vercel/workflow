@@ -1,0 +1,5 @@
+{
+  "env": {
+    "WORKFLOW_PUBLIC_MANIFEST": "1"
+  }
+}
