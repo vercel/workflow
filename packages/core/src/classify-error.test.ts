@@ -1,4 +1,5 @@
 import {
+  CorruptedEventLogError,
   HookConflictError,
   RUN_ERROR_CODES,
   WorkflowNotRegisteredError,
@@ -9,6 +10,12 @@ import { describe, expect, it } from 'vitest';
 import { classifyRunError } from './classify-error.js';
 
 describe('classifyRunError', () => {
+  it('classifies CorruptedEventLogError as CORRUPTED_EVENT_LOG', () => {
+    expect(
+      classifyRunError(new CorruptedEventLogError('corrupted event log'))
+    ).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+  });
+
   it('classifies WorkflowRuntimeError as RUNTIME_ERROR', () => {
     expect(
       classifyRunError(new WorkflowRuntimeError('corrupted event log'))
@@ -39,6 +46,28 @@ describe('classifyRunError', () => {
         new WorkflowWorldError('Internal Server Error', { status: 500 })
       )
     ).toBe(RUN_ERROR_CODES.USER_ERROR);
+  });
+
+  it('classifies world schema validation failures as WORLD_CONTRACT_ERROR', () => {
+    expect(
+      classifyRunError(
+        new WorkflowWorldError(
+          'Schema validation failed for POST /v3/runs/wrun/events',
+          { code: 'SCHEMA_VALIDATION' }
+        )
+      )
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  });
+
+  it('classifies world response parse failures as WORLD_CONTRACT_ERROR', () => {
+    expect(
+      classifyRunError(
+        new WorkflowWorldError(
+          'Failed to parse response body for GET /v3/runs/wrun/events',
+          { code: 'PARSE_ERROR' }
+        )
+      )
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
   });
 
   it('classifies string throw as USER_ERROR', () => {

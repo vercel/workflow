@@ -50,7 +50,7 @@ Migration removes infrastructure and collapses indirection. Business logic stays
 | Signal | `createHook()` or `createWebhook()` | Use hooks for typed resume signals; webhooks for HTTP callbacks. |
 | Query | `getWritable({ namespace: 'status' })` stream | Durably stream status updates from the workflow. Clients read from the stream instead of polling a database. |
 | Update | `createHook()` + `resumeHook()` (one-way) | Temporal Updates return a value to the caller; hooks do not. If the Update returns data, either write the result to a named stream via `getWritable()` and have the caller read from it, or keep an HTTP read route that fetches the workflow's current state. |
-| Child Workflow | `"use step"` wrappers around `start()` / `getRun()` | Spawn from a step and return the `Run` object so observability can deep-link into child runs. |
+| Child Workflow | `start()` plus a `"use step"` wrapper around `getRun()` | Spawn a child run and return the `Run` object so observability can deep-link into child runs. |
 | Activity retry policy | Step retries, `RetryableError`, `FatalError`, `maxRetries` | Retries live at the step boundary. |
 | Event History | Workflow event log / run timeline | Same durable replay; built-in observability UI replaces Temporal Web. Search attributes and visibility APIs have no direct equivalent — filter by run status and timestamps instead. |
 
@@ -173,19 +173,14 @@ Temporal Queries expose in-memory workflow state on demand. In the Workflow SDK,
 
 ### Minimal translation
 
-`start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Return the `Run` object (not a plain `runId` string) so workflow observability can deep-link into child runs.
+In v5, call `start()` directly from the workflow to spawn a child run. Wrap `getRun()` and `returnValue` access in a `"use step"` function when you need to await the child result. Return the `Run` object (not a plain `runId` string) so workflow observability can deep-link into child runs.
 
 ```typescript title="workflow/workflows/parent.ts"
 import { start } from 'workflow/api';
 
-async function spawnChild(item: string) {
-  'use step'; // [!code highlight]
-  return start(childWorkflow, [item]); // [!code highlight]
-}
-
 export async function parentWorkflow(item: string) {
   'use workflow';
-  const child = await spawnChild(item); // [!code highlight]
+  const child = await start(childWorkflow, [item]); // [!code highlight]
   return { childRunId: child.runId };
 }
 ```
@@ -204,7 +199,7 @@ async function collectResult(runId: string) {
 }
 ```
 
-Call both steps from the parent in sequence: `const result = await collectResult(child.runId)`. To fan out, call `spawnChild` inside a loop, then `Promise.all` the `collectResult` calls.
+Call `start()` and then `collectResult()` from the parent in sequence: `const result = await collectResult(child.runId)`. To fan out, call `start()` inside a loop, then `Promise.all` the `collectResult` calls.
 
 <Callout type="warn">
 Activity retry policy moves to the step boundary. Use `maxRetries`, `RetryableError`, and `FatalError` on each step instead of a single workflow-wide retry block.
@@ -308,7 +303,7 @@ Remove the Worker process, `@temporalio/*` dependencies, and the Temporal Server
 - Convert each Activity into a `"use step"` function.
 - Remove Worker and Task Queue code. Start workflows from the app with `start()`.
 - Replace Signals with `createHook()` or `createWebhook()` for HTTP callers.
-- Wrap `start()` and `getRun()` in `"use step"` functions for child workflows. Return the `Run` object from `start()` so observability can deep-link into child runs.
+- Use `start()` directly for child workflows, and wrap `getRun()` in a `"use step"` function when collecting results. Return the `Run` object from `start()` so observability can deep-link into child runs.
 - Set retry policy per step with `maxRetries`, `RetryableError`, and `FatalError`.
 - Use `getStepMetadata().stepId` as the idempotency key for external side effects.
 - Stream status and progress from steps with `getWritable({ namespace: 'status' })`, and have clients read from the stream instead of polling.

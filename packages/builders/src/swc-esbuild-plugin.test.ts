@@ -18,6 +18,10 @@ vi.mock('./apply-swc-transform.js', () => ({
   applySwcTransform: applySwcTransformMock,
 }));
 
+import {
+  createDiscoverEntriesPlugin,
+  importParents,
+} from './discover-entries-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 
 const realTmpdir = realpathSync(tmpdir());
@@ -32,6 +36,7 @@ describe('createSwcPlugin externalizeNonSteps', () => {
 
   beforeEach(() => {
     testRoot = mkdtempSync(join(realTmpdir, 'workflow-swc-plugin-'));
+    importParents.clear();
     applySwcTransformMock.mockReset();
     applySwcTransformMock.mockImplementation(
       async (_filename: string, source: string) => ({
@@ -42,6 +47,7 @@ describe('createSwcPlugin externalizeNonSteps', () => {
   });
 
   afterEach(() => {
+    importParents.clear();
     rmSync(testRoot, { recursive: true, force: true });
   });
 
@@ -348,6 +354,231 @@ export const client = { provider: providerName };`
     expect(result.errors).toHaveLength(0);
     const output = result.outputFiles[0].text;
     expect(output).toContain(`/dep${inputExt}`);
+  });
+
+  it('bundles transitive local TypeScript dependencies with extensionless imports', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'server', 'workflows', 'my-workflow.ts');
+    const constantsFile = join(testRoot, 'shared', 'constants.ts');
+    const helpersFile = join(testRoot, 'shared', 'helpers.ts');
+
+    writeFile(helpersFile, `export const HELPER_VALUE = "from-helper";`);
+    writeFile(
+      constantsFile,
+      `import { HELPER_VALUE } from './helpers';\nexport const CATEGORIES = [HELPER_VALUE];`
+    );
+    writeFile(
+      stepFile,
+      `import { CATEGORIES } from '../../shared/constants';\nexport async function myStep() {\n  'use step';\n  return CATEGORIES[0];\n}`
+    );
+
+    const state = {
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+    };
+    await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      plugins: [createDiscoverEntriesPlugin(state, testRoot)],
+    });
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+          bundleTransitiveLocalStepDependencies: true,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toContain('from-helper');
+    expect(output).not.toMatch(/from\s+["'][^"']*shared\/constants/);
+    expect(output).not.toMatch(/from\s+["'][^"']*shared\/helpers/);
+  });
+
+  it('externalizes transitive local TypeScript dependencies by default', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'server', 'workflows', 'my-workflow.ts');
+    const constantsFile = join(testRoot, 'shared', 'constants.ts');
+    const helpersFile = join(testRoot, 'shared', 'helpers.ts');
+
+    writeFile(helpersFile, `export const HELPER_VALUE = "from-helper";`);
+    writeFile(
+      constantsFile,
+      `import { HELPER_VALUE } from './helpers';\nexport const CATEGORIES = [HELPER_VALUE];`
+    );
+    writeFile(
+      stepFile,
+      `import { CATEGORIES } from '../../shared/constants';\nexport async function myStep() {\n  'use step';\n  return CATEGORIES[0];\n}`
+    );
+
+    const state = {
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+    };
+    await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      plugins: [createDiscoverEntriesPlugin(state, testRoot)],
+    });
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).not.toContain('from-helper');
+    expect(output).toMatch(/from\s+["'][^"']*shared\/constants\.ts["']/);
+  });
+
+  it('keeps ordinary package dependencies external when reachable from a bundled step', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'server', 'workflows', 'my-workflow.ts');
+    const pkgDir = join(testRoot, 'node_modules', 'plain-pkg');
+    const pkgIndex = join(pkgDir, 'index.js');
+
+    writeFile(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'plain-pkg', main: 'index.js' })
+    );
+    writeFile(pkgIndex, `export const value = "from-package";`);
+    writeFile(
+      stepFile,
+      `import { value } from 'plain-pkg';\nexport async function myStep() {\n  'use step';\n  return value;\n}`
+    );
+
+    const state = {
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+    };
+    await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [createDiscoverEntriesPlugin(state, testRoot)],
+    });
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+          bundleTransitiveLocalStepDependencies: true,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toMatch(/from\s+["']plain-pkg["']/);
+    expect(output).not.toContain('from-package');
+  });
+
+  it('bundles package parents when they lead to discovered workflow-related entries', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'server', 'workflows', 'my-workflow.ts');
+    const pkgDir = join(testRoot, 'node_modules', 'workflow-pkg');
+    const pkgIndex = join(pkgDir, 'index.js');
+    const pkgSerde = join(pkgDir, 'serde.js');
+
+    writeFile(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'workflow-pkg', main: 'index.js' })
+    );
+    writeFile(pkgSerde, `export const value = "from-serde";`);
+    writeFile(pkgIndex, `export { value } from './serde.js';`);
+    writeFile(
+      stepFile,
+      `import { value } from 'workflow-pkg';\nexport async function myStep() {\n  'use step';\n  return value;\n}`
+    );
+
+    const state = {
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+    };
+    await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [createDiscoverEntriesPlugin(state, testRoot)],
+    });
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile, pkgSerde],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toContain('from-serde');
+    expect(output).not.toMatch(/from\s+["']workflow-pkg["']/);
   });
 });
 
