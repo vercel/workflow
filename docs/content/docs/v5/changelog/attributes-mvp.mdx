@@ -11,13 +11,14 @@ The MVP lets workflow and step code attach plaintext `string → string` metadat
 
 ## What MVP supports
 
-- `setAttributes(record)` callable from a workflow body
-- `setAttributes(record)` callable from a step body
+- `setAttributes(record)` callable from a **step body** (`"use step"` function)
+- From a workflow body: wrap the call in a one-line step (see "Runtime SDK" below)
 - Attributes are materialized onto the `WorkflowRun` entity, plaintext, and visible via `world.runs.get()` / `world.runs.list()` and any observability UI built on top of those
 - World implementations emit a side-channel observability record per write (in `world-vercel`, this hooks into the same observability/analytics pipeline already used for other run lifecycle events)
 
 ## What MVP does **not** support (deferred to 5.0.0)
 
+- Direct workflow-body calls (V5 MVP requires a wrapping `"use step"` function — see "Why workflow-body dispatch is deferred" below)
 - Reading attributes from inside a workflow or step (`getAttribute` / `getAttributes`)
 - `start(workflow, input, { attributes })` (initial attributes at run creation)
 - Filtering runs by attribute value (`runs.list({ attributes: { ... } })`)
@@ -113,12 +114,25 @@ Validation (shared helper, applied both client-side and server-side):
 - Maximum 64 attributes per run (validated against the post-merge snapshot when the server applies)
 - Violations throw `FatalError` from `@workflow/errors`
 
-Two execution paths, one SDK surface:
+**V5 MVP restriction: step body only.** `setAttributes` may only be called from inside a `"use step"` function. Calling it from a workflow body throws `FatalError`. To attach attributes from a workflow body, wrap the call in a step yourself:
 
-- **From a workflow body**: `setAttributes` internally invokes an SDK-private `"use step"` function (for example `_setAttributesStep`) which calls `world.runs.experimentalSetAttributes`. Going through a step gives durable retry and replay determinism for free — the workflow VM records `step_created` / `step_completed` events, and on replay the call is not re-executed; the recorded completion is read from the event log.
-- **From a step body**: `setAttributes` calls `world.runs.experimentalSetAttributes` directly. Step bodies cannot nest steps, so the internal `"use step"` indirection does not apply. The two paths converge on the same world method.
+```ts
+import { setAttributes } from 'workflow';
 
-Context detection uses existing patterns: presence of the workflow VM context indicates workflow body; presence of `contextStorage.getStore()` indicates step body. Calling `setAttributes` from outside either context throws.
+async function setAttrs(attrs: Record<string, string | undefined>) {
+  'use step';
+  await setAttributes(attrs);
+}
+
+export async function myWorkflow() {
+  'use workflow';
+  await setAttrs({ phase: 'init' });
+}
+```
+
+The restriction is an MVP shortcut, not a long-term design choice — see "Why workflow-body dispatch is deferred" below. The 5.0.0 attributes feature lifts it via the `attr_set` event mechanism; the SDK signature stays the same, so user code that wraps in a step today keeps working after the cutover.
+
+Context detection: `contextStorage.getStore()` returns the step context (provides the run ID); `WORKFLOW_CONTEXT_SYMBOL` on globalThis indicates the workflow VM context (triggers the `FatalError`). Calling outside both contexts throws `NotInWorkflowOrStepContextError`.
 
 #### Optional world support
 
@@ -138,9 +152,9 @@ if (typeof world.runs.experimentalSetAttributes !== 'function') {
 await world.runs.experimentalSetAttributes(runId, changes);
 ```
 
-The no-op-with-warning behaviour applies in **both** dispatch paths (workflow body and step body). User code does not need to feature-detect; calling `setAttributes` against an unsupporting world is safe but silently ineffective beyond the warning.
+The no-op-with-warning behaviour fires on the step-body call path (the only supported path in MVP). User code does not need to feature-detect; calling `setAttributes` against an unsupporting world is safe but silently ineffective beyond the warning.
 
-The warning is emitted once per process (deduped on the warning text) so high-frequency callers do not flood logs.
+The warning is emitted once per process (deduped) so high-frequency callers do not flood logs.
 
 ### 4. World implementations
 
@@ -229,6 +243,18 @@ Skew protection means workflows started under the MVP will continue to run with 
 ## Implementation notes (decisions made during the MVP build-out)
 
 This section records concrete decisions taken while landing the MVP that weren't in the original plan, so the next iteration has them in one place.
+
+### Why workflow-body dispatch is deferred
+
+The original plan was for `setAttributes` to work from both workflow bodies and step bodies behind a single SDK surface, with workflow-body calls dispatched as a step under the hood via an SDK-private `"use step"` function. We initially shipped that. Two problems landed it back to step-body-only:
+
+1. **`'use step'` inside `@workflow/core/dist/`** turned the helper file into a step file from the perspective of the deferred-entry discoverer in `nextjs-webpack` dev mode. The discoverer then traced transitive imports of the helper, ultimately reaching the host-side world adapter and `@vercel/queue` — at which point webpack's regex-based import extractor blew the call stack on tarball-installed deployments. The failure manifested as `RangeError: Maximum call stack size exceeded at RegExpStringIterator.next` and broke every `E2E Local Dev Tests (nextjs-webpack)` run on this branch while passing for every other framework. `runtime/start.ts` and `runtime/run.ts` get away with the same directive because they are never imported from the workflow-VM bundle entry (`packages/core/src/workflow/index.ts`); ours was reachable from that entry.
+
+2. **A host-side bridge** comparable to `sleep` (globalThis-injected dispatch + `registerStepFunction`) was the obvious workaround, but it's substantial wiring for a feature whose end state (event-sourced `attr_set`) replaces the bridge mechanism entirely. Spending that complexity twice did not seem worth it for the MVP.
+
+The pragmatic path is to restrict the MVP to step-body callers and let users wrap in a step explicitly. The full 5.0.0 feature dispatches via `attr_set` events through the workflow controller, which handles the workflow-body case natively without the SWC-discovery hazard. SDK signature is unchanged across the cutover.
+
+Tracked as a known limitation in the trade-offs section above.
 
 ### Endpoint lives under `v2`, not a fresh namespace
 

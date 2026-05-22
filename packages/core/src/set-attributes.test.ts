@@ -5,7 +5,7 @@ import { setAttributes } from './set-attributes.js';
 import { contextStorage } from './step/context-storage.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 
-// `setAttributesStep` resolves the World via `getWorldLazy`. We mock that
+// `setAttributes` resolves the World via `getWorldLazy`. We mock that
 // so tests don't try to load the real world initializer chain (which
 // pulls in world-local / world-vercel).
 const dispatchCalls: Array<{ runId: string; changes: any[] }> = [];
@@ -69,13 +69,13 @@ describe('setAttributes', () => {
       ]);
     });
 
-    it('dispatches when called inside a workflow VM context', async () => {
-      await withWorkflowContext('wrun_workflow', () =>
-        setAttributes({ phase: 'init' })
-      );
-      expect(dispatchCalls).toEqual([
-        { runId: 'wrun_workflow', changes: [{ key: 'phase', value: 'init' }] },
-      ]);
+    it('throws FatalError when called from a workflow body without a wrapping step (V5 MVP restriction)', async () => {
+      await expect(
+        withWorkflowContext('wrun_workflow', () =>
+          setAttributes({ phase: 'init' })
+        )
+      ).rejects.toBeInstanceOf(FatalError);
+      expect(dispatchCalls).toHaveLength(0);
     });
 
     it('throws NotInWorkflowOrStepContextError when called outside both', async () => {
