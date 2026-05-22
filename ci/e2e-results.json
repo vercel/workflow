@@ -1,14 +1,14 @@
 {
-  "lastUpdated": "2026-05-22T15:10:36.427Z",
-  "commit": "070bd0cea960a0d56d7812a6147455f75a06d859",
+  "lastUpdated": "2026-05-22T15:48:40.784Z",
+  "commit": "34481af4b6c5b321275f874f93012e639d7971c6",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
-      "status": "partial",
+      "status": "passing",
       "total": 4323,
-      "passed": 3784,
-      "failed": 1,
+      "passed": 3785,
+      "failed": 0,
       "skipped": 538,
       "frameworks": {
         "astro": {
@@ -23,8 +23,8 @@
         },
         "fastify": {
           "total": 262,
-          "passed": 211,
-          "failed": 1
+          "passed": 212,
+          "failed": 0
         },
         "hono": {
           "total": 262,
@@ -123,6 +123,66 @@
         }
       },
       "progress": 87
+    },
+    "vercel": {
+      "status": "passing",
+      "total": 1572,
+      "passed": 1327,
+      "failed": 0,
+      "skipped": 245,
+      "frameworks": {
+        "astro": {
+          "total": 131,
+          "passed": 105,
+          "failed": 0
+        },
+        "express": {
+          "total": 131,
+          "passed": 105,
+          "failed": 0
+        },
+        "fastify": {
+          "total": 131,
+          "passed": 105,
+          "failed": 0
+        },
+        "hono": {
+          "total": 131,
+          "passed": 105,
+          "failed": 0
+        },
+        "nextjs-turbopack": {
+          "total": 131,
+          "passed": 129,
+          "failed": 0
+        },
+        "nextjs-webpack": {
+          "total": 131,
+          "passed": 129,
+          "failed": 0
+        },
+        "nitro": {
+          "total": 131,
+          "passed": 105,
+          "failed": 0
+        },
+        "nuxt": {
+          "total": 131,
+          "passed": 105,
+          "failed": 0
+        },
+        "sveltekit": {
+          "total": 131,
+          "passed": 124,
+          "failed": 0
+        },
+        "vite": {
+          "total": 131,
+          "passed": 105,
+          "failed": 0
+        }
+      },
+      "progress": 84
     }
   }
 }
