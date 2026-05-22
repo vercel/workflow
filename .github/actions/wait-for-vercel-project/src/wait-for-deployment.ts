@@ -279,6 +279,7 @@ async function run(): Promise<void> {
       core.info(`Deployment ID: ${deploymentId}`);
       core.setOutput('deployment-url', deploymentUrl);
       core.setOutput('deployment-id', deploymentId);
+      core.setOutput('deployment-state', latest.state);
       return;
     }
 

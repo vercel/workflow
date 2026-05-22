@@ -300,6 +300,29 @@ export class WorkflowRuntimeError extends WorkflowError {
   }
 }
 
+/**
+ * Thrown when the persisted workflow event log cannot be replayed because it
+ * contains orphaned, duplicate, or mismatched events.
+ *
+ * This is a runtime/infrastructure failure rather than user code throwing.
+ * When this reaches run failure handling, it is recorded with the distinct
+ * `CORRUPTED_EVENT_LOG` code so worlds and backends can track it separately
+ * from generic runtime failures.
+ */
+export class CorruptedEventLogError extends WorkflowRuntimeError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, {
+      ...options,
+      slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG,
+    });
+    this.name = 'CorruptedEventLogError';
+  }
+
+  static is(value: unknown): value is CorruptedEventLogError {
+    return isError(value) && value.name === 'CorruptedEventLogError';
+  }
+}
+
 interface WorkflowBuildErrorOptions extends ErrorOptions {
   /**
    * An optional actionable hint appended to the main message, explaining how

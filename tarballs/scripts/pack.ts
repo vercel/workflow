@@ -12,6 +12,7 @@ interface PackageJson {
   version: string;
   private?: boolean;
   description?: string;
+  scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
@@ -54,6 +55,16 @@ export interface Catalog {
 const rootDir = fileURLToPath(new URL('../../', import.meta.url));
 const packagesDir = path.join(rootDir, 'packages');
 const outDir = fileURLToPath(new URL('../public', import.meta.url));
+const generatedVersionFiles = [
+  'src/version.ts',
+  'dist/version.js',
+  'dist/version.d.ts',
+];
+
+interface FileSnapshot {
+  path: string;
+  content: string;
+}
 
 async function main() {
   const sha = await getSha();
@@ -123,12 +134,19 @@ async function main() {
     updateDeps(modifiedPackageJson.devDependencies);
     updateDeps(modifiedPackageJson.peerDependencies);
 
-    await fs.writeFile(
-      packageJsonPath,
-      JSON.stringify(modifiedPackageJson, null, 2)
-    );
+    const versionFileSnapshots: FileSnapshot[] = [];
 
     try {
+      await fs.writeFile(
+        packageJsonPath,
+        JSON.stringify(modifiedPackageJson, null, 2)
+      );
+      await updateGeneratedVersionFiles(
+        dir,
+        packageJson,
+        previewVersion,
+        versionFileSnapshots
+      );
       await exec(`pnpm pack --out="${outDir}/%s.tgz"`, { cwd: dir });
 
       const escapedName = name.replace(/^@(.+)\//, '$1-');
@@ -152,6 +170,7 @@ async function main() {
         `Packed ${name} (${formatBytes(stat.size)} → ${formatBytes(unpackedSizeBytes)} unpacked, ${files.length} files)`
       );
     } finally {
+      await restoreFiles(versionFileSnapshots);
       await fs.writeFile(packageJsonPath, originalContent);
     }
   }
@@ -175,6 +194,51 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+}
+
+async function updateGeneratedVersionFiles(
+  packageDir: string,
+  packageJson: PackageJson,
+  version: string,
+  snapshots: FileSnapshot[]
+): Promise<void> {
+  if (!usesGeneratedVersionFile(packageJson)) {
+    return;
+  }
+
+  for (const relativePath of generatedVersionFiles) {
+    const filePath = path.join(packageDir, relativePath);
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+
+    snapshots.push({ path: filePath, content });
+    await fs.writeFile(filePath, renderGeneratedVersionFile(filePath, version));
+  }
+}
+
+function usesGeneratedVersionFile(packageJson: PackageJson): boolean {
+  return Object.values(packageJson.scripts ?? {}).some(
+    (script) =>
+      script.includes('genversion') && script.includes('src/version.ts')
+  );
+}
+
+function renderGeneratedVersionFile(filePath: string, version: string): string {
+  if (filePath.endsWith('.d.ts')) {
+    return `export declare const version: ${JSON.stringify(version)};\n`;
+  }
+  return `export const version = ${JSON.stringify(version)};\n`;
+}
+
+async function restoreFiles(snapshots: FileSnapshot[]): Promise<void> {
+  for (const snapshot of snapshots.slice().reverse()) {
+    await fs.writeFile(snapshot.path, snapshot.content);
+  }
 }
 
 /**

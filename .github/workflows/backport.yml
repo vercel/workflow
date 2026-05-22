@@ -176,7 +176,7 @@ jobs:
 
       - name: Setup pnpm
         if: steps.existing-pr.outputs.exists != 'true'
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
 
       - name: Setup Node.js
         if: steps.existing-pr.outputs.exists != 'true'
@@ -265,7 +265,9 @@ jobs:
             echo "Recommend AGAINST backport for:"
             echo "- Changes that explicitly build on or require new APIs/behavior introduced only on \`main\`"
             echo "- Major breaking changes intended exclusively for the next major release"
-            echo "- Changes to files/directories that are not maintained on \`stable\` (the \`docs/\` app outside of \`docs/content/\`, and anything under \`skills/\`)"
+            echo "- Changes confined to files/directories that are not maintained on \`stable\`. **This list is exhaustive** — only the following paths qualify; assume every other path IS actively maintained on \`stable\` unless you verify otherwise (see below):"
+            echo "  - the \`docs/\` app outside of \`docs/content/\` (i.e. \`docs/content/\` IS maintained on \`stable\`, the rest of the docs app is not)"
+            echo "  - anything under \`skills/\`"
             echo "- Changesets-only commits, version bump commits (\"Version Packages\"), and similar release plumbing"
             echo "- Commits that revert something that only exists on \`main\`"
             echo ""
@@ -274,6 +276,8 @@ jobs:
             echo "Analyze the commit below and decide whether to recommend a backport."
             echo ""
             echo "When in doubt, lean toward recommending a backport — humans review the resulting PR and can close it if it's not worth merging."
+            echo ""
+            echo "**Important:** before recommending AGAINST a backport on the grounds that a file or directory is not maintained on \`stable\`, you MUST verify your claim. The exhaustive list above is the only set of paths you may assume are absent or stubbed on \`stable\` without checking. For any other path, use the \`bash\` tool to run \`git ls-tree origin/stable -- <path>\` (or \`git show origin/stable:<path>\`) and confirm the path is actually absent or a stub on \`stable\` before citing it as a reason against backport. Do not guess based on file/directory names — for example, names containing words like \"docs\", \"preview\", \"tarball\", or \"workflow\" do not imply a path is main-only."
             echo ""
             echo "## Output format"
             echo ""
@@ -373,16 +377,18 @@ jobs:
             const reasoning = process.env.REASONING;
             const sha = process.env.SHA.slice(0, 7);
             const prNumber = Number(process.env.PR_NUMBER);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const workflowUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/backport.yml`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
-                `**No backport to \`stable\`** for ${sha} (AI decision).`,
+                `**No backport to \`stable\`** for ${sha} ([AI decision](${runUrl})).`,
                 '',
                 reasoning,
                 '',
-                'To override, re-run the [Backport to stable](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/workflows/backport.yml) workflow manually via `workflow_dispatch` with this commit SHA.'
+                `To override, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` with this commit SHA.`
               ].join('\n')
             });
 
@@ -818,6 +824,7 @@ jobs:
           CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
           AI_REASONING: ${{ steps.decide.outputs.reasoning }}
           TRIGGER: ${{ steps.resolve.outputs.trigger }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # Build the PR title.
           if [ -n "$PR_NUMBER" ]; then
@@ -830,9 +837,9 @@ jobs:
           # Build the PR body.
           {
             if [ -n "$PR_NUMBER" ]; then
-              echo "Automated backport of #${PR_NUMBER} to \`stable\`."
+              echo "Automated backport of #${PR_NUMBER} to \`stable\` ([backport job run](${RUN_URL}))."
             else
-              echo "Automated backport of ${SHA} to \`stable\`."
+              echo "Automated backport of ${SHA} to \`stable\` ([backport job run](${RUN_URL}))."
             fi
             echo ""
 
@@ -882,6 +889,7 @@ jobs:
             const cherryPickStatus = process.env.CHERRY_PICK_STATUS;
             const prUrl = process.env.PR_URL;
             const prNumber = Number(process.env.PR_NUMBER);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const conflictNote = cherryPickStatus === 'conflict'
               ? ' Merge conflicts were resolved by AI — please review carefully.'
               : '';
@@ -889,7 +897,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: `Backport PR opened against \`stable\`: ${prUrl}.${conflictNote}`
+              body: `Backport PR opened against \`stable\`: ${prUrl}.${conflictNote} ([backport job run](${runUrl}))`
             });
 
       - name: Comment on conflict failure
@@ -913,12 +921,13 @@ jobs:
             const sha = process.env.SHA;
             const prNumber = Number(process.env.PR_NUMBER);
             const shortSha = sha.slice(0, 12);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
-                '**Backport to `stable` failed** — the cherry-pick had conflicts that could not be resolved automatically.',
+                `**Backport to \`stable\` failed** — the cherry-pick had conflicts that could not be resolved automatically ([backport job run](${runUrl})).`,
                 '',
                 'To resolve manually, push a backport branch and open a PR against `stable` (the workflow never pushes directly to `stable`). Note: this repository requires verified signatures on every branch, so your local commits must be signed (`git config commit.gpgsign true` with a configured GPG/SSH signing key, or `git cherry-pick -S`).',
                 '```bash',
