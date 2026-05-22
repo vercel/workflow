@@ -34,7 +34,7 @@ There are two ways to apply this:
 
 ## Method 1: Upgrade on every iteration
 
-Each run inherits state via its argument, blocks on a hook, processes the resume, then unconditionally hands off to its successor. The `start()` call is wrapped in a `"use step"` function (required) and passes `deploymentId: "latest"` so the new run lands on the freshest code.
+Each run inherits state via its argument, blocks on a hook, processes the resume, then unconditionally hands off to its successor by calling `start()` directly from the workflow body with `deploymentId: "latest"`.
 
 ```typescript lineNumbers
 import { defineHook, getWorkflowMetadata } from "workflow";
@@ -48,17 +48,6 @@ interface QueueState {
 }
 
 export const nextItemHook = defineHook<{ itemId: string }>();
-
-async function spawnSelfOnLatest(state: QueueState): Promise<string> {
-  "use step"; // [!code highlight]
-
-  // `deploymentId: "latest"` resolves to whichever deployment is current
-  // when this spawn lands — NOT the deployment running this code.
-  const next = await start(longRunningQueue, [state], { // [!code highlight]
-    deploymentId: "latest", // [!code highlight]
-  }); // [!code highlight]
-  return next.runId;
-}
 
 export async function longRunningQueue(
   state: QueueState = { processed: 0, cursor: null },
@@ -74,10 +63,13 @@ export async function longRunningQueue(
   await processItem(itemId);
 
   // Hand off to a fresh run on the latest deployment. THIS run ends here.
-  await spawnSelfOnLatest({ // [!code highlight]
-    processed: state.processed + 1, // [!code highlight]
-    cursor: itemId, // [!code highlight]
-  }); // [!code highlight]
+  // `deploymentId: "latest"` resolves to whichever deployment is current
+  // when this spawn lands — NOT the deployment running this code.
+  await start( // [!code highlight]
+    longRunningQueue, // [!code highlight]
+    [{ processed: state.processed + 1, cursor: itemId }], // [!code highlight]
+    { deploymentId: "latest" }, // [!code highlight]
+  );
 }
 ```
 
@@ -117,15 +109,6 @@ interface QueueState {
 export const nextItemHook = defineHook<{ itemId: string }>();
 export const upgradeHook = defineHook<{ reason?: string }>(); // [!code highlight]
 
-async function spawnSelfOnLatest(state: QueueState): Promise<string> {
-  "use step";
-
-  const next = await start(longRunningQueue, [state], {
-    deploymentId: "latest",
-  });
-  return next.runId;
-}
-
 export async function longRunningQueue(
   state: QueueState = { processed: 0, cursor: null },
 ): Promise<void> {
@@ -147,7 +130,9 @@ export async function longRunningQueue(
     if (event.kind === "upgrade") { // [!code highlight]
       // Checkpoint current state and hand off to a fresh run
       // on whatever deployment is live now. THIS run ends here.
-      await spawnSelfOnLatest(state); // [!code highlight]
+      await start(longRunningQueue, [state], { // [!code highlight]
+        deploymentId: "latest", // [!code highlight]
+      }); // [!code highlight]
       return; // [!code highlight]
     }
 
@@ -183,7 +168,7 @@ To upgrade a fleet of runs after a deploy, list active runs (e.g. from a trackin
 ## How it works
 
 1. **`deploymentId: "latest"` is the upgrade knob.** Without it, the spawn pins to the current deployment. With it, the new run resolves to whatever deployment is current when the runtime picks it up — so any shipped fix applies starting from that respawn. Both methods rely on this.
-2. **`start()` from a step.** [`start()`](/docs/api-reference/workflow-api/start) is not allowed directly inside `"use workflow"` functions — wrap it in a `"use step"` helper to keep the spawn deterministic across replays.
+2. **`start()` runs directly from the workflow body.** In v5, [`start()`](/docs/api-reference/workflow-api/start) is step-backed, so it can be called from a workflow function and still records a deterministic step boundary in the event log — no manual `"use step"` wrapper is required.
 3. **State carries through the function argument.** The accumulating context flows from run N to run N+1 as a serialized argument. No external store is required for the state itself.
 4. **Per-run hook tokens.** Using `workflowRunId` as the hook token scopes each iteration's wait to its own run, so multiple chains can run concurrently without interfering.
 5. **Method 1 vs Method 2 is just where the spawn happens.** In Method 1 every run spawns its successor unconditionally before exiting — there is no long-lived process to migrate. In Method 2 the spawn happens only when the upgrade hook fires; otherwise the loop keeps handling events on the same run.
@@ -193,7 +178,7 @@ To upgrade a fleet of runs after a deploy, list active runs (e.g. from a trackin
 - **Combine with a sleep.** Race the hook against `sleep()` so iterations also tick on a timer: `Promise.race([hook, sleep("1d")])` lets the workflow advance even if no external event arrives.
 - **Stateless successors.** If the next iteration doesn't need the previous state (e.g. a pure event router), call `start(longRunningQueue, [], { deploymentId: "latest" })` and skip the argument plumbing.
 - **Persist state externally.** If state needs to be readable from outside the workflow (dashboards, debugging, recovery), write it to a database in a step before spawning the next run.
-- **Track the active runId externally.** Whatever resumes the hook needs to know the current run. Have the spawn step write the new `runId` to a KV/database keyed by a stable session identifier so resumers always look up the latest one.
+- **Track the active runId externally.** Whatever resumes the hook needs to know the current run. Capture the `runId` returned by `start()` and write it to a KV/database keyed by a stable session identifier (in a step) so resumers always look up the latest one.
 
 ## Caveats
 
@@ -201,12 +186,10 @@ To upgrade a fleet of runs after a deploy, list active runs (e.g. from a trackin
 - **Workflow identity is the function name + file path.** Renaming the function or moving the file across a deployment changes the workflow ID — the next iteration will fail to resolve. Treat the workflow's name and location as stable interfaces.
 - **There is a tiny gap between iterations.** The current run ends as soon as `start()` returns; the next run starts asynchronously. A resume that arrives in that window can fail with "hook not found." Make resumers retry, or have the API persist pending payloads and apply them once the next iteration is ready.
 - **Method 2: track active runs externally.** Because Method 2's runs are long-lived, the set of in-flight runs only changes when one starts, completes, or upgrades. Persist run IDs (and clean them up on completion or upgrade) so a rollout script can fan out reliably. After resuming `upgradeHook`, also update the tracked run ID once the new run reports back, the same way you would in Method 1.
-- **`start()` must be called from a step**, never directly from the workflow body.
 
 ## Key APIs
 
 - [`"use workflow"`](/docs/foundations/workflows-and-steps) — marks the orchestrator function
-- [`"use step"`](/docs/foundations/workflows-and-steps) — required wrapper for `start()` calls
 - [`start()`](/docs/api-reference/workflow-api/start) with [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) — spawn the successor on the newest deployment
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) — suspend the workflow until an external event resumes it
 - [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) — exposes `workflowRunId` for per-run hook tokens
