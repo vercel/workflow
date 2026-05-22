@@ -1064,5 +1064,84 @@ describe('streamer', () => {
         expect(content).toBe('chunk1\nchunk2\n');
       });
     });
+
+    // Regression tests for VULN-916: path-traversal via request-controlled IDs.
+    //
+    // The streamer concatenates runId and stream name into filesystem paths
+    // (`streams/runs/{runId}.json`, `streams/chunks/{name}-{chunkId}.bin`),
+    // so unsanitized values from the request body could escape the storage
+    // root. Each entry point that takes a runId or stream name should call
+    // `assertSafeEntityId` before any path is constructed.
+    describe('path traversal prevention (VULN-916)', () => {
+      const traversalIds = [
+        '../../../package',
+        '../runs/wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        'a/b',
+        'a\\b',
+        '.hidden',
+        '.locks',
+        // Dots in entity IDs collide with the `.tag` / `.json` suffix the
+        // tagging logic strips from filenames.
+        'wrun_ABC.vitest-0',
+      ];
+
+      for (const badId of traversalIds) {
+        it(`rejects traversal runId on writeToStream: ${JSON.stringify(badId)}`, async () => {
+          const { streamer } = await setupStreamer();
+          await expect(
+            streamer.writeToStream('stream', badId, 'data')
+          ).rejects.toThrow(/Unsafe (runId|streamName)/);
+        });
+
+        it(`rejects traversal streamName on writeToStream: ${JSON.stringify(badId)}`, async () => {
+          const { streamer } = await setupStreamer();
+          await expect(
+            streamer.writeToStream(badId, TEST_RUN_ID, 'data')
+          ).rejects.toThrow(/Unsafe (runId|streamName)/);
+        });
+
+        it(`rejects traversal runId on closeStream: ${JSON.stringify(badId)}`, async () => {
+          const { streamer } = await setupStreamer();
+          await expect(streamer.closeStream('stream', badId)).rejects.toThrow(
+            /Unsafe (runId|streamName)/
+          );
+        });
+
+        it(`rejects traversal streamName on closeStream: ${JSON.stringify(badId)}`, async () => {
+          const { streamer } = await setupStreamer();
+          await expect(
+            streamer.closeStream(badId, TEST_RUN_ID)
+          ).rejects.toThrow(/Unsafe (runId|streamName)/);
+        });
+
+        it(`rejects traversal runId on listStreamsByRunId: ${JSON.stringify(badId)}`, async () => {
+          const { streamer } = await setupStreamer();
+          await expect(streamer.listStreamsByRunId(badId)).rejects.toThrow(
+            /Unsafe runId/
+          );
+        });
+
+        it(`rejects traversal streamName on getStreamChunks: ${JSON.stringify(badId)}`, async () => {
+          const { streamer } = await setupStreamer();
+          await expect(
+            streamer.getStreamChunks(badId, TEST_RUN_ID)
+          ).rejects.toThrow(/Unsafe streamName/);
+        });
+      }
+
+      it('does not create files outside the streams root for a traversal runId', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        await expect(
+          streamer.writeToStream('stream', '../escape', 'data')
+        ).rejects.toThrow();
+
+        // The streams directory should not exist (or be empty if created by
+        // some unrelated path), and no `escape*` files should be created in
+        // the parent directory.
+        const parentDir = path.dirname(testDir);
+        const parentEntries = await fs.readdir(parentDir);
+        expect(parentEntries.every((e) => !e.startsWith('escape'))).toBe(true);
+      });
+    });
   });
 });
