@@ -1,9 +1,11 @@
-import { notFound } from 'next/navigation';
+import { generateNotFoundMarkdown } from '@vercel/agent-readability';
 import { rewriteCookbookUrlsInText } from '@/lib/geistdocs/cookbook-source';
 import { getLLMText, source } from '@/lib/geistdocs/source';
 import { i18n } from '@/lib/geistdocs/i18n';
 
 export const revalidate = false;
+
+const MARKDOWN_HEADERS = { 'Content-Type': 'text/markdown; charset=utf-8' };
 
 export async function GET(
   _req: Request,
@@ -13,7 +15,11 @@ export async function GET(
   const page = source.getPage(slug, lang);
 
   if (!page) {
-    notFound();
+    // Status 200 (not 404): agents commonly discard 404 response bodies.
+    const requestedPath = slug?.length ? `/${slug.join('/')}` : '/';
+    return new Response(generateNotFoundMarkdown(requestedPath), {
+      headers: MARKDOWN_HEADERS,
+    });
   }
 
   const sitemapPath =
