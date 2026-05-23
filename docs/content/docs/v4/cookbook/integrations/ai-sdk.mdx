@@ -2,7 +2,7 @@
 title: AI SDK
 description: Use AI SDK's streamText directly inside durable workflows for lower-level control over model calls and tool execution.
 type: guide
-summary: Use streamText() inside a workflow for full control over model options, stop conditions, and output schemas. The per-turn step is durable; individual tool calls inside it are not.
+summary: Use streamText() inside a workflow for full control over model options, stop conditions, and output schemas. Each turn is durable; individual tool calls and LLM calls inside it are not.
 related:
   - /docs/ai
   - /docs/ai/chat-session-modeling
