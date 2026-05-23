@@ -1,5 +1,5 @@
 import { defineHook } from 'workflow';
-import { resumeHook, start } from 'workflow/api';
+import { start } from 'workflow/api';
 import { z } from 'zod';
 
 async function processItem(item: string): Promise<string> {
@@ -16,7 +16,9 @@ const childCompletionHook = defineHook({
 
 async function resumeParentCompletion(
   token: string,
-  result: { status: 'completed' | 'failed'; value?: unknown; error?: string }
+  result:
+    | { status: 'completed'; value: unknown }
+    | { status: 'failed'; error: string }
 ) {
   'use step';
   await childCompletionHook.resume(token, result);

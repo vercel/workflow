@@ -51,7 +51,9 @@ function completionToken(parentRunId: string, key: string) {
 
 async function resumeParentCompletion(
   token: string,
-  result: { status: "completed" | "failed"; value?: unknown; error?: string }
+  result:
+    | { status: "completed"; value: unknown }
+    | { status: "failed"; error: string }
 ) {
   "use step";
   await childCompletionHook.resume(token, result);
