@@ -179,7 +179,7 @@ export const recipes: Record<string, Recipe> = {
     slug: 'child-workflows',
     title: 'Child Workflows',
     description:
-      'Spawn and orchestrate child workflows from a parent, polling for completion and handling partial failures.',
+      'Spawn and orchestrate child workflows from a parent, waiting for completion via hook resume and handling partial failures.',
     category: 'advanced',
   },
   'distributed-abort-controller': {
