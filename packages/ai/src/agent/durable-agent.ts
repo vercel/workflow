@@ -751,6 +751,10 @@ export interface DurableAgentStreamResult<
 /**
  * A class for building durable AI agents within workflows.
  *
+ * @deprecated `DurableAgent` will be deprecated soon. For new durable agent
+ * workflows, use `WorkflowAgent` from `@ai-sdk/workflow` instead.
+ * https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent
+ *
  * DurableAgent enables you to create AI-powered agents that can maintain state
  * across workflow steps, call tools, and gracefully handle interruptions and resumptions.
  * It integrates seamlessly with the AI SDK and the Workflow SDK for

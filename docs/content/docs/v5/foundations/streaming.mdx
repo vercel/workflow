@@ -347,6 +347,10 @@ export async function batchProcessingWorkflow(items: string[]) {
 
 ### Streaming AI Responses with `DurableAgent`
 
+<Callout type="warn">
+**Deprecation notice:** `DurableAgent` will be deprecated soon. For new durable agent workflows, use [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) from `@ai-sdk/workflow` instead.
+</Callout>
+
 Stream AI-generated content using [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) from `@workflow/ai`. Tools can also emit progress updates to the same stream using [data chunks](https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data#streaming-custom-data) with the [`UIMessageChunk`](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) type from the AI SDK:
 
 ```typescript title="workflows/ai-assistant.ts" lineNumbers
