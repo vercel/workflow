@@ -21,9 +21,9 @@ import {
 // step-discovery graph. That triggers a stack overflow inside webpack
 // dev mode's regex-based import extractor on tarball-installed
 // deployments. The MVP works around this by performing the world
-// dispatch from the SDK helper (step body only); workflow-body use is
-// supported only via the host-side bridge in `set-attributes.ts`,
-// which calls into an actual step via `registerStepFunction`.
+// dispatch from the SDK helper (step body only); workflow-body use
+// throws FatalError — users must wrap the call in their own
+// `'use step'` function.
 
 /**
  * Validate and normalize a `setAttributes(record)` call. Returns the
