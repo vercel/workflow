@@ -132,6 +132,8 @@ export async function myWorkflow() {
 
 ## DurableAgent — AI Agents in Workflows
 
+> **Deprecation notice:** `DurableAgent` will be deprecated soon. For new durable agent workflows, use [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) from `@ai-sdk/workflow` instead.
+
 Use `DurableAgent` to build AI agents that maintain state and survive interruptions. It handles the workflow sandbox automatically (no manual `globalThis.fetch` needed).
 
 ```typescript

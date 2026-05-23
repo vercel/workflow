@@ -133,7 +133,7 @@ export const recipes: Record<string, Recipe> = {
     slug: 'durable-agent',
     title: 'Durable Agent',
     description:
-      'Replace a stateless AI agent with a durable one that survives crashes, retries tool calls, and streams output.',
+      'Legacy durable agent pattern (deprecated soon — prefer WorkflowAgent from @ai-sdk/workflow). Survives crashes, retries tool calls, and streams output.',
     category: 'agent-patterns',
   },
   'human-in-the-loop': {
@@ -179,7 +179,7 @@ export const recipes: Record<string, Recipe> = {
     slug: 'child-workflows',
     title: 'Child Workflows',
     description:
-      'Spawn and orchestrate child workflows from a parent, polling for completion and handling partial failures.',
+      'Spawn and orchestrate child workflows from a parent, waiting for completion via hook resume and handling partial failures.',
     category: 'advanced',
   },
   'distributed-abort-controller': {

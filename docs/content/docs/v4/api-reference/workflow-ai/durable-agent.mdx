@@ -11,6 +11,10 @@ related:
 
 The `DurableAgent` class enables you to create AI-powered agents that can maintain state across workflow steps, call tools, and gracefully handle interruptions and resumptions.
 
+<Callout type="warn">
+**Deprecation notice:** `DurableAgent` will be deprecated soon. For new durable agent workflows, use [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) from `@ai-sdk/workflow` instead. See [Migrating from DurableAgent](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent) in the AI SDK docs.
+</Callout>
+
 Tool calls can be implemented as workflow steps for automatic retries, or as regular workflow-level logic utilizing core library features such as [`sleep()`](/docs/api-reference/workflow/sleep) and [Hooks](/docs/foundations/hooks).
 
 ```typescript lineNumbers
