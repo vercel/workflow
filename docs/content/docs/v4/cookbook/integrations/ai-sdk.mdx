@@ -1,8 +1,8 @@
 ---
 title: AI SDK
-description: Use AI SDK's streamText directly inside durable workflows for lower-level control over model calls and tool execution.
+description: Use AI SDK's streamText directly inside durable workflows when you need the raw AI SDK API or a per-turn durability boundary.
 type: guide
-summary: Use streamText() inside a workflow for full control over model options, stop conditions, and output schemas. Each turn is durable; individual tool calls and LLM calls inside it are not.
+summary: Use streamText() inside a workflow when the durability boundary is an entire user turn, or when you need AI SDK APIs not exposed by DurableAgent. Individual tool calls and LLM calls inside a turn are not separately durable.
 related:
   - /docs/ai
   - /docs/ai/chat-session-modeling
@@ -16,17 +16,18 @@ related:
 For the full AI SDK reference (providers, `streamText`, `generateObject`, `useChat`, tool calling, etc.) see the [AI SDK docs](https://ai-sdk.dev/docs). This page covers the Workflow-specific integration points.
 
 <Callout type="info">
-For most agent use cases, prefer [`DurableAgent`](/cookbook/agent-patterns/durable-agent) which wraps [`streamText`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text), manages the tool loop automatically, and runs tools at workflow scope — each tool can be marked `"use step"` for per-call durability and retries, or stay at workflow level to use primitives like `sleep()` and hooks. This page covers using `streamText()` directly when you need AI SDK features `DurableAgent` doesn't expose (`stopWhen`, structured output, `onStepFinish`, etc.) — accepting that tools inside a turn are no longer individually durable.
+For most agent use cases, prefer [`DurableAgent`](/cookbook/agent-patterns/durable-agent), which implements the same agent loop as [`streamText`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text), manages tool calling automatically, and runs tools at workflow scope — each tool can be marked `"use step"` for per-call durability and retries, or stay at workflow level to use primitives like `sleep()` and hooks. Use this page's raw `streamText()` pattern when you want the exact AI SDK API (for example `toUIMessageStream()`, `onChunk`, or `generateText`), or when the durability boundary should be an entire user turn in one step — accepting that tool calls inside that turn are not individually durable.
 </Callout>
 
 ## When to use streamText directly
 
 Use [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) instead of `DurableAgent` when you need:
 
-* **Custom stop conditions** — [`stopWhen`](https://ai-sdk.dev/docs/ai-sdk-core/agents#stop-conditions), [`prepareStep`](https://ai-sdk.dev/docs/ai-sdk-core/agents#prepare-step), or [`onStepFinish`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#on-step-finish) callbacks
-* **Structured output** — [`Output.object()`](https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data) or `Output.array()` alongside tool calling
-* **Step-level callbacks** — `onStepFinish` for logging, metrics, or branching logic
-* **Provider options** — per-step model switching, reasoning budgets, or custom [provider options](https://ai-sdk.dev/docs/ai-sdk-core/provider-options)
+* **The raw AI SDK API** — `streamText().toUIMessageStream()`, `onChunk`, `smoothStream`, or other options that map directly to the [`streamText`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) return value rather than `DurableAgent.stream()`
+* **Per-turn durability** — wrap the entire agent response (model + tools) in a single `"use step"` function so one user turn is the atomic retry unit; useful when you want all tool calls inside a turn to re-execute together
+* **Custom multi-turn orchestration** — manual hook loops, per-turn stream slicing (`sliceUntilFinish`), or other workflow patterns shown below that don't map cleanly to `DurableAgent`
+
+`DurableAgent` already supports `stopWhen`, `prepareStep`, `onStepFinish`, structured output (`experimental_output`), per-step model switching, and [provider options](https://ai-sdk.dev/docs/ai-sdk-core/provider-options). See the [DurableAgent reference](/docs/api-reference/workflow-ai/durable-agent).
 
 ## Multi-turn pattern
 
@@ -352,17 +353,17 @@ Clients can send a `runId` from a long-gone workflow (localStorage, back button,
 
 ## streamText vs DurableAgent
 
-| | `streamText()` | `DurableAgent` |
+| | `streamText()` (this pattern) | `DurableAgent` |
 |---|---|---|
-| **Tool loop** | AI SDK handles via `stopWhen` | DurableAgent handles internally |
-| **LLM call durability** | Re-executes on replay | Each LLM call is a durable step |
+| **Tool loop** | AI SDK handles via `stopWhen` | Handles internally (AI SDK–compatible options) |
+| **LLM call durability** | Re-executes with the parent turn | Each LLM call is a durable step |
 | **Tool call durability** | Not individually durable — re-executes with the parent turn | Per tool — mark `"use step"` for a durable, retryable step, or keep at workflow level for `sleep()` / hooks |
-| **Stop conditions** | `stopWhen`, `prepareStep` | `prepareStep` only |
-| **Structured output** | `Output.object()`, `Output.array()` | Not available |
-| **Step callbacks** | `onStepFinish`, `onChunk` | Not available |
-| **Setup** | Manual stream piping | Automatic |
+| **Stop conditions** | `stopWhen`, `prepareStep` | `stopWhen`, `prepareStep` |
+| **Structured output** | `Output.object()`, `Output.array()` | `experimental_output` (`Output.object()`, `Output.text()`) |
+| **Step callbacks** | `onStepFinish`, `onChunk`, etc. | `onStepFinish`, `onFinish`, `onError`, `onAbort` (`onChunk` not available) |
+| **Setup** | Manual stream piping and turn slicing | Automatic |
 
-Use `DurableAgent` for most agent use cases. Use `streamText` when you need the additional control.
+Use `DurableAgent` for most agent use cases. Use `streamText` when you need the raw AI SDK surface or a per-turn durability boundary.
 
 ## Key APIs
 
