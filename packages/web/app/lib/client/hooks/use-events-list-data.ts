@@ -17,6 +17,8 @@ import type { EnvMap } from '~/lib/types';
 
 const INITIAL_PAGE_SIZE = 100;
 const LOAD_MORE_PAGE_SIZE = 100;
+/** Max pages when fetching correlation ID search results (100 events/page). */
+const MAX_CORRELATION_SEARCH_PAGES = 30;
 
 /**
  * Independent event fetching for the Events tab.
@@ -140,7 +142,8 @@ export function useEventsListData(
   const searchByExactId = useCallback(
     async (
       id: string,
-      kind: ExactWorkflowSearchIdKind
+      kind: ExactWorkflowSearchIdKind,
+      _signal?: AbortSignal
     ): Promise<Event[] | null> => {
       if (kind === 'event') {
         const { error: fetchError, result } = await unwrapServerActionResult(
@@ -150,11 +153,12 @@ export function useEventsListData(
           return null;
         }
         const [event] = await hydrateEvents([result]);
-        return event.runId === runId ? [event] : null;
+        return event?.runId === runId ? [event] : null;
       }
 
       const matched: Event[] = [];
       let nextCursor: string | undefined;
+      let pagesFetched = 0;
       do {
         const { error: fetchError, result } = await unwrapServerActionResult(
           fetchEventsByCorrelationId(env, id, {
@@ -168,11 +172,16 @@ export function useEventsListData(
           return null;
         }
 
+        pagesFetched += 1;
         const hydrated = await hydrateEvents(result.data);
         matched.push(...hydrated.filter((event) => event.runId === runId));
 
         nextCursor =
-          result.hasMore && result.cursor ? result.cursor : undefined;
+          pagesFetched < MAX_CORRELATION_SEARCH_PAGES &&
+          result.hasMore &&
+          result.cursor
+            ? result.cursor
+            : undefined;
       } while (nextCursor);
 
       return matched.length > 0 ? matched : null;

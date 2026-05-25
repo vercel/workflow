@@ -13,6 +13,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { isEncryptedMarker } from '../lib/hydration';
 import {
   parseExactWorkflowSearchId,
+  looksLikeWorkflowIdSearchInput,
   type ExactWorkflowSearchIdKind,
 } from '../lib/exact-event-search-id';
 import { DecryptButton } from './ui/decrypt-button';
@@ -733,7 +734,8 @@ interface EventsListProps {
   /** Fetch events for an exact correlation or event ID. */
   onExactIdSearch?: (
     id: string,
-    kind: ExactWorkflowSearchIdKind
+    kind: ExactWorkflowSearchIdKind,
+    signal?: AbortSignal
   ) => Promise<Event[] | null>;
 }
 
@@ -1354,10 +1356,16 @@ export function EventListView({
     setSearchLoading(true);
     setSearchNotFound(false);
 
+    const abortController = new AbortController();
+
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const results = await onExactIdSearch(parsed.id, parsed.kind);
+          const results = await onExactIdSearch(
+            parsed.id,
+            parsed.kind,
+            abortController.signal
+          );
           if (searchRequestRef.current !== requestId) {
             return;
           }
@@ -1388,7 +1396,10 @@ export function EventListView({
             behavior: 'smooth',
           });
         } catch {
-          if (searchRequestRef.current !== requestId) {
+          if (
+            abortController.signal.aborted ||
+            searchRequestRef.current !== requestId
+          ) {
             return;
           }
           setSearchResults([]);
@@ -1402,8 +1413,11 @@ export function EventListView({
       })();
     }, 300);
 
-    return () => clearTimeout(timer);
-  }, [searchQuery, onExactIdSearch, effectiveSortOrder]);
+    return () => {
+      clearTimeout(timer);
+      abortController.abort();
+    };
+  }, [searchQuery, onExactIdSearch]);
 
   const handleSearchKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -1412,7 +1426,12 @@ export function EventListView({
       }
 
       const trimmed = searchQuery.trim();
-      if (!trimmed || parseExactWorkflowSearchId(trimmed) || !onExactIdSearch) {
+      if (
+        !trimmed ||
+        parseExactWorkflowSearchId(trimmed) ||
+        !onExactIdSearch ||
+        !looksLikeWorkflowIdSearchInput(trimmed)
+      ) {
         return;
       }
 
@@ -1533,6 +1552,12 @@ export function EventListView({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={handleSearchKeyDown}
+              disabled={!onExactIdSearch}
+              title={
+                onExactIdSearch
+                  ? undefined
+                  : 'Exact ID search is unavailable in this view.'
+              }
               style={{
                 marginLeft: -16,
                 paddingInline: 12,
@@ -1543,6 +1568,8 @@ export function EventListView({
                 outline: 'none',
                 height: 40,
                 width: '100%',
+                opacity: onExactIdSearch ? 1 : 0.5,
+                cursor: onExactIdSearch ? 'text' : 'not-allowed',
               }}
             />
           </label>

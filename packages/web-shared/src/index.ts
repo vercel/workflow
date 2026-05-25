@@ -16,6 +16,7 @@ export {
 export type { EventAnalysis } from './lib/event-analysis';
 export {
   parseExactWorkflowSearchId,
+  looksLikeWorkflowIdSearchInput,
   type ExactWorkflowSearchId,
   type ExactWorkflowSearchIdKind,
 } from './lib/exact-event-search-id';
