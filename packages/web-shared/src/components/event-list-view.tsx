@@ -1373,7 +1373,13 @@ export function EventListView({
           setSearchNotFound(false);
           setSelectedGroupKey(
             parsed.kind === 'event'
-              ? (results[0]?.correlationId ?? undefined)
+              ? (() => {
+                  const first = results[0];
+                  if (!first) return undefined;
+                  return isRunLevel(first.eventType)
+                    ? '__run__'
+                    : (first.correlationId ?? undefined);
+                })()
               : parsed.kind === 'run'
                 ? '__run__'
                 : parsed.id
