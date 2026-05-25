@@ -183,14 +183,14 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
 }
 
 /**
- * Turn a v4 event (full entity from GET single-event, or LIST frame
- * meta + body) into the Event shape the workflow runtime expects.
+ * Turn a v4 event (frame meta + frame body) into the Event shape the
+ * workflow runtime expects.
  *
- * The server-side GET resolves refs server-side and bakes the payload
- * bytes into eventData, so `payloadBody` is empty there. The LIST path
- * keeps the payload as a `RefDescriptor` in `eventData[fieldName]` and
- * delivers the resolved bytes in `payloadBody`; this helper splices them
- * back in so the runtime sees a uniform shape.
+ * Both GET single-event and LIST use the same frame format: meta is the
+ * full event entity with the payload field as a RefDescriptor, body is
+ * the resolved payload bytes (possibly empty). This helper CBOR-decodes
+ * the body and splices the value into `eventData[fieldName]`, symmetric
+ * with the unconditional CBOR-encode in `splitEventDataForV4`.
  */
 function buildEventFromV4(
   decoded: DecodedV4Event,
@@ -202,29 +202,12 @@ function buildEventFromV4(
   if (payloadBody.byteLength > 0) {
     const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[decoded.eventType];
     if (payloadField) {
-      // CBOR-decode the bytes to recover the original JS value the SDK
-      // encoded on the write side. Symmetric with splitEventDataForV4.
       try {
         eventData[payloadField] = decode(payloadBody);
       } catch {
-        // If decode fails, leave the raw bytes — the consumer can
-        // inspect them as a Uint8Array. This is a defensive path; in
-        // practice the SDK is the only producer here.
+        // Defensive: leave the raw bytes if decode fails. The SDK is
+        // the only producer in practice so this shouldn't fire.
         eventData[payloadField] = payloadBody;
-      }
-    }
-  }
-
-  // For the GET-single-event path, the server already resolved the ref
-  // server-side, so eventData[payloadField] is a Uint8Array of the CBOR
-  // bytes the SDK originally sent. Decode it the same way.
-  if (payloadBody.byteLength === 0) {
-    const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[decoded.eventType];
-    if (payloadField && eventData[payloadField] instanceof Uint8Array) {
-      try {
-        eventData[payloadField] = decode(eventData[payloadField] as Uint8Array);
-      } catch {
-        // leave as-is
       }
     }
   }
@@ -260,10 +243,10 @@ export async function getEvent(
   config?: APIConfig
 ): Promise<Event> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const decoded = await getEventV4(runId, eventId, config);
-  // GET resolves refs server-side and bakes the payload into eventData,
-  // so there's no separate body slot to splice in here.
-  return buildEventFromV4(decoded, new Uint8Array(0), resolveData);
+  const { event, body } = await getEventV4(runId, eventId, config);
+  // Same shape as a LIST frame — splice the body bytes into
+  // eventData[payloadField] in buildEventFromV4.
+  return buildEventFromV4(event, body, resolveData);
 }
 
 export async function getWorkflowRunEvents(

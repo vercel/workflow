@@ -248,16 +248,19 @@ function readHeader(
 /**
  * GET /api/v4/runs/:runId/events/:eventId
  *
- * Returns the full event entity (CBOR-decoded from the response body).
- * The server resolves the payload ref server-side, so eventData already
- * contains the resolved bytes — callers consume it the same way they
- * did on v3 GET event.
+ * Returns one v4 frame: the full event entity (CBOR-decoded from the
+ * frame meta) plus the resolved payload bytes (frame body, possibly
+ * empty). The wire format is identical to a single LIST frame so the
+ * server can stream the payload from S3 without buffering — callers
+ * are responsible for splicing `body` into `event.eventData[payloadField]`
+ * when they need the resolved value. The world-vercel adapter does this
+ * in events.ts.
  */
 export async function getEventV4(
   runId: string,
   eventId: string,
   config?: APIConfig
-): Promise<DecodedV4Event> {
+): Promise<{ event: DecodedV4Event; body: Uint8Array }> {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   await setAuthHeader(headers, config);
@@ -272,8 +275,22 @@ export async function getEventV4(
     const errorBody = await response.body.text();
     throw new Error(`v4 getEvent failed: ${response.statusCode} ${errorBody}`);
   }
-  const bodyBytes = new Uint8Array(await response.body.arrayBuffer());
-  return decode(bodyBytes) as DecodedV4Event;
+  const contentType = readHeader(response.headers, 'content-type');
+  if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    throw new Error(
+      `v4 getEvent: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
+    );
+  }
+  const webBody = (await import('node:stream')).Readable.toWeb(
+    response.body as unknown as import('node:stream').Readable
+  ) as unknown as ReadableStream<Uint8Array>;
+
+  // GET emits a single frame (no sentinel); decodeFrames returns at EOF
+  // after yielding it.
+  for await (const frame of decodeFrames(webBody)) {
+    return { event: frame.meta as unknown as DecodedV4Event, body: frame.body };
+  }
+  throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
 
 export interface ListEventsV4Params {
