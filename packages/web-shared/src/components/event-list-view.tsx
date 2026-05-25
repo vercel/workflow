@@ -737,7 +737,7 @@ interface EventsListProps {
     id: string,
     kind: ExactWorkflowSearchIdKind,
     signal?: AbortSignal
-  ) => Promise<ExactIdSearchResult | null>;
+  ) => Promise<ExactIdSearchResult>;
 }
 
 function EventRow({
@@ -1196,6 +1196,7 @@ export function EventListView({
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Event[] | null>(null);
   const [searchResultsTruncated, setSearchResultsTruncated] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchNotFound, setSearchNotFound] = useState(false);
   const searchRequestRef = useRef(0);
@@ -1342,6 +1343,7 @@ export function EventListView({
       searchRequestRef.current += 1;
       setSearchResults(null);
       setSearchResultsTruncated(false);
+      setSearchError(null);
       setSearchLoading(false);
       setSearchNotFound(false);
       setSelectedGroupKey(undefined);
@@ -1359,6 +1361,7 @@ export function EventListView({
     const requestId = ++searchRequestRef.current;
     setSearchLoading(true);
     setSearchNotFound(false);
+    setSearchError(null);
 
     const abortController = new AbortController();
 
@@ -1377,10 +1380,23 @@ export function EventListView({
             return;
           }
 
-          if (!results || results.events.length === 0) {
+          if (results.status === 'error') {
+            setSearchResults([]);
+            setSearchResultsTruncated(false);
+            setSearchNotFound(false);
+            setSearchError(results.message);
+            setSelectedGroupKey(undefined);
+            return;
+          }
+
+          if (
+            results.status === 'not_found' ||
+            (results.status === 'ok' && results.events.length === 0)
+          ) {
             setSearchResults([]);
             setSearchResultsTruncated(false);
             setSearchNotFound(true);
+            setSearchError(null);
             setSelectedGroupKey(undefined);
             return;
           }
@@ -1388,6 +1404,7 @@ export function EventListView({
           setSearchResults(results.events);
           setSearchResultsTruncated(Boolean(results.truncated));
           setSearchNotFound(false);
+          setSearchError(null);
           setSelectedGroupKey(
             parsed.kind === 'event'
               ? (() => {
@@ -1413,7 +1430,8 @@ export function EventListView({
           }
           setSearchResults([]);
           setSearchResultsTruncated(false);
-          setSearchNotFound(true);
+          setSearchNotFound(false);
+          setSearchError('Failed to search events. Try again.');
           setSelectedGroupKey(undefined);
         } finally {
           if (
@@ -1638,9 +1656,11 @@ export function EventListView({
           >
             {searchNotFound && searchQuery.trim()
               ? `No events found for ${searchQuery.trim()}`
-              : parsedSearchId && searchQuery.trim() && !onExactIdSearch
-                ? 'Exact ID search is unavailable in this view.'
-                : 'No events found'}
+              : searchError
+                ? searchError
+                : parsedSearchId && searchQuery.trim() && !onExactIdSearch
+                  ? 'Exact ID search is unavailable in this view.'
+                  : 'No events found'}
           </div>
         ) : (
           <Virtuoso
@@ -1702,9 +1722,11 @@ export function EventListView({
         >
           <span>
             {isExactSearchActive
-              ? searchNotFound
-                ? `No events found for ${searchQuery.trim()}`
-                : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}${searchResultsTruncated ? ' (results may be truncated)' : ''}`
+              ? searchError
+                ? searchError
+                : searchNotFound
+                  ? `No events found for ${searchQuery.trim()}`
+                  : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}${searchResultsTruncated ? ' (results may be truncated)' : ''}`
               : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} loaded`}
           </span>
           {!isExactSearchActive && hasMoreEvents && (

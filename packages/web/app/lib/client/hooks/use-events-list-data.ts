@@ -147,9 +147,9 @@ export function useEventsListData(
       id: string,
       kind: ExactWorkflowSearchIdKind,
       signal?: AbortSignal
-    ): Promise<ExactIdSearchResult | null> => {
+    ): Promise<ExactIdSearchResult> => {
       if (signal?.aborted) {
-        return null;
+        throw new DOMException('Aborted', 'AbortError');
       }
 
       if (kind === 'event') {
@@ -157,10 +157,16 @@ export function useEventsListData(
           fetchEvent(env, runId, id, 'none')
         );
         if (fetchError || signal?.aborted) {
-          return null;
+          return fetchError
+            ? { status: 'error', message: fetchError.message }
+            : (() => {
+                throw new DOMException('Aborted', 'AbortError');
+              })();
         }
         const [event] = await hydrateEvents([result]);
-        return event?.runId === runId ? { events: [event] } : null;
+        return event?.runId === runId
+          ? { status: 'ok', events: [event] }
+          : { status: 'not_found' };
       }
 
       const matched: Event[] = [];
@@ -169,7 +175,7 @@ export function useEventsListData(
       let truncated = false;
       do {
         if (signal?.aborted) {
-          return null;
+          throw new DOMException('Aborted', 'AbortError');
         }
 
         const { error: fetchError, result } = await unwrapServerActionResult(
@@ -180,8 +186,11 @@ export function useEventsListData(
             withData: false,
           })
         );
-        if (fetchError || signal?.aborted) {
-          return null;
+        if (fetchError) {
+          return { status: 'error', message: fetchError.message };
+        }
+        if (signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
         }
 
         pagesFetched += 1;
@@ -198,8 +207,8 @@ export function useEventsListData(
       } while (nextCursor);
 
       return matched.length > 0
-        ? { events: matched, truncated: truncated || undefined }
-        : null;
+        ? { status: 'ok', events: matched, truncated: truncated || undefined }
+        : { status: 'not_found' };
     },
     [env, runId, sortOrder, hydrateEvents]
   );

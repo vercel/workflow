@@ -16,11 +16,10 @@ export type ExactWorkflowSearchId = {
   id: string;
 };
 
-export type ExactIdSearchResult = {
-  events: Event[];
-  /** Set when correlation pagination hits the client-side page cap. */
-  truncated?: boolean;
-};
+export type ExactIdSearchResult =
+  | { status: 'ok'; events: Event[]; truncated?: boolean }
+  | { status: 'not_found' }
+  | { status: 'error'; message: string };
 
 function matchPrefixedId(
   pattern: RegExp,
