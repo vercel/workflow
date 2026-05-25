@@ -109,7 +109,7 @@ interface SplitEventData {
     workflowName?: string;
     stepName?: string;
     attempt?: number;
-    resumeAt?: string;
+    resumeAt?: Date;
     hookToken?: string;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
@@ -146,10 +146,15 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.attempt === 'number') {
     meta.attempt = eventData.attempt;
   }
-  if (typeof eventData.resumeAt === 'string') {
+  // wait_created passes resumeAt as a Date. cbor-x encodes Date natively
+  // (tag 1) and round-trips back to a Date on the server, so the runtime
+  // sees a real Date instance when it reads the event back. ISO strings
+  // are accepted as a fallback for non-runtime callers.
+  if (eventData.resumeAt instanceof Date) {
     meta.resumeAt = eventData.resumeAt;
-  } else if (eventData.resumeAt instanceof Date) {
-    meta.resumeAt = eventData.resumeAt.toISOString();
+  } else if (typeof eventData.resumeAt === 'string') {
+    const parsed = new Date(eventData.resumeAt);
+    if (!Number.isNaN(parsed.getTime())) meta.resumeAt = parsed;
   }
   // Runtime emits hook_created / hook_received / hook_disposed with the
   // hook token in `eventData.token` (matches the world contract in

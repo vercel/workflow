@@ -58,7 +58,11 @@ export interface CreateEventV4Input {
   workflowName?: string;
   stepName?: string;
   attempt?: number;
-  resumeAt?: string;
+  /** cbor-x encodes Date as CBOR tag 1 (epoch) and the server decodes it
+   *  back to a Date — the round-trip is symmetric, so wait_created /
+   *  step_retrying / etc. see a Date in eventData.resumeAt on the read
+   *  side. */
+  resumeAt?: Date;
   hookToken?: string;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
