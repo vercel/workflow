@@ -1,8 +1,8 @@
 ---
 title: AI SDK
-description: Use AI SDK's streamText directly inside durable workflows for lower-level control over model calls and tool execution.
+description: Use AI SDK's streamText directly inside durable workflows when you need the raw AI SDK API or a per-turn durability boundary.
 type: guide
-summary: Use streamText() inside a workflow for full control over model options, stop conditions, and output schemas — while tools remain durable steps.
+summary: Use streamText() inside a workflow when the durability boundary is an entire user turn, or when you need AI SDK APIs not exposed by DurableAgent. Individual tool calls and LLM calls inside a turn are not separately durable.
 related:
   - /docs/ai
   - /docs/ai/chat-session-modeling
@@ -11,22 +11,23 @@ related:
   - /docs/api-reference/workflow-ai/durable-agent
 ---
 
-[AI SDK](https://ai-sdk.dev/) is Vercel's framework-agnostic TypeScript toolkit for building AI-powered apps and agents — unified provider access, streaming, tool calling, structured output, and UI hooks. Workflow SDK complements it by making those calls durable: the model request, the tool loop, and the multi-turn conversation all survive restarts and timeouts.
+[AI SDK](https://ai-sdk.dev/) is Vercel's framework-agnostic TypeScript toolkit for building AI-powered apps and agents — unified provider access, streaming, tool calling, structured output, and UI hooks. Workflow SDK complements it by making the multi-turn loop durable: the conversation state, hooks, and per-turn responses survive restarts and timeouts. Note that in this pattern the durability boundary is the entire turn — individual tool calls inside a turn are **not** durable on their own (see [Pitfalls](#tools-are-not-individually-durable) below).
 
 For the full AI SDK reference (providers, `streamText`, `generateObject`, `useChat`, tool calling, etc.) see the [AI SDK docs](https://ai-sdk.dev/docs). This page covers the Workflow-specific integration points.
 
 <Callout type="info">
-For most agent use cases, prefer [`DurableAgent`](/cookbook/agent-patterns/durable-agent) which wraps [`streamText`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) and manages the tool loop automatically. This page covers using `streamText()` directly when you need lower-level control.
+For most agent use cases, prefer [`DurableAgent`](/cookbook/agent-patterns/durable-agent), which implements the same agent loop as [`streamText`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text), manages tool calling automatically, and runs tools at workflow scope — each tool can be marked `"use step"` for per-call durability and retries, or stay at workflow level to use primitives like `sleep()` and hooks. Use this page's raw `streamText()` pattern when you want the exact AI SDK API (for example `toUIMessageStream()`, `onChunk`, or `generateText`), or when the durability boundary should be an entire user turn in one step — accepting that tool calls inside that turn are not individually durable.
 </Callout>
 
 ## When to use streamText directly
 
 Use [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) instead of `DurableAgent` when you need:
 
-* **Custom stop conditions** — [`stopWhen`](https://ai-sdk.dev/docs/ai-sdk-core/agents#stop-conditions), [`prepareStep`](https://ai-sdk.dev/docs/ai-sdk-core/agents#prepare-step), or [`onStepFinish`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#on-step-finish) callbacks
-* **Structured output** — [`Output.object()`](https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data) or `Output.array()` alongside tool calling
-* **Step-level callbacks** — `onStepFinish` for logging, metrics, or branching logic
-* **Provider options** — per-step model switching, reasoning budgets, or custom [provider options](https://ai-sdk.dev/docs/ai-sdk-core/provider-options)
+* **The raw AI SDK API** — `streamText().toUIMessageStream()`, `onChunk`, `smoothStream`, or other options that map directly to the [`streamText`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) return value rather than `DurableAgent.stream()`
+* **Per-turn durability** — wrap the entire agent response (model + tools) in a single `"use step"` function so one user turn is the atomic retry unit; useful when you want all tool calls inside a turn to re-execute together
+* **Custom multi-turn orchestration** — manual hook loops, per-turn stream slicing (`sliceUntilFinish`), or other workflow patterns shown below that don't map cleanly to `DurableAgent`
+
+`DurableAgent` already supports `stopWhen`, `prepareStep`, `onStepFinish`, structured output (`experimental_output`), per-step model switching, and [provider options](https://ai-sdk.dev/docs/ai-sdk-core/provider-options). See the [DurableAgent reference](/docs/api-reference/workflow-ai/durable-agent).
 
 ## Multi-turn pattern
 
@@ -52,14 +53,15 @@ export const turnHook = defineHook({ // [!code highlight]
   schema: z.object({ message: z.string() }),
 });
 
+// `streamText` runs tool executes inside `runTurn` (a step), so tool calls
+// are not individually durable — the entire turn retries together. See
+// "Tools are not individually durable" below. Make side-effectful tools idempotent.
 async function lookupOrder({ orderId }: { orderId: string }) {
-  "use step";
   const res = await fetch(`https://api.store.com/orders/${orderId}`);
   return res.json();
 }
 
 async function processRefund({ orderId, reason }: { orderId: string; reason: string }) {
-  "use step";
   const res = await fetch("https://api.store.com/refunds", {
     method: "POST",
     body: JSON.stringify({ orderId, reason }),
@@ -294,15 +296,31 @@ export function SupportChat() {
 ## How it works
 
 1. **One workflow = one conversation.** The workflow loops on a hook, keeping `allMessages`, tool history, and state alive across turns.
-2. **Hook is created once.** `turnHook.create({ token: workflowRunId })` outside the loop — calling it twice with the same token throws `HookConflictError`.
-3. **`preventClose: true`** on `pipeTo` keeps the durable writable open so the next turn can write to it.
-4. **`sliceUntilFinish`** in the API reads chunks until `type === "finish"`, then closes the HTTP response. The source reader is released — not cancelled — so the workflow stream keeps flowing.
-5. **`startIndex: tailIndex + 1`** gives each follow-up response only the new chunks, avoiding replay of previous turns.
-6. **`/done`** resumes the hook so the workflow exits cleanly, then returns a synthetic `start` + `finish` so `useChat` transitions out of "streaming".
+2. **`runTurn` is the durability boundary.** Each turn is one step. The model request and all tool calls inside it run as plain inline functions within that step. If anything throws mid-turn, the whole `runTurn` retries — individual tool calls are not separately durable. See [Pitfalls](#tools-are-not-individually-durable).
+3. **Hook is created once.** `turnHook.create({ token: workflowRunId })` outside the loop — calling it twice with the same token throws `HookConflictError`.
+4. **`preventClose: true`** on `pipeTo` keeps the durable writable open so the next turn can write to it.
+5. **`sliceUntilFinish`** in the API reads chunks until `type === "finish"`, then closes the HTTP response. The source reader is released — not cancelled — so the workflow stream keeps flowing.
+6. **`startIndex: tailIndex + 1`** gives each follow-up response only the new chunks, avoiding replay of previous turns.
+7. **`/done`** resumes the hook so the workflow exits cleanly, then returns a synthetic `start` + `finish` so `useChat` transitions out of "streaming".
 
 ## Pitfalls
 
 Non-obvious correctness details worth knowing before adapting this pattern.
+
+### Tools are not individually durable
+
+`streamText()` is invoked from inside `runTurn` (a `"use step"` function), and the AI SDK calls each tool by directly invoking its `execute` function in that same step. Even if a tool body has its own `"use step"` directive, that directive is a [no-op when called from another step](/docs/foundations/workflows-and-steps#step-functions) — the function just runs inline.
+
+The consequences:
+
+- The atomic retry unit is the entire `runTurn`, not the individual tool call.
+- If `processRefund` succeeds and then the model call (or a later tool) throws, the whole turn retries, and `processRefund` will run again.
+- Tool calls do not appear as separate entries in the event log or observability dashboard.
+
+**Mitigations:**
+
+- Make side-effectful tool implementations idempotent — dedupe server-side on a stable key (e.g. `orderId`, an `Idempotency-Key` header, etc.).
+- Or use [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent), which runs tools at workflow scope — each tool can be marked `"use step"` to become its own durable, retryable step, or stay at workflow level to use primitives like `sleep()` and hooks.
 
 ### Snapshot `tailIndex` *before* resuming the hook
 
@@ -334,30 +352,31 @@ Clients can send a `runId` from a long-gone workflow (localStorage, back button,
 
 ## streamText vs DurableAgent
 
-| | `streamText()` | `DurableAgent` |
+| | `streamText()` (this pattern) | `DurableAgent` |
 |---|---|---|
-| **Tool loop** | AI SDK handles via `stopWhen` | DurableAgent handles internally |
-| **LLM call durability** | Re-executes on replay | Each LLM call is a durable step |
-| **Stop conditions** | `stopWhen`, `prepareStep` | `prepareStep` only |
-| **Structured output** | `Output.object()`, `Output.array()` | Not available |
-| **Step callbacks** | `onStepFinish`, `onChunk` | Not available |
-| **Setup** | Manual stream piping | Automatic |
+| **Tool loop** | AI SDK handles via `stopWhen` | Handles internally (AI SDK–compatible options) |
+| **LLM call durability** | Re-executes with the parent turn | Each LLM call is a durable step |
+| **Tool call durability** | Not individually durable — re-executes with the parent turn | Per tool — mark `"use step"` for a durable, retryable step, or keep at workflow level for `sleep()` / hooks |
+| **Stop conditions** | `stopWhen`, `prepareStep` | `stopWhen`, `prepareStep` |
+| **Structured output** | `Output.object()`, `Output.array()` | `experimental_output` (`Output.object()`, `Output.text()`) |
+| **Step callbacks** | `onStepFinish`, `onChunk`, etc. | `onStepFinish`, `onFinish`, `onError`, `onAbort` (`onChunk` not available) |
+| **Setup** | Manual stream piping and turn slicing | Automatic |
 
-Use `DurableAgent` for most agent use cases. Use `streamText` when you need the additional control.
+Use `DurableAgent` for most agent use cases. Use `streamText` when you need the raw AI SDK surface or a per-turn durability boundary.
 
 ## Key APIs
 
 **AI SDK** ([docs](https://ai-sdk.dev/docs))
 
 * [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) — core streaming function; `toUIMessageStream()` pipes into the durable writable
-* [`tool()` / tool calling](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling) — tools wrap `"use step"` functions so each tool call is replayed from the log, not re-executed
+* [`tool()` / tool calling](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling) — tools are plain async functions invoked by `streamText` inside the turn step; they are **not** individually durable in this pattern (see [Pitfalls](#tools-are-not-individually-durable))
 * [`stepCountIs()` / `stopWhen`](https://ai-sdk.dev/docs/ai-sdk-core/agents#stop-conditions) — bound the agent loop inside each turn
 * [`convertToModelMessages()`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/convert-to-model-messages) / [`createUIMessageStreamResponse()`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/create-ui-message-stream-response) — UI ↔ model message conversion at the API boundary
 * [`useChat()`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat) — React hook that consumes the UI message stream on the client
 
 **Workflow SDK**
 
-* [`"use step"`](/docs/api-reference/workflow/use-step) — makes tool executions durable
+* [`"use step"`](/docs/api-reference/workflow/use-step) — applied to `runTurn` to make each turn a durable, retryable unit
 * [`defineHook()`](/docs/api-reference/workflow/define-hook) — suspension point for follow-up messages
 * [`getWritable()`](/docs/api-reference/workflow/get-writable) — resumable stream output
 * [`getRun()`](/docs/api-reference/workflow-api/get-run) — `run.getReadable({ startIndex })` for slicing per-turn streams
