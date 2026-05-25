@@ -1,6 +1,6 @@
 ---
 title: Child Workflows
-description: Spawn child workflows from a parent and wait for completion via hook resume for batch processing, report generation, and other multi-workflow orchestration scenarios.
+description: Spawn child workflows from a parent and wait for completion via hook resume.
 type: guide
 summary: Orchestrate independent child workflows from a parent using start(), defineHook(), and startAndWait() — the child resumes the parent's hook when done instead of polling getRun().status.
 ---
@@ -26,8 +26,6 @@ The recommended pattern has four parts:
 2. A **wrapped child export** that runs the real child in try/catch/finally and resumes the parent's hook from a step in `finally`
 3. A **`start()` call** that spawns the wrapped child with the hook token (directly from the workflow in v5)
 4. A **`startAndWait()` helper** that ties the hook, spawn, and typed result together
-
-This replaces polling `getRun().status` in a sleep loop. The parent suspends on `await hook` until the child calls `resumeHook()` — durable, efficient, and free of poll-interval latency.
 
 ```typescript
 import { defineHook, getWorkflowMetadata } from "workflow";
@@ -296,13 +294,8 @@ async function startAndWaitWithRetries(
 }
 ```
 
-## Alternative: polling with `getRun()`
-
-If you need to inspect many runs that were spawned without hook tokens (e.g., legacy integrations), you can poll `getRun(runId).status` in a durable `sleep()` loop. This pattern is supported but not recommended for new code — prefer hook resume for waiting on child completion.
-
 ## Tips
 
-- **`start()` can be called directly from a workflow function in v5.** It records a step-backed boundary in the parent event log and returns a serializable `Run`.
 - **`defineHook().resume()` must be called from a step.** The wrapped child's `finally` block calls a step that resumes the parent hook.
 - **Export wrapped children at module scope.** The SDK registers `"use workflow"` functions statically — a runtime higher-order function returned from `withChildCompletionHook()` cannot be passed to `start()`.
 - **Use stable hook keys** — document ID, job ID, or index — so parallel children inside one parent run don't collide on tokens.
