@@ -2,23 +2,28 @@
  * world-vercel event functions — v4 wire format throughout.
  *
  * This module replaces the previous v2/v3 implementation. The v4 wire
- * format moves structured event metadata into `x-wf-*` HTTP headers and
- * treats payloads as opaque user-data bytes streamed end-to-end. See
+ * format uses a single length-prefixed binary frame layout in both
+ * directions:
+ *
+ *   frame := [u32_be meta_len][cbor_meta][u32_be body_len][body_bytes]
+ *
+ * `cbor_meta` is the structured event metadata; `body_bytes` is the
+ * opaque user payload, never CBOR-decoded by the server. See
  * workflow-server/lib/handlers/v4/ for the matching server-side handlers
  * and ../events-v4.ts for the wire-level client.
  *
  * Key shape changes vs. v2/v3:
  *
- *   - POST event response carries the materialized EventResult
- *     (event/run/step/hook/wait/events/cursor/hasMore) as a CBOR-encoded
- *     body — the server resolved-refs path is still respected via the
- *     `remoteRefBehavior` header.
- *   - GET single event returns metadata in headers + the user payload
- *     bytes in the response body.
- *   - LIST events returns a length-prefixed binary frame stream
- *     (application/vnd.workflow.v4-frames) — one frame per event with
- *     CBOR metadata + raw payload bytes. The old per-event `/refs`
- *     round-trip is eliminated.
+ *   - POST request body is one v4 frame (meta + payload). The response
+ *     surfaces eventId/runId/createdAt as `x-wf-*` headers and carries
+ *     the materialized EventResult (event/run/step/hook/wait/events/
+ *     cursor/hasMore) as a CBOR body — `remoteRefBehavior` in the frame
+ *     meta still controls server-side ref resolution.
+ *   - GET single event returns one v4 frame: the event entity in the
+ *     frame meta, the user payload bytes in the frame body.
+ *   - LIST events returns a stream of v4 frames terminated by a sentinel
+ *     frame whose meta carries `{_end: 1, next?: cursor}`. The old
+ *     per-event `/refs` round-trip is eliminated.
  *
  * Public function signatures are unchanged: storage.ts continues to
  * wire these as `Storage['events']` and the workflow runtime sees the
@@ -44,15 +49,15 @@ import { decode, encode } from 'cbor-x';
 import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
-  getEventV4,
   getEventsByCorrelationIdV4,
+  getEventV4,
   getWorkflowRunEventsV4,
 } from './events-v4.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import { deserializeStep } from './steps.js';
 import {
-  DEFAULT_RESOLVE_DATA_OPTION,
   type APIConfig,
+  DEFAULT_RESOLVE_DATA_OPTION,
   deserializeError,
 } from './utils.js';
 
@@ -62,8 +67,8 @@ import {
  * (workflow-server/lib/handlers/v4/events.ts PAYLOAD_FIELD_BY_EVENT_TYPE).
  *
  * The v4 wire encoding picks this field out of `eventData`, CBOR-encodes
- * its value, and ships it as the request body. Everything else in
- * `eventData` becomes a `x-wf-*` header.
+ * its value, and ships it as the frame body. Everything else in
+ * `eventData` rides in the frame's CBOR meta block.
  */
 const PAYLOAD_FIELD_BY_EVENT_TYPE: Record<string, string> = {
   run_created: 'input',
@@ -99,7 +104,7 @@ const hookEventsRequiringExistence = new Set<string>([
 interface SplitEventData {
   /** Encoded payload bytes (undefined when the event has no user payload). */
   payload?: Uint8Array;
-  /** Metadata fields that ride in v4 request headers. */
+  /** Metadata fields that ride in the v4 POST frame's CBOR meta block. */
   meta: {
     deploymentId?: string;
     workflowName?: string;
@@ -110,15 +115,15 @@ interface SplitEventData {
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
     errorCode?: string;
-    /** Pre-encoded base64 CBOR of executionContext (or undefined). */
-    executionContextB64?: string;
+    /** Structured executionContext, included verbatim in frame meta. */
+    executionContext?: Record<string, unknown>;
   };
 }
 
 /**
  * Split an AnyEventRequest's `eventData` into (a) the payload bytes that
- * become the v4 request body and (b) the metadata fields that become
- * v4 request headers.
+ * become the v4 frame body and (b) the metadata fields that become the
+ * CBOR-encoded meta block of the same frame.
  */
 function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // Some event types in the AnyEventRequest discriminated union (e.g.
@@ -161,10 +166,13 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (
     eventData.executionContext !== undefined &&
-    eventData.executionContext !== null
+    eventData.executionContext !== null &&
+    typeof eventData.executionContext === 'object'
   ) {
-    const cbor = encode(eventData.executionContext);
-    meta.executionContextB64 = Buffer.from(cbor).toString('base64');
+    meta.executionContext = eventData.executionContext as Record<
+      string,
+      unknown
+    >;
   }
 
   let payload: Uint8Array | undefined;

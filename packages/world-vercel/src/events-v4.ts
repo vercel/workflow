@@ -1,51 +1,41 @@
 /**
- * v4 event endpoints — header/body-split wire protocol.
+ * v4 event endpoints — fully framed wire protocol.
  *
- * Mirrors the server-side handlers in
- * workflow-server/lib/handlers/v4/. The v4 wire format:
+ * Both directions use the same length-prefixed binary frame layout:
  *
- *   - POST: structured event metadata rides in `x-wf-*` request headers;
- *     the request body is opaque user-payload bytes streamed straight
- *     to S3 by the server. No CBOR encoding/decoding on the body — the
- *     SDK passes Uint8Array bytes through unchanged.
- *   - GET single event: response headers carry the same `x-wf-*` metadata;
- *     the response body is the raw payload bytes (streamed from S3 when
- *     stored there).
- *   - GET list: a length-prefixed binary frame stream — see
- *     `frames.ts` for the codec. Eliminates the per-event `/refs`
- *     round-trip used by v2/v3.
+ *   frame := [u32_be meta_len][cbor_meta][u32_be body_len][body_bytes]
  *
- * Higher-level callers (the world-vercel adapter) are expected to
- * CBOR-encode their JS values into the `payload` parameter and to
- * CBOR-decode the returned `body` bytes — this module stays at the
- * wire-bytes layer.
+ * - **POST**: request body is one frame. `cbor_meta` carries structured
+ *   event metadata (eventType, specVersion, deploymentId, workflowName,
+ *   …, executionContext); `body_bytes` is the opaque user payload that
+ *   the server streams straight to S3 without decoding.
+ * - **GET single event**: response body is one frame.
+ * - **LIST events**: response body is a stream of frames terminated by a
+ *   sentinel frame (meta = `{_end: 1, next?: cursor}`).
+ *
+ * The few HTTP response headers v4 still uses (eventId / runId /
+ * createdAt) are for client convenience — they let the caller read those
+ * three fields without decoding the response body.
+ *
+ * Higher-level callers (the world-vercel adapter) CBOR-encode their JS
+ * values into the `payload` parameter and CBOR-decode returned `body`
+ * bytes — this module stays at the wire-bytes layer.
  */
 
 import { getVercelOidcToken } from '@vercel/oidc';
 import { decode } from 'cbor-x';
 import { request } from 'undici';
-import { decodeFrames, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
-/** Names of the `x-wf-*` headers exchanged with the server. Mirror of
- *  workflow-server/lib/handlers/v4/headers.ts `V4_HEADERS`. */
-export const V4_HEADERS = {
-  eventType: 'x-wf-event-type',
-  specVersion: 'x-wf-spec-version',
-  correlationId: 'x-wf-correlation-id',
-  vercelId: 'x-wf-vercel-id',
-  remoteRefBehavior: 'x-wf-remote-ref-behavior',
-  deploymentId: 'x-wf-deployment-id',
-  workflowName: 'x-wf-workflow-name',
-  stepName: 'x-wf-step-name',
-  attempt: 'x-wf-attempt',
-  resumeAt: 'x-wf-resume-at',
-  hookToken: 'x-wf-hook-token',
-  hookIsWebhook: 'x-wf-hook-is-webhook',
-  hookIsSystem: 'x-wf-hook-is-system',
-  errorCode: 'x-wf-error-code',
-  executionContextB64: 'x-wf-execution-context-b64',
+/**
+ * The few HTTP response headers v4 still uses. POST surfaces these so
+ * callers can read the freshly-created eventId without decoding the
+ * CBOR response body. Mirror of
+ * workflow-server/lib/handlers/v4/headers.ts `V4_RESPONSE_HEADERS`.
+ */
+export const V4_RESPONSE_HEADERS = {
   eventId: 'x-wf-event-id',
   runId: 'x-wf-run-id',
   createdAt: 'x-wf-created-at',
@@ -73,9 +63,9 @@ export interface CreateEventV4Input {
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
   errorCode?: string;
-  /** Base64-encoded CBOR of the executionContext object. Use
-   *  `encodeExecutionContextHeader` to produce this. */
-  executionContextB64?: string;
+  /** Arbitrary structured map; rides as a native CBOR object in the
+   *  frame meta. Bounded by the server at 2 KB encoded. */
+  executionContext?: Record<string, unknown>;
 }
 
 export interface CreateEventV4Result {
@@ -101,55 +91,35 @@ export interface CreateEventV4Result {
   };
 }
 
-/** Apply structured fields onto a Headers object. Non-ASCII string fields
- *  are percent-encoded so they survive the byte-restricted header
- *  transport, matching the server-side decode. */
-function applyV4Headers(headers: Headers, input: CreateEventV4Input): void {
-  headers.set(V4_HEADERS.eventType, input.eventType);
-  headers.set(V4_HEADERS.specVersion, String(input.specVersion));
-  if (input.correlationId) {
-    headers.set(V4_HEADERS.correlationId, input.correlationId);
+/** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
+ *  so the wire shape matches what the server expects to see. */
+function buildPostFrameMeta(
+  input: CreateEventV4Input
+): Record<string, unknown> {
+  const meta: Record<string, unknown> = {
+    eventType: input.eventType,
+    specVersion: input.specVersion,
+  };
+  if (input.correlationId !== undefined)
+    meta.correlationId = input.correlationId;
+  if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
+  if (input.remoteRefBehavior !== undefined) {
+    meta.remoteRefBehavior = input.remoteRefBehavior;
   }
-  if (input.vercelId) headers.set(V4_HEADERS.vercelId, input.vercelId);
-  if (input.remoteRefBehavior) {
-    headers.set(V4_HEADERS.remoteRefBehavior, input.remoteRefBehavior);
+  if (input.deploymentId !== undefined) meta.deploymentId = input.deploymentId;
+  if (input.workflowName !== undefined) meta.workflowName = input.workflowName;
+  if (input.stepName !== undefined) meta.stepName = input.stepName;
+  if (input.attempt !== undefined) meta.attempt = input.attempt;
+  if (input.resumeAt !== undefined) meta.resumeAt = input.resumeAt;
+  if (input.hookToken !== undefined) meta.hookToken = input.hookToken;
+  if (input.hookIsWebhook !== undefined)
+    meta.hookIsWebhook = input.hookIsWebhook;
+  if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
+  if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
+  if (input.executionContext !== undefined) {
+    meta.executionContext = input.executionContext;
   }
-  if (input.deploymentId) {
-    headers.set(
-      V4_HEADERS.deploymentId,
-      encodeURIComponent(input.deploymentId)
-    );
-  }
-  if (input.workflowName) {
-    headers.set(
-      V4_HEADERS.workflowName,
-      encodeURIComponent(input.workflowName)
-    );
-  }
-  if (input.stepName) {
-    headers.set(V4_HEADERS.stepName, encodeURIComponent(input.stepName));
-  }
-  if (input.attempt !== undefined) {
-    headers.set(V4_HEADERS.attempt, String(input.attempt));
-  }
-  if (input.resumeAt) {
-    headers.set(V4_HEADERS.resumeAt, encodeURIComponent(input.resumeAt));
-  }
-  if (input.hookToken) {
-    headers.set(V4_HEADERS.hookToken, encodeURIComponent(input.hookToken));
-  }
-  if (input.hookIsWebhook !== undefined) {
-    headers.set(V4_HEADERS.hookIsWebhook, String(input.hookIsWebhook));
-  }
-  if (input.hookIsSystem !== undefined) {
-    headers.set(V4_HEADERS.hookIsSystem, String(input.hookIsSystem));
-  }
-  if (input.errorCode) {
-    headers.set(V4_HEADERS.errorCode, encodeURIComponent(input.errorCode));
-  }
-  if (input.executionContextB64) {
-    headers.set(V4_HEADERS.executionContextB64, input.executionContextB64);
-  }
+  return meta;
 }
 
 async function setAuthHeader(
@@ -168,8 +138,9 @@ async function setAuthHeader(
 /**
  * POST /api/v4/runs/:runId/events
  *
- * Returns the event/run ids and createdAt timestamp parsed out of
- * the response headers. Throws on non-2xx responses.
+ * Sends the full request as a single v4 frame and returns the event ids
+ * + materialized-entity bag from the CBOR response body. Throws on
+ * non-2xx.
  */
 export async function createWorkflowRunEventV4(
   input: CreateEventV4Input,
@@ -178,14 +149,18 @@ export async function createWorkflowRunEventV4(
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
-  applyV4Headers(headers, input);
   await setAuthHeader(headers, config);
+
+  const frame = encodeFrame(
+    buildPostFrameMeta(input),
+    input.payload ?? new Uint8Array(0)
+  );
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events`;
   const response = await request(url, {
     method: 'POST',
     headers: Object.fromEntries(headers.entries()),
-    body: input.payload ?? undefined,
+    body: frame,
     dispatcher: getDispatcher(),
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -195,9 +170,9 @@ export async function createWorkflowRunEventV4(
     );
   }
 
-  const eventId = response.headers[V4_HEADERS.eventId];
-  const runId = response.headers[V4_HEADERS.runId];
-  const createdAt = response.headers[V4_HEADERS.createdAt];
+  const eventId = response.headers[V4_RESPONSE_HEADERS.eventId];
+  const runId = response.headers[V4_RESPONSE_HEADERS.runId];
+  const createdAt = response.headers[V4_RESPONSE_HEADERS.createdAt];
   if (
     typeof eventId !== 'string' ||
     typeof runId !== 'string' ||
@@ -206,9 +181,7 @@ export async function createWorkflowRunEventV4(
     throw new Error('v4 createEvent: response missing required x-wf-* headers');
   }
 
-  // Decode the materialized-entity bag from the response body. The server
-  // always returns a CBOR body now (was 204 in an earlier iteration —
-  // see workflow-server PR #439 for the corresponding handler change).
+  // Decode the materialized-entity bag from the CBOR response body.
   const bodyBytes = new Uint8Array(await response.body.arrayBuffer());
   const body =
     bodyBytes.byteLength > 0
