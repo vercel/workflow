@@ -375,7 +375,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const reasoning = process.env.REASONING;
-            const sha = process.env.SHA.slice(0, 7);
+            const fullSha = process.env.SHA;
+            const shortSha = fullSha.slice(0, 7);
             const prNumber = Number(process.env.PR_NUMBER);
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const workflowUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/backport.yml`;
@@ -384,11 +385,19 @@ jobs:
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
-                `**No backport to \`stable\`** for ${sha} ([AI decision](${runUrl})).`,
+                `**No backport to \`stable\`** for ${shortSha} ([AI decision](${runUrl})).`,
                 '',
                 reasoning,
                 '',
-                `To override, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` with this commit SHA.`
+                // GitHub Actions doesn't support prefilling workflow_dispatch
+                // inputs via URL query params (community/community#51159), so
+                // we paste the full SHA here for easy copy-paste into the
+                // "Commit SHA" input on the workflow run page.
+                `To override, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` and paste this commit SHA into the \`ref\` input:`,
+                '',
+                '```',
+                fullSha,
+                '```'
               ].join('\n')
             });
 

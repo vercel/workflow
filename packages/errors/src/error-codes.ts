@@ -14,6 +14,8 @@ export const RUN_ERROR_CODES = {
   MAX_DELIVERIES_EXCEEDED: 'MAX_DELIVERIES_EXCEEDED',
   /** Workflow replay exceeded the maximum allowed duration */
   REPLAY_TIMEOUT: 'REPLAY_TIMEOUT',
+  /** World response violated the SDK contract and cannot be retried safely */
+  WORLD_CONTRACT_ERROR: 'WORLD_CONTRACT_ERROR',
 } as const;
 
 export type RunErrorCode =

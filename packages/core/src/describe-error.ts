@@ -80,9 +80,11 @@ const RUNTIME_ERROR_HINT =
 const CORRUPTED_EVENT_LOG_HINT =
   'The workflow event log contains orphaned or mismatched events and cannot be replayed. This is an internal workflow SDK error; please report it with the runId.';
 const REPLAY_TIMEOUT_HINT =
-  'The workflow replay took too long. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work between step boundaries.';
+  'The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (`"use step"` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. Override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var if needed.';
 const MAX_DELIVERIES_HINT =
   'The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.';
+const WORLD_CONTRACT_HINT =
+  'The workflow backend returned data that violated the SDK contract. This is not retryable; please report it with the stack trace and runId.';
 
 function normalizeErrorCode(code: string | undefined): RunErrorCode {
   // Values read back from persisted events are `string | undefined` — we
@@ -133,6 +135,13 @@ export function describeRunError(
       attribution: 'sdk',
       errorCode,
       hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+  if (errorCode === RUN_ERROR_CODES.WORLD_CONTRACT_ERROR) {
+    return {
+      attribution: 'sdk',
+      errorCode,
+      hint: WORLD_CONTRACT_HINT,
     };
   }
   if (name === 'WorkflowRuntimeError' || name === 'StepNotRegisteredError') {
@@ -224,6 +233,14 @@ export function describeError(
       attribution: 'sdk',
       errorCode: effectiveCode,
       hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+
+  if (effectiveCode === RUN_ERROR_CODES.WORLD_CONTRACT_ERROR) {
+    return {
+      attribution: 'sdk',
+      errorCode: effectiveCode,
+      hint: WORLD_CONTRACT_HINT,
     };
   }
 

@@ -68,7 +68,7 @@ const EventRow = ({
       onClick={() => onSelectSpan(span.spanId)}
     >
       <div className="h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200">
-        <div className="flex h-full min-w-0 items-center px-2">
+        <div className="flex h-full min-w-0 items-center pl-4 pr-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span className={cn('shrink-0', tagClassName)}>
               <Icon className="w-4 h-4" />

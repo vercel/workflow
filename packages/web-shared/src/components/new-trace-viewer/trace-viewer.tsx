@@ -1,7 +1,15 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import { RotateCcw, Search, X, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronUp,
+  RotateCcw,
+  Search,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
@@ -19,7 +27,6 @@ import {
 import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
 import type { Trace } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
-import { CopyButton } from './components/copy-button';
 import EventList from './components/event-list';
 import { SplitPane } from './components/split-pane';
 import {
@@ -307,13 +314,31 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const [altHeld, setAltHeld] = useState(false);
 
   useEffect(() => {
+    const handleSidebarNavKey = (e: KeyboardEvent): void => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      const targetId =
+        e.key === 'k' ? prevSpanIdRef.current : nextSpanIdRef.current;
+      if (targetId) {
+        e.preventDefault();
+        handleSelectSpanRef.current(targetId);
+      }
+    };
+
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         clearActiveSpan();
-      }
-      if (e.key === 'Alt') {
+      } else if (e.key === 'Alt') {
         e.preventDefault();
         setAltHeld(true);
+      } else if (e.key === 'j' || e.key === 'k') {
+        handleSidebarNavKey(e);
       }
     };
     const onKeyUp = (e: KeyboardEvent): void => {
@@ -468,21 +493,30 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     );
   }, [selectedSpan?.data, selectedSpan?.resource]);
 
-  const selectedResource = selectedSpan?.resource as string | undefined;
-  const selectedResourceId = useMemo(() => {
-    if (!selectedSpan?.data) return undefined;
-    const data = selectedSpan.data as Record<string, unknown>;
-    if (selectedSpan.resource === 'hook') {
-      return (data.hookId as string | undefined) ?? selectedSpan.spanId;
-    }
+  const { prevSpanId, nextSpanId } = useMemo(() => {
+    if (!activeSpanId) return { prevSpanId: null, nextSpanId: null };
+    const i = filteredSpans.findIndex((s) => s.spanId === activeSpanId);
+    if (i === -1) return { prevSpanId: null, nextSpanId: null };
+    return {
+      prevSpanId: filteredSpans[i - 1]?.spanId ?? null,
+      nextSpanId: filteredSpans[i + 1]?.spanId ?? null,
+    };
+  }, [activeSpanId, filteredSpans]);
 
-    return (
-      (data.stepId as string) ??
-      (data.runId as string) ??
-      (data.hookId as string) ??
-      selectedSpan.spanId
-    );
-  }, [selectedSpan?.data, selectedSpan?.resource, selectedSpan?.spanId]);
+  const handleSelectPrevSpan = useCallback(() => {
+    if (prevSpanId) handleSelectSpan(prevSpanId);
+  }, [prevSpanId, handleSelectSpan]);
+
+  const handleSelectNextSpan = useCallback(() => {
+    if (nextSpanId) handleSelectSpan(nextSpanId);
+  }, [nextSpanId, handleSelectSpan]);
+
+  const prevSpanIdRef = useRef(prevSpanId);
+  const nextSpanIdRef = useRef(nextSpanId);
+  const handleSelectSpanRef = useRef(handleSelectSpan);
+  prevSpanIdRef.current = prevSpanId;
+  nextSpanIdRef.current = nextSpanId;
+  handleSelectSpanRef.current = handleSelectSpan;
 
   return (
     <div
@@ -496,7 +530,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       >
         <SplitPane
           startHeader={
-            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center px-2 gap-1.5">
+            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
               <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
               <input
                 id="trace-viewer-search"
@@ -511,6 +545,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               {searchQuery && (
                 <button
                   type="button"
+                  aria-label="Clear search"
                   onClick={() => setSearchQuery('')}
                   className="shrink-0 p-0.5 rounded-sm text-gray-800 hover:text-gray-1000 hover:bg-gray-200 transition-colors"
                 >
@@ -581,45 +616,37 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       {activeSpan && sidebar ? (
         <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
           {/* Panel header */}
-          <div className="flex-shrink-0 px-4 pt-4 pb-3">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0 flex-1">
-                <span className="text-[15px] font-semibold text-gray-1000 truncate block">
-                  {selectedSpanName}
-                </span>
-                {selectedResourceId && (
-                  <div className="mt-1 flex items-center gap-2">
-                    {selectedResource && (
-                      <span
-                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-none shrink-0 ${
-                          selectedResource === 'step'
-                            ? 'bg-green-200 text-green-900'
-                            : selectedResource === 'run'
-                              ? 'bg-blue-200 text-blue-900'
-                              : 'bg-gray-200 text-gray-900'
-                        }`}
-                      >
-                        {selectedResource.charAt(0).toUpperCase() +
-                          selectedResource.slice(1)}
-                      </span>
-                    )}
-                    <div
-                      className="flex items-center gap-1 text-[13px] font-mono text-gray-700 min-w-0"
-                      title={selectedResourceId}
-                    >
-                      <span className="truncate">{selectedResourceId}</span>
-                      <CopyButton
-                        copyText={selectedResourceId}
-                        ariaLabel="Copy ID"
-                        className="shrink-0"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
+          <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
+            <span className="text-label-14 font-medium text-gray-1000 truncate block">
+              {selectedSpanName}
+            </span>
+            <div className="flex items-center gap-0.5 shrink-0">
               <button
                 type="button"
-                className="p-1 rounded-md text-gray-900 hover:text-gray-1000 hover:bg-gray-alpha-200 transition-colors shrink-0"
+                aria-label="Navigate to previous span"
+                aria-keyshortcuts="K"
+                onClick={handleSelectPrevSpan}
+                disabled={!prevSpanId}
+                className="p-1 rounded text-gray-1000 transition-colors enabled:hover:bg-gray-alpha-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                aria-label="Navigate to next span"
+                aria-keyshortcuts="J"
+                onClick={handleSelectNextSpan}
+                disabled={!nextSpanId}
+                className="p-1 rounded text-gray-1000 transition-colors enabled:hover:bg-gray-alpha-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+              <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
+              <button
+                type="button"
+                aria-label="Close span details"
+                aria-keyshortcuts="Escape"
+                className="p-1 rounded text-gray-1000 hover:bg-gray-alpha-100 transition-colors"
                 onClick={clearActiveSpan}
               >
                 <X className="w-4 h-4" />

@@ -221,6 +221,7 @@ jobs:
       id-token: write
       contents: read
       deployments: read
+      statuses: read
     strategy:
       fail-fast: false
       matrix:
@@ -282,7 +283,7 @@ jobs:
 
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
-        uses: ./.github/actions/wait-for-vercel-project
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: ${{ matrix.app.project-slug }}
           timeout: 1000

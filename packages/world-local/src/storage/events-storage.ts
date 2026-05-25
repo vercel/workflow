@@ -138,14 +138,16 @@ export function createEventsStorage(
       // attacks where a client supplies runId / correlationId values like
       // "../../../package" to read or write files outside the storage root.
       // Run before taking the per-step mutex so malformed inputs fail fast.
+      //
+      // Empty `correlationId` values are also rejected here: the event
+      // schemas only require `z.string()`, so without this check a
+      // step_created / hook_created / wait_created request with
+      // `correlationId: ''` would silently be written under a malformed
+      // composite key like `${runId}-`.
       if (runId != null && runId !== '') {
         assertSafeEntityId('runId', runId);
       }
-      if (
-        'correlationId' in data &&
-        typeof data.correlationId === 'string' &&
-        data.correlationId.length > 0
-      ) {
+      if ('correlationId' in data && typeof data.correlationId === 'string') {
         assertSafeEntityId('correlationId', data.correlationId);
       }
 

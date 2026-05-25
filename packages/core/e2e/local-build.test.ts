@@ -96,8 +96,7 @@ const DEFERRED_BUILD_MODE_PROJECTS = new Set([
   'nextjs-webpack',
   'nextjs-turbopack',
 ]);
-const DEFERRED_BUILD_UNSUPPORTED_WARNING =
-  'Enabled lazyDiscovery but Next.js version is not compatible';
+const DEFERRED_BUILD_UNSUPPORTED_WARNING = 'lazyDiscovery requires Next.js >=';
 const EAGER_DISCOVERY_LOG = 'Discovering workflow directives';
 
 describe.each([

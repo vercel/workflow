@@ -589,6 +589,12 @@ export async function getNextBuilderDeferred() {
           'public/.well-known/workflow/v1'
         );
         await mkdir(publicManifestDir, { recursive: true });
+        if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
+          await this.writeFileIfChanged(
+            join(publicManifestDir, '.gitignore'),
+            '*'
+          );
+        }
         await this.copyFileIfChanged(
           manifestFilePath,
           join(publicManifestDir, 'manifest.json')
