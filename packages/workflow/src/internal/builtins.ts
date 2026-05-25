@@ -30,23 +30,13 @@ export async function __builtin_response_text(this: Request | Response) {
  * canonical `{ key, value }[]` changes. This step runs in normal Node
  * context with full world access and forwards to the same code path the
  * step-body `setAttributes` uses.
- *
- * NOTE: the `@workflow/core/_step-set-attributes` specifier is assembled
- * at runtime so the Next.js deferred-entries discoverer can't follow it
- * statically. If it did, the discovery walk would reach
- * `step-set-attributes.ts` → world adapters → `@vercel/queue`, blowing
- * up the regex-based extractor with a stack overflow on tarball-
- * installed builds (same hazard documented in `set-attributes-shared.ts`).
  */
 export async function __builtin_set_attributes(
   changes: Array<{ key: string; value: string | null }>
 ) {
   'use step';
-  const specifier = ['@workflow/core', '_step-set-attributes'].join('/');
-  const { applySetAttributesChanges } = (await import(specifier)) as {
-    applySetAttributesChanges: (
-      changes: Array<{ key: string; value: string | null }>
-    ) => Promise<void>;
-  };
+  const { applySetAttributesChanges } = await import(
+    '@workflow/core/_step-set-attributes'
+  );
   await applySetAttributesChanges(changes);
 }
