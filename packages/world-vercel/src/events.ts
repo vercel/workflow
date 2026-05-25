@@ -45,7 +45,6 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
-import { decode, encode } from 'cbor-x';
 import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
@@ -179,12 +178,26 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (payloadField && payloadField in eventData) {
     const value = eventData[payloadField];
     if (value !== undefined) {
-      // Always CBOR-encode, including Uint8Array (cbor-x represents it as
-      // a binary type that round-trips back to Uint8Array on decode). The
-      // server stores the bytes opaquely; the SDK does the symmetric
-      // decode on read. Keeping the encoding unconditional means we never
-      // have to track "is this raw bytes or CBOR?" on the wire.
-      payload = new Uint8Array(encode(value));
+      // Payload fields (input / output / result / error / payload /
+      // metadata) reach this layer already serialized as Uint8Array — the
+      // runtime calls dehydrateRunError / dehydrateStepReturnValue / etc.
+      // before invoking events.create. Pass the bytes through unchanged
+      // so runs.get and the events stream return the same raw form that
+      // hydrateRunError / hydrateStepIO expect. CBOR-encoding here would
+      // double-wrap on write and (since runs.get bypasses the v4 frame
+      // decode) leave the consumer with cbor(Uint8Array) rather than the
+      // devalue blob it was looking for.
+      if (!(value instanceof Uint8Array)) {
+        // Surface non-Uint8Array values loudly — current SDK callers go
+        // through the dehydrate helpers, so anything else is either a
+        // legacy caller or a bug.
+        throw new TypeError(
+          `world-vercel v4: eventData.${payloadField} for ${data.eventType} ` +
+            `must be a Uint8Array (the runtime's dehydrated wire form); ` +
+            `got ${typeof value === 'object' ? (value === null ? 'null' : ((value as object).constructor?.name ?? typeof value)) : typeof value}.`
+        );
+      }
+      payload = value;
     }
   }
 
@@ -197,9 +210,11 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
  *
  * Both GET single-event and LIST use the same frame format: meta is the
  * full event entity with the payload field as a RefDescriptor, body is
- * the resolved payload bytes (possibly empty). This helper CBOR-decodes
- * the body and splices the value into `eventData[fieldName]`, symmetric
- * with the unconditional CBOR-encode in `splitEventDataForV4`.
+ * the resolved payload bytes (possibly empty). This helper splices the
+ * body bytes into `eventData[fieldName]` unchanged — the runtime's
+ * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume the raw
+ * devalue-with-format-prefix Uint8Array directly. No CBOR decode here,
+ * symmetric with the pass-through write in `splitEventDataForV4`.
  */
 function buildEventFromV4(
   decoded: DecodedV4Event,
@@ -210,15 +225,7 @@ function buildEventFromV4(
 
   if (payloadBody.byteLength > 0) {
     const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[decoded.eventType];
-    if (payloadField) {
-      try {
-        eventData[payloadField] = decode(payloadBody);
-      } catch {
-        // Defensive: leave the raw bytes if decode fails. The SDK is
-        // the only producer in practice so this shouldn't fire.
-        eventData[payloadField] = payloadBody;
-      }
-    }
+    if (payloadField) eventData[payloadField] = payloadBody;
   }
 
   const event = {
