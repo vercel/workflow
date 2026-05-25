@@ -51,10 +51,10 @@ Inngest's event-bus model is loosely coupled — publishers don't know consumers
 | `step.run()` | `"use step"` function | Standalone async function with Node.js access. |
 | `step.sleep()` / `step.sleepUntil()` | `sleep()` | `sleep('5m')` for a duration; `sleep(date)` for sleep-until. |
 | `step.waitForEvent()` | `createHook()` or `createWebhook()` | Hooks for typed signals, webhooks for HTTP. |
-| `step.invoke()` | `"use step"` wrappers around `start()` / `getRun()` | Spawn a child run, pass `runId` forward. |
+| `step.invoke()` | `start()` plus a `"use step"` wrapper around `getRun()` | Spawn a child run, pass `runId` forward, and collect from a step when needed. |
 | `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
 | Retry configuration (`retries`) | `RetryableError`, `FatalError`, `maxRetries` | Retry logic lives at the step level. |
-| `step.sendEvent()` | `"use step"` wrapper around `start()` | Fan out via `start()`, not an event bus. |
+| `step.sendEvent()` | `start()` from the workflow or app boundary | Fan out explicitly, not through an event bus. |
 | Realtime / `step.realtime.publish()` | `getWritable()` / `getWritable({ namespace })` | Named streams are the canonical way for clients to read workflow status. No database or `getRun()` polling required. |
 
 ## Translate your first workflow
@@ -169,19 +169,9 @@ Event matching disappears. A hook's token encodes the routing (for example, `ref
 
 ## Spawn a child workflow
 
-`step.invoke()` splits into two steps: spawn and collect. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Return the `Run` object from the spawn step so observability can deep-link into the child run.
+`step.invoke()` splits into spawn and collect. In v5, call `start()` directly from the workflow to spawn the child. Wrap `getRun()` and `returnValue` access in a `"use step"` function when you need to collect the result. Returning the `Run` object from `start()` lets observability deep-link into the child run.
 
 You can return either the full `Run` object (enables deep-linking) or just `run.runId` (simpler).
-
-{/* @skip-typecheck: snippet without imports */}
-```typescript title="workflow/workflows/parent.ts"
-async function spawnChild(item: string) {
-  'use step';
-  return start(childWorkflow, [item]); // [!code highlight]
-}
-```
-
-Await the result in a second step, then orchestrate both from the parent:
 
 {/* @skip-typecheck: snippet without imports */}
 ```typescript title="workflow/workflows/parent.ts"
@@ -193,7 +183,7 @@ async function collectResult(runId: string) {
 
 export async function parentWorkflow(item: string) {
   'use workflow';
-  const child = await spawnChild(item);
+  const child = await start(childWorkflow, [item]); // [!code highlight]
   return await collectResult(child.runId);
 }
 ```
@@ -266,7 +256,7 @@ See [Errors and retries](/docs/foundations/errors-and-retries) for full retry do
 
 - `step.waitForEvent(...)` → `createHook({ token })` + `await hook`. Resume it from an API route with `resumeHook(token, payload)`.
 - `step.sleep(...)` → `sleep("5m")` from `workflow`.
-- `step.invoke(child, { data })` → wrap `start(child, [data])` in a `"use step"` function that returns the `Run`, and optionally read its return value with `getRun(run.runId).returnValue`.
+- `step.invoke(child, { data })` → call `start(child, [data])` from the workflow, and optionally read its return value from a step with `getRun(run.runId).returnValue`.
 
 ### Step 5: Start runs from the app
 
@@ -301,8 +291,8 @@ Remove the `inngest` client, the `serve()` route, event schemas, and the Inngest
 - Swap `step.sleep()` / `step.sleepUntil()` for `sleep()` from `workflow`.
 - Swap `step.waitForEvent()` for `createHook()` (internal) or `createWebhook()` (HTTP).
 - Model `waitForEvent` timeouts as `Promise.race()` between the hook and `sleep()`.
-- Replace `step.invoke()` with `"use step"` wrappers around `start()` and `getRun()`.
-- Replace `step.sendEvent()` fan-out with `start()` called from a `"use step"` function.
+- Replace `step.invoke()` with direct `start()` calls and a `"use step"` wrapper around `getRun()` when collecting results.
+- Replace `step.sendEvent()` fan-out with explicit `start()` calls.
 - Remove the Inngest client, `serve()` handler, and event definitions.
 - Push retry configuration down to step boundaries via `maxRetries`, `RetryableError`, and `FatalError`.
 - Use `getStepMetadata().stepId` as the idempotency key for external side effects.

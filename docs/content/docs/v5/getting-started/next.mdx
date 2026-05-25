@@ -75,9 +75,9 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
 </Accordion>
 
 <Accordion type="single" collapsible>
-  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
+  <AccordionItem value="configure-proxy-handler" className="[&_h3]:my-0">
     <AccordionTrigger className="text-sm">
-      ### Configure Proxy Handler (if applicable)
+      <h3 id="configure-proxy-handler">Configure Proxy Handler (if applicable)</h3>
     </AccordionTrigger>
     <AccordionContent className="[&_p]:my-2">
 
@@ -85,7 +85,9 @@ If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-refere
 (formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
 internal paths to prevent the proxy handler from running on them.
 
-Add `.well-known/workflow/*` to your middleware's exclusion list:
+If you see `[local world] Queue operation failed` with `Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer`, your proxy matcher is still intercepting Workflow's internal `POST /.well-known/workflow/v1/flow` request. This is especially easy to miss in Next.js 16, where `proxy.ts` replaced `middleware.ts`.
+
+Add `.well-known/workflow/*` to your matcher exclusion list:
 
 ```typescript title="proxy.ts" lineNumbers
 import { NextResponse } from "next/server";

@@ -341,11 +341,17 @@ export function withWorkflow(
     };
   } = {}
 ) {
+  // lazyDiscovery defaults to true; pass `lazyDiscovery: false` to force eager
+  // discovery (scanning the project at startup) instead of deferring workflow
+  // discovery until files are requested. The `WORKFLOW_NEXT_LAZY_DISCOVERY`
+  // environment variable, if set, takes precedence over the option.
   const lazyDiscoveryOverride = parseEnvironmentFlag(
     process.env.WORKFLOW_NEXT_LAZY_DISCOVERY
   );
   if (lazyDiscoveryOverride === undefined) {
-    if (workflows?.lazyDiscovery) {
+    if (workflows?.lazyDiscovery === false) {
+      delete process.env.WORKFLOW_NEXT_LAZY_DISCOVERY;
+    } else {
       process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
     }
   } else {

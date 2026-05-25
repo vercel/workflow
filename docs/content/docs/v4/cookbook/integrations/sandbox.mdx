@@ -21,6 +21,10 @@ A sandbox alone gets you an isolated VM. A workflow around it gets you a **durab
 - **Beyond the 5-hour hard cap.** Every Vercel Sandbox has a maximum lifetime. The workflow tracks that deadline and proactively snapshots + recreates *before* the cap, so the logical session outlives any one VM. Effectively unbounded session duration on top of time-bounded infrastructure.
 - **Automatic cleanup.** `try/finally` in the workflow guarantees the VM is stopped on failure or destroy.
 
+<Callout type="info">
+An effectively unbounded sandbox session is still one workflow run, so it stays on the deployment that started it. If the controller or agent code should upgrade over time, use an explicit version boundary and pass the serialized state or stream handles forward. See [Versioning](/docs/foundations/versioning).
+</Callout>
+
 ## Use Case: Coding Agents
 
 This is the pattern [Open Agents](https://open-agents.dev/) uses to spawn coding agents that run "infinitely in the cloud." Each agent session gets its own sandbox — full filesystem, network, and runtime access — and the durable workflow keeps the agent loop resumable across restarts, auto-hibernates when the user walks away, and reconnects instantly when they return.

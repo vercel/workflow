@@ -272,7 +272,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .prepare('events_get_step_for_validation');
 
   const getHookByToken = drizzle
-    .select({ hookId: Schema.hooks.hookId })
+    .select({ hookId: Schema.hooks.hookId, runId: Schema.hooks.runId })
     .from(Schema.hooks)
     .where(eq(Schema.hooks.token, sql.placeholder('token')))
     .limit(1)
@@ -1038,6 +1038,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           // This allows the workflow to continue and fail gracefully when the hook is awaited
           const conflictEventData = {
             token: eventData.token,
+            conflictingRunId: existingHook.runId,
           };
 
           const [conflictValue] = await drizzle
@@ -1274,6 +1275,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
       let allEvents: Event[] | undefined;
+      let cursor: string | null | undefined;
+      let hasMore: boolean | undefined;
       if (data.eventType === 'run_started' && run) {
         const eventRows = await drizzle
           .select()
@@ -1285,6 +1288,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
+        cursor = allEvents.at(-1)?.eventId ?? null;
+        hasMore = false;
       }
 
       return {
@@ -1294,6 +1299,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         hook,
         wait,
         events: allEvents,
+        cursor,
+        hasMore,
       };
     },
     async get(

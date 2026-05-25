@@ -543,6 +543,18 @@
     counter-increment: step;
     @apply mr-6 inline-block w-6 text-right tabular-nums text-muted-foreground;
   }
+
+  /*
+   * Shiki wraps each highlighted token in its own <span>, which breaks
+   * Geist Mono programming ligatures (e.g. `===`, `!==`, `=>`): the ligature
+   * collapses to a single-character advance width, causing the glyph to
+   * visually overlap adjacent text. Disable ligatures inside code blocks
+   * so each character is rendered at its true monospace width.
+   */
+  pre code,
+  pre code span {
+    font-variant-ligatures: none;
+  }
 }
 
 :root {

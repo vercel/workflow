@@ -1,3 +1,4 @@
+import { isAIAgent } from '@vercel/agent-readability';
 import { createI18nMiddleware } from 'fumadocs-core/i18n/middleware';
 import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
 import {
@@ -5,7 +6,6 @@ import {
   type NextRequest,
   NextResponse,
 } from 'next/server';
-import { isAIAgent } from '@/lib/ai-agent-detection';
 import { i18n } from '@/lib/geistdocs/i18n';
 import { trackMdRequest } from '@/lib/md-tracking';
 
@@ -92,22 +92,22 @@ const proxy = (request: NextRequest, context: NextFetchEvent) => {
   // so they always get structured content without needing .md URLs or Accept headers
   if (isDocsOrCookbookPath(pathname) && !pathname.includes('/llms.mdx/')) {
     const agentResult = isAIAgent(request);
-    if (agentResult.detected && !isMarkdownPreferred(request)) {
-      const result = markdownRewrite;
-
-      if (result) {
-        context.waitUntil(
-          trackMdRequest({
-            path: pathname,
-            userAgent: request.headers.get('user-agent'),
-            referer: request.headers.get('referer'),
-            acceptHeader: request.headers.get('accept'),
-            requestType: 'agent-rewrite',
-            detectionMethod: agentResult.method,
-          })
-        );
-        return NextResponse.rewrite(new URL(result, request.nextUrl));
-      }
+    if (
+      agentResult.detected &&
+      !isMarkdownPreferred(request) &&
+      markdownRewrite
+    ) {
+      context.waitUntil(
+        trackMdRequest({
+          path: pathname,
+          userAgent: request.headers.get('user-agent'),
+          referer: request.headers.get('referer'),
+          acceptHeader: request.headers.get('accept'),
+          requestType: 'agent-rewrite',
+          detectionMethod: agentResult.method,
+        })
+      );
+      return NextResponse.rewrite(new URL(markdownRewrite, request.nextUrl));
     }
   }
 

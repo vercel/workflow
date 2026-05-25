@@ -56,6 +56,7 @@ export const slugToCategory: Record<string, string> = {
   // Advanced
   'child-workflows': 'advanced',
   'distributed-abort-controller': 'advanced',
+  'upgrading-workflows': 'advanced',
   'serializable-steps': 'advanced',
   'publishing-libraries': 'advanced',
 };
@@ -188,6 +189,13 @@ export const recipes: Record<string, Recipe> = {
       'Build a cross-process abort controller using workflow streams and hooks to coordinate cancellation by semantic ID.',
     category: 'advanced',
     skipVersions: ['v5'],
+  },
+  'upgrading-workflows': {
+    slug: 'upgrading-workflows',
+    title: 'Upgrading Workflows',
+    description:
+      'Identify a clean upgrade point in a long-running workflow and spawn a fresh run on the latest deployment carrying state forward.',
+    category: 'advanced',
   },
   'serializable-steps': {
     slug: 'serializable-steps',

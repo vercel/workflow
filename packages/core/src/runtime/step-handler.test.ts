@@ -585,6 +585,10 @@ describe('step-handler max deliveries', () => {
       expect.objectContaining({
         eventType: 'step_failed',
         correlationId: 'step_abc',
+        eventData: expect.objectContaining({
+          stepName: 'myStep',
+          error: expect.any(Uint8Array),
+        }),
       }),
       expect.anything()
     );
@@ -669,6 +673,9 @@ describe('step-handler step not found', () => {
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_started',
+        eventData: expect.objectContaining({
+          stepName: 'missingStep',
+        }),
       }),
       expect.anything()
     );
@@ -680,6 +687,7 @@ describe('step-handler step not found', () => {
         eventType: 'step_failed',
         correlationId: 'step_abc',
         eventData: expect.objectContaining({
+          stepName: 'missingStep',
           error: expect.any(Uint8Array),
         }),
       }),
@@ -712,6 +720,7 @@ describe('step-handler step not found', () => {
       expect.objectContaining({
         eventType: 'step_failed',
         eventData: expect.objectContaining({
+          stepName: 'badStep',
           error: expect.any(Uint8Array),
         }),
       }),

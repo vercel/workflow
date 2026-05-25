@@ -1,8 +1,48 @@
 'use client';
 
-import { Copy } from 'lucide-react';
-import { useToast } from '../../lib/toast';
-import { DataInspector } from '../ui/data-inspector';
+import { Lock } from 'lucide-react';
+import { useContext } from 'react';
+import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { Button } from '../ui/button';
+import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
+import { Spinner } from '../ui/spinner';
+
+const encryptedPlaceholderPreview = `{
+  "input": "[encrypted]",
+  "result": "[encrypted]"
+}`;
+
+export function EncryptedDataBlock() {
+  const ctx = useContext(DecryptClickContext);
+
+  return (
+    <div className="relative min-h-20 overflow-hidden rounded-md border border-gray-alpha-400 bg-background-100">
+      <pre
+        aria-hidden="true"
+        className="pointer-events-none m-0 select-none p-3 font-mono text-label-12 text-gray-900 blur-xs"
+      >
+        {encryptedPlaceholderPreview}
+      </pre>
+      <div className="absolute inset-0 flex items-center justify-center">
+        {ctx ? (
+          <Button onClick={ctx.onDecrypt} disabled={ctx.isDecrypting} size="xs">
+            {ctx.isDecrypting ? (
+              <Spinner size={10} />
+            ) : (
+              <Lock className="h-3 w-3" />
+            )}
+            <span>Decrypt</span>
+          </Button>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded border border-gray-alpha-400 bg-gray-100 px-1.5 py-0.5 text-button-12 font-medium text-gray-700">
+            <Lock className="h-3 w-3" />
+            Encrypted
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const serializeForClipboard = (value: unknown): string => {
   if (typeof value === 'string') return value;
@@ -21,31 +61,13 @@ const serializeForClipboard = (value: unknown): string => {
 };
 
 export function CopyableDataBlock({ data }: { data: unknown }) {
-  const toast = useToast();
   return (
-    <div
-      className="relative overflow-x-auto rounded-md border p-3"
-      style={{ borderColor: 'var(--ds-gray-300)' }}
-    >
-      <button
-        type="button"
-        aria-label="Copy data"
-        title="Copy"
-        className="!absolute !right-2 !top-2 !flex !h-6 !w-6 !items-center !justify-center !rounded-md !border !bg-[var(--ds-background-100)] !text-[var(--ds-gray-800)] transition-transform transition-colors duration-100 hover:!bg-[var(--ds-gray-alpha-200)] active:!scale-95 active:!bg-[var(--ds-gray-alpha-300)]"
-        style={{ borderColor: 'var(--ds-gray-300)' }}
-        onClick={() => {
-          navigator.clipboard
-            .writeText(serializeForClipboard(data))
-            .then(() => {
-              toast.success('Copied to clipboard');
-            })
-            .catch(() => {
-              toast.error('Failed to copy');
-            });
-        }}
-      >
-        <Copy size={12} />
-      </button>
+    <div className="relative overflow-x-auto rounded-md border border-gray-alpha-400 p-3">
+      <CopyButton
+        copyText={serializeForClipboard(data)}
+        ariaLabel="Copy data"
+        className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-gray-alpha-400 !bg-background-100 p-0 text-gray-900 transition-transform transition-colors duration-100 hover:bg-gray-200 active:scale-95 active:bg-gray-300"
+      />
       <DataInspector data={data} />
     </div>
   );

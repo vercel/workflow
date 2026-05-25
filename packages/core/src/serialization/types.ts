@@ -57,6 +57,14 @@ export interface SerializableSpecial {
   Error: { name: string; message: string; stack?: string; cause?: unknown };
   EvalError: { message: string; stack?: string; cause?: unknown };
   Headers: [string, string][];
+  HookConflictError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    token: string;
+    // TODO: Make this required when HookConflictError.conflictingRunId is required.
+    conflictingRunId?: string;
+  };
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
   Int32Array: string; // base64 string
@@ -144,7 +152,16 @@ export interface SerializableSpecial {
     cause?: unknown;
     errors: unknown[];
   };
-  WritableStream: { name: string };
+  WritableStream: {
+    name: string;
+    /**
+     * The runId of the workflow run that owns the underlying server
+     * stream. Present only when the writable was forwarded across a
+     * `start()` boundary (parent → child). When omitted, the writable
+     * belongs to the receiving run (the normal in-run case).
+     */
+    runId?: string;
+  };
   AbortController: {
     streamName: string;
     hookToken: string;

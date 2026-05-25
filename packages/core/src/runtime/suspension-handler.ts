@@ -21,8 +21,8 @@ import type {
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
-import { getAbortStreamIdFromToken } from '../util.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
+import { getAbortStreamIdFromToken } from '../util.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -163,6 +163,9 @@ export async function handleSuspension({
           eventType: 'hook_disposed' as const,
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: queueItem.correlationId,
+          eventData: {
+            token: queueItem.token,
+          },
         };
         try {
           await world.events.create(runId, hookDisposedEvent, { requestId });
@@ -224,6 +227,7 @@ export async function handleSuspension({
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: queueItem.correlationId,
             eventData: {
+              token: queueItem.token,
               payload: abortPayload,
             },
           });

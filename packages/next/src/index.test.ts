@@ -129,6 +129,21 @@ describe('withWorkflow builder config', () => {
     });
   });
 
+  it('enables lazyDiscovery by default', async () => {
+    withWorkflow({});
+    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
+  });
+
+  it('enables lazyDiscovery when explicitly set to true', async () => {
+    withWorkflow({}, { workflows: { lazyDiscovery: true } });
+    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
+  });
+
+  it('disables lazyDiscovery when explicitly set to false', async () => {
+    withWorkflow({}, { workflows: { lazyDiscovery: false } });
+    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBeUndefined();
+  });
+
   it('configures diagnostics inside the default Next.js dist dir', async () => {
     const config = withWorkflow({});
 

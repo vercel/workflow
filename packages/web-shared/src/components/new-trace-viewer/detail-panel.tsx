@@ -29,7 +29,7 @@ export function DetailPanel({
         </span>
         <button
           type="button"
-          className="p-1 rounded-md text-gray-900 hover:text-gray-1000 hover:bg-gray-alpha-200 transition-colors"
+          className="p-1 rounded-md text-gray-1000 hover:bg-gray-alpha-100 transition-colors"
           onClick={onClose}
         >
           <X className="w-4 h-4" />
