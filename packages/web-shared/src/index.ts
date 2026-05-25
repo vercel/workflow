@@ -15,6 +15,11 @@ export {
 } from './components/workflow-traces/trace-span-construction';
 export type { EventAnalysis } from './lib/event-analysis';
 export {
+  parseExactWorkflowSearchId,
+  type ExactWorkflowSearchId,
+  type ExactWorkflowSearchIdKind,
+} from './lib/exact-event-search-id';
+export {
   analyzeEvents,
   hasPendingHooksFromEvents,
   hasPendingStepsFromEvents,

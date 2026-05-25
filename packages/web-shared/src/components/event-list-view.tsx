@@ -3,12 +3,21 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { Check, ChevronRight, Copy } from 'lucide-react';
-import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { isEncryptedMarker } from '../lib/hydration';
+import {
+  parseExactWorkflowSearchId,
+  type ExactWorkflowSearchIdKind,
+} from '../lib/exact-event-search-id';
 import { DecryptButton } from './ui/decrypt-button';
 import { formatDuration } from '../lib/utils';
+import { useToast } from '../lib/toast';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import {
   ErrorStackBlock,
@@ -721,6 +730,11 @@ interface EventsListProps {
   isDecrypting?: boolean;
   /** Run-level hint: the run contains encrypted data (from probe). */
   hasEncryptedData?: boolean;
+  /** Fetch events for an exact correlation or event ID. */
+  onExactIdSearch?: (
+    id: string,
+    kind: ExactWorkflowSearchIdKind
+  ) => Promise<Event[] | null>;
 }
 
 function EventRow({
@@ -1155,7 +1169,9 @@ export function EventListView({
   onDecrypt,
   isDecrypting = false,
   hasEncryptedData: hasEncryptedDataProp = false,
+  onExactIdSearch,
 }: EventsListProps) {
+  const toast = useToast();
   const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
     'asc'
   );
@@ -1171,25 +1187,40 @@ export function EventListView({
     [onSortOrderChange]
   );
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Event[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchNotFound, setSearchNotFound] = useState(false);
+  const searchRequestRef = useRef(0);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+
+  const parsedSearchId = useMemo(
+    () => parseExactWorkflowSearchId(searchQuery),
+    [searchQuery]
+  );
+  const isExactSearchActive = searchResults !== null;
+
   const sortedEvents = useMemo(() => {
-    if (!events || events.length === 0) return [];
+    const sourceEvents = isExactSearchActive ? searchResults : (events ?? []);
+    if (sourceEvents.length === 0) return [];
     const dir = effectiveSortOrder === 'desc' ? -1 : 1;
-    return [...events].sort(
+    return [...sourceEvents].sort(
       (a, b) =>
         dir *
         (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     );
-  }, [events, effectiveSortOrder]);
+  }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
 
   // Detect encrypted fields across all loaded events (inline eventData).
   const hasEncryptedInlineData = useMemo(() => {
-    if (!events) return false;
-    for (const event of events) {
+    const sourceEvents = isExactSearchActive ? searchResults : events;
+    if (!sourceEvents) return false;
+    for (const event of sourceEvents) {
       const ed = (event as Record<string, unknown>).eventData;
       if (hasEncryptedValues(ed)) return true;
     }
     return false;
-  }, [events]);
+  }, [events, isExactSearchActive, searchResults]);
 
   // Tracks whether any expanded row's lazy-loaded data contained encrypted markers.
   // Set to true by EventRow via onEncryptedDataDetected; never reset (sticky).
@@ -1203,8 +1234,12 @@ export function EventListView({
     hasEncryptedDataProp || hasEncryptedInlineData || foundEncryptedInLazyData;
 
   const { correlationNameMap, workflowName } = useMemo(
-    () => buildNameMaps(events ?? null, run ?? null),
-    [events, run]
+    () =>
+      buildNameMaps(
+        isExactSearchActive ? searchResults : (events ?? null),
+        run ?? null
+      ),
+    [events, isExactSearchActive, run, searchResults]
   );
 
   const durationMap = useMemo(
@@ -1294,68 +1329,88 @@ export function EventListView({
     return first >= 0 ? { first, last } : null;
   }, [activeGroupKey, sortedEvents]);
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
-
-  const searchIndex = useMemo(() => {
-    const entries: {
-      fields: string[];
-      groupKey?: string;
-      eventId: string;
-      index: number;
-    }[] = [];
-    for (let i = 0; i < sortedEvents.length; i++) {
-      const ev = sortedEvents[i];
-      const isRun = isRunLevel(ev.eventType);
-      const name = isRun
-        ? (workflowName ?? '')
-        : ev.correlationId
-          ? (correlationNameMap.get(ev.correlationId) ?? '')
-          : '';
-      entries.push({
-        fields: [
-          ev.eventId,
-          ev.correlationId ?? '',
-          ev.eventType,
-          formatEventType(ev.eventType),
-          name,
-        ].map((f) => f.toLowerCase()),
-        groupKey: ev.correlationId ?? (isRun ? '__run__' : undefined),
-        eventId: ev.eventId,
-        index: i,
-      });
-    }
-    return entries;
-  }, [sortedEvents, correlationNameMap, workflowName]);
-
   useEffect(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      setSearchResults(null);
+      setSearchLoading(false);
+      setSearchNotFound(false);
       setSelectedGroupKey(undefined);
       return;
     }
-    let bestMatch: (typeof searchIndex)[number] | null = null;
-    let bestScore = 0;
-    for (const entry of searchIndex) {
-      for (const field of entry.fields) {
-        if (field && field.includes(q)) {
-          const score = q.length / field.length;
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = entry;
+
+    const parsed = parseExactWorkflowSearchId(trimmed);
+    if (!parsed || !onExactIdSearch) {
+      setSearchResults(null);
+      setSearchLoading(false);
+      setSearchNotFound(false);
+      return;
+    }
+
+    const requestId = ++searchRequestRef.current;
+    setSearchLoading(true);
+    setSearchNotFound(false);
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const results = await onExactIdSearch(parsed.id, parsed.kind);
+          if (searchRequestRef.current !== requestId) {
+            return;
+          }
+
+          if (!results || results.length === 0) {
+            setSearchResults([]);
+            setSearchNotFound(true);
+            setSelectedGroupKey(undefined);
+            return;
+          }
+
+          setSearchResults(results);
+          setSearchNotFound(false);
+          setSelectedGroupKey(
+            parsed.kind === 'event'
+              ? (results[0]?.correlationId ?? undefined)
+              : parsed.id
+          );
+          virtuosoRef.current?.scrollToIndex({
+            index: 0,
+            align: 'start',
+            behavior: 'smooth',
+          });
+        } catch {
+          if (searchRequestRef.current !== requestId) {
+            return;
+          }
+          setSearchResults([]);
+          setSearchNotFound(true);
+          setSelectedGroupKey(undefined);
+        } finally {
+          if (searchRequestRef.current === requestId) {
+            setSearchLoading(false);
           }
         }
+      })();
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery, onExactIdSearch, effectiveSortOrder]);
+
+  const handleSearchKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== 'Enter') {
+        return;
       }
-    }
-    if (bestMatch) {
-      setSelectedGroupKey(bestMatch.groupKey);
-      virtuosoRef.current?.scrollToIndex({
-        index: bestMatch.index,
-        align: 'center',
-        behavior: 'smooth',
-      });
-    }
-  }, [searchQuery, searchIndex]);
+
+      const trimmed = searchQuery.trim();
+      if (!trimmed || parseExactWorkflowSearchId(trimmed) || !onExactIdSearch) {
+        return;
+      }
+
+      toast.info('Enter a full correlation ID or event ID');
+    },
+    [searchQuery, onExactIdSearch, toast]
+  );
 
   // Track whether we've ever had events to distinguish initial load from refetch
   const hasHadEventsRef = useRef(false);
@@ -1397,17 +1452,6 @@ export function EventListView({
           </div>
         </div>
         <RowsSkeleton />
-      </div>
-    );
-  }
-
-  if (!isLoading && (!events || events.length === 0)) {
-    return (
-      <div
-        className="flex items-center justify-center h-full text-sm"
-        style={{ color: 'var(--ds-gray-700)' }}
-      >
-        No events found
       </div>
     );
   }
@@ -1476,9 +1520,10 @@ export function EventListView({
             </div>
             <input
               type="search"
-              placeholder="Search by name, event type, or ID…"
+              placeholder="Search by correlation ID or event ID…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
               style={{
                 marginLeft: -16,
                 paddingInline: 12,
@@ -1535,8 +1580,19 @@ export function EventListView({
         </div>
 
         {/* Virtualized event rows or refetching skeleton */}
-        {isRefetching ? (
+        {isRefetching || searchLoading ? (
           <RowsSkeleton />
+        ) : sortedEvents.length === 0 ? (
+          <div
+            className="flex flex-1 items-center justify-center px-6 text-center text-sm"
+            style={{ color: 'var(--ds-gray-700)' }}
+          >
+            {searchNotFound && searchQuery.trim()
+              ? `No events found for ${searchQuery.trim()}`
+              : parsedSearchId && searchQuery.trim() && !onExactIdSearch
+                ? 'Exact ID search is unavailable in this view.'
+                : 'No events found'}
+          </div>
         ) : (
           <Virtuoso
             ref={virtuosoRef}
@@ -1544,7 +1600,11 @@ export function EventListView({
             overscan={20}
             defaultItemHeight={40}
             endReached={() => {
-              if (!hasMoreEvents || isLoadingMoreEvents) {
+              if (
+                isExactSearchActive ||
+                !hasMoreEvents ||
+                isLoadingMoreEvents
+              ) {
                 return;
               }
               void onLoadMoreEvents?.();
@@ -1591,10 +1651,13 @@ export function EventListView({
           }}
         >
           <span>
-            {sortedEvents.length} event
-            {sortedEvents.length !== 1 ? 's' : ''} loaded
+            {isExactSearchActive
+              ? searchNotFound
+                ? `No events found for ${searchQuery.trim()}`
+                : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}`
+              : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} loaded`}
           </span>
-          {hasMoreEvents && (
+          {!isExactSearchActive && hasMoreEvents && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="pointer-events-auto">
                 <LoadMoreButton

@@ -1,11 +1,18 @@
+'use client';
+
+import type { Event } from '@workflow/world';
+import type { ExactWorkflowSearchIdKind } from '@workflow/web-shared';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   hydrateResourceIO,
   hydrateResourceIOWithKey,
 } from '@workflow/web-shared';
-import type { Event } from '@workflow/world';
-import { useCallback, useEffect, useRef, useState } from 'react';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
-import { fetchEvents } from '~/lib/rpc-client';
+import {
+  fetchEvent,
+  fetchEvents,
+  fetchEventsByCorrelationId,
+} from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 
 const INITIAL_PAGE_SIZE = 100;
@@ -39,6 +46,17 @@ export function useEventsListData(
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
 
+  const hydrateEvents = useCallback(async (rawEvents: Event[]) => {
+    const hydrated = rawEvents.map(hydrateResourceIO);
+    const key = encryptionKeyRef.current;
+    if (key) {
+      return Promise.all(
+        hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
+      );
+    }
+    return hydrated;
+  }, []);
+
   const fetchInitial = useCallback(async () => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -59,16 +77,7 @@ export function useEventsListData(
       if (fetchError) {
         setError(fetchError);
       } else {
-        const hydrated = result.data.map(hydrateResourceIO);
-        const key = encryptionKeyRef.current;
-        if (key) {
-          const decrypted = await Promise.all(
-            hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
-          );
-          setEvents(decrypted);
-        } else {
-          setEvents(hydrated);
-        }
+        setEvents(await hydrateEvents(result.data));
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
       }
@@ -78,7 +87,7 @@ export function useEventsListData(
       setLoading(false);
       isFetchingRef.current = false;
     }
-  }, [env, runId, sortOrder]);
+  }, [env, runId, sortOrder, hydrateEvents]);
 
   useEffect(() => {
     if (enabled) fetchInitial();
@@ -115,16 +124,8 @@ export function useEventsListData(
         setError(fetchError);
       } else {
         if (result.data.length > 0) {
-          const hydrated = result.data.map(hydrateResourceIO);
-          const key = encryptionKeyRef.current;
-          if (key) {
-            const decrypted = await Promise.all(
-              hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
-            );
-            setEvents((prev) => [...prev, ...decrypted]);
-          } else {
-            setEvents((prev) => [...prev, ...hydrated]);
-          }
+          const hydrated = await hydrateEvents(result.data);
+          setEvents((prev) => [...prev, ...hydrated]);
         }
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
@@ -134,7 +135,50 @@ export function useEventsListData(
     } finally {
       setLoadingMore(false);
     }
-  }, [env, runId, sortOrder, cursor, loadingMore]);
+  }, [env, runId, sortOrder, cursor, loadingMore, hydrateEvents]);
+
+  const searchByExactId = useCallback(
+    async (
+      id: string,
+      kind: ExactWorkflowSearchIdKind
+    ): Promise<Event[] | null> => {
+      if (kind === 'event') {
+        const { error: fetchError, result } = await unwrapServerActionResult(
+          fetchEvent(env, runId, id, 'none')
+        );
+        if (fetchError) {
+          return null;
+        }
+        const [event] = await hydrateEvents([result]);
+        return event.runId === runId ? [event] : null;
+      }
+
+      const matched: Event[] = [];
+      let nextCursor: string | undefined;
+      do {
+        const { error: fetchError, result } = await unwrapServerActionResult(
+          fetchEventsByCorrelationId(env, id, {
+            cursor: nextCursor,
+            sortOrder,
+            limit: 100,
+            withData: false,
+          })
+        );
+        if (fetchError) {
+          return null;
+        }
+
+        const hydrated = await hydrateEvents(result.data);
+        matched.push(...hydrated.filter((event) => event.runId === runId));
+
+        nextCursor =
+          result.hasMore && result.cursor ? result.cursor : undefined;
+      } while (nextCursor);
+
+      return matched.length > 0 ? matched : null;
+    },
+    [env, runId, sortOrder, hydrateEvents]
+  );
 
   return {
     events,
@@ -143,5 +187,6 @@ export function useEventsListData(
     hasMore,
     loadingMore,
     loadMore,
+    searchByExactId,
   };
 }
