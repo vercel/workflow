@@ -757,6 +757,7 @@ function EventRow({
   onCacheEventData,
   encryptionKey,
   onEncryptedDataDetected,
+  suppressGroupDimming = false,
 }: {
   event: Event;
   index: number;
@@ -777,6 +778,8 @@ function EventRow({
   onCacheEventData: (eventId: string, data: unknown) => void;
   encryptionKey?: Uint8Array;
   onEncryptedDataDetected?: () => void;
+  /** Exact-ID search results should not dim unrelated rows. */
+  suppressGroupDimming?: boolean;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -818,7 +821,7 @@ function EventRow({
 
   const hasActive = activeGroupKey !== undefined;
   const isRelated = rowGroupKey !== undefined && rowGroupKey === activeGroupKey;
-  const isDimmed = hasActive && !isRelated;
+  const isDimmed = hasActive && !isRelated && !suppressGroupDimming;
   const isPulsing = hasActive && isRelated;
 
   // Gutter state derived from selectedGroupRange
@@ -1371,7 +1374,9 @@ export function EventListView({
           setSelectedGroupKey(
             parsed.kind === 'event'
               ? (results[0]?.correlationId ?? undefined)
-              : parsed.id
+              : parsed.kind === 'run'
+                ? '__run__'
+                : parsed.id
           );
           virtuosoRef.current?.scrollToIndex({
             index: 0,
@@ -1634,6 +1639,7 @@ export function EventListView({
                   onCacheEventData={cacheEventData}
                   encryptionKey={encryptionKey}
                   onEncryptedDataDetected={handleEncryptedDataDetected}
+                  suppressGroupDimming={isExactSearchActive}
                 />
               );
             }}
