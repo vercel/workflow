@@ -1,19 +1,28 @@
 import { FatalError } from '@workflow/errors';
-import type { AttributeChange } from '@workflow/world';
-import { normalizeSetAttributesInput } from '../set-attributes-shared.js';
-import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
+import {
+  type AttributeChange,
+  AttributeValidationError,
+  validateAttributeChanges,
+} from '@workflow/world';
+import { WORKFLOW_USE_STEP } from '../symbols.js';
 
 /**
- * Workflow-VM-side `setAttributes`. Validates the input on the VM side
- * (cheap, deterministic) and then dispatches the canonical
- * `AttributeChange[]` through the host's `__builtin_set_attributes`
- * step bridge — registered on `globalThis` under `WORKFLOW_SET_ATTRIBUTES`
- * by the workflow runtime. The actual world call happens inside that
- * step, which gives the mutation an event-log entry (`step_created` →
- * `step_completed`) just like any other step.
+ * Attach plaintext string key/value metadata to the current workflow run.
  *
- * Empty input is a no-op (no step dispatch). `value: undefined` removes
- * the key from the run's attribute map.
+ * **EXPERIMENTAL.** Callable only from a workflow body (`'use workflow'`).
+ * The call is dispatched through the workflow runtime as a step, so the
+ * mutation is recorded in the event log and survives replay.
+ *
+ * Validation runs in the VM (cheap, deterministic) before the step
+ * dispatch — violations throw `FatalError` without queuing a step. An
+ * empty record is a no-op. `value: undefined` removes the key from the
+ * run's attribute map.
+ *
+ * **WARNING**: While this feature is experimental, calling e.g.
+ * `Promise.all([setAttributes({ a: '1' }), setAttributes({ a: '2' })])`
+ * is not guaranteed to be ordered consistently, but
+ * `await setAttributes({ a: '1' }).then(() => setAttributes({ a: '2' }))`
+ * is.
  *
  * @example
  * ```ts
@@ -21,23 +30,44 @@ import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
  *   'use workflow';
  *   await setAttributes({ phase: 'init' });
  *   // ... work ...
- *   await setAttributes({ phase: 'done' });
+ *   await setAttributes({ phase: 'done', orderId: 'ord_123' });
+ *   await setAttributes({ orderId: undefined }); // remove
  * }
  * ```
  */
 export async function setAttributes(
   attrs: Record<string, string | undefined>
 ): Promise<void> {
-  const changes = normalizeSetAttributesInput(attrs);
-  if (!changes) return;
-  const dispatch = (globalThis as Record<symbol, unknown>)[
-    WORKFLOW_SET_ATTRIBUTES
-  ] as ((changes: AttributeChange[]) => Promise<void>) | undefined;
-  if (!dispatch) {
+  if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) {
     throw new FatalError(
-      'setAttributes() called outside a workflow runtime context. ' +
-        'The workflow VM must be initialized before this function is invoked.'
+      `setAttributes requires a plain object, got ${
+        attrs === null ? 'null' : Array.isArray(attrs) ? 'array' : typeof attrs
+      }`
     );
   }
-  await dispatch(changes);
+  const changes: AttributeChange[] = Object.entries(attrs).map(
+    ([key, value]) => ({
+      key,
+      value: value === undefined ? null : value,
+    })
+  );
+  if (changes.length === 0) return;
+  try {
+    validateAttributeChanges(changes);
+  } catch (err) {
+    if (err instanceof AttributeValidationError) {
+      throw new FatalError(err.message);
+    }
+    throw err;
+  }
+  const useStep = (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP] as
+    | ((stepName: string) => (changes: AttributeChange[]) => Promise<void>)
+    | undefined;
+  if (!useStep) {
+    throw new FatalError(
+      'setAttributes() called outside a workflow runtime context. ' +
+        'It must be called from within a workflow body (`use workflow`).'
+    );
+  }
+  await useStep('__builtin_set_attributes')(changes);
 }

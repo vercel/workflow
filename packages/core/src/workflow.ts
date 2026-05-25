@@ -6,7 +6,6 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPortLazy } from './runtime/get-port-lazy.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -16,9 +15,10 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import type { WorkflowOrchestratorContext } from './private.js';
+import { getPortLazy } from './runtime/get-port-lazy.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
-import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -29,7 +29,6 @@ import {
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
-  WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
 } from './symbols.js';
@@ -37,12 +36,12 @@ import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
-import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
-import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import {
   createAbortSignalStatics,
   createCreateAbortController,
 } from './workflow/abort-controller.js';
+import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
+import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
@@ -234,15 +233,6 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
-    // Workflow-body `setAttributes` dispatches through the
-    // `__builtin_set_attributes` step. Pre-bind a useStep handle so the
-    // VM-side helper just has a callable function to invoke. See
-    // `packages/workflow/src/internal/builtins.ts` for the step body.
-    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
-    vmGlobalThis[WORKFLOW_SET_ATTRIBUTES] = useStep<
-      [Array<{ key: string; value: string | null }>],
-      void
-    >('__builtin_set_attributes');
 
     // TODO: there should be a getUrl method on the world interface itself. This
     // solution only works for vercel + local worlds.

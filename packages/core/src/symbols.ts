@@ -1,7 +1,6 @@
 export const WORKFLOW_USE_STEP = Symbol.for('WORKFLOW_USE_STEP');
 export const WORKFLOW_CREATE_HOOK = Symbol.for('WORKFLOW_CREATE_HOOK');
 export const WORKFLOW_SLEEP = Symbol.for('WORKFLOW_SLEEP');
-export const WORKFLOW_SET_ATTRIBUTES = Symbol.for('WORKFLOW_SET_ATTRIBUTES');
 export const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');
 export const WORKFLOW_GET_STREAM_ID = Symbol.for('WORKFLOW_GET_STREAM_ID');
 export const STABLE_ULID = Symbol.for('WORKFLOW_STABLE_ULID');

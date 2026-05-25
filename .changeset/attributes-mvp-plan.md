@@ -7,4 +7,4 @@
 'workflow': patch
 ---
 
-Add experimental `setAttributes()` for attaching plaintext string key/value metadata to a workflow run from workflow or step code.
+Add experimental `setAttributes()` for attaching plaintext string key/value metadata to a workflow run. Callable from a workflow body; the call is dispatched as a step so the mutation is recorded on the event log.

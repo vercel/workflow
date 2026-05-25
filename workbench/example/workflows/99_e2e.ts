@@ -3172,35 +3172,16 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
 }
 
 //////////////////////////////////////////////////////////
-// Workflow Attributes MVP — both contexts exercised end-to-end.
-
-async function tagStepPhase(phase: string) {
-  'use step';
-  await setAttributes({ phase });
-  return phase;
-}
+// Workflow Attributes MVP — workflow-body-only API.
 
 /**
- * Calls `setAttributes` from inside a `'use step'` body, twice. The
- * second call overwrites `phase` and the test verifies the final
- * merged map matches what the world materialized on the run entity.
+ * Calls `setAttributes` directly from the workflow body. The call is
+ * dispatched through the `__builtin_set_attributes` step bridge, so the
+ * mutation gets a `step_created`/`step_completed` event pair. The third
+ * call sets a key to `undefined` and the test verifies the key is
+ * absent from the final attribute map.
  */
-export async function setAttributesFromStepWorkflow(input: number) {
-  'use workflow';
-  await tagStepPhase('init');
-  const doubled = input * 2;
-  await tagStepPhase('done');
-  return doubled;
-}
-
-/**
- * Calls `setAttributes` directly from the workflow body (no wrapping
- * step). Exercises the `__builtin_set_attributes` step bridge wired
- * through the `WORKFLOW_SET_ATTRIBUTES` symbol. The third call sets a
- * key to `undefined` and the test verifies the key is absent from the
- * final attribute map.
- */
-export async function setAttributesFromWorkflowBodyWorkflow(input: number) {
+export async function setAttributesWorkflow(input: number) {
   'use workflow';
   await setAttributes({ phase: 'init', source: 'workflow-body' });
   const tripled = input * 3;

@@ -3437,30 +3437,10 @@ describe('e2e', () => {
 
   describe('setAttributes', () => {
     test(
-      'setAttributesFromStepWorkflow: step-body calls land on the run entity',
+      'setAttributesWorkflow: workflow-body calls dispatch through the step bridge and merge correctly',
       { timeout: 30_000 },
       async () => {
-        const run = await start(
-          await e2e('setAttributesFromStepWorkflow'),
-          [5]
-        );
-        const output = await run.returnValue;
-        expect(output).toBe(10);
-
-        const world = await getWorld();
-        const persisted = await world.runs.get(run.runId);
-        expect(persisted?.attributes).toEqual({ phase: 'done' });
-      }
-    );
-
-    test(
-      'setAttributesFromWorkflowBodyWorkflow: workflow-body calls dispatch through the step bridge and merge correctly',
-      { timeout: 30_000 },
-      async () => {
-        const run = await start(
-          await e2e('setAttributesFromWorkflowBodyWorkflow'),
-          [7]
-        );
+        const run = await start(await e2e('setAttributesWorkflow'), [7]);
         const output = await run.returnValue;
         expect(output).toBe(21);
 

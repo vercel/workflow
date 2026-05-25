@@ -73,11 +73,7 @@
       "types": "./dist/describe-error.d.ts",
       "default": "./dist/describe-error.js"
     },
-    "./_workflow": "./dist/workflow/index.js",
-    "./_step-set-attributes": {
-      "types": "./dist/step-set-attributes.d.ts",
-      "default": "./dist/step-set-attributes.js"
-    }
+    "./_workflow": "./dist/workflow/index.js"
   },
   "scripts": {
     "build": "genversion --es6 src/version.ts && tsc",

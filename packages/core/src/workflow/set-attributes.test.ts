@@ -1,41 +1,51 @@
 import { FatalError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
+import { WORKFLOW_USE_STEP } from '../symbols.js';
 import { setAttributes } from './set-attributes.js';
 
 describe('workflow.setAttributes', () => {
-  const dispatchCalls: Array<Array<{ key: string; value: string | null }>> = [];
+  const dispatchCalls: Array<{
+    stepName: string;
+    changes: Array<{ key: string; value: string | null }>;
+  }> = [];
 
   beforeEach(() => {
     dispatchCalls.length = 0;
-    (globalThis as Record<symbol, unknown>)[WORKFLOW_SET_ATTRIBUTES] = vi.fn(
-      async (changes: Array<{ key: string; value: string | null }>) => {
-        dispatchCalls.push(changes);
-      }
+    (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP] = vi.fn(
+      (stepName: string) =>
+        async (changes: Array<{ key: string; value: string | null }>) => {
+          dispatchCalls.push({ stepName, changes });
+        }
     );
   });
 
   afterEach(() => {
-    delete (globalThis as Record<symbol, unknown>)[WORKFLOW_SET_ATTRIBUTES];
+    delete (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP];
   });
 
-  it('dispatches normalized changes to the host-side step bridge', async () => {
+  it('dispatches normalized changes through __builtin_set_attributes', async () => {
     await setAttributes({ phase: 'init', orderId: 'ord_1' });
     expect(dispatchCalls).toEqual([
-      [
-        { key: 'phase', value: 'init' },
-        { key: 'orderId', value: 'ord_1' },
-      ],
+      {
+        stepName: '__builtin_set_attributes',
+        changes: [
+          { key: 'phase', value: 'init' },
+          { key: 'orderId', value: 'ord_1' },
+        ],
+      },
     ]);
   });
 
   it('translates undefined values into null (unset semantics)', async () => {
     await setAttributes({ phase: 'done', stale: undefined });
     expect(dispatchCalls).toEqual([
-      [
-        { key: 'phase', value: 'done' },
-        { key: 'stale', value: null },
-      ],
+      {
+        stepName: '__builtin_set_attributes',
+        changes: [
+          { key: 'phase', value: 'done' },
+          { key: 'stale', value: null },
+        ],
+      },
     ]);
   });
 
@@ -44,8 +54,8 @@ describe('workflow.setAttributes', () => {
     expect(dispatchCalls).toHaveLength(0);
   });
 
-  it('throws FatalError when the host has not initialized the bridge', async () => {
-    delete (globalThis as Record<symbol, unknown>)[WORKFLOW_SET_ATTRIBUTES];
+  it('throws FatalError when the workflow runtime has not initialized useStep', async () => {
+    delete (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP];
     await expect(setAttributes({ phase: 'init' })).rejects.toBeInstanceOf(
       FatalError
     );
