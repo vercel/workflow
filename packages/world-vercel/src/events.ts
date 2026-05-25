@@ -151,8 +151,12 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   } else if (eventData.resumeAt instanceof Date) {
     meta.resumeAt = eventData.resumeAt.toISOString();
   }
-  if (typeof eventData.hookToken === 'string') {
-    meta.hookToken = eventData.hookToken;
+  // Runtime emits hook_created / hook_received / hook_disposed with the
+  // hook token in `eventData.token` (matches the world contract in
+  // packages/world/src/events.ts). The v4 wire encoding still calls it
+  // `hookToken` in the frame meta, so do the rename here.
+  if (typeof eventData.token === 'string') {
+    meta.hookToken = eventData.token;
   }
   if (typeof eventData.isWebhook === 'boolean') {
     meta.hookIsWebhook = eventData.isWebhook;
