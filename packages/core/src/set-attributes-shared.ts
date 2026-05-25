@@ -9,21 +9,16 @@ import {
 // the step/host bundle. It must NOT import anything that pulls in
 // `node:async_hooks` (e.g. `step/context-storage.ts`) or any other
 // Node-only module — the workflow VM bundle is built with a no-Node
-// constraint, and an offending transitive import will fail the build
-// with "You are attempting to use 'node:async_hooks' which is a Node.js
-// module. Node.js modules are not available in workflow functions."
+// constraint, and an offending transitive import will fail the build.
 //
 // It must ALSO not contain a `'use step'` directive: the deferred-entry
 // discoverer in `@workflow/next/builder-deferred.ts` walks transitive
-// imports from `'use step'` files, and adding a step file to
-// `@workflow/core/dist/` puts the host-side `world.ts` (and its
-// transitive `@vercel/queue` + adapter imports) inside the workflow
-// step-discovery graph. That triggers a stack overflow inside webpack
-// dev mode's regex-based import extractor on tarball-installed
-// deployments. The MVP works around this by performing the world
-// dispatch from the SDK helper (step body only); workflow-body use
-// throws FatalError — users must wrap the call in their own
-// `'use step'` function.
+// imports from `'use step'` files, and a step file inside
+// `@workflow/core/dist/` puts host-side world adapters and
+// `@vercel/queue` into the step-discovery graph, which has historically
+// triggered a stack overflow inside webpack's regex-based extractor on
+// tarball-installed deployments. The workflow-body step bridge lives
+// in `packages/workflow/src/internal/builtins.ts` instead.
 
 /**
  * Validate and normalize a `setAttributes(record)` call. Returns the
