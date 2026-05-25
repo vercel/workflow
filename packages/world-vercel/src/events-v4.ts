@@ -218,19 +218,21 @@ export async function createWorkflowRunEventV4(
   return { eventId, runId, createdAt, body };
 }
 
-export interface GetEventV4Result {
+/**
+ * Decoded event entity returned by GET /api/v4/runs/:runId/events/:eventId.
+ * The server CBOR-encodes the full entity with refs resolved server-side,
+ * so the payload field (input/output/result/error/payload/metadata
+ * depending on eventType) already contains the resolved bytes — the
+ * adapter layer doesn't need to splice them in.
+ */
+export interface DecodedV4Event {
   eventId: string;
   runId: string;
   eventType: string;
-  createdAt: string;
   correlationId?: string;
-  workflowName?: string;
-  stepName?: string;
-  attempt?: number;
-  deploymentId?: string;
-  errorCode?: string;
-  /** The raw payload bytes (possibly empty). Caller decodes. */
-  body: Uint8Array;
+  createdAt: Date | string;
+  specVersion?: number;
+  eventData?: Record<string, unknown>;
 }
 
 function readHeader(
@@ -243,47 +245,19 @@ function readHeader(
   return undefined;
 }
 
-function parseEventMetaFromHeaders(
-  responseHeaders: Record<string, string | string[] | undefined>
-): Omit<GetEventV4Result, 'body'> {
-  const eventId = readHeader(responseHeaders, V4_HEADERS.eventId);
-  const runId = readHeader(responseHeaders, V4_HEADERS.runId);
-  const eventType = readHeader(responseHeaders, V4_HEADERS.eventType);
-  const createdAt = readHeader(responseHeaders, V4_HEADERS.createdAt);
-  if (!eventId || !runId || !eventType || !createdAt) {
-    throw new Error('v4 getEvent: response missing required x-wf-* headers');
-  }
-  const correlationId = readHeader(responseHeaders, V4_HEADERS.correlationId);
-  const workflowName = readHeader(responseHeaders, V4_HEADERS.workflowName);
-  const stepName = readHeader(responseHeaders, V4_HEADERS.stepName);
-  const attemptStr = readHeader(responseHeaders, V4_HEADERS.attempt);
-  const deploymentId = readHeader(responseHeaders, V4_HEADERS.deploymentId);
-  const errorCode = readHeader(responseHeaders, V4_HEADERS.errorCode);
-  return {
-    eventId,
-    runId,
-    eventType,
-    createdAt,
-    ...(correlationId ? { correlationId } : {}),
-    ...(workflowName ? { workflowName: decodeURIComponent(workflowName) } : {}),
-    ...(stepName ? { stepName: decodeURIComponent(stepName) } : {}),
-    ...(attemptStr ? { attempt: Number(attemptStr) } : {}),
-    ...(deploymentId ? { deploymentId: decodeURIComponent(deploymentId) } : {}),
-    ...(errorCode ? { errorCode: decodeURIComponent(errorCode) } : {}),
-  };
-}
-
 /**
  * GET /api/v4/runs/:runId/events/:eventId
  *
- * Returns the event metadata (parsed from response headers) along
- * with the payload body as a Uint8Array.
+ * Returns the full event entity (CBOR-decoded from the response body).
+ * The server resolves the payload ref server-side, so eventData already
+ * contains the resolved bytes — callers consume it the same way they
+ * did on v3 GET event.
  */
 export async function getEventV4(
   runId: string,
   eventId: string,
   config?: APIConfig
-): Promise<GetEventV4Result> {
+): Promise<DecodedV4Event> {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   await setAuthHeader(headers, config);
@@ -298,9 +272,8 @@ export async function getEventV4(
     const errorBody = await response.body.text();
     throw new Error(`v4 getEvent failed: ${response.statusCode} ${errorBody}`);
   }
-  const meta = parseEventMetaFromHeaders(response.headers);
-  const body = new Uint8Array(await response.body.arrayBuffer());
-  return { ...meta, body };
+  const bodyBytes = new Uint8Array(await response.body.arrayBuffer());
+  return decode(bodyBytes) as DecodedV4Event;
 }
 
 export interface ListEventsV4Params {
@@ -309,17 +282,16 @@ export interface ListEventsV4Params {
   sortOrder?: 'asc' | 'desc';
 }
 
+/**
+ * A single event extracted from a v4 LIST frame. Mirrors `DecodedV4Event`
+ * but also carries the raw payload bytes — for payload-bearing events the
+ * server emits the resolved bytes in the frame body (so it never has to
+ * decode them) and the SDK is expected to splice them back into the
+ * appropriate `eventData` field.
+ */
 export interface ListedEventV4 {
-  eventId: string;
-  runId: string;
-  eventType: string;
-  createdAt: string;
-  correlationId?: string;
-  workflowName?: string;
-  stepName?: string;
-  attempt?: number;
-  deploymentId?: string;
-  errorCode?: string;
+  event: DecodedV4Event;
+  /** Resolved payload bytes. Empty for events without a payload. */
   body: Uint8Array;
 }
 
@@ -333,13 +305,15 @@ export interface ListEventsV4Result {
  * GET /api/v4/runs/:runId/events
  *
  * Parses the binary-frame stream into a list of events plus the
- * pagination cursor (from the sentinel frame).
+ * pagination cursor (from the sentinel frame). Each frame's CBOR meta
+ * IS the full event entity, with the payload field still in `eventData`
+ * as a `RefDescriptor` (lazy); the resolved payload bytes ride in the
+ * frame body. The adapter layer splices them back into eventData.
  *
- * NOTE: this implementation eagerly drains the stream into memory. A
- * streaming variant that yields events one at a time without buffering
- * the whole page is a straightforward refactor (decodeFrames is already
- * an async generator); we keep this signature for parity with the
- * existing `getWorkflowRunEvents` callers in the world-vercel adapter.
+ * Eagerly drains the stream into memory to match the existing
+ * `getWorkflowRunEvents` page-at-a-time contract. A streaming variant
+ * that yields events one at a time without buffering the page would be
+ * a small refactor (decodeFrames is already async-iterable).
  */
 export async function getWorkflowRunEventsV4(
   runId: string,
@@ -393,27 +367,10 @@ export async function getWorkflowRunEventsV4(
       if (typeof frame.meta.next === 'string') next = frame.meta.next;
       break;
     }
-    const meta = frame.meta as Record<string, unknown>;
-    const event: ListedEventV4 = {
-      eventId: String(meta.eventId ?? ''),
-      runId: String(meta.runId ?? ''),
-      eventType: String(meta.eventType ?? ''),
-      createdAt: String(meta.createdAt ?? ''),
+    events.push({
+      event: frame.meta as unknown as DecodedV4Event,
       body: frame.body,
-    };
-    if (typeof meta.correlationId === 'string') {
-      event.correlationId = meta.correlationId;
-    }
-    if (typeof meta.workflowName === 'string') {
-      event.workflowName = meta.workflowName;
-    }
-    if (typeof meta.stepName === 'string') event.stepName = meta.stepName;
-    if (typeof meta.attempt === 'number') event.attempt = meta.attempt;
-    if (typeof meta.deploymentId === 'string') {
-      event.deploymentId = meta.deploymentId;
-    }
-    if (typeof meta.errorCode === 'string') event.errorCode = meta.errorCode;
-    events.push(event);
+    });
   }
 
   return { events, ...(next ? { next } : {}) };

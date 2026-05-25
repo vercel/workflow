@@ -43,9 +43,9 @@ import {
 import { decode, encode } from 'cbor-x';
 import {
   createWorkflowRunEventV4,
+  type DecodedV4Event,
   getEventV4,
   getWorkflowRunEventsV4,
-  type ListedEventV4,
 } from './events-v4.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import { deserializeStep } from './steps.js';
@@ -169,12 +169,12 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   let payload: Uint8Array | undefined;
   if (payloadField && payloadField in eventData) {
     const value = eventData[payloadField];
-    if (value instanceof Uint8Array) {
-      payload = value;
-    } else if (value !== undefined) {
-      // CBOR-encode arbitrary JS values. The server treats the bytes as
-      // opaque; the SDK reverses this at decode time so the wire layer
-      // doesn't know about CBOR.
+    if (value !== undefined) {
+      // Always CBOR-encode, including Uint8Array (cbor-x represents it as
+      // a binary type that round-trips back to Uint8Array on decode). The
+      // server stores the bytes opaquely; the SDK does the symmetric
+      // decode on read. Keeping the encoding unconditional means we never
+      // have to track "is this raw bytes or CBOR?" on the wire.
       payload = new Uint8Array(encode(value));
     }
   }
@@ -183,48 +183,69 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
 }
 
 /**
- * Turn a v4 single-event response (metadata in headers + opaque body
- * bytes) into the Event shape the workflow runtime expects.
+ * Turn a v4 event (full entity from GET single-event, or LIST frame
+ * meta + body) into the Event shape the workflow runtime expects.
  *
- * Reconstructs `eventData` from header fields and places the CBOR-decoded
- * payload value (if any) under the appropriate per-event-type field.
+ * The server-side GET resolves refs server-side and bakes the payload
+ * bytes into eventData, so `payloadBody` is empty there. The LIST path
+ * keeps the payload as a `RefDescriptor` in `eventData[fieldName]` and
+ * delivers the resolved bytes in `payloadBody`; this helper splices them
+ * back in so the runtime sees a uniform shape.
  */
 function buildEventFromV4(
-  meta: Omit<ListedEventV4, 'body'>,
-  body: Uint8Array,
+  decoded: DecodedV4Event,
+  payloadBody: Uint8Array,
   resolveData: 'none' | 'all'
 ): Event {
-  const eventData: Record<string, unknown> = {};
-  if (meta.workflowName) eventData.workflowName = meta.workflowName;
-  if (meta.stepName) eventData.stepName = meta.stepName;
-  if (meta.attempt !== undefined) eventData.attempt = meta.attempt;
-  if (meta.deploymentId) eventData.deploymentId = meta.deploymentId;
-  if (meta.errorCode) eventData.errorCode = meta.errorCode;
+  const eventData = (decoded.eventData ?? {}) as Record<string, unknown>;
 
-  if (resolveData === 'all' && body.byteLength > 0) {
-    const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[meta.eventType];
+  if (payloadBody.byteLength > 0) {
+    const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[decoded.eventType];
     if (payloadField) {
+      // CBOR-decode the bytes to recover the original JS value the SDK
+      // encoded on the write side. Symmetric with splitEventDataForV4.
       try {
-        eventData[payloadField] = decode(body);
+        eventData[payloadField] = decode(payloadBody);
       } catch {
-        // CBOR decode failure — fall back to the raw bytes so callers
-        // can still inspect the payload if they know its format.
-        eventData[payloadField] = body;
+        // If decode fails, leave the raw bytes — the consumer can
+        // inspect them as a Uint8Array. This is a defensive path; in
+        // practice the SDK is the only producer here.
+        eventData[payloadField] = payloadBody;
+      }
+    }
+  }
+
+  // For the GET-single-event path, the server already resolved the ref
+  // server-side, so eventData[payloadField] is a Uint8Array of the CBOR
+  // bytes the SDK originally sent. Decode it the same way.
+  if (payloadBody.byteLength === 0) {
+    const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[decoded.eventType];
+    if (payloadField && eventData[payloadField] instanceof Uint8Array) {
+      try {
+        eventData[payloadField] = decode(eventData[payloadField] as Uint8Array);
+      } catch {
+        // leave as-is
       }
     }
   }
 
   const event = {
-    eventId: meta.eventId,
-    runId: meta.runId,
-    eventType: meta.eventType,
-    createdAt: new Date(meta.createdAt),
-    ...(meta.correlationId ? { correlationId: meta.correlationId } : {}),
+    eventId: decoded.eventId,
+    runId: decoded.runId,
+    eventType: decoded.eventType,
+    createdAt:
+      decoded.createdAt instanceof Date
+        ? decoded.createdAt
+        : new Date(decoded.createdAt),
+    ...(decoded.correlationId ? { correlationId: decoded.correlationId } : {}),
     eventData,
+    ...(decoded.specVersion !== undefined
+      ? { specVersion: decoded.specVersion }
+      : {}),
   } as unknown as Event;
 
-  // For resolveData='none', strip eventData entirely. Use the existing
-  // world-side helper so behavior stays in sync with other backends.
+  // For resolveData='none', strip eventData entirely. Reuse the world-
+  // side helper so behavior stays in sync with other backends.
   return resolveData === 'none' ? stripEventDataRefs(event, 'none') : event;
 }
 
@@ -239,9 +260,10 @@ export async function getEvent(
   config?: APIConfig
 ): Promise<Event> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const result = await getEventV4(runId, eventId, config);
-  const { body, ...meta } = result;
-  return buildEventFromV4(meta, body, resolveData);
+  const decoded = await getEventV4(runId, eventId, config);
+  // GET resolves refs server-side and bakes the payload into eventData,
+  // so there's no separate body slot to splice in here.
+  return buildEventFromV4(decoded, new Uint8Array(0), resolveData);
 }
 
 export async function getWorkflowRunEvents(
@@ -271,10 +293,9 @@ export async function getWorkflowRunEvents(
     config
   );
 
-  const events = result.events.map((listed) => {
-    const { body, ...meta } = listed;
-    return buildEventFromV4(meta, body, resolveData);
-  });
+  const events = result.events.map((listed) =>
+    buildEventFromV4(listed.event, listed.body, resolveData)
+  );
 
   return {
     data: events,
