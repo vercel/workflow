@@ -29,6 +29,7 @@ import {
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
 } from './symbols.js';
@@ -233,6 +234,15 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
+    // Workflow-body `setAttributes` dispatches through the
+    // `__builtin_set_attributes` step. Pre-bind a useStep handle so the
+    // VM-side helper just has a callable function to invoke. See
+    // `packages/workflow/src/internal/builtins.ts` for the step body.
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[WORKFLOW_SET_ATTRIBUTES] = useStep<
+      [Array<{ key: string; value: string | null }>],
+      void
+    >('__builtin_set_attributes');
 
     // TODO: there should be a getUrl method on the world interface itself. This
     // solution only works for vercel + local worlds.

@@ -417,7 +417,7 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // V5 attributes MVP — string-string metadata attached to the run.
+  // Attributes MVP — string-string metadata attached to the run.
   // Rendered as a JSON block; if empty/missing, hidden by the
   // hasDisplayContent gate above.
   attributes: (value: unknown) => {

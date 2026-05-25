@@ -3430,4 +3430,64 @@ describe('e2e', () => {
       expect(returnValue.reason).toBe('Test complete');
     }
   );
+
+  // ==========================================================================
+  // setAttributes (experimental MVP)
+  // ==========================================================================
+
+  describe('setAttributes', () => {
+    test(
+      'setAttributesFromStepWorkflow: step-body calls land on the run entity',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('setAttributesFromStepWorkflow'),
+          [5]
+        );
+        const output = await run.returnValue;
+        expect(output).toBe(10);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted?.attributes).toEqual({ phase: 'done' });
+      }
+    );
+
+    test(
+      'setAttributesFromWorkflowBodyWorkflow: workflow-body calls dispatch through the step bridge and merge correctly',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('setAttributesFromWorkflowBodyWorkflow'),
+          [7]
+        );
+        const output = await run.returnValue;
+        expect(output).toBe(21);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        // First call sets {phase: 'init', source: 'workflow-body'}; second
+        // overwrites phase; third unsets source via undefined → null.
+        expect(persisted?.attributes).toEqual({ phase: 'done' });
+        expect(persisted?.attributes ?? {}).not.toHaveProperty('source');
+
+        // Dispatch is via a real step — verify at least one
+        // `step_created`/`step_completed` pair for the `__builtin_set_attributes`
+        // step exists on the run's event log.
+        const { data: events } = await world.events.list({ runId: run.runId });
+        const attrStepEvents = events.filter(
+          (e) =>
+            (e.eventType === 'step_created' ||
+              e.eventType === 'step_completed') &&
+            typeof (e.eventData as { stepName?: string } | undefined)
+              ?.stepName === 'string' &&
+            (e.eventData as { stepName: string }).stepName.includes(
+              '__builtin_set_attributes'
+            )
+        );
+        expect(attrStepEvents.length).toBeGreaterThanOrEqual(2);
+      }
+    );
+  });
 });

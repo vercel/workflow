@@ -1,41 +1,43 @@
 import { FatalError } from '@workflow/errors';
+import type { AttributeChange } from '@workflow/world';
+import { normalizeSetAttributesInput } from '../set-attributes-shared.js';
+import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
 
 /**
- * Workflow-VM-side `setAttributes` for V5 MVP.
+ * Workflow-VM-side `setAttributes`. Validates the input on the VM side
+ * (cheap, deterministic) and then dispatches the canonical
+ * `AttributeChange[]` through the host's `__builtin_set_attributes`
+ * step bridge — registered on `globalThis` under `WORKFLOW_SET_ATTRIBUTES`
+ * by the workflow runtime. The actual world call happens inside that
+ * step, which gives the mutation an event-log entry (`step_created` →
+ * `step_completed`) just like any other step.
  *
- * In V5 MVP, `setAttributes` is restricted to **step bodies** — calling
- * it from inside a workflow body throws `FatalError`. The restriction
- * exists because dispatching the call through the workflow controller
- * requires either a `'use step'`-tagged helper inside `@workflow/core`
- * (which trips the deferred-entry discoverer in `nextjs-webpack` dev
- * mode by adding host-side world adapters to the step-discovery graph)
- * or host-side bridge wiring comparable in scope to `sleep`. Neither is
- * worth the complexity for the MVP, given that wrapping a single line
- * in a `'use step'` function in user code is trivial:
+ * Empty input is a no-op (no step dispatch). `value: undefined` removes
+ * the key from the run's attribute map.
  *
+ * @example
  * ```ts
- * async function setAttrs(attrs: Record<string, string | undefined>) {
- *   'use step';
- *   await setAttributes(attrs);
- * }
- *
  * export async function myWorkflow() {
  *   'use workflow';
- *   await setAttrs({ phase: 'init' });
+ *   await setAttributes({ phase: 'init' });
+ *   // ... work ...
+ *   await setAttributes({ phase: 'done' });
  * }
  * ```
- *
- * The full Workflow Attributes feature in 5.0.0 dispatches via
- * `attr_set` events through the workflow controller and lifts this
- * restriction. The SDK signature does not change.
  */
 export async function setAttributes(
-  _attrs: Record<string, string | undefined>
+  attrs: Record<string, string | undefined>
 ): Promise<void> {
-  throw new FatalError(
-    'setAttributes() can only be called from a step body in the V5 MVP. ' +
-      "Wrap it: `async function setAttrs(a) { 'use step'; await setAttributes(a); }` " +
-      'and call that from your workflow. The 5.0.0 attributes feature removes ' +
-      'this restriction; see the attributes-mvp changelog entry.'
-  );
+  const changes = normalizeSetAttributesInput(attrs);
+  if (!changes) return;
+  const dispatch = (globalThis as Record<symbol, unknown>)[
+    WORKFLOW_SET_ATTRIBUTES
+  ] as ((changes: AttributeChange[]) => Promise<void>) | undefined;
+  if (!dispatch) {
+    throw new FatalError(
+      'setAttributes() called outside a workflow runtime context. ' +
+        'The workflow VM must be initialized before this function is invoked.'
+    );
+  }
+  await dispatch(changes);
 }

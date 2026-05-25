@@ -73,7 +73,7 @@ export const WorkflowRunBaseSchema = z.object({
    * EXPERIMENTAL (MVP): runs created before this field landed read as
    * `undefined`. The full Workflow Attributes feature replaces the
    * direct-mutation MVP path with an event-sourced model — see the
-   * V5 attributes-mvp changelog entry.
+   * attributes-mvp changelog entry.
    */
   attributes: z.record(z.string(), z.string()).optional(),
   expiredAt: z.coerce.date().optional(),

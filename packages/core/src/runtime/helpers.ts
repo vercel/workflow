@@ -354,7 +354,7 @@ export async function loadWorkflowRunEvents(
         // Preserve the last non-null cursor across pages. A World may
         // legitimately return `{ data: [], cursor: null, hasMore: false }`
         // on a trailing empty page — for example when the previous page's
-        // underlying DynamoDB query hit `Limit` exactly and returned a
+        // underlying DB query hit the limit exactly and returned a
         // `LastEvaluatedKey` "just in case". Overwriting with that null
         // would lose the position past the last real event we loaded and
         // force the runtime into the "no cursor after initial load" full-

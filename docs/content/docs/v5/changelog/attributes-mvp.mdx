@@ -12,13 +12,12 @@ The MVP lets workflow and step code attach plaintext `string → string` metadat
 ## What MVP supports
 
 - `setAttributes(record)` callable from a **step body** (`"use step"` function)
-- From a workflow body: wrap the call in a one-line step (see "Runtime SDK" below)
+- `setAttributes(record)` callable from a **workflow body** (`"use workflow"` function), dispatched via an internal `__builtin_set_attributes` step bridge
 - Attributes are materialized onto the `WorkflowRun` entity, plaintext, and visible via `world.runs.get()` / `world.runs.list()` and any observability UI built on top of those
 - World implementations emit a side-channel observability record per write (in `world-vercel`, this hooks into the same observability/analytics pipeline already used for other run lifecycle events)
 
 ## What MVP does **not** support (deferred to 5.0.0)
 
-- Direct workflow-body calls (V5 MVP requires a wrapping `"use step"` function — see "Why workflow-body dispatch is deferred" below)
 - Reading attributes from inside a workflow or step (`getAttribute` / `getAttributes`)
 - `start(workflow, input, { attributes })` (initial attributes at run creation)
 - Filtering runs by attribute value (`runs.list({ attributes: { ... } })`)
@@ -114,25 +113,27 @@ Validation (shared helper, applied both client-side and server-side):
 - Maximum 64 attributes per run (validated against the post-merge snapshot when the server applies)
 - Violations throw `FatalError` from `@workflow/errors`
 
-**V5 MVP restriction: step body only.** `setAttributes` may only be called from inside a `"use step"` function. Calling it from a workflow body throws `FatalError`. To attach attributes from a workflow body, wrap the call in a step yourself:
+`setAttributes` is callable from both contexts:
 
 ```ts
 import { setAttributes } from 'workflow';
 
-async function setAttrs(attrs: Record<string, string | undefined>) {
-  'use step';
-  await setAttributes(attrs);
+export async function myWorkflow(orderId: string) {
+  'use workflow';
+  await setAttributes({ phase: 'init', orderId });
+  // ...
+  await setAttributes({ phase: 'done' });
 }
 
-export async function myWorkflow() {
-  'use workflow';
-  await setAttrs({ phase: 'init' });
+async function someStep() {
+  'use step';
+  await setAttributes({ source: 'step' });
 }
 ```
 
-The restriction is an MVP shortcut, not a long-term design choice — see "Why workflow-body dispatch is deferred" below. The 5.0.0 attributes feature lifts it via the `attr_set` event mechanism; the SDK signature stays the same, so user code that wraps in a step today keeps working after the cutover.
+The step-body path calls the world adapter directly. The workflow-body path validates input inside the VM and then dispatches the canonical `AttributeChange[]` through a host-side step bridge — see "How workflow-body dispatch works" below. Either path is materialized identically on the run entity.
 
-Context detection: `contextStorage.getStore()` returns the step context (provides the run ID); `WORKFLOW_CONTEXT_SYMBOL` on globalThis indicates the workflow VM context (triggers the `FatalError`). Calling outside both contexts throws `NotInWorkflowOrStepContextError`.
+Context detection (step-side helper, after the workflow VM has resolved the import): `contextStorage.getStore()` returns the step context (provides the run ID). Calling outside both contexts throws `NotInWorkflowOrStepContextError`. The workflow VM resolves `setAttributes` to the workflow-side variant via package-exports condition matching, so the step-side helper is never reached from inside the VM.
 
 #### Optional world support
 
@@ -244,17 +245,21 @@ Skew protection means workflows started under the MVP will continue to run with 
 
 This section records concrete decisions taken while landing the MVP that weren't in the original plan, so the next iteration has them in one place.
 
-### Why workflow-body dispatch is deferred
+### How workflow-body dispatch works
 
-The original plan was for `setAttributes` to work from both workflow bodies and step bodies behind a single SDK surface, with workflow-body calls dispatched as a step under the hood via an SDK-private `"use step"` function. We initially shipped that. Two problems landed it back to step-body-only:
+`setAttributes` from a workflow body is wired through an internal built-in step, `__builtin_set_attributes`, defined in `packages/workflow/src/internal/builtins.ts` alongside the other workflow-side builtins (`__builtin_response_json`, etc.). The mechanism:
 
-1. **`'use step'` inside `@workflow/core/dist/`** turned the helper file into a step file from the perspective of the deferred-entry discoverer in `nextjs-webpack` dev mode. The discoverer then traced transitive imports of the helper, ultimately reaching the host-side world adapter and `@vercel/queue` — at which point webpack's regex-based import extractor blew the call stack on tarball-installed deployments. The failure manifested as `RangeError: Maximum call stack size exceeded at RegExpStringIterator.next` and broke every `E2E Local Dev Tests (nextjs-webpack)` run on this branch while passing for every other framework. `runtime/start.ts` and `runtime/run.ts` get away with the same directive because they are never imported from the workflow-VM bundle entry (`packages/core/src/workflow/index.ts`); ours was reachable from that entry.
+1. The workflow VM bundle resolves `setAttributes` to `packages/core/src/workflow/set-attributes.ts` (via the `workflow` package-exports condition).
+2. That helper runs the shared validator on the input record and produces canonical `AttributeChange[]`.
+3. It then calls a pre-bound `useStep('__builtin_set_attributes')` dispatcher stashed on `globalThis` under `WORKFLOW_SET_ATTRIBUTES` by the workflow runtime (in `packages/core/src/workflow.ts`, alongside the existing `WORKFLOW_USE_STEP` / `WORKFLOW_SLEEP` registrations).
+4. The dispatch queues a step (`step_created`), the host runs `__builtin_set_attributes(changes)`, which loads `@workflow/core/_step-set-attributes` and calls `applySetAttributesChanges(changes)` against the active world.
+5. The step completes (`step_completed`), the workflow resumes.
 
-2. **A host-side bridge** comparable to `sleep` (globalThis-injected dispatch + `registerStepFunction`) was the obvious workaround, but it's substantial wiring for a feature whose end state (event-sourced `attr_set`) replaces the bridge mechanism entirely. Spending that complexity twice did not seem worth it for the MVP.
+This puts the mutation on the event log as a normal `step_created → step_completed` pair without inventing a new event type — that stays for the full 5.0.0 cutover. The host-side dispatch helper (`applySetAttributesChanges`) is shared with the direct step-body path, so the two contexts converge on a single world call.
 
-The pragmatic path is to restrict the MVP to step-body callers and let users wrap in a step explicitly. The full 5.0.0 feature dispatches via `attr_set` events through the workflow controller, which handles the workflow-body case natively without the SWC-discovery hazard. SDK signature is unchanged across the cutover.
+The earlier draft tried to host the `'use step'` directive in `packages/core/src/set-attributes.ts` directly, which trips webpack's deferred-entry discoverer on `nextjs-webpack` tarball deployments (the discoverer walks transitive imports and pulls `@vercel/queue` + adapter imports into the step-discovery graph, blowing the call stack of webpack's regex-based extractor with `RangeError: Maximum call stack size exceeded at RegExpStringIterator.next`). Putting the directive in `packages/workflow/src/internal/builtins.ts` instead — i.e. inside the umbrella `workflow` package next to the existing `__builtin_response_*` steps, not `@workflow/core/dist/` — sidesteps that hazard because the builtins file is already a step-bundle entry and the discoverer doesn't graft its transitive imports onto the workflow-VM bundle graph.
 
-Tracked as a known limitation in the trade-offs section above.
+When the full 5.0.0 attributes feature lands, `__builtin_set_attributes` is replaced by an `events.create(runId, { eventType: 'attr_set', ... })` dispatch path; SDK signatures don't change.
 
 ### Endpoint lives under `v2`, not a fresh namespace
 
@@ -296,4 +301,3 @@ Validation lives in a single helper exported from `@workflow/world` (`validateAt
 - **`@workflow/world-postgres`** — 3 integration tests added under the existing Postgres container suite covering upsert, merge across calls, and unset via null. The SQL-side merge (`jsonb_set` / `-`) is exercised through these.
 
 End-to-end coverage in the workbench app is intentionally deferred — running through the full SWC plugin + workflow VM path can land once the workflow-server preview deployment carrying the endpoint is live.
-

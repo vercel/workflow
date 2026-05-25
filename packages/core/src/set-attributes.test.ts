@@ -69,7 +69,11 @@ describe('setAttributes', () => {
       ]);
     });
 
-    it('throws FatalError when called from a workflow body without a wrapping step (V5 MVP restriction)', async () => {
+    it('throws FatalError when the step-side helper is reached from a workflow body (indicates bundling misconfig)', async () => {
+      // Reaching the step-side `setAttributes` from inside the workflow
+      // VM is a bundling failure — the VM should resolve to the
+      // workflow-side variant. Surface a clear error rather than
+      // silently misbehaving.
       await expect(
         withWorkflowContext('wrun_workflow', () =>
           setAttributes({ phase: 'init' })
