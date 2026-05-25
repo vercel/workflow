@@ -319,38 +319,18 @@ export interface ListEventsV4Result {
 }
 
 /**
- * GET /api/v4/runs/:runId/events
- *
- * Parses the binary-frame stream into a list of events plus the
- * pagination cursor (from the sentinel frame). Each frame's CBOR meta
- * IS the full event entity, with the payload field still in `eventData`
- * as a `RefDescriptor` (lazy); the resolved payload bytes ride in the
- * frame body. The adapter layer splices them back into eventData.
- *
- * Eagerly drains the stream into memory to match the existing
- * `getWorkflowRunEvents` page-at-a-time contract. A streaming variant
- * that yields events one at a time without buffering the page would be
- * a small refactor (decodeFrames is already async-iterable).
+ * Drive a v4 frame-stream list response into an in-memory page. Used by
+ * both the by-runId and by-correlationId list endpoints — the wire
+ * shape is identical, only the URL differs.
  */
-export async function getWorkflowRunEventsV4(
-  runId: string,
-  params: ListEventsV4Params = {},
-  config?: APIConfig
+async function consumeListFrameStream(
+  url: string,
+  config: APIConfig | undefined,
+  opName: string
 ): Promise<ListEventsV4Result> {
-  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
+  const { headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   await setAuthHeader(headers, config);
-
-  const searchParams = new URLSearchParams();
-  if (params.cursor) searchParams.set('cursor', params.cursor);
-  if (params.limit !== undefined) {
-    searchParams.set('limit', String(params.limit));
-  }
-  if (params.sortOrder) searchParams.set('sortOrder', params.sortOrder);
-  const qs = searchParams.toString();
-  const url =
-    `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-    (qs ? `?${qs}` : '');
 
   const response = await request(url, {
     method: 'GET',
@@ -359,14 +339,12 @@ export async function getWorkflowRunEventsV4(
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
-    throw new Error(
-      `v4 listEvents failed: ${response.statusCode} ${errorBody}`
-    );
+    throw new Error(`v4 ${opName} failed: ${response.statusCode} ${errorBody}`);
   }
   const contentType = readHeader(response.headers, 'content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
-      `v4 listEvents: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
+      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
 
@@ -391,4 +369,62 @@ export async function getWorkflowRunEventsV4(
   }
 
   return { events, ...(next ? { next } : {}) };
+}
+
+function paginationToQuery(params: ListEventsV4Params): string {
+  const sp = new URLSearchParams();
+  if (params.cursor) sp.set('cursor', params.cursor);
+  if (params.limit !== undefined) sp.set('limit', String(params.limit));
+  if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
+  const qs = sp.toString();
+  return qs ? `?${qs}` : '';
+}
+
+/**
+ * GET /api/v4/runs/:runId/events
+ *
+ * Parses the binary-frame stream into a list of events plus the
+ * pagination cursor (from the sentinel frame). Each frame's CBOR meta
+ * IS the full event entity, with the payload field still in `eventData`
+ * as a `RefDescriptor` (lazy); the resolved payload bytes ride in the
+ * frame body. The adapter layer splices them back into eventData.
+ *
+ * Eagerly drains the stream into memory to match the existing
+ * `getWorkflowRunEvents` page-at-a-time contract. A streaming variant
+ * that yields events one at a time without buffering the page would be
+ * a small refactor (decodeFrames is already async-iterable).
+ */
+export async function getWorkflowRunEventsV4(
+  runId: string,
+  params: ListEventsV4Params = {},
+  config?: APIConfig
+): Promise<ListEventsV4Result> {
+  const { baseUrl } = await getHttpConfig(config);
+  const url =
+    `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
+    paginationToQuery(params);
+  return consumeListFrameStream(url, config, 'listEvents');
+}
+
+/**
+ * GET /api/v4/events?correlationId=...
+ *
+ * Same frame stream as getWorkflowRunEventsV4 but selected by
+ * correlationId (GSI) instead of runId. Used by the storage adapter's
+ * `events.listByCorrelationId` path — the v3 client used
+ * `/v2/events?correlationId=...` for the equivalent query.
+ */
+export async function getEventsByCorrelationIdV4(
+  correlationId: string,
+  params: ListEventsV4Params = {},
+  config?: APIConfig
+): Promise<ListEventsV4Result> {
+  const { baseUrl } = await getHttpConfig(config);
+  const sp = new URLSearchParams();
+  sp.set('correlationId', correlationId);
+  if (params.cursor) sp.set('cursor', params.cursor);
+  if (params.limit !== undefined) sp.set('limit', String(params.limit));
+  if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
+  const url = `${baseUrl}/v4/events?${sp.toString()}`;
+  return consumeListFrameStream(url, config, 'listEventsByCorrelationId');
 }

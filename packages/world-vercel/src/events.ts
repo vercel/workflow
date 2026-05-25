@@ -45,6 +45,7 @@ import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
   getEventV4,
+  getEventsByCorrelationIdV4,
   getWorkflowRunEventsV4,
 } from './events-v4.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
@@ -254,27 +255,15 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
-  if ('correlationId' in params) {
-    // v4 has no list-by-correlation-id endpoint yet. Throw a clear error
-    // until a server-side endpoint lands — callers that hit this path
-    // historically used the by-correlation-id query for hook lookup and
-    // can be migrated to direct hook fetches.
-    throw new Error(
-      'world-vercel v4: listEventsByCorrelationId is not yet implemented. ' +
-        'Fetch the hook directly via storage.hooks.getByToken or use ' +
-        'storage.events.list(runId) on a known run.'
-    );
-  }
+  const wirePagination = {
+    cursor: pagination?.cursor ?? undefined,
+    limit: pagination?.limit,
+    sortOrder: pagination?.sortOrder,
+  };
 
-  const result = await getWorkflowRunEventsV4(
-    params.runId,
-    {
-      cursor: pagination?.cursor ?? undefined,
-      limit: pagination?.limit,
-      sortOrder: pagination?.sortOrder,
-    },
-    config
-  );
+  const result = await ('correlationId' in params
+    ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
+    : getWorkflowRunEventsV4(params.runId, wirePagination, config));
 
   const events = result.events.map((listed) =>
     buildEventFromV4(listed.event, listed.body, resolveData)
