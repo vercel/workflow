@@ -26,14 +26,6 @@ describe('parseExactWorkflowSearchId', () => {
     });
   });
 
-  it('accepts full run IDs as correlation IDs', () => {
-    const id = 'wrun_01KSG94CFWFBPBYWW3PX7SF73W';
-    expect(parseExactWorkflowSearchId(id)).toEqual({
-      kind: 'run',
-      id,
-    });
-  });
-
   it('accepts full event IDs', () => {
     const id = 'evnt_01KSG94CMGCPMC3PPACDCJR9AQ';
     expect(parseExactWorkflowSearchId(id)).toEqual({
@@ -42,11 +34,13 @@ describe('parseExactWorkflowSearchId', () => {
     });
   });
 
-  it('rejects partial IDs', () => {
+  it('rejects partial IDs and run IDs', () => {
     expect(parseExactWorkflowSearchId('step_01KSG94')).toBeNull();
     expect(parseExactWorkflowSearchId('wait_01KSG94')).toBeNull();
     expect(parseExactWorkflowSearchId('hook_01KSG94')).toBeNull();
-    expect(parseExactWorkflowSearchId('wrun_01KSG94')).toBeNull();
     expect(parseExactWorkflowSearchId('evnt_01KSG94')).toBeNull();
+    expect(
+      parseExactWorkflowSearchId('wrun_01KSG94CFWFBPBYWW3PX7SF73W')
+    ).toBeNull();
   });
 });

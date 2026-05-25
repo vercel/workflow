@@ -1380,9 +1380,7 @@ export function EventListView({
                     ? '__run__'
                     : (first.correlationId ?? undefined);
                 })()
-              : parsed.kind === 'run'
-                ? '__run__'
-                : parsed.id
+              : parsed.id
           );
           virtuosoRef.current?.scrollToIndex({
             index: 0,
@@ -1418,7 +1416,7 @@ export function EventListView({
         return;
       }
 
-      toast.info('Enter a full correlation ID or event ID');
+      toast.info('Enter a full step ID, wait ID, hook ID, or event ID');
     },
     [searchQuery, onExactIdSearch, toast]
   );
@@ -1531,7 +1529,7 @@ export function EventListView({
             </div>
             <input
               type="search"
-              placeholder="Search by correlation ID or event ID…"
+              placeholder="Search by step ID, wait ID, hook ID, or event ID…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={handleSearchKeyDown}
