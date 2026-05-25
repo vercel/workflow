@@ -14,6 +14,7 @@ import { isEncryptedMarker } from '../lib/hydration';
 import {
   parseExactWorkflowSearchId,
   looksLikeWorkflowIdSearchInput,
+  type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
 } from '../lib/exact-event-search-id';
 import { DecryptButton } from './ui/decrypt-button';
@@ -736,7 +737,7 @@ interface EventsListProps {
     id: string,
     kind: ExactWorkflowSearchIdKind,
     signal?: AbortSignal
-  ) => Promise<Event[] | null>;
+  ) => Promise<ExactIdSearchResult | null>;
 }
 
 function EventRow({
@@ -1194,6 +1195,7 @@ export function EventListView({
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Event[] | null>(null);
+  const [searchResultsTruncated, setSearchResultsTruncated] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchNotFound, setSearchNotFound] = useState(false);
   const searchRequestRef = useRef(0);
@@ -1337,7 +1339,9 @@ export function EventListView({
   useEffect(() => {
     const trimmed = searchQuery.trim();
     if (!trimmed) {
+      searchRequestRef.current += 1;
       setSearchResults(null);
+      setSearchResultsTruncated(false);
       setSearchLoading(false);
       setSearchNotFound(false);
       setSelectedGroupKey(undefined);
@@ -1366,23 +1370,28 @@ export function EventListView({
             parsed.kind,
             abortController.signal
           );
-          if (searchRequestRef.current !== requestId) {
+          if (
+            abortController.signal.aborted ||
+            searchRequestRef.current !== requestId
+          ) {
             return;
           }
 
-          if (!results || results.length === 0) {
+          if (!results || results.events.length === 0) {
             setSearchResults([]);
+            setSearchResultsTruncated(false);
             setSearchNotFound(true);
             setSelectedGroupKey(undefined);
             return;
           }
 
-          setSearchResults(results);
+          setSearchResults(results.events);
+          setSearchResultsTruncated(Boolean(results.truncated));
           setSearchNotFound(false);
           setSelectedGroupKey(
             parsed.kind === 'event'
               ? (() => {
-                  const first = results[0];
+                  const first = results.events[0];
                   if (!first) return undefined;
                   return isRunLevel(first.eventType)
                     ? '__run__'
@@ -1403,10 +1412,14 @@ export function EventListView({
             return;
           }
           setSearchResults([]);
+          setSearchResultsTruncated(false);
           setSearchNotFound(true);
           setSelectedGroupKey(undefined);
         } finally {
-          if (searchRequestRef.current === requestId) {
+          if (
+            searchRequestRef.current === requestId &&
+            !abortController.signal.aborted
+          ) {
             setSearchLoading(false);
           }
         }
@@ -1691,7 +1704,7 @@ export function EventListView({
             {isExactSearchActive
               ? searchNotFound
                 ? `No events found for ${searchQuery.trim()}`
-                : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}`
+                : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}${searchResultsTruncated ? ' (results may be truncated)' : ''}`
               : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} loaded`}
           </span>
           {!isExactSearchActive && hasMoreEvents && (

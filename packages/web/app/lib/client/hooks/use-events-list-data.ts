@@ -1,7 +1,10 @@
 'use client';
 
 import type { Event } from '@workflow/world';
-import type { ExactWorkflowSearchIdKind } from '@workflow/web-shared';
+import type {
+  ExactIdSearchResult,
+  ExactWorkflowSearchIdKind,
+} from '@workflow/web-shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   hydrateResourceIO,
@@ -143,23 +146,32 @@ export function useEventsListData(
     async (
       id: string,
       kind: ExactWorkflowSearchIdKind,
-      _signal?: AbortSignal
-    ): Promise<Event[] | null> => {
+      signal?: AbortSignal
+    ): Promise<ExactIdSearchResult | null> => {
+      if (signal?.aborted) {
+        return null;
+      }
+
       if (kind === 'event') {
         const { error: fetchError, result } = await unwrapServerActionResult(
           fetchEvent(env, runId, id, 'none')
         );
-        if (fetchError) {
+        if (fetchError || signal?.aborted) {
           return null;
         }
         const [event] = await hydrateEvents([result]);
-        return event?.runId === runId ? [event] : null;
+        return event?.runId === runId ? { events: [event] } : null;
       }
 
       const matched: Event[] = [];
       let nextCursor: string | undefined;
       let pagesFetched = 0;
+      let truncated = false;
       do {
+        if (signal?.aborted) {
+          return null;
+        }
+
         const { error: fetchError, result } = await unwrapServerActionResult(
           fetchEventsByCorrelationId(env, id, {
             cursor: nextCursor,
@@ -168,7 +180,7 @@ export function useEventsListData(
             withData: false,
           })
         );
-        if (fetchError) {
+        if (fetchError || signal?.aborted) {
           return null;
         }
 
@@ -176,15 +188,18 @@ export function useEventsListData(
         const hydrated = await hydrateEvents(result.data);
         matched.push(...hydrated.filter((event) => event.runId === runId));
 
+        const hitPageCap = pagesFetched >= MAX_CORRELATION_SEARCH_PAGES;
+        truncated =
+          truncated || (hitPageCap && Boolean(result.hasMore && result.cursor));
         nextCursor =
-          pagesFetched < MAX_CORRELATION_SEARCH_PAGES &&
-          result.hasMore &&
-          result.cursor
+          !hitPageCap && result.hasMore && result.cursor
             ? result.cursor
             : undefined;
       } while (nextCursor);
 
-      return matched.length > 0 ? matched : null;
+      return matched.length > 0
+        ? { events: matched, truncated: truncated || undefined }
+        : null;
     },
     [env, runId, sortOrder, hydrateEvents]
   );

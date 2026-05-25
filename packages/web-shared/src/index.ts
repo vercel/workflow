@@ -19,6 +19,7 @@ export {
   looksLikeWorkflowIdSearchInput,
   type ExactWorkflowSearchId,
   type ExactWorkflowSearchIdKind,
+  type ExactIdSearchResult,
 } from './lib/exact-event-search-id';
 export {
   analyzeEvents,

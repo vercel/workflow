@@ -1,3 +1,5 @@
+import type { Event } from '@workflow/world';
+
 const WORKFLOW_ULID_BODY = '[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}';
 
 const STEP_ID_PATTERN = new RegExp(`^step_(${WORKFLOW_ULID_BODY})$`, 'i');
@@ -12,6 +14,12 @@ export type ExactWorkflowSearchIdKind = 'step' | 'wait' | 'hook' | 'event';
 export type ExactWorkflowSearchId = {
   kind: ExactWorkflowSearchIdKind;
   id: string;
+};
+
+export type ExactIdSearchResult = {
+  events: Event[];
+  /** Set when correlation pagination hits the client-side page cap. */
+  truncated?: boolean;
 };
 
 function matchPrefixedId(
@@ -55,5 +63,6 @@ export function looksLikeWorkflowIdSearchInput(query: string): boolean {
     return false;
   }
   // Distinguish IDs (contain digits) from event-type strings like step_started.
+  // Assumes workflow event types do not include digits in their names.
   return /\d/.test(trimmed);
 }
