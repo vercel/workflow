@@ -53,10 +53,9 @@ export const turnHook = defineHook({ // [!code highlight]
   schema: z.object({ message: z.string() }),
 });
 
-// Tools are plain async functions in this pattern. `streamText` calls them
-// from inside `runTurn` (a step), and the `"use step"` directive is a no-op
-// when called from another step — see the "Tools are not individually durable"
-// pitfall below. Make side-effectful tools idempotent.
+// `streamText` runs tool executes inside `runTurn` (a step), so tool calls
+// are not individually durable — the entire turn retries together. See
+// "Tools are not individually durable" below. Make side-effectful tools idempotent.
 async function lookupOrder({ orderId }: { orderId: string }) {
   const res = await fetch(`https://api.store.com/orders/${orderId}`);
   return res.json();
