@@ -1,8 +1,8 @@
 import { FatalError } from '@workflow/errors';
 import { throwNotInWorkflowOrStepContext } from './context-errors.js';
 import { normalizeSetAttributesInput } from './set-attributes-shared.js';
-import { applySetAttributesChanges } from './step-set-attributes.js';
 import { contextStorage } from './step/context-storage.js';
+import { applySetAttributesChanges } from './step-set-attributes.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 
 /**
@@ -12,6 +12,12 @@ import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
  * Workflow-body calls dispatch through an internal step bridge so the
  * mutation is recorded in the event log; step-body calls hit the world
  * adapter directly.
+ *
+ * **WARNING**: While this features is experimental, calling e.g.
+ * `Promise.all([setAttributes({ a: '1' }), setAttributes({ a: '2' })])`
+ * is not guaranteed to be ordered consistently, but
+ * `await setAttributes({ a: '1' }).then(() => setAttributes({ a: '2' }))`
+ * is.
  *
  * Validation runs client-side; violations throw `FatalError`. An empty
  * record is a no-op (no RPC). `value: undefined` removes the key from
