@@ -9,7 +9,11 @@ import type {
 } from '@workflow/world';
 import { WorkflowRunSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
-import { paginatedFileSystemQuery, readJSONWithFallback } from '../fs.js';
+import {
+  assertSafeEntityId,
+  paginatedFileSystemQuery,
+  readJSONWithFallback,
+} from '../fs.js';
 import { filterRunData } from './filters.js';
 import { getObjectCreatedAt } from './helpers.js';
 
@@ -49,6 +53,7 @@ export function createRunsStorage(
 ): LocalRunsStorage {
   return {
     get: (async (id: string, params?: any) => {
+      assertSafeEntityId('runId', id);
       const run = await readJSONWithFallback(
         basedir,
         'runs',

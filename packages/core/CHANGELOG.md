@@ -1,5 +1,30 @@
 # @workflow/core
 
+## 4.2.5
+
+### Patch Changes
+
+- [#2029](https://github.com/vercel/workflow/pull/2029) [`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d) Thanks [@pranaygp](https://github.com/pranaygp)! - Refresh workflow events after completing elapsed waits so concurrent hook events preserve deterministic replay order.
+
+- [#2046](https://github.com/vercel/workflow/pull/2046) [`8407c1e`](https://github.com/vercel/workflow/commit/8407c1e9a408bd60b1f3cd0367222d4f1d5d878d) Thanks [@pranaygp](https://github.com/pranaygp)! - Report corrupted event logs with a distinct `CorruptedEventLogError` type and `CORRUPTED_EVENT_LOG` run error code.
+
+- [#2056](https://github.com/vercel/workflow/pull/2056) [`7487430`](https://github.com/vercel/workflow/commit/74874309cb416c239c53fe24742fb2739d010c2b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix spurious "Event cursor missing after initial load" warning
+
+- [#2030](https://github.com/vercel/workflow/pull/2030) [`c347509`](https://github.com/vercel/workflow/commit/c3475096e9811b2d20fc0b5bc65e0e24d1b58b49) Thanks [@pranaygp](https://github.com/pranaygp)! - Validate step, wait, and hook lifecycle events against replay ownership metadata.
+
+- [#2060](https://github.com/vercel/workflow/pull/2060) [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8) Thanks [@pranaygp](https://github.com/pranaygp)! - Record fatal world response contract failures as non-retryable workflow errors.
+
+- [#1986](https://github.com/vercel/workflow/pull/1986) [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix local workflow port detection, make generated health endpoints respond to HEAD requests, materialize manual webhook response bodies before returning them, wait for step return stream serialization before completing the step, bound Vercel stream and health-check operations so stuck writes or queue sends retry or time out instead of hanging, and stabilize remote Vercel e2e checks around CLI inspection, sleep timing, and hook registration/disposal.
+
+- [#1935](https://github.com/vercel/workflow/pull/1935) [`6aabd6f`](https://github.com/vercel/workflow/commit/6aabd6fd2ef407c3a57835b2c51ceb881a77935f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Preserve the `this` binding of bound step proxies across workflow serialization, so passing `useStep(...).bind(thisArg)` as a step argument no longer loses the receiver.
+
+- Updated dependencies [[`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d), [`8407c1e`](https://github.com/vercel/workflow/commit/8407c1e9a408bd60b1f3cd0367222d4f1d5d878d), [`15e44b3`](https://github.com/vercel/workflow/commit/15e44b360535dcf1e5303cb7389db1f4007a24e8), [`c347509`](https://github.com/vercel/workflow/commit/c3475096e9811b2d20fc0b5bc65e0e24d1b58b49), [`a350e8d`](https://github.com/vercel/workflow/commit/a350e8ddf21b39b242a83c7e8c478d5ce5bd2001), [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8), [`76352f0`](https://github.com/vercel/workflow/commit/76352f0b66514726fb4adde0a618fd1767436799), [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc), [`e428cdb`](https://github.com/vercel/workflow/commit/e428cdb1d55b64956914a165ac57e0da76d1a33c), [`ecfccc3`](https://github.com/vercel/workflow/commit/ecfccc37c0ab19f2aff7fef9e6b6d62005b6c9c6), [`5f50bbc`](https://github.com/vercel/workflow/commit/5f50bbcee6b35ab275e49214c60143dab1f78c03), [`677867b`](https://github.com/vercel/workflow/commit/677867bd1919476625bd30da9fecde4405d19463)]:
+  - @workflow/world@4.1.2
+  - @workflow/world-local@4.1.2
+  - @workflow/world-vercel@4.2.0
+  - @workflow/errors@4.1.2
+  - @workflow/utils@4.1.2
+
 ## 4.2.4
 
 ### Patch Changes

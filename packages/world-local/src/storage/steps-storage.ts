@@ -3,6 +3,7 @@ import type { StepWithoutData, Storage } from '@workflow/world';
 import { StepSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
+  assertSafeEntityId,
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSONWithFallback,
@@ -21,6 +22,7 @@ export function createStepsStorage(
 ): Storage['steps'] {
   return {
     get: (async (runId: string | undefined, stepId: string, params?: any) => {
+      assertSafeEntityId('stepId', stepId);
       if (!runId) {
         const fileIds = await listJSONFiles(path.join(basedir, 'steps'));
         const fileId = fileIds.find((fid) =>
@@ -30,6 +32,8 @@ export function createStepsStorage(
           throw new Error(`Step ${stepId} not found`);
         }
         runId = stripTag(fileId).split('-')[0];
+      } else {
+        assertSafeEntityId('runId', runId);
       }
       const compositeKey = `${runId}-${stepId}`;
       const step = await readJSONWithFallback(
@@ -47,6 +51,7 @@ export function createStepsStorage(
     }) as Storage['steps']['get'],
 
     list: (async (params: any) => {
+      assertSafeEntityId('runId', params.runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'steps'),

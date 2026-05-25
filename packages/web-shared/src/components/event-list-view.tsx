@@ -142,7 +142,7 @@ function buildNameMaps(
   return { correlationNameMap, workflowName };
 }
 
-interface DurationInfo {
+export interface DurationInfo {
   /** Time from created → started (ms) */
   queued?: number;
   /** Time from started → completed/failed/cancelled (ms) */
@@ -154,19 +154,30 @@ interface DurationInfo {
  * created ↔ started (queued) and started ↔ completed/failed/cancelled (ran).
  * Also computes run-level durations under the key '__run__'.
  */
-function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
+export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
+  // Process events in chronological order so the result doesn't depend on
+  // the caller's sort direction. Retried steps emit multiple `step_started`
+  // events for the same correlationId; the queued duration must be measured
+  // against the first one, not the last.
+  const chronological = [...events].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+
   const createdTimes = new Map<string, number>();
+  const firstStartedTimes = new Map<string, number>();
   const startedTimes = new Map<string, number>();
   const durations = new Map<string, DurationInfo>();
 
-  for (const event of events) {
+  for (const event of chronological) {
     const ts = new Date(event.createdAt).getTime();
     const key = event.correlationId ?? '__run__';
     const type: string = event.eventType;
 
     // Track created times (first event for each correlation)
     if (type === 'step_created' || type === 'run_created') {
-      createdTimes.set(key, ts);
+      if (!createdTimes.has(key)) {
+        createdTimes.set(key, ts);
+      }
     }
 
     // Track started times & compute queued duration
@@ -176,16 +187,21 @@ function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
       type === 'workflow_started'
     ) {
       startedTimes.set(key, ts);
-      // If no explicit created event was seen, use the started time as created
-      if (!createdTimes.has(key)) {
-        createdTimes.set(key, ts);
+      // The queued duration is anchored on the first start event only —
+      // subsequent step_started events come from retries.
+      if (!firstStartedTimes.has(key)) {
+        firstStartedTimes.set(key, ts);
+        // If no explicit created event was seen, use the started time as created
+        if (!createdTimes.has(key)) {
+          createdTimes.set(key, ts);
+        }
+        const createdAt = createdTimes.get(key);
+        const info = durations.get(key) ?? {};
+        if (createdAt !== undefined) {
+          info.queued = ts - createdAt;
+        }
+        durations.set(key, info);
       }
-      const createdAt = createdTimes.get(key);
-      const info = durations.get(key) ?? {};
-      if (createdAt !== undefined) {
-        info.queued = ts - createdAt;
-      }
-      durations.set(key, info);
     }
 
     // Compute ran duration on terminal events

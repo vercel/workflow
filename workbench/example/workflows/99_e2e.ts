@@ -1296,6 +1296,45 @@ export class Counter {
     'use step';
     return { label, value: this.value };
   }
+
+  /**
+   * Returns a "tool"-shaped object whose `add` property is a nested arrow
+   * step that lexically captures `this`.
+   *
+   * This exercises the SWC plugin's lexical-`this` capture for nested arrow
+   * step functions: in workflow mode the proxy is wrapped with
+   * `.bind(this)` (so the queue item carries `thisVal`), and in step mode
+   * the body is hoisted as a regular `function` (so `stepFn.apply(thisVal,
+   * args)` can rebind). The captured `delta` exercises the closure-vars
+   * path alongside it.
+   *
+   * This is structurally identical to the AI SDK `tool({ execute: async
+   * (input) => { 'use step'; return this.x; } })` pattern from the
+   * upstream issue (vercel/workflow#1865).
+   */
+  makeAdder(delta: number): {
+    add: (amount: number) => Promise<number>;
+  } {
+    return {
+      add: async (amount: number) => {
+        'use step';
+        return this.value + amount + delta;
+      },
+    };
+  }
+}
+
+/**
+ * Step that takes a step-function reference and invokes it. Used by
+ * `instanceMethodStepWorkflow` to exercise the workflow→step→step
+ * round-trip serialization of a `bind(this)`-wrapped step proxy.
+ */
+async function invokeAdderFromStep(
+  add: (amount: number) => Promise<number>,
+  amount: number
+): Promise<number> {
+  'use step';
+  return add(amount);
 }
 
 /**
@@ -1319,12 +1358,32 @@ export async function instanceMethodStepWorkflow(initialValue: number) {
   const counter2 = new Counter(100);
   const added2 = await counter2.add(50);
 
+  // Lexical-`this` capture in a nested arrow step:
+  //
+  // `counter.makeAdder(7).add` is a step proxy that the SWC plugin wraps
+  // with `.bind(this)` in workflow mode. Invoking it directly should
+  // capture the Counter instance as `thisVal` so the step body sees
+  // `this.value` correctly.
+  const adder = counter.makeAdder(7);
+  const adderResult = await adder.add(2); // initialValue + 2 + 7
+
+  // Round-trip the bound step proxy through another step boundary:
+  //
+  // Passing `adder.add` as a step argument forces the
+  // `getStepFunctionReducer` to capture the bound `this` (`__boundThis`)
+  // alongside the `stepId`, and the step bundle's reviver must re-bind
+  // the freshly created proxy so the inner step still sees the original
+  // Counter instance via `this`.
+  const adderViaStep = await invokeAdderFromStep(adder.add, 3); // initialValue + 3 + 7
+
   return {
     initialValue,
     added, // initialValue + 10
     multiplied, // initialValue * 3
     description, // { label: 'test counter', value: initialValue }
     added2, // 100 + 50 = 150
+    adderResult, // initialValue + 2 + 7
+    adderViaStep, // initialValue + 3 + 7
   };
 }
 

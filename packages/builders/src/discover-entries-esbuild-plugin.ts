@@ -9,9 +9,36 @@ import {
   isWorkflowSdkFile,
 } from './transform-utils.js';
 
-const enhancedResolve = promisify(enhancedResolveOriginal);
+const enhancedResolve = promisify(
+  enhancedResolveOriginal.create({
+    extensions: [
+      '.ts',
+      '.tsx',
+      '.mts',
+      '.cts',
+      '.js',
+      '.jsx',
+      '.mjs',
+      '.cjs',
+      '.json',
+      '.node',
+    ],
+    fullySpecified: false,
+    conditionNames: ['node', 'import', 'require'],
+  })
+);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
+
+type StringCollection = string[] | Set<string>;
+
+function addDiscovered(collection: StringCollection, value: string): void {
+  if (collection instanceof Set) {
+    collection.add(value);
+  } else if (!collection.includes(value)) {
+    collection.push(value);
+  }
+}
 
 function isGeneratedBuildArtifactPath(filePath: string): boolean {
   const normalizedPath = filePath.replace(/\\/g, '/');
@@ -60,16 +87,18 @@ export function parentHasChild(parent: string, childToFind: string): boolean {
 
 export function createDiscoverEntriesPlugin(
   state: {
-    discoveredSteps: string[];
-    discoveredWorkflows: string[];
-    discoveredSerdeFiles: string[];
+    discoveredSteps: StringCollection;
+    discoveredWorkflows: StringCollection;
+    discoveredSerdeFiles: StringCollection;
   },
   projectRoot?: string
 ): Plugin {
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
-      build.onResolve({ filter: jsTsRegex }, async (args) => {
+      build.onResolve({ filter: /.*/ }, async (args) => {
+        if (!args.importer) return null;
+
         try {
           const resolved = await enhancedResolve(args.resolveDir, args.path);
 
@@ -130,11 +159,11 @@ export function createDiscoverEntriesPlugin(
           const isSdkFile = isWorkflowSdkFile(args.path);
 
           if (patterns.hasUseWorkflow) {
-            state.discoveredWorkflows.push(normalizedPath);
+            addDiscovered(state.discoveredWorkflows, normalizedPath);
           }
 
           if (patterns.hasUseStep) {
-            state.discoveredSteps.push(normalizedPath);
+            addDiscovered(state.discoveredSteps, normalizedPath);
           }
 
           // Track all serde files separately for cross-context class registration.
@@ -142,9 +171,7 @@ export function createDiscoverEntriesPlugin(
           // to support serialization across execution boundaries.
           // Skip @workflow SDK packages since those are internal implementation files.
           if (patterns.hasSerde && !isSdkFile) {
-            if (!state.discoveredSerdeFiles.includes(normalizedPath)) {
-              state.discoveredSerdeFiles.push(normalizedPath);
-            }
+            addDiscovered(state.discoveredSerdeFiles, normalizedPath);
           }
 
           const { code: transformedCode } = await applySwcTransform(

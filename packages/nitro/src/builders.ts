@@ -60,6 +60,10 @@ export class LocalBuilder extends BaseBuilder {
     const { manifest: stepsManifest } = await this.createStepsBundle({
       outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
+      // In dev, Nitro dynamically imports the generated workflow files from
+      // disk, so there is no later Rollup pass to resolve externalized local
+      // TypeScript imports. In prod, Nitro/Rollup handles those imports.
+      bundleTransitiveLocalStepDependencies: this.config.watch,
       format: 'esm',
       inputFiles,
     });
