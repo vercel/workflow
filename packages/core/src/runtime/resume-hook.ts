@@ -156,13 +156,12 @@ export async function resumeHook<T = any>(
           })
         );
 
-        // Create a hook_received event with the payload. `asOfTimestamp`
-        // anchors the OCC fence: the server resolves it to the highest
-        // eventId strictly before `now` and uses that as the expected
-        // previous fence, so this `hook_received` is guaranteed to land
-        // after anything the caller could have observed at resume time —
-        // no client-side event pre-load required.
-        const asOfTimestamp = Date.now();
+        // Append `hook_received` unconditionally — ULID ordering already
+        // places this write after anything committed before us. We do
+        // NOT send `lastKnownEventId` here: a fence would only ever
+        // reject the hook in favor of an unrelated concurrent write,
+        // which would lose the user's hook signal. Stale-snapshot
+        // protection lives on the *tick* writes that consume hooks.
         await world.events.create(
           hook.runId,
           {
@@ -174,7 +173,7 @@ export async function resumeHook<T = any>(
               payload: dehydratedPayload,
             },
           },
-          { v1Compat, asOfTimestamp }
+          { v1Compat }
         );
 
         span?.setAttributes({
