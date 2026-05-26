@@ -72,13 +72,6 @@ import {
  */
 const PAYLOAD_FIELD_BY_EVENT_TYPE: Record<string, string> = {
   run_created: 'input',
-  // run_started normally has no payload, but on the resilient-start path
-  // the runtime piggybacks `runInput.input` here so the server can
-  // synthesize the missing run_created. Without this entry the v4 split
-  // would silently drop those bytes and EventsService's
-  // "run_started arrived before run_created" fallback would have nothing
-  // to backfill from.
-  run_started: 'input',
   run_completed: 'output',
   run_failed: 'error',
   step_created: 'input',

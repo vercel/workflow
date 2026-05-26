@@ -765,58 +765,12 @@ export async function runWorkflow(
     let args: unknown[] = [];
     workflowContext.promiseQueue = workflowContext.promiseQueue.then(
       async () => {
-        // Diagnostic: dump workflowRun.input bytes when hydration is about
-        // to run, so we can spot bad bytes / wrong refs that previously
-        // surfaced as "Invalid input" on the resilient-start path.
-        const inp = workflowRun.input as unknown;
-        const inpInfo = (() => {
-          if (inp instanceof Uint8Array) {
-            return {
-              type: 'Uint8Array',
-              byteLength: inp.byteLength,
-              hexFirst16: Buffer.from(
-                inp.subarray(0, Math.min(16, inp.byteLength))
-              ).toString('hex'),
-              prefix4: new TextDecoder('utf-8', { fatal: false }).decode(
-                inp.subarray(0, 4)
-              ),
-            };
-          }
-          return {
-            type:
-              inp === null
-                ? 'null'
-                : inp === undefined
-                  ? 'undefined'
-                  : typeof inp === 'object'
-                    ? ((inp as object).constructor?.name ?? typeof inp)
-                    : typeof inp,
-          };
-        })();
-        // eslint-disable-next-line no-console
-        console.warn('[v4-debug] workflowRun.input before hydrate', {
-          runId: workflowRun.runId,
-          ...inpInfo,
-        });
-        try {
-          args = await hydrateWorkflowArguments(
-            workflowRun.input,
-            workflowRun.runId,
-            encryptionKey,
-            vmGlobalThis
-          );
-        } catch (hydrateErr) {
-          // eslint-disable-next-line no-console
-          console.warn('[v4-debug] hydrateWorkflowArguments threw', {
-            runId: workflowRun.runId,
-            error:
-              hydrateErr instanceof Error
-                ? hydrateErr.message
-                : String(hydrateErr),
-            ...inpInfo,
-          });
-          throw hydrateErr;
-        }
+        args = await hydrateWorkflowArguments(
+          workflowRun.input,
+          workflowRun.runId,
+          encryptionKey,
+          vmGlobalThis
+        );
       }
     );
     await workflowContext.promiseQueue;
