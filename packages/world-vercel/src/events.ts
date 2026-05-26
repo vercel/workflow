@@ -238,6 +238,32 @@ function buildEventFromV4(
     if (payloadField) eventData[payloadField] = payloadBody;
   }
 
+  // Diagnostic: log the first 16 bytes of step_failed / run_failed payloads
+  // when the resulting Uint8Array doesn't begin with the expected devalue
+  // format prefix. This is a temporary probe to figure out where corrupted
+  // bytes are entering the read path — remove once the root cause is found.
+  if (
+    (decoded.eventType === 'step_failed' ||
+      decoded.eventType === 'run_failed') &&
+    payloadBody.byteLength >= 4
+  ) {
+    const prefix = new TextDecoder('utf-8', { fatal: false }).decode(
+      payloadBody.subarray(0, 4)
+    );
+    if (!/^[a-z0-9]{4}$/.test(prefix)) {
+      // eslint-disable-next-line no-console
+      console.warn('[v4-debug] payload bytes lack devalue prefix', {
+        eventType: decoded.eventType,
+        eventId: decoded.eventId,
+        bodyLen: payloadBody.byteLength,
+        hexFirst16: Buffer.from(
+          payloadBody.subarray(0, Math.min(16, payloadBody.byteLength))
+        ).toString('hex'),
+        prefixStr: prefix,
+      });
+    }
+  }
+
   const raw = {
     eventId: decoded.eventId,
     runId: decoded.runId,
