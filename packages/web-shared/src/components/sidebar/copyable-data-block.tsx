@@ -19,7 +19,7 @@ export function EncryptedDataBlock() {
     <div className="relative min-h-20 overflow-hidden rounded-md border border-gray-alpha-400 bg-background-100">
       <pre
         aria-hidden="true"
-        className="pointer-events-none m-0 select-none p-3 font-mono text-label-12 text-gray-900 blur-xs"
+        className="pointer-events-none m-0 select-none p-3 font-mono text-label-12 text-gray-900 blur-[4px]"
       >
         {encryptedPlaceholderPreview}
       </pre>
