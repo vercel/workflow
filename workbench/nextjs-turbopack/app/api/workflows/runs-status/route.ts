@@ -12,13 +12,27 @@ interface Body {
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as Body;
   const world = await getWorldLazy();
+  // Optional: when ?events=1 is set, also return the list of events for
+  // each run so we can diff branch events for failures.
+  const url = new URL(request.url);
+  const includeEvents = url.searchParams.get('events') === '1';
   const results = await Promise.allSettled(
     body.runIds.map(async (runId) => {
       const run = await world.runs.get(runId);
-      return {
+      const base = {
         runId,
         status: run.status,
         errorCode: (run as { errorCode?: string }).errorCode,
+      };
+      if (!includeEvents) return base;
+      const eventsList = await world.events.list({ runId });
+      return {
+        ...base,
+        events: eventsList.data.map((e) => ({
+          eventId: e.eventId,
+          eventType: e.eventType,
+          correlationId: e.correlationId,
+        })),
       };
     })
   );
@@ -28,6 +42,11 @@ export async function POST(request: NextRequest) {
     runId: string;
     status: string;
     errorCode?: string;
+    events?: Array<{
+      eventId: string;
+      eventType: string;
+      correlationId?: string;
+    }>;
   }> = [];
   for (const r of results) {
     if (r.status === 'fulfilled') {
