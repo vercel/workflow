@@ -1,7 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-// Access the underlying world directly for fields that Run doesn't surface.
-import { getWorldLazy } from '@workflow/core/runtime/get-world-lazy';
+import { getRun } from 'workflow/api';
 
 export const maxDuration = 300;
 
@@ -9,48 +8,26 @@ interface Body {
   runIds: string[];
 }
 
+interface RunRow {
+  runId: string;
+  status: string;
+}
+
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as Body;
-  const world = await getWorldLazy();
-  // Optional: when ?events=1 is set, also return the list of events for
-  // each run so we can diff branch events for failures.
-  const url = new URL(request.url);
-  const includeEvents = url.searchParams.get('events') === '1';
-  const results = await Promise.allSettled(
+  const results = await Promise.allSettled<RunRow>(
     body.runIds.map(async (runId) => {
-      const run = await world.runs.get(runId);
-      const base = {
-        runId,
-        status: run.status,
-        errorCode: (run as { errorCode?: string }).errorCode,
-      };
-      if (!includeEvents) return base;
-      const eventsList = await world.events.list({ runId });
-      return {
-        ...base,
-        events: eventsList.data.map((e) => ({
-          eventId: e.eventId,
-          eventType: e.eventType,
-          correlationId: e.correlationId,
-        })),
-      };
+      const run = await getRun(runId);
+      const status = await run.status;
+      return { runId, status };
     })
   );
 
   const grouped: Record<string, number> = {};
-  const failures: Array<{
-    runId: string;
-    status: string;
-    errorCode?: string;
-    events?: Array<{
-      eventId: string;
-      eventType: string;
-      correlationId?: string;
-    }>;
-  }> = [];
+  const failures: RunRow[] = [];
   for (const r of results) {
     if (r.status === 'fulfilled') {
-      const key = `${r.value.status}${r.value.errorCode ? `:${r.value.errorCode}` : ''}`;
+      const key = r.value.status;
       grouped[key] = (grouped[key] ?? 0) + 1;
       if (r.value.status === 'failed') {
         failures.push(r.value);
@@ -63,6 +40,6 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     total: body.runIds.length,
     grouped,
-    failures: failures.slice(0, 20),
+    failures: failures.slice(0, 50),
   });
 }
