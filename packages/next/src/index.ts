@@ -33,6 +33,26 @@ const workflowSerdeComputedPropertyPattern =
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
 
+let dashboardServerPromise: Promise<string> | undefined;
+
+function ensureDashboardServer(): Promise<string> {
+  if (!dashboardServerPromise) {
+    dashboardServerPromise = (async () => {
+      const { startServer } = (await import('@workflow/web/server')) as {
+        startServer: (port?: number) => Promise<import('node:http').Server>;
+      };
+      const server = await startServer(0);
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 3456;
+      return `http://localhost:${port}`;
+    })().catch((error: unknown) => {
+      dashboardServerPromise = undefined;
+      throw error;
+    });
+  }
+  return dashboardServerPromise;
+}
+
 interface WorkflowPatternMatch {
   hasUseWorkflow: boolean;
   hasUseStep: boolean;
@@ -627,6 +647,33 @@ export function withWorkflow(
 
       await workflowBuilder.build();
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';
+    }
+
+    if (phase === 'phase-development-server') {
+      const dashboardUrl = await ensureDashboardServer().catch(
+        (error: unknown) => {
+          console.error('Failed to start workflow dashboard:', error);
+          return undefined;
+        }
+      );
+
+      if (dashboardUrl) {
+        const existingRedirects = nextConfig.redirects;
+        nextConfig.redirects = async () => {
+          const userRedirects = existingRedirects
+            ? await existingRedirects()
+            : [];
+          return [
+            ...userRedirects,
+            {
+              source: '/_workflow',
+              destination: dashboardUrl,
+              permanent: false,
+              basePath: false,
+            },
+          ];
+        };
+      }
     }
 
     return nextConfig;
