@@ -12,16 +12,15 @@ export async function POST(request: NextRequest) {
   const body = (await request.json()) as Body;
   const results = await Promise.allSettled(
     body.runIds.map(async (runId) => {
-      const run = (await getRun(runId)) as unknown as {
-        status: string;
-        error?: { code?: string; message?: string };
-      };
-      return {
-        runId,
-        status: run.status,
-        errorCode: run.error?.code,
-        errorMessage: run.error?.message,
-      };
+      const run = await getRun(runId);
+      // Status / error live on the underlying world entity, which Run
+      // exposes via lazy getters. Access them by awaiting the getters.
+      const [status, errorCode] = await Promise.all([
+        run.status,
+        (run as unknown as { errorCode?: Promise<string | undefined> })
+          .errorCode ?? Promise.resolve(undefined),
+      ]);
+      return { runId, status, errorCode };
     })
   );
 
@@ -30,7 +29,6 @@ export async function POST(request: NextRequest) {
     runId: string;
     status: string;
     errorCode?: string;
-    errorMessage?: string;
   }> = [];
   for (const r of results) {
     if (r.status === 'fulfilled') {
