@@ -238,30 +238,48 @@ function buildEventFromV4(
     if (payloadField) eventData[payloadField] = payloadBody;
   }
 
-  // Diagnostic: log the first 16 bytes of step_failed / run_failed payloads
-  // when the resulting Uint8Array doesn't begin with the expected devalue
-  // format prefix. This is a temporary probe to figure out where corrupted
-  // bytes are entering the read path — remove once the root cause is found.
+  // Diagnostic: log EVERY step_failed / run_failed payload arriving on the
+  // v4 read path so we can compare what buildEventFromV4 produces with what
+  // hydrateStepError sees. The previous "only-bad-prefix" check never fired,
+  // so either the bytes ARE valid here and get mangled downstream, or this
+  // path isn't being hit at all.
   if (
-    (decoded.eventType === 'step_failed' ||
-      decoded.eventType === 'run_failed') &&
-    payloadBody.byteLength >= 4
+    decoded.eventType === 'step_failed' ||
+    decoded.eventType === 'run_failed'
   ) {
-    const prefix = new TextDecoder('utf-8', { fatal: false }).decode(
-      payloadBody.subarray(0, 4)
-    );
-    if (!/^[a-z0-9]{4}$/.test(prefix)) {
-      // eslint-disable-next-line no-console
-      console.warn('[v4-debug] payload bytes lack devalue prefix', {
-        eventType: decoded.eventType,
-        eventId: decoded.eventId,
-        bodyLen: payloadBody.byteLength,
-        hexFirst16: Buffer.from(
-          payloadBody.subarray(0, Math.min(16, payloadBody.byteLength))
-        ).toString('hex'),
-        prefixStr: prefix,
-      });
-    }
+    const errVal = (eventData as { error?: unknown }).error;
+    const isUint8 = errVal instanceof Uint8Array;
+    const len = isUint8 ? (errVal as Uint8Array).byteLength : -1;
+    const hex = isUint8
+      ? Buffer.from(
+          (errVal as Uint8Array).subarray(
+            0,
+            Math.min(16, (errVal as Uint8Array).byteLength)
+          )
+        ).toString('hex')
+      : 'n/a';
+    const prefix =
+      isUint8 && (errVal as Uint8Array).byteLength >= 4
+        ? new TextDecoder('utf-8', { fatal: false }).decode(
+            (errVal as Uint8Array).subarray(0, 4)
+          )
+        : 'n/a';
+    // eslint-disable-next-line no-console
+    console.warn('[v4-debug] read-path event.error', {
+      eventType: decoded.eventType,
+      eventId: decoded.eventId,
+      bodyLenFromFrame: payloadBody.byteLength,
+      isUint8,
+      lenOnEventData: len,
+      hexFirst16: hex,
+      prefixStr: prefix,
+      errValType: typeof errVal,
+      errValCtor: isUint8
+        ? 'Uint8Array'
+        : errVal && typeof errVal === 'object'
+          ? (errVal as object).constructor?.name
+          : 'n/a',
+    });
   }
 
   const raw = {
