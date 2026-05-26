@@ -797,6 +797,9 @@ importers:
       '@workflow/vite':
         specifier: workspace:*
         version: link:../vite
+      '@workflow/web':
+        specifier: workspace:*
+        version: link:../web
       exsolve:
         specifier: 1.0.8
         version: 1.0.8
