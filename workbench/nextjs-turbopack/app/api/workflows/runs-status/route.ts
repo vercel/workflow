@@ -12,7 +12,10 @@ export async function POST(request: NextRequest) {
   const body = (await request.json()) as Body;
   const results = await Promise.allSettled(
     body.runIds.map(async (runId) => {
-      const run = await getRun(runId);
+      const run = (await getRun(runId)) as unknown as {
+        status: string;
+        error?: { code?: string; message?: string };
+      };
       return {
         runId,
         status: run.status,
