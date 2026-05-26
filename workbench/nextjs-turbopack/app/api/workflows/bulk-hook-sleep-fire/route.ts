@@ -22,6 +22,10 @@ interface BulkBody {
   fireCount?: number;
   // Delay between consecutive fires for the same token.
   fireBurstSpacingMs?: number;
+  // Retry the resumeHook on transient "Hook not found" so workflows that
+  // haven't yet reached createHook by fireAfterMs still get their hook.
+  fireRetries?: number;
+  fireRetryDelayMs?: number;
 }
 
 export async function POST(request: NextRequest) {
@@ -33,6 +37,8 @@ export async function POST(request: NextRequest) {
   const count = body.count ?? 500;
   const fireAfterMs = body.fireAfterMs ?? 1500;
   const fireCount = body.fireCount ?? 2;
+  const fireRetries = body.fireRetries ?? 0;
+  const fireRetryDelayMs = body.fireRetryDelayMs ?? 250;
 
   const batchId = randomUUID();
   const startedAt = Date.now();
@@ -82,7 +88,23 @@ export async function POST(request: NextRequest) {
     tokens.map(async (token) => {
       for (let i = 0; i < fireCount; i++) {
         const payload = { value: i, ts: Date.now() };
-        await resumeHook(token, payload);
+        let attempts = 0;
+        // Retry transient "Hook not found" so a small fireAfterMs doesn't
+        // mask the actual race we want to exercise.
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          try {
+            await resumeHook(token, payload);
+            break;
+          } catch (err) {
+            attempts += 1;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (attempts > fireRetries || !/not found/i.test(msg)) {
+              throw err;
+            }
+            await new Promise((r) => setTimeout(r, fireRetryDelayMs));
+          }
+        }
         if (fireBurstSpacingMs > 0) {
           await new Promise((r) => setTimeout(r, fireBurstSpacingMs));
         }
