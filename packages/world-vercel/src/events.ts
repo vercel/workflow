@@ -36,6 +36,7 @@ import {
   type AnyEventRequest,
   type CreateEventParams,
   type Event,
+  EventSchema,
   type EventResult,
   type GetEventParams,
   type ListEventsByCorrelationIdParams,
@@ -237,7 +238,7 @@ function buildEventFromV4(
     if (payloadField) eventData[payloadField] = payloadBody;
   }
 
-  const event = {
+  const raw = {
     eventId: decoded.eventId,
     runId: decoded.runId,
     eventType: decoded.eventType,
@@ -250,7 +251,16 @@ function buildEventFromV4(
     ...(decoded.specVersion !== undefined
       ? { specVersion: decoded.specVersion }
       : {}),
-  } as unknown as Event;
+  };
+
+  // Run the assembled event through EventSchema so per-event-type
+  // z.coerce.date() (wait_created.resumeAt, wait_completed.resumeAt,
+  // step_retrying.retryAfter) converts the ISO strings DynamoDB returns
+  // back into Date instances — the workflow runtime calls .getTime() on
+  // these and would otherwise crash. safeParse: pass the event through
+  // unchanged if it doesn't match a known shape (legacy / mid-rollout).
+  const parsed = EventSchema.safeParse(raw);
+  const event = (parsed.success ? parsed.data : raw) as unknown as Event;
 
   // For resolveData='none', strip eventData entirely. Reuse the world-
   // side helper so behavior stays in sync with other backends.
