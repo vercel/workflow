@@ -72,14 +72,6 @@ import {
  */
 const PAYLOAD_FIELD_BY_EVENT_TYPE: Record<string, string> = {
   run_created: 'input',
-  // run_started normally has no payload, but the runtime piggybacks
-  // `input` here on the resilient-start path: when the original
-  // `run_created` POST failed, the worker re-issues `run_started` with
-  // the run-input bag in eventData so the server can synthesize the
-  // missing `run_created`. Without listing it here we'd silently drop
-  // those bytes and the server's "run_started arrived before run_created"
-  // fallback couldn't fire.
-  run_started: 'input',
   run_completed: 'output',
   run_failed: 'error',
   step_created: 'input',

@@ -22,58 +22,12 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import {
-  EntityConflictError,
-  RunExpiredError,
-  ThrottleError,
-  TooEarlyError,
-  WorkflowWorldError,
-} from '@workflow/errors';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { decode } from 'cbor-x';
 import { request } from 'undici';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
-
-/**
- * Map a v4 endpoint's non-2xx response to the same typed errors the v3
- * `makeRequest` helper produces (see utils.ts). Runtime callers branch
- * on `EntityConflictError.is(err)` / `RunExpiredError.is(err)` / etc. —
- * a plain `Error` would be treated as fatal, which broke `start()`'s
- * resilient-start path and the queue handler's idempotency tolerance.
- */
-async function throwV4HttpError(
-  opName: string,
-  response: { statusCode: number; body: { text: () => Promise<string> } }
-): Promise<never> {
-  const text = await response.body.text();
-  let parsed: { message?: string; error?: string } = {};
-  try {
-    parsed = JSON.parse(text) as { message?: string; error?: string };
-  } catch {
-    // body wasn't JSON — fall back to the raw status + body
-  }
-  const message =
-    parsed.message ?? `${opName} failed: ${response.statusCode} ${text}`;
-  const code = parsed.error;
-  if (response.statusCode === 409) {
-    throw new EntityConflictError(message);
-  }
-  if (response.statusCode === 410) {
-    throw new RunExpiredError(message);
-  }
-  if (response.statusCode === 425) {
-    throw new TooEarlyError(message);
-  }
-  if (response.statusCode === 429) {
-    throw new ThrottleError(message);
-  }
-  throw new WorkflowWorldError(message, {
-    status: response.statusCode,
-    code,
-  });
-}
 
 /**
  * The few HTTP response headers v4 still uses. POST surfaces these so
@@ -214,7 +168,10 @@ export async function createWorkflowRunEventV4(
     dispatcher: getDispatcher(),
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    await throwV4HttpError('v4 createEvent', response);
+    const errorBody = await response.body.text();
+    throw new Error(
+      `v4 createEvent failed: ${response.statusCode} ${errorBody}`
+    );
   }
 
   const eventId = response.headers[V4_RESPONSE_HEADERS.eventId];
@@ -292,7 +249,8 @@ export async function getEventV4(
     dispatcher: getDispatcher(),
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    await throwV4HttpError('v4 getEvent', response);
+    const errorBody = await response.body.text();
+    throw new Error(`v4 getEvent failed: ${response.statusCode} ${errorBody}`);
   }
   const contentType = readHeader(response.headers, 'content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -357,7 +315,8 @@ async function consumeListFrameStream(
     dispatcher: getDispatcher(),
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    await throwV4HttpError(`v4 ${opName}`, response);
+    const errorBody = await response.body.text();
+    throw new Error(`v4 ${opName} failed: ${response.statusCode} ${errorBody}`);
   }
   const contentType = readHeader(response.headers, 'content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
