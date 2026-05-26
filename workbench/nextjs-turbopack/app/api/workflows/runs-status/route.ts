@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { getRun } from 'workflow/api';
+// Access the underlying world directly for fields that Run doesn't surface.
+import { getWorldLazy } from '@workflow/core/runtime/get-world-lazy';
 
 export const maxDuration = 300;
 
@@ -10,17 +11,15 @@ interface Body {
 
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as Body;
+  const world = await getWorldLazy();
   const results = await Promise.allSettled(
     body.runIds.map(async (runId) => {
-      const run = await getRun(runId);
-      // Status / error live on the underlying world entity, which Run
-      // exposes via lazy getters. Access them by awaiting the getters.
-      const [status, errorCode] = await Promise.all([
-        run.status,
-        (run as unknown as { errorCode?: Promise<string | undefined> })
-          .errorCode ?? Promise.resolve(undefined),
-      ]);
-      return { runId, status, errorCode };
+      const run = await world.runs.get(runId);
+      return {
+        runId,
+        status: run.status,
+        errorCode: (run as { errorCode?: string }).errorCode,
+      };
     })
   );
 
