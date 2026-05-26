@@ -833,13 +833,19 @@ export function workflowEntrypoint(
                             if (!EntityConflictError.is(err)) {
                               throw err;
                             }
+                            // Fence conflicts surface a specific error
+                            // message from workflow-server. Anything
+                            // else (workflow-server "Workflow wait …",
+                            // world-local 'Wait "…" already completed',
+                            // and any other world's duplicate-wait
+                            // shape) is the existing
+                            // wait-already-completed conflict — skip
+                            // and continue, matching pre-OCC behavior
+                            // across worlds.
                             const isFenceConflict = /fence conflict/i.test(
                               err.message
                             );
-                            const isDuplicateWait = /workflow wait/i.test(
-                              err.message
-                            );
-                            if (isDuplicateWait) {
+                            if (!isFenceConflict) {
                               runtimeLogger.info(
                                 'Wait already completed, skipping',
                                 {
@@ -848,9 +854,6 @@ export function workflowEntrypoint(
                                 }
                               );
                               break;
-                            }
-                            if (!isFenceConflict) {
-                              throw err;
                             }
                             attempts += 1;
                             if (attempts > MAX_FENCE_RETRIES) {
