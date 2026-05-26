@@ -22,6 +22,11 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import {
+  EntityConflictError,
+  ThrottleError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { decode } from 'cbor-x';
 import { request } from 'undici';
@@ -169,6 +174,30 @@ export async function createWorkflowRunEventV4(
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
+    // Only typed errors that start.ts / runtime resilient-start paths
+    // actually branch on: 409 = "run already exists" (start() catches),
+    // 429 = ThrottleError, 5xx = retryable WorkflowWorldError. Other
+    // statuses keep the plain-Error form to avoid changing catch
+    // behavior at other call sites that didn't previously see typed v4
+    // errors.
+    let parsedMessage = errorBody;
+    try {
+      const json = JSON.parse(errorBody) as { message?: string };
+      if (typeof json.message === 'string') parsedMessage = json.message;
+    } catch {
+      // body wasn't JSON — keep raw text
+    }
+    if (response.statusCode === 409) {
+      throw new EntityConflictError(parsedMessage);
+    }
+    if (response.statusCode === 429) {
+      throw new ThrottleError(parsedMessage);
+    }
+    if (response.statusCode >= 500) {
+      throw new WorkflowWorldError(parsedMessage, {
+        status: response.statusCode,
+      });
+    }
     throw new Error(
       `v4 createEvent failed: ${response.statusCode} ${errorBody}`
     );
