@@ -99,7 +99,9 @@ export async function POST(request: NextRequest) {
           } catch (err) {
             attempts += 1;
             const msg = err instanceof Error ? err.message : String(err);
-            if (attempts > fireRetries || !/not found/i.test(msg)) {
+            const retryable =
+              /not found/i.test(msg) || /fence conflict/i.test(msg);
+            if (attempts > fireRetries || !retryable) {
               throw err;
             }
             await new Promise((r) => setTimeout(r, fireRetryDelayMs));
