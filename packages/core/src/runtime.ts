@@ -798,46 +798,101 @@ export function workflowEntrypoint(
 
                       // Snapshot the loaded events' tail eventId as the OCC
                       // fence. If a concurrent writer (e.g. `resumeHook`)
-                      // committed something between our load and these
-                      // writes, the server's CAS will reject and we'll
-                      // surface that as `EntityConflictError` — same handling
-                      // as a duplicate wait completion (skip + continue,
-                      // we'll re-replay the next iteration with fresh events).
+                      // committed something between our load and this write,
+                      // the server's CAS rejects and we retry *in-place*
+                      // with a freshly-loaded fence rather than throwing
+                      // the whole tick away. Falling back to queue
+                      // redelivery thunder-herds — every redelivery spawns
+                      // another concurrent tick which fences-conflicts
+                      // again, and workflows stall in `running`.
                       let fenceEventId: string | undefined =
                         events.length > 0
                           ? events[events.length - 1].eventId
                           : undefined;
+                      const MAX_FENCE_RETRIES = 5;
                       for (const waitEvent of waitsToComplete) {
-                        try {
-                          const result = await world.events.create(
-                            runId,
-                            waitEvent,
-                            {
-                              requestId,
-                              ...(fenceEventId
-                                ? { lastKnownEventId: fenceEventId }
-                                : {}),
-                            }
-                          );
-                          // Advance the local fence so the next wait_completed
-                          // (or subsequent write) chains off the just-committed
-                          // event, not the snapshot tail.
-                          if (result.event) {
-                            fenceEventId = result.event.eventId;
-                          }
-                        } catch (err) {
-                          if (EntityConflictError.is(err)) {
-                            runtimeLogger.info(
-                              'Wait already completed or fence conflict, skipping',
+                        let attempts = 0;
+                        let written = false;
+                        while (!written) {
+                          try {
+                            const result = await world.events.create(
+                              runId,
+                              waitEvent,
                               {
-                                workflowRunId: runId,
-                                correlationId: waitEvent.correlationId,
-                                fenceEventId,
+                                requestId,
+                                ...(fenceEventId
+                                  ? { lastKnownEventId: fenceEventId }
+                                  : {}),
                               }
                             );
-                            continue;
+                            if (result.event) {
+                              fenceEventId = result.event.eventId;
+                            }
+                            written = true;
+                          } catch (err) {
+                            if (!EntityConflictError.is(err)) {
+                              throw err;
+                            }
+                            const isFenceConflict = /fence conflict/i.test(
+                              err.message
+                            );
+                            const isDuplicateWait = /workflow wait/i.test(
+                              err.message
+                            );
+                            if (isDuplicateWait) {
+                              runtimeLogger.info(
+                                'Wait already completed, skipping',
+                                {
+                                  workflowRunId: runId,
+                                  correlationId: waitEvent.correlationId,
+                                }
+                              );
+                              break;
+                            }
+                            if (!isFenceConflict) {
+                              throw err;
+                            }
+                            attempts += 1;
+                            if (attempts > MAX_FENCE_RETRIES) {
+                              runtimeLogger.warn(
+                                'Wait completion gave up after fence retries; falling back to queue redelivery',
+                                {
+                                  workflowRunId: runId,
+                                  correlationId: waitEvent.correlationId,
+                                  attempts,
+                                }
+                              );
+                              throw err;
+                            }
+                            const loaded = eventsCursor
+                              ? await loadWorkflowRunEvents(runId, eventsCursor)
+                              : await loadWorkflowRunEvents(runId);
+                            if (eventsCursor) {
+                              for (const e of loaded.events) {
+                                if (
+                                  !events.some((x) => x.eventId === e.eventId)
+                                ) {
+                                  events.push(e);
+                                }
+                              }
+                              eventsCursor = loaded.cursor ?? eventsCursor;
+                            } else {
+                              events = loaded.events;
+                              eventsCursor = loaded.cursor;
+                            }
+                            const alreadyCompleted = events.some(
+                              (e) =>
+                                e.eventType === 'wait_completed' &&
+                                e.correlationId === waitEvent.correlationId
+                            );
+                            if (alreadyCompleted) {
+                              break;
+                            }
+                            fenceEventId = events[events.length - 1]?.eventId;
+                            await new Promise((r) =>
+                              setTimeout(r, 25 * attempts)
+                            );
                           }
-                          throw err;
                         }
                       }
 
