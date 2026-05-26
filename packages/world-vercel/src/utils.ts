@@ -59,7 +59,7 @@ function httpLog(
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-9ajd392ge.vercel.sh';
+const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-5t3zh0gg2.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
