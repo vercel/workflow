@@ -156,7 +156,13 @@ export async function resumeHook<T = any>(
           })
         );
 
-        // Create a hook_received event with the payload
+        // Create a hook_received event with the payload. `asOfTimestamp`
+        // anchors the OCC fence: the server resolves it to the highest
+        // eventId strictly before `now` and uses that as the expected
+        // previous fence, so this `hook_received` is guaranteed to land
+        // after anything the caller could have observed at resume time —
+        // no client-side event pre-load required.
+        const asOfTimestamp = Date.now();
         await world.events.create(
           hook.runId,
           {
@@ -168,7 +174,7 @@ export async function resumeHook<T = any>(
               payload: dehydratedPayload,
             },
           },
-          { v1Compat }
+          { v1Compat, asOfTimestamp }
         );
 
         span?.setAttributes({

@@ -796,18 +796,43 @@ export function workflowEntrypoint(
                           },
                         }));
 
+                      // Snapshot the loaded events' tail eventId as the OCC
+                      // fence. If a concurrent writer (e.g. `resumeHook`)
+                      // committed something between our load and these
+                      // writes, the server's CAS will reject and we'll
+                      // surface that as `EntityConflictError` — same handling
+                      // as a duplicate wait completion (skip + continue,
+                      // we'll re-replay the next iteration with fresh events).
+                      let fenceEventId: string | undefined =
+                        events.length > 0
+                          ? events[events.length - 1].eventId
+                          : undefined;
                       for (const waitEvent of waitsToComplete) {
                         try {
-                          await world.events.create(runId, waitEvent, {
-                            requestId,
-                          });
+                          const result = await world.events.create(
+                            runId,
+                            waitEvent,
+                            {
+                              requestId,
+                              ...(fenceEventId
+                                ? { lastKnownEventId: fenceEventId }
+                                : {}),
+                            }
+                          );
+                          // Advance the local fence so the next wait_completed
+                          // (or subsequent write) chains off the just-committed
+                          // event, not the snapshot tail.
+                          if (result.event) {
+                            fenceEventId = result.event.eventId;
+                          }
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
-                              'Wait already completed, skipping',
+                              'Wait already completed or fence conflict, skipping',
                               {
                                 workflowRunId: runId,
                                 correlationId: waitEvent.correlationId,
+                                fenceEventId,
                               }
                             );
                             continue;
