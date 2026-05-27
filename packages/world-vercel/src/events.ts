@@ -488,6 +488,12 @@ async function createWorkflowRunEventInner(
       ...data,
       remoteRefBehavior,
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.lastKnownEventId
+        ? { lastKnownEventId: params.lastKnownEventId }
+        : {}),
+      ...(params?.asOfTimestamp !== undefined
+        ? { asOfTimestamp: params.asOfTimestamp }
+        : {}),
     },
     config,
     schema: EventResultLazyWireSchema,
