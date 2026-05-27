@@ -204,7 +204,10 @@ export const hooks = schema.table(
     isWebhook: boolean('is_webhook').default(true),
     isSystem: boolean('is_system').default(false),
   } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
-  (tb) => [index().on(tb.runId), index().on(tb.token)]
+  (tb) => [
+    index().on(tb.runId),
+    uniqueIndex('workflow_hooks_token_unique').on(tb.token),
+  ]
 );
 
 export const waits = schema.table(

@@ -92,6 +92,13 @@
       "when": 1775600000000,
       "tag": "0012_add_is_system",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1776100000000,
+      "tag": "0013_add_hooks_token_unique_index",
+      "breakpoints": true
     }
   ]
 }
