@@ -20,6 +20,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./run-id": {
+      "types": "./dist/run-id/index.d.ts",
+      "default": "./dist/run-id/index.js"
     }
   },
   "scripts": {
