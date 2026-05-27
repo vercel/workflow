@@ -1,6 +1,7 @@
 import { CorruptedEventLogError } from '@workflow/errors';
 import { parseDurationToDate, withResolvers } from '@workflow/utils';
 import type { StringValue } from 'ms';
+import { getTraceState, traceSleepSubscribe } from '../__debug-replay-trace.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import {
@@ -25,6 +26,20 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       resumeAt,
     };
     ctx.invocationsQueue.set(correlationId, waitItem);
+
+    // [DEBUG] Record the assignment correlationId → resumeAt for this replay.
+    {
+      const __t = getTraceState(ctx);
+      if (__t) {
+        traceSleepSubscribe(
+          __t.runId,
+          __t.invKey,
+          __t.invId,
+          correlationId,
+          resumeAt
+        );
+      }
+    }
 
     ctx.eventsConsumer.subscribe((event) => {
       // If there are no events and we're waiting for wait_completed,

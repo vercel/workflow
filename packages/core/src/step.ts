@@ -1,5 +1,10 @@
 import { CorruptedEventLogError, FatalError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
+import {
+  getTraceState,
+  traceStepMismatch,
+  traceStepSubscribe,
+} from './__debug-replay-trace.js';
 import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { stepLogger } from './logger.js';
@@ -50,6 +55,22 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         stepName,
         args,
       });
+
+      // [DEBUG] Record the assignment correlationId → stepName for this
+      // replay so we can diff successive replays of the same runId.
+      {
+        const __t = getTraceState(ctx);
+        if (__t) {
+          traceStepSubscribe(
+            __t.runId,
+            __t.invKey,
+            __t.invId,
+            correlationId,
+            stepName
+          );
+        }
+      }
+
       ctx.eventsConsumer.subscribe((event) => {
         if (!event) {
           // We've reached the end of the events, so this step has either not been run or is currently running.
@@ -86,6 +107,25 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             : undefined;
 
         if (typeof eventStepName === 'string' && eventStepName !== stepName) {
+          // [DEBUG] Emit the mismatch as a structured trace line, including
+          // the index of the offending event in the SDK's view of the log
+          // so we can correlate this replay's events:[...] dump with the
+          // exact event row that triggered the failure.
+          {
+            const __t = getTraceState(ctx);
+            if (__t) {
+              traceStepMismatch(
+                __t.runId,
+                __t.invId,
+                correlationId,
+                stepName,
+                eventStepName,
+                event.eventId,
+                event.eventType,
+                ctx.eventsConsumer.eventIndex
+              );
+            }
+          }
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
             ctx.onWorkflowError(
               new CorruptedEventLogError(
