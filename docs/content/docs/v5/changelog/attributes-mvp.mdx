@@ -137,6 +137,8 @@ Three call patterns are supported. Pick by whether you need ordering and whether
 
 **Awaited (default).** The workflow blocks on the write before continuing. Use this when later workflow logic depends on the attribute being persisted, or when you want errors (validation, world rejection) to surface immediately.
 
+{/*@skip-typecheck - snippet, not runnable code*/}
+
 ```ts
 'use workflow';
 await experimental_setAttributes({ phase: 'init' });
@@ -145,6 +147,8 @@ await experimental_setAttributes({ phase: 'done', orderId: result.id });
 ```
 
 **Fire-and-forget (`void`).** Drop the `await` to let the workflow proceed without blocking. The pending step queues on the workflow's next suspension (any `await` on a runtime primitive — a step, `sleep`, a hook). This is the canonical pattern for observability / tracking metadata where the workflow doesn't depend on the write.
+
+{/*@skip-typecheck - snippet, not runnable code*/}
 
 ```ts
 'use workflow';
@@ -163,11 +167,13 @@ Two trade-offs to know about:
 
 **Parallel (`Promise.all`).** Multiple calls dispatch concurrently. Writes to disjoint keys all land. Writes to the same key resolve last-write-wins by *arrival order at the world* (not the order the workflow body issued the calls) — so don't use `Promise.all` for writes that must observe a specific order to the same key.
 
+{/*@skip-typecheck - snippet, not runnable code*/}
+
 ```ts
 'use workflow';
 await Promise.all([
-  experimental_setAttributes({ phase: 'init' }),    // disjoint keys — all land
-  experimental_setAttributes({ orderId: id }),
+  experimental_setAttributes({ phase: 'init' }), // disjoint keys — all land
+  experimental_setAttributes({ orderId: 'ord_123' }),
   experimental_setAttributes({ tenant: 't1' }),
 ]);
 ```
