@@ -177,15 +177,23 @@ export async function resolveRefDescriptors(
   if (refs.length === 0) return [];
 
   return trace('world.refs.resolve', async (span) => {
-    const inlineCount = refs.filter((r) =>
-      r.descriptor._ref.startsWith('dbrf:')
-    ).length;
-    const remoteCount = refs.length - inlineCount;
+    let inlineCount = 0;
+    let s3DirectCount = 0;
+    let serverFallbackCount = 0;
+    for (const r of refs) {
+      if (r.descriptor._ref.startsWith('dbrf:')) inlineCount++;
+      else if (r.descriptor._url) s3DirectCount++;
+      else serverFallbackCount++;
+    }
 
     span?.setAttributes({
       'workflow.refs.total_count': refs.length,
       'workflow.refs.inline_count': inlineCount,
-      'workflow.refs.remote_count': remoteCount,
+      'workflow.refs.remote_count': refs.length - inlineCount,
+      // Split remote-ref fetches by destination so replay-latency triage
+      // can attribute slowness without joining over child http GET spans.
+      'workflow.refs.s3_direct_count': s3DirectCount,
+      'workflow.refs.server_fallback_count': serverFallbackCount,
     });
 
     return Promise.all(

@@ -187,7 +187,21 @@ async function hydrateEventRefs(
   if (pending.length === 0) return events;
 
   return trace('world.refs.hydrate', async (span) => {
-    span?.setAttribute('workflow.refs.hydrated_count', pending.length);
+    // Split the page-level count by destination so the hydrate span tells
+    // the same story as the resolve span below — useful for triaging which
+    // bytes came from S3 vs which round-tripped through workflow-server.
+    let s3DirectCount = 0;
+    let serverFallbackCount = 0;
+    for (const p of pending) {
+      if (p.descriptor._ref.startsWith('dbrf:')) continue;
+      if (p.descriptor._url) s3DirectCount++;
+      else serverFallbackCount++;
+    }
+    span?.setAttributes({
+      'workflow.refs.hydrated_count': pending.length,
+      'workflow.refs.s3_direct_count': s3DirectCount,
+      'workflow.refs.server_fallback_count': serverFallbackCount,
+    });
 
     // Deduplicate descriptors by _ref key to avoid redundant resolutions.
     // Multiple events may reference the same ref (e.g., shared input).
