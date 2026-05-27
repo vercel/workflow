@@ -124,6 +124,50 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
     ).rejects.toBeInstanceOf(AttributeValidationError);
   });
 
+  it('updates at the cap boundary do not falsely trip the limit', async () => {
+    const run = await newRun();
+    // Fill to exactly the cap.
+    const initial = Array.from({ length: 64 }, (_, i) => ({
+      key: `k${i}`,
+      value: 'v',
+    }));
+    await storage.runs.experimentalSetAttributes!(run.runId, initial);
+
+    // Updating an existing key (no growth) must succeed even at the cap.
+    const result = await storage.runs.experimentalSetAttributes!(run.runId, [
+      { key: 'k0', value: 'updated' },
+    ]);
+    expect(result.attributes.k0).toBe('updated');
+    expect(Object.keys(result.attributes)).toHaveLength(64);
+  });
+
+  it('repeated identical calls are idempotent', async () => {
+    const run = await newRun();
+    const changes = [
+      { key: 'phase', value: 'init' as string | null },
+      { key: 'tenant', value: 't1' as string | null },
+    ];
+
+    const first = await storage.runs.experimentalSetAttributes!(
+      run.runId,
+      changes
+    );
+    const second = await storage.runs.experimentalSetAttributes!(
+      run.runId,
+      changes
+    );
+    const third = await storage.runs.experimentalSetAttributes!(
+      run.runId,
+      changes
+    );
+
+    // All three converge on the same snapshot — second/third are no-op
+    // upserts of the same values.
+    expect(first.attributes).toEqual({ phase: 'init', tenant: 't1' });
+    expect(second.attributes).toEqual(first.attributes);
+    expect(third.attributes).toEqual(first.attributes);
+  });
+
   it('rejects when post-merge count exceeds limit', async () => {
     const run = await newRun();
     // Pre-fill to within the cap. The MVP cap is 64.

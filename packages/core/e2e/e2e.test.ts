@@ -3472,5 +3472,90 @@ describe('e2e', () => {
         expect(attrStepEvents.length).toBeGreaterThanOrEqual(2);
       }
     );
+
+    test(
+      'fire-and-forget: void experimental_setAttributes lands without awaiting',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesFireAndForgetWorkflow'),
+          []
+        );
+        const output = await run.returnValue;
+        expect(output).toBe('completed');
+
+        const world = await getWorld();
+
+        // The workflow returned `'completed'` without awaiting any of
+        // the three `experimental_setAttributes` calls. The third call
+        // (`phase: 'done'`) is dispatched immediately before `return`
+        // and may not have landed by the time `run.returnValue`
+        // resolves — the drain-on-completion path commits the
+        // step_created event before run_completed lands, but the step
+        // body itself runs out-of-band on the queue worker. Poll
+        // until the eventual state converges.
+        let persisted = await world.runs.get(run.runId);
+        const deadline = Date.now() + 15_000;
+        while (
+          persisted?.attributes?.phase !== 'done' &&
+          Date.now() < deadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          persisted = await world.runs.get(run.runId);
+        }
+
+        expect(persisted?.attributes).toEqual({
+          phase: 'done',
+          mode: 'fire-and-forget',
+        });
+      }
+    );
+
+    test(
+      'Promise.all of disjoint-key writes: every key lands',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesParallelWorkflow'),
+          []
+        );
+        const output = await run.returnValue;
+        expect(output).toBe('done');
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        // Disjoint-key writes never collide, so all three keys must
+        // land regardless of dispatch ordering at the world.
+        expect(persisted?.attributes).toEqual({ a: '1', b: '2', c: '3' });
+      }
+    );
+
+    test(
+      'workflow throws after awaited setAttributes: attribute still persists on the failed run',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesThrowsAfterWorkflow'),
+          []
+        );
+        // The workflow throws — `returnValue` rejects.
+        await expect(run.returnValue).rejects.toThrow(/intentional failure/);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        expect(persisted?.status).toBe('failed');
+        // The attribute was awaited and therefore landed before the
+        // throw. The `run_failed` lifecycle write must preserve the
+        // attribute snapshot — the per-run file lock guarantees the
+        // lifecycle handler reads the fresh value off disk inside its
+        // critical section before writing the failed state back.
+        expect(persisted?.attributes).toEqual({
+          phase: 'about-to-fail',
+          reason: 'intentional',
+        });
+      }
+    );
   });
 });

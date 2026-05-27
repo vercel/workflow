@@ -129,7 +129,48 @@ export async function myWorkflow(orderId: string) {
 
 The workflow-body path validates input inside the VM and then dispatches the canonical `AttributeChange[]` through an internal `__builtin_set_attributes` step bridge — see "How workflow-body dispatch works" below. The mutation is materialized on the run entity by the step body.
 
-The host-side export (the one resolved when the `workflow` package-exports condition is **not** `workflow`, i.e. step bodies and plain host code) throws `FatalError` with a message pointing callers back to the workflow body. There is no step-side dispatch path in the MVP.
+The host-side export (the one resolved when the `workflow` package-exports condition is **not** `workflow`, i.e. step bodies and plain host code) throws `FatalError` with a message pointing callers back to the workflow body. There is no step-side dispatch path in the MVP — the workflow-body-only restriction is a scope cut for the MVP, not an architectural constraint, and may be relaxed in a follow-up.
+
+#### Usage patterns
+
+Three call patterns are supported. Pick by whether you need ordering and whether you need to know the write has landed before continuing:
+
+**Awaited (default).** The workflow blocks on the write before continuing. Use this when later workflow logic depends on the attribute being persisted, or when you want errors (validation, world rejection) to surface immediately.
+
+```ts
+'use workflow';
+await experimental_setAttributes({ phase: 'init' });
+const result = await processOrder();
+await experimental_setAttributes({ phase: 'done', orderId: result.id });
+```
+
+**Fire-and-forget (`void`).** Drop the `await` to let the workflow proceed without blocking. The pending step queues at the next workflow suspension (the next `await` on a runtime primitive such as a step result, `sleep`, hook, etc.). This is the canonical pattern for observability / tracking metadata where the workflow doesn't depend on the write — and works the same way as any other fire-and-forget step call.
+
+```ts
+'use workflow';
+void experimental_setAttributes({ phase: 'init', orderId });
+// Workflow doesn't block. The step queues during the next await.
+const result = await processOrder();
+void experimental_setAttributes({ phase: 'done' });
+return result;
+```
+
+There are two trade-offs to know about:
+
+1. **Order of arrival at the world is not workflow-source order.** Fire-and-forget steps run out-of-band on the queue worker. A `void` write to one key followed by an `await` write to the same key may race; LWW-by-arrival applies (see "Concurrent writes" below).
+
+2. **The last `void` before `return` may not land.** If you place a `void experimental_setAttributes(...)` immediately before returning, with no intervening `await` on a runtime primitive, the workflow runtime's drain-on-completion path commits the `step_created` event but does *not* queue the step body for execution — the step never runs. In practice workflows almost always have a meaningful `await` somewhere after the last fire-and-forget call (a step, a sleep, a hook); if you don't, add `await sleep('0s')` before returning, or use the awaited form for that final write.
+
+**Parallel (`Promise.all`).** Multiple calls dispatch concurrently. Writes to disjoint keys all land. Writes to the same key resolve last-write-wins by *arrival order at the world* (not the order the workflow body issued the calls) — so don't use `Promise.all` for writes that must observe a specific order to the same key.
+
+```ts
+'use workflow';
+await Promise.all([
+  experimental_setAttributes({ phase: 'init' }),    // disjoint keys — all land
+  experimental_setAttributes({ orderId: id }),
+  experimental_setAttributes({ tenant: 't1' }),
+]);
+```
 
 #### Optional world support
 
@@ -157,16 +198,17 @@ Because attributes are stored plaintext on the `WorkflowRun` entity, any UI that
 
 ## Trade-offs and known limitations
 
-### Concurrent writes to the same run
+### Concurrent writes to the same key
 
-The MVP applies **last-write-wins by arrival order**. Two concurrent `experimental_setAttributes` calls writing to the same key produce a final state matching whichever request the world processes second. There is no conditional / `expectedValue` semantic and no `unique: true` mode.
+The MVP applies **last-write-wins by arrival order at the world**. Two concurrent `experimental_setAttributes` calls writing the same key produce a final state matching whichever request the world processes second. There is no conditional / `expectedValue` semantic and no `unique: true` mode.
 
-Workflow body writes are serialized by the workflow VM (one step at a time within a single workflow body), so the concurrent case in practice arises when:
+Writes from a single `await`-ed call chain are serialized by the workflow VM and land in workflow-source order. The concurrent / racy case applies to:
 
-- Multiple steps within the same workflow run write the same key in parallel (`Promise.all`).
-- A step writes a key while another concurrent step is also writing.
+- Multiple `experimental_setAttributes` calls inside one `Promise.all` writing the same key (the workflow VM dispatches them concurrently; the world sees them in scheduler order, not source order).
+- `void experimental_setAttributes(...)` followed by another call to the same key — the fire-and-forget step may still be in flight when the next call lands.
+- Multiple workflows writing the same key on the same run (rare — usually one workflow owns a run).
 
-Both are well-defined under LWW-by-arrival, but applications that need conditional semantics should wait for the 5.0.0 release. We will not retrofit conditional writes onto the MVP path.
+Disjoint-key writes are unaffected: every call lands, regardless of pattern. Applications that need conditional semantics on a shared key should wait for the 5.0.0 release; we will not retrofit conditional writes onto the MVP path.
 
 ### No event-log history
 
@@ -186,26 +228,35 @@ The 5.0.0 path closes this gap.
 
 If you need behavior the MVP does not provide (read, list, filter, initial attributes at `start`, writer attribution), wait for 5.0.0 rather than building around the MVP surface.
 
-## Test plan
+## Test coverage
 
-- Unit tests in `@workflow/core` for:
-  - Validation rules (length, `$` prefix, post-merge count cap)
-  - `experimental_setAttributes({})` is a no-op (no dispatch, no events)
-  - `undefined` value normalizes to a `null`-valued change on the wire
-  - Workflow VM with no `useStep` bound (= called outside a workflow) throws `FatalError`
-  - Host-side stub (resolved from step or plain code) throws `FatalError`
-- `world-local` integration tests:
-  - `experimental_setAttributes` from a workflow body materializes onto the run row
-  - Merge semantics: setting + unsetting in a single call leaves the run with the expected snapshot
-  - Idempotency: repeated identical calls converge to the same final state
-- `world-postgres` integration tests: same shape as `world-local`
-- `world-vercel` contract test: verifies the request body shape matches the documented wire format
-- E2E in `workbench/nextjs-turbopack`:
-  1. Start a workflow
-  2. Workflow body calls `experimental_setAttributes({ tenant: 't1', phase: 'init' })`
-  3. Awaits a step that calls `experimental_setAttributes({ phase: 'processing', orderId: 'ord_123' })`
-  4. Then `experimental_setAttributes({ phase: 'done', orderId: undefined })`
-  5. Assert via `world.runs.get(runId)`: `attributes === { tenant: 't1', phase: 'done' }`
+Unit tests in `@workflow/world` (validation surface) and `@workflow/core` (VM-side dispatch + host-side stub):
+
+- Validation rules — key length, value byte cap, `$` prefix, per-batch duplicates, post-merge count cap (with `existingKeys` so updates of present keys don't falsely trip the cap)
+- `experimental_setAttributes({})` is a no-op (no dispatch, no events)
+- `undefined` value normalizes to a `null`-valued change on the wire
+- Workflow VM with no `WORKFLOW_USE_STEP` bound throws `FatalError`
+- Host-side stub (resolved when not in the workflow VM) throws `FatalError` directing the caller back to a workflow body
+
+Integration tests in `world-local`:
+
+- Upsert, merge across calls, unset via `null`, set-and-unset in a single batch
+- Validation rejection (reserved prefix, oversize key, oversize value, post-merge cap)
+- Cap-boundary updates: a write that only updates existing keys must succeed even when the run is exactly at the cap
+- Idempotency: repeated identical calls converge to the same final snapshot
+- Concurrent writes serialize via the per-run mutex; no lost writes across 20 parallel calls
+
+Integration tests in `world-postgres`:
+
+- Upsert, merge across calls, unset via `null` (the SQL `jsonb_set` / `-` chain is exercised through these)
+- Atomic cap enforcement inside the `UPDATE`'s `WHERE` clause; concurrent writers cannot collectively push past the per-run cap
+
+End-to-end in `workbench/nextjs-turbopack` (exercises the full SWC plugin + workflow VM + step worker + `world-vercel` wire path against the production workflow-server `/v2/runs/:runId/attributes` endpoint):
+
+- Awaited workflow-body calls dispatch through the `__builtin_set_attributes` step bridge and merge correctly (the test inspects the run's event log to confirm a `step_created` / `step_completed` pair was emitted)
+- Fire-and-forget (`void experimental_setAttributes`) attributes land before the run terminates
+- `Promise.all` of disjoint-key writes — every key persists
+- Workflow throws after an awaited `experimental_setAttributes` — the attribute persists on the now-`failed` run (the per-run file lock on `run_failed` re-reads inside the critical section so the attribute snapshot survives the lifecycle write)
 
 ## Migration to 5.0.0
 
@@ -266,17 +317,10 @@ Validation lives in a single helper exported from `@workflow/world` (`validateAt
 
 ### Run row reconstruction had to thread `attributes` through
 
-`world-local`'s events storage rebuilds the run row on every lifecycle event (`run_started`, `run_completed`, `run_failed`, `run_cancelled`) by explicitly listing fields rather than spreading. Without forwarding `attributes: currentRun.attributes` through each branch, any attribute set before the run completed would be silently dropped by the next lifecycle event. The fix was local to the four reconstruction sites — the field is otherwise untouched by event-sourced code. A subtler race remains: a `experimental_setAttributes` write landing in the same async window as a `run_completed` event read can be clobbered, but that's the same LWW-by-arrival semantic documented above.
+`world-local`'s events storage rebuilds the run row on every lifecycle event (`run_started`, `run_completed`, `run_failed`, `run_cancelled`) by explicitly listing fields rather than spreading. Without forwarding `attributes` through each branch, any attribute set before the run completed would be silently dropped by the next lifecycle event. Each lifecycle write now also takes the per-run file lock (`withRunFileLock`) and re-reads the on-disk run inside the critical section, so an `experimental_setAttributes` call that lands in the same async window as a `run_completed` event is no longer clobbered.
 
 ### Optional world method: feature-detect, warn once
 
 `runs.experimentalSetAttributes` is optional on the `World` interface so community worlds (Redis, MongoDB, Turso, etc.) continue to build and run without adopting the experimental API. The SDK helper feature-detects the method's presence on first dispatch; if absent, it logs a single `console.warn` for the lifetime of the process and resolves silently for that call and all subsequent calls. Users do not need to feature-detect in their own code — calling `experimental_setAttributes` against an unsupporting world is safe but ineffective.
 
-### Tests
-
-- **`@workflow/world`** — 18 unit tests covering validation rules (key length, reserved prefix, value byte cap, batch cap, duplicate keys) and the `applyAttributeChanges` merge helper.
-- **`@workflow/core`** — 10 unit tests covering context detection (workflow body / step body / neither), undefined-to-null normalization, empty-record no-op, validation surface (throws `FatalError`), and feature-detect-with-single-warning when the world lacks support.
-- **`@workflow/world-local`** — 10 integration tests covering upsert, merge across calls, unset via null, set-and-unset in a single batch, not-found errors, all four validation flavors, and concurrent writes (per-run mutex prevents lost writes).
-- **`@workflow/world-postgres`** — 3 integration tests added under the existing Postgres container suite covering upsert, merge across calls, and unset via null. The SQL-side merge (`jsonb_set` / `-`) is exercised through these.
-
-End-to-end coverage in the workbench app is intentionally deferred — running through the full SWC plugin + workflow VM path can land once the workflow-server preview deployment carrying the endpoint is live.
+See "Test coverage" above for the full test surface that ships with this change.

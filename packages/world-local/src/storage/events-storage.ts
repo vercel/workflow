@@ -298,6 +298,7 @@ export function createEventsStorage(
                 error: undefined,
                 startedAt: undefined,
                 completedAt: undefined,
+                attributes: {},
                 createdAt: now,
                 updatedAt: now,
               };
@@ -547,6 +548,7 @@ export function createEventsStorage(
             error: undefined,
             startedAt: undefined,
             completedAt: undefined,
+            attributes: {},
             createdAt: now,
             updatedAt: now,
           };
@@ -576,45 +578,55 @@ export function createEventsStorage(
               return { run: currentRun };
             }
 
-            run = await writeRunUnderLifecycleLock(basedir, effectiveRunId, tag, {
-              runId: currentRun.runId,
-              deploymentId: currentRun.deploymentId,
-              workflowName: currentRun.workflowName,
-              specVersion: currentRun.specVersion,
-              executionContext: currentRun.executionContext,
-              input: currentRun.input,
-              createdAt: currentRun.createdAt,
-              expiredAt: currentRun.expiredAt,
-              status: 'running',
-              output: undefined,
-              error: undefined,
-              completedAt: undefined,
-              startedAt: currentRun.startedAt ?? now,
-              updatedAt: now,
-              attributes: currentRun.attributes,
-            });
+            run = await writeRunUnderLifecycleLock(
+              basedir,
+              effectiveRunId,
+              tag,
+              {
+                runId: currentRun.runId,
+                deploymentId: currentRun.deploymentId,
+                workflowName: currentRun.workflowName,
+                specVersion: currentRun.specVersion,
+                executionContext: currentRun.executionContext,
+                input: currentRun.input,
+                createdAt: currentRun.createdAt,
+                expiredAt: currentRun.expiredAt,
+                status: 'running',
+                output: undefined,
+                error: undefined,
+                completedAt: undefined,
+                startedAt: currentRun.startedAt ?? now,
+                updatedAt: now,
+                attributes: currentRun.attributes,
+              }
+            );
           }
         } else if (data.eventType === 'run_completed' && 'eventData' in data) {
           const completedData = data.eventData as { output?: any };
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
-            run = await writeRunUnderLifecycleLock(basedir, effectiveRunId, tag, {
-              runId: currentRun.runId,
-              deploymentId: currentRun.deploymentId,
-              workflowName: currentRun.workflowName,
-              specVersion: currentRun.specVersion,
-              executionContext: currentRun.executionContext,
-              input: currentRun.input,
-              createdAt: currentRun.createdAt,
-              expiredAt: currentRun.expiredAt,
-              startedAt: currentRun.startedAt,
-              status: 'completed',
-              output: completedData.output,
-              error: undefined,
-              completedAt: now,
-              updatedAt: now,
-              attributes: currentRun.attributes,
-            });
+            run = await writeRunUnderLifecycleLock(
+              basedir,
+              effectiveRunId,
+              tag,
+              {
+                runId: currentRun.runId,
+                deploymentId: currentRun.deploymentId,
+                workflowName: currentRun.workflowName,
+                specVersion: currentRun.specVersion,
+                executionContext: currentRun.executionContext,
+                input: currentRun.input,
+                createdAt: currentRun.createdAt,
+                expiredAt: currentRun.expiredAt,
+                startedAt: currentRun.startedAt,
+                status: 'completed',
+                output: completedData.output,
+                error: undefined,
+                completedAt: now,
+                updatedAt: now,
+                attributes: currentRun.attributes,
+              }
+            );
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -630,24 +642,29 @@ export function createEventsStorage(
             // The error field is SerializedData (Uint8Array) produced by
             // dehydrateRunError. We store it verbatim — consumers hydrate it
             // via hydrateRunError to reconstruct the original thrown value.
-            run = await writeRunUnderLifecycleLock(basedir, effectiveRunId, tag, {
-              runId: currentRun.runId,
-              deploymentId: currentRun.deploymentId,
-              workflowName: currentRun.workflowName,
-              specVersion: currentRun.specVersion,
-              executionContext: currentRun.executionContext,
-              input: currentRun.input,
-              createdAt: currentRun.createdAt,
-              expiredAt: currentRun.expiredAt,
-              startedAt: currentRun.startedAt,
-              status: 'failed',
-              output: undefined,
-              error: failedData.error as Uint8Array,
-              errorCode: failedData.errorCode,
-              completedAt: now,
-              updatedAt: now,
-              attributes: currentRun.attributes,
-            });
+            run = await writeRunUnderLifecycleLock(
+              basedir,
+              effectiveRunId,
+              tag,
+              {
+                runId: currentRun.runId,
+                deploymentId: currentRun.deploymentId,
+                workflowName: currentRun.workflowName,
+                specVersion: currentRun.specVersion,
+                executionContext: currentRun.executionContext,
+                input: currentRun.input,
+                createdAt: currentRun.createdAt,
+                expiredAt: currentRun.expiredAt,
+                startedAt: currentRun.startedAt,
+                status: 'failed',
+                output: undefined,
+                error: failedData.error as Uint8Array,
+                errorCode: failedData.errorCode,
+                completedAt: now,
+                updatedAt: now,
+                attributes: currentRun.attributes,
+              }
+            );
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -656,23 +673,28 @@ export function createEventsStorage(
         } else if (data.eventType === 'run_cancelled') {
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
-            run = await writeRunUnderLifecycleLock(basedir, effectiveRunId, tag, {
-              runId: currentRun.runId,
-              deploymentId: currentRun.deploymentId,
-              workflowName: currentRun.workflowName,
-              specVersion: currentRun.specVersion,
-              executionContext: currentRun.executionContext,
-              input: currentRun.input,
-              createdAt: currentRun.createdAt,
-              expiredAt: currentRun.expiredAt,
-              startedAt: currentRun.startedAt,
-              status: 'cancelled',
-              output: undefined,
-              error: undefined,
-              completedAt: now,
-              updatedAt: now,
-              attributes: currentRun.attributes,
-            });
+            run = await writeRunUnderLifecycleLock(
+              basedir,
+              effectiveRunId,
+              tag,
+              {
+                runId: currentRun.runId,
+                deploymentId: currentRun.deploymentId,
+                workflowName: currentRun.workflowName,
+                specVersion: currentRun.specVersion,
+                executionContext: currentRun.executionContext,
+                input: currentRun.input,
+                createdAt: currentRun.createdAt,
+                expiredAt: currentRun.expiredAt,
+                startedAt: currentRun.startedAt,
+                status: 'cancelled',
+                output: undefined,
+                error: undefined,
+                completedAt: now,
+                updatedAt: now,
+                attributes: currentRun.attributes,
+              }
+            );
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),

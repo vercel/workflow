@@ -65,17 +65,22 @@ export const WorkflowRunBaseSchema = z.object({
   errorCode: z.string().optional(),
   /**
    * Plaintext string-string metadata attached to the run via
-   * `setAttributes()` (or, in the future, materialized from `attr_set`
-   * events). Stored unencrypted alongside other plaintext fields so
-   * observability surfaces can read it without going through the
-   * decryption pipeline.
+   * `experimental_setAttributes()` (or, in the future, materialized
+   * from `attr_set` events). Stored unencrypted alongside other
+   * plaintext fields so observability surfaces can read it without
+   * going through the decryption pipeline.
    *
-   * EXPERIMENTAL (MVP): runs created before this field landed read as
-   * `undefined`. The full Workflow Attributes feature replaces the
-   * direct-mutation MVP path with an event-sourced model — see the
-   * attributes-mvp changelog entry.
+   * Defaults to `{}` after schema parsing so consumers always receive
+   * a record regardless of world. World adapters need not initialize
+   * the field on disk — `world-local` JSON files written before this
+   * field existed, and rows from any other adapter that omits the
+   * column, both read as `{}` after Zod parses them.
+   *
+   * EXPERIMENTAL (MVP): the full Workflow Attributes feature replaces
+   * the direct-mutation MVP path with an event-sourced model — see
+   * the attributes-mvp changelog entry.
    */
-  attributes: z.record(z.string(), z.string()).optional(),
+  attributes: z.record(z.string(), z.string()).default({}),
   expiredAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
