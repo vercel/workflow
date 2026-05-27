@@ -796,15 +796,12 @@ export function workflowEntrypoint(
                           },
                         }));
 
-                      // Snapshot the loaded events' tail eventId as the OCC
-                      // fence. If a concurrent writer (e.g. `resumeHook`)
-                      // committed something between our load and this write,
-                      // the server's CAS rejects and we retry *in-place*
-                      // with a freshly-loaded fence rather than throwing
-                      // the whole tick away. Falling back to queue
-                      // redelivery thunder-herds — every redelivery spawns
-                      // another concurrent tick which fences-conflicts
-                      // again, and workflows stall in `running`.
+                      // The last known event ID is used for optimistic concurrency
+                      // control, being provided to the World, which will reject if any
+                      // other events arrive between our event log read and event write.
+                      // On fail, we retry *in-place* with a freshly-loaded fence rather than
+                      // terminating the invocation. Falling back to queue redelivery directly
+                      // could cause retry-storms under high load.
                       let fenceEventId: string | undefined =
                         events.length > 0
                           ? events[events.length - 1].eventId
@@ -834,14 +831,12 @@ export function workflowEntrypoint(
                               throw err;
                             }
                             // Fence conflicts surface a specific error
-                            // message from workflow-server. Anything
-                            // else (workflow-server "Workflow wait …",
-                            // world-local 'Wait "…" already completed',
-                            // and any other world's duplicate-wait
-                            // shape) is the existing
-                            // wait-already-completed conflict — skip
-                            // and continue, matching pre-OCC behavior
-                            // across worlds.
+                            // message from workflow-server.
+                            // Most 409s will simply exit since we assume a separate
+                            // invocation is active. This should hold true for fence conflicts
+                            // too, but to guarantee correctness, will be re-tried here directly.
+                            // TODO: We can remove the retry here after extensive validation.
+                            // The cost is low in the meantime.
                             const isFenceConflict = /fence conflict/i.test(
                               err.message
                             );

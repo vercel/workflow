@@ -392,17 +392,18 @@ export interface CreateEventParams {
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**
-   * OCC fence: when set, the event write is rejected with a conflict
-   * unless the run's materialized `lastKnownEventId` equals this value.
-   * Lets the runtime stop a stale-snapshot tick from advancing the log.
+   * Optimistic concurrency control fence: when set, the event write is
+   * rejected with a conflict unless the run's materialized `lastKnownEventId`
+   * equals this value. Lets the runtime stop an invocation operating on a stale
+   * event log snapshot from advancing the log.
    */
   lastKnownEventId?: string;
   /**
-   * OCC fence (alternative form): unix-ms cutoff. Server resolves to the
-   * highest eventId strictly before this timestamp and uses that as the
-   * expected fence. Lets `resumeHook` fence `hook_received` after anything
-   * the caller could have observed without paying for a separate read.
-   * Ignored when `lastKnownEventId` is also set.
+   * Optimistic concurrency control fence (alternative form), see above for reasoning.
+   * This is a unix-ms cutoff. Server resolves to the highest eventId strictly before this
+   * timestamp and uses that as the expected fence. Lets `resumeHook` fence
+   * `hook_received` after anything the caller could have observed without paying
+   * for a separate read. Ignored when `lastKnownEventId` is also set.
    */
   asOfTimestamp?: number;
 }

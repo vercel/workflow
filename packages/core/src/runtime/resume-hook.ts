@@ -156,12 +156,11 @@ export async function resumeHook<T = any>(
           })
         );
 
-        // Append `hook_received` unconditionally — ULID ordering already
-        // places this write after anything committed before us. We do
-        // NOT send `lastKnownEventId` here: a fence would only ever
-        // reject the hook in favor of an unrelated concurrent write,
-        // which would lose the user's hook signal. Stale-snapshot
-        // protection lives on the *tick* writes that consume hooks.
+        //  Create a hook_received event with the payload 
+        //
+        // From a concurrency control perspective, this is done unconditionally.
+        // Any other event creations or invocations use the `lastKnownEventId`
+        // fence to ensure hook_received being added won't cause ordering issues.
         await world.events.create(
           hook.runId,
           {
