@@ -3193,30 +3193,19 @@ export async function experimentalSetAttributesWorkflow(input: number) {
 /**
  * Fire-and-forget pattern: `void experimental_setAttributes(...)` lets
  * the workflow body proceed without blocking on the attribute write.
- * The step is queued on the next workflow suspension (any `await` that
- * yields back to the runtime). This is the canonical observability /
- * tracking pattern — the caller doesn't care about ordering, just that
- * the data eventually appears on the run.
- *
- * Caveat: a `void` call placed immediately before `return` (with no
- * intervening `await` on a runtime primitive) may not land — drain on
- * completion commits the step_created event but does not queue the
- * step body itself. Real workflows almost always have a real await
- * after the last `void`, but it's worth knowing.
+ * Calls placed before a workflow suspension queue immediately; calls
+ * placed right before `return` are queued by drain-on-completion.
+ * Either way, every fire-and-forget step body executes — making this
+ * the canonical pattern for observability / tracking metadata.
  */
 export async function experimentalSetAttributesFireAndForgetWorkflow() {
   'use workflow';
   void experimental_setAttributes({ phase: 'init', mode: 'fire-and-forget' });
-  // The next `await sleep` forces a suspension; the init step queues
-  // and executes during that window.
   await sleep('100ms');
   void experimental_setAttributes({ phase: 'mid' });
-  // Same — this sleep queues the `phase: 'mid'` step.
   await sleep('100ms');
+  // No `await` after this call — drain queues it on workflow completion.
   void experimental_setAttributes({ phase: 'done' });
-  // Final sleep gives the `phase: 'done'` step a suspension to queue
-  // on before we return.
-  await sleep('100ms');
   return 'completed';
 }
 
