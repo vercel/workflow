@@ -4,6 +4,7 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
+  experimental_setAttributes,
   FatalError,
   fetch,
   getStepMetadata,
@@ -11,7 +12,6 @@ import {
   getWritable,
   type RequestWithResponse,
   RetryableError,
-  setAttributes,
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
@@ -3175,17 +3175,17 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
 // Workflow Attributes MVP — workflow-body-only API.
 
 /**
- * Calls `setAttributes` directly from the workflow body. The call is
- * dispatched through the `__builtin_set_attributes` step bridge, so the
- * mutation gets a `step_created`/`step_completed` event pair. The third
- * call sets a key to `undefined` and the test verifies the key is
- * absent from the final attribute map.
+ * Calls `experimental_setAttributes` directly from the workflow body.
+ * The call is dispatched through the `__builtin_set_attributes` step
+ * bridge, so the mutation gets a `step_created`/`step_completed` event
+ * pair. The third call sets a key to `undefined` and the test verifies
+ * the key is absent from the final attribute map.
  */
-export async function setAttributesWorkflow(input: number) {
+export async function experimentalSetAttributesWorkflow(input: number) {
   'use workflow';
-  await setAttributes({ phase: 'init', source: 'workflow-body' });
+  await experimental_setAttributes({ phase: 'init', source: 'workflow-body' });
   const tripled = input * 3;
-  await setAttributes({ phase: 'done' });
-  await setAttributes({ source: undefined });
+  await experimental_setAttributes({ phase: 'done' });
+  await experimental_setAttributes({ source: undefined });
   return tripled;
 }

@@ -11,11 +11,11 @@ The MVP lets workflow and step code attach plaintext `string → string` metadat
 
 ## What MVP supports
 
-- `setAttributes(record)` callable from a **workflow body** (`"use workflow"` function), dispatched via an internal `__builtin_set_attributes` step bridge so the mutation gets a `step_created → step_completed` event pair
+- `experimental_setAttributes(record)` callable from a **workflow body** (`"use workflow"` function), dispatched via an internal `__builtin_set_attributes` step bridge so the mutation gets a `step_created → step_completed` event pair
 - Attributes are materialized onto the `WorkflowRun` entity, plaintext, and visible via `world.runs.get()` / `world.runs.list()` and any observability UI built on top of those
 - World implementations emit a side-channel observability record per write (in `world-vercel`, this hooks into the same observability/analytics pipeline already used for other run lifecycle events)
 
-Calling `setAttributes` from a step body or plain host code is intentionally not supported in the MVP — the host-side export throws `FatalError` directing callers back to a workflow body. This keeps the implementation a single dispatch path; step-body support can be added later without breaking the workflow-body contract.
+Calling `experimental_setAttributes` from a step body or plain host code is intentionally not supported in the MVP — the host-side export throws `FatalError` directing callers back to a workflow body. This keeps the implementation a single dispatch path; step-body support can be added later without breaking the workflow-body contract.
 
 ## What MVP does **not** support (deferred to 5.0.0)
 
@@ -56,7 +56,7 @@ runs: {
    * are removed. Other keys on the run are untouched.
    *
    * OPTIONAL. World implementations may omit this method; the SDK
-   * detects absence and no-ops `setAttributes` with a warning so that
+   * detects absence and no-ops `experimental_setAttributes` with a warning so that
    * third-party / community worlds continue to function without
    * adopting the experimental API.
    *
@@ -100,7 +100,7 @@ A new export from `@workflow/core` (re-exported by `workflow`):
 {/*@skip-typecheck - snippet, not runnable code*/}
 
 ```ts
-function setAttributes(
+function experimental_setAttributes(
   attrs: Record<string, string | undefined>
 ): Promise<void>
 ```
@@ -114,16 +114,16 @@ Validation (shared helper, applied both client-side and server-side):
 - Maximum 64 attributes per run (validated against the post-merge snapshot when the server applies)
 - Violations throw `FatalError` from `@workflow/errors`
 
-`setAttributes` is callable only from a workflow body:
+`experimental_setAttributes` is callable only from a workflow body:
 
 ```ts
-import { setAttributes } from 'workflow';
+import { experimental_setAttributes } from 'workflow';
 
 export async function myWorkflow(orderId: string) {
   'use workflow';
-  await setAttributes({ phase: 'init', orderId });
+  await experimental_setAttributes({ phase: 'init', orderId });
   // ...
-  await setAttributes({ phase: 'done' });
+  await experimental_setAttributes({ phase: 'done' });
 }
 ```
 
@@ -133,7 +133,7 @@ The host-side export (the one resolved when the `workflow` package-exports condi
 
 #### Optional world support
 
-Because `runs.experimentalSetAttributes` is **optional** on the World interface (see §1), the `__builtin_set_attributes` step body checks for its presence before dispatching and silently no-ops when absent. User code does not need to feature-detect; calling `setAttributes` against an unsupporting world is safe but ineffective.
+Because `runs.experimentalSetAttributes` is **optional** on the World interface (see §1), the `__builtin_set_attributes` step body checks for its presence before dispatching and silently no-ops when absent. User code does not need to feature-detect; calling `experimental_setAttributes` against an unsupporting world is safe but ineffective.
 
 ### 4. World implementations
 
@@ -159,7 +159,7 @@ Because attributes are stored plaintext on the `WorkflowRun` entity, any UI that
 
 ### Concurrent writes to the same run
 
-The MVP applies **last-write-wins by arrival order**. Two concurrent `setAttributes` calls writing to the same key produce a final state matching whichever request the world processes second. There is no conditional / `expectedValue` semantic and no `unique: true` mode.
+The MVP applies **last-write-wins by arrival order**. Two concurrent `experimental_setAttributes` calls writing to the same key produce a final state matching whichever request the world processes second. There is no conditional / `expectedValue` semantic and no `unique: true` mode.
 
 Workflow body writes are serialized by the workflow VM (one step at a time within a single workflow body), so the concurrent case in practice arises when:
 
@@ -182,7 +182,7 @@ The 5.0.0 path closes this gap.
 
 ### SDK surface stability
 
-`setAttributes(record)` is intended to be stable across MVP and 5.0.0. User code calling it under the MVP will continue to work after the full feature lands; only the runtime dispatch path changes (`"use step"` indirection → workflow-VM-native intercept, parallel to `sleep`).
+`experimental_setAttributes(record)` is intended to be stable across MVP and 5.0.0. User code calling it under the MVP will continue to work after the full feature lands; only the runtime dispatch path changes (`"use step"` indirection → workflow-VM-native intercept, parallel to `sleep`).
 
 If you need behavior the MVP does not provide (read, list, filter, initial attributes at `start`, writer attribution), wait for 5.0.0 rather than building around the MVP surface.
 
@@ -190,28 +190,28 @@ If you need behavior the MVP does not provide (read, list, filter, initial attri
 
 - Unit tests in `@workflow/core` for:
   - Validation rules (length, `$` prefix, post-merge count cap)
-  - `setAttributes({})` is a no-op (no dispatch, no events)
+  - `experimental_setAttributes({})` is a no-op (no dispatch, no events)
   - `undefined` value normalizes to a `null`-valued change on the wire
   - Workflow VM with no `useStep` bound (= called outside a workflow) throws `FatalError`
   - Host-side stub (resolved from step or plain code) throws `FatalError`
 - `world-local` integration tests:
-  - `setAttributes` from a workflow body materializes onto the run row
+  - `experimental_setAttributes` from a workflow body materializes onto the run row
   - Merge semantics: setting + unsetting in a single call leaves the run with the expected snapshot
   - Idempotency: repeated identical calls converge to the same final state
 - `world-postgres` integration tests: same shape as `world-local`
 - `world-vercel` contract test: verifies the request body shape matches the documented wire format
 - E2E in `workbench/nextjs-turbopack`:
   1. Start a workflow
-  2. Workflow body calls `setAttributes({ tenant: 't1', phase: 'init' })`
-  3. Awaits a step that calls `setAttributes({ phase: 'processing', orderId: 'ord_123' })`
-  4. Then `setAttributes({ phase: 'done', orderId: undefined })`
+  2. Workflow body calls `experimental_setAttributes({ tenant: 't1', phase: 'init' })`
+  3. Awaits a step that calls `experimental_setAttributes({ phase: 'processing', orderId: 'ord_123' })`
+  4. Then `experimental_setAttributes({ phase: 'done', orderId: undefined })`
   5. Assert via `world.runs.get(runId)`: `attributes === { tenant: 't1', phase: 'done' }`
 
 ## Migration to 5.0.0
 
 When the full attributes feature ships:
 
-- `setAttributes` (SDK) — unchanged signature, new dispatch path
+- `experimental_setAttributes` (SDK) — unchanged signature, new dispatch path
 - `runs.experimentalSetAttributes` (world interface) — deprecated, then removed; replaced by `events.create(runId, { eventType: 'attr_set', eventData: { changes, writer } })`
 - Wire endpoint — `POST /v2/runs/:runId/attributes` removed; the same body shape posts to `POST /v2/runs/:id/events`
 - Pre-existing attribute values on MVP-era runs remain on the run entity but are not represented in the event log
@@ -224,9 +224,9 @@ This section records concrete decisions taken while landing the MVP that weren't
 
 ### How workflow-body dispatch works
 
-`setAttributes` from a workflow body is wired through an internal built-in step, `__builtin_set_attributes`, defined in `packages/workflow/src/internal/builtins.ts` alongside the other workflow-side builtins (`__builtin_response_json`, etc.). The mechanism:
+`experimental_setAttributes` from a workflow body is wired through an internal built-in step, `__builtin_set_attributes`, defined in `packages/workflow/src/internal/builtins.ts` alongside the other workflow-side builtins (`__builtin_response_json`, etc.). The mechanism:
 
-1. The workflow VM bundle resolves `setAttributes` to `packages/core/src/workflow/set-attributes.ts` (via the `workflow` package-exports condition).
+1. The workflow VM bundle resolves `experimental_setAttributes` to `packages/core/src/workflow/set-attributes.ts` (via the `workflow` package-exports condition).
 2. That helper validates the input record inline (no shared helper, no cross-file dependency from a 'use step' file) and produces canonical `AttributeChange[]`.
 3. It dispatches through the standard workflow-VM step mechanism: `globalThis[WORKFLOW_USE_STEP]('__builtin_set_attributes')(changes)`. The `useStep` dispatcher is the same one used by every other step call from a workflow body, populated by `packages/core/src/workflow.ts` at VM bootstrap.
 4. The dispatch queues a step (`step_created`), the host runs `__builtin_set_attributes(changes)` from `packages/workflow/src/internal/builtins.ts`. The step body reads the active world and current run id directly from `globalThis` symbols (`Symbol.for('@workflow/world//cache')` and `Symbol.for('WORKFLOW_STEP_CONTEXT_STORAGE')`) — populated by the host runtime — and calls `world.runs.experimentalSetAttributes(runId, changes)`.
@@ -236,7 +236,7 @@ This puts the mutation on the event log as a normal `step_created → step_compl
 
 The step body intentionally does **not** import anything from `@workflow/core`. That keeps the Next.js deferred-entries discoverer from walking a `__builtin_set_attributes` → `@workflow/core/...` → world adapter → `@vercel/queue` chain, which earlier drafts triggered (blowing the call stack of webpack's regex-based extractor with `RangeError: Maximum call stack size exceeded at RegExpStringIterator.next` on tarball-installed `nextjs-webpack` builds).
 
-The host-side `setAttributes` export (`packages/core/src/set-attributes.ts`, resolved by everything that isn't the workflow VM) throws `FatalError` with a message pointing the caller back to a workflow body. Step-body support can be added in a follow-up without changing this contract.
+The host-side `experimental_setAttributes` export (`packages/core/src/set-attributes.ts`, resolved by everything that isn't the workflow VM) throws `FatalError` with a message pointing the caller back to a workflow body. Step-body support can be added in a follow-up without changing this contract.
 
 When the full 5.0.0 attributes feature lands, `__builtin_set_attributes` is replaced by an `events.create(runId, { eventType: 'attr_set', ... })` dispatch path; SDK signatures don't change.
 
@@ -250,7 +250,7 @@ The plan called for per-key atomic `UpdateExpression` updates (`SET #attrs.#k = 
 
 - **In `world-postgres`** the SQL-side `jsonb_set` / `-` chain *is* used and is genuinely atomic on the run row, so the only race is the cap check (a separate `SELECT`). Documented as LWW-by-arrival for the cap; the merge itself is atomic.
 - **In the `world-vercel` backing service** the attributes column is laid out as a native key-addressable map so the atomic `UpdateItem` variant can be enabled later without a data migration. The MVP commits the merged map via the existing entity update path. Two concurrent writers therefore race; whichever lands second wins on shared keys, and any write to a non-overlapping key is preserved.
-- **In `world-local`** an in-process per-run mutex serializes the read-merge-write sequence so parallel `setAttributes` calls from concurrent steps do not lose writes within a single process. There is a corresponding test that exercises 20 parallel writes to the same run.
+- **In `world-local`** an in-process per-run mutex serializes the read-merge-write sequence so parallel `experimental_setAttributes` calls from concurrent steps do not lose writes within a single process. There is a corresponding test that exercises 20 parallel writes to the same run.
 
 This is consistent with the original "concurrent writes are LWW by arrival" caveat. Promoting to per-key atomic writes is a no-API-break change once the event-sourced path lands.
 
@@ -262,15 +262,15 @@ For the MVP the endpoint reuses the existing `WORKFLOW_EVENT` fact with `eventTy
 
 ### Validation rules are shared between SDK and world
 
-Validation lives in a single helper exported from `@workflow/world` (`validateAttributeChanges`, `validateAttributeKey`, `validateAttributeValue`). Both the SDK `setAttributes` helper and the `world-local` / `world-postgres` implementations call it; the `world-vercel` backing service applies the same rules independently. The shared module is the authoritative spec for the limits (256-char keys, 256-byte values, max 64 attributes per run, `$`-prefixed keys reserved) — any future change goes through one file.
+Validation lives in a single helper exported from `@workflow/world` (`validateAttributeChanges`, `validateAttributeKey`, `validateAttributeValue`). Both the SDK `experimental_setAttributes` helper and the `world-local` / `world-postgres` implementations call it; the `world-vercel` backing service applies the same rules independently. The shared module is the authoritative spec for the limits (256-char keys, 256-byte values, max 64 attributes per run, `$`-prefixed keys reserved) — any future change goes through one file.
 
 ### Run row reconstruction had to thread `attributes` through
 
-`world-local`'s events storage rebuilds the run row on every lifecycle event (`run_started`, `run_completed`, `run_failed`, `run_cancelled`) by explicitly listing fields rather than spreading. Without forwarding `attributes: currentRun.attributes` through each branch, any attribute set before the run completed would be silently dropped by the next lifecycle event. The fix was local to the four reconstruction sites — the field is otherwise untouched by event-sourced code. A subtler race remains: a `setAttributes` write landing in the same async window as a `run_completed` event read can be clobbered, but that's the same LWW-by-arrival semantic documented above.
+`world-local`'s events storage rebuilds the run row on every lifecycle event (`run_started`, `run_completed`, `run_failed`, `run_cancelled`) by explicitly listing fields rather than spreading. Without forwarding `attributes: currentRun.attributes` through each branch, any attribute set before the run completed would be silently dropped by the next lifecycle event. The fix was local to the four reconstruction sites — the field is otherwise untouched by event-sourced code. A subtler race remains: a `experimental_setAttributes` write landing in the same async window as a `run_completed` event read can be clobbered, but that's the same LWW-by-arrival semantic documented above.
 
 ### Optional world method: feature-detect, warn once
 
-`runs.experimentalSetAttributes` is optional on the `World` interface so community worlds (Redis, MongoDB, Turso, etc.) continue to build and run without adopting the experimental API. The SDK helper feature-detects the method's presence on first dispatch; if absent, it logs a single `console.warn` for the lifetime of the process and resolves silently for that call and all subsequent calls. Users do not need to feature-detect in their own code — calling `setAttributes` against an unsupporting world is safe but ineffective.
+`runs.experimentalSetAttributes` is optional on the `World` interface so community worlds (Redis, MongoDB, Turso, etc.) continue to build and run without adopting the experimental API. The SDK helper feature-detects the method's presence on first dispatch; if absent, it logs a single `console.warn` for the lifetime of the process and resolves silently for that call and all subsequent calls. Users do not need to feature-detect in their own code — calling `experimental_setAttributes` against an unsupporting world is safe but ineffective.
 
 ### Tests
 

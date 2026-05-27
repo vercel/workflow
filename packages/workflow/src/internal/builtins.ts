@@ -22,6 +22,14 @@ export async function __builtin_response_text(this: Request | Response) {
 }
 
 /**
+ * Process-wide dedupe for the unsupported-world warning so high-volume
+ * callers don't flood logs.
+ */
+const UNSUPPORTED_WORLD_WARNED = Symbol.for(
+  '@workflow/setAttributes//unsupportedWorldWarned'
+);
+
+/**
  * Step bridge for workflow-body `setAttributes` calls. The VM-side
  * helper validates input and dispatches here via `useStep`. This step
  * runs in normal Node context with full world access.
@@ -55,6 +63,7 @@ export async function __builtin_set_attributes(
 
   const world = g[Symbol.for('@workflow/world//cache')] as
     | {
+        name?: string;
         runs?: {
           experimentalSetAttributes?: (
             runId: string,
@@ -64,8 +73,18 @@ export async function __builtin_set_attributes(
       }
     | undefined;
   if (typeof world?.runs?.experimentalSetAttributes !== 'function') {
-    // World adapter doesn't implement attributes yet — silently no-op.
-    // The VM-side validation already ran, so input was well-formed.
+    // World adapter doesn't implement attributes yet — no-op the call,
+    // but emit one process-wide warning so users know their writes are
+    // being dropped. The VM-side validation already ran so the input
+    // is well-formed.
+    if (!g[UNSUPPORTED_WORLD_WARNED]) {
+      g[UNSUPPORTED_WORLD_WARNED] = true;
+      const worldName = world?.name ? ` (${world.name})` : '';
+      // biome-ignore lint/suspicious/noConsole: surface in user terminals
+      console.warn(
+        `[workflow] setAttributes: the current world implementation${worldName} does not implement experimentalSetAttributes; this call (and any subsequent setAttributes calls in this process) is a no-op. Attributes will become available once the world adapter adds support.`
+      );
+    }
     return;
   }
 

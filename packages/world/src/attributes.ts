@@ -44,12 +44,16 @@ export interface ExperimentalSetAttributesResult {
 
 export interface AttributeValidationContext {
   /**
-   * Existing attribute count on the run, used to enforce the per-run cap
-   * after merging in the incoming changes. Defaults to 0 so client-side
-   * validation (which does not know the existing snapshot) can still
-   * catch single-batch violations.
+   * Existing attribute keys on the run, used to enforce the per-run
+   * cap accurately against the post-merge total — an incoming change
+   * that updates an already-present key contributes zero net adds.
+   *
+   * If omitted, the cap check assumes every non-null change is a fresh
+   * add, which is conservative but still safe (the only false-positive
+   * shape rejects updates to existing keys at the cap boundary; the
+   * authoritative server-side check uses the real post-merge size).
    */
-  existingCount?: number;
+  existingKeys?: Iterable<string>;
 }
 
 /**
@@ -121,15 +125,24 @@ export function validateAttributeValue(
 
 /**
  * Validate a batch of attribute changes. Throws `AttributeValidationError`
- * on the first violation found. Use `existingCount` (in `context`) to
- * enforce the per-run cap against the post-merge total.
+ * on the first violation found. Pass `existingKeys` (in `context`) so
+ * the per-run cap check can use the real post-merge total — without it
+ * the check is conservative and may reject an update to an
+ * already-present key when the run is at the cap.
  */
 export function validateAttributeChanges(
   changes: AttributeChange[],
   context: AttributeValidationContext = {}
 ): void {
   const seenKeys = new Set<string>();
+  const existingKeys =
+    context.existingKeys === undefined
+      ? undefined
+      : context.existingKeys instanceof Set
+        ? (context.existingKeys as Set<string>)
+        : new Set(context.existingKeys);
   let netAdds = 0;
+  let netDeletes = 0;
   for (const change of changes) {
     const keyError = validateAttributeKey(change.key);
     if (keyError) throw keyError;
@@ -141,16 +154,23 @@ export function validateAttributeChanges(
       );
     }
     seenKeys.add(change.key);
-    // Net adds counted optimistically — an existing key being set is also
-    // counted as +1 here, which makes the cap check slightly conservative.
-    // For the MVP cap of 64 this is acceptable; the server's authoritative
-    // check uses the real post-merge size.
-    if (change.value !== null) netAdds += 1;
+    // Per-run cap accounting: an upsert on an already-present key is
+    // a zero-net change; a delete on an absent key is also zero-net.
+    // When `existingKeys` is undefined the cap check falls back to the
+    // conservative "every upsert is +1" shape, documented above.
+    if (change.value !== null) {
+      if (existingKeys === undefined || !existingKeys.has(change.key)) {
+        netAdds += 1;
+      }
+    } else if (existingKeys === undefined || existingKeys.has(change.key)) {
+      netDeletes += 1;
+    }
   }
-  const existing = context.existingCount ?? 0;
-  if (existing + netAdds > ATTRIBUTE_MAX_PER_RUN) {
+  const existing = existingKeys === undefined ? 0 : existingKeys.size;
+  const postMerge = existing + netAdds - netDeletes;
+  if (postMerge > ATTRIBUTE_MAX_PER_RUN) {
     throw new AttributeValidationError(
-      `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} (existing ${existing} + incoming ${netAdds})`
+      `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} (post-merge ${postMerge})`
     );
   }
 }

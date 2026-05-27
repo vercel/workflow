@@ -9,9 +9,14 @@ import { WORKFLOW_USE_STEP } from '../symbols.js';
 /**
  * Attach plaintext string key/value metadata to the current workflow run.
  *
- * **EXPERIMENTAL.** Callable only from a workflow body (`'use workflow'`).
- * The call is dispatched through the workflow runtime as a step, so the
- * mutation is recorded in the event log and survives replay.
+ * **EXPERIMENTAL.** The `experimental_` prefix is deliberate — the
+ * shape, semantics, and dispatch path are likely to change before this
+ * is renamed to a stable export. Use only when you can absorb a
+ * breaking rename later.
+ *
+ * Callable only from a workflow body (`'use workflow'`). The call is
+ * dispatched through the workflow runtime as a step, so the mutation
+ * is recorded in the event log and survives replay.
  *
  * Validation runs in the VM (cheap, deterministic) before the step
  * dispatch — violations throw `FatalError` without queuing a step. An
@@ -19,28 +24,29 @@ import { WORKFLOW_USE_STEP } from '../symbols.js';
  * run's attribute map.
  *
  * **WARNING**: While this feature is experimental, calling e.g.
- * `Promise.all([setAttributes({ a: '1' }), setAttributes({ a: '2' })])`
- * is not guaranteed to be ordered consistently, but
- * `await setAttributes({ a: '1' }).then(() => setAttributes({ a: '2' }))`
- * is.
+ * `Promise.all([experimental_setAttributes({ a: '1' }), experimental_setAttributes({ a: '2' })])`
+ * is not guaranteed to be ordered consistently, but the equivalent
+ * sequential `.then()` chain is.
  *
  * @example
  * ```ts
+ * import { experimental_setAttributes } from 'workflow';
+ *
  * export async function myWorkflow() {
  *   'use workflow';
- *   await setAttributes({ phase: 'init' });
+ *   await experimental_setAttributes({ phase: 'init' });
  *   // ... work ...
- *   await setAttributes({ phase: 'done', orderId: 'ord_123' });
- *   await setAttributes({ orderId: undefined }); // remove
+ *   await experimental_setAttributes({ phase: 'done', orderId: 'ord_123' });
+ *   await experimental_setAttributes({ orderId: undefined }); // remove
  * }
  * ```
  */
-export async function setAttributes(
+export async function experimental_setAttributes(
   attrs: Record<string, string | undefined>
 ): Promise<void> {
   if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) {
     throw new FatalError(
-      `setAttributes requires a plain object, got ${
+      `experimental_setAttributes requires a plain object, got ${
         attrs === null ? 'null' : Array.isArray(attrs) ? 'array' : typeof attrs
       }`
     );
@@ -65,7 +71,7 @@ export async function setAttributes(
     | undefined;
   if (!useStep) {
     throw new FatalError(
-      'setAttributes() called outside a workflow runtime context. ' +
+      'experimental_setAttributes() called outside a workflow runtime context. ' +
         'It must be called from within a workflow body (`use workflow`).'
     );
   }

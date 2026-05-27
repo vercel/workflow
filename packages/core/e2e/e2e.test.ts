@@ -3432,15 +3432,18 @@ describe('e2e', () => {
   );
 
   // ==========================================================================
-  // setAttributes (experimental MVP)
+  // experimental_setAttributes (experimental MVP)
   // ==========================================================================
 
-  describe('setAttributes', () => {
+  describe('experimental_setAttributes', () => {
     test(
-      'setAttributesWorkflow: workflow-body calls dispatch through the step bridge and merge correctly',
+      'experimentalSetAttributesWorkflow: workflow-body calls dispatch through the step bridge and merge correctly',
       { timeout: 30_000 },
       async () => {
-        const run = await start(await e2e('setAttributesWorkflow'), [7]);
+        const run = await start(
+          await e2e('experimentalSetAttributesWorkflow'),
+          [7]
+        );
         const output = await run.returnValue;
         expect(output).toBe(21);
 

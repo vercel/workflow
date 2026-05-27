@@ -1,9 +1,9 @@
 import { FatalError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WORKFLOW_USE_STEP } from '../symbols.js';
-import { setAttributes } from './set-attributes.js';
+import { experimental_setAttributes } from './set-attributes.js';
 
-describe('workflow.setAttributes', () => {
+describe('workflow.experimental_setAttributes', () => {
   const dispatchCalls: Array<{
     stepName: string;
     changes: Array<{ key: string; value: string | null }>;
@@ -24,7 +24,7 @@ describe('workflow.setAttributes', () => {
   });
 
   it('dispatches normalized changes through __builtin_set_attributes', async () => {
-    await setAttributes({ phase: 'init', orderId: 'ord_1' });
+    await experimental_setAttributes({ phase: 'init', orderId: 'ord_1' });
     expect(dispatchCalls).toEqual([
       {
         stepName: '__builtin_set_attributes',
@@ -37,7 +37,7 @@ describe('workflow.setAttributes', () => {
   });
 
   it('translates undefined values into null (unset semantics)', async () => {
-    await setAttributes({ phase: 'done', stale: undefined });
+    await experimental_setAttributes({ phase: 'done', stale: undefined });
     expect(dispatchCalls).toEqual([
       {
         stepName: '__builtin_set_attributes',
@@ -50,19 +50,19 @@ describe('workflow.setAttributes', () => {
   });
 
   it('is a no-op for an empty record (no dispatch)', async () => {
-    await setAttributes({});
+    await experimental_setAttributes({});
     expect(dispatchCalls).toHaveLength(0);
   });
 
   it('throws FatalError when the workflow runtime has not initialized useStep', async () => {
     delete (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP];
-    await expect(setAttributes({ phase: 'init' })).rejects.toBeInstanceOf(
+    await expect(experimental_setAttributes({ phase: 'init' })).rejects.toBeInstanceOf(
       FatalError
     );
   });
 
   it('throws FatalError for reserved-prefix keys before any dispatch', async () => {
-    await expect(setAttributes({ $sys: 'x' })).rejects.toBeInstanceOf(
+    await expect(experimental_setAttributes({ $sys: 'x' })).rejects.toBeInstanceOf(
       FatalError
     );
     expect(dispatchCalls).toHaveLength(0);
@@ -70,10 +70,10 @@ describe('workflow.setAttributes', () => {
 
   it('throws FatalError when called with a non-object', async () => {
     await expect(
-      setAttributes(null as unknown as Record<string, string>)
+      experimental_setAttributes(null as unknown as Record<string, string>)
     ).rejects.toBeInstanceOf(FatalError);
     await expect(
-      setAttributes([] as unknown as Record<string, string>)
+      experimental_setAttributes([] as unknown as Record<string, string>)
     ).rejects.toBeInstanceOf(FatalError);
   });
 });

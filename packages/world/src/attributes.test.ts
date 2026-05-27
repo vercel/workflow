@@ -88,8 +88,23 @@ describe('validateAttributeChanges', () => {
       value: 'v',
     }));
     expect(() =>
-      validateAttributeChanges(changes, { existingCount: 1 })
+      validateAttributeChanges(changes, { existingKeys: ['preexisting'] })
     ).toThrow(AttributeValidationError);
+  });
+
+  it('does not count upserts on already-present keys against the cap', () => {
+    // 64 keys already exist; the call updates one of them. Post-merge
+    // size is still 64 so the cap must accept it.
+    const existingKeys = Array.from(
+      { length: ATTRIBUTE_MAX_PER_RUN },
+      (_, i) => `k${i}`
+    );
+    expect(() =>
+      validateAttributeChanges(
+        [{ key: 'k0', value: 'updated' }],
+        { existingKeys }
+      )
+    ).not.toThrow();
   });
 });
 

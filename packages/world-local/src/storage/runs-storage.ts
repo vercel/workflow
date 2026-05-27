@@ -56,31 +56,38 @@ export interface LocalRunsStorage {
 }
 
 /**
- * Per-run in-process async mutex. Serializes concurrent attribute writes
- * to the same run so the read-merge-write sequence is atomic. Without this
- * two parallel `setAttributes` calls (e.g. from `Promise.all` steps) can
- * both read the same prior snapshot and one of the updates is lost.
+ * Per-run in-process async mutex. Serializes concurrent writes that
+ * touch the same run JSON file — both attribute writes via
+ * `experimentalSetAttributes` and run-lifecycle writes (run_started,
+ * run_completed, run_failed, run_cancelled) acquire it. Without the
+ * shared lock, an attribute write that lands between a lifecycle
+ * handler's read and write would be silently overwritten by the
+ * lifecycle write's stale attribute snapshot.
+ *
+ * Lifecycle writers acquire the lock and re-read the run file inside
+ * the critical section to pick up any attributes that landed since
+ * their pre-validation read.
  */
-const runAttributeLocks = new Map<string, Promise<unknown>>();
+const runFileLocks = new Map<string, Promise<unknown>>();
 
-function withRunAttributeLock<T>(
+export function withRunFileLock<T>(
   key: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  const prev = runAttributeLocks.get(key);
+  const prev = runFileLocks.get(key);
   const taskBox: { task?: Promise<T> } = {};
   const task = (async () => {
     if (prev) await prev.catch(() => undefined);
     try {
       return await fn();
     } finally {
-      if (runAttributeLocks.get(key) === taskBox.task) {
-        runAttributeLocks.delete(key);
+      if (runFileLocks.get(key) === taskBox.task) {
+        runFileLocks.delete(key);
       }
     }
   })();
   taskBox.task = task;
-  runAttributeLocks.set(key, task);
+  runFileLocks.set(key, task);
   return task;
 }
 
@@ -153,7 +160,7 @@ export function createRunsStorage(
     experimentalSetAttributes: async (runId, changes) => {
       assertSafeEntityId('runId', runId);
 
-      return withRunAttributeLock(runId, async () => {
+      return withRunFileLock(runId, async () => {
         const run = await readJSONWithFallback(
           basedir,
           'runs',
@@ -170,7 +177,7 @@ export function createRunsStorage(
         // (tests, other consumers) cannot bypass the limits.
         try {
           validateAttributeChanges(changes, {
-            existingCount: Object.keys(run.attributes ?? {}).length,
+            existingKeys: Object.keys(run.attributes ?? {}),
           });
         } catch (err) {
           if (err instanceof AttributeValidationError) {
