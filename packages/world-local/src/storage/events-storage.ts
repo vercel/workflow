@@ -132,23 +132,26 @@ async function deleteAllWaitsForRun(
  * write are preserved. Without the re-read, an `experimentalSetAttributes`
  * call sandwiched between the lifecycle read and write would be
  * silently overwritten by the lifecycle write's stale attribute snapshot.
+ *
+ * `proposed` is the fully-constructed run row the caller wants to
+ * write (with the correct discriminated-union status branch). Only the
+ * `attributes` field is replaced with the freshest version inside the
+ * lock.
  */
-async function writeRunUnderLifecycleLock(
+async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
   basedir: string,
   runId: string,
   tag: string | undefined,
-  baselineRun: WorkflowRun,
-  overrides: Partial<WorkflowRun>
-): Promise<WorkflowRun> {
+  proposed: T
+): Promise<T> {
   return withRunFileLock(runId, async () => {
     const fresh = await readJSON(
       taggedPath(basedir, 'runs', runId, tag),
       WorkflowRunSchema
     );
-    const next: WorkflowRun = {
-      ...baselineRun,
-      ...overrides,
-      attributes: fresh?.attributes ?? baselineRun.attributes,
+    const next: T = {
+      ...proposed,
+      attributes: fresh?.attributes ?? proposed.attributes,
     };
     await writeJSON(taggedPath(basedir, 'runs', runId, tag), next, {
       overwrite: true,
@@ -573,38 +576,45 @@ export function createEventsStorage(
               return { run: currentRun };
             }
 
-            run = await writeRunUnderLifecycleLock(
-              basedir,
-              effectiveRunId,
-              tag,
-              currentRun,
-              {
-                status: 'running',
-                output: undefined,
-                error: undefined,
-                completedAt: undefined,
-                startedAt: currentRun.startedAt ?? now,
-                updatedAt: now,
-              }
-            );
+            run = await writeRunUnderLifecycleLock(basedir, effectiveRunId, tag, {
+              runId: currentRun.runId,
+              deploymentId: currentRun.deploymentId,
+              workflowName: currentRun.workflowName,
+              specVersion: currentRun.specVersion,
+              executionContext: currentRun.executionContext,
+              input: currentRun.input,
+              createdAt: currentRun.createdAt,
+              expiredAt: currentRun.expiredAt,
+              status: 'running',
+              output: undefined,
+              error: undefined,
+              completedAt: undefined,
+              startedAt: currentRun.startedAt ?? now,
+              updatedAt: now,
+              attributes: currentRun.attributes,
+            });
           }
         } else if (data.eventType === 'run_completed' && 'eventData' in data) {
           const completedData = data.eventData as { output?: any };
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
-            run = await writeRunUnderLifecycleLock(
-              basedir,
-              effectiveRunId,
-              tag,
-              currentRun,
-              {
-                status: 'completed',
-                output: completedData.output,
-                error: undefined,
-                completedAt: now,
-                updatedAt: now,
-              }
-            );
+            run = await writeRunUnderLifecycleLock(basedir, effectiveRunId, tag, {
+              runId: currentRun.runId,
+              deploymentId: currentRun.deploymentId,
+              workflowName: currentRun.workflowName,
+              specVersion: currentRun.specVersion,
+              executionContext: currentRun.executionContext,
+              input: currentRun.input,
+              createdAt: currentRun.createdAt,
+              expiredAt: currentRun.expiredAt,
+              startedAt: currentRun.startedAt,
+              status: 'completed',
+              output: completedData.output,
+              error: undefined,
+              completedAt: now,
+              updatedAt: now,
+              attributes: currentRun.attributes,
+            });
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -620,20 +630,24 @@ export function createEventsStorage(
             // The error field is SerializedData (Uint8Array) produced by
             // dehydrateRunError. We store it verbatim — consumers hydrate it
             // via hydrateRunError to reconstruct the original thrown value.
-            run = await writeRunUnderLifecycleLock(
-              basedir,
-              effectiveRunId,
-              tag,
-              currentRun,
-              {
-                status: 'failed',
-                output: undefined,
-                error: failedData.error as Uint8Array,
-                errorCode: failedData.errorCode,
-                completedAt: now,
-                updatedAt: now,
-              }
-            );
+            run = await writeRunUnderLifecycleLock(basedir, effectiveRunId, tag, {
+              runId: currentRun.runId,
+              deploymentId: currentRun.deploymentId,
+              workflowName: currentRun.workflowName,
+              specVersion: currentRun.specVersion,
+              executionContext: currentRun.executionContext,
+              input: currentRun.input,
+              createdAt: currentRun.createdAt,
+              expiredAt: currentRun.expiredAt,
+              startedAt: currentRun.startedAt,
+              status: 'failed',
+              output: undefined,
+              error: failedData.error as Uint8Array,
+              errorCode: failedData.errorCode,
+              completedAt: now,
+              updatedAt: now,
+              attributes: currentRun.attributes,
+            });
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -642,19 +656,23 @@ export function createEventsStorage(
         } else if (data.eventType === 'run_cancelled') {
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
-            run = await writeRunUnderLifecycleLock(
-              basedir,
-              effectiveRunId,
-              tag,
-              currentRun,
-              {
-                status: 'cancelled',
-                output: undefined,
-                error: undefined,
-                completedAt: now,
-                updatedAt: now,
-              }
-            );
+            run = await writeRunUnderLifecycleLock(basedir, effectiveRunId, tag, {
+              runId: currentRun.runId,
+              deploymentId: currentRun.deploymentId,
+              workflowName: currentRun.workflowName,
+              specVersion: currentRun.specVersion,
+              executionContext: currentRun.executionContext,
+              input: currentRun.input,
+              createdAt: currentRun.createdAt,
+              expiredAt: currentRun.expiredAt,
+              startedAt: currentRun.startedAt,
+              status: 'cancelled',
+              output: undefined,
+              error: undefined,
+              completedAt: now,
+              updatedAt: now,
+              attributes: currentRun.attributes,
+            });
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),
