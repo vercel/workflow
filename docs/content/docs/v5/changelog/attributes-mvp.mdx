@@ -144,18 +144,22 @@ const result = await processOrder();
 await experimental_setAttributes({ phase: 'done', orderId: result.id });
 ```
 
-**Fire-and-forget (`void`).** Drop the `await` to let the workflow proceed without blocking. The pending step queues at the next workflow suspension; a `void` call placed right before `return` is queued by drain-on-completion. Either way, the step body executes — making this the canonical pattern for observability / tracking metadata where the workflow doesn't depend on the write.
+**Fire-and-forget (`void`).** Drop the `await` to let the workflow proceed without blocking. The pending step queues on the workflow's next suspension (any `await` on a runtime primitive — a step, `sleep`, a hook). This is the canonical pattern for observability / tracking metadata where the workflow doesn't depend on the write.
 
 ```ts
 'use workflow';
 void experimental_setAttributes({ phase: 'init', orderId });
-// Workflow doesn't block. The step queues during the next await.
+// Workflow doesn't block. The step queues on the next runtime await.
 const result = await processOrder();
 void experimental_setAttributes({ phase: 'done' });
 return result;
 ```
 
-Trade-off: order of arrival at the world is not workflow-source order. Fire-and-forget steps run out-of-band on the queue worker. A `void` write to one key followed by an `await` write to the same key may race; LWW-by-arrival applies (see "Concurrent writes" below).
+Two trade-offs to know about:
+
+1. **Order of arrival at the world is not workflow-source order.** Fire-and-forget steps run out-of-band on the queue worker. A `void` write to one key followed by an `await` write to the same key may race; LWW-by-arrival applies (see "Concurrent writes" below).
+
+2. **The last `void` before `return` may not land.** If you place a `void experimental_setAttributes(...)` immediately before returning, with no intervening `await` on a runtime primitive, drain-on-completion commits the `step_created` event but the step body is not reliably dispatched before the run transitions to its terminal status — see the architectural note in the "Implementation notes" section. In practice workflows almost always have an `await` after the last fire-and-forget call (a step, a sleep, a hook); if you don't, add `await sleep('0s')` before returning, or use the awaited form for that final write.
 
 **Parallel (`Promise.all`).** Multiple calls dispatch concurrently. Writes to disjoint keys all land. Writes to the same key resolve last-write-wins by *arrival order at the world* (not the order the workflow body issued the calls) — so don't use `Promise.all` for writes that must observe a specific order to the same key.
 

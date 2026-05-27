@@ -17,7 +17,6 @@ import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
-import { getWorkflowQueueName, queueMessage } from './runtime/helpers.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
 import {
@@ -34,7 +33,7 @@ import {
   WORKFLOW_USE_STEP,
 } from './symbols.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
-import { serializeTraceCarrier, trace } from './telemetry.js';
+import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
 import {
@@ -52,22 +51,23 @@ import { createSleep } from './workflow/sleep.js';
  * Treats end-of-run like a final suspension: any operation the workflow code
  * spawned but didn't `await` — abort hook resumes, hook creations/disposals,
  * sleep waits, step queueings — gets committed to the event log via the
- * suspension handler, and pending step bodies are enqueued to the workflow
- * queue so they actually execute, before the run is marked terminal.
+ * suspension handler before the run is marked terminal.
  *
  * This matches normal JS semantics where `setTimeout(fn, ...)` etc. continue
- * running after the surrounding function returns. Two side effects this is
- * load-bearing for:
+ * running after the surrounding function returns. Most importantly, it ensures
+ * `controller.abort()` called as the last statement of a workflow actually
+ * propagates to in-flight steps on other compute instances — without this,
+ * the abort hook is created but never resumed and the cancellation never
+ * reaches the running step.
  *
- * - `controller.abort()` called as the last statement of a workflow
- *   propagates to in-flight steps on other compute instances — without the
- *   drain the abort hook is created but never resumed and the cancellation
- *   never reaches the running step.
- * - Fire-and-forget step calls (`void someStep()` /
- *   `void experimental_setAttributes(...)`) that produce real side effects
- *   actually run — without the queueing step here, the step_created event
- *   would land but no worker would pick up the body, and the side effect
- *   would silently never happen.
+ * NOTE: drain only commits the `*_created` events; it does NOT enqueue step
+ * bodies for execution. The platform's step worker rejects `step_started`
+ * for runs that have already transitioned to terminal (`RunExpiredError`),
+ * so a step queued here would be skipped anyway. Fire-and-forget step calls
+ * with side effects therefore work only when followed by some later `await`
+ * on a runtime primitive that triggers a real suspension (the normal
+ * runtime loop in `runtime.ts` queues the step there). A `void` placed
+ * immediately before `return` is not reliably executed.
  *
  * Drain failures are swallowed: the workflow's own outcome (the user's return
  * value or thrown error) is the source of truth; secondary cleanup that fails
@@ -100,48 +100,11 @@ async function drainPendingQueueItems(
   try {
     const world = await getWorld();
     const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
-    const suspensionResult = await handleSuspension({
+    await handleSuspension({
       suspension: synthesized,
       world,
       run: workflowRun,
     });
-
-    // `handleSuspension` commits step_created / hook_created / wait_created
-    // events but does not enqueue step bodies for execution — the normal
-    // runtime loop (`runtime.ts`) handles that, choosing between inline and
-    // queued execution. At workflow completion we have no inline path, so
-    // every newly-owned step needs to land on the queue or its body
-    // (e.g. the `__builtin_set_attributes` write) never runs.
-    //
-    // Mirror the runtime's enqueue pattern: idempotency keyed on
-    // correlationId so concurrent drains (crash recovery, queue redelivery)
-    // dedupe cleanly. Only enqueue steps THIS drain wrote step_created for —
-    // if another writer already owned the step (e.g. via flow redelivery),
-    // they'll enqueue it themselves.
-    const stepsToQueue = suspensionResult.pendingSteps.filter((step) =>
-      suspensionResult.createdStepCorrelationIds.has(step.correlationId)
-    );
-    if (stepsToQueue.length > 0) {
-      const queueName = getWorkflowQueueName(workflowRun.workflowName);
-      const traceCarrier = await serializeTraceCarrier();
-      const requestedAt = new Date();
-      await Promise.all(
-        stepsToQueue.map((step) =>
-          queueMessage(
-            world,
-            queueName,
-            {
-              runId,
-              stepId: step.correlationId,
-              stepName: step.stepName,
-              traceCarrier,
-              requestedAt,
-            },
-            { idempotencyKey: step.correlationId }
-          )
-        )
-      );
-    }
   } catch (err) {
     runtimeLogger.warn(
       `Failed to drain pending queue items for ${outcome} workflow run`,

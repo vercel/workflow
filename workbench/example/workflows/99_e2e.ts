@@ -3193,10 +3193,15 @@ export async function experimentalSetAttributesWorkflow(input: number) {
 /**
  * Fire-and-forget pattern: `void experimental_setAttributes(...)` lets
  * the workflow body proceed without blocking on the attribute write.
- * Calls placed before a workflow suspension queue immediately; calls
- * placed right before `return` are queued by drain-on-completion.
- * Either way, every fire-and-forget step body executes — making this
- * the canonical pattern for observability / tracking metadata.
+ * Each `void` call queues a step on the workflow's next suspension —
+ * any later `await` on a runtime primitive (a step, a sleep, a hook).
+ * This is the canonical pattern for observability / tracking metadata
+ * where the workflow doesn't depend on the write.
+ *
+ * Note: a `void` call placed *immediately before* `return` (with no
+ * later `await`) is currently unreliable — the step is committed but
+ * the queue worker skips it once `run_completed` lands. See the
+ * `test.todo(...)` for `fire-and-forget` in `packages/core/e2e/e2e.test.ts`.
  */
 export async function experimentalSetAttributesFireAndForgetWorkflow() {
   'use workflow';
@@ -3204,7 +3209,6 @@ export async function experimentalSetAttributesFireAndForgetWorkflow() {
   await sleep('100ms');
   void experimental_setAttributes({ phase: 'mid' });
   await sleep('100ms');
-  // No `await` after this call — drain queues it on workflow completion.
   void experimental_setAttributes({ phase: 'done' });
   return 'completed';
 }
