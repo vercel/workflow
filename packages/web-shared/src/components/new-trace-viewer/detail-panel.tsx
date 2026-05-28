@@ -4,6 +4,7 @@ import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { Span } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import { IconButton } from '../ui/icon-button';
 import { getSpanDurationMs } from './utils';
 
 interface DetailPanelProps {
@@ -27,13 +28,9 @@ export function DetailPanel({
         <span className="text-sm font-medium text-gray-1000 truncate">
           {span.name}
         </span>
-        <button
-          type="button"
-          className="p-1 rounded-md text-gray-1000 hover:bg-gray-alpha-100 transition-colors"
-          onClick={onClose}
-        >
+        <IconButton aria-label="Close span details" onClick={onClose}>
           <X className="w-4 h-4" />
-        </button>
+        </IconButton>
       </div>
       <div className="overflow-y-auto p-3 space-y-3">
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm">
