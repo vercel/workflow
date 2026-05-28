@@ -6,7 +6,6 @@ import {
 } from '@workflow/errors';
 import {
   type CreateEventRequest,
-  type Event,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -24,7 +23,6 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { fencedEventCreate } from './fenced-write.js';
-import { loadWorkflowRunEvents } from './helpers.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -44,13 +42,6 @@ export interface SuspensionHandlerParams {
    * step/wait/hook `_created` and `hook_disposed`.
    */
   fenceEventId?: string;
-  /**
-   * Caller's events-cursor token (from `loadWorkflowRunEvents`). Used to
-   * refresh the fence after a CAS conflict — the handler pulls fresh
-   * events from this cursor, takes the new tail as the next fence, and
-   * retries.
-   */
-  eventsCursor?: string | null;
 }
 
 /**
@@ -92,7 +83,6 @@ export async function handleSuspension({
   span,
   requestId,
   fenceEventId: initialFenceEventId,
-  eventsCursor: initialEventsCursor,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -102,29 +92,7 @@ export async function handleSuspension({
   // fence is a single-tip CAS, so parallel sibling writes from one replay turn
   // would force self-conflicts against the same starting fence.
   let fenceEventId = initialFenceEventId;
-  let eventsCursor = initialEventsCursor;
 
-  /**
-   * Reloads events from the cursor and returns the new tail as a fresh
-   * fence. Also returns the freshly-loaded events so callers can run
-   * idempotency checks (e.g. "is this `wait_created` already in the log?
-   * → abort the write").
-   *
-   * NOTE: when `eventsCursor` is unset the reload is a full re-read of
-   * the run's log, matching the elapsed-wait scan fallback.
-   */
-  async function refreshFence(): Promise<{
-    fenceEventId: string | undefined;
-    loadedEvents: Event[];
-  }> {
-    const loaded = eventsCursor
-      ? await loadWorkflowRunEvents(runId, eventsCursor)
-      : await loadWorkflowRunEvents(runId);
-    eventsCursor = loaded.cursor ?? eventsCursor;
-    const tail =
-      loaded.events[loaded.events.length - 1]?.eventId ?? fenceEventId;
-    return { fenceEventId: tail, loadedEvents: loaded.events };
-  }
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -185,22 +153,6 @@ export async function handleSuspension({
         event: hookEvent,
         requestId,
         fenceEventId,
-        onConflictRefresh: async () => {
-          const { fenceEventId: fresh, loadedEvents } = await refreshFence();
-          // Idempotency: if the hook was already created (by us in a
-          // previous attempt that 412'd then succeeded server-side,
-          // or by a concurrent handler), don't retry.
-          const alreadyCreated = loadedEvents.some(
-            (e) =>
-              (e.eventType === 'hook_created' ||
-                e.eventType === 'hook_conflict') &&
-              e.correlationId === hookEvent.correlationId
-          );
-          if (alreadyCreated) {
-            return { kind: 'abort' };
-          }
-          return { kind: 'retry', fenceEventId: fresh };
-        },
         onEntityConflict: () => 'abort',
       });
       if (writeResult.newFenceEventId) {
@@ -254,19 +206,6 @@ export async function handleSuspension({
         event: hookDisposedEvent,
         requestId,
         fenceEventId,
-        onConflictRefresh: async () => {
-          const { fenceEventId: fresh, loadedEvents } = await refreshFence();
-          // Idempotency: if already disposed, abort.
-          const alreadyDisposed = loadedEvents.some(
-            (e) =>
-              e.eventType === 'hook_disposed' &&
-              e.correlationId === queueItem.correlationId
-          );
-          if (alreadyDisposed) {
-            return { kind: 'abort' };
-          }
-          return { kind: 'retry', fenceEventId: fresh };
-        },
         onEntityConflict: () => 'abort',
       });
       if (writeResult.newFenceEventId) {
@@ -418,24 +357,6 @@ export async function handleSuspension({
           event: stepEvent,
           requestId,
           fenceEventId,
-          onConflictRefresh: async () => {
-            const { fenceEventId: fresh, loadedEvents } = await refreshFence();
-            // Idempotency: if step_created for this correlationId is
-            // already in the log, abort. Distinct from the
-            // EntityConflictError-on-duplicate-stepId case (that's
-            // handled by onEntityConflict below) — this branch
-            // catches the case where _our_ stale-snapshot CAS lost
-            // to a concurrent writer for the same correlationId.
-            const alreadyCreated = loadedEvents.some(
-              (e) =>
-                e.eventType === 'step_created' &&
-                e.correlationId === queueItem.correlationId
-            );
-            if (alreadyCreated) {
-              return { kind: 'abort' };
-            }
-            return { kind: 'retry', fenceEventId: fresh };
-          },
           onEntityConflict: () => 'abort',
         });
         if (writeResult.newFenceEventId) {
@@ -477,18 +398,6 @@ export async function handleSuspension({
           event: waitEvent,
           requestId,
           fenceEventId,
-          onConflictRefresh: async () => {
-            const { fenceEventId: fresh, loadedEvents } = await refreshFence();
-            const alreadyCreated = loadedEvents.some(
-              (e) =>
-                e.eventType === 'wait_created' &&
-                e.correlationId === queueItem.correlationId
-            );
-            if (alreadyCreated) {
-              return { kind: 'abort' };
-            }
-            return { kind: 'retry', fenceEventId: fresh };
-          },
           onEntityConflict: () => 'abort',
         });
         if (writeResult.newFenceEventId) {

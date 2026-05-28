@@ -800,136 +800,42 @@ export function workflowEntrypoint(
                       // The last known event ID is used for optimistic concurrency
                       // control, being provided to the World, which will reject if any
                       // other events arrive between our event log read and event write.
-                      // On fail, we retry *in-place* with a freshly-loaded fence rather than
-                      // terminating the invocation. Falling back to queue redelivery directly
-                      // could cause retry-storms under high load.
+                      // On fence conflict, bail the write — another invocation has
+                      // the canonical view of the log; trying to retry in place
+                      // here only spins against a moving target and (under stress)
+                      // amplifies the stuck-fence pattern caused by the server-side
+                      // patch-then-PUT non-atomicity. See `runtime/fenced-write.ts`
+                      // for the full reasoning.
                       let fenceEventId: string | undefined =
                         events.length > 0
                           ? events[events.length - 1].eventId
                           : undefined;
-                      const MAX_FENCE_RETRIES = 5;
                       for (const waitEvent of waitsToComplete) {
-                        let attempts = 0;
-                        let written = false;
-                        while (!written) {
-                          try {
-                            const result = await world.events.create(
-                              runId,
-                              waitEvent,
-                              {
-                                requestId,
-                                ...(fenceEventId
-                                  ? { lastKnownEventId: fenceEventId }
-                                  : {}),
-                              }
-                            );
-                            // The server response schema marks `event` as
-                            // optional for legacy compatibility. In practice
-                            // creates always return the persisted event, but
-                            // if the response is missing it we leave the
-                            // fence at its prior value (a stale fence will
-                            // simply force one more fence-and-reload cycle
-                            // on the next iteration; we never silently
-                            // advance to a value we didn't actually observe
-                            // on the wire).
-                            if (result.event) {
-                              fenceEventId = result.event.eventId;
-                            } else {
-                              runtimeLogger.warn(
-                                'wait_completed write missing event in response; keeping prior fence',
-                                {
-                                  workflowRunId: runId,
-                                  correlationId: waitEvent.correlationId,
-                                  fenceEventId,
-                                }
-                              );
+                        const writeResult = await fencedEventCreate({
+                          world,
+                          runId,
+                          event: waitEvent,
+                          requestId,
+                          fenceEventId,
+                          onEntityConflict: () => 'abort',
+                        });
+                        if (writeResult.newFenceEventId) {
+                          fenceEventId = writeResult.newFenceEventId;
+                        }
+                        if (!writeResult.written) {
+                          // Either fence conflict (canonical replay
+                          // elsewhere) or the wait was already completed
+                          // by a concurrent invocation. Both terminal
+                          // for this invocation's attempt; continue with
+                          // remaining waitsToComplete using the latest
+                          // fence we have observed.
+                          runtimeLogger.info(
+                            'Wait completion skipped (fence conflict or already completed)',
+                            {
+                              workflowRunId: runId,
+                              correlationId: waitEvent.correlationId,
                             }
-                            written = true;
-                          } catch (err) {
-                            if (!EntityConflictError.is(err)) {
-                              throw err;
-                            }
-                            // Fence-conflict detection is anchored on
-                            // packages/world-vercel/src/utils.ts mapping
-                            // HTTP 412 to EntityConflictError with a
-                            // guaranteed `fence conflict:` prefix on the
-                            // message. The status-based marker is enforced
-                            // client-side, so this regex can't silently
-                            // regress against a server wording change.
-                            const isFenceConflict = /fence conflict/i.test(
-                              err.message
-                            );
-                            if (!isFenceConflict) {
-                              // Non-fence 409s mean the wait was already
-                              // completed by a concurrent invocation (or
-                              // never existed). Both cases are terminal for
-                              // this wait — log and move on.
-                              runtimeLogger.info(
-                                'Wait already completed, skipping',
-                                {
-                                  workflowRunId: runId,
-                                  correlationId: waitEvent.correlationId,
-                                }
-                              );
-                              break;
-                            }
-                            attempts += 1;
-                            runtimeLogger.info(
-                              'wait_completed fence conflict; reloading and retrying',
-                              {
-                                workflowRunId: runId,
-                                correlationId: waitEvent.correlationId,
-                                attempt: attempts,
-                                maxAttempts: MAX_FENCE_RETRIES,
-                              }
-                            );
-                            if (attempts > MAX_FENCE_RETRIES) {
-                              runtimeLogger.warn(
-                                'Wait completion gave up after fence retries; falling back to queue redelivery',
-                                {
-                                  workflowRunId: runId,
-                                  correlationId: waitEvent.correlationId,
-                                  attempts,
-                                }
-                              );
-                              throw err;
-                            }
-                            const loaded = eventsCursor
-                              ? await loadWorkflowRunEvents(runId, eventsCursor)
-                              : await loadWorkflowRunEvents(runId);
-                            if (eventsCursor) {
-                              // Build a Set of existing eventIds once per
-                              // reload so the merge is O(n + m) rather
-                              // than O(n × m). Matters on the retry path,
-                              // which is exactly where the log will be
-                              // longest.
-                              const existingIds = new Set(
-                                events.map((e) => e.eventId)
-                              );
-                              for (const e of loaded.events) {
-                                if (!existingIds.has(e.eventId)) {
-                                  events.push(e);
-                                  existingIds.add(e.eventId);
-                                }
-                              }
-                              eventsCursor = loaded.cursor ?? eventsCursor;
-                            } else {
-                              events = loaded.events;
-                              eventsCursor = loaded.cursor;
-                            }
-                            const alreadyCompleted = events.some(
-                              (e) =>
-                                e.eventType === 'wait_completed' &&
-                                e.correlationId === waitEvent.correlationId
-                            );
-                            if (alreadyCompleted) {
-                              break;
-                            }
-                            fenceEventId = events[events.length - 1]?.eventId;
-                            await new Promise((r) =>
-                              setTimeout(r, 25 * attempts)
-                            );
-                          }
+                          );
                         }
                       }
 
@@ -1076,32 +982,16 @@ export function workflowEntrypoint(
                           },
                           requestId,
                           fenceEventId: runCompletedFence,
-                          onConflictRefresh: async () => {
-                            // Terminal-state idempotency: if any
-                            // terminal run event landed since our load,
-                            // abort. Don't retry — once a run is in a
-                            // terminal state, our write is wrong.
-                            const loaded = eventsCursor
-                              ? await loadWorkflowRunEvents(runId, eventsCursor)
-                              : await loadWorkflowRunEvents(runId);
-                            eventsCursor = loaded.cursor ?? eventsCursor;
-                            const reachedTerminal = loaded.events.some(
-                              (e) =>
-                                e.eventType === 'run_completed' ||
-                                e.eventType === 'run_failed' ||
-                                e.eventType === 'run_cancelled'
-                            );
-                            if (reachedTerminal) return { kind: 'abort' };
-                            const fresh =
-                              loaded.events[loaded.events.length - 1]
-                                ?.eventId ?? runCompletedFence;
-                            return { kind: 'retry', fenceEventId: fresh };
-                          },
                           onEntityConflict: () => 'abort',
                         });
                         if (!writeResult.written) {
+                          // `written: false` covers both fence conflict
+                          // (another invocation has the canonical view)
+                          // and entity-conflict abort (run already
+                          // terminal). Either way the run is done from
+                          // this invocation's perspective.
                           runtimeLogger.info(
-                            'Tried completing workflow run, but run has already finished.',
+                            'Tried completing workflow run, but run has already finished or another invocation is canonical.',
                             { workflowRunId: runId }
                           );
                           return;
@@ -1165,7 +1055,6 @@ export function workflowEntrypoint(
                           span,
                           requestId,
                           fenceEventId: suspensionFenceEventId,
-                          eventsCursor,
                         });
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
@@ -1564,31 +1453,11 @@ export function workflowEntrypoint(
                             },
                             requestId,
                             fenceEventId: runFailedFence,
-                            onConflictRefresh: async () => {
-                              const loaded = eventsCursor
-                                ? await loadWorkflowRunEvents(
-                                    runId,
-                                    eventsCursor
-                                  )
-                                : await loadWorkflowRunEvents(runId);
-                              eventsCursor = loaded.cursor ?? eventsCursor;
-                              const reachedTerminal = loaded.events.some(
-                                (e) =>
-                                  e.eventType === 'run_completed' ||
-                                  e.eventType === 'run_failed' ||
-                                  e.eventType === 'run_cancelled'
-                              );
-                              if (reachedTerminal) return { kind: 'abort' };
-                              const fresh =
-                                loaded.events[loaded.events.length - 1]
-                                  ?.eventId ?? runFailedFence;
-                              return { kind: 'retry', fenceEventId: fresh };
-                            },
                             onEntityConflict: () => 'abort',
                           });
                           if (!writeResult.written) {
                             runtimeLogger.info(
-                              'Tried failing workflow run, but run has already finished.',
+                              'Tried failing workflow run, but run has already finished or another invocation is canonical.',
                               { workflowRunId: runId }
                             );
                             return;

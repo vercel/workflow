@@ -1,9 +1,8 @@
 /**
  * Helper for "branch-decision" event writes that need OCC fencing.
  *
- * Applies the same fence-and-retry pattern the elapsed-wait scan uses for
- * `wait_completed` to every other write whose outcome depends on a branch
- * decision the workflow VM made from its loaded event log:
+ * Used by the writes whose outcome depends on a branch decision the
+ * workflow VM made from its loaded event log:
  *
  *   suspension-handler.ts:
  *     - step_created
@@ -19,17 +18,34 @@
  * would drop it on contention; stale-snapshot protection belongs on the
  * writes that consume hooks, not the writes that deliver them.
  *
- * Each fenced write tries up to MAX_FENCE_RETRIES times. On a fence
- * conflict, the caller is expected to refresh `fenceEventId` from a fresh
- * event log read. The `onConflictRefresh` callback gives the caller a
- * chance to do that, and to decide whether to give up (e.g. when an
- * idempotency check confirms the write is no longer needed).
+ * On a fence conflict, this helper **bails the current write** rather
+ * than retrying in place. A fence conflict means some other invocation
+ * has already advanced the event log past our snapshot, so the work
+ * implied by our snapshot is either already done or will be done by
+ * whoever advanced the log. Retrying in place caused two problems:
+ *
+ *  1. Under high contention (e.g. a hook flood firing many concurrent
+ *     ticks), the retry loop became a stuck-fence spin: lambdas would
+ *     spend their budget retrying against an ever-changing tail and
+ *     either succeed by luck or exhaust MAX_FENCE_RETRIES and throw.
+ *     A thrown EntityConflictError surfaces as `run_failed` (a
+ *     transient infra issue mis-classified as terminal failure).
+ *
+ *  2. The retries-against-the-same-fence shape, paired with the
+ *     server-side patch-then-PUT non-atomicity, made stuck-fence runs
+ *     measurably worse: every retry attempt against an already-advanced
+ *     fence is wasted compute, and the spin keeps the run stuck
+ *     longer in the affected-runs-per-stress-cycle window.
+ *
+ * The simpler model matches Peter's existing workflow-server comment
+ * ("the @workflow/core suspension handler swallows it"): a fence
+ * conflict signals "another replay is canonical; this one isn't" —
+ * exit cleanly, trust the canonical replay, no error, no retry, no
+ * re-enqueue.
  */
 import { EntityConflictError } from '@workflow/errors';
 import type { CreateEventRequest, World } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
-
-const MAX_FENCE_RETRIES = 5;
 
 /**
  * Returns true when an EntityConflictError carries the fence-conflict
@@ -58,29 +74,8 @@ export interface FencedWriteParams {
    * helper will then issue an unfenced write — which still atomically
    * advances `run.lastKnownEventId` on the server side so future fenced
    * writers see the materialized value.
-   *
-   * After a successful fenced write, the caller should update its
-   * tracked fence to the returned `newFenceEventId`.
    */
   fenceEventId: string | undefined;
-  /**
-   * Called when the server rejects the write with a fence conflict.
-   * Implementations should:
-   *  1. Reload events from the cursor.
-   *  2. Check whether the write is still necessary (e.g. wait_completed
-   *     idempotency — if the event already exists in the reloaded log,
-   *     return `'abort'` so we don't retry pointlessly).
-   *  3. Return `{ kind: 'retry', fenceEventId: <fresh-tail> }` to retry
-   *     against the new tail, or `{ kind: 'abort' }` to give up.
-   *
-   * Receives the attempt number (1-indexed) so backoff can be tuned by
-   * the caller if it wants.
-   */
-  onConflictRefresh: (
-    attempt: number
-  ) => Promise<
-    { kind: 'retry'; fenceEventId: string | undefined } | { kind: 'abort' }
-  >;
   /**
    * Called when the server rejects with a *non-fence* EntityConflictError
    * (e.g. the entity already exists because a concurrent handler beat us
@@ -92,7 +87,15 @@ export interface FencedWriteParams {
 }
 
 export interface FencedWriteResult {
-  /** Whether the event was actually written (false = aborted via dedup). */
+  /**
+   * Whether the event was actually written.
+   *
+   * `false` covers two cases the caller usually wants to treat the same
+   * way (no further action required for this write):
+   *  - Fence conflict — another invocation has the canonical view.
+   *  - Non-fence EntityConflictError with `onEntityConflict: 'abort'`
+   *    (entity already exists, run already terminal, etc.).
+   */
   written: boolean;
   /**
    * eventId of the newly-written event (when `written` is true), so
@@ -109,7 +112,9 @@ export interface FencedWriteResult {
 
 /**
  * Issues `world.events.create(runId, event, { requestId, lastKnownEventId })`
- * with up to MAX_FENCE_RETRIES retries on fence conflict.
+ * once. On fence conflict, returns `{ written: false }` immediately
+ * (no retry, no throw, no re-enqueue) — see the file-level comment for
+ * the reasoning.
  *
  * On any non-fence EntityConflictError, defers to `onEntityConflict` for
  * the abort-vs-rethrow decision (preserves the existing
@@ -118,91 +123,61 @@ export interface FencedWriteResult {
 export async function fencedEventCreate(
   params: FencedWriteParams
 ): Promise<FencedWriteResult> {
-  const {
-    world,
-    runId,
-    event,
-    requestId,
-    onConflictRefresh,
-    onEntityConflict,
-  } = params;
-  let fenceEventId = params.fenceEventId;
-  let attempt = 0;
-  // biome-ignore lint/correctness/noConstantCondition: bounded by MAX_FENCE_RETRIES
-  while (true) {
-    try {
-      const result = await world.events.create(runId, event, {
-        requestId,
-        ...(fenceEventId ? { lastKnownEventId: fenceEventId } : {}),
-      });
-      // The server response schema marks `event` as optional for legacy
-      // compatibility. In practice creates always return the persisted
-      // event, but if it's missing we leave the caller's fence at its
-      // prior value rather than silently advancing to a value we didn't
-      // observe on the wire. A stale fence on the next call will simply
-      // surface one extra fence-and-reload cycle.
-      if (!result.event) {
-        runtimeLogger.warn(
-          'Branch-decision write missing event in response; keeping prior fence',
-          {
-            workflowRunId: runId,
-            eventType: event.eventType,
-            correlationId: event.correlationId,
-            fenceEventId,
+  const { world, runId, event, requestId, fenceEventId, onEntityConflict } =
+    params;
+  try {
+    const result = await world.events.create(runId, event, {
+      requestId,
+      ...(fenceEventId ? { lastKnownEventId: fenceEventId } : {}),
+    });
+    // The server response schema marks `event` as optional for legacy
+    // compatibility. In practice creates always return the persisted
+    // event, but if it's missing we keep the caller's fence at its
+    // prior value rather than silently advancing to a value we didn't
+    // observe on the wire.
+    if (!result.event) {
+      runtimeLogger.warn(
+        'Branch-decision write missing event in response; keeping prior fence',
+        {
+          workflowRunId: runId,
+          eventType: event.eventType,
+          correlationId: event.correlationId,
+          fenceEventId,
+        }
+      );
+    }
+    return {
+      written: true,
+      newFenceEventId: result.event?.eventId ?? fenceEventId,
+      event: result.event
+        ? {
+            eventType: result.event.eventType,
+            eventId: result.event.eventId,
           }
-        );
-      }
-      return {
-        written: true,
-        newFenceEventId: result.event?.eventId ?? fenceEventId,
-        event: result.event
-          ? {
-              eventType: result.event.eventType,
-              eventId: result.event.eventId,
-            }
-          : undefined,
-      };
-    } catch (err) {
-      if (isFenceConflict(err)) {
-        attempt += 1;
-        runtimeLogger.info(
-          'Branch-decision write fence conflict; reloading and retrying',
-          {
-            workflowRunId: runId,
-            eventType: event.eventType,
-            correlationId: event.correlationId,
-            attempt,
-            maxAttempts: MAX_FENCE_RETRIES,
-          }
-        );
-        if (attempt > MAX_FENCE_RETRIES) {
-          runtimeLogger.warn(
-            'Branch-decision write gave up after fence retries',
-            {
-              workflowRunId: runId,
-              eventType: event.eventType,
-              correlationId: event.correlationId,
-              attempts: attempt,
-            }
-          );
-          throw err;
+        : undefined,
+    };
+  } catch (err) {
+    if (isFenceConflict(err)) {
+      // Another invocation has the canonical view of the event log.
+      // Bail out cleanly: no retry, no throw. The canonical invocation
+      // is responsible for whatever progress the workflow needs.
+      runtimeLogger.info(
+        'Branch-decision write fence conflict; yielding to canonical replay',
+        {
+          workflowRunId: runId,
+          eventType: event.eventType,
+          correlationId: event.correlationId,
         }
-        const decision = await onConflictRefresh(attempt);
-        if (decision.kind === 'abort') {
-          return { written: false };
-        }
-        fenceEventId = decision.fenceEventId;
-        await new Promise((r) => setTimeout(r, 25 * attempt));
-        continue;
-      }
-      if (EntityConflictError.is(err)) {
-        const decision = onEntityConflict(err);
-        if (decision === 'abort') {
-          return { written: false };
-        }
-        throw err;
+      );
+      return { written: false };
+    }
+    if (EntityConflictError.is(err)) {
+      const decision = onEntityConflict(err);
+      if (decision === 'abort') {
+        return { written: false };
       }
       throw err;
     }
+    throw err;
   }
 }
