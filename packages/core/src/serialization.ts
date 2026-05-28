@@ -1,4 +1,8 @@
-import { SerializationError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  RuntimeDecryptionError,
+  SerializationError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
@@ -245,9 +249,16 @@ export function getDeserializeStream(
       if (format === SerializationFormat.ENCRYPTED) {
         if (!keyState.key) {
           controller.error(
-            new WorkflowRuntimeError(
+            new RuntimeDecryptionError(
               'Encrypted stream data encountered but no encryption key is available. ' +
-                'Encryption is not configured or no key was provided for this run.'
+                'Encryption is not configured or no key was provided for this run.',
+              {
+                context: {
+                  operation: 'decrypt',
+                  byteLength: payload.byteLength,
+                  formatPrefix: 'encr',
+                },
+              }
             )
           );
           return;

@@ -87,6 +87,7 @@ export const ERROR_SLUGS = {
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   STEP_NOT_REGISTERED: 'step-not-registered',
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
+  RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -320,6 +321,70 @@ export class CorruptedEventLogError extends WorkflowRuntimeError {
 
   static is(value: unknown): value is CorruptedEventLogError {
     return isError(value) && value.name === 'CorruptedEventLogError';
+  }
+}
+
+/**
+ * Optional structured context attached to a {@link RuntimeDecryptionError},
+ * carried over from the underlying decrypt call site to help diagnose the
+ * failure without poking through stacks.
+ */
+export interface RuntimeDecryptionErrorContext {
+  /** The operation that failed — useful to tell encrypt vs decrypt apart. */
+  operation?: 'encrypt' | 'decrypt';
+  /** Byte length of the input payload at the time of the failure. */
+  byteLength?: number;
+  /**
+   * The first 4 bytes of the input payload, decoded as UTF-8 if printable.
+   * Useful for telling apart truncated-but-valid-looking encrypted payloads
+   * from completely unrelated corruption (e.g. an HTML error page surfaced
+   * as a 200 OK).
+   */
+  formatPrefix?: string;
+}
+
+/**
+ * Thrown when the SDK's built-in AES-GCM encryption layer fails to encrypt
+ * or decrypt a workflow payload.
+ *
+ * This is **never** a user code error — the user never directly invokes
+ * the SDK's encryption primitives. A failure here means the SDK encountered
+ * an internal problem such as:
+ *
+ * - A ciphertext / auth tag mismatch (commonly surfaces as the native Web
+ *   Crypto `OperationError: The operation failed for an operation-specific
+ *   reason`), typically caused by ciphertext mutation or truncation in
+ *   transit between storage and read (e.g. a truncated HTTP response from
+ *   a workflow-server ref endpoint, an edge-cache miss returning a partial
+ *   200, a proxy drop during streaming, etc.).
+ * - A key resolution mismatch (wrong deployment, missing key material).
+ * - A malformed encrypted envelope (too short to contain the GCM nonce
+ *   and tag).
+ *
+ * Extending {@link WorkflowRuntimeError} ensures these failures classify
+ * as `RUNTIME_ERROR` rather than `USER_ERROR` when they bubble up to the
+ * run-failure handler.
+ */
+export class RuntimeDecryptionError extends WorkflowRuntimeError {
+  /** Optional structured context about the failed encrypt/decrypt call. */
+  readonly context?: RuntimeDecryptionErrorContext;
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & { context?: RuntimeDecryptionErrorContext }
+  ) {
+    super(message, {
+      cause: options?.cause,
+      slug: ERROR_SLUGS.RUNTIME_DECRYPTION_FAILED,
+    });
+    this.name = 'RuntimeDecryptionError';
+    if (options?.context !== undefined) {
+      this.context = options.context;
+    }
+  }
+
+  static is(value: unknown): value is RuntimeDecryptionError {
+    return isError(value) && value.name === 'RuntimeDecryptionError';
   }
 }
 

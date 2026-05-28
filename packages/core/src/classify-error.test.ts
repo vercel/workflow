@@ -2,6 +2,7 @@ import {
   CorruptedEventLogError,
   HookConflictError,
   RUN_ERROR_CODES,
+  RuntimeDecryptionError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -86,5 +87,27 @@ describe('classifyRunError', () => {
     expect(classifyRunError(new HookConflictError('my-token'))).toBe(
       RUN_ERROR_CODES.USER_ERROR
     );
+  });
+
+  it('classifies RuntimeDecryptionError as RUNTIME_ERROR', () => {
+    // SDK-level encryption is never the user's responsibility, so a
+    // decrypt failure must not surface as USER_ERROR.
+    expect(classifyRunError(new RuntimeDecryptionError('decrypt failed'))).toBe(
+      RUN_ERROR_CODES.RUNTIME_ERROR
+    );
+  });
+
+  it('classifies a raw native OperationError as USER_ERROR (sanity check)', () => {
+    // This documents the previous (and still current, for unwrapped
+    // errors) behavior: a bare DOMException-shaped OperationError from
+    // the Web Crypto API would still classify as USER_ERROR because
+    // its name does not match any RUNTIME_ERROR_CHECKS entry. The fix
+    // is to make sure the encryption module always wraps these in
+    // RuntimeDecryptionError before they bubble up.
+    const native = new Error(
+      'The operation failed for an operation-specific reason'
+    );
+    native.name = 'OperationError';
+    expect(classifyRunError(native)).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 });

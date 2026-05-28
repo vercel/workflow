@@ -5,7 +5,7 @@
  * using the format prefix system to mark encrypted data.
  */
 
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { RuntimeDecryptionError } from '@workflow/errors';
 import {
   decrypt as aesGcmDecrypt,
   encrypt as aesGcmEncrypt,
@@ -64,12 +64,21 @@ export async function decrypt(
   const format = peekFormatPrefix(data);
 
   // If the data is encrypted but no key was provided, fail fast.
-  // Uses WorkflowRuntimeError to preserve the error contract from the
-  // legacy maybeDecrypt() implementation that callers may rely on.
+  // RuntimeDecryptionError extends WorkflowRuntimeError, preserving the
+  // legacy error contract while ensuring the run-failure classifier
+  // routes this to RUNTIME_ERROR rather than misattributing it to user
+  // code (USER_ERROR).
   if (format === SerializationFormat.ENCRYPTED && !key) {
-    throw new WorkflowRuntimeError(
+    throw new RuntimeDecryptionError(
       'Encrypted data encountered but no encryption key is available. ' +
-        'Encryption is not configured or no key was provided for this run.'
+        'Encryption is not configured or no key was provided for this run.',
+      {
+        context: {
+          operation: 'decrypt',
+          byteLength: data.byteLength,
+          formatPrefix: 'encr',
+        },
+      }
     );
   }
 
