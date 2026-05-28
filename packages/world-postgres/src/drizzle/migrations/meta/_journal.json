@@ -92,6 +92,13 @@
       "when": 1775600000000,
       "tag": "0012_add_is_system",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1779609600000,
+      "tag": "0013_add_attributes",
+      "breakpoints": true
     }
   ]
 }

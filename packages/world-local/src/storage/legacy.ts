@@ -48,6 +48,7 @@ export async function handleLegacyEvent(
         error: undefined,
         completedAt: now,
         updatedAt: now,
+        attributes: currentRun.attributes,
       };
       const runPath = resolveWithinBase(basedir, 'runs', `${runId}.json`);
       await writeJSON(runPath, run, { overwrite: true });

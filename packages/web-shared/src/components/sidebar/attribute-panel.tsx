@@ -417,6 +417,13 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
+  // Attributes MVP — string-string metadata attached to the run.
+  // Rendered as a JSON block; if empty/missing, hidden by the
+  // hasDisplayContent gate above.
+  attributes: (value: unknown) => {
+    if (!hasDisplayContent(value)) return null;
+    return JsonBlock(value);
+  },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,

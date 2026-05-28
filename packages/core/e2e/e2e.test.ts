@@ -3430,4 +3430,117 @@ describe('e2e', () => {
       expect(returnValue.reason).toBe('Test complete');
     }
   );
+
+  // ==========================================================================
+  // experimental_setAttributes (experimental MVP)
+  // ==========================================================================
+
+  describe('experimental_setAttributes', () => {
+    test(
+      'experimentalSetAttributesWorkflow: workflow-body calls dispatch through the step bridge and merge correctly',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesWorkflow'),
+          [7]
+        );
+        const output = await run.returnValue;
+        expect(output).toBe(21);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        // First call sets {phase: 'init', source: 'workflow-body'}; second
+        // overwrites phase; third unsets source via undefined → null.
+        expect(persisted?.attributes).toEqual({ phase: 'done' });
+        expect(persisted?.attributes ?? {}).not.toHaveProperty('source');
+
+        // Dispatch is via a real step — verify at least one
+        // `step_created`/`step_completed` pair for the `__builtin_set_attributes`
+        // step exists on the run's event log.
+        const { data: events } = await world.events.list({ runId: run.runId });
+        const attrStepEvents = events.filter(
+          (e) =>
+            (e.eventType === 'step_created' ||
+              e.eventType === 'step_completed') &&
+            typeof (e.eventData as { stepName?: string } | undefined)
+              ?.stepName === 'string' &&
+            (e.eventData as { stepName: string }).stepName.includes(
+              '__builtin_set_attributes'
+            )
+        );
+        expect(attrStepEvents.length).toBeGreaterThanOrEqual(2);
+      }
+    );
+
+    // TODO(attributes): un-skip once the platform supports executing
+    // step bodies queued by `drainPendingQueueItems`. Today the step
+    // worker calls `executeStep` → `world.events.create('step_started')`,
+    // which the server rejects with `RunExpiredError` (HTTP 410) once
+    // the run has transitioned to a terminal state. Drain commits the
+    // `step_created` event and enqueues the message, but by the time
+    // the queue worker picks it up `run_completed` has landed and the
+    // worker skips the step ("Workflow run X has already completed,
+    // skipping step Y" in step-executor.ts).
+    //
+    // The fire-and-forget pattern itself works for `void` calls placed
+    // before any later `await` on a runtime primitive (the suspension
+    // queues the step before the run terminates) — see the awaited
+    // workflow-body test above for that coverage. What's broken is
+    // specifically "last void immediately before return". Either the
+    // platform needs to keep accepting `step_started` for steps the
+    // workflow itself queued at drain time, or attribute writes need
+    // a non-step dispatch path (planned for the full V1 attributes
+    // feature where attr_set is a first-class event type).
+    test.todo(
+      'fire-and-forget: void experimental_setAttributes lands without awaiting'
+    );
+
+    test(
+      'Promise.all of disjoint-key writes: every key lands',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesParallelWorkflow'),
+          []
+        );
+        const output = await run.returnValue;
+        expect(output).toBe('done');
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        // Disjoint-key writes never collide, so all three keys must
+        // land regardless of dispatch ordering at the world.
+        expect(persisted?.attributes).toEqual({ a: '1', b: '2', c: '3' });
+      }
+    );
+
+    test(
+      'workflow throws after awaited setAttributes: attribute still persists on the failed run',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesThrowsAfterWorkflow'),
+          []
+        );
+        // The workflow throws — `returnValue` rejects.
+        await expect(run.returnValue).rejects.toThrow(/intentional failure/);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        expect(persisted?.status).toBe('failed');
+        // The attribute was awaited and therefore landed before the
+        // throw. The `run_failed` lifecycle write must preserve the
+        // attribute snapshot — the per-run file lock guarantees the
+        // lifecycle handler reads the fresh value off disk inside its
+        // critical section before writing the failed state back.
+        expect(persisted?.attributes).toEqual({
+          phase: 'about-to-fail',
+          reason: 'intentional',
+        });
+      }
+    );
+  });
 });

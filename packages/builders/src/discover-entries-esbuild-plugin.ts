@@ -43,6 +43,7 @@ function hasManifestEntries(
 function isGeneratedBuildArtifactPath(filePath: string): boolean {
   const normalizedPath = filePath.replace(/\\/g, '/');
   return (
+    normalizedPath.includes('/.nitro/') ||
     normalizedPath.includes('/.output/') ||
     normalizedPath.includes('/.next/') ||
     normalizedPath.includes('/.nuxt/') ||

@@ -1,5 +1,21 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.7
+
+### Minor Changes
+
+- [#1978](https://github.com/vercel/workflow/pull/1978) [`b0d0561`](https://github.com/vercel/workflow/commit/b0d0561afc41d20b5203c02bb9a4dbf59d18c214) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `@workflow/world-vercel/run-id` sub-export with `encode`/`decode` helpers that produce ULID-shaped workflow run IDs carrying a tag bit, a 5-bit version, and a 6-bit Vercel region ID.
+
+### Patch Changes
+
+- [#2134](https://github.com/vercel/workflow/pull/2134) [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `experimental_setAttributes()` workflow-level helper for attaching string key/value metadata to a workflow run, surfaced as `run.attributes`
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/world@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.5
+
 ## 5.0.0-beta.6
 
 ### Patch Changes
