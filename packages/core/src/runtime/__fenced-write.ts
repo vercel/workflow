@@ -1,10 +1,8 @@
 /**
  * Helper for "branch-decision" event writes that need OCC fencing.
  *
- * Extends Peter's CAS approach (workflow#2113 + workflow-server#447) — which
- * only fenced `wait_completed` — to every other write whose outcome depends
- * on a branch decision the workflow VM made from its loaded event log. Per
- * the table @VaguelySerious himself laid out on PR 2113, those are:
+ * Extends OCC fencing beyond `wait_completed` to every write whose outcome
+ * depends on a branch decision the workflow VM made from its loaded event log:
  *
  *   suspension-handler.ts:
  *     - step_created
@@ -16,10 +14,9 @@
  *     - run_completed
  *     - run_failed
  *
- * `hook_received` is deliberately NOT fenced (Peter's reasoning preserved:
- * fencing the user's signal would drop it on contention; stale-snapshot
- * protection belongs on the writes that consume hooks, not the writes that
- * deliver them).
+ * `hook_received` is deliberately NOT fenced: fencing the user's signal would
+ * drop it on contention; stale-snapshot protection belongs on the writes that
+ * consume hooks, not the writes that deliver them.
  *
  * Each fenced write tries up to MAX_FENCE_RETRIES times. On a fence
  * conflict, the caller is expected to refresh `fenceEventId` from a fresh
@@ -39,14 +36,11 @@ const MAX_FENCE_RETRIES = 5;
 
 /**
  * Returns true when an EntityConflictError carries the fence-conflict
- * shape (workflow-server returns the literal string "fence conflict" in
- * the 412 body for the EventLogFenceConflictError). Anything else with
- * a 409/410/etc shape is some other kind of conflict (entity-already-
- * exists, run already terminal, hook token taken) that the caller's
- * existing handlers want to keep dealing with.
+ * shape. Anything else with a 409/410/etc shape is some other kind of
+ * conflict (entity already exists, run already terminal, hook token taken)
+ * that the caller's existing handlers want to keep dealing with.
  *
- * TODO: switch to a typed error class once the server returns one on the
- * wire — Peter's existing code does the same string match.
+ * TODO: switch to a typed error class once the wire format exposes one.
  */
 function isFenceConflict(err: unknown): boolean {
   return (

@@ -39,9 +39,9 @@ export interface SuspensionHandlerParams {
    * unfenced (still atomically advance `run.lastKnownEventId` on the
    * server side so future fenced writers chain off the new value).
    *
-   * Conceptually identical to the `fenceEventId` Peter's PR 2113 added
-   * for the elapsed-wait scan — see `__fenced-write.ts` for the rationale
-   * for extending it to step/wait/hook `_created` and `hook_disposed`.
+   * Conceptually identical to the elapsed-wait scan fence. See
+   * `__fenced-write.ts` for the rationale for extending it to
+   * step/wait/hook `_created` and `hook_disposed`.
    */
   fenceEventId?: string;
   /**
@@ -111,8 +111,7 @@ export async function handleSuspension({
    * → abort the write").
    *
    * NOTE: when `eventsCursor` is unset the reload is a full re-read of
-   * the run's log; that's the same fallback Peter used in PR 2113 for
-   * the elapsed-wait scan.
+   * the run's log, matching the elapsed-wait scan fallback.
    */
   async function refreshFence(): Promise<{
     fenceEventId: string | undefined;

@@ -59,12 +59,7 @@ function httpLog(
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-// [DEBUG] Point at Peter's workflow-server PR #447 preview so the SDK's
-// extended fence (see runtime/__fenced-write.ts) hits a server that
-// implements the EventLogFenceConflictError (HTTP 412) path. Branch
-// alias of dpl_6FyMKmZhR4mpafRrjKh8wUugpXgE.
-const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-83nn57dvc.vercel.sh';
+const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
@@ -389,11 +384,10 @@ export async function makeRequest<T>({
           throwWithTrace(new EntityConflictError(defaultMessage));
         }
         if (response.status === 412) {
-          // OCC fence conflict (EventLogFenceConflictError on the server,
-          // workflow-server PR #447). The server's error message includes
-          // "fence conflict", which the runtime's fence-retry loops match
-          // on. Surfacing this as EntityConflictError keeps the existing
-          // 409-vs-fence-conflict branching downstream unchanged.
+          // OCC fence conflict. The response message includes "fence conflict",
+          // which the runtime's fence-retry loops match on. Surfacing this as
+          // EntityConflictError keeps the existing conflict branching
+          // downstream unchanged.
           throwWithTrace(new EntityConflictError(defaultMessage));
         }
         if (response.status === 410) {

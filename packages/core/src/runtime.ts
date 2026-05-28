@@ -1109,11 +1109,9 @@ export function workflowEntrypoint(
                         // handler can fence its branch-decision writes
                         // (step_created, hook_created, hook_disposed,
                         // wait_created) against this snapshot of the log.
-                        // This extends Peter's OCC fencing (which currently
-                        // only covers `wait_completed` in the elapsed-wait
-                        // scan above) to the other writes whose outcome
-                        // depends on a branch decision the workflow VM
-                        // made from the loaded log. See review on PR 2113.
+                        // This extends OCC fencing to the other writes whose
+                        // outcome depends on a branch decision the workflow VM
+                        // made from the loaded log.
                         const suspensionStart = Date.now();
                         // `cachedEvents` mirrors `events` (assigned right
                         // before runWorkflow above) and is visible in the
