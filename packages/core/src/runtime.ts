@@ -35,6 +35,7 @@ import {
   ReplayBudget,
 } from './runtime/replay-budget.js';
 import { executeStep } from './runtime/step-executor.js';
+import { fencedEventCreate } from './runtime/__fenced-write.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import {
   getWorld,
@@ -964,22 +965,60 @@ export function workflowEntrypoint(
                         replayMs: Date.now() - replayStart,
                       });
 
-                      // Workflow completed
+                      // Workflow completed.
+                      //
+                      // Fence the `run_completed` write against the
+                      // load-time tail of `events`: if a concurrent
+                      // replay with a fresher view has already written
+                      // its own terminal event (run_completed / run_failed),
+                      // CAS rejects this write and we treat the run as
+                      // already-terminal (same shape as the existing
+                      // EntityConflictError / RunExpiredError branches).
                       try {
-                        await world.events.create(
+                        const runCompletedFence =
+                          events.length > 0
+                            ? events[events.length - 1].eventId
+                            : undefined;
+                        const writeResult = await fencedEventCreate({
+                          world,
                           runId,
-                          {
+                          event: {
                             eventType: 'run_completed',
                             specVersion: SPEC_VERSION_CURRENT,
                             eventData: { output: result },
                           },
-                          { requestId }
-                        );
+                          requestId,
+                          fenceEventId: runCompletedFence,
+                          onConflictRefresh: async () => {
+                            // Terminal-state idempotency: if any
+                            // terminal run event landed since our load,
+                            // abort. Don't retry — once a run is in a
+                            // terminal state, our write is wrong.
+                            const loaded = eventsCursor
+                              ? await loadWorkflowRunEvents(runId, eventsCursor)
+                              : await loadWorkflowRunEvents(runId);
+                            const reachedTerminal = loaded.events.some(
+                              (e) =>
+                                e.eventType === 'run_completed' ||
+                                e.eventType === 'run_failed' ||
+                                e.eventType === 'run_cancelled'
+                            );
+                            if (reachedTerminal) return { kind: 'abort' };
+                            const fresh =
+                              loaded.events[loaded.events.length - 1]?.eventId;
+                            return { kind: 'retry', fenceEventId: fresh };
+                          },
+                          onEntityConflict: () => 'abort',
+                        });
+                        if (!writeResult.written) {
+                          runtimeLogger.info(
+                            'Tried completing workflow run, but run has already finished.',
+                            { workflowRunId: runId }
+                          );
+                          return;
+                        }
                       } catch (err) {
-                        if (
-                          EntityConflictError.is(err) ||
-                          RunExpiredError.is(err)
-                        ) {
+                        if (RunExpiredError.is(err)) {
                           runtimeLogger.info(
                             'Tried completing workflow run, but run has already finished.',
                             { workflowRunId: runId, message: err.message }
@@ -1013,14 +1052,33 @@ export function workflowEntrypoint(
                           runtimeLogger.debug(suspensionMessage);
                         }
 
-                        // V2: handle suspension without queuing steps
+                        // V2: handle suspension without queuing steps.
+                        //
+                        // Pass the load-time tail eventId + cursor so the
+                        // handler can fence its branch-decision writes
+                        // (step_created, hook_created, hook_disposed,
+                        // wait_created) against this snapshot of the log.
+                        // This extends Peter's OCC fencing (which currently
+                        // only covers `wait_completed` in the elapsed-wait
+                        // scan above) to the other writes whose outcome
+                        // depends on a branch decision the workflow VM
+                        // made from the loaded log. See review on PR 2113.
                         const suspensionStart = Date.now();
+                        // `cachedEvents` mirrors `events` (assigned right
+                        // before runWorkflow above) and is visible in the
+                        // outer catch scope where `events` is not.
+                        const suspensionFenceEventId =
+                          cachedEvents && cachedEvents.length > 0
+                            ? cachedEvents[cachedEvents.length - 1].eventId
+                            : undefined;
                         const suspensionResult = await handleSuspension({
                           suspension: err,
                           world,
                           run: workflowRun,
                           span,
                           requestId,
+                          fenceEventId: suspensionFenceEventId,
+                          eventsCursor,
                         });
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
@@ -1278,10 +1336,22 @@ export function workflowEntrypoint(
                         // Serialize the original thrown value so its full
                         // type identity and custom properties round-trip
                         // through the event log.
+                        //
+                        // Fenced for the same reason as run_completed:
+                        // don't let a stale-view replay paper over a
+                        // concurrent terminal write.
                         try {
-                          await world.events.create(
+                          // `cachedEvents` mirrors the local `events`
+                          // (which lives in the try-block above); see
+                          // the suspension catch for the same trick.
+                          const runFailedFence =
+                            cachedEvents && cachedEvents.length > 0
+                              ? cachedEvents[cachedEvents.length - 1].eventId
+                              : undefined;
+                          const writeResult = await fencedEventCreate({
+                            world,
                             runId,
-                            {
+                            event: {
                               eventType: 'run_failed',
                               specVersion: SPEC_VERSION_CURRENT,
                               eventData: {
@@ -1293,13 +1363,38 @@ export function workflowEntrypoint(
                                 errorCode,
                               },
                             },
-                            { requestId }
-                          );
+                            requestId,
+                            fenceEventId: runFailedFence,
+                            onConflictRefresh: async () => {
+                              const loaded = eventsCursor
+                                ? await loadWorkflowRunEvents(
+                                    runId,
+                                    eventsCursor
+                                  )
+                                : await loadWorkflowRunEvents(runId);
+                              const reachedTerminal = loaded.events.some(
+                                (e) =>
+                                  e.eventType === 'run_completed' ||
+                                  e.eventType === 'run_failed' ||
+                                  e.eventType === 'run_cancelled'
+                              );
+                              if (reachedTerminal) return { kind: 'abort' };
+                              const fresh =
+                                loaded.events[loaded.events.length - 1]
+                                  ?.eventId;
+                              return { kind: 'retry', fenceEventId: fresh };
+                            },
+                            onEntityConflict: () => 'abort',
+                          });
+                          if (!writeResult.written) {
+                            runtimeLogger.info(
+                              'Tried failing workflow run, but run has already finished.',
+                              { workflowRunId: runId }
+                            );
+                            return;
+                          }
                         } catch (failErr) {
-                          if (
-                            EntityConflictError.is(failErr) ||
-                            RunExpiredError.is(failErr)
-                          ) {
+                          if (RunExpiredError.is(failErr)) {
                             runtimeLogger.info(
                               'Tried failing workflow run, but run has already finished.',
                               {

@@ -7,6 +7,7 @@ import {
 } from '@workflow/errors';
 import {
   type CreateEventRequest,
+  type Event,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -23,6 +24,8 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
+import { fencedEventCreate } from './__fenced-write.js';
+import { loadWorkflowRunEvents } from './helpers.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -30,6 +33,25 @@ export interface SuspensionHandlerParams {
   run: WorkflowRun;
   span?: Span;
   requestId?: string;
+  /**
+   * Caller's most recent view of the event log (tail eventId), used as
+   * the OCC fence on every branch-decision write below. Pass `undefined`
+   * when the caller has no events loaded yet; the writes will then be
+   * unfenced (still atomically advance `run.lastKnownEventId` on the
+   * server side so future fenced writers chain off the new value).
+   *
+   * Conceptually identical to the `fenceEventId` Peter's PR 2113 added
+   * for the elapsed-wait scan — see `__fenced-write.ts` for the rationale
+   * for extending it to step/wait/hook `_created` and `hook_disposed`.
+   */
+  fenceEventId?: string;
+  /**
+   * Caller's events-cursor token (from `loadWorkflowRunEvents`). Used to
+   * refresh the fence after a CAS conflict — the handler pulls fresh
+   * events from this cursor, takes the new tail as the next fence, and
+   * retries.
+   */
+  eventsCursor?: string | null;
 }
 
 /**
@@ -69,8 +91,40 @@ export async function handleSuspension({
   run,
   span,
   requestId,
+  fenceEventId: initialFenceEventId,
+  eventsCursor: initialEventsCursor,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
+
+  // Per-suspension shared fence state. Each successful fenced write advances
+  // `fenceEventId` so subsequent writes from this handler chain off it.
+  // Concurrent writes within this handler that all started with the same
+  // fence may conflict — that's fine, each falls through to a fresh-cursor
+  // reload in `refreshFence` below.
+  let fenceEventId = initialFenceEventId;
+  let eventsCursor = initialEventsCursor;
+
+  /**
+   * Reloads events from the cursor and returns the new tail as a fresh
+   * fence. Also returns the freshly-loaded events so callers can run
+   * idempotency checks (e.g. "is this `wait_created` already in the log?
+   * → abort the write").
+   *
+   * NOTE: when `eventsCursor` is unset the reload is a full re-read of
+   * the run's log; that's the same fallback Peter used in PR 2113 for
+   * the elapsed-wait scan.
+   */
+  async function refreshFence(): Promise<{
+    fenceEventId: string | undefined;
+    loadedEvents: Event[];
+  }> {
+    const loaded = eventsCursor
+      ? await loadWorkflowRunEvents(runId, eventsCursor)
+      : await loadWorkflowRunEvents(runId);
+    eventsCursor = loaded.cursor ?? eventsCursor;
+    const tail = loaded.events[loaded.events.length - 1]?.eventId;
+    return { fenceEventId: tail, loadedEvents: loaded.events };
+  }
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -128,18 +182,55 @@ export async function handleSuspension({
     await Promise.all(
       hookEvents.map(async (hookEvent) => {
         try {
-          const result = await world.events.create(runId, hookEvent, {
+          const writeResult = await fencedEventCreate({
+            world,
+            runId,
+            event: hookEvent,
             requestId,
+            fenceEventId,
+            onConflictRefresh: async () => {
+              const { fenceEventId: fresh, loadedEvents } =
+                await refreshFence();
+              // Idempotency: if the hook was already created (by us in a
+              // previous attempt that 412'd then succeeded server-side,
+              // or by a concurrent handler), don't retry.
+              const alreadyCreated = loadedEvents.some(
+                (e) =>
+                  (e.eventType === 'hook_created' ||
+                    e.eventType === 'hook_conflict') &&
+                  e.correlationId === hookEvent.correlationId
+              );
+              if (alreadyCreated) {
+                return { kind: 'abort' };
+              }
+              return { kind: 'retry', fenceEventId: fresh };
+            },
+            onEntityConflict: () => 'abort',
           });
-          // Check if the world returned a hook_conflict event instead of hook_created.
-          // The hook_conflict event is stored in the event log and will be replayed
-          // on the next workflow invocation, causing the hook's promise to reject.
-          // Note: hook events always create an event (legacy runs throw, not return undefined)
-          if (result.event!.eventType === 'hook_conflict') {
+          if (writeResult.newFenceEventId) {
+            fenceEventId = writeResult.newFenceEventId;
+          }
+          if (!writeResult.written) {
+            // Already created concurrently — surface as info, same shape
+            // as the pre-fence "EntityConflictError → skip" branch did.
+            runtimeLogger.info(
+              'Workflow run already completed or hook already created, skipping',
+              {
+                workflowRunId: runId,
+                correlationId: hookEvent.correlationId,
+              }
+            );
+            return;
+          }
+          // Preserve the "world resolved hook_created → hook_conflict"
+          // short-circuit. The hook_conflict event lives in the log and
+          // will be replayed; the immediate signal lets the caller
+          // re-invoke right away rather than waiting on the queue.
+          if (writeResult.event?.eventType === 'hook_conflict') {
             hasHookConflict = true;
           }
         } catch (err) {
-          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+          if (RunExpiredError.is(err)) {
             runtimeLogger.info(
               'Workflow run already completed, skipping hook',
               {
@@ -168,19 +259,33 @@ export async function handleSuspension({
           },
         };
         try {
-          await world.events.create(runId, hookDisposedEvent, { requestId });
-        } catch (err) {
-          if (EntityConflictError.is(err)) {
-            // Hook was already disposed by a concurrent invocation — safe to skip
-            runtimeLogger.info(
-              'Hook already disposed, skipping duplicate disposal',
-              {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
+          const writeResult = await fencedEventCreate({
+            world,
+            runId,
+            event: hookDisposedEvent,
+            requestId,
+            fenceEventId,
+            onConflictRefresh: async () => {
+              const { fenceEventId: fresh, loadedEvents } =
+                await refreshFence();
+              // Idempotency: if already disposed, abort.
+              const alreadyDisposed = loadedEvents.some(
+                (e) =>
+                  e.eventType === 'hook_disposed' &&
+                  e.correlationId === queueItem.correlationId
+              );
+              if (alreadyDisposed) {
+                return { kind: 'abort' };
               }
-            );
-          } else if (RunExpiredError.is(err)) {
+              return { kind: 'retry', fenceEventId: fresh };
+            },
+            onEntityConflict: () => 'abort',
+          });
+          if (writeResult.newFenceEventId) {
+            fenceEventId = writeResult.newFenceEventId;
+          }
+        } catch (err) {
+          if (RunExpiredError.is(err)) {
             runtimeLogger.info(
               'Workflow run already completed, skipping hook disposal',
               {
@@ -293,7 +398,15 @@ export async function handleSuspension({
 
   const ops: Promise<void>[] = [];
 
-  // Steps: create step_created events (no queuing — V2 returns pending steps to caller)
+  // Steps: create step_created events (no queuing — V2 returns pending steps to caller).
+  //
+  // NOTE: this is the write site that triggered the failure on
+  // `wrun_01KSPS7XEGHF4A6WYF4DB03D40` against PR #456's monotonic-append:
+  // a stale-view replay decided iter-K's race resolved with "wake" and
+  // wrote `step_created (drain)` even though a concurrent replay with a
+  // fresher view had already taken the "sleep" branch. Fencing this
+  // write makes the stale-view writer's fence stale and 412, so only the
+  // authoritative replay's step_created lands. See review on PR 2113.
   for (const queueItem of stepItems) {
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(
@@ -318,25 +431,64 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, stepEvent, { requestId });
-            createdStepCorrelationIds.add(queueItem.correlationId);
-          } catch (err) {
-            if (EntityConflictError.is(err)) {
-              runtimeLogger.info('Step already exists, continuing', {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              });
-            } else {
-              throw err;
+            const writeResult = await fencedEventCreate({
+              world,
+              runId,
+              event: stepEvent,
+              requestId,
+              fenceEventId,
+              onConflictRefresh: async () => {
+                const { fenceEventId: fresh, loadedEvents } =
+                  await refreshFence();
+                // Idempotency: if step_created for this correlationId is
+                // already in the log, abort. Distinct from the
+                // EntityConflictError-on-duplicate-stepId case (that's
+                // handled by onEntityConflict below) — this branch
+                // catches the case where _our_ stale-snapshot CAS lost
+                // to a concurrent writer for the same correlationId.
+                const alreadyCreated = loadedEvents.some(
+                  (e) =>
+                    e.eventType === 'step_created' &&
+                    e.correlationId === queueItem.correlationId
+                );
+                if (alreadyCreated) {
+                  return { kind: 'abort' };
+                }
+                return { kind: 'retry', fenceEventId: fresh };
+              },
+              onEntityConflict: () => 'abort',
+            });
+            if (writeResult.newFenceEventId) {
+              fenceEventId = writeResult.newFenceEventId;
             }
+            if (writeResult.written) {
+              createdStepCorrelationIds.add(queueItem.correlationId);
+            } else {
+              runtimeLogger.info(
+                'Step already exists (post-fence-conflict), continuing',
+                {
+                  workflowRunId: runId,
+                  correlationId: queueItem.correlationId,
+                }
+              );
+            }
+          } catch (err) {
+            // fencedEventCreate doesn't swallow non-fence EntityConflictError
+            // when onEntityConflict='abort' returns — it returns
+            // { written: false }. So anything that reaches this catch is
+            // either a fence-retry-exhaustion (already logged) or an
+            // unrelated runtime error. Re-throw.
+            throw err;
           }
         })()
       );
     }
   }
 
-  // Create wait events (same as V1)
+  // Create wait events. Same fencing rationale as `step_created`: a
+  // stale-view replay can otherwise call `sleep(...)` on a code path
+  // that the authoritative replay doesn't take, landing a `wait_created`
+  // that future replays will see as an orphan.
   for (const queueItem of waitItems) {
     if (!queueItem.hasCreatedEvent) {
       ops.push(
@@ -349,18 +501,35 @@ export async function handleSuspension({
               resumeAt: queueItem.resumeAt,
             },
           };
-          try {
-            await world.events.create(runId, waitEvent, { requestId });
-          } catch (err) {
-            if (EntityConflictError.is(err)) {
-              runtimeLogger.info('Wait already exists, continuing', {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              });
-            } else {
-              throw err;
-            }
+          const writeResult = await fencedEventCreate({
+            world,
+            runId,
+            event: waitEvent,
+            requestId,
+            fenceEventId,
+            onConflictRefresh: async () => {
+              const { fenceEventId: fresh, loadedEvents } =
+                await refreshFence();
+              const alreadyCreated = loadedEvents.some(
+                (e) =>
+                  e.eventType === 'wait_created' &&
+                  e.correlationId === queueItem.correlationId
+              );
+              if (alreadyCreated) {
+                return { kind: 'abort' };
+              }
+              return { kind: 'retry', fenceEventId: fresh };
+            },
+            onEntityConflict: () => 'abort',
+          });
+          if (writeResult.newFenceEventId) {
+            fenceEventId = writeResult.newFenceEventId;
+          }
+          if (!writeResult.written) {
+            runtimeLogger.info('Wait already exists, continuing', {
+              workflowRunId: runId,
+              correlationId: queueItem.correlationId,
+            });
           }
         })()
       );
