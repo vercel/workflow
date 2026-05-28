@@ -44,6 +44,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     let conflictErrorRef: HookConflictError | null = null;
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
+
     ctx.eventsConsumer.subscribe((event) => {
       // If there are no events and there are promises waiting,
       // it means the hook has been awaited, but an incoming payload has not yet been received.

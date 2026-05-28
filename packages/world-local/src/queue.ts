@@ -54,6 +54,8 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
+const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
+
 export type DirectHandler = (req: Request) => Promise<Response>;
 
 export type LocalQueue = Queue & {
@@ -123,8 +125,20 @@ export function createQueue(config: Partial<Config>): LocalQueue {
    * that we don't queue the same message multiple times
    */
   const inflightMessages = new Map<string, MessageId>();
+  const completedMessages = new Map<string, MessageId>();
   /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
   const directHandlers = new Map<string, DirectHandler>();
+
+  function markMessageCompleted(idempotencyKey: string, messageId: MessageId) {
+    completedMessages.delete(idempotencyKey);
+    completedMessages.set(idempotencyKey, messageId);
+    if (completedMessages.size > COMPLETED_IDEMPOTENCY_CACHE_LIMIT) {
+      const oldestKey = completedMessages.keys().next().value;
+      if (oldestKey) {
+        completedMessages.delete(oldestKey);
+      }
+    }
+  }
 
   const queue: Queue['queue'] = async (queueName, message, opts) => {
     const cleanup = [] as (() => void)[];
@@ -133,6 +147,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       const existing = inflightMessages.get(opts.idempotencyKey);
       if (existing) {
         return { messageId: existing };
+      }
+
+      const completed = completedMessages.get(opts.idempotencyKey);
+      if (completed) {
+        return { messageId: completed };
       }
     }
 
@@ -224,6 +243,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                 continue;
               }
             } catch {}
+            if (opts?.idempotencyKey) {
+              markMessageCompleted(opts.idempotencyKey, messageId);
+            }
             return;
           }
 

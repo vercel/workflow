@@ -1,5 +1,5 @@
-import { expect, test, vi } from 'vitest';
 import { hydrateWorkflowReturnValue } from '@workflow/core/serialization';
+import { expect, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
@@ -258,6 +258,9 @@ export function inlineBatchesDebug(world: string) {
 
       // Sanity: the run did complete. Everything else is diagnostic.
       expect(run.status).toBe('completed');
+      expect(stepsSkippedAlreadyDone).toBe(0);
+      expect(stepCompletedRaces).toBe(0);
+      expect(unconsumedEventSkips).toBe(0);
       // Hard assertion: no step should have hit max retries for this workflow.
       expect(maxDeliveries).toBe(0);
     }

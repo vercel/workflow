@@ -169,6 +169,37 @@ describe('queue timeout re-enqueue', () => {
     expect(mockSetTimeout).not.toHaveBeenCalled();
   });
 
+  it('dedupes idempotency keys after the handler completes', async () => {
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler('__wkf_step_', async () => {
+      callCount++;
+      return undefined;
+    });
+
+    localQueue.registerHandler('__wkf_step_', handler);
+
+    const first = await localQueue.queue(
+      '__wkf_step_test' as any,
+      stepPayload,
+      { idempotencyKey: stepPayload.stepId }
+    );
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(1);
+    });
+
+    const second = await localQueue.queue(
+      '__wkf_step_test' as any,
+      stepPayload,
+      { idempotencyKey: stepPayload.stepId }
+    );
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(second.messageId).toBe(first.messageId);
+    expect(callCount).toBe(1);
+  });
+
   it('logs actionable guidance for detached ArrayBuffer proxy failures', async () => {
     const consoleError = vi
       .spyOn(console, 'error')
