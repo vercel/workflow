@@ -98,7 +98,11 @@ const EventList = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   return (
-    <ul id="event-list" role="tree" className="block min-h-0 overflow-visible">
+    <ul
+      id="event-list"
+      role="tree"
+      className="block min-h-0 overflow-visible divide-y divide-gray-alpha-400 border-b border-gray-alpha-400"
+    >
       {spans.map((span) => {
         return (
           <EventRow
