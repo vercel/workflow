@@ -14,6 +14,19 @@ export function getErrorStack(v: unknown): string {
   return '';
 }
 
+export function isAbortError(
+  value: unknown
+): value is { name: 'AbortError'; message: string; stack?: string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'name' in value &&
+    value.name === 'AbortError' &&
+    'message' in value &&
+    typeof value.message === 'string'
+  );
+}
+
 export interface NormalizedUnknownError {
   name: string;
   message: string;

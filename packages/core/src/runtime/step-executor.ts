@@ -27,6 +27,7 @@ import { trace } from '../telemetry.js';
 import {
   getErrorName,
   getErrorStack,
+  isAbortError,
   normalizeUnknownError,
 } from '../types.js';
 import { getPortLazy } from './get-port-lazy.js';
@@ -426,14 +427,22 @@ export async function executeStep(
       // and queue a continuation so waitUntil can flush them.
       return { type: 'completed', hasPendingOps: !opsSettled };
     } catch (err: unknown) {
-      const normalizedError = await normalizeUnknownError(err);
-      const normalizedStack = normalizedError.stack || getErrorStack(err) || '';
-
-      if (err instanceof Error) {
-        span?.recordException?.(err);
+      let effectiveErr: unknown = err;
+      if (isAbortError(err) && !FatalError.is(err)) {
+        const fatalErr = new FatalError(`Aborted: ${err.message}`);
+        if (err.stack) fatalErr.stack = err.stack;
+        effectiveErr = fatalErr;
       }
 
-      const isFatal = FatalError.is(err);
+      const normalizedError = await normalizeUnknownError(effectiveErr);
+      const normalizedStack =
+        normalizedError.stack || getErrorStack(effectiveErr) || '';
+
+      if (effectiveErr instanceof Error) {
+        span?.recordException?.(effectiveErr);
+      }
+
+      const isFatal = FatalError.is(effectiveErr);
 
       span?.setAttributes({
         ...Attribute.StepErrorName(getErrorName(err)),
@@ -463,8 +472,8 @@ export async function executeStep(
         // error preserves it for consumers. `types.isNativeError()` works
         // across VM realms (a workflow-thrown error is an instance of the
         // VM's Error class, not the host's).
-        if (types.isNativeError(err) && normalizedStack) {
-          (err as Error).stack = normalizedStack;
+        if (types.isNativeError(effectiveErr) && normalizedStack) {
+          (effectiveErr as Error).stack = normalizedStack;
         }
         try {
           await world.events.create(workflowRunId, {
@@ -474,7 +483,7 @@ export async function executeStep(
             eventData: {
               stepName,
               error: await dehydrateStepError(
-                err,
+                effectiveErr,
                 workflowRunId,
                 await getEncryptionKey()
               ),
