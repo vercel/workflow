@@ -18,6 +18,7 @@ import { z } from 'zod';
 import {
   assertSafeEntityId,
   paginatedFileSystemQuery,
+  readFirstByte,
   readJSONWithFallback,
   resolveWithinBase,
   taggedPath,
@@ -94,6 +95,18 @@ describe('fs utilities', () => {
       const testUlid = ulid(testTime.getTime());
       const result = ulidToDate(testUlid);
       expect(result?.getTime()).toEqual(testTime.getTime());
+    });
+  });
+
+  describe('readFirstByte', () => {
+    it('reads only the marker value and handles empty files', async () => {
+      const dataPath = path.join(testDir, 'chunk.bin');
+      const emptyPath = path.join(testDir, 'empty.bin');
+      await fs.writeFile(dataPath, Buffer.from([1, 2, 3]));
+      await fs.writeFile(emptyPath, Buffer.alloc(0));
+
+      expect(await readFirstByte(dataPath)).toBe(1);
+      expect(await readFirstByte(emptyPath)).toBeUndefined();
     });
   });
 
