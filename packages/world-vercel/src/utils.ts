@@ -282,6 +282,18 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
     if (oidcToken) {
       headers.set('x-vercel-trusted-oidc-idp-token', oidcToken);
     }
+    // [DEBUG] Allow an explicit deployment-protection bypass token via
+    // env var so we can point the SDK at a protected workflow-server
+    // preview from the repro app's runtime (where OIDC trusted-sources
+    // can't help — there's no GitHub-Actions-issued OIDC token, and the
+    // bake-time VERCEL_OIDC_TOKEN doesn't satisfy the preview's
+    // trusted-sources rule). This re-adds the bypass mechanism that
+    // PR #1882 removed; intended only for diagnostic builds.
+    const protectionBypass = process.env.WORKFLOW_VERCEL_PROTECTION_BYPASS;
+    if (protectionBypass) {
+      headers.set('x-vercel-protection-bypass', protectionBypass);
+      headers.set('x-vercel-set-bypass-cookie', 'true');
+    }
   }
 
   return { baseUrl, headers, usingProxy };
