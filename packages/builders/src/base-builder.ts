@@ -211,6 +211,7 @@ export abstract class BaseBuilder {
       '**/node_modules/**',
       '**/.git/**',
       '**/.next/**',
+      '**/.nitro/**',
       '**/.nuxt/**',
       '**/.output/**',
       '**/.vercel/**',
