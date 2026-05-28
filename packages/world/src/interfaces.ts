@@ -1,4 +1,8 @@
 import type {
+  AttributeChange,
+  ExperimentalSetAttributesResult,
+} from './attributes.js';
+import type {
   CreateEventParams,
   CreateEventRequest,
   Event,
@@ -154,6 +158,38 @@ export interface Storage {
     list(
       params?: ListWorkflowRunsParams
     ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
+
+    /**
+     * Apply a batch of attribute changes to a run. Merge semantics:
+     * - `value: string` upserts the key
+     * - `value: null` removes the key
+     * - keys not listed in `changes` are untouched
+     *
+     * Returns the post-merge attribute snapshot on the run.
+     *
+     * Pass `options.allowReservedAttributes: true` to permit keys
+     * starting with the reserved `$` prefix. Default behavior rejects
+     * those keys so user code can't accidentally collide with
+     * framework / tooling namespaces; framework callers that own a
+     * sub-namespace flip this on.
+     *
+     * OPTIONAL. World implementations may omit this method; the SDK
+     * helper (`setAttributes` in `@workflow/core`) feature-detects its
+     * absence and no-ops with a one-time warning so third-party /
+     * community worlds keep working without adopting the experimental
+     * API.
+     *
+     * EXPERIMENTAL: this method exists as a stopgap until the
+     * `attr_set` event type lands in a future spec version. When that
+     * happens, `setAttributes` will dispatch through `events.create`
+     * instead, and this method is expected to be removed. See the
+     * `attributes-mvp` changelog entry for the migration shape.
+     */
+    experimentalSetAttributes?(
+      runId: string,
+      changes: AttributeChange[],
+      options?: { allowReservedAttributes?: boolean }
+    ): Promise<ExperimentalSetAttributesResult>;
   };
 
   steps: {
@@ -248,6 +284,28 @@ export interface World extends Queue, Streamer, Storage {
    * older @workflow/world versions — are expected to handle.
    */
   specVersion?: number;
+
+  /**
+   * Whether calling `process.exit(1)` from a queue handler is observed by
+   * the World as a delivery failure that will be retried.
+   *
+   * Set to `true` for worlds running inside a managed serverless platform
+   * (e.g. `world-vercel`) where the platform fails the invocation when the
+   * function process exits non-zero, and the queue redelivers the message
+   * via a separate fresh invocation.
+   *
+   * Set to `false` (the default) for in-process worlds (e.g. `world-local`,
+   * dev servers) where calling `process.exit()` would terminate the host
+   * process — including the user's `pnpm dev` — without producing a
+   * redelivery. Such worlds should instead surface failures via the event
+   * log and return normally.
+   *
+   * The core runtime reads this when deciding how to handle an exhausted
+   * replay budget: when `true` it exits so the queue redelivers; when
+   * `false` it writes `run_failed` best-effort and returns. See
+   * `packages/core/src/runtime/replay-budget.ts`.
+   */
+  processExitTriggersQueueRedelivery?: boolean;
 
   /**
    * A function that will be called to start any background tasks needed by the World implementation.

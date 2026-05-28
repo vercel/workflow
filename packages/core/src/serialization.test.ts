@@ -41,6 +41,7 @@ import {
   ABORT_STREAM_NAME,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
 
@@ -496,6 +497,44 @@ describe('workflow arguments', () => {
     expect(hydrated).toBeInstanceOf(OurWritableStream);
     const streamName = hydrated[STREAM_NAME_SYMBOL];
     expect(streamName).toMatch(/^strm_[0-9A-Z]{26}$/);
+  });
+
+  // When a user writable is already backed by a workflow server
+  // stream (because it was hydrated by a step-side reviver or created
+  // via step-context `getWritable()`), forwarding it across a
+  // `start()` boundary must emit the original `(runId, name)` in the
+  // dehydrated descriptor and MUST NOT install any pipe through the
+  // user's writable. The child run's step-side reviver then opens a
+  // server writable against the original `(runId, name)` directly,
+  // so writes survive for the full lifetime of the child run — not
+  // just for the dehydrating step's process.
+  it('forwards original (runId, name) for a tagged WritableStream', async () => {
+    const userWritable = new WritableStream();
+    Object.defineProperty(userWritable, STREAM_NAME_SYMBOL, {
+      value: 'strm_parentstreamname',
+      writable: false,
+    });
+    Object.defineProperty(userWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      value: 'wrun_parent',
+      writable: false,
+    });
+
+    expect(userWritable.locked).toBe(false);
+    const serialized = await dehydrateWorkflowArguments(
+      userWritable,
+      'wrun_child',
+      noEncryptionKey,
+      []
+    );
+    // If the reducer had piped through the user's writable, the lock
+    // would be acquired here.
+    expect(userWritable.locked).toBe(false);
+    // The dehydrated descriptor should carry both the original name
+    // and the original runId so the child's reviver can open the
+    // writable against the parent's server stream directly.
+    const text = new TextDecoder().decode(serialized as Uint8Array);
+    expect(text).toContain('strm_parentstreamname');
+    expect(text).toContain('wrun_parent');
   });
 
   it('should work with ReadableStream', async () => {

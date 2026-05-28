@@ -1,7 +1,7 @@
 'use client';
 
-import { AlertCircle, Copy } from 'lucide-react';
-import { useToast } from '../../lib/toast';
+import { AlertCircle } from 'lucide-react';
+import { CopyButton } from '../new-trace-viewer/components/copy-button';
 
 /**
  * Check whether `value` looks like a structured error object with a `stack`
@@ -43,7 +43,6 @@ export function ErrorStackBlock({
 }: {
   value: Record<string, unknown> & { stack: string };
 }) {
-  const toast = useToast();
   const stack = value.stack;
   const message = typeof value.message === 'string' ? value.message : undefined;
   // V8's `Error.stack` already starts with `Name: message`, so when the
@@ -60,29 +59,11 @@ export function ErrorStackBlock({
         background: 'var(--ds-red-100)',
       }}
     >
-      <button
-        type="button"
-        aria-label="Copy error"
-        title="Copy"
-        className="!absolute !right-2 !top-2 !flex !h-6 !w-6 !items-center !justify-center !rounded-md !border transition-transform transition-colors duration-100 hover:!bg-[var(--ds-red-200)] active:!scale-95"
-        style={{
-          borderColor: 'var(--ds-red-400)',
-          background: 'var(--ds-red-100)',
-          color: 'var(--ds-red-900)',
-        }}
-        onClick={() => {
-          navigator.clipboard
-            .writeText(copyText)
-            .then(() => {
-              toast.success('Copied to clipboard');
-            })
-            .catch(() => {
-              toast.error('Failed to copy');
-            });
-        }}
-      >
-        <Copy size={12} />
-      </button>
+      <CopyButton
+        copyText={copyText}
+        ariaLabel="Copy error"
+        className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border border-red-400 bg-red-100 p-0 text-red-900 transition-transform transition-colors duration-100 hover:bg-red-200 active:scale-95"
+      />
 
       {title && (
         <div

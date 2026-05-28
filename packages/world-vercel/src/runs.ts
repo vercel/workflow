@@ -1,7 +1,9 @@
 import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
+  type AttributeChange,
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
+  type ExperimentalSetAttributesResult,
   type GetWorkflowRunParams,
   type ListWorkflowRunsParams,
   type PaginatedResponse,
@@ -250,6 +252,53 @@ export async function cancelWorkflowRunV1(
   } catch (error) {
     if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Wire response schema for `experimentalSetAttributes`. The backend
+ * returns the post-merge attribute snapshot so callers don't need to
+ * issue a follow-up read.
+ */
+const ExperimentalSetAttributesResponseSchema = z.object({
+  attributes: z.record(z.string(), z.string()),
+});
+
+/**
+ * Apply attribute changes to a workflow run. The body shape mirrors the
+ * future `attr_set` event's `eventData.changes`, so the wire contract is
+ * forward-compatible with the full 5.0.0 attributes feature — only the
+ * endpoint path changes.
+ *
+ * `options.allowReservedAttributes` opts the request into permitting
+ * `$`-prefixed keys (framework-only — see the SDK helper for details).
+ * The flag is forwarded to the server via the request body.
+ *
+ * EXPERIMENTAL: tied to the MVP write-only attributes API. See
+ * `docs/content/docs/v5/changelog/attributes-mvp.mdx`.
+ */
+export async function experimentalSetAttributes(
+  runId: string,
+  changes: AttributeChange[],
+  options?: { allowReservedAttributes?: boolean },
+  config?: APIConfig
+): Promise<ExperimentalSetAttributesResult> {
+  try {
+    const response = await makeRequest({
+      endpoint: `/v2/runs/${encodeURIComponent(runId)}/attributes`,
+      options: { method: 'POST' },
+      data: options?.allowReservedAttributes
+        ? { changes, allowReservedAttributes: true }
+        : { changes },
+      config,
+      schema: ExperimentalSetAttributesResponseSchema,
+    });
+    return { attributes: response.attributes };
+  } catch (error) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
+      throw new WorkflowRunNotFoundError(runId);
     }
     throw error;
   }

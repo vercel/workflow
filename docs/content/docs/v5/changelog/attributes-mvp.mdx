@@ -1,0 +1,365 @@
+---
+title: Workflow Attributes (MVP, experimental)
+description: A minimal, write-only subset of the planned Workflow Attributes feature, forward-compatible with the full 5.0.0 release. Lets workflow code attach plaintext string key/value metadata to a run.
+---
+
+# Workflow Attributes (MVP)
+
+This is a minimal, **experimental** subset of the [planned Workflow Attributes feature for 5.0.0](https://github.com/vercel/workflow/pull/1933). See [discussion #132](https://github.com/vercel/workflow/discussions/132) for broader background on the use cases and the full design space.
+
+The MVP lets workflow code attach plaintext `string → string` metadata to a run, viewable in any observability surface that reads the `WorkflowRun` entity. It is deliberately narrow: write-only, no reads from inside a run, no list/filter endpoints, no event-log representation. The wire format and SDK surface are chosen so the full 5.0.0 implementation replaces this without source-level breaking changes for end users.
+
+## What MVP supports
+
+- `experimental_setAttributes(record)` callable from a **workflow body** (`"use workflow"` function), dispatched via an internal `__builtin_set_attributes` step bridge so the mutation gets a `step_created → step_completed` event pair
+- Attributes are materialized onto the `WorkflowRun` entity, plaintext, and visible via `world.runs.get()` / `world.runs.list()` and any observability UI built on top of those
+- World implementations emit a side-channel observability record per successful write (in `world-vercel`, this hooks into the same observability/analytics pipeline already used for other run lifecycle events)
+
+Calling `experimental_setAttributes` from a step body or plain host code is intentionally not supported in the MVP — the host-side export throws `FatalError` directing callers back to a workflow body. This keeps the implementation a single dispatch path; step-body support can be added later without breaking the workflow-body contract.
+
+## What MVP does **not** support (deferred to 5.0.0)
+
+- Reading attributes from inside a workflow or step (`getAttribute` / `getAttributes`)
+- `start(workflow, input, { attributes })` (initial attributes at run creation)
+- Filtering runs by attribute value (`runs.list({ attributes: { ... } })`)
+- Enumerating attribute keys or values (`listAttributeKeys`, `listAttributeValues`)
+- Writer attribution / event-log history of attribute changes
+- Any non-string value type
+
+See [PR #1933](https://github.com/vercel/workflow/pull/1933) for the design of those features.
+
+## Why the MVP defers an `attr_set` event type
+
+The full design represents attribute changes as a new `attr_set` event type in the event log, replayed by the workflow runtime VM to reconstruct the attribute snapshot. That requires bumping `SPEC_VERSION_CURRENT`, because every world implementation (including community worlds) needs to handle the new event during replay, and the runtime's reconstruction logic gains a new case.
+
+A spec version bump is expensive: it gates every world adapter and ties the rollout to coordinated upgrades. We do not want to pay that cost twice — once for the MVP, again for the full feature.
+
+The MVP instead writes attributes via a direct entity-mutation path (outside the event log) which does not require a spec version bump. The downside is that MVP-era attributes have **no representation in the event log** and will not be visible to event-based reconstruction (e.g. a materialization rebuild). When the full feature ships, new writes use `attr_set` events; old runs created during the MVP window retain whatever attributes were materialized at the time, but their history is not recoverable.
+
+## Implementation plan
+
+### 1. `@workflow/world` — Storage interface addition
+
+Add an `experimentalSetAttributes` method to `Storage.runs`:
+
+{/*@skip-typecheck - snippet, not runnable code*/}
+
+```ts
+runs: {
+  get: /* unchanged */;
+  list: /* unchanged */;
+
+  /**
+   * Apply a set of attribute changes to a run. Merge semantics:
+   * keys with a string value are upserted, keys with `value: null`
+   * are removed. Other keys on the run are untouched.
+   *
+   * `options.allowReservedAttributes` permits `$`-prefixed keys for
+   * framework-level callers that own a reserved sub-namespace.
+   *
+   * OPTIONAL. World implementations may omit this method; the SDK
+   * detects absence and no-ops `experimental_setAttributes` with a warning so that
+   * third-party / community worlds continue to function without
+   * adopting the experimental API.
+   *
+   * EXPERIMENTAL: this method exists as a stopgap until the
+   * `attr_set` event type lands. See the 5.0.0 attributes design.
+   */
+  experimentalSetAttributes?(
+    runId: string,
+    changes: Array<{ key: string; value: string | null }>,
+    options?: { allowReservedAttributes?: boolean }
+  ): Promise<{ attributes: Record<string, string> }>;
+}
+```
+
+The method is **optional** to avoid forcing every World implementation (especially community-maintained adapters such as Redis, MongoDB, Turso, and similar) to ship support before the API stabilises. World implementations that do support it return the post-merge attribute snapshot so callers — notably the SDK helper and world adapters emitting observability records — have it without a follow-up read.
+
+Add `attributes?: Record<string, string>` to `WorkflowRunBaseSchema` in `packages/world/src/runs.ts`. Optional for backward compatibility: runs created before this field landed have no `attributes` and read as `undefined`.
+
+### 2. Wire format (used by `world-vercel`)
+
+`world-vercel` calls into a remote endpoint to persist attributes:
+
+```
+POST /v2/runs/:runId/attributes
+
+{
+  "changes": [
+    { "key": "phase", "value": "done" },
+    { "key": "stale", "value": null }
+  ],
+  "allowReservedAttributes": true
+}
+```
+
+Response: `{ "attributes": { "phase": "done", "tenant": "t1" } }`.
+
+The `changes` field **deliberately mirrors** the eventual `attr_set` event's `eventData.changes`. `allowReservedAttributes` is optional and framework-only; omit it for user-authored attributes. When the full feature ships, this endpoint goes away — the same `changes` shape is posted to `POST /v2/runs/:id/events` with `eventType: 'attr_set'` (plus a `writer` discriminator). No SDK signature change, no client-side migration.
+
+### 3. `@workflow/core` — SDK surface
+
+A new export from `@workflow/core` (re-exported by `workflow`):
+
+{/*@skip-typecheck - snippet, not runnable code*/}
+
+```ts
+function experimental_setAttributes(
+  attrs: Record<string, string | undefined>,
+  options?: { allowReservedAttributes?: boolean }
+): Promise<void>
+```
+
+`undefined` is normalized to `null` (unset). An empty object is a no-op (no RPC, no events).
+
+Validation (shared helper, applied both client-side and server-side):
+
+- Key: 1–256 chars, must not start with `$` (reserved — see "Reserved `$` namespace" below)
+- Value: ≤ 256 bytes UTF-8
+- Maximum 64 attributes per run (validated against the post-merge snapshot when the server applies)
+- SDK-side violations throw `FatalError` from `@workflow/errors` before the internal step is dispatched; worlds revalidate as the final authority before mutating storage
+
+#### Reserved `$` namespace
+
+Keys starting with `$` are reserved for framework and library code built on top of the workflow SDK (telemetry tags, agent metadata, future platform-emitted attributes, etc.). User code calling `experimental_setAttributes({ '$foo': 'bar' })` throws `FatalError` so accidental collisions with tooling-owned keys can't slip through.
+
+Framework / library authors that own a `$`-prefixed sub-namespace can opt in per-call:
+
+{/*@skip-typecheck - snippet, not runnable code*/}
+
+```ts
+await experimental_setAttributes(
+  { '$agent.kind': 'durable-agent' },
+  { allowReservedAttributes: true }
+);
+```
+
+The flag is per-call (no run-level "this run accepts reserved keys" mode), so each framework call site explicitly declares intent. Don't enable it from user code — misuse can conflict with observability surfaces, agent dashboards, or future platform features that rely on the reserved namespace.
+
+`experimental_setAttributes` is callable only from a workflow body:
+
+```ts
+import { experimental_setAttributes } from 'workflow';
+
+export async function myWorkflow(orderId: string) {
+  'use workflow';
+  await experimental_setAttributes({ phase: 'init', orderId });
+  // ...
+  await experimental_setAttributes({ phase: 'done' });
+}
+```
+
+The workflow-body path validates input inside the VM and then dispatches the canonical `AttributeChange[]` through an internal `__builtin_set_attributes` step bridge — see "How workflow-body dispatch works" below. The mutation is materialized on the run entity by the step body.
+
+The host-side export (the one resolved when the `workflow` package-exports condition is **not** `workflow`, i.e. step bodies and plain host code) throws `FatalError` with a message pointing callers back to the workflow body. There is no step-side dispatch path in the MVP — the workflow-body-only restriction is a scope cut for the MVP, not an architectural constraint, and may be relaxed in a follow-up.
+
+#### Usage patterns
+
+Three call patterns are supported. Pick by whether you need ordering and whether you need to know the write has landed before continuing:
+
+**Awaited (default).** The workflow blocks on the internal write step before continuing. Use this when later workflow logic should wait until the attribute write has either succeeded or exhausted the MVP's best-effort retry budget. Deterministic SDK validation errors still throw before dispatch; persistence failures from the world are retried by the internal step and then logged/dropped after three attempts so failing to post tags does not fail a run during the experimental phase.
+
+{/*@skip-typecheck - snippet, not runnable code*/}
+
+```ts
+'use workflow';
+await experimental_setAttributes({ phase: 'init' });
+const result = await processOrder();
+await experimental_setAttributes({ phase: 'done', orderId: result.id });
+```
+
+**Fire-and-forget (`void`).** Drop the `await` to let the workflow proceed without blocking. The pending step queues on the workflow's next suspension (any `await` on a runtime primitive — a step, `sleep`, a hook). This is the canonical pattern for observability / tracking metadata where the workflow doesn't depend on the write.
+
+{/*@skip-typecheck - snippet, not runnable code*/}
+
+```ts
+'use workflow';
+void experimental_setAttributes({ phase: 'init', orderId });
+// Workflow doesn't block. The step queues on the next runtime await.
+const result = await processOrder();
+void experimental_setAttributes({ phase: 'done' });
+return result;
+```
+
+Two trade-offs to know about:
+
+1. **Order of arrival at the world is not workflow-source order.** Fire-and-forget steps run out-of-band on the queue worker. A `void` write to one key followed by an `await` write to the same key may race; LWW-by-arrival applies (see "Concurrent writes" below).
+
+2. **The last `void` before `return` may not land.** If you place a `void experimental_setAttributes(...)` immediately before returning, with no intervening `await` on a runtime primitive, drain-on-completion commits the `step_created` event but the step body is not reliably dispatched before the run transitions to its terminal status — see the architectural note in the "Implementation notes" section. In practice workflows almost always have an `await` after the last fire-and-forget call (a step, a sleep, a hook); if you don't, add `await sleep('0s')` before returning, or use the awaited form for that final write.
+
+**Parallel (`Promise.all`).** Multiple calls dispatch concurrently. Writes to disjoint keys all land. Writes to the same key resolve last-write-wins by *arrival order at the world* (not the order the workflow body issued the calls) — so don't use `Promise.all` for writes that must observe a specific order to the same key.
+
+{/*@skip-typecheck - snippet, not runnable code*/}
+
+```ts
+'use workflow';
+await Promise.all([
+  experimental_setAttributes({ phase: 'init' }), // disjoint keys — all land
+  experimental_setAttributes({ orderId: 'ord_123' }),
+  experimental_setAttributes({ tenant: 't1' }),
+]);
+```
+
+#### Optional world support
+
+Because `runs.experimentalSetAttributes` is **optional** on the World interface (see §1), the `__builtin_set_attributes` step body checks for its presence before dispatching and no-ops when absent after logging a single process-wide warning. User code does not need to feature-detect; calling `experimental_setAttributes` against an unsupporting world is safe but ineffective.
+
+### 4. World implementations
+
+#### `world-local`
+
+Implement `experimentalSetAttributes(runId, changes)` by reading the run's JSON file, merging the changes into `run.attributes` (set on string value, delete on null), and writing back atomically using the same per-run write gate that protects entity writes today. Apply validation server-side before merging.
+
+#### `world-postgres`
+
+Add an `attributes JSONB` column to the runs table (default `'{}'::jsonb`, NOT NULL). Apply the merge in SQL using `jsonb_set` / `jsonb_strip_nulls` so the database does the merge atomically without a read-modify-write cycle, returning the post-merge map via `RETURNING attributes`.
+
+#### `world-vercel`
+
+Pure HTTP wrapper. Calls the wire endpoint described in §2 and returns the response's `attributes`. The backing service materializes the attribute map onto its run-row storage; where the underlying data store supports atomic per-key map updates, the merge is a single atomic operation rather than a read-modify-write cycle — the same shape the future `attr_set` event handler will use, so the storage layout is forward-compatible.
+
+After the persistence ack, the service emits a side-channel observability record carrying the post-merge attribute snapshot, decoupled from the request path so the runtime never waits on analytics emission.
+
+### 5. Observability surfaces
+
+Because attributes are stored plaintext on the `WorkflowRun` entity, any UI that already calls `world.runs.get()` / `world.runs.list()` can read them with no additional plumbing. The render details (where attributes appear in the run-detail view, formatting, etc.) are out of scope for this MVP and tracked separately from the SDK work.
+
+## Trade-offs and known limitations
+
+### Concurrent writes to the same key
+
+The MVP applies **last-write-wins by arrival order at the world**. Two concurrent `experimental_setAttributes` calls writing the same key produce a final state matching whichever request the world processes second. There is no conditional / `expectedValue` semantic and no `unique: true` mode.
+
+Writes from a single `await`-ed call chain are serialized by the workflow VM and land in workflow-source order. The concurrent / racy case applies to:
+
+- Multiple `experimental_setAttributes` calls inside one `Promise.all` writing the same key (the workflow VM dispatches them concurrently; the world sees them in scheduler order, not source order).
+- `void experimental_setAttributes(...)` followed by another call to the same key — the fire-and-forget step may still be in flight when the next call lands.
+- Multiple workflows writing the same key on the same run (rare — usually one workflow owns a run).
+
+Disjoint-key writes are unaffected: every call lands, regardless of pattern. Applications that need conditional semantics on a shared key should wait for the 5.0.0 release; we will not retrofit conditional writes onto the MVP path.
+
+### No event-log history
+
+Attribute changes do not appear in `world.events.list(runId)`. There is no record of *when* a key changed or *which step attempt* set it. The current snapshot on the run entity is authoritative; the history is lost.
+
+When the full feature ships, new writes carry writer attribution (`writer: { type: 'workflow' }` or `writer: { type: 'step', stepId, attempt }`) in their `attr_set` events. MVP-era writes will not have this — history starts at the `attr_set` cutover.
+
+### MVP attributes do not survive materialization rebuild
+
+Any tooling that reconstructs the run entity from the event log (disaster recovery, debugging, audit) will see no attributes on MVP-era runs, because the writes are not in the event log. This is the chief reason `experimentalSetAttributes` is named "experimental" — it is a known break from the otherwise-strict event-sourced model.
+
+The 5.0.0 path closes this gap.
+
+### SDK surface stability
+
+`experimental_setAttributes(record)` is intended to be stable across MVP and 5.0.0. User code calling it under the MVP will continue to work after the full feature lands; only the runtime dispatch path changes (`"use step"` indirection → workflow-VM-native intercept, parallel to `sleep`).
+
+If you need behavior the MVP does not provide (read, list, filter, initial attributes at `start`, writer attribution), wait for 5.0.0 rather than building around the MVP surface.
+
+## Test coverage
+
+Unit tests in `@workflow/world` (validation surface) and `@workflow/core` (VM-side dispatch + host-side stub):
+
+- Validation rules — key length, value byte cap, `$` prefix, per-batch duplicates, post-merge count cap (with `existingKeys` so updates of present keys don't falsely trip the cap)
+- Reserved `$` namespace — rejected by default, accepted when `allowReservedAttributes: true` is passed (both for `validateAttributeKey` and at the batch level via `validateAttributeChanges`)
+- `experimental_setAttributes({})` is a no-op (no dispatch, no events)
+- `undefined` value normalizes to a `null`-valued change on the wire
+- The `{ allowReservedAttributes: true }` opt-in is forwarded through the step bridge so the world receives the flag
+- Workflow VM with no `WORKFLOW_USE_STEP` bound throws `FatalError`
+- Host-side stub (resolved when not in the workflow VM) throws `FatalError` directing the caller back to a workflow body
+
+Unit tests in `workflow` (internal built-in step behavior):
+
+- `__builtin_set_attributes` rethrows world write failures on attempts 1 and 2 so normal step retry semantics apply
+- On attempt 3, `__builtin_set_attributes` logs a `console.error` and resolves so retry exhaustion does not turn the internal attribute write into a `FatalError`
+- The internal step is configured for three total attempts (`maxRetries = 2`)
+
+Integration tests in `world-local`:
+
+- Upsert, merge across calls, unset via `null`, set-and-unset in a single batch
+- Validation rejection (reserved prefix, oversize key, oversize value, post-merge cap)
+- Reserved-prefix escape hatch via `{ allowReservedAttributes: true }` (per-call, not sticky on the run)
+- Cap-boundary updates: a write that only updates existing keys must succeed even when the run is exactly at the cap
+- Idempotency: repeated identical calls converge to the same final snapshot
+- Concurrent writes serialize via the per-run mutex; no lost writes across 20 parallel calls
+
+Integration tests in `world-postgres`:
+
+- Upsert, merge across calls, unset via `null` (the SQL `jsonb_set` / `-` chain is exercised through these)
+- Atomic cap enforcement inside the `UPDATE`'s `WHERE` clause; concurrent writers cannot collectively push past the per-run cap
+
+End-to-end in `workbench/nextjs-turbopack` (exercises the full SWC plugin + workflow VM + step worker + `world-vercel` wire path against the production workflow-server `/v2/runs/:runId/attributes` endpoint):
+
+- Awaited workflow-body calls dispatch through the `__builtin_set_attributes` step bridge and merge correctly (the test inspects the run's event log to confirm a `step_created` / `step_completed` pair was emitted)
+- Fire-and-forget (`void experimental_setAttributes`) attributes land before the run terminates
+- `Promise.all` of disjoint-key writes — every key persists
+- Workflow throws after an awaited `experimental_setAttributes` — the attribute persists on the now-`failed` run (the per-run file lock on `run_failed` re-reads inside the critical section so the attribute snapshot survives the lifecycle write)
+
+## Migration to 5.0.0
+
+When the full attributes feature ships:
+
+- `experimental_setAttributes` (SDK) — unchanged signature, new dispatch path
+- `runs.experimentalSetAttributes` (world interface) — deprecated, then removed; replaced by `events.create(runId, { eventType: 'attr_set', eventData: { changes, writer } })`
+- Wire endpoint — `POST /v2/runs/:runId/attributes` removed; the same `changes` shape posts to `POST /v2/runs/:id/events`
+- Pre-existing attribute values on MVP-era runs remain on the run entity but are not represented in the event log
+
+Skew protection means workflows started under the MVP will continue to run with the MVP dispatch path on their original deployment. New deployments use the new path. No in-place data migration is needed.
+
+## Implementation notes (decisions made during the MVP build-out)
+
+This section records concrete decisions taken while landing the MVP that weren't in the original plan, so the next iteration has them in one place.
+
+### How workflow-body dispatch works
+
+`experimental_setAttributes` from a workflow body is wired through an internal built-in step, `__builtin_set_attributes`, defined in `packages/workflow/src/internal/builtins.ts` alongside the other workflow-side builtins (`__builtin_response_json`, etc.). The mechanism:
+
+1. The workflow VM bundle resolves `experimental_setAttributes` to `packages/core/src/workflow/set-attributes.ts` (via the `workflow` package-exports condition).
+2. That helper validates the input record inline (no shared helper, no cross-file dependency from a 'use step' file) and produces canonical `AttributeChange[]`.
+3. It dispatches through the standard workflow-VM step mechanism: `globalThis[WORKFLOW_USE_STEP]('__builtin_set_attributes')(changes)`. The `useStep` dispatcher is the same one used by every other step call from a workflow body, populated by `packages/core/src/workflow.ts` at VM bootstrap.
+4. The dispatch queues a step (`step_created`), the host runs `__builtin_set_attributes(changes, options)` from `packages/workflow/src/internal/builtins.ts`. The step body reads the active world, current run id, and attempt number directly from `globalThis` symbols (`Symbol.for('@workflow/world//cache')` and `Symbol.for('WORKFLOW_STEP_CONTEXT_STORAGE')`) — populated by the host runtime — and calls `world.runs.experimentalSetAttributes(runId, changes, options)`.
+5. The step completes (`step_completed`), the workflow resumes.
+
+This puts the mutation on the event log as a normal `step_created → step_completed` pair without inventing a new event type — that stays for the full 5.0.0 cutover.
+
+The internal step is best-effort during the experimental phase. It sets `maxRetries = 2`, for three total attempts. If `world.runs.experimentalSetAttributes` fails on attempts 1 or 2, the error is rethrown so the runtime retries the step normally. If it still fails on attempt 3, the step logs `console.error` and returns; the workflow run continues instead of receiving a retry-exhaustion `FatalError` for failed tag posting.
+
+The step body intentionally does **not** import anything from `@workflow/core`. That keeps the Next.js deferred-entries discoverer from walking a `__builtin_set_attributes` → `@workflow/core/...` → world adapter → `@vercel/queue` chain, which earlier drafts triggered (blowing the call stack of webpack's regex-based extractor with `RangeError: Maximum call stack size exceeded at RegExpStringIterator.next` on tarball-installed `nextjs-webpack` builds).
+
+The host-side `experimental_setAttributes` export (`packages/core/src/set-attributes.ts`, resolved by everything that isn't the workflow VM) throws `FatalError` with a message pointing the caller back to a workflow body. Step-body support can be added in a follow-up without changing this contract.
+
+When the full 5.0.0 attributes feature lands, `__builtin_set_attributes` is replaced by an `events.create(runId, { eventType: 'attr_set', ... })` dispatch path; SDK signatures don't change.
+
+### Endpoint lives under `v2`, not a fresh namespace
+
+The initial draft placed the new endpoint at `POST /v3/runs/:runId/attributes`, on the assumption that introducing a new wire feature warranted a major namespace bump. In practice `world-vercel` mixes `/v1/...` and `/v2/...` endpoints already, and creating a `v3Api` subrouter just for a single endpoint would have required duplicating the auth / flags / rate-limit middleware stack. The MVP endpoint is therefore mounted under the existing `v2Api`. The wire body shape is unchanged, so the migration path described above (rerouting from `/v2/runs/:runId/attributes` to `/v2/runs/:id/events`) still holds — just within the same namespace.
+
+### Concurrent writes: read-modify-write, not per-key atomic
+
+The plan called for per-key atomic `UpdateExpression` updates (`SET #attrs.#k = :v` / `REMOVE #attrs.#k`) in the `world-vercel` backing store, on the basis that it eliminates the read-modify-write race. The MVP ships with the simpler read-modify-write path instead:
+
+- **In `world-postgres`** the SQL-side `jsonb_set` / `-` chain *is* used and is genuinely atomic on the run row, so the only race is the cap check (a separate `SELECT`). Documented as LWW-by-arrival for the cap; the merge itself is atomic.
+- **In the `world-vercel` backing service** the attributes column is laid out as a native key-addressable map so the atomic `UpdateItem` variant can be enabled later without a data migration. The MVP commits the merged map via the existing entity update path. Two concurrent writers therefore race; whichever lands second wins on shared keys, and any write to a non-overlapping key is preserved.
+- **In `world-local`** an in-process per-run mutex serializes the read-merge-write sequence so parallel `experimental_setAttributes` calls from concurrent steps do not lose writes within a single process. There is a corresponding test that exercises 20 parallel writes to the same run.
+
+This is consistent with the original "concurrent writes are LWW by arrival" caveat. Promoting to per-key atomic writes is a no-API-break change once the event-sourced path lands.
+
+### `WORKFLOW_ATTRIBUTES` usage-fact schema: not introduced
+
+The plan called for a dedicated `WORKFLOW_ATTRIBUTES` usage fact carrying the post-merge snapshot. Landing that schema would have required a coordinated change to the shared usage-facts package (used by `world-vercel`'s backing service) plus an ingest-side update before the endpoint could ship.
+
+For the MVP the endpoint reuses the existing `WORKFLOW_EVENT` fact with `eventType: 'attr_set'`. That mirrors how other run-lifecycle events are reported, and it's enough for "did an attribute mutation happen" debugging without adding an analytics dependency to the critical path. A dedicated fact carrying the full snapshot can land alongside the event-sourced path without touching the SDK wire contract.
+
+### Validation rules are shared between SDK and world
+
+Validation lives in a single helper exported from `@workflow/world` (`validateAttributeChanges`, `validateAttributeKey`, `validateAttributeValue`). Both the SDK `experimental_setAttributes` helper and the `world-local` / `world-postgres` implementations call it; the `world-vercel` backing service applies the same rules independently. The shared module is the authoritative spec for the limits (256-char keys, 256-byte values, max 64 attributes per run, `$`-prefixed keys reserved) — any future change goes through one file.
+
+### Run row reconstruction had to thread `attributes` through
+
+`world-local`'s events storage rebuilds the run row on every lifecycle event (`run_started`, `run_completed`, `run_failed`, `run_cancelled`) by explicitly listing fields rather than spreading. Without forwarding `attributes` through each branch, any attribute set before the run completed would be silently dropped by the next lifecycle event. Each lifecycle write now also takes the per-run file lock (`withRunFileLock`) and re-reads the on-disk run inside the critical section, so an `experimental_setAttributes` call that lands in the same async window as a `run_completed` event is no longer clobbered.
+
+### Optional world method: feature-detect, warn once
+
+`runs.experimentalSetAttributes` is optional on the `World` interface so community worlds (Redis, MongoDB, Turso, etc.) continue to build and run without adopting the experimental API. The SDK helper feature-detects the method's presence on first dispatch; if absent, it logs a single `console.warn` for the lifetime of the process and resolves silently for that call and all subsequent calls. Users do not need to feature-detect in their own code — calling `experimental_setAttributes` against an unsupporting world is safe but ineffective.
+
+See "Test coverage" above for the full test surface that ships with this change.

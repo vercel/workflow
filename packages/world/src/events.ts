@@ -416,6 +416,10 @@ export interface EventResult {
    * initial events.list call and reduce TTFB.
    */
   events?: Event[];
+  /** Pagination cursor for `events`, matching events.list semantics. */
+  cursor?: string | null;
+  /** Whether additional event pages are available for `events`. */
+  hasMore?: boolean;
 }
 
 export interface GetEventParams {

@@ -1,5 +1,54 @@
 # workflow
 
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#2134](https://github.com/vercel/workflow/pull/2134) [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `experimental_setAttributes()` workflow-level helper for attaching string key/value metadata to a workflow run, surfaced as `run.attributes`
+
+- [#2086](https://github.com/vercel/workflow/pull/2086) [`2050656`](https://github.com/vercel/workflow/commit/2050656099349ededd11b33256e951cf97d88a76) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `getWritable()` returning a new TransformStream per call, which caused racing pipes to reorder chunks when callers acquired a writer per write. Repeat calls within the same step now share a single pipe per `(runId, namespace)`.
+
+- [#1979](https://github.com/vercel/workflow/pull/1979) [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14) Thanks [@adamiBs](https://github.com/adamiBs)! - Make `run.input` and `step.input` `.optional()` on the World snapshot schemas so consumers no longer fail validation when the service externalizes payloads as `RemoteRef` blobs.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`2050656`](https://github.com/vercel/workflow/commit/2050656099349ededd11b33256e951cf97d88a76), [`0d0bb01`](https://github.com/vercel/workflow/commit/0d0bb013d7073f964bb3aea7869e84ed762bf7a9), [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`070bd0c`](https://github.com/vercel/workflow/commit/070bd0cea960a0d56d7812a6147455f75a06d859), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/core@5.0.0-beta.8
+  - @workflow/next@5.0.0-beta.8
+  - @workflow/sveltekit@5.0.0-beta.8
+  - @workflow/astro@5.0.0-beta.8
+  - @workflow/cli@5.0.0-beta.8
+  - @workflow/errors@5.0.0-beta.5
+  - @workflow/nest@5.0.0-beta.8
+  - @workflow/nitro@5.0.0-beta.8
+  - @workflow/nuxt@5.0.0-beta.8
+  - @workflow/rollup@5.0.0-beta.8
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/utils@5.0.0-beta.3
+
+## 5.0.0-beta.7
+
+### Minor Changes
+
+- [#2059](https://github.com/vercel/workflow/pull/2059) [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335) Thanks [@TooTallNate](https://github.com/TooTallNate)! - A `WritableStream` from a workflow's `getWritable()` can now be passed as an argument to a child workflow via `start()`; the child's writes land on the parent run's stream directly for the full lifetime of the child run.
+
+### Patch Changes
+
+- [#2056](https://github.com/vercel/workflow/pull/2056) [`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix spurious "Event cursor missing after initial load" warning
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`c1242e8`](https://github.com/vercel/workflow/commit/c1242e8dc5db42748ae2739c7d24f964b39b7232), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b), [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335)]:
+  - @workflow/core@5.0.0-beta.7
+  - @workflow/errors@5.0.0-beta.4
+  - @workflow/nitro@5.0.0-beta.7
+  - @workflow/cli@5.0.0-beta.7
+  - @workflow/next@5.0.0-beta.7
+  - @workflow/typescript-plugin@5.0.0-beta.3
+  - @workflow/nuxt@5.0.0-beta.7
+  - @workflow/astro@5.0.0-beta.7
+  - @workflow/nest@5.0.0-beta.7
+  - @workflow/rollup@5.0.0-beta.7
+  - @workflow/sveltekit@5.0.0-beta.7
+
 ## 5.0.0-beta.6
 
 ### Patch Changes
