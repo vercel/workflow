@@ -1,5 +1,4 @@
 import type { Span } from '@opentelemetry/api';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   HookNotFoundError,
@@ -83,7 +82,8 @@ export interface SuspensionHandlerResult {
  *
  * Processing order:
  * 1. Hooks are processed first to prevent race conditions with webhook receivers
- * 2. Step events and wait events are created in parallel
+ * 2. Writes that advance the event-log fence are issued in DB-order from this
+ *    replay turn, so the next local write chains off the previous event ID.
  */
 export async function handleSuspension({
   suspension,
@@ -98,9 +98,9 @@ export async function handleSuspension({
 
   // Per-suspension shared fence state. Each successful fenced write advances
   // `fenceEventId` so subsequent writes from this handler chain off it.
-  // Concurrent writes within this handler that all started with the same
-  // fence may conflict — that's fine, each falls through to a fresh-cursor
-  // reload in `refreshFence` below.
+  // Branch-decision event writes must not race each other locally: the server
+  // fence is a single-tip CAS, so parallel sibling writes from one replay turn
+  // would force self-conflicts against the same starting fence.
   let fenceEventId = initialFenceEventId;
   let eventsCursor = initialEventsCursor;
 
@@ -122,7 +122,8 @@ export async function handleSuspension({
       ? await loadWorkflowRunEvents(runId, eventsCursor)
       : await loadWorkflowRunEvents(runId);
     eventsCursor = loaded.cursor ?? eventsCursor;
-    const tail = loaded.events[loaded.events.length - 1]?.eventId;
+    const tail =
+      loaded.events[loaded.events.length - 1]?.eventId ?? fenceEventId;
     return { fenceEventId: tail, loadedEvents: loaded.events };
   }
   // Separate queue items by type
@@ -173,140 +174,126 @@ export async function handleSuspension({
   );
 
   // Process hooks first to prevent race conditions with webhook receivers.
-  // All hook creations run in parallel.
   // Track any hook conflicts that occur — these are returned to the caller
   // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
 
-  if (hookEvents.length > 0) {
-    await Promise.all(
-      hookEvents.map(async (hookEvent) => {
-        try {
-          const writeResult = await fencedEventCreate({
-            world,
-            runId,
-            event: hookEvent,
-            requestId,
-            fenceEventId,
-            onConflictRefresh: async () => {
-              const { fenceEventId: fresh, loadedEvents } =
-                await refreshFence();
-              // Idempotency: if the hook was already created (by us in a
-              // previous attempt that 412'd then succeeded server-side,
-              // or by a concurrent handler), don't retry.
-              const alreadyCreated = loadedEvents.some(
-                (e) =>
-                  (e.eventType === 'hook_created' ||
-                    e.eventType === 'hook_conflict') &&
-                  e.correlationId === hookEvent.correlationId
-              );
-              if (alreadyCreated) {
-                return { kind: 'abort' };
-              }
-              return { kind: 'retry', fenceEventId: fresh };
-            },
-            onEntityConflict: () => 'abort',
-          });
-          if (writeResult.newFenceEventId) {
-            fenceEventId = writeResult.newFenceEventId;
+  for (const hookEvent of hookEvents) {
+    try {
+      const writeResult = await fencedEventCreate({
+        world,
+        runId,
+        event: hookEvent,
+        requestId,
+        fenceEventId,
+        onConflictRefresh: async () => {
+          const { fenceEventId: fresh, loadedEvents } = await refreshFence();
+          // Idempotency: if the hook was already created (by us in a
+          // previous attempt that 412'd then succeeded server-side,
+          // or by a concurrent handler), don't retry.
+          const alreadyCreated = loadedEvents.some(
+            (e) =>
+              (e.eventType === 'hook_created' ||
+                e.eventType === 'hook_conflict') &&
+              e.correlationId === hookEvent.correlationId
+          );
+          if (alreadyCreated) {
+            return { kind: 'abort' };
           }
-          if (!writeResult.written) {
-            // Already created concurrently — surface as info, same shape
-            // as the pre-fence "EntityConflictError → skip" branch did.
-            runtimeLogger.info(
-              'Workflow run already completed or hook already created, skipping',
-              {
-                workflowRunId: runId,
-                correlationId: hookEvent.correlationId,
-              }
-            );
-            return;
+          return { kind: 'retry', fenceEventId: fresh };
+        },
+        onEntityConflict: () => 'abort',
+      });
+      if (writeResult.newFenceEventId) {
+        fenceEventId = writeResult.newFenceEventId;
+      }
+      if (!writeResult.written) {
+        // Already created concurrently — surface as info, same shape
+        // as the pre-fence "EntityConflictError → skip" branch did.
+        runtimeLogger.info(
+          'Workflow run already completed or hook already created, skipping',
+          {
+            workflowRunId: runId,
+            correlationId: hookEvent.correlationId,
           }
-          // Preserve the "world resolved hook_created → hook_conflict"
-          // short-circuit. The hook_conflict event lives in the log and
-          // will be replayed; the immediate signal lets the caller
-          // re-invoke right away rather than waiting on the queue.
-          if (writeResult.event?.eventType === 'hook_conflict') {
-            hasHookConflict = true;
-          }
-        } catch (err) {
-          if (RunExpiredError.is(err)) {
-            runtimeLogger.info(
-              'Workflow run already completed, skipping hook',
-              {
-                workflowRunId: runId,
-                message: err.message,
-              }
-            );
-          } else {
-            throw err;
-          }
-        }
-      })
-    );
+        );
+        continue;
+      }
+      // Preserve the "world resolved hook_created → hook_conflict"
+      // short-circuit. The hook_conflict event lives in the log and
+      // will be replayed; the immediate signal lets the caller
+      // re-invoke right away rather than waiting on the queue.
+      if (writeResult.event?.eventType === 'hook_conflict') {
+        hasHookConflict = true;
+      }
+    } catch (err) {
+      if (RunExpiredError.is(err)) {
+        runtimeLogger.info('Workflow run already completed, skipping hook', {
+          workflowRunId: runId,
+          message: err.message,
+        });
+      } else {
+        throw err;
+      }
+    }
   }
 
   // Process hook disposals — these release hook tokens for reuse by other workflows.
-  if (hooksNeedingDisposal.length > 0) {
-    await Promise.all(
-      hooksNeedingDisposal.map(async (queueItem) => {
-        const hookDisposedEvent: CreateEventRequest = {
-          eventType: 'hook_disposed' as const,
-          specVersion: SPEC_VERSION_CURRENT,
+  for (const queueItem of hooksNeedingDisposal) {
+    const hookDisposedEvent: CreateEventRequest = {
+      eventType: 'hook_disposed' as const,
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: queueItem.correlationId,
+      eventData: {
+        token: queueItem.token,
+      },
+    };
+    try {
+      const writeResult = await fencedEventCreate({
+        world,
+        runId,
+        event: hookDisposedEvent,
+        requestId,
+        fenceEventId,
+        onConflictRefresh: async () => {
+          const { fenceEventId: fresh, loadedEvents } = await refreshFence();
+          // Idempotency: if already disposed, abort.
+          const alreadyDisposed = loadedEvents.some(
+            (e) =>
+              e.eventType === 'hook_disposed' &&
+              e.correlationId === queueItem.correlationId
+          );
+          if (alreadyDisposed) {
+            return { kind: 'abort' };
+          }
+          return { kind: 'retry', fenceEventId: fresh };
+        },
+        onEntityConflict: () => 'abort',
+      });
+      if (writeResult.newFenceEventId) {
+        fenceEventId = writeResult.newFenceEventId;
+      }
+    } catch (err) {
+      if (RunExpiredError.is(err)) {
+        runtimeLogger.info(
+          'Workflow run already completed, skipping hook disposal',
+          {
+            workflowRunId: runId,
+            correlationId: queueItem.correlationId,
+            message: err.message,
+          }
+        );
+      } else if (HookNotFoundError.is(err)) {
+        // Hook may have already been disposed or never created
+        runtimeLogger.info('Hook not found for disposal, continuing', {
+          workflowRunId: runId,
           correlationId: queueItem.correlationId,
-          eventData: {
-            token: queueItem.token,
-          },
-        };
-        try {
-          const writeResult = await fencedEventCreate({
-            world,
-            runId,
-            event: hookDisposedEvent,
-            requestId,
-            fenceEventId,
-            onConflictRefresh: async () => {
-              const { fenceEventId: fresh, loadedEvents } =
-                await refreshFence();
-              // Idempotency: if already disposed, abort.
-              const alreadyDisposed = loadedEvents.some(
-                (e) =>
-                  e.eventType === 'hook_disposed' &&
-                  e.correlationId === queueItem.correlationId
-              );
-              if (alreadyDisposed) {
-                return { kind: 'abort' };
-              }
-              return { kind: 'retry', fenceEventId: fresh };
-            },
-            onEntityConflict: () => 'abort',
-          });
-          if (writeResult.newFenceEventId) {
-            fenceEventId = writeResult.newFenceEventId;
-          }
-        } catch (err) {
-          if (RunExpiredError.is(err)) {
-            runtimeLogger.info(
-              'Workflow run already completed, skipping hook disposal',
-              {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              }
-            );
-          } else if (HookNotFoundError.is(err)) {
-            // Hook may have already been disposed or never created
-            runtimeLogger.info('Hook not found for disposal, continuing', {
-              workflowRunId: runId,
-              correlationId: queueItem.correlationId,
-              message: err.message,
-            });
-          } else {
-            throw err;
-          }
-        }
-      })
-    );
+          message: err.message,
+        });
+      } else {
+        throw err;
+      }
+    }
   }
 
   // Process abort requests — resume the hook with abort payload and write stream packet
@@ -314,76 +301,73 @@ export async function handleSuspension({
     (item) => item.abortRequested && !item.disposed
   );
 
-  if (hooksNeedingAbort.length > 0) {
-    await Promise.all(
-      hooksNeedingAbort.map(async (queueItem) => {
-        try {
-          // Dehydrate the abort payload for storage
-          const abortPayload = await dehydrateStepArguments(
-            { aborted: true, reason: queueItem.abortReason },
-            runId,
-            encryptionKey,
-            suspension.globalThis
-          );
+  for (const queueItem of hooksNeedingAbort) {
+    try {
+      // Dehydrate the abort payload for storage
+      const abortPayload = await dehydrateStepArguments(
+        { aborted: true, reason: queueItem.abortReason },
+        runId,
+        encryptionKey,
+        suspension.globalThis
+      );
 
-          // Create hook_received event with abort payload
-          await world.events.create(runId, {
-            eventType: 'hook_received' as const,
-            specVersion: SPEC_VERSION_CURRENT,
+      // Create hook_received event with abort payload. This event is
+      // deliberately unfenced because it represents signal delivery, but
+      // successful writes still advance the server's run.lastKnownEventId.
+      const abortEventResult = await world.events.create(runId, {
+        eventType: 'hook_received' as const,
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: queueItem.correlationId,
+        eventData: {
+          token: queueItem.token,
+          payload: abortPayload,
+        },
+      });
+      if (abortEventResult.event?.eventId) {
+        fenceEventId = abortEventResult.event.eventId;
+      }
+
+      // Write stream cancellation packet for real-time step propagation.
+      // Reuse the same dehydrated payload as the hook event so the reason
+      // round-trips through `dehydrateStepArguments` / `hydrateStepArguments`
+      // (handles DOMException, custom errors, encryption, etc.) instead of
+      // bare JSON.stringify which loses type information and drops undefined.
+      // streamName is set on the queue item at controller construction time
+      // (see workflow/abort-controller.ts).
+      try {
+        const streamName = getAbortStreamIdFromToken(queueItem.token);
+        await world.streams.write(
+          runId,
+          streamName,
+          abortPayload as Uint8Array
+        );
+        await world.streams.close(runId, streamName);
+      } catch {
+        // Best-effort stream write — hook event provides the durable fallback
+        runtimeLogger.debug(
+          'Failed to write abort stream packet, hook event will provide fallback',
+          {
+            workflowRunId: runId,
             correlationId: queueItem.correlationId,
-            eventData: {
-              token: queueItem.token,
-              payload: abortPayload,
-            },
-          });
-
-          // Write stream cancellation packet for real-time step propagation.
-          // Reuse the same dehydrated payload as the hook event so the reason
-          // round-trips through `dehydrateStepArguments` / `hydrateStepArguments`
-          // (handles DOMException, custom errors, encryption, etc.) instead of
-          // bare JSON.stringify which loses type information and drops undefined.
-          // streamName is set on the queue item at controller construction time
-          // (see workflow/abort-controller.ts).
-          try {
-            const streamName = getAbortStreamIdFromToken(queueItem.token);
-            await world.streams.write(
-              runId,
-              streamName,
-              abortPayload as Uint8Array
-            );
-            await world.streams.close(runId, streamName);
-          } catch {
-            // Best-effort stream write — hook event provides the durable fallback
-            runtimeLogger.debug(
-              'Failed to write abort stream packet, hook event will provide fallback',
-              {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-              }
-            );
           }
-        } catch (err) {
-          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
-            runtimeLogger.info(
-              'Workflow run already completed, skipping abort',
-              {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              }
-            );
-          } else {
-            throw err;
-          }
-        }
-      })
-    );
+        );
+      }
+    } catch (err) {
+      if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+        runtimeLogger.info('Workflow run already completed, skipping abort', {
+          workflowRunId: runId,
+          correlationId: queueItem.correlationId,
+          message: err.message,
+        });
+      } else {
+        throw err;
+      }
+    }
   }
 
   // Create step events for steps that don't have them yet.
   // Unlike V1, we do NOT queue step messages from here — the caller
   // decides which steps to execute inline vs. queue to background.
-  // Wait events are also created in parallel below.
   const stepsNeedingCreation = new Set(
     stepItems
       .filter((queueItem) => !queueItem.hasCreatedEvent)
@@ -396,7 +380,7 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
-  const ops: Promise<void>[] = [];
+  const ops: Array<() => Promise<void>> = [];
 
   // Steps: create step_created events (no queuing — V2 returns pending steps to caller).
   //
@@ -409,79 +393,67 @@ export async function handleSuspension({
   // authoritative replay's step_created lands. See review on PR 2113.
   for (const queueItem of stepItems) {
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
-      ops.push(
-        (async () => {
-          const dehydratedInput = await dehydrateStepArguments(
+      ops.push(async () => {
+        const dehydratedInput = await dehydrateStepArguments(
+          {
+            args: queueItem.args,
+            closureVars: queueItem.closureVars,
+            thisVal: queueItem.thisVal,
+          },
+          runId,
+          encryptionKey,
+          suspension.globalThis
+        );
+        const stepEvent: CreateEventRequest = {
+          eventType: 'step_created' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+          eventData: {
+            stepName: queueItem.stepName,
+            input: dehydratedInput as SerializedData,
+          },
+        };
+        const writeResult = await fencedEventCreate({
+          world,
+          runId,
+          event: stepEvent,
+          requestId,
+          fenceEventId,
+          onConflictRefresh: async () => {
+            const { fenceEventId: fresh, loadedEvents } = await refreshFence();
+            // Idempotency: if step_created for this correlationId is
+            // already in the log, abort. Distinct from the
+            // EntityConflictError-on-duplicate-stepId case (that's
+            // handled by onEntityConflict below) — this branch
+            // catches the case where _our_ stale-snapshot CAS lost
+            // to a concurrent writer for the same correlationId.
+            const alreadyCreated = loadedEvents.some(
+              (e) =>
+                e.eventType === 'step_created' &&
+                e.correlationId === queueItem.correlationId
+            );
+            if (alreadyCreated) {
+              return { kind: 'abort' };
+            }
+            return { kind: 'retry', fenceEventId: fresh };
+          },
+          onEntityConflict: () => 'abort',
+        });
+        if (writeResult.newFenceEventId) {
+          fenceEventId = writeResult.newFenceEventId;
+        }
+        if (writeResult.written) {
+          createdStepCorrelationIds.add(queueItem.correlationId);
+        } else {
+          runtimeLogger.info(
+            'Step already exists (post-fence-conflict), continuing',
             {
-              args: queueItem.args,
-              closureVars: queueItem.closureVars,
-              thisVal: queueItem.thisVal,
-            },
-            runId,
-            encryptionKey,
-            suspension.globalThis
+              workflowRunId: runId,
+              correlationId: queueItem.correlationId,
+            }
           );
-          const stepEvent: CreateEventRequest = {
-            eventType: 'step_created' as const,
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: queueItem.correlationId,
-            eventData: {
-              stepName: queueItem.stepName,
-              input: dehydratedInput as SerializedData,
-            },
-          };
-          try {
-            const writeResult = await fencedEventCreate({
-              world,
-              runId,
-              event: stepEvent,
-              requestId,
-              fenceEventId,
-              onConflictRefresh: async () => {
-                const { fenceEventId: fresh, loadedEvents } =
-                  await refreshFence();
-                // Idempotency: if step_created for this correlationId is
-                // already in the log, abort. Distinct from the
-                // EntityConflictError-on-duplicate-stepId case (that's
-                // handled by onEntityConflict below) — this branch
-                // catches the case where _our_ stale-snapshot CAS lost
-                // to a concurrent writer for the same correlationId.
-                const alreadyCreated = loadedEvents.some(
-                  (e) =>
-                    e.eventType === 'step_created' &&
-                    e.correlationId === queueItem.correlationId
-                );
-                if (alreadyCreated) {
-                  return { kind: 'abort' };
-                }
-                return { kind: 'retry', fenceEventId: fresh };
-              },
-              onEntityConflict: () => 'abort',
-            });
-            if (writeResult.newFenceEventId) {
-              fenceEventId = writeResult.newFenceEventId;
-            }
-            if (writeResult.written) {
-              createdStepCorrelationIds.add(queueItem.correlationId);
-            } else {
-              runtimeLogger.info(
-                'Step already exists (post-fence-conflict), continuing',
-                {
-                  workflowRunId: runId,
-                  correlationId: queueItem.correlationId,
-                }
-              );
-            }
-          } catch (err) {
-            // fencedEventCreate doesn't swallow non-fence EntityConflictError
-            // when onEntityConflict='abort' returns — it returns
-            // { written: false }. So anything that reaches this catch is
-            // either a fence-retry-exhaustion (already logged) or an
-            // unrelated runtime error. Re-throw.
-            throw err;
-          }
-        })()
-      );
+        }
+      });
     }
   }
 
@@ -491,59 +463,51 @@ export async function handleSuspension({
   // that future replays will see as an orphan.
   for (const queueItem of waitItems) {
     if (!queueItem.hasCreatedEvent) {
-      ops.push(
-        (async () => {
-          const waitEvent: CreateEventRequest = {
-            eventType: 'wait_created' as const,
-            specVersion: SPEC_VERSION_CURRENT,
+      ops.push(async () => {
+        const waitEvent: CreateEventRequest = {
+          eventType: 'wait_created' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+          eventData: {
+            resumeAt: queueItem.resumeAt,
+          },
+        };
+        const writeResult = await fencedEventCreate({
+          world,
+          runId,
+          event: waitEvent,
+          requestId,
+          fenceEventId,
+          onConflictRefresh: async () => {
+            const { fenceEventId: fresh, loadedEvents } = await refreshFence();
+            const alreadyCreated = loadedEvents.some(
+              (e) =>
+                e.eventType === 'wait_created' &&
+                e.correlationId === queueItem.correlationId
+            );
+            if (alreadyCreated) {
+              return { kind: 'abort' };
+            }
+            return { kind: 'retry', fenceEventId: fresh };
+          },
+          onEntityConflict: () => 'abort',
+        });
+        if (writeResult.newFenceEventId) {
+          fenceEventId = writeResult.newFenceEventId;
+        }
+        if (!writeResult.written) {
+          runtimeLogger.info('Wait already exists, continuing', {
+            workflowRunId: runId,
             correlationId: queueItem.correlationId,
-            eventData: {
-              resumeAt: queueItem.resumeAt,
-            },
-          };
-          const writeResult = await fencedEventCreate({
-            world,
-            runId,
-            event: waitEvent,
-            requestId,
-            fenceEventId,
-            onConflictRefresh: async () => {
-              const { fenceEventId: fresh, loadedEvents } =
-                await refreshFence();
-              const alreadyCreated = loadedEvents.some(
-                (e) =>
-                  e.eventType === 'wait_created' &&
-                  e.correlationId === queueItem.correlationId
-              );
-              if (alreadyCreated) {
-                return { kind: 'abort' };
-              }
-              return { kind: 'retry', fenceEventId: fresh };
-            },
-            onEntityConflict: () => 'abort',
           });
-          if (writeResult.newFenceEventId) {
-            fenceEventId = writeResult.newFenceEventId;
-          }
-          if (!writeResult.written) {
-            runtimeLogger.info('Wait already exists, continuing', {
-              workflowRunId: runId,
-              correlationId: queueItem.correlationId,
-            });
-          }
-        })()
-      );
+        }
+      });
     }
   }
 
-  waitUntil(
-    Promise.all(ops).catch((opErr) => {
-      const isAbortError =
-        opErr?.name === 'AbortError' || opErr?.name === 'ResponseAborted';
-      if (!isAbortError) throw opErr;
-    })
-  );
-  await Promise.all(ops);
+  for (const op of ops) {
+    await op();
+  }
 
   // Calculate minimum timeout from waits
   const now = Date.now();

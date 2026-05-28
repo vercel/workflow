@@ -19,6 +19,7 @@ import { classifyRunError, isWorldContractError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import { fencedEventCreate } from './runtime/__fenced-write.js';
 import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
 import {
   getQueueOverhead,
@@ -35,7 +36,6 @@ import {
   ReplayBudget,
 } from './runtime/replay-budget.js';
 import { executeStep } from './runtime/step-executor.js';
-import { fencedEventCreate } from './runtime/__fenced-write.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import {
   getWorld,
@@ -975,10 +975,59 @@ export function workflowEntrypoint(
                       // already-terminal (same shape as the existing
                       // EntityConflictError / RunExpiredError branches).
                       try {
-                        const runCompletedFence =
+                        let runCompletedFence =
                           events.length > 0
                             ? events[events.length - 1].eventId
                             : undefined;
+                        try {
+                          const terminalFenceRefresh = eventsCursor
+                            ? await loadWorkflowRunEvents(runId, eventsCursor)
+                            : await loadWorkflowRunEvents(runId);
+                          if (terminalFenceRefresh.events.length > 0) {
+                            const existingIds = new Set(
+                              events.map((e) => e.eventId)
+                            );
+                            for (const event of terminalFenceRefresh.events) {
+                              if (!existingIds.has(event.eventId)) {
+                                events.push(event);
+                              }
+                            }
+                            runCompletedFence =
+                              terminalFenceRefresh.events[
+                                terminalFenceRefresh.events.length - 1
+                              ].eventId;
+                          }
+                          eventsCursor =
+                            terminalFenceRefresh.cursor ?? eventsCursor;
+                          cachedEvents = events;
+                        } catch (refreshErr) {
+                          runtimeLogger.debug(
+                            'Failed to refresh terminal fence before completing workflow run',
+                            {
+                              workflowRunId: runId,
+                              message:
+                                refreshErr instanceof Error
+                                  ? refreshErr.message
+                                  : String(refreshErr),
+                            }
+                          );
+                        }
+                        const terminalEventAfterReplay = events.find(
+                          (e) =>
+                            e.eventType === 'run_completed' ||
+                            e.eventType === 'run_failed' ||
+                            e.eventType === 'run_cancelled'
+                        );
+                        if (terminalEventAfterReplay) {
+                          runtimeLogger.debug(
+                            'Run completed by concurrent handler after replay, exiting',
+                            {
+                              workflowRunId: runId,
+                              eventType: terminalEventAfterReplay.eventType,
+                            }
+                          );
+                          return;
+                        }
                         const writeResult = await fencedEventCreate({
                           world,
                           runId,
@@ -997,6 +1046,7 @@ export function workflowEntrypoint(
                             const loaded = eventsCursor
                               ? await loadWorkflowRunEvents(runId, eventsCursor)
                               : await loadWorkflowRunEvents(runId);
+                            eventsCursor = loaded.cursor ?? eventsCursor;
                             const reachedTerminal = loaded.events.some(
                               (e) =>
                                 e.eventType === 'run_completed' ||
@@ -1005,7 +1055,8 @@ export function workflowEntrypoint(
                             );
                             if (reachedTerminal) return { kind: 'abort' };
                             const fresh =
-                              loaded.events[loaded.events.length - 1]?.eventId;
+                              loaded.events[loaded.events.length - 1]
+                                ?.eventId ?? runCompletedFence;
                             return { kind: 'retry', fenceEventId: fresh };
                           },
                           onEntityConflict: () => 'abort',
@@ -1344,10 +1395,67 @@ export function workflowEntrypoint(
                           // `cachedEvents` mirrors the local `events`
                           // (which lives in the try-block above); see
                           // the suspension catch for the same trick.
-                          const runFailedFence =
-                            cachedEvents && cachedEvents.length > 0
-                              ? cachedEvents[cachedEvents.length - 1].eventId
+                          let runFailedEvents = cachedEvents ?? [];
+                          let runFailedFence =
+                            runFailedEvents.length > 0
+                              ? runFailedEvents[runFailedEvents.length - 1]
+                                  .eventId
                               : undefined;
+                          try {
+                            const terminalFenceRefresh = eventsCursor
+                              ? await loadWorkflowRunEvents(runId, eventsCursor)
+                              : await loadWorkflowRunEvents(runId);
+                            if (eventsCursor) {
+                              if (terminalFenceRefresh.events.length > 0) {
+                                const existingIds = new Set(
+                                  runFailedEvents.map((e) => e.eventId)
+                                );
+                                for (const event of terminalFenceRefresh.events) {
+                                  if (!existingIds.has(event.eventId)) {
+                                    runFailedEvents.push(event);
+                                  }
+                                }
+                              }
+                            } else {
+                              runFailedEvents = terminalFenceRefresh.events;
+                            }
+                            if (terminalFenceRefresh.events.length > 0) {
+                              runFailedFence =
+                                terminalFenceRefresh.events[
+                                  terminalFenceRefresh.events.length - 1
+                                ].eventId;
+                            }
+                            eventsCursor =
+                              terminalFenceRefresh.cursor ?? eventsCursor;
+                            cachedEvents = runFailedEvents;
+                          } catch (refreshErr) {
+                            runtimeLogger.debug(
+                              'Failed to refresh terminal fence before failing workflow run',
+                              {
+                                workflowRunId: runId,
+                                message:
+                                  refreshErr instanceof Error
+                                    ? refreshErr.message
+                                    : String(refreshErr),
+                              }
+                            );
+                          }
+                          const terminalEventAfterReplay = runFailedEvents.find(
+                            (e) =>
+                              e.eventType === 'run_completed' ||
+                              e.eventType === 'run_failed' ||
+                              e.eventType === 'run_cancelled'
+                          );
+                          if (terminalEventAfterReplay) {
+                            runtimeLogger.debug(
+                              'Run completed by concurrent handler after replay, exiting',
+                              {
+                                workflowRunId: runId,
+                                eventType: terminalEventAfterReplay.eventType,
+                              }
+                            );
+                            return;
+                          }
                           const writeResult = await fencedEventCreate({
                             world,
                             runId,
@@ -1372,6 +1480,7 @@ export function workflowEntrypoint(
                                     eventsCursor
                                   )
                                 : await loadWorkflowRunEvents(runId);
+                              eventsCursor = loaded.cursor ?? eventsCursor;
                               const reachedTerminal = loaded.events.some(
                                 (e) =>
                                   e.eventType === 'run_completed' ||
@@ -1381,7 +1490,7 @@ export function workflowEntrypoint(
                               if (reachedTerminal) return { kind: 'abort' };
                               const fresh =
                                 loaded.events[loaded.events.length - 1]
-                                  ?.eventId;
+                                  ?.eventId ?? runFailedFence;
                               return { kind: 'retry', fenceEventId: fresh };
                             },
                             onEntityConflict: () => 'abort',
