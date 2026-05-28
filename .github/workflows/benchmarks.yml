@@ -19,11 +19,60 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  ci-scope:
+    name: Detect CI Scope
+    runs-on: ubuntu-latest
+    outputs:
+      fast-path: ${{ steps.scope.outputs.fast-path }}
+    steps:
+      - name: Classify changed files
+        id: scope
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName !== 'pull_request') {
+              core.setOutput('fast-path', 'false');
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const fastPathPatterns = [
+              /^\.changeset\/[^/]+\.md$/,
+              /^docs\//,
+              /^packages\/web\//,
+              /^packages\/web-shared\//,
+              /^(AGENTS|CONTRIBUTING|LICENSE|README)\.md$/,
+              /^packages\/[^/]+\/README\.md$/,
+            ];
+            const fullCiFiles = files
+              .map((file) => file.filename)
+              .filter(
+                (filename) =>
+                  !fastPathPatterns.some((pattern) => pattern.test(filename))
+              );
+
+            core.setOutput('fast-path', fullCiFiles.length === 0 ? 'true' : 'false');
+            core.info(
+              fullCiFiles.length === 0
+                ? 'Only docs or UI files changed; skipping ordinary benchmarks.'
+                : `Benchmarks required by: ${fullCiFiles.join(', ')}`
+            );
+
   # Phase 0: Update PR comment to show benchmarks are running
   pr-comment-start:
     name: Create PR Comment
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test')
+    needs: ci-scope
+    if: >-
+      github.event_name == 'pull_request' &&
+      !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
+      (needs.ci-scope.outputs.fast-path != 'true' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     timeout-minutes: 2
 
     steps:
@@ -127,7 +176,12 @@ jobs:
   build:
     name: Build Packages
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
+      (needs.ci-scope.outputs.fast-path != 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     timeout-minutes: 30
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -156,8 +210,8 @@ jobs:
   benchmark-local:
     name: Benchmark Local (${{ matrix.app }})
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, build]
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -239,8 +293,8 @@ jobs:
   benchmark-postgres:
     name: Benchmark Postgres (${{ matrix.app }})
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, build]
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -343,8 +397,8 @@ jobs:
   benchmark-vercel:
     name: Benchmark Vercel (${{ matrix.app.name }})
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, build]
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 90
     permissions:
       id-token: write
@@ -446,7 +500,11 @@ jobs:
   getCommunityWorldsMatrix:
     name: Get Community Worlds Matrix
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
+      (github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
@@ -471,7 +529,10 @@ jobs:
 
   benchmark-community:
     name: Benchmark Community World (${{ matrix.world.name }})
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
+      (github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     needs: [build, getCommunityWorldsMatrix]
     strategy:
       fail-fast: false
@@ -491,8 +552,12 @@ jobs:
   summary:
     name: Benchmark Summary
     runs-on: ubuntu-latest
-    needs: [benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community]
-    if: always() && !cancelled()
+    needs: [ci-scope, benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community]
+    if: >-
+      always() && !cancelled() &&
+      (needs.ci-scope.outputs.fast-path != 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     timeout-minutes: 10
 
     steps:
