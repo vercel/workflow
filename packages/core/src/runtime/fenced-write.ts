@@ -1,8 +1,9 @@
 /**
  * Helper for "branch-decision" event writes that need OCC fencing.
  *
- * Extends OCC fencing beyond `wait_completed` to every write whose outcome
- * depends on a branch decision the workflow VM made from its loaded event log:
+ * Applies the same fence-and-retry pattern the elapsed-wait scan uses for
+ * `wait_completed` to every other write whose outcome depends on a branch
+ * decision the workflow VM made from its loaded event log:
  *
  *   suspension-handler.ts:
  *     - step_created
@@ -14,19 +15,15 @@
  *     - run_completed
  *     - run_failed
  *
- * `hook_received` is deliberately NOT fenced: fencing the user's signal would
- * drop it on contention; stale-snapshot protection belongs on the writes that
- * consume hooks, not the writes that deliver them.
+ * `hook_received` is deliberately NOT fenced: fencing the user's signal
+ * would drop it on contention; stale-snapshot protection belongs on the
+ * writes that consume hooks, not the writes that deliver them.
  *
  * Each fenced write tries up to MAX_FENCE_RETRIES times. On a fence
  * conflict, the caller is expected to refresh `fenceEventId` from a fresh
- * event log read (the runtime does this via loadWorkflowRunEvents). The
- * `onConflictRefresh` callback gives the caller a chance to do that and
- * to decide whether to give up (e.g. when an idempotency check confirms
- * the write is no longer needed).
- *
- * NOTE: This file lives next to the runtime as `__fenced-write.ts` so it
- * can be deleted in one go if the design lands differently in PR 2113.
+ * event log read. The `onConflictRefresh` callback gives the caller a
+ * chance to do that, and to decide whether to give up (e.g. when an
+ * idempotency check confirms the write is no longer needed).
  */
 import { EntityConflictError } from '@workflow/errors';
 import type { CreateEventRequest, World } from '@workflow/world';

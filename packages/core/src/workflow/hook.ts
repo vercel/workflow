@@ -1,7 +1,6 @@
 import { CorruptedEventLogError, HookConflictError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
-import { getTraceState, traceHookSubscribe } from '../__debug-replay-trace.js';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
@@ -45,20 +44,6 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     let conflictErrorRef: HookConflictError | null = null;
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
-
-    // [DEBUG] Record the assignment correlationId → token for this replay.
-    {
-      const __t = getTraceState(ctx);
-      if (__t) {
-        traceHookSubscribe(
-          __t.runId,
-          __t.invKey,
-          __t.invId,
-          correlationId,
-          token
-        );
-      }
-    }
 
     ctx.eventsConsumer.subscribe((event) => {
       // If there are no events and there are promises waiting,

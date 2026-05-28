@@ -11,12 +11,6 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import {
-  attachTraceState,
-  nextInv,
-  traceReplayEnd,
-  traceReplayStart,
-} from './__debug-replay-trace.js';
 import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
@@ -134,20 +128,6 @@ export async function runWorkflow(
       );
     }
 
-    // [DEBUG] Per-invocation trace state used to diagnose intermittent
-    // CorruptedEventLogError "step consumer mismatch" failures. The
-    // `traceReplayStart` call dumps the full event log the replay is about
-    // to consume (eventIds, types, correlationIds, stepNames) so we can
-    // diff successive replays of the same runId.
-    const __debugInvId = nextInv();
-    const { invKey: __debugInvKey } = traceReplayStart(
-      workflowRun.runId,
-      workflowRun.workflowName,
-      __debugInvId,
-      startedAt,
-      events
-    );
-
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
@@ -208,15 +188,6 @@ export async function runWorkflow(
       },
       pendingDeliveries: 0,
     };
-
-    // [DEBUG] Stash trace identity on the context so step/hook/sleep
-    // subscriber registration code can correlate its log lines back to
-    // this replay invocation.
-    attachTraceState(workflowContext, {
-      runId: workflowRun.runId,
-      invKey: __debugInvKey,
-      invId: __debugInvId,
-    });
 
     // Subscribe to the events log to update the timestamp in the vm context
     workflowContext.eventsConsumer.subscribe((event) => {
@@ -834,12 +805,10 @@ export async function runWorkflow(
         'completed'
       );
 
-      traceReplayEnd(workflowRun.runId, __debugInvId, 'completed');
       return dehydrated;
     } catch (err) {
       // Let WorkflowSuspension propagate — handled separately by the runtime
       if (WorkflowSuspension.is(err)) {
-        traceReplayEnd(workflowRun.runId, __debugInvId, 'suspended');
         throw err;
       }
 
@@ -851,12 +820,6 @@ export async function runWorkflow(
         'failed'
       );
 
-      traceReplayEnd(
-        workflowRun.runId,
-        __debugInvId,
-        'failed',
-        err instanceof Error ? err.message : String(err)
-      );
       throw err;
     }
   });

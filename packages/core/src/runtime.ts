@@ -19,7 +19,7 @@ import { classifyRunError, isWorldContractError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
-import { fencedEventCreate } from './runtime/__fenced-write.js';
+import { fencedEventCreate } from './runtime/fenced-write.js';
 import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
 import {
   getQueueOverhead,

@@ -23,7 +23,7 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
-import { fencedEventCreate } from './__fenced-write.js';
+import { fencedEventCreate } from './fenced-write.js';
 import { loadWorkflowRunEvents } from './helpers.js';
 
 export interface SuspensionHandlerParams {
@@ -40,7 +40,7 @@ export interface SuspensionHandlerParams {
    * server side so future fenced writers chain off the new value).
    *
    * Conceptually identical to the elapsed-wait scan fence. See
-   * `__fenced-write.ts` for the rationale for extending it to
+   * `fenced-write.ts` for the rationale for extending it to
    * step/wait/hook `_created` and `hook_disposed`.
    */
   fenceEventId?: string;
@@ -381,15 +381,15 @@ export async function handleSuspension({
 
   const ops: Array<() => Promise<void>> = [];
 
-  // Steps: create step_created events (no queuing — V2 returns pending steps to caller).
+  // Steps: create step_created events (no queuing — V2 returns pending
+  // steps to caller).
   //
-  // NOTE: this is the write site that triggered the failure on
-  // `wrun_01KSPS7XEGHF4A6WYF4DB03D40` against PR #456's monotonic-append:
-  // a stale-view replay decided iter-K's race resolved with "wake" and
-  // wrote `step_created (drain)` even though a concurrent replay with a
-  // fresher view had already taken the "sleep" branch. Fencing this
-  // write makes the stale-view writer's fence stale and 412, so only the
-  // authoritative replay's step_created lands. See review on PR 2113.
+  // Fenced: under concurrent replay, two invocations with diverging
+  // event-log snapshots can pick different branch decisions for the same
+  // deterministic correlationId (e.g. a hook/sleep race that one replay
+  // saw resolve to "wake" and another to "sleep"). The fence rejects the
+  // stale-view writer so only the authoritative replay's step_created
+  // lands; the other invocation reloads and retries against the new tail.
   for (const queueItem of stepItems) {
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(async () => {
