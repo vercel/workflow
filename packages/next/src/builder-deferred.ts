@@ -965,12 +965,70 @@ export async function getNextBuilderDeferred() {
 
       const baseDirectory = dirname(bundleFilePath);
       const localSourceFiles = new Set<string>();
-      const sourceMapMatches = bundleContents.matchAll(
-        /\/\/# sourceMappingURL=data:application\/json[^,]*;base64,([A-Za-z0-9+/=]+)/g
-      );
+
+      // Extract inline base64 sourcemaps via string scanning. A previous
+      // implementation used `bundleContents.matchAll(/...[A-Za-z0-9+/=]+.../g)`
+      // which overflows V8's regex stack
+      // (`RangeError: Maximum call stack size exceeded at RegExpStringIterator.next`)
+      // on bundles with large inline sourcemaps — V8's irregexp uses
+      // recursion for greedy character-class quantifiers and certain long
+      // base64 inputs exhaust the call stack.
+      const sourceMapPrefix = '//# sourceMappingURL=data:application/json';
+      const base64Marker = ';base64,';
+      const sourceMapMatches: Array<{ base64Value: string }> = [];
+      let scanFrom = 0;
+      while (scanFrom < bundleContents.length) {
+        const prefixIdx = bundleContents.indexOf(sourceMapPrefix, scanFrom);
+        if (prefixIdx === -1) break;
+        const base64Start = bundleContents.indexOf(
+          base64Marker,
+          prefixIdx + sourceMapPrefix.length
+        );
+        if (base64Start === -1) {
+          scanFrom = prefixIdx + sourceMapPrefix.length;
+          continue;
+        }
+        // Bail if a comma appears before `;base64,` — that means this
+        // wasn't a `data:application/json[;params];base64,...` URL after
+        // all (the comma would terminate the data URL parameters).
+        const commaBefore = bundleContents.indexOf(',', prefixIdx);
+        if (commaBefore !== -1 && commaBefore < base64Start) {
+          scanFrom = base64Start;
+          continue;
+        }
+        const valueStart = base64Start + base64Marker.length;
+        // Base64 payload terminates at first non-base64 char (newline,
+        // closing `*/`, etc.). Scanning a small alphabet by char is far
+        // cheaper than backtracking a regex over a multi-MB capture.
+        let valueEnd = valueStart;
+        while (valueEnd < bundleContents.length) {
+          const code = bundleContents.charCodeAt(valueEnd);
+          // A-Z 0x41-0x5A, a-z 0x61-0x7A, 0-9 0x30-0x39, '+' 0x2B,
+          // '/' 0x2F, '=' 0x3D
+          if (
+            !(
+              (code >= 0x41 && code <= 0x5a) ||
+              (code >= 0x61 && code <= 0x7a) ||
+              (code >= 0x30 && code <= 0x39) ||
+              code === 0x2b ||
+              code === 0x2f ||
+              code === 0x3d
+            )
+          ) {
+            break;
+          }
+          valueEnd++;
+        }
+        if (valueEnd > valueStart) {
+          sourceMapMatches.push({
+            base64Value: bundleContents.slice(valueStart, valueEnd),
+          });
+        }
+        scanFrom = valueEnd;
+      }
 
       for (const match of sourceMapMatches) {
-        const base64Value = match[1];
+        const base64Value = match.base64Value;
         if (!base64Value) {
           continue;
         }

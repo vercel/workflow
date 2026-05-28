@@ -6,7 +6,6 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPortLazy } from './runtime/get-port-lazy.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -16,9 +15,10 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import type { WorkflowOrchestratorContext } from './private.js';
+import { getPortLazy } from './runtime/get-port-lazy.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
-import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -36,12 +36,12 @@ import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
-import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
-import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import {
   createAbortSignalStatics,
   createCreateAbortController,
 } from './workflow/abort-controller.js';
+import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
+import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
@@ -59,6 +59,15 @@ import { createSleep } from './workflow/sleep.js';
  * propagates to in-flight steps on other compute instances — without this,
  * the abort hook is created but never resumed and the cancellation never
  * reaches the running step.
+ *
+ * NOTE: drain only commits the `*_created` events; it does NOT enqueue step
+ * bodies for execution. The platform's step worker rejects `step_started`
+ * for runs that have already transitioned to terminal (`RunExpiredError`),
+ * so a step queued here would be skipped anyway. Fire-and-forget step calls
+ * with side effects therefore work only when followed by some later `await`
+ * on a runtime primitive that triggers a real suspension (the normal
+ * runtime loop in `runtime.ts` queues the step there). A `void` placed
+ * immediately before `return` is not reliably executed.
  *
  * Drain failures are swallowed: the workflow's own outcome (the user's return
  * value or thrown error) is the source of truth; secondary cleanup that fails
