@@ -7,6 +7,7 @@ import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
 import type { Segment, SegmentStatus, TimeMarker } from '../utils';
+import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import {
   computeSpanGaps,
   computeSpanSegments,
@@ -264,6 +265,7 @@ const TimelineBar = memo(function TimelineBar({
   viewDuration,
   containerWidth,
   isSelected,
+  isDimmed,
   onSelect,
 }: {
   span: Span;
@@ -271,6 +273,7 @@ const TimelineBar = memo(function TimelineBar({
   viewDuration: number;
   containerWidth: number;
   isSelected: boolean;
+  isDimmed?: boolean;
   onSelect: (spanId: string) => void;
 }): ReactNode {
   const startMs = getHighResInMs(span.startTime);
@@ -323,12 +326,15 @@ const TimelineBar = memo(function TimelineBar({
       aria-selected={isSelected}
       aria-expanded={isSelected}
       aria-level={1}
-      className="group/timeline-row h-10 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200"
+      className={cn(
+        'group/timeline-row h-10 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200 transition-opacity',
+        isDimmed && 'opacity-35'
+      )}
       onClick={handleClick}
     >
       <div className="absolute inset-y-0" style={TIMELINE_INSET_STYLE}>
         <div
-          className="absolute top-1/2 h-6 -translate-y-1/2"
+          className="absolute top-1/2 h-6 -translate-y-1/2 rounded-[0.25rem]"
           style={getBarPositionStyle(geometry)}
         >
           {geometry.mode.kind === 'arrow' ? (
@@ -448,6 +454,7 @@ export function Timeline({
   viewEnd,
   markers,
   selectedId,
+  searchResult,
   onSelect,
   hoverFraction,
   altHeld = false,
@@ -457,6 +464,7 @@ export function Timeline({
   viewEnd: number;
   markers: TimeMarker[];
   selectedId: string | null;
+  searchResult: SpanSearchResult;
   onSelect: (spanId: string) => void;
   hoverFraction?: number | null;
   altHeld?: boolean;
@@ -518,6 +526,7 @@ export function Timeline({
           viewDuration={viewDuration}
           containerWidth={timelineWidth}
           isSelected={selectedId === span.spanId}
+          isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
           onSelect={onSelect}
         />
       ))}
