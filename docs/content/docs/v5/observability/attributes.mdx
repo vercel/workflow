@@ -7,6 +7,7 @@ prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/observability
+  - /docs/api-reference/workflow/experimental-set-attributes
   - /docs/api-reference/workflow-errors/workflow-world-error
 ---
 
@@ -39,8 +40,6 @@ Call `experimental_setAttributes` from a `"use workflow"` function. Calling it f
 
 Values must be strings. Pass `undefined` to remove a key:
 
-{/* @skip-typecheck - snippet, depends on workflow runtime */}
-
 ```typescript lineNumbers
 import { experimental_setAttributes } from "workflow"
 
@@ -51,7 +50,7 @@ export async function cleanupAttributes() {
 }
 ```
 
-Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code. Validation errors throw `FatalError` and fail the run.
+Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code.
 
 ## Experimental Behavior
 
@@ -62,4 +61,4 @@ While attributes are experimental:
 - Setting attributes is currently slower than the final API will be, because each write goes through an internal workflow step. Prefer batching related attributes in one call.
 - Reading and querying attributes is not available yet. A query API is planned.
 
-In a future release, using attributes with a World that does not support them, or when the World fails to store them, will fail with a [world error](/docs/api-reference/workflow-errors/workflow-world-error).
+In a future release, using attributes with a World that does not support them, or when the World fails to store them, will fail with a [world error](/docs/api-reference/workflow-errors/workflow-world-error). This can be caught and handled to prevent failing a run.
