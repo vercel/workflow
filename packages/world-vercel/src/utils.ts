@@ -58,8 +58,14 @@ function httpLog(
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
+ *
+ * [debug branch] Pinned to the workflow-server PR vercel/workflow-server#447
+ * preview deployment (commit e6722b2 — "events: move entity materialization
+ * after fence CAS") so this validation run exercises both the SDK fixes
+ * in #2113 and the server-side fence + ordering fix end to end.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-peter-event-write-cas.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
@@ -183,6 +189,15 @@ export const getHeaders = (
   const workflowServerUrlOverride = getWorkflowServerUrlOverride();
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
+  }
+  // [debug branch] Vercel Deployment Protection bypass for the pinned
+  // workflow-server preview. Must be the bare `x-vercel-protection-bypass`
+  // header — do NOT also set `x-vercel-set-bypass-cookie: true`, which
+  // triggers a 307 redirect loop on Node undici. Env var is baked at
+  // deploy time on the repro app.
+  const bypassToken = process.env.WORKFLOW_VERCEL_PROTECTION_BYPASS;
+  if (bypassToken) {
+    headers.set('x-vercel-protection-bypass', bypassToken);
   }
   return headers;
 };
