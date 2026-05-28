@@ -40,18 +40,24 @@ export interface Chunk {
   chunk: Buffer;
 }
 
+const EOF_MARKER = 1;
+
+function isEofByte(byte: number | undefined): boolean {
+  return byte === EOF_MARKER;
+}
+
 export function serializeChunk(chunk: Chunk) {
-  const eofByte = Buffer.from([chunk.eof ? 1 : 0]);
+  const eofByte = Buffer.from([chunk.eof ? EOF_MARKER : 0]);
   return Buffer.concat([eofByte, chunk.chunk]);
 }
 
 /** Check only the EOF flag byte without copying chunk payload. */
 export function isEofChunk(serialized: Buffer): boolean {
-  return serialized[0] === 1;
+  return isEofByte(serialized[0]);
 }
 
 export function deserializeChunk(serialized: Buffer) {
-  const eof = serialized[0] === 1;
+  const eof = isEofChunk(serialized);
   // Create a copy instead of a view to prevent ArrayBuffer detachment
   const chunk = Buffer.from(serialized.subarray(1));
   return { eof, chunk };
@@ -353,7 +359,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
           // Before the cursor: only need to check EOF (1 byte), skip content
           if (dataIndex < startIndex) {
-            if ((await readFirstByte(filePath)) === 1) {
+            if (isEofByte(await readFirstByte(filePath))) {
               streamDone = true;
               break;
             }
@@ -363,7 +369,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
           // Collected enough data chunks — peek at the next file for EOF/hasMore
           if (resultChunks.length >= limit) {
-            if ((await readFirstByte(filePath)) === 1) {
+            if (isEofByte(await readFirstByte(filePath))) {
               streamDone = true;
             } else {
               // More data files exist beyond this page
@@ -412,7 +418,9 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         for (const file of chunkFiles) {
           const ext = fileExtMap.get(file) ?? '.bin';
           if (
-            (await readFirstByte(path.join(chunksDir, `${file}${ext}`))) === 1
+            isEofByte(
+              await readFirstByte(path.join(chunksDir, `${file}${ext}`))
+            )
           ) {
             streamDone = true;
             break;
@@ -514,9 +522,11 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               const lastFile = chunkFiles[chunkFiles.length - 1];
               const lastExt = fileExtMap.get(lastFile) ?? '.bin';
               if (
-                (await readFirstByte(
-                  path.join(chunksDir, `${lastFile}${lastExt}`)
-                )) === 1
+                isEofByte(
+                  await readFirstByte(
+                    path.join(chunksDir, `${lastFile}${lastExt}`)
+                  )
+                )
               ) {
                 dataChunkCount--;
               }
