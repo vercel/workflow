@@ -1,7 +1,11 @@
 import {
   CorruptedEventLogError,
+  EntityConflictError,
   HookConflictError,
   RUN_ERROR_CODES,
+  RunExpiredError,
+  ThrottleError,
+  TooEarlyError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -86,5 +90,33 @@ describe('classifyRunError', () => {
     expect(classifyRunError(new HookConflictError('my-token'))).toBe(
       RUN_ERROR_CODES.USER_ERROR
     );
+  });
+
+  it('classifies EntityConflictError as RUNTIME_ERROR (fence-conflict / 409 from runtime CAS write)', () => {
+    expect(
+      classifyRunError(
+        new EntityConflictError(
+          'fence conflict: Stale request: event-log fence conflict'
+        )
+      )
+    ).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+  });
+
+  it('classifies RunExpiredError as RUNTIME_ERROR (410 on runtime operation)', () => {
+    expect(classifyRunError(new RunExpiredError('run gone'))).toBe(
+      RUN_ERROR_CODES.RUNTIME_ERROR
+    );
+  });
+
+  it('classifies TooEarlyError as RUNTIME_ERROR (425 retry-after-not-reached)', () => {
+    expect(
+      classifyRunError(new TooEarlyError('too early', { retryAfter: 5 }))
+    ).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+  });
+
+  it('classifies ThrottleError as RUNTIME_ERROR (429 rate limited)', () => {
+    expect(
+      classifyRunError(new ThrottleError('throttled', { retryAfter: 1 }))
+    ).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
   });
 });
