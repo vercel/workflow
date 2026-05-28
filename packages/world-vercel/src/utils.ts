@@ -289,10 +289,15 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
     // bake-time VERCEL_OIDC_TOKEN doesn't satisfy the preview's
     // trusted-sources rule). This re-adds the bypass mechanism that
     // PR #1882 removed; intended only for diagnostic builds.
+    //
+    // NOTE: only `x-vercel-protection-bypass` is set. We deliberately do
+    // NOT set `x-vercel-set-bypass-cookie: true` — that triggers a 307
+    // redirect-and-set-cookie flow intended for browsers, which loops
+    // forever on a non-cookie-following HTTP client like Node's fetch.
+    // The bare bypass header authenticates each request directly.
     const protectionBypass = process.env.WORKFLOW_VERCEL_PROTECTION_BYPASS;
     if (protectionBypass) {
       headers.set('x-vercel-protection-bypass', protectionBypass);
-      headers.set('x-vercel-set-bypass-cookie', 'true');
     }
   }
 
