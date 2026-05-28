@@ -384,11 +384,18 @@ export async function makeRequest<T>({
           throwWithTrace(new EntityConflictError(defaultMessage));
         }
         if (response.status === 412) {
-          // OCC fence conflict. The response message includes "fence conflict",
-          // which the runtime's fence-retry loops match on. Surfacing this as
-          // EntityConflictError keeps the existing conflict branching
-          // downstream unchanged.
-          throwWithTrace(new EntityConflictError(defaultMessage));
+          // OCC fence conflict. Surface as EntityConflictError so the
+          // existing conflict branching downstream applies, and ensure the
+          // message carries a "fence conflict" marker even when the
+          // response body didn't parse — the fence-retry loop in
+          // runtime/fenced-write.ts dispatches off that marker, and
+          // upstream error pages (CDN HTML, gateway timeouts, etc.)
+          // shouldn't be allowed to demote a fence conflict to a generic
+          // EntityConflictError that callers treat as terminal.
+          const fenceMessage = /fence conflict/i.test(defaultMessage)
+            ? defaultMessage
+            : `fence conflict: ${defaultMessage}`;
+          throwWithTrace(new EntityConflictError(fenceMessage));
         }
         if (response.status === 410) {
           throwWithTrace(new RunExpiredError(defaultMessage));
