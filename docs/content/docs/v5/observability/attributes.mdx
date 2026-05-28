@@ -1,8 +1,8 @@
 ---
 title: Run attributes
-description: Attach experimental string metadata to workflow runs for observability.
+description: Attach experimental metadata to workflow runs for observability.
 type: reference
-summary: Use experimental_setAttributes to add string tags to a workflow run.
+summary: Use experimental_setAttributes to add string attributes to a workflow run.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -10,7 +10,7 @@ related:
   - /docs/api-reference/workflow-errors/workflow-world-error
 ---
 
-`experimental_setAttributes` attaches plaintext string metadata to the current workflow run. These attributes can be displayed by observability tools as run tags.
+`experimental_setAttributes` attaches plaintext string metadata to the current workflow run. These attributes can be displayed by observability tools.
 
 <Callout>
 This feature is experimental and may change before the stable attributes API is released.
@@ -51,7 +51,7 @@ export async function cleanupAttributes() {
 }
 ```
 
-Attribute keys that start with `$` are reserved for framework and library code.
+Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code. Validation errors throw `FatalError` and fail the run.
 
 ## Experimental Behavior
 
@@ -59,6 +59,7 @@ While attributes are experimental:
 
 - Worlds that do not support attributes log a warning and ignore the call.
 - Storage errors are logged after retries, but do not fail the workflow run.
-- Setting attributes is currently slower than the final API will be, because each write goes through an internal workflow step. Prefer batching related tags in one call.
+- Setting attributes is currently slower than the final API will be, because each write goes through an internal workflow step. Prefer batching related attributes in one call.
+- Reading and querying attributes is not available yet. A query API is planned.
 
 In a future release, using attributes with a World that does not support them, or when the World fails to store them, will fail with a [world error](/docs/api-reference/workflow-errors/workflow-world-error).
