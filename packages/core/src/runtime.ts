@@ -1178,10 +1178,10 @@ export function workflowEntrypoint(
                         // the step, replay still picks the step because
                         // wait_completed is only created on the *next* loop
                         // iteration, which doesn't run until the step
-                        // finishes. Queueing every step in this case lets
-                        // the wait timeout drive a continuation in parallel,
-                        // matching V1's behavior where each step ran in a
-                        // separate function invocation.
+                        // finishes. Queueing every owned step in this case
+                        // lets the wait timeout drive a continuation in
+                        // parallel, matching V1's behavior where each step
+                        // ran in a separate function invocation.
                         const inlineStep:
                           | (typeof pendingSteps)[number]
                           | undefined =
@@ -1189,19 +1189,63 @@ export function workflowEntrypoint(
                             ? ownedPendingSteps[0]
                             : undefined;
 
-                        // Queue every pending step except the one we're
-                        // executing inline. This mirrors V1's unconditional
-                        // enqueue-with-idempotency pattern and is what makes
-                        // crash recovery work: if a prior handler wrote
-                        // step_created events but crashed before enqueuing,
-                        // a later handler (e.g., from flow-message
-                        // redelivery or reenqueueActiveRuns) will enqueue
-                        // the orphaned steps. In the happy path with a
-                        // single owner, concurrent handlers' queue attempts
-                        // dedupe on correlationId. Skipping the inline step
-                        // avoids a queue handler racing against our own
-                        // inline executor.
-                        for (const step of pendingSteps) {
+                        // Queue only steps this handler owns. A non-owner
+                        // may have a stale replay view where another handler
+                        // just created a step and is about to execute it
+                        // inline; queueing that step here would bypass the
+                        // ownership invariant and can run the step body twice.
+                        //
+                        // Recovery exception: if this workflow queue message
+                        // is itself being redelivered, pick up pre-existing
+                        // step_created / step_retrying events from the loaded
+                        // log that never reached step_started. This covers the
+                        // crash window after a handler writes step_created but
+                        // before it queues the step.
+                        const recoverablePendingStepCorrelationIds =
+                          new Set<string>();
+                        if (metadata.attempt > 1 && cachedEvents) {
+                          const latestStepEvents = new Map<string, string>();
+                          for (const event of cachedEvents) {
+                            if (
+                              event.correlationId &&
+                              (event.eventType === 'step_created' ||
+                                event.eventType === 'step_retrying' ||
+                                event.eventType === 'step_started' ||
+                                event.eventType === 'step_completed' ||
+                                event.eventType === 'step_failed')
+                            ) {
+                              latestStepEvents.set(
+                                event.correlationId,
+                                event.eventType
+                              );
+                            }
+                          }
+                          for (const [
+                            correlationId,
+                            eventType,
+                          ] of latestStepEvents) {
+                            if (
+                              eventType === 'step_created' ||
+                              eventType === 'step_retrying'
+                            ) {
+                              recoverablePendingStepCorrelationIds.add(
+                                correlationId
+                              );
+                            }
+                          }
+                        }
+
+                        const queueablePendingSteps = pendingSteps.filter(
+                          (step) =>
+                            suspensionResult.createdStepCorrelationIds.has(
+                              step.correlationId
+                            ) ||
+                            recoverablePendingStepCorrelationIds.has(
+                              step.correlationId
+                            )
+                        );
+
+                        for (const step of queueablePendingSteps) {
                           if (
                             inlineStep &&
                             step.correlationId === inlineStep.correlationId
@@ -1226,7 +1270,8 @@ export function workflowEntrypoint(
                         }
 
                         // Nothing to execute inline — we already queued all
-                        // pending steps above, exit and let the queue drive.
+                        // steps this handler can safely dispatch, exit and
+                        // let the queue drive.
                         if (!inlineStep) {
                           if (suspensionResult.timeoutSeconds !== undefined) {
                             return {
