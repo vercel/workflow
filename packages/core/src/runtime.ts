@@ -1062,7 +1062,27 @@ export function workflowEntrypoint(
                           pendingSteps: suspensionResult.pendingSteps.length,
                           timeoutSeconds: suspensionResult.timeoutSeconds,
                           hasHookConflict: suspensionResult.hasHookConflict,
+                          staleSnapshot: suspensionResult.staleSnapshot,
                         });
+
+                        // Stale-snapshot abandonment: a fenced write
+                        // rejected, meaning a concurrent invocation has
+                        // already advanced the canonical event log. Our
+                        // VM's queue results were derived from a snapshot
+                        // that may diverge from the canonical replay's
+                        // decisions; queueing them risks
+                        // `CorruptedEventLogError` on a future replay
+                        // when the loser's events meet the winner's
+                        // events in the log. Exit cleanly (do NOT write
+                        // run_failed) and let the canonical invocation
+                        // make progress.
+                        if (suspensionResult.staleSnapshot) {
+                          runtimeLogger.info(
+                            'Replay abandoned: stale event-log snapshot, canonical invocation has the log',
+                            { workflowRunId: runId }
+                          );
+                          return;
+                        }
 
                         // Hook conflict: break loop, re-invoke via queue
                         if (suspensionResult.hasHookConflict) {

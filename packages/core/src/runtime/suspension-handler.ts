@@ -64,6 +64,18 @@ export interface SuspensionHandlerResult {
   timeoutSeconds?: number;
   /** Whether a hook conflict was detected (should re-invoke immediately) */
   hasHookConflict: boolean;
+  /**
+   * `true` when at least one fenced write rejected with a fence
+   * conflict, meaning another invocation has a fresher snapshot of the
+   * event log. The caller (runtime tick) must abandon the current
+   * replay without writing `run_failed` — the canonical invocation is
+   * making progress and this replay's VM decisions could be divergent.
+   *
+   * When set, `pendingSteps` should be considered invalid and not
+   * queued; `createdStepCorrelationIds` may be a partial set (only the
+   * writes that landed before the conflict).
+   */
+  staleSnapshot: boolean;
 }
 
 /**
@@ -145,6 +157,22 @@ export async function handleSuspension({
   // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
 
+  // Helper to build the early-return result when we detect a stale-snapshot
+  // fence conflict. Once flipped, the entire replay's queue results are
+  // invalid (a stale-snapshot VM decision could be divergent from the
+  // canonical replay's), so further writes from this invocation must not
+  // happen.
+  const staleSnapshotResult = (): SuspensionHandlerResult => ({
+    pendingSteps: [],
+    createdStepCorrelationIds,
+    hasHookConflict: false,
+    staleSnapshot: true,
+  });
+
+  // Track set of created stepIds up here so the early-return helper above
+  // can reference it. May be partially populated if we stale-snapshot mid-batch.
+  const createdStepCorrelationIds = new Set<string>();
+
   for (const hookEvent of hookEvents) {
     try {
       const writeResult = await fencedEventCreate({
@@ -155,6 +183,9 @@ export async function handleSuspension({
         fenceEventId,
         onEntityConflict: () => 'abort',
       });
+      if (writeResult.staleSnapshot) {
+        return staleSnapshotResult();
+      }
       if (writeResult.newFenceEventId) {
         fenceEventId = writeResult.newFenceEventId;
       }
@@ -208,6 +239,9 @@ export async function handleSuspension({
         fenceEventId,
         onEntityConflict: () => 'abort',
       });
+      if (writeResult.staleSnapshot) {
+        return staleSnapshotResult();
+      }
       if (writeResult.newFenceEventId) {
         fenceEventId = writeResult.newFenceEventId;
       }
@@ -312,13 +346,16 @@ export async function handleSuspension({
       .map((queueItem) => queueItem.correlationId)
   );
 
-  // Correlation IDs for which THIS suspension call actually wrote the
-  // step_created event. Populated by the ops below after a successful
-  // events.create — used by the caller to claim ownership and avoid
-  // racing with concurrent handlers on step execution.
-  const createdStepCorrelationIds = new Set<string>();
+  // `createdStepCorrelationIds` was declared up top so the
+  // `staleSnapshotResult()` helper can include it on early returns.
+  // It is populated below after each successful events.create — used by
+  // the caller to claim ownership and avoid racing with concurrent
+  // handlers on step execution.
 
-  const ops: Array<() => Promise<void>> = [];
+  // Each op returns `true` if the entire suspension handling must
+  // abandon (stale-snapshot fence conflict observed). The outer loop
+  // checks the return value and early-exits on `true`.
+  const ops: Array<() => Promise<boolean>> = [];
 
   // Steps: create step_created events (no queuing — V2 returns pending
   // steps to caller).
@@ -359,6 +396,9 @@ export async function handleSuspension({
           fenceEventId,
           onEntityConflict: () => 'abort',
         });
+        if (writeResult.staleSnapshot) {
+          return true;
+        }
         if (writeResult.newFenceEventId) {
           fenceEventId = writeResult.newFenceEventId;
         }
@@ -373,6 +413,7 @@ export async function handleSuspension({
             }
           );
         }
+        return false;
       });
     }
   }
@@ -400,6 +441,9 @@ export async function handleSuspension({
           fenceEventId,
           onEntityConflict: () => 'abort',
         });
+        if (writeResult.staleSnapshot) {
+          return true;
+        }
         if (writeResult.newFenceEventId) {
           fenceEventId = writeResult.newFenceEventId;
         }
@@ -409,12 +453,16 @@ export async function handleSuspension({
             correlationId: queueItem.correlationId,
           });
         }
+        return false;
       });
     }
   }
 
   for (const op of ops) {
-    await op();
+    const stale = await op();
+    if (stale) {
+      return staleSnapshotResult();
+    }
   }
 
   // Calculate minimum timeout from waits
@@ -442,5 +490,6 @@ export async function handleSuspension({
     createdStepCorrelationIds,
     timeoutSeconds: hasHookConflict ? 0 : (minTimeoutSeconds ?? undefined),
     hasHookConflict,
+    staleSnapshot: false,
   };
 }

@@ -90,13 +90,32 @@ export interface FencedWriteResult {
   /**
    * Whether the event was actually written.
    *
-   * `false` covers two cases the caller usually wants to treat the same
-   * way (no further action required for this write):
-   *  - Fence conflict — another invocation has the canonical view.
+   * `false` covers two cases the caller usually wants to treat
+   * differently (see `staleSnapshot` below):
+   *  - Fence conflict (`staleSnapshot: true`): another invocation has
+   *    a fresher view of the event log; the caller must abandon any
+   *    further work derived from its own snapshot, because that work
+   *    could have been a different VM decision than the canonical
+   *    replay made and continuing would corrupt the log.
    *  - Non-fence EntityConflictError with `onEntityConflict: 'abort'`
-   *    (entity already exists, run already terminal, etc.).
+   *    (`staleSnapshot: false`): the entity already exists / run is
+   *    terminal; the caller can skip this write and continue.
    */
   written: boolean;
+  /**
+   * Set to `true` when `written` is `false` because of an OCC fence
+   * conflict. The caller is expected to propagate this signal up so the
+   * entire current tick / replay is abandoned (without failing the
+   * run): a stale-snapshot replay can otherwise re-derive a divergent
+   * VM decision from a log that has since been advanced by a canonical
+   * replay, and continuing past the conflict point can cause
+   * `CorruptedEventLogError` when the loser's VM consumes the
+   * canonical replay's events as if they were its own.
+   *
+   * Always `false` when `written` is `true`. Always `false` for
+   * non-fence EntityConflictError aborts.
+   */
+  staleSnapshot: boolean;
   /**
    * eventId of the newly-written event (when `written` is true), so
    * the caller can advance its tracked fence value.
@@ -148,6 +167,7 @@ export async function fencedEventCreate(
     }
     return {
       written: true,
+      staleSnapshot: false,
       newFenceEventId: result.event?.eventId ?? fenceEventId,
       event: result.event
         ? {
@@ -158,23 +178,25 @@ export async function fencedEventCreate(
     };
   } catch (err) {
     if (isFenceConflict(err)) {
-      // Another invocation has the canonical view of the event log.
-      // Bail out cleanly: no retry, no throw. The canonical invocation
-      // is responsible for whatever progress the workflow needs.
+      // Another invocation has a fresher view of the event log. The
+      // caller must surface `staleSnapshot: true` upward and abandon
+      // the current replay's queue results — see the field doc on
+      // `FencedWriteResult` for why continuing past this point is
+      // unsafe under divergent-VM-decision contention.
       runtimeLogger.info(
-        'Branch-decision write fence conflict; yielding to canonical replay',
+        'Branch-decision write fence conflict; signalling stale snapshot',
         {
           workflowRunId: runId,
           eventType: event.eventType,
           correlationId: event.correlationId,
         }
       );
-      return { written: false };
+      return { written: false, staleSnapshot: true };
     }
     if (EntityConflictError.is(err)) {
       const decision = onEntityConflict(err);
       if (decision === 'abort') {
-        return { written: false };
+        return { written: false, staleSnapshot: false };
       }
       throw err;
     }
