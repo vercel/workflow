@@ -29,9 +29,7 @@ const RUNTIME_ERROR_CHECKS = [
   // SDK-level encryption failures (most notably AES-GCM auth-tag
   // mismatches surfacing as a native `OperationError` from
   // `AESCipherJob.onDone`) are wrapped in `RuntimeDecryptionError` at
-  // the encryption module boundary. Without this check they'd fall
-  // through to `USER_ERROR`, which is incorrect — the user never
-  // touched the ciphertext.
+  // the encryption module boundary.
   RuntimeDecryptionError.is,
 ];
 

@@ -347,23 +347,20 @@ export interface RuntimeDecryptionErrorContext {
  * Thrown when the SDK's built-in AES-GCM encryption layer fails to encrypt
  * or decrypt a workflow payload.
  *
- * This is **never** a user code error — the user never directly invokes
- * the SDK's encryption primitives. A failure here means the SDK encountered
- * an internal problem such as:
+ * This is an internal SDK failure — user code never invokes the SDK's
+ * encryption primitives directly. Common causes:
  *
- * - A ciphertext / auth tag mismatch (commonly surfaces as the native Web
+ * - A ciphertext / auth tag mismatch, typically surfaced as the native Web
  *   Crypto `OperationError: The operation failed for an operation-specific
- *   reason`), typically caused by ciphertext mutation or truncation in
- *   transit between storage and read (e.g. a truncated HTTP response from
- *   a workflow-server ref endpoint, an edge-cache miss returning a partial
- *   200, a proxy drop during streaming, etc.).
+ *   reason`. Usually caused by ciphertext mutation or truncation in transit
+ *   between storage and read (truncated HTTP response, edge-cache miss
+ *   returning a partial 200, proxy drop during streaming, etc.).
  * - A key resolution mismatch (wrong deployment, missing key material).
  * - A malformed encrypted envelope (too short to contain the GCM nonce
  *   and tag).
  *
- * Extending {@link WorkflowRuntimeError} ensures these failures classify
- * as `RUNTIME_ERROR` rather than `USER_ERROR` when they bubble up to the
- * run-failure handler.
+ * Extends {@link WorkflowRuntimeError} so the run-failure classifier
+ * routes it to `RUNTIME_ERROR`.
  */
 export class RuntimeDecryptionError extends WorkflowRuntimeError {
   /** Optional structured context about the failed encrypt/decrypt call. */

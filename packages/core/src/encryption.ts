@@ -112,12 +112,8 @@ export async function encrypt(
     );
   } catch (cause) {
     // Re-wrap any Web Crypto failure (DOMException etc.) as a
-    // RuntimeDecryptionError so the run-failure classifier surfaces it
-    // as RUNTIME_ERROR rather than misattributing it to user code.
-    // Encryption failures from this path are exceedingly rare in
-    // practice — they happen e.g. when a CryptoKey was imported with
-    // `usages: ['decrypt']` only — but lumping them with USER_ERROR is
-    // still wrong, so the same wrap applies here.
+    // RuntimeDecryptionError. Failures here are rare — they happen e.g.
+    // when a CryptoKey was imported with `usages: ['decrypt']` only.
     throw new RuntimeDecryptionError(
       `AES-256-GCM encryption failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       {
@@ -141,12 +137,11 @@ export async function encrypt(
  * Any failure inside the Web Crypto layer — most commonly an
  * `OperationError: The operation failed for an operation-specific reason`
  * raised by `AESCipherJob.onDone` when the GCM authentication tag does
- * not verify — is rewrapped as {@link RuntimeDecryptionError} so the
- * run-failure classifier treats it as a `RUNTIME_ERROR` rather than a
- * `USER_ERROR`. The wrapped error carries the original DOMException as
- * `cause`, plus a small diagnostic context (input byte length, printable
- * header prefix) to help disambiguate ciphertext corruption from key
- * mismatch from truncated transport reads.
+ * not verify — is rewrapped as {@link RuntimeDecryptionError}. The
+ * wrapped error carries the original DOMException as `cause`, plus a
+ * small diagnostic context (input byte length, printable header prefix)
+ * to help disambiguate ciphertext corruption from key mismatch from
+ * truncated transport reads.
  *
  * @param key - CryptoKey from `importKey()`
  * @param data - `[nonce (12 bytes)][ciphertext + GCM auth tag]`
@@ -183,13 +178,8 @@ export async function decrypt(
     // `name: 'OperationError'` and message "The operation failed for
     // an operation-specific reason" — this is what Web Crypto throws
     // when the GCM auth tag does not verify. Re-throw as
-    // RuntimeDecryptionError so:
-    //   1. `classifyRunError` lifts it to RUNTIME_ERROR (instead of
-    //      falling through to USER_ERROR, which would misattribute the
-    //      failure to the workflow author).
-    //   2. The downstream error log carries diagnostic context (byte
-    //      length and a printable header prefix) that the bare
-    //      DOMException lacks.
+    // RuntimeDecryptionError, attaching diagnostic context (byte length
+    // and a printable header prefix) that the bare DOMException lacks.
     const causeMsg = cause instanceof Error ? cause.message : String(cause);
     throw new RuntimeDecryptionError(
       `AES-256-GCM decryption failed: ${causeMsg}`,

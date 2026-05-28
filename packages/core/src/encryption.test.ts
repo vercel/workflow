@@ -52,11 +52,10 @@ describe('encryption', () => {
     });
 
     it('throws RuntimeDecryptionError (not a bare OperationError) on auth-tag failure', async () => {
-      // This is the exact code path that surfaced in production as
-      // `OperationError: The operation failed for an operation-specific
-      // reason at AESCipherJob.onDone (node:internal/crypto/util:646:19)`.
-      // It must surface as a RuntimeDecryptionError so classifyRunError
-      // routes it to RUNTIME_ERROR, not USER_ERROR.
+      // GCM auth-tag verification failure surfaces from Node's Web
+      // Crypto API as `OperationError: The operation failed for an
+      // operation-specific reason at AESCipherJob.onDone`. The
+      // encryption module must rewrap this as a RuntimeDecryptionError.
       const key = await getKey();
       const plaintext = new TextEncoder().encode('hello, workflow');
       const ciphertext = await encrypt(key, plaintext);

@@ -64,10 +64,6 @@ export async function decrypt(
   const format = peekFormatPrefix(data);
 
   // If the data is encrypted but no key was provided, fail fast.
-  // RuntimeDecryptionError extends WorkflowRuntimeError, preserving the
-  // legacy error contract while ensuring the run-failure classifier
-  // routes this to RUNTIME_ERROR rather than misattributing it to user
-  // code (USER_ERROR).
   if (format === SerializationFormat.ENCRYPTED && !key) {
     throw new RuntimeDecryptionError(
       'Encrypted data encountered but no encryption key is available. ' +
