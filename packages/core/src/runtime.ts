@@ -823,25 +823,47 @@ export function workflowEntrypoint(
                                   : {}),
                               }
                             );
+                            // The server response schema marks `event` as
+                            // optional for legacy compatibility. In practice
+                            // creates always return the persisted event, but
+                            // if the response is missing it we leave the
+                            // fence at its prior value (a stale fence will
+                            // simply force one more fence-and-reload cycle
+                            // on the next iteration; we never silently
+                            // advance to a value we didn't actually observe
+                            // on the wire).
                             if (result.event) {
                               fenceEventId = result.event.eventId;
+                            } else {
+                              runtimeLogger.warn(
+                                'wait_completed write missing event in response; keeping prior fence',
+                                {
+                                  workflowRunId: runId,
+                                  correlationId: waitEvent.correlationId,
+                                  fenceEventId,
+                                }
+                              );
                             }
                             written = true;
                           } catch (err) {
                             if (!EntityConflictError.is(err)) {
                               throw err;
                             }
-                            // Fence conflicts surface a specific error
-                            // message from workflow-server.
-                            // Most 409s will simply exit since we assume a separate
-                            // invocation is active. This should hold true for fence conflicts
-                            // too, but to guarantee correctness, will be re-tried here directly.
-                            // TODO: We can remove the retry here after extensive validation.
-                            // The cost is low in the meantime.
+                            // Fence-conflict detection is anchored on
+                            // packages/world-vercel/src/utils.ts mapping
+                            // HTTP 412 to EntityConflictError with a
+                            // guaranteed `fence conflict:` prefix on the
+                            // message. The status-based marker is enforced
+                            // client-side, so this regex can't silently
+                            // regress against a server wording change.
                             const isFenceConflict = /fence conflict/i.test(
                               err.message
                             );
                             if (!isFenceConflict) {
+                              // Non-fence 409s mean the wait was already
+                              // completed by a concurrent invocation (or
+                              // never existed). Both cases are terminal for
+                              // this wait — log and move on.
                               runtimeLogger.info(
                                 'Wait already completed, skipping',
                                 {
@@ -852,6 +874,15 @@ export function workflowEntrypoint(
                               break;
                             }
                             attempts += 1;
+                            runtimeLogger.info(
+                              'wait_completed fence conflict; reloading and retrying',
+                              {
+                                workflowRunId: runId,
+                                correlationId: waitEvent.correlationId,
+                                attempt: attempts,
+                                maxAttempts: MAX_FENCE_RETRIES,
+                              }
+                            );
                             if (attempts > MAX_FENCE_RETRIES) {
                               runtimeLogger.warn(
                                 'Wait completion gave up after fence retries; falling back to queue redelivery',
@@ -867,11 +898,18 @@ export function workflowEntrypoint(
                               ? await loadWorkflowRunEvents(runId, eventsCursor)
                               : await loadWorkflowRunEvents(runId);
                             if (eventsCursor) {
+                              // Build a Set of existing eventIds once per
+                              // reload so the merge is O(n + m) rather
+                              // than O(n × m). Matters on the retry path,
+                              // which is exactly where the log will be
+                              // longest.
+                              const existingIds = new Set(
+                                events.map((e) => e.eventId)
+                              );
                               for (const e of loaded.events) {
-                                if (
-                                  !events.some((x) => x.eventId === e.eventId)
-                                ) {
+                                if (!existingIds.has(e.eventId)) {
                                   events.push(e);
+                                  existingIds.add(e.eventId);
                                 }
                               }
                               eventsCursor = loaded.cursor ?? eventsCursor;

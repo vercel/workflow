@@ -398,14 +398,6 @@ export interface CreateEventParams {
    * event log snapshot from advancing the log.
    */
   lastKnownEventId?: string;
-  /**
-   * Optimistic concurrency control fence (alternative form), see above for reasoning.
-   * This is a unix-ms cutoff. Server resolves to the highest eventId strictly before this
-   * timestamp and uses that as the expected fence. Lets `resumeHook` fence
-   * `hook_received` after anything the caller could have observed without paying
-   * for a separate read. Ignored when `lastKnownEventId` is also set.
-   */
-  asOfTimestamp?: number;
 }
 
 /**

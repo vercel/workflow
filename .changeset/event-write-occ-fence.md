@@ -4,4 +4,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Add optional `lastKnownEventId` and `asOfTimestamp` params to `events.create`, which the World can use to do optimisti concurrency control fencing. Conflict surfaces as existing `EntityConflictError`, which the runtime already reloads-and-continues on.
+Add optional `lastKnownEventId` param to `events.create`, which the World can use to do optimistic concurrency control fencing on branch-decision event writes. Conflict surfaces as existing `EntityConflictError`, which the runtime retries in place against a freshly-loaded fence.

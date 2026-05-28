@@ -135,6 +135,23 @@ export async function fencedEventCreate(
         requestId,
         ...(fenceEventId ? { lastKnownEventId: fenceEventId } : {}),
       });
+      // The server response schema marks `event` as optional for legacy
+      // compatibility. In practice creates always return the persisted
+      // event, but if it's missing we leave the caller's fence at its
+      // prior value rather than silently advancing to a value we didn't
+      // observe on the wire. A stale fence on the next call will simply
+      // surface one extra fence-and-reload cycle.
+      if (!result.event) {
+        runtimeLogger.warn(
+          'Branch-decision write missing event in response; keeping prior fence',
+          {
+            workflowRunId: runId,
+            eventType: event.eventType,
+            correlationId: event.correlationId,
+            fenceEventId,
+          }
+        );
+      }
       return {
         written: true,
         newFenceEventId: result.event?.eventId ?? fenceEventId,
@@ -148,6 +165,16 @@ export async function fencedEventCreate(
     } catch (err) {
       if (isFenceConflict(err)) {
         attempt += 1;
+        runtimeLogger.info(
+          'Branch-decision write fence conflict; reloading and retrying',
+          {
+            workflowRunId: runId,
+            eventType: event.eventType,
+            correlationId: event.correlationId,
+            attempt,
+            maxAttempts: MAX_FENCE_RETRIES,
+          }
+        );
         if (attempt > MAX_FENCE_RETRIES) {
           runtimeLogger.warn(
             'Branch-decision write gave up after fence retries',
