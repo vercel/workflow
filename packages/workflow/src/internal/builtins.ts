@@ -29,6 +29,15 @@ const UNSUPPORTED_WORLD_WARNED = Symbol.for(
   '@workflow/setAttributes//unsupportedWorldWarned'
 );
 
+const INTERNAL_ATTRIBUTES_MAX_ATTEMPTS = 3;
+
+function formatUnknownError(error: unknown) {
+  if (error instanceof Error) {
+    return error.stack ?? `${error.name}: ${error.message}`;
+  }
+  return String(error);
+}
+
 /**
  * Step bridge for workflow-body `setAttributes` calls. The VM-side
  * helper validates input and dispatches here via `useStep`. This step
@@ -51,16 +60,18 @@ export async function __builtin_set_attributes(
   const contextStorage = g[Symbol.for('WORKFLOW_STEP_CONTEXT_STORAGE')] as
     | {
         getStore: () =>
-          | { workflowMetadata?: { workflowRunId?: string } }
+          | {
+              stepMetadata?: { attempt?: number };
+              workflowMetadata?: { workflowRunId?: string };
+            }
           | undefined;
       }
     | undefined;
-  const runId = contextStorage?.getStore?.()?.workflowMetadata?.workflowRunId;
-  if (!runId) {
-    throw new Error(
-      '__builtin_set_attributes: no workflow run id available in step context'
-    );
-  }
+  const store = contextStorage?.getStore?.();
+  const attempt =
+    typeof store?.stepMetadata?.attempt === 'number'
+      ? store.stepMetadata.attempt
+      : INTERNAL_ATTRIBUTES_MAX_ATTEMPTS;
 
   const world = g[Symbol.for('@workflow/world//cache')] as
     | {
@@ -82,7 +93,6 @@ export async function __builtin_set_attributes(
     if (!g[UNSUPPORTED_WORLD_WARNED]) {
       g[UNSUPPORTED_WORLD_WARNED] = true;
       const worldName = world?.name ? ` (${world.name})` : '';
-      // biome-ignore lint/suspicious/noConsole: surface in user terminals
       console.warn(
         `[workflow] setAttributes: the current world implementation${worldName} does not implement experimentalSetAttributes; this call (and any subsequent setAttributes calls in this process) is a no-op. Attributes will become available once the world adapter adds support.`
       );
@@ -90,5 +100,31 @@ export async function __builtin_set_attributes(
     return;
   }
 
-  await world.runs.experimentalSetAttributes(runId, changes, options);
+  try {
+    const runId = store?.workflowMetadata?.workflowRunId;
+    if (!runId) {
+      throw new Error(
+        '__builtin_set_attributes: no workflow run id available in step context'
+      );
+    }
+
+    await world.runs.experimentalSetAttributes(runId, changes, options);
+  } catch (error) {
+    if (attempt < INTERNAL_ATTRIBUTES_MAX_ATTEMPTS) {
+      throw error;
+    }
+
+    // Failing to post tags should not fail a run during the experimental phase.
+    // After three attempts, log and let the internal step complete so the
+    // runtime does not convert retry exhaustion into a FatalError.
+    console.error(
+      `[workflow] setAttributes: failed to post tags after ${INTERNAL_ATTRIBUTES_MAX_ATTEMPTS} attempts; dropping the internal attribute write. ${formatUnknownError(error)}`
+    );
+  }
 }
+
+(
+  __builtin_set_attributes as typeof __builtin_set_attributes & {
+    maxRetries: number;
+  }
+).maxRetries = INTERNAL_ATTRIBUTES_MAX_ATTEMPTS - 1;
