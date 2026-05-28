@@ -47,7 +47,7 @@ export const WorkflowRunBaseSchema = z.object({
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
   executionContext: z.record(z.string(), z.any()).optional(),
-  input: SerializedDataSchema,
+  input: SerializedDataSchema.optional(),
   output: SerializedDataSchema.optional(),
   /**
    * The thrown value from a run_failed event, serialized via the workflow
