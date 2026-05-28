@@ -6,7 +6,7 @@ import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import { isVmIdle, type WorkflowOrchestratorContext } from './private.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
 import { createContext } from './vm/index.js';
@@ -53,6 +53,19 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
         );
       },
       getPromiseQueue: () => promiseQueueHolder.current,
+      isVmIdle: () => {
+        const c = ctxRef.current;
+        return c ? isVmIdle(c) : true;
+      },
+      onceVmIdle: (callback) => {
+        const c = ctxRef.current;
+        if (!c) {
+          callback();
+          return () => {};
+        }
+        c.vmIdleObservers.add(callback);
+        return () => c.vmIdleObservers.delete(callback);
+      },
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
@@ -67,6 +80,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       promiseQueueHolder.current = value;
     },
     pendingDeliveries: 0,
+    pendingVmWork: 0,
+    vmIdleObservers: new Set<() => void>(),
   };
   ctxRef.current = ctx;
   return ctx;

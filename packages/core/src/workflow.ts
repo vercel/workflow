@@ -18,6 +18,7 @@ import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
+import { isVmIdle } from './private.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -158,6 +159,14 @@ export async function runWorkflow(
     // by step/hook/sleep callbacks as events are processed.
     const promiseQueueHolder = { current: Promise.resolve() };
 
+    // Holder for the orchestrator context so the EventsConsumer's idle
+    // probes can read `pendingDeliveries` / `pendingVmWork` after the
+    // context is constructed below. The context references the consumer
+    // (cyclic), so we wire both sides through holders/closures.
+    const ctxHolder: { current: WorkflowOrchestratorContext | null } = {
+      current: null,
+    };
+
     const eventsConsumer = new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
@@ -167,6 +176,25 @@ export async function runWorkflow(
         );
       },
       getPromiseQueue: () => promiseQueueHolder.current,
+      isVmIdle: () => {
+        const ctx = ctxHolder.current;
+        if (ctx === null) return true;
+        return isVmIdle(ctx);
+      },
+      onceVmIdle: (callback) => {
+        const ctx = ctxHolder.current;
+        if (ctx === null) {
+          // Should be unreachable in practice — the consumer is constructed
+          // before the context, but options are only invoked once events
+          // start flowing. Defensive fallback: fire immediately.
+          callback();
+          return () => {};
+        }
+        ctx.vmIdleObservers.add(callback);
+        return () => {
+          ctx.vmIdleObservers.delete(callback);
+        };
+      },
     });
 
     const workflowContext: WorkflowOrchestratorContext = {
@@ -187,7 +215,10 @@ export async function runWorkflow(
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      pendingVmWork: 0,
+      vmIdleObservers: new Set<() => void>(),
     };
+    ctxHolder.current = workflowContext;
 
     // Subscribe to the events log to update the timestamp in the vm context
     workflowContext.eventsConsumer.subscribe((event) => {

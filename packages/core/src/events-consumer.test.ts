@@ -1,7 +1,11 @@
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
-import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
+import {
+  EventConsumerResult,
+  EventsConsumer,
+  type EventsConsumerOptions,
+} from './events-consumer.js';
 
 // Helper function to create mock events
 function createMockEvent(overrides: Partial<Event> = {}): Event {
@@ -16,11 +20,29 @@ function createMockEvent(overrides: Partial<Event> = {}): Event {
   };
 }
 
-// Default options for tests that don't care about onUnconsumedEvent
-const defaultOptions = {
-  onUnconsumedEvent: vi.fn(),
-  getPromiseQueue: () => Promise.resolve(),
-};
+/**
+ * Build a `Mocked-idle` options bundle whose VM is always idle and whose
+ * `onceVmIdle` fires the callback synchronously. With this wired, the
+ * deferred unconsumed-event check takes the fast path (queueMicrotask)
+ * instead of falling back to the 5-second watchdog, so the existing
+ * unconsumed-event suite runs in ms rather than seconds.
+ */
+function makeOptions(
+  overrides: Partial<EventsConsumerOptions> = {}
+): EventsConsumerOptions {
+  return {
+    onUnconsumedEvent: vi.fn(),
+    getPromiseQueue: () => Promise.resolve(),
+    isVmIdle: () => true,
+    onceVmIdle: (cb) => {
+      cb();
+      return () => {};
+    },
+    ...overrides,
+  };
+}
+
+const defaultOptions = makeOptions();
 
 // Helper function to wait for next tick
 function waitForNextTick(): Promise<void> {
@@ -158,10 +180,10 @@ describe('EventsConsumer', () => {
     it('should process all callbacks when none return true and call onUnconsumedEvent', async () => {
       const event = createMockEvent();
       const unconsumedReceived = withResolvers<Event>();
-      const consumer = new EventsConsumer([event], {
-        onUnconsumedEvent: unconsumedReceived.resolve,
-        getPromiseQueue: () => Promise.resolve(),
-      });
+      const consumer = new EventsConsumer(
+        [event],
+        makeOptions({ onUnconsumedEvent: unconsumedReceived.resolve })
+      );
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);
@@ -353,10 +375,10 @@ describe('EventsConsumer', () => {
     it('should call onUnconsumedEvent when a non-null event is not consumed by any callback', async () => {
       const event = createMockEvent();
       const unconsumedReceived = withResolvers<Event>();
-      const consumer = new EventsConsumer([event], {
-        onUnconsumedEvent: unconsumedReceived.resolve,
-        getPromiseQueue: () => Promise.resolve(),
-      });
+      const consumer = new EventsConsumer(
+        [event],
+        makeOptions({ onUnconsumedEvent: unconsumedReceived.resolve })
+      );
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -367,10 +389,10 @@ describe('EventsConsumer', () => {
 
     it('should NOT call onUnconsumedEvent for null event (end-of-events)', async () => {
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([], {
-        onUnconsumedEvent,
-        getPromiseQueue: () => Promise.resolve(),
-      });
+      const consumer = new EventsConsumer(
+        [],
+        makeOptions({ onUnconsumedEvent })
+      );
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -387,10 +409,10 @@ describe('EventsConsumer', () => {
     it('should cancel pending unconsumed check when a new callback subscribes', async () => {
       const event = createMockEvent();
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([event], {
-        onUnconsumedEvent,
-        getPromiseQueue: () => Promise.resolve(),
-      });
+      const consumer = new EventsConsumer(
+        [event],
+        makeOptions({ onUnconsumedEvent })
+      );
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);
@@ -412,6 +434,215 @@ describe('EventsConsumer', () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
 
       // The new callback consumed the event, so onUnconsumedEvent should NOT be called
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fireUnconsumedWhenVmIdle', () => {
+    /**
+     * Build a controllable VM-idle harness: a flippable `idle` flag and a
+     * set of one-shot observers that `flipToIdle()` releases all at once.
+     * Tests use this to simulate the production wiring where `pendingVmWork`
+     * drops to 0 and `notifyVmIdleObservers` fires the callbacks.
+     */
+    function makeIdleHarness() {
+      let idle = true;
+      const observers = new Set<() => void>();
+      const options: Partial<EventsConsumerOptions> = {
+        isVmIdle: () => idle,
+        onceVmIdle: (cb) => {
+          observers.add(cb);
+          return () => observers.delete(cb);
+        },
+      };
+      return {
+        options,
+        setBusy: () => {
+          idle = false;
+        },
+        flipToIdle: () => {
+          idle = true;
+          const fired = Array.from(observers);
+          observers.clear();
+          for (const cb of fired) cb();
+        },
+        observerCount: () => observers.size,
+      };
+    }
+
+    it('fast path: fires onUnconsumedEvent on the next microtask when VM is already idle', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      const harness = makeIdleHarness();
+      const consumer = new EventsConsumer(
+        [event],
+        makeOptions({ onUnconsumedEvent, ...harness.options })
+      );
+      const cb = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+      consumer.subscribe(cb);
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+      });
+      expect(onUnconsumedEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('slow path: waits for VM to become idle before firing', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      const harness = makeIdleHarness();
+      harness.setBusy();
+      const consumer = new EventsConsumer(
+        [event],
+        makeOptions({ onUnconsumedEvent, ...harness.options })
+      );
+      const cb = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+      consumer.subscribe(cb);
+      // Give the deferred chain time to register on the observer.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      expect(harness.observerCount()).toBe(1);
+      harness.flipToIdle();
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+      });
+      expect(onUnconsumedEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('recursion path: when the observer fires but VM is still busy, re-registers and waits again', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      let idle = false;
+      const observers = new Set<() => void>();
+      const consumer = new EventsConsumer(
+        [event],
+        makeOptions({
+          onUnconsumedEvent,
+          isVmIdle: () => idle,
+          onceVmIdle: (cb) => {
+            observers.add(cb);
+            return () => observers.delete(cb);
+          },
+        })
+      );
+      const cb = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+      consumer.subscribe(cb);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(observers.size).toBe(1);
+
+      // Fire the observer but keep `idle === false`. The recursion path
+      // should re-register a fresh observer instead of firing.
+      const first = Array.from(observers);
+      observers.clear();
+      for (const o of first) o();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      expect(observers.size).toBe(1);
+
+      // Now actually flip to idle and fire the fresh observer.
+      idle = true;
+      const second = Array.from(observers);
+      observers.clear();
+      for (const o of second) o();
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+      });
+      expect(onUnconsumedEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('recursion path: does not leak watchdog timers (no double-fire even if multiple stale timers race)', async () => {
+      vi.useFakeTimers();
+      try {
+        const event = createMockEvent();
+        const onUnconsumedEvent = vi.fn();
+        let idle = false;
+        const observers = new Set<() => void>();
+        const consumer = new EventsConsumer(
+          [event],
+          makeOptions({
+            onUnconsumedEvent,
+            isVmIdle: () => idle,
+            onceVmIdle: (cb) => {
+              observers.add(cb);
+              return () => observers.delete(cb);
+            },
+          })
+        );
+        const cb = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+        consumer.subscribe(cb);
+        await vi.advanceTimersByTimeAsync(20);
+        expect(observers.size).toBe(1);
+
+        // Force recursion several times while VM stays busy. Each recursion
+        // must clear the previous watchdog, otherwise after the watchdog
+        // window each leaked timer would fire `onUnconsumedEvent` again.
+        for (let i = 0; i < 3; i++) {
+          const stale = Array.from(observers);
+          observers.clear();
+          for (const o of stale) o();
+          await vi.advanceTimersByTimeAsync(20);
+        }
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+
+        // Cross the watchdog ceiling. Exactly one fire should land even
+        // though three watchdogs were notionally scheduled.
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(onUnconsumedEvent).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('watchdog: fires fallback when VM never becomes idle', async () => {
+      vi.useFakeTimers();
+      try {
+        const event = createMockEvent();
+        const onUnconsumedEvent = vi.fn();
+        const consumer = new EventsConsumer(
+          [event],
+          makeOptions({
+            onUnconsumedEvent,
+            isVmIdle: () => false,
+            onceVmIdle: () => () => {},
+          })
+        );
+        const cb = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+        consumer.subscribe(cb);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+        expect(onUnconsumedEvent).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('cancellation: subscribe between deferred-check schedule and fire cancels the check', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      const harness = makeIdleHarness();
+      harness.setBusy();
+      const consumer = new EventsConsumer(
+        [event],
+        makeOptions({ onUnconsumedEvent, ...harness.options })
+      );
+      const cb1 = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+      consumer.subscribe(cb1);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(harness.observerCount()).toBe(1);
+
+      // A late subscriber arrives and consumes the event. The observer
+      // should be unsubscribed and the watchdog cleared.
+      const cb2 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
+      consumer.subscribe(cb2);
+      await vi.waitFor(() => {
+        expect(consumer.eventIndex).toBe(1);
+      });
+      expect(harness.observerCount()).toBe(0);
+
+      // Even if the harness flips to idle later, no fire should land.
+      harness.flipToIdle();
+      await new Promise((r) => setTimeout(r, 50));
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
   });
