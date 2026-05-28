@@ -51,7 +51,8 @@ export interface LocalRunsStorage {
   };
   experimentalSetAttributes(
     runId: string,
-    changes: AttributeChange[]
+    changes: AttributeChange[],
+    options?: { allowReservedAttributes?: boolean }
   ): Promise<ExperimentalSetAttributesResult>;
 }
 
@@ -157,7 +158,7 @@ export function createRunsStorage(
       return result;
     }) as LocalRunsStorage['list'],
 
-    experimentalSetAttributes: async (runId, changes) => {
+    experimentalSetAttributes: async (runId, changes, options) => {
       assertSafeEntityId('runId', runId);
 
       return withRunFileLock(runId, async () => {
@@ -178,6 +179,7 @@ export function createRunsStorage(
         try {
           validateAttributeChanges(changes, {
             existingKeys: Object.keys(run.attributes ?? {}),
+            allowReservedAttributes: options?.allowReservedAttributes,
           });
         } catch (err) {
           if (err instanceof AttributeValidationError) {

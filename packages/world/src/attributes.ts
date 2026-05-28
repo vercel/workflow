@@ -54,6 +54,27 @@ export interface AttributeValidationContext {
    * authoritative server-side check uses the real post-merge size).
    */
   existingKeys?: Iterable<string>;
+  /**
+   * Permit keys that start with the reserved `$` prefix. Default `false`.
+   *
+   * The `$` namespace is reserved for framework / library code built on
+   * top of the workflow SDK (telemetry, agent metadata, etc.). User code
+   * MUST NOT set it; if a user tries, validation rejects the call so
+   * accidental conflicts with tooling-owned keys can't slip through.
+   *
+   * Set this to `true` only from framework-level code that is aware of
+   * the namespace conventions in use. Misuse can collide with tooling
+   * keys and break observability surfaces.
+   */
+  allowReservedAttributes?: boolean;
+}
+
+export interface AttributeKeyValidationOptions {
+  /**
+   * Permit keys that start with the reserved `$` prefix. See the
+   * `allowReservedAttributes` note on `AttributeValidationContext`.
+   */
+  allowReservedAttributes?: boolean;
 }
 
 /**
@@ -75,9 +96,13 @@ const valueByteLength = (value: string): number =>
  * Validate a single attribute key. Returns an `AttributeValidationError`
  * on violation, or `null` if the key is valid. Returning instead of
  * throwing lets callers aggregate or wrap the failure as needed.
+ *
+ * The reserved `$`-prefix rule is enforced by default; framework code
+ * may pass `allowReservedAttributes: true` to opt out.
  */
 export function validateAttributeKey(
-  key: string
+  key: string,
+  options: AttributeKeyValidationOptions = {}
 ): AttributeValidationError | null {
   if (typeof key !== 'string') {
     return new AttributeValidationError(
@@ -92,9 +117,12 @@ export function validateAttributeKey(
       `Attribute key length ${key.length} exceeds limit ${ATTRIBUTE_KEY_MAX_LENGTH}: ${JSON.stringify(key.slice(0, 32))}…`
     );
   }
-  if (key.startsWith(RESERVED_ATTRIBUTE_KEY_PREFIX)) {
+  if (
+    !options.allowReservedAttributes &&
+    key.startsWith(RESERVED_ATTRIBUTE_KEY_PREFIX)
+  ) {
     return new AttributeValidationError(
-      `Attribute key ${JSON.stringify(key)} starts with reserved prefix "${RESERVED_ATTRIBUTE_KEY_PREFIX}"`
+      `Attribute key ${JSON.stringify(key)} starts with reserved prefix "${RESERVED_ATTRIBUTE_KEY_PREFIX}" — that namespace is reserved for framework/library code. Set { allowReservedAttributes: true } only if your caller is framework-level.`
     );
   }
   return null;
@@ -144,7 +172,9 @@ export function validateAttributeChanges(
   let netAdds = 0;
   let netDeletes = 0;
   for (const change of changes) {
-    const keyError = validateAttributeKey(change.key);
+    const keyError = validateAttributeKey(change.key, {
+      allowReservedAttributes: context.allowReservedAttributes,
+    });
     if (keyError) throw keyError;
     const valueError = validateAttributeValue(change.value);
     if (valueError) throw valueError;

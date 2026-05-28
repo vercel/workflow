@@ -41,7 +41,8 @@ const UNSUPPORTED_WORLD_WARNED = Symbol.for(
  * and `@vercel/queue` from this step file.
  */
 export async function __builtin_set_attributes(
-  changes: Array<{ key: string; value: string | null }>
+  changes: Array<{ key: string; value: string | null }>,
+  options?: { allowReservedAttributes?: boolean }
 ) {
   'use step';
   if (changes.length === 0) return;
@@ -67,7 +68,8 @@ export async function __builtin_set_attributes(
         runs?: {
           experimentalSetAttributes?: (
             runId: string,
-            changes: Array<{ key: string; value: string | null }>
+            changes: Array<{ key: string; value: string | null }>,
+            options?: { allowReservedAttributes?: boolean }
           ) => Promise<unknown>;
         };
       }
@@ -88,5 +90,5 @@ export async function __builtin_set_attributes(
     return;
   }
 
-  await world.runs.experimentalSetAttributes(runId, changes);
+  await world.runs.experimentalSetAttributes(runId, changes, options);
 }

@@ -1,4 +1,7 @@
 import { FatalError } from '@workflow/errors';
+import type { ExperimentalSetAttributesOptions } from './workflow/set-attributes.js';
+
+export type { ExperimentalSetAttributesOptions };
 
 /**
  * Host-side stub for `experimental_setAttributes`. The real
@@ -12,7 +15,8 @@ import { FatalError } from '@workflow/errors';
  * event-sourced through the workflow runtime so they survive replay.
  */
 export async function experimental_setAttributes(
-  _attrs: Record<string, string | undefined>
+  _attrs: Record<string, string | undefined>,
+  _options?: ExperimentalSetAttributesOptions
 ): Promise<void> {
   throw new FatalError(
     "experimental_setAttributes() must be called from a 'use workflow' function. " +

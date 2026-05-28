@@ -7,6 +7,29 @@ import {
 import { WORKFLOW_USE_STEP } from '../symbols.js';
 
 /**
+ * Options accepted by `experimental_setAttributes`.
+ */
+export interface ExperimentalSetAttributesOptions {
+  /**
+   * Permit attribute keys that start with the reserved `$` prefix.
+   * **Default: `false`.**
+   *
+   * The `$` namespace is reserved for framework and library code that
+   * is built on top of the workflow SDK (telemetry, agent metadata,
+   * platform-emitted tags, etc.). User code MUST NOT write keys in
+   * this namespace; validation rejects them so accidental collisions
+   * with tooling-owned keys can't slip through.
+   *
+   * Only flip this to `true` if your caller is itself a framework or
+   * library that owns a `$`-prefixed sub-namespace and knows the
+   * conventions of any other tools writing into it. Misuse can
+   * conflict with observability surfaces, agent dashboards, or future
+   * platform features that rely on the reserved namespace.
+   */
+  allowReservedAttributes?: boolean;
+}
+
+/**
  * Attach plaintext string key/value metadata to the current workflow run.
  *
  * **EXPERIMENTAL.** The `experimental_` prefix is deliberate — the
@@ -22,6 +45,13 @@ import { WORKFLOW_USE_STEP } from '../symbols.js';
  * dispatch — violations throw `FatalError` without queuing a step. An
  * empty record is a no-op. `value: undefined` removes the key from the
  * run's attribute map.
+ *
+ * **Reserved namespace.** Keys starting with `$` are reserved for
+ * framework/library code (telemetry, agent metadata, etc.). User code
+ * trying to write a `$`-prefixed key throws `FatalError`. If you are a
+ * framework author and need to set a reserved key, pass
+ * `{ allowReservedAttributes: true }` as the second argument — see
+ * `ExperimentalSetAttributesOptions` for the trade-offs.
  *
  * **WARNING**: While this feature is experimental, calling e.g.
  * `Promise.all([experimental_setAttributes({ a: '1' }), experimental_setAttributes({ a: '2' })])`
@@ -40,9 +70,18 @@ import { WORKFLOW_USE_STEP } from '../symbols.js';
  *   await experimental_setAttributes({ orderId: undefined }); // remove
  * }
  * ```
+ *
+ * @example Framework / library code writing into the reserved namespace.
+ * ```ts
+ * await experimental_setAttributes(
+ *   { '$agent.kind': 'durable-agent' },
+ *   { allowReservedAttributes: true }
+ * );
+ * ```
  */
 export async function experimental_setAttributes(
-  attrs: Record<string, string | undefined>
+  attrs: Record<string, string | undefined>,
+  options: ExperimentalSetAttributesOptions = {}
 ): Promise<void> {
   if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) {
     throw new FatalError(
@@ -58,8 +97,9 @@ export async function experimental_setAttributes(
     })
   );
   if (changes.length === 0) return;
+  const allowReservedAttributes = options.allowReservedAttributes === true;
   try {
-    validateAttributeChanges(changes);
+    validateAttributeChanges(changes, { allowReservedAttributes });
   } catch (err) {
     if (err instanceof AttributeValidationError) {
       throw new FatalError(err.message);
@@ -67,7 +107,12 @@ export async function experimental_setAttributes(
     throw err;
   }
   const useStep = (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP] as
-    | ((stepName: string) => (changes: AttributeChange[]) => Promise<void>)
+    | ((
+        stepName: string
+      ) => (
+        changes: AttributeChange[],
+        options?: { allowReservedAttributes?: boolean }
+      ) => Promise<void>)
     | undefined;
   if (!useStep) {
     throw new FatalError(
@@ -75,5 +120,8 @@ export async function experimental_setAttributes(
         'It must be called from within a workflow body (`use workflow`).'
     );
   }
-  await useStep('__builtin_set_attributes')(changes);
+  await useStep('__builtin_set_attributes')(
+    changes,
+    allowReservedAttributes ? { allowReservedAttributes: true } : {}
+  );
 }

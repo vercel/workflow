@@ -148,7 +148,8 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
 
     experimentalSetAttributes: async (
       runId: string,
-      changes: AttributeChange[]
+      changes: AttributeChange[],
+      options?: { allowReservedAttributes?: boolean }
     ): Promise<ExperimentalSetAttributesResult> => {
       // Load existing attributes so the SDK-shape validator can produce
       // a precise error message (cap, duplicate keys, reserved prefix,
@@ -168,6 +169,7 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       try {
         validateAttributeChanges(changes, {
           existingKeys: Object.keys(existing.attributes ?? {}),
+          allowReservedAttributes: options?.allowReservedAttributes,
         });
       } catch (err) {
         if (err instanceof AttributeValidationError) throw err;

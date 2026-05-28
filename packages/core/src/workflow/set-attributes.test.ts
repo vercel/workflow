@@ -7,14 +7,18 @@ describe('workflow.experimental_setAttributes', () => {
   const dispatchCalls: Array<{
     stepName: string;
     changes: Array<{ key: string; value: string | null }>;
+    options: { allowReservedAttributes?: boolean } | undefined;
   }> = [];
 
   beforeEach(() => {
     dispatchCalls.length = 0;
     (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP] = vi.fn(
       (stepName: string) =>
-        async (changes: Array<{ key: string; value: string | null }>) => {
-          dispatchCalls.push({ stepName, changes });
+        async (
+          changes: Array<{ key: string; value: string | null }>,
+          options?: { allowReservedAttributes?: boolean }
+        ) => {
+          dispatchCalls.push({ stepName, changes, options });
         }
     );
   });
@@ -32,6 +36,7 @@ describe('workflow.experimental_setAttributes', () => {
           { key: 'phase', value: 'init' },
           { key: 'orderId', value: 'ord_1' },
         ],
+        options: {},
       },
     ]);
   });
@@ -45,6 +50,7 @@ describe('workflow.experimental_setAttributes', () => {
           { key: 'phase', value: 'done' },
           { key: 'stale', value: null },
         ],
+        options: {},
       },
     ]);
   });
@@ -56,15 +62,39 @@ describe('workflow.experimental_setAttributes', () => {
 
   it('throws FatalError when the workflow runtime has not initialized useStep', async () => {
     delete (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP];
-    await expect(experimental_setAttributes({ phase: 'init' })).rejects.toBeInstanceOf(
-      FatalError
-    );
+    await expect(
+      experimental_setAttributes({ phase: 'init' })
+    ).rejects.toBeInstanceOf(FatalError);
   });
 
   it('throws FatalError for reserved-prefix keys before any dispatch', async () => {
-    await expect(experimental_setAttributes({ $sys: 'x' })).rejects.toBeInstanceOf(
-      FatalError
+    await expect(
+      experimental_setAttributes({ $sys: 'x' })
+    ).rejects.toBeInstanceOf(FatalError);
+    expect(dispatchCalls).toHaveLength(0);
+  });
+
+  it('dispatches reserved-prefix keys when allowReservedAttributes opt-in is set, and forwards the flag to the step', async () => {
+    await experimental_setAttributes(
+      { '$framework.kind': 'agent' },
+      { allowReservedAttributes: true }
     );
+    expect(dispatchCalls).toEqual([
+      {
+        stepName: '__builtin_set_attributes',
+        changes: [{ key: '$framework.kind', value: 'agent' }],
+        options: { allowReservedAttributes: true },
+      },
+    ]);
+  });
+
+  it('still rejects reserved-prefix keys when allowReservedAttributes is explicitly false', async () => {
+    await expect(
+      experimental_setAttributes(
+        { '$framework.kind': 'agent' },
+        { allowReservedAttributes: false }
+      )
+    ).rejects.toBeInstanceOf(FatalError);
     expect(dispatchCalls).toHaveLength(0);
   });
 

@@ -106,6 +106,33 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
     ).rejects.toBeInstanceOf(AttributeValidationError);
   });
 
+  it('accepts reserved-prefix keys when allowReservedAttributes is set (framework escape hatch)', async () => {
+    const run = await newRun();
+    const result = await storage.runs.experimentalSetAttributes!(
+      run.runId,
+      [
+        {
+          key: `${RESERVED_ATTRIBUTE_KEY_PREFIX}framework.kind`,
+          value: 'agent',
+        },
+        { key: 'phase', value: 'init' },
+      ],
+      { allowReservedAttributes: true }
+    );
+    expect(result.attributes).toEqual({
+      [`${RESERVED_ATTRIBUTE_KEY_PREFIX}framework.kind`]: 'agent',
+      phase: 'init',
+    });
+
+    // Without the flag on a follow-up write, the rejection still
+    // fires — the opt-in is per-call, not sticky on the run.
+    await expect(
+      storage.runs.experimentalSetAttributes!(run.runId, [
+        { key: `${RESERVED_ATTRIBUTE_KEY_PREFIX}other`, value: 'x' },
+      ])
+    ).rejects.toBeInstanceOf(AttributeValidationError);
+  });
+
   it('rejects keys over the max length', async () => {
     const run = await newRun();
     await expect(

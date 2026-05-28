@@ -25,7 +25,6 @@ Calling `experimental_setAttributes` from a step body or plain host code is inte
 - Enumerating attribute keys or values (`listAttributeKeys`, `listAttributeValues`)
 - Writer attribution / event-log history of attribute changes
 - Any non-string value type
-- Reserved-key (`$`-prefixed) namespace
 
 See [PR #1933](https://github.com/vercel/workflow/pull/1933) for the design of those features.
 
@@ -109,10 +108,27 @@ function experimental_setAttributes(
 
 Validation (shared helper, applied both client-side and server-side):
 
-- Key: 1–256 chars, must not start with `$` (reserved)
+- Key: 1–256 chars, must not start with `$` (reserved — see "Reserved `$` namespace" below)
 - Value: ≤ 256 bytes UTF-8
 - Maximum 64 attributes per run (validated against the post-merge snapshot when the server applies)
 - Violations throw `FatalError` from `@workflow/errors`
+
+#### Reserved `$` namespace
+
+Keys starting with `$` are reserved for framework and library code built on top of the workflow SDK (telemetry tags, agent metadata, future platform-emitted attributes, etc.). User code calling `experimental_setAttributes({ '$foo': 'bar' })` throws `FatalError` so accidental collisions with tooling-owned keys can't slip through.
+
+Framework / library authors that own a `$`-prefixed sub-namespace can opt in per-call:
+
+{/*@skip-typecheck - snippet, not runnable code*/}
+
+```ts
+await experimental_setAttributes(
+  { '$agent.kind': 'durable-agent' },
+  { allowReservedAttributes: true }
+);
+```
+
+The flag is per-call (no run-level "this run accepts reserved keys" mode), so each framework call site explicitly declares intent. Don't enable it from user code — misuse can conflict with observability surfaces, agent dashboards, or future platform features that rely on the reserved namespace.
 
 `experimental_setAttributes` is callable only from a workflow body:
 
@@ -239,8 +255,10 @@ If you need behavior the MVP does not provide (read, list, filter, initial attri
 Unit tests in `@workflow/world` (validation surface) and `@workflow/core` (VM-side dispatch + host-side stub):
 
 - Validation rules — key length, value byte cap, `$` prefix, per-batch duplicates, post-merge count cap (with `existingKeys` so updates of present keys don't falsely trip the cap)
+- Reserved `$` namespace — rejected by default, accepted when `allowReservedAttributes: true` is passed (both for `validateAttributeKey` and at the batch level via `validateAttributeChanges`)
 - `experimental_setAttributes({})` is a no-op (no dispatch, no events)
 - `undefined` value normalizes to a `null`-valued change on the wire
+- The `{ allowReservedAttributes: true }` opt-in is forwarded through the step bridge so the world receives the flag
 - Workflow VM with no `WORKFLOW_USE_STEP` bound throws `FatalError`
 - Host-side stub (resolved when not in the workflow VM) throws `FatalError` directing the caller back to a workflow body
 
@@ -248,6 +266,7 @@ Integration tests in `world-local`:
 
 - Upsert, merge across calls, unset via `null`, set-and-unset in a single batch
 - Validation rejection (reserved prefix, oversize key, oversize value, post-merge cap)
+- Reserved-prefix escape hatch via `{ allowReservedAttributes: true }` (per-call, not sticky on the run)
 - Cap-boundary updates: a write that only updates existing keys must succeed even when the run is exactly at the cap
 - Idempotency: repeated identical calls converge to the same final snapshot
 - Concurrent writes serialize via the per-run mutex; no lost writes across 20 parallel calls

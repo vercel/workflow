@@ -30,10 +30,22 @@ describe('validateAttributeKey', () => {
     ).toBeNull();
   });
 
-  it('rejects keys starting with the reserved prefix', () => {
+  it('rejects keys starting with the reserved prefix by default', () => {
     expect(validateAttributeKey('$internal')).toBeInstanceOf(
       AttributeValidationError
     );
+  });
+
+  it('accepts reserved-prefix keys when allowReservedAttributes is set', () => {
+    expect(
+      validateAttributeKey('$internal', { allowReservedAttributes: true })
+    ).toBeNull();
+  });
+
+  it('still rejects reserved-prefix keys when allowReservedAttributes is explicitly false', () => {
+    expect(
+      validateAttributeKey('$internal', { allowReservedAttributes: false })
+    ).toBeInstanceOf(AttributeValidationError);
   });
 });
 
@@ -100,9 +112,29 @@ describe('validateAttributeChanges', () => {
       (_, i) => `k${i}`
     );
     expect(() =>
+      validateAttributeChanges([{ key: 'k0', value: 'updated' }], {
+        existingKeys,
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects reserved-prefix keys in a batch by default', () => {
+    expect(() =>
+      validateAttributeChanges([
+        { key: 'phase', value: 'init' },
+        { key: '$framework.kind', value: 'agent' },
+      ])
+    ).toThrow(AttributeValidationError);
+  });
+
+  it('accepts reserved-prefix keys when allowReservedAttributes is set', () => {
+    expect(() =>
       validateAttributeChanges(
-        [{ key: 'k0', value: 'updated' }],
-        { existingKeys }
+        [
+          { key: 'phase', value: 'init' },
+          { key: '$framework.kind', value: 'agent' },
+        ],
+        { allowReservedAttributes: true }
       )
     ).not.toThrow();
   });

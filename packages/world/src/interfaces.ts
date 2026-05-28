@@ -167,6 +167,12 @@ export interface Storage {
      *
      * Returns the post-merge attribute snapshot on the run.
      *
+     * Pass `options.allowReservedAttributes: true` to permit keys
+     * starting with the reserved `$` prefix. Default behavior rejects
+     * those keys so user code can't accidentally collide with
+     * framework / tooling namespaces; framework callers that own a
+     * sub-namespace flip this on.
+     *
      * OPTIONAL. World implementations may omit this method; the SDK
      * helper (`setAttributes` in `@workflow/core`) feature-detects its
      * absence and no-ops with a one-time warning so third-party /
@@ -181,7 +187,8 @@ export interface Storage {
      */
     experimentalSetAttributes?(
       runId: string,
-      changes: AttributeChange[]
+      changes: AttributeChange[],
+      options?: { allowReservedAttributes?: boolean }
     ): Promise<ExperimentalSetAttributesResult>;
   };
 
