@@ -1189,11 +1189,18 @@ export function workflowEntrypoint(
                             ? ownedPendingSteps[0]
                             : undefined;
 
-                        // Queue only steps this handler owns. A non-owner
-                        // may have a stale replay view where another handler
-                        // just created a step and is about to execute it
-                        // inline; queueing that step here would bypass the
-                        // ownership invariant and can run the step body twice.
+                        // Queue only steps this handler owns when inline
+                        // execution is possible. A non-owner may have a
+                        // stale replay view where another handler just
+                        // created a step and is about to execute it inline;
+                        // queueing that step here would bypass the ownership
+                        // invariant and can run the step body twice.
+                        //
+                        // When a wait is pending, no handler executes a step
+                        // inline: all step work is queue-driven so the wait
+                        // timeout can race it. In that branch it is safe, and
+                        // important for crash recovery, to enqueue every
+                        // pending step and let queue idempotency dedupe.
                         //
                         // Recovery exception: if this workflow queue message
                         // is itself being redelivered, pick up pre-existing
@@ -1235,15 +1242,18 @@ export function workflowEntrypoint(
                           }
                         }
 
-                        const queueablePendingSteps = pendingSteps.filter(
-                          (step) =>
-                            suspensionResult.createdStepCorrelationIds.has(
-                              step.correlationId
-                            ) ||
-                            recoverablePendingStepCorrelationIds.has(
-                              step.correlationId
-                            )
-                        );
+                        const queueablePendingSteps =
+                          suspensionResult.timeoutSeconds !== undefined
+                            ? pendingSteps
+                            : pendingSteps.filter(
+                                (step) =>
+                                  suspensionResult.createdStepCorrelationIds.has(
+                                    step.correlationId
+                                  ) ||
+                                  recoverablePendingStepCorrelationIds.has(
+                                    step.correlationId
+                                  )
+                              );
 
                         for (const step of queueablePendingSteps) {
                           if (
