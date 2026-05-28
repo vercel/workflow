@@ -27,34 +27,6 @@ const NONCE_LENGTH = 12;
 const TAG_LENGTH = 128; // bits
 const KEY_LENGTH = 32; // bytes (AES-256)
 
-/** Number of header bytes to capture for diagnostics on a failed decrypt. */
-const DIAGNOSTIC_PREFIX_BYTES = 4;
-
-/**
- * Extract a short, printable preview of the first few input bytes for
- * diagnostic context. Returns a UTF-8 decoded string when every byte is
- * a printable ASCII character (0x20–0x7e); otherwise returns a hex dump.
- * Falls back to `undefined` for empty inputs.
- *
- * Kept tiny on purpose — this is only for surfacing in error messages
- * and telemetry where a few bytes of header context is enough to tell
- * "encrypted payload that failed auth-tag check" apart from "garbage
- * bytes from a truncated HTTP response that happen to start with non-
- * printable noise".
- */
-function getDiagnosticPrefix(data: Uint8Array): string | undefined {
-  if (data.byteLength === 0) return undefined;
-  const head = data.subarray(0, DIAGNOSTIC_PREFIX_BYTES);
-  // Printable ASCII range (no control chars, no DEL).
-  const allPrintable = head.every((b) => b >= 0x20 && b <= 0x7e);
-  if (allPrintable) {
-    return new TextDecoder().decode(head);
-  }
-  return Array.from(head)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 /**
  * Import a raw AES-256 key as a `CryptoKey` for use with `encrypt()`/`decrypt()`.
  *
@@ -139,9 +111,15 @@ export async function encrypt(
  * raised by `AESCipherJob.onDone` when the GCM authentication tag does
  * not verify — is rewrapped as {@link RuntimeDecryptionError}. The
  * wrapped error carries the original DOMException as `cause`, plus a
- * small diagnostic context (input byte length, printable header prefix)
- * to help disambiguate ciphertext corruption from key mismatch from
- * truncated transport reads.
+ * small diagnostic context (`operation`, input `byteLength`) to help
+ * disambiguate ciphertext corruption from key mismatch from truncated
+ * transport reads.
+ *
+ * Note: `data` is the raw AES payload (`[nonce][ciphertext + tag]`), not a
+ * format-prefixed envelope — callers strip the `encr` marker via
+ * `decodeFormatPrefix()` before reaching this function. The outer
+ * envelope's format prefix is therefore attached by the serialization
+ * layer (`serialization/encryption.ts`), which is the layer that has it.
  *
  * @param key - CryptoKey from `importKey()`
  * @param data - `[nonce (12 bytes)][ciphertext + GCM auth tag]`
@@ -159,7 +137,6 @@ export async function decrypt(
         context: {
           operation: 'decrypt',
           byteLength: data.byteLength,
-          formatPrefix: getDiagnosticPrefix(data),
         },
       }
     );
@@ -178,8 +155,8 @@ export async function decrypt(
     // `name: 'OperationError'` and message "The operation failed for
     // an operation-specific reason" — this is what Web Crypto throws
     // when the GCM auth tag does not verify. Re-throw as
-    // RuntimeDecryptionError, attaching diagnostic context (byte length
-    // and a printable header prefix) that the bare DOMException lacks.
+    // RuntimeDecryptionError, attaching diagnostic context (byte length)
+    // that the bare DOMException lacks.
     const causeMsg = cause instanceof Error ? cause.message : String(cause);
     throw new RuntimeDecryptionError(
       `AES-256-GCM decryption failed: ${causeMsg}`,
@@ -188,7 +165,6 @@ export async function decrypt(
         context: {
           operation: 'decrypt',
           byteLength: data.byteLength,
-          formatPrefix: getDiagnosticPrefix(data),
         },
       }
     );

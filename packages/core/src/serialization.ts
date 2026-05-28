@@ -31,7 +31,10 @@ import {
   type EncryptionKeyParam,
   encrypt,
 } from './serialization/encryption.js';
-import { formatSerializationError } from './serialization/errors.js';
+import {
+  formatSerializationError,
+  rethrowIfRuntimeError,
+} from './serialization/errors.js';
 import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -133,8 +136,17 @@ const FRAME_HEADER_SIZE = 4;
  * arguments" instead of generic "workflow value"), so they unwrap the
  * inner SerializationError and reformat with the original cause. Errors
  * that aren't already SerializationError flow through unchanged.
+ *
+ * `RuntimeDecryptionError` is an exception: it must keep its identity (and
+ * `context`) so the run-failure classifier routes it to `RUNTIME_ERROR`,
+ * so this rethrows it unchanged before any unwrapping. Note this guard
+ * must run before the generic `WorkflowRuntimeError` unwrap below, since
+ * `RuntimeDecryptionError` extends `WorkflowRuntimeError` and carries a
+ * `cause` (the underlying DOMException) that would otherwise be unwrapped
+ * and reframed as a `SerializationError`.
  */
 function unwrapSerializationCause(error: unknown): unknown {
+  rethrowIfRuntimeError(error);
   if (error instanceof SerializationError && error.cause !== undefined) {
     return error.cause;
   }
@@ -185,6 +197,13 @@ export function getSerializeStream(
         frame.set(prefixed, FRAME_HEADER_SIZE);
         controller.enqueue(frame);
       } catch (error) {
+        // Encryption failures must keep their RuntimeDecryptionError
+        // identity (RUNTIME_ERROR) rather than be reframed as a
+        // SerializationError (USER_ERROR).
+        if (RuntimeDecryptionError.is(error)) {
+          controller.error(error);
+          return;
+        }
         const { message, hint } = formatSerializationError(
           'stream chunk',
           error

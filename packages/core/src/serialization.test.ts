@@ -4,6 +4,7 @@ import {
   FatalError,
   HookConflictError,
   RetryableError,
+  RuntimeDecryptionError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -4180,6 +4181,44 @@ describe('dehydrate/hydrateRunError', () => {
     expect(cause.message).toBe('root type error');
   });
 
+  it('should round-trip a RuntimeDecryptionError preserving its diagnostic context', async () => {
+    // RuntimeDecryptionError self-registers on globalThis via Symbol.for
+    // when `@workflow/errors` is imported, so the reviver can resolve it.
+    const original = new RuntimeDecryptionError(
+      'AES-256-GCM decryption failed: The operation failed for an operation-specific reason',
+      {
+        cause: Object.assign(new Error('boom'), { name: 'OperationError' }),
+        context: {
+          operation: 'decrypt',
+          byteLength: 1234,
+          formatPrefix: 'encr',
+        },
+      }
+    );
+    const serialized = await dehydrateRunError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as RuntimeDecryptionError;
+
+    expect(RuntimeDecryptionError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toContain('AES-256-GCM decryption failed');
+    // The diagnostic context must survive the dehydrate → hydrate round trip.
+    expect(hydrated.context).toEqual({
+      operation: 'decrypt',
+      byteLength: 1234,
+      formatPrefix: 'encr',
+    });
+    // The underlying DOMException cause is preserved too.
+    const cause = (hydrated as Error).cause as Error;
+    expect(cause?.name).toBe('OperationError');
+  });
+
   it('should produce DEVALUE_V1-prefixed binary output', async () => {
     const serialized = await dehydrateRunError(
       new Error('x'),
@@ -4202,6 +4241,48 @@ describe('dehydrate/hydrateRunError', () => {
     }
     expect(err).toBeDefined();
     expect(err?.message).toContain('run error');
+  });
+});
+
+describe('encryption-failure propagation through dehydrate wrappers', () => {
+  // A CryptoKey imported with only the 'decrypt' usage makes subtle.encrypt()
+  // throw, which the encryption layer wraps as RuntimeDecryptionError. The
+  // dehydrate wrappers must NOT reframe that as a SerializationError, or the
+  // run-failure classifier would mislabel an SDK encryption failure as a
+  // USER_ERROR.
+  async function decryptOnlyKey() {
+    return importKey(crypto.getRandomValues(new Uint8Array(32)), ['decrypt']);
+  }
+
+  it('dehydrateWorkflowReturnValue preserves RuntimeDecryptionError', async () => {
+    const key = await decryptOnlyKey();
+    const error = await dehydrateWorkflowReturnValue(
+      { hello: 'world' },
+      mockRunId,
+      key
+    ).catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+    expect(error.context?.operation).toBe('encrypt');
+  });
+
+  it('dehydrateStepReturnValue preserves RuntimeDecryptionError', async () => {
+    const key = await decryptOnlyKey();
+    const error = await dehydrateStepReturnValue(
+      { hello: 'world' },
+      mockRunId,
+      key
+    ).catch((e: unknown) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+  });
+
+  it('dehydrateRunError preserves RuntimeDecryptionError', async () => {
+    const key = await decryptOnlyKey();
+    const error = await dehydrateRunError(
+      new Error('thrown by workflow'),
+      mockRunId,
+      key
+    ).catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
   });
 });
 

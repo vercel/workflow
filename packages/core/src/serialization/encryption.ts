@@ -82,5 +82,16 @@ export async function decrypt(
   if (format !== SerializationFormat.ENCRYPTED) return data;
 
   const { payload } = decodeFormatPrefix(data);
-  return aesGcmDecrypt(key!, payload);
+  try {
+    return await aesGcmDecrypt(key!, payload);
+  } catch (error) {
+    // The low-level AES layer only sees the stripped payload, so it cannot
+    // record the outer envelope prefix. This layer peeked it (`encr`), so
+    // enrich the diagnostic context with the real format prefix before
+    // rethrowing.
+    if (RuntimeDecryptionError.is(error) && error.context) {
+      error.context.formatPrefix = format;
+    }
+    throw error;
+  }
 }

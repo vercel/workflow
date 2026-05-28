@@ -905,6 +905,9 @@ const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
 const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookConflictError'
 );
+const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
+  '@workflow/errors//RuntimeDecryptionError'
+);
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -926,6 +929,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, HOOK_CONFLICT_ERROR_KEY)) {
     Object.defineProperty(globalThis, HOOK_CONFLICT_ERROR_KEY, {
       value: HookConflictError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RUNTIME_DECRYPTION_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RUNTIME_DECRYPTION_ERROR_KEY, {
+      value: RuntimeDecryptionError,
       writable: false,
       enumerable: false,
       configurable: false,

@@ -92,33 +92,21 @@ describe('encryption', () => {
       expect(cause?.name).toBe('OperationError');
     });
 
-    it('records a printable format prefix when the input bytes are ASCII', async () => {
+    it('does not record a formatPrefix at the low-level layer', async () => {
+      // This function only ever sees the stripped AES payload
+      // (`[nonce][ciphertext+tag]`), never the outer `encr` envelope marker.
+      // Capturing the first bytes here would record nonce bytes and be
+      // misleading, so the low-level layer records only operation/byteLength.
+      // The serialization layer attaches the real envelope prefix.
       const key = await getKey();
-      // 28 bytes — passes the length check, but the bytes are bogus.
-      const fakeEncrypted = new TextEncoder().encode('encr' + 'A'.repeat(24));
-      const error = await decrypt(key, fakeEncrypted).catch((e) => e);
+      const bogus = new Uint8Array(28).fill(0x41); // 28 bytes, passes length check
+      const error = await decrypt(key, bogus).catch((e) => e);
       expect(RuntimeDecryptionError.is(error)).toBe(true);
       expect(error.context).toMatchObject({
         operation: 'decrypt',
         byteLength: 28,
-        formatPrefix: 'encr',
       });
-    });
-
-    it('records a hex format prefix when the input bytes are not printable ASCII', async () => {
-      const key = await getKey();
-      const binary = new Uint8Array(28);
-      binary[0] = 0x00;
-      binary[1] = 0xff;
-      binary[2] = 0x80;
-      binary[3] = 0x1f;
-      const error = await decrypt(key, binary).catch((e) => e);
-      expect(RuntimeDecryptionError.is(error)).toBe(true);
-      expect(error.context).toMatchObject({
-        operation: 'decrypt',
-        byteLength: 28,
-        formatPrefix: '00ff801f',
-      });
+      expect(error.context.formatPrefix).toBeUndefined();
     });
   });
 

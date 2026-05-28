@@ -13,7 +13,7 @@ import {
   decrypt as decryptData,
   encrypt as encryptData,
 } from './encryption.js';
-import { formatSerializationError } from './errors.js';
+import { formatSerializationError, rethrowIfRuntimeError } from './errors.js';
 import { decodeFormatPrefix, encodeWithFormatPrefix } from './format.js';
 import { SerializationFormat } from './types.js';
 
@@ -33,6 +33,7 @@ export async function serialize(
     ) as Uint8Array;
     return encryptData(prefixed, encryptionKey);
   } catch (error) {
+    rethrowIfRuntimeError(error);
     const { message, hint } = formatSerializationError('client value', error);
     throw new SerializationError(message, { hint, cause: error });
   }
