@@ -2,7 +2,7 @@
 title: Attributes
 description: Attach experimental metadata to workflow runs for observability.
 type: reference
-summary: Use experimental_setAttributes to add string attributes to a workflow run.
+summary: Add string attributes to a workflow run.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -15,7 +15,7 @@ related:
 This feature is experimental and may change before the stable attributes API is released.
 </Callout>
 
-`experimental_setAttributes` attaches plaintext string metadata to the current workflow run. These attributes are displayed in observability CLI/UI.
+[`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) attaches plaintext string metadata to the current workflow run. These attributes are displayed in observability CLI/UI.
 In the future, you'll be able to search and filter runs by attributes.
 
 ```typescript lineNumbers
@@ -37,7 +37,7 @@ export async function orderWorkflow(orderId: string) {
 
 ## Usage
 
-Call `experimental_setAttributes` from a `"use workflow"` function. Calling it from a `"use step"` function or plain application code is not supported.
+Call [`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) from a `"use workflow"` function. Calling it from a `"use step"` function or plain application code is not supported.
 
 Values must be strings. Pass `undefined` to remove a key:
 
