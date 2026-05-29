@@ -445,11 +445,15 @@ export async function executeStep(
       const isFatal = FatalError.is(effectiveErr);
 
       span?.setAttributes({
-        ...Attribute.StepErrorName(getErrorName(err)),
+        ...Attribute.StepErrorName(getErrorName(effectiveErr)),
         ...Attribute.StepErrorMessage(normalizedError.message),
-        ...Attribute.ErrorType(getErrorName(err)),
+        ...Attribute.ErrorType(getErrorName(effectiveErr)),
         ...Attribute.ErrorCategory(
-          isFatal ? 'fatal' : RetryableError.is(err) ? 'retryable' : 'transient'
+          isFatal
+            ? 'fatal'
+            : RetryableError.is(effectiveErr)
+              ? 'retryable'
+              : 'transient'
         ),
         ...Attribute.ErrorRetryable(!isFatal),
       });

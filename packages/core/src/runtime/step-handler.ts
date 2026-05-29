@@ -694,9 +694,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   : 'transient';
 
               span?.setAttributes({
-                ...Attribute.StepErrorName(getErrorName(err)),
+                ...Attribute.StepErrorName(getErrorName(effectiveErr)),
                 ...Attribute.StepErrorMessage(normalizedError.message),
-                ...Attribute.ErrorType(getErrorName(err)),
+                ...Attribute.ErrorType(getErrorName(effectiveErr)),
                 ...Attribute.ErrorCategory(errorCategory),
                 ...Attribute.ErrorRetryable(!isFatal),
               });

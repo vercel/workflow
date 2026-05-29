@@ -2065,7 +2065,7 @@ export async function abortAnyInStepWorkflow() {
 
   // Step-initiated aborts update workflow-side signal state when replay
   // processes hook_received at a suspension boundary.
-  await sleep('1s');
+  await sleep('100ms');
 
   return {
     stepResult,

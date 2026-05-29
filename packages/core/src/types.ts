@@ -23,7 +23,10 @@ export function isAbortError(
     'name' in value &&
     value.name === 'AbortError' &&
     'message' in value &&
-    typeof value.message === 'string'
+    typeof value.message === 'string' &&
+    (!('stack' in value) ||
+      value.stack === undefined ||
+      typeof value.stack === 'string')
   );
 }
 
