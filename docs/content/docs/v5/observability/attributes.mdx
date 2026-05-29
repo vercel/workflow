@@ -37,7 +37,7 @@ export async function orderWorkflow(orderId: string) {
 
 ## Usage
 
-Call [`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) from a `"use workflow"` function. Calling it from a `"use step"` function or plain application code is not supported.
+Call [`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) from a `"use workflow"` function or a `"use step"` function. Plain application code is not supported because there is no active workflow run to attach attributes to.
 
 Values must be strings. Pass `undefined` to remove a key:
 
@@ -58,8 +58,9 @@ Attribute keys must be 1-256 characters, values must be strings up to 256 bytes,
 While attributes are experimental:
 
 - Worlds that do not support attributes log a warning and ignore the call.
-- Storage errors are logged after retries, but do not fail the workflow run.
-- Setting attributes is currently slower than the final API will be, because each write goes through an internal workflow step. Prefer batching related attributes in one call.
+- Workflow-body storage errors are logged after retries, but do not fail the workflow run.
+- Step-body storage errors throw from `experimental_setAttributes` like any other step-side network write. Catch the error inside the step if the attribute is best-effort.
+- Setting attributes from a workflow body is currently slower than the final API will be, because each write goes through an internal workflow step. Step-body calls post directly to the World. Prefer batching related attributes in one call.
 - Reading and querying attributes is not available yet. A query API is planned.
 
 In a future release, using attributes with a World that does not support them, or when the World fails to store them, will fail with a [world error](/docs/api-reference/workflow-errors/workflow-world-error). This can be caught and handled to prevent failing a run.

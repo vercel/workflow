@@ -15,7 +15,7 @@ The MVP lets workflow code attach plaintext `string → string` metadata to a ru
 - Attributes are materialized onto the `WorkflowRun` entity, plaintext, and visible via `world.runs.get()` / `world.runs.list()` and any observability UI built on top of those
 - World implementations emit a side-channel observability record per successful write (in `world-vercel`, this hooks into the same observability/analytics pipeline already used for other run lifecycle events)
 
-Calling `experimental_setAttributes` from a step body or plain host code is intentionally not supported in the MVP — the host-side export throws `FatalError` directing callers back to a workflow body. This keeps the implementation a single dispatch path; step-body support can be added later without breaking the workflow-body contract.
+Calling `experimental_setAttributes` from a step body was intentionally not supported in the MVP, but step-body calls are now supported as a follow-up. Plain host code remains unsupported because there is no active workflow run to attach attributes to.
 
 ## What MVP does **not** support (deferred to 5.0.0)
 
@@ -136,7 +136,7 @@ await experimental_setAttributes(
 
 The flag is per-call (no run-level "this run accepts reserved keys" mode), so each framework call site explicitly declares intent. Don't enable it from user code — misuse can conflict with observability surfaces, agent dashboards, or future platform features that rely on the reserved namespace.
 
-`experimental_setAttributes` is callable only from a workflow body:
+`experimental_setAttributes` is callable from a workflow body:
 
 ```ts
 import { experimental_setAttributes } from 'workflow';
@@ -151,7 +151,7 @@ export async function myWorkflow(orderId: string) {
 
 The workflow-body path validates input inside the VM and then dispatches the canonical `AttributeChange[]` through an internal `__builtin_set_attributes` step bridge — see "How workflow-body dispatch works" below. The mutation is materialized on the run entity by the step body.
 
-The host-side export (the one resolved when the `workflow` package-exports condition is **not** `workflow`, i.e. step bodies and plain host code) throws `FatalError` with a message pointing callers back to the workflow body. There is no step-side dispatch path in the MVP — the workflow-body-only restriction is a scope cut for the MVP, not an architectural constraint, and may be relaxed in a follow-up.
+Step-body calls resolve to the host-side export. In a step context, that export validates the input and posts the attribute changes directly to `world.runs.experimentalSetAttributes(runId, changes)`. Plain host code still throws `FatalError`.
 
 #### Usage patterns
 
@@ -266,7 +266,8 @@ Unit tests in `@workflow/world` (validation surface) and `@workflow/core` (VM-si
 - `undefined` value normalizes to a `null`-valued change on the wire
 - The `{ allowReservedAttributes: true }` opt-in is forwarded through the step bridge so the world receives the flag
 - Workflow VM with no `WORKFLOW_USE_STEP` bound throws `FatalError`
-- Host-side stub (resolved when not in the workflow VM) throws `FatalError` directing the caller back to a workflow body
+- Host-side implementation posts directly to the world when called from a step context
+- Host-side implementation throws `FatalError` when called from plain host code
 
 Unit tests in `workflow` (internal built-in step behavior):
 
@@ -324,9 +325,11 @@ This puts the mutation on the event log as a normal `step_created → step_compl
 
 The internal step is best-effort during the experimental phase. It sets `maxRetries = 2`, for three total attempts. If `world.runs.experimentalSetAttributes` fails on attempts 1 or 2, the error is rethrown so the runtime retries the step normally. If it still fails on attempt 3, the step logs `console.error` and returns; the workflow run continues instead of receiving a retry-exhaustion `FatalError` for failed tag posting.
 
+Step-body calls do not use the internal built-in step. They run in host context already, so they post directly to the World. Storage errors throw from `experimental_setAttributes` like any other step-side side effect and can be caught by user code inside the step.
+
 The step body intentionally does **not** import anything from `@workflow/core`. That keeps the Next.js deferred-entries discoverer from walking a `__builtin_set_attributes` → `@workflow/core/...` → world adapter → `@vercel/queue` chain, which earlier drafts triggered (blowing the call stack of webpack's regex-based extractor with `RangeError: Maximum call stack size exceeded at RegExpStringIterator.next` on tarball-installed `nextjs-webpack` builds).
 
-The host-side `experimental_setAttributes` export (`packages/core/src/set-attributes.ts`, resolved by everything that isn't the workflow VM) throws `FatalError` with a message pointing the caller back to a workflow body. Step-body support can be added in a follow-up without changing this contract.
+The host-side `experimental_setAttributes` export (`packages/core/src/set-attributes.ts`, resolved by everything that isn't the workflow VM) supports step bodies by reading the current run id from step context and posting directly to the World. It still throws `FatalError` when called from plain host code.
 
 When the full 5.0.0 attributes feature lands, `__builtin_set_attributes` is replaced by an `events.create(runId, { eventType: 'attr_set', ... })` dispatch path; SDK signatures don't change.
 

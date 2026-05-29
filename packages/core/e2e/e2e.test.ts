@@ -3424,7 +3424,7 @@ describe('e2e', () => {
 
       // Workflow should still be running (grace period), so hook should still be findable
       await sleep(1_000);
-      const hookAfterAbort = await getHookByToken(token).catch(() => null);
+      const _hookAfterAbort = await getHookByToken(token).catch(() => null);
       // Hook may or may not be disposed depending on timing, but run should complete
       const returnValue = await run1.returnValue;
       expect(returnValue.aborted).toBe(true);
@@ -3471,6 +3471,42 @@ describe('e2e', () => {
             )
         );
         expect(attrStepEvents.length).toBeGreaterThanOrEqual(2);
+      }
+    );
+
+    test(
+      'experimentalSetAttributesInsideStepWorkflow: step-body calls post directly to the world',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesInsideStepWorkflow'),
+          [9]
+        );
+        const output = await run.returnValue;
+        expect(output).toBe(36);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        expect(persisted?.attributes).toEqual({
+          phase: 'step-done',
+          source: 'step-body',
+          input: '9',
+        });
+
+        const { data: events } = await world.events.list({ runId: run.runId });
+        expect(
+          events.some(
+            (e) =>
+              (e.eventType === 'step_created' ||
+                e.eventType === 'step_completed') &&
+              typeof (e.eventData as { stepName?: string } | undefined)
+                ?.stepName === 'string' &&
+              (e.eventData as { stepName: string }).stepName.includes(
+                '__builtin_set_attributes'
+              )
+          )
+        ).toBe(false);
       }
     );
 

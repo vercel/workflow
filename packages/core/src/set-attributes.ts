@@ -1,25 +1,60 @@
 import { FatalError } from '@workflow/errors';
+import { normalizeAttributeChanges } from './attribute-changes.js';
+import { getWorldLazy } from './runtime/get-world-lazy.js';
+import { contextStorage } from './step/context-storage.js';
 import type { ExperimentalSetAttributesOptions } from './workflow/set-attributes.js';
 
 export type { ExperimentalSetAttributesOptions };
 
+const UNSUPPORTED_WORLD_WARNED = Symbol.for(
+  '@workflow/setAttributes//unsupportedWorldWarned'
+);
+
 /**
- * Host-side stub for `experimental_setAttributes`. The real
- * implementation lives in `./workflow/set-attributes.ts` and is
- * selected by the `workflow` package-exports condition when the
- * workflow VM bundle is resolved.
+ * Host-side implementation for `experimental_setAttributes`. Workflow
+ * bodies resolve to `./workflow/set-attributes.ts` via the `workflow`
+ * package-exports condition; step bodies resolve here and can perform
+ * the world write directly because they already run in host context.
  *
- * Reaching this stub means the function was called outside a workflow
- * body — most likely from a `'use step'` function or plain host code.
- * That isn't supported in the MVP: attribute mutations must be
- * event-sourced through the workflow runtime so they survive replay.
+ * Plain application code still has no active workflow run, so it throws
+ * a clear `FatalError`.
  */
 export async function experimental_setAttributes(
-  _attrs: Record<string, string | undefined>,
-  _options?: ExperimentalSetAttributesOptions
+  attrs: Record<string, string | undefined>,
+  options: ExperimentalSetAttributesOptions = {}
 ): Promise<void> {
-  throw new FatalError(
-    "experimental_setAttributes() must be called from a 'use workflow' function. " +
-      'Calling it from a step body or plain host code is not supported.'
+  const store = contextStorage.getStore();
+  const runId = store?.workflowMetadata?.workflowRunId;
+  if (!runId) {
+    throw new FatalError(
+      "experimental_setAttributes() must be called from a 'use workflow' or 'use step' function. " +
+        'Calling it from plain host code is not supported.'
+    );
+  }
+
+  const changes = normalizeAttributeChanges(attrs, options);
+  if (changes.length === 0) return;
+
+  const world = await getWorldLazy();
+  if (typeof world.runs.experimentalSetAttributes !== 'function') {
+    const g = globalThis as Record<symbol, unknown>;
+    if (!g[UNSUPPORTED_WORLD_WARNED]) {
+      g[UNSUPPORTED_WORLD_WARNED] = true;
+      const name =
+        'name' in world && typeof world.name === 'string' ? world.name : '';
+      const worldName = name ? ` (${name})` : '';
+      console.warn(
+        `[workflow] setAttributes: the current world implementation${worldName} does not implement experimentalSetAttributes; this call (and any subsequent setAttributes calls in this process) is a no-op. Attributes will become available once the world adapter adds support.`
+      );
+    }
+    return;
+  }
+
+  await world.runs.experimentalSetAttributes(
+    runId,
+    changes,
+    options.allowReservedAttributes === true
+      ? { allowReservedAttributes: true }
+      : {}
   );
 }

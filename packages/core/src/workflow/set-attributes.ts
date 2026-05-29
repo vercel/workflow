@@ -1,9 +1,6 @@
 import { FatalError } from '@workflow/errors';
-import {
-  type AttributeChange,
-  AttributeValidationError,
-  validateAttributeChanges,
-} from '@workflow/world';
+import type { AttributeChange } from '@workflow/world';
+import { normalizeAttributeChanges } from '../attribute-changes.js';
 import { WORKFLOW_USE_STEP } from '../symbols.js';
 
 /**
@@ -83,29 +80,9 @@ export async function experimental_setAttributes(
   attrs: Record<string, string | undefined>,
   options: ExperimentalSetAttributesOptions = {}
 ): Promise<void> {
-  if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) {
-    throw new FatalError(
-      `experimental_setAttributes requires a plain object, got ${
-        attrs === null ? 'null' : Array.isArray(attrs) ? 'array' : typeof attrs
-      }`
-    );
-  }
-  const changes: AttributeChange[] = Object.entries(attrs).map(
-    ([key, value]) => ({
-      key,
-      value: value === undefined ? null : value,
-    })
-  );
+  const changes = normalizeAttributeChanges(attrs, options);
   if (changes.length === 0) return;
   const allowReservedAttributes = options.allowReservedAttributes === true;
-  try {
-    validateAttributeChanges(changes, { allowReservedAttributes });
-  } catch (err) {
-    if (err instanceof AttributeValidationError) {
-      throw new FatalError(err.message);
-    }
-    throw err;
-  }
   const useStep = (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP] as
     | ((
         stepName: string
