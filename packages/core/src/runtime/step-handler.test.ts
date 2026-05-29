@@ -1,4 +1,8 @@
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  FatalError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   afterEach,
   beforeAll,
@@ -137,16 +141,17 @@ vi.mock('../step/context-storage.js', () => ({
 
 // Mock types
 vi.mock('../types.js', () => ({
-  isAbortError: vi
+  promoteAbortErrorToFatal: vi
     .fn()
-    .mockImplementation(
-      (err: unknown) =>
-        typeof err === 'object' &&
-        err !== null &&
-        'name' in err &&
-        err.name === 'AbortError' &&
-        'message' in err &&
-        typeof err.message === 'string'
+    .mockImplementation((err: unknown) =>
+      typeof err === 'object' &&
+      err !== null &&
+      'name' in err &&
+      err.name === 'AbortError' &&
+      'message' in err &&
+      typeof err.message === 'string'
+        ? new FatalError(`Aborted: ${err.message}`)
+        : err
     ),
   normalizeUnknownError: vi.fn().mockImplementation(async (err: unknown) => ({
     message: err instanceof Error ? err.message : String(err),

@@ -1,4 +1,5 @@
 import { types } from 'node:util';
+import { FatalError } from '@workflow/errors';
 
 export function getErrorName(v: unknown): string {
   if (types.isNativeError(v)) {
@@ -28,6 +29,18 @@ export function isAbortError(
       value.stack === undefined ||
       typeof value.stack === 'string')
   );
+}
+
+export function promoteAbortErrorToFatal(value: unknown): unknown {
+  if (!isAbortError(value) || FatalError.is(value)) {
+    return value;
+  }
+
+  const fatalError = new FatalError(`Aborted: ${value.message}`);
+  if (value.stack) {
+    fatalError.stack = value.stack;
+  }
+  return fatalError;
 }
 
 export interface NormalizedUnknownError {

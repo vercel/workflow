@@ -27,8 +27,8 @@ import { trace } from '../telemetry.js';
 import {
   getErrorName,
   getErrorStack,
-  isAbortError,
   normalizeUnknownError,
+  promoteAbortErrorToFatal,
 } from '../types.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
@@ -427,12 +427,7 @@ export async function executeStep(
       // and queue a continuation so waitUntil can flush them.
       return { type: 'completed', hasPendingOps: !opsSettled };
     } catch (err: unknown) {
-      let effectiveErr: unknown = err;
-      if (isAbortError(err) && !FatalError.is(err)) {
-        const fatalErr = new FatalError(`Aborted: ${err.message}`);
-        if (err.stack) fatalErr.stack = err.stack;
-        effectiveErr = fatalErr;
-      }
+      const effectiveErr = promoteAbortErrorToFatal(err);
 
       const normalizedError = await normalizeUnknownError(effectiveErr);
       const normalizedStack =

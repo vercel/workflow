@@ -35,8 +35,8 @@ import {
 import {
   getErrorName,
   getErrorStack,
-  isAbortError,
   normalizeUnknownError,
+  promoteAbortErrorToFatal,
 } from '../types.js';
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
@@ -669,12 +669,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
 
               // Abort failures can cross VM/serialization realms, where
               // `instanceof Error` is not reliable.
-              let effectiveErr: unknown = err;
-              if (isAbortError(err) && !FatalError.is(err)) {
-                const fatalErr = new FatalError(`Aborted: ${err.message}`);
-                if (err.stack) fatalErr.stack = err.stack;
-                effectiveErr = fatalErr;
-              }
+              const effectiveErr = promoteAbortErrorToFatal(err);
               const normalizedError = await normalizeUnknownError(effectiveErr);
               const normalizedStack =
                 normalizedError.stack || getErrorStack(effectiveErr) || '';
