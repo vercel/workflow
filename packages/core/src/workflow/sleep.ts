@@ -5,6 +5,7 @@ import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import {
   scheduleWhenIdle,
+  trackVmDelivery,
   type WorkflowOrchestratorContext,
 } from '../private.js';
 
@@ -52,7 +53,11 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
           queueItem.hasCreatedEvent = true;
           queueItem.resumeAt = event.eventData.resumeAt;
         }
-        return EventConsumerResult.Consumed;
+        // wait_created can be replayed while another branch of Promise.race
+        // has already queued a delivery, for example a buffered hook payload
+        // from iterator.next(). Yield so that delivery can win before replay
+        // advances to this wait's eventual wait_completed event.
+        return EventConsumerResult.ConsumedAndYield;
       }
 
       // Check for wait_completed event
@@ -86,12 +91,14 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         // Remove this wait from the invocations queue (O(1) delete using Map)
         ctx.invocationsQueue.delete(correlationId);
 
-        // Wait has elapsed - chain through promiseQueue to ensure
-        // deterministic ordering of all promise resolutions.
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        // Wait has elapsed — deliver the resolve through `trackVmDelivery`
+        // so it runs in event-log order AND `pendingVmWork` covers the
+        // body's reaction window (e.g. a `for await` over a hook that
+        // races a sleep).
+        trackVmDelivery(ctx, async () => {
           resolve();
         });
-        return EventConsumerResult.Finished;
+        return EventConsumerResult.FinishedAndYield;
       }
 
       // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.

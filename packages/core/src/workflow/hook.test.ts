@@ -8,9 +8,9 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import { EventsConsumer } from '../events-consumer.js';
+import { EventConsumerResult, EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
-import type { WorkflowOrchestratorContext } from '../private.js';
+import { isVmIdle, type WorkflowOrchestratorContext } from '../private.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
 import { createContext } from '../vm/index.js';
 import { createWebhook } from './create-hook.js';
@@ -24,13 +24,19 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
-  return {
+  const promiseQueueHolder = { current: Promise.resolve() };
+  const ctx: WorkflowOrchestratorContext = {
     runId: 'wrun_test',
     encryptionKey: undefined,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
-      getPromiseQueue: () => Promise.resolve(),
+      getPromiseQueue: () => promiseQueueHolder.current,
+      isVmIdle: () => isVmIdle(ctx),
+      onceVmIdle: (callback) => {
+        ctx.vmIdleObservers.add(callback);
+        return () => ctx.vmIdleObservers.delete(callback);
+      },
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
@@ -38,12 +44,90 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
     onWorkflowError: vi.fn(),
-    promiseQueue: Promise.resolve(),
+    get promiseQueue() {
+      return promiseQueueHolder.current;
+    },
+    set promiseQueue(value: Promise<void>) {
+      promiseQueueHolder.current = value;
+    },
     pendingDeliveries: 0,
+    pendingVmWork: 0,
+    vmIdleObservers: new Set<() => void>(),
   };
+  return ctx;
 }
 
 describe('createCreateHook', () => {
+  it('should yield to workflow code after delivering a pending hook payload', async () => {
+    const ops: Promise<any>[] = [];
+    const payload = await dehydrateStepReturnValue(
+      { message: 'hello' },
+      'wrun_test',
+      undefined,
+      ops
+    );
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'test-token',
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'test-token',
+          payload,
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_next',
+        eventData: {
+          resumeAt: new Date('2026-05-20T23:16:49.309Z'),
+        },
+        createdAt: new Date(),
+      },
+    ]);
+    const createHook = createCreateHook(ctx);
+    const observed: string[] = [];
+    const hook = createHook({ token: 'test-token' });
+
+    ctx.eventsConsumer.subscribe((event) => {
+      if (event?.eventType !== 'wait_created') {
+        return EventConsumerResult.NotConsumed;
+      }
+
+      observed.push('next-event');
+      return EventConsumerResult.Finished;
+    });
+
+    const hookPromise = hook.then((value) => {
+      observed.push('hook');
+      return value;
+    });
+
+    await expect(hookPromise).resolves.toEqual({ message: 'hello' });
+    expect(observed).toEqual(['hook']);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await ctx.promiseQueue;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => {
+      expect(observed).toEqual(['hook', 'next-event']);
+    });
+  });
+
   it('should resolve with payload when hook_received event is received', async () => {
     const ops: Promise<any>[] = [];
     const ctx = setupWorkflowContext([
@@ -69,6 +153,76 @@ describe('createCreateHook', () => {
     const result = await hook;
     expect(result).toEqual({ message: 'hello' });
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
+
+  it('should yield after buffering a hook_received event without a waiter', async () => {
+    const ops: Promise<any>[] = [];
+    const payload = await dehydrateStepReturnValue(
+      { message: 'buffered' },
+      'wrun_test',
+      undefined,
+      ops
+    );
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'test-token' });
+    const hookConsumer = ctx.eventsConsumer.callbacks[0];
+    if (!hookConsumer) {
+      throw new Error('expected hook consumer to be registered');
+    }
+
+    const result = hookConsumer({
+      eventId: 'evnt_0',
+      runId: 'wrun_123',
+      eventType: 'hook_received',
+      correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+      eventData: {
+        token: 'test-token',
+        payload,
+      },
+      createdAt: new Date(),
+    });
+
+    expect(result).toBe(EventConsumerResult.ConsumedAndYield);
+    await expect(hook).resolves.toEqual({ message: 'buffered' });
+  });
+
+  it('should synchronously subscribe when iterator.next() is called', async () => {
+    const ops: Promise<any>[] = [];
+    const payload = await dehydrateStepReturnValue(
+      { message: 'buffered' },
+      'wrun_test',
+      undefined,
+      ops
+    );
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'test-token' });
+    const hookConsumer = ctx.eventsConsumer.callbacks[0];
+    if (!hookConsumer) {
+      throw new Error('expected hook consumer to be registered');
+    }
+
+    hookConsumer({
+      eventId: 'evnt_0',
+      runId: 'wrun_123',
+      eventType: 'hook_received',
+      correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+      eventData: {
+        token: 'test-token',
+        payload,
+      },
+      createdAt: new Date(),
+    });
+
+    const iterator = hook[Symbol.asyncIterator]();
+    const next = iterator.next();
+
+    expect(ctx.pendingDeliveries).toBe(1);
+    await expect(next).resolves.toEqual({
+      done: false,
+      value: { message: 'buffered' },
+    });
   });
 
   it('should invoke workflow error handler when hook_created token mismatches the hook', async () => {
@@ -198,7 +352,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     // Start awaiting the hook - it will process events asynchronously
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
@@ -228,7 +382,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     // Start awaiting the hook - it will process events asynchronously
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
@@ -300,7 +454,7 @@ describe('createCreateHook', () => {
     ]);
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook({ token: 'test-token' });
+    const _hook = createHook({ token: 'test-token' });
 
     // Wait for event processing (hook_disposed removes from invocationsQueue)
     await vi.waitFor(() => {
@@ -411,7 +565,7 @@ describe('createCreateHook', () => {
     const hook = createHook({ token: 'my-custom-token' });
 
     // Start awaiting the hook
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
@@ -516,7 +670,9 @@ describe('createCreateHook', () => {
     hook.dispose();
 
     // hook_disposed is a terminal event, so the item should be removed from the queue
-    expect(ctx.invocationsQueue.size).toBe(0);
+    await vi.waitFor(() => {
+      expect(ctx.invocationsQueue.size).toBe(0);
+    });
 
     // Calling dispose again should also be safe (idempotent)
     hook.dispose();
@@ -573,9 +729,9 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
+    let _workflowError: Error | undefined;
     ctx.onWorkflowError = (err) => {
-      workflowError = err;
+      _workflowError = err;
     };
 
     const createHook = createCreateHook(ctx);
@@ -676,7 +832,9 @@ describe('createCreateHook', () => {
     expect(payloads[1]).toEqual({ message: 'second' });
 
     // hook_disposed is a terminal event, so the item should be removed from the queue
-    expect(ctx.invocationsQueue.size).toBe(0);
+    await vi.waitFor(() => {
+      expect(ctx.invocationsQueue.size).toBe(0);
+    });
   });
 
   it('should remove hook from invocations queue when hook_conflict event is received', async () => {
@@ -724,9 +882,9 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
+    let _workflowError: Error | undefined;
     ctx.onWorkflowError = (err) => {
-      workflowError = err;
+      _workflowError = err;
     };
 
     const createHook = createCreateHook(ctx);
@@ -796,7 +954,7 @@ describe('createCreateHook', () => {
 
     const createHook = createCreateHook(ctx);
     const hook1 = createHook({ token: 'token-a' });
-    const hook2 = createHook({ token: 'token-b' });
+    const _hook2 = createHook({ token: 'token-b' });
 
     // Only dispose the first hook
     hook1.dispose();
@@ -857,7 +1015,11 @@ describe('createCreateHook', () => {
     const vmDispose = ctx.globalThis.Symbol.dispose;
     expect(vmDispose).toBeDefined();
 
-    const disposeFn = (hook as any)[vmDispose!];
+    if (!vmDispose) {
+      throw new Error('Expected dispose symbol to be registered');
+    }
+
+    const disposeFn = (hook as any)[vmDispose];
     expect(typeof disposeFn).toBe('function');
 
     // Call it — should behave same as hook.dispose()
@@ -952,7 +1114,7 @@ describe('createCreateHook', () => {
     });
 
     // Start awaiting — this pushes a resolver to promises[] since payloadsQueue is empty
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     // Now dispose while the promise is pending — this should drain promises
     // and trigger suspension (not leave an orphaned promise)
@@ -980,7 +1142,7 @@ describe('createCreateHook', () => {
     hook.dispose();
 
     // Then await — the event log is empty, so this should trigger suspension
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);

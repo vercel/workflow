@@ -1,11 +1,43 @@
 import type { Event } from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
+/**
+ * Watchdog ceiling: max time the deferred unconsumed-event check will wait
+ * for the VM-idle signal (`isVmIdle` returning true) before forcing a
+ * decision. Used purely as a safety net so a lost decrement somewhere in
+ * the `pendingVmWork` accounting can't hang a run forever.
+ *
+ * The primary mechanism for the deferred check is the VM-idle observer
+ * (`onceVmIdle`), which fires deterministically when both
+ * `pendingDeliveries` and `pendingVmWork` have settled. The previous
+ * implementation used a 100 ms wall-clock guess (see `DEFERRED_CHECK_DELAY_MS`
+ * below); the counter replaces that. This constant only kicks in if the
+ * counter mechanism is broken.
+ */
+export const UNCONSUMED_CHECK_WATCHDOG_MS = 5000;
+
+/**
+ * @deprecated The deferred unconsumed-event check is now driven by the
+ * VM-idle counter (`pendingDeliveries` + `pendingVmWork`), not a fixed
+ * wall-clock delay. This constant is preserved only for tests that
+ * imported it for delay-arithmetic; its value is no longer consulted by
+ * runtime code. Use `UNCONSUMED_CHECK_WATCHDOG_MS` for the watchdog
+ * ceiling.
+ */
+export const DEFERRED_CHECK_DELAY_MS = 100;
+
 export enum EventConsumerResult {
   /**
    * Callback consumed the event, but should not be removed from the callbacks list
    */
   Consumed,
+  /**
+   * Callback consumed the event and resolved/rejected workflow code, but should
+   * not be removed from the callbacks list. Event replay should yield before
+   * processing the next event so the resumed workflow can subscribe to follow-up
+   * operations first.
+   */
+  ConsumedAndYield,
   /**
    * Callback did not consume the event, so it should be passed to the next callback
    */
@@ -14,9 +46,38 @@ export enum EventConsumerResult {
    * Callback consumed the event, and should be removed from the callbacks list
    */
   Finished,
+  /**
+   * Callback consumed the event, should be removed from the callbacks list, and
+   * resumed workflow code. Event replay should yield before processing the next
+   * event.
+   */
+  FinishedAndYield,
 }
 
 type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
+
+function isConsumedResult(result: EventConsumerResult) {
+  return (
+    result === EventConsumerResult.Consumed ||
+    result === EventConsumerResult.ConsumedAndYield ||
+    result === EventConsumerResult.Finished ||
+    result === EventConsumerResult.FinishedAndYield
+  );
+}
+
+function isFinishedResult(result: EventConsumerResult) {
+  return (
+    result === EventConsumerResult.Finished ||
+    result === EventConsumerResult.FinishedAndYield
+  );
+}
+
+function shouldYieldAfterResult(result: EventConsumerResult) {
+  return (
+    result === EventConsumerResult.ConsumedAndYield ||
+    result === EventConsumerResult.FinishedAndYield
+  );
+}
 
 export interface EventsConsumerOptions {
   /**
@@ -34,6 +95,27 @@ export interface EventsConsumerOptions {
    * deserialization delays the resolve() that triggers the next subscribe().
    */
   getPromiseQueue: () => Promise<void>;
+  /**
+   * Returns true when both `pendingDeliveries` and `pendingVmWork` are 0 —
+   * i.e. the VM has no in-flight network deliveries AND no body-continuation
+   * reactions pending. The deferred unconsumed-event check only fires when
+   * this is true: an "unconsumed" event observed while the VM is still
+   * processing a delivery is almost always a timing artifact, not real
+   * corruption.
+   *
+   * Optional for backwards compatibility with older `WorkflowOrchestratorContext`
+   * shapes that don't carry the `pendingVmWork` counter; when omitted, the
+   * deferred check falls back to the watchdog-timeout-only behaviour.
+   */
+  isVmIdle?: () => boolean;
+  /**
+   * Register a one-shot callback to be fired when the VM becomes idle
+   * (both counters reach 0 after a decrement). Used by the deferred check
+   * to wait for true idle without polling. Returns an unsubscribe function
+   * so the consumer can cancel the registration if a new subscribe()
+   * arrives in the meantime (the canonical cancellation pattern).
+   */
+  onceVmIdle?: (callback: () => void) => () => void;
 }
 
 export class EventsConsumer {
@@ -42,15 +124,22 @@ export class EventsConsumer {
   readonly callbacks: EventConsumerCallback[] = [];
   private onUnconsumedEvent: (event: Event) => void;
   private getPromiseQueue: () => Promise<void>;
+  private isVmIdle: (() => boolean) | undefined;
+  private onceVmIdle: ((cb: () => void) => () => void) | undefined;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pendingUnconsumedUnsubscribe: (() => void) | null = null;
   private unconsumedCheckVersion = 0;
+  private consumeScheduled = false;
+  private replayPaused = false;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
     this.events = events;
     this.eventIndex = 0;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
+    this.isVmIdle = options.isVmIdle;
+    this.onceVmIdle = options.onceVmIdle;
   }
 
   /**
@@ -66,7 +155,7 @@ export class EventsConsumer {
     this.callbacks.push(fn);
     // Cancel any pending unconsumed check since a new callback may consume the event.
     // Incrementing the version causes any in-flight promise chain check to no-op.
-    // Also clear the pending setTimeout if it hasn't fired yet.
+    // Also clear the pending setTimeout / VM-idle observer if not yet fired.
     if (this.pendingUnconsumedCheck !== null) {
       this.unconsumedCheckVersion++;
       this.pendingUnconsumedCheck = null;
@@ -74,11 +163,19 @@ export class EventsConsumer {
         clearTimeout(this.pendingUnconsumedTimeout);
         this.pendingUnconsumedTimeout = null;
       }
+      if (this.pendingUnconsumedUnsubscribe !== null) {
+        this.pendingUnconsumedUnsubscribe();
+        this.pendingUnconsumedUnsubscribe = null;
+      }
     }
-    process.nextTick(this.consume);
+    this.scheduleConsume();
   }
 
   private consume = () => {
+    if (this.replayPaused) {
+      return;
+    }
+
     const currentEvent = this.events[this.eventIndex] ?? null;
     for (let i = 0; i < this.callbacks.length; i++) {
       const callback = this.callbacks[i];
@@ -88,20 +185,21 @@ export class EventsConsumer {
       } catch (error) {
         eventsLogger.error('EventConsumer callback threw an error', { error });
       }
-      if (
-        handled === EventConsumerResult.Consumed ||
-        handled === EventConsumerResult.Finished
-      ) {
+      if (isConsumedResult(handled)) {
         // consumer handled this event, so increase the event index
         this.eventIndex++;
 
         // remove the callback if it has finished
-        if (handled === EventConsumerResult.Finished) {
+        if (isFinishedResult(handled)) {
           this.callbacks.splice(i, 1);
         }
 
         // continue to the next event
-        process.nextTick(this.consume);
+        if (shouldYieldAfterResult(handled)) {
+          this.scheduleConsumeAfterWorkflowTurn();
+        } else {
+          this.scheduleConsume();
+        }
         return;
       }
     }
@@ -111,35 +209,219 @@ export class EventsConsumer {
     // schedule a deferred check. We chain onto the promiseQueue so that any
     // pending async work (e.g., deserialization/decryption that triggers
     // resolve() → user code → subscribe()) completes first. If the event
-    // is still unconsumed after the queue drains, it's truly orphaned.
+    // is still unconsumed after the queue drains AND the VM is idle, it's
+    // truly orphaned.
     if (currentEvent !== null) {
       const checkVersion = ++this.unconsumedCheckVersion;
-      this.pendingUnconsumedCheck = this.getPromiseQueue()
-        .then(
-          // Yield once after the first queue drain so promise chains resumed by
-          // that drain can run across the VM boundary and append any follow-up
-          // async work (for example: step_completed resolves -> for-await loop
-          // resumes -> the next hook payload starts hydrating).
-          () => new Promise<void>((resolve) => setTimeout(resolve, 0))
-        )
-        .then(() => this.getPromiseQueue())
+      this.pendingUnconsumedCheck = this.waitForQueueTurn()
         .then(() => {
-          // Use a delayed setTimeout after the queue drains. The delay must be
-          // long enough for promise chains to propagate across the VM boundary
-          // (from resolve() in the host context through to the workflow code
-          // calling subscribe() in the VM context). Node.js does not guarantee
-          // that setTimeout(0) fires after all cross-context microtasks settle,
-          // so we use a small but non-zero delay. Any subscribe() call that
-          // arrives during this window will cancel the check via version
-          // invalidation + clearTimeout.
-          this.pendingUnconsumedTimeout = setTimeout(() => {
-            this.pendingUnconsumedTimeout = null;
-            if (this.unconsumedCheckVersion === checkVersion) {
-              this.pendingUnconsumedCheck = null;
-              this.onUnconsumedEvent(currentEvent);
-            }
-          }, 100);
+          if (this.unconsumedCheckVersion !== checkVersion) return;
+          this.fireUnconsumedWhenVmIdle(currentEvent, checkVersion);
         });
     }
   };
+  private scheduleConsume() {
+    if (this.consumeScheduled || this.replayPaused) {
+      return;
+    }
+
+    this.consumeScheduled = true;
+    process.nextTick(() => {
+      this.consumeScheduled = false;
+      this.consume();
+    });
+  }
+
+  private scheduleConsumeAfterWorkflowTurn() {
+    this.replayPaused = true;
+    this.waitForWorkflowTurn()
+      .then(() => {
+        this.replayPaused = false;
+        this.scheduleConsume();
+      })
+      .catch(() => {
+        this.replayPaused = false;
+        this.scheduleConsume();
+      });
+  }
+
+  private async waitForQueueTurn() {
+    await this.getPromiseQueue();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await this.getPromiseQueue();
+  }
+
+  private async waitForWorkflowTurn() {
+    await this.waitForQueueTurn();
+    await this.waitUntilVmIdle();
+    await this.waitForQueueTurn();
+  }
+
+  private async waitUntilVmIdle() {
+    if (this.isVmIdle && this.onceVmIdle) {
+      if (this.isVmIdle()) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (this.isVmIdle()) {
+          return;
+        }
+      }
+
+      await new Promise<void>((resolve) => {
+        let done = false;
+        let watchdog: ReturnType<typeof setTimeout> | null = null;
+        let unsubscribe: (() => void) | null = null;
+
+        const finish = () => {
+          if (done) {
+            return;
+          }
+          done = true;
+          if (watchdog !== null) {
+            clearTimeout(watchdog);
+            watchdog = null;
+          }
+          if (unsubscribe !== null) {
+            unsubscribe();
+            unsubscribe = null;
+          }
+          resolve();
+        };
+
+        watchdog = setTimeout(() => {
+          finish();
+        }, UNCONSUMED_CHECK_WATCHDOG_MS);
+
+        const waitAgain = () => {
+          if (done) {
+            return;
+          }
+
+          if (this.isVmIdle?.()) {
+            queueMicrotask(() => {
+              if (this.isVmIdle?.()) {
+                finish();
+              } else {
+                waitAgain();
+              }
+            });
+            return;
+          }
+
+          unsubscribe = this.onceVmIdle?.(() => {
+            unsubscribe = null;
+            queueMicrotask(waitAgain);
+          }) ?? null;
+        };
+
+        waitAgain();
+      });
+      return;
+    }
+
+    let stableTurns = 0;
+
+    for (let i = 0; i < 20; i++) {
+      const queue = this.getPromiseQueue();
+      await queue;
+
+      // Give workflow continuations resumed by the drained queue a full turn to
+      // subscribe follow-up operations. Those continuations may append more
+      // deliveries to the promise queue, for example when a buffered hook
+      // payload wins Promise.race after a step result.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      if (this.getPromiseQueue() === queue) {
+        stableTurns++;
+        if (stableTurns >= 2) {
+          return;
+        }
+      } else {
+        stableTurns = 0;
+      }
+    }
+
+    await this.getPromiseQueue();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  /**
+   * Fire `onUnconsumedEvent` once the VM has settled, not after a fixed
+   * wall-clock delay. "Settled" means both `pendingDeliveries` and
+   * `pendingVmWork` are 0 — i.e. the body has finished reacting to any
+   * in-flight delivery and any next-wave `subscribe()` calls have had
+   * their chance to register.
+   *
+   * If the consumer wasn't configured with `isVmIdle`/`onceVmIdle` (older
+   * orchestrator wiring), fall back to the watchdog timeout only — same
+   * behaviour as before, just deferred longer to reduce false positives.
+   */
+  private fireUnconsumedWhenVmIdle(
+    currentEvent: Event,
+    checkVersion: number
+  ): void {
+    // Each re-entry installs a fresh watchdog. Clear any prior one so
+    // recursive re-registration (observer fired but VM not yet idle) doesn't
+    // leak timers — and so a stale timer can't fire onUnconsumedEvent a
+    // second time after a fresh fire/cancel.
+    if (this.pendingUnconsumedTimeout !== null) {
+      clearTimeout(this.pendingUnconsumedTimeout);
+      this.pendingUnconsumedTimeout = null;
+    }
+
+    const fire = () => {
+      // Idempotency guard: `pendingUnconsumedCheck` is null'd both on
+      // successful fire AND when `subscribe()` cancels the check. Combined
+      // with the version check below, this prevents stale timers, stale
+      // observers, or a leaked recursion path from double-firing
+      // `onUnconsumedEvent`.
+      if (this.pendingUnconsumedCheck === null) return;
+      if (this.unconsumedCheckVersion !== checkVersion) return;
+      this.pendingUnconsumedCheck = null;
+      if (this.pendingUnconsumedTimeout !== null) {
+        clearTimeout(this.pendingUnconsumedTimeout);
+        this.pendingUnconsumedTimeout = null;
+      }
+      if (this.pendingUnconsumedUnsubscribe !== null) {
+        this.pendingUnconsumedUnsubscribe();
+        this.pendingUnconsumedUnsubscribe = null;
+      }
+      this.onUnconsumedEvent(currentEvent);
+    };
+
+    // Watchdog: under any circumstance, never wait more than
+    // UNCONSUMED_CHECK_WATCHDOG_MS. This protects against a stuck
+    // `pendingVmWork` counter (e.g. an exception in a delivery's
+    // microtask chain).
+    this.pendingUnconsumedTimeout = setTimeout(
+      fire,
+      UNCONSUMED_CHECK_WATCHDOG_MS
+    );
+
+    if (this.isVmIdle && this.onceVmIdle) {
+      // Fast path: already idle — fire on the next microtask boundary so
+      // any subscribe() arriving in the same synchronous tick can still
+      // cancel us (preserves prior cancellation semantics).
+      if (this.isVmIdle()) {
+        queueMicrotask(fire);
+        return;
+      }
+      // Wait for the next VM-idle transition. The observer is single-shot.
+      this.pendingUnconsumedUnsubscribe = this.onceVmIdle(() => {
+        this.pendingUnconsumedUnsubscribe = null;
+        // Re-check idle on a microtask boundary — by the time the observer
+        // fires, a new delivery may already have started.
+        queueMicrotask(() => {
+          if (this.pendingUnconsumedCheck === null) return;
+          if (this.unconsumedCheckVersion !== checkVersion) return;
+          if (this.isVmIdle?.()) {
+            fire();
+          } else {
+            // New delivery in flight — re-register and wait again.
+            this.fireUnconsumedWhenVmIdle(currentEvent, checkVersion);
+          }
+        });
+      });
+    }
+    // Else: no counter wiring — watchdog timeout will eventually fire.
+  }
 }

@@ -17,7 +17,7 @@ describe('CorruptedEventLogError', () => {
   test('adds the corrupted event log docs link', () => {
     const err = new CorruptedEventLogError('event mismatch');
     expect(err.message).toContain(
-      'https://workflow-sdk.dev/err/corrupted-event-log'
+      'https://useworkflow.dev/err/corrupted-event-log'
     );
   });
 
