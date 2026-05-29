@@ -38,3 +38,4 @@ export { MenuDropdown, type MenuDropdownOption } from './ui/menu-dropdown';
 export { Spinner } from './ui/spinner';
 export { WorkflowTraceViewer } from './workflow-trace-view';
 export { NewTraceViewer } from './trace-viewer-new';
+export { TraceViewerSkeleton } from './new-trace-viewer/components/trace-viewer-skeleton';
