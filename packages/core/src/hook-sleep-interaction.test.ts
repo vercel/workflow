@@ -405,7 +405,9 @@ function defineTests(mode: 'sync' | 'async') {
       );
     });
 
-    it('should let a queued hook payload win without mapping the race promises', async () => {
+    async function expectRawRaceToChooseQueuedHook(
+      hookWaitBeforeSetup: boolean
+    ) {
       await setupHydrateMock();
       const ops: Promise<any>[] = [];
       const [payload, setupResult] = await Promise.all([
@@ -494,6 +496,7 @@ function defineTests(mode: 'sync' | 'async') {
       const { error } = await runWithDiscontinuation(ctx, async () => {
         const hook = createHook<{ value: string }>({ token: 'test-token' });
         const iterator = hook[Symbol.asyncIterator]();
+        const pendingHook = hookWaitBeforeSetup ? iterator.next() : undefined;
         const pendingSleep = sleep(resumeAt);
         const setupStep = useStep('setupStep');
         const drainStep = useStep('drainStep');
@@ -501,7 +504,10 @@ function defineTests(mode: 'sync' | 'async') {
 
         await setupStep();
 
-        const result = await Promise.race([iterator.next(), pendingSleep]);
+        const result = await Promise.race([
+          pendingHook ?? iterator.next(),
+          pendingSleep,
+        ]);
 
         if (result !== undefined) {
           await drainStep();
@@ -524,6 +530,14 @@ function defineTests(mode: 'sync' | 'async') {
       expect(pendingSteps[0].type === 'step' && pendingSteps[0].stepName).toBe(
         'drainStep'
       );
+    }
+
+    it('should let a queued hook payload win without mapping the race promises', async () => {
+      await expectRawRaceToChooseQueuedHook(false);
+    });
+
+    it('should let a queued hook payload win when iterator.next is pending before the setup step completes', async () => {
+      await expectRawRaceToChooseQueuedHook(true);
     });
   });
 
