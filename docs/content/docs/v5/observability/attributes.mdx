@@ -1,5 +1,5 @@
 ---
-title: Run attributes
+title: Attributes
 description: Attach experimental metadata to workflow runs for observability.
 type: reference
 summary: Use experimental_setAttributes to add string attributes to a workflow run.
@@ -11,9 +11,10 @@ related:
   - /docs/api-reference/workflow-errors/workflow-world-error
 ---
 
-`experimental_setAttributes` attaches plaintext string metadata to the current workflow run. These attributes can be displayed by observability tools.
+`experimental_setAttributes` attaches plaintext string metadata to the current workflow run. These attributes are displayed in observability CLI/UI.
+In the future, you'll be able to search and filter runs by attributes.
 
-<Callout>
+<Callout type="warn">
 This feature is experimental and may change before the stable attributes API is released.
 </Callout>
 
@@ -23,14 +24,14 @@ import { experimental_setAttributes } from "workflow"
 export async function orderWorkflow(orderId: string) {
   "use workflow"
 
-  await experimental_setAttributes({
-    phase: "received",
-    orderId,
-  })
+  await experimental_setAttributes({ // [!code highlight]
+    phase: "received", // [!code highlight]
+    orderId, // [!code highlight]
+  }) // [!code highlight]
 
   // ...work...
 
-  await experimental_setAttributes({ phase: "complete" })
+  await experimental_setAttributes({ phase: "complete" }) // [!code highlight]
 }
 ```
 
@@ -46,7 +47,7 @@ import { experimental_setAttributes } from "workflow"
 export async function cleanupAttributes() {
   "use workflow"
 
-  await experimental_setAttributes({ staleKey: undefined })
+  await experimental_setAttributes({ staleKey: undefined }) // [!code highlight]
 }
 ```
 
