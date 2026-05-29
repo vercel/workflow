@@ -59,13 +59,15 @@ function httpLog(
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  *
- * [debug branch] Pinned to the workflow-server PR vercel/workflow-server#447
- * preview deployment (commit e6722b2 — "events: move entity materialization
- * after fence CAS") so this validation run exercises both the SDK fixes
- * in #2113 and the server-side fence + ordering fix end to end.
+ * [debug branch] Pinned to the workflow-server branch
+ * `nate/event-write-atomic-txn` (commit e1d0ea7 — "events: atomic fence +
+ * materialization + event for fenced writes"), which builds on #447 and
+ * folds fence + materialization + event PUT into one TransactWriteItems
+ * for the fenced event types. This validates the full stack: SDK
+ * abandon-tick (#2113) + server-side atomic fenced writes.
  */
 const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-git-peter-event-write-cas.vercel.sh';
+  'https://workflow-server-git-nate-event-write-atomic-txn.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
