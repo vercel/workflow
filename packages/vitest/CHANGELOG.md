@@ -1,5 +1,18 @@
 # @workflow/vitest
 
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`2050656`](https://github.com/vercel/workflow/commit/2050656099349ededd11b33256e951cf97d88a76), [`0d0bb01`](https://github.com/vercel/workflow/commit/0d0bb013d7073f964bb3aea7869e84ed762bf7a9), [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8), [`657e8bb`](https://github.com/vercel/workflow/commit/657e8bb9629e7002c7658b98c32761e01e714474)]:
+  - @workflow/core@5.0.0-beta.8
+  - @workflow/world@5.0.0-beta.5
+  - @workflow/world-local@5.0.0-beta.7
+  - @workflow/builders@5.0.0-beta.8
+  - @workflow/rollup@5.0.0-beta.8
+
 ## 5.0.0-beta.7
 
 ### Patch Changes

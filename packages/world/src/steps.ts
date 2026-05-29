@@ -44,7 +44,7 @@ export const StepSchema = z.object({
    */
   stepName: z.string(),
   status: StepStatusSchema,
-  input: SerializedDataSchema,
+  input: SerializedDataSchema.optional(),
   output: SerializedDataSchema.optional(),
   /**
    * The thrown value from a step_retrying or step_failed event, serialized

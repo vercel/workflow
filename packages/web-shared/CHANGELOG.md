@@ -1,5 +1,22 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#2108](https://github.com/vercel/workflow/pull/2108) [`8633ebb`](https://github.com/vercel/workflow/commit/8633ebb9b32f28cce4344329840aca47e22d3197) Thanks [@mitul-s](https://github.com/mitul-s)! - Use the `blur-[4px]` arbitrary-value utility on the encrypted data preview instead of Tailwind v4's `blur-xs` utility, so the component renders correctly for consumers on Tailwind v3.
+
+- [#2087](https://github.com/vercel/workflow/pull/2087) [`a490f58`](https://github.com/vercel/workflow/commit/a490f584e0a739f74f179930c2f84c5ff809d5b2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix the "Queued for" duration shown in the events list for retried steps. It now measures from `step_created` to the first `step_started` instead of the last, so the displayed value reflects actual queue time rather than queue time plus all retry waits.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- [#1973](https://github.com/vercel/workflow/pull/1973) [`34481af`](https://github.com/vercel/workflow/commit/34481af4b6c5b321275f874f93012e639d7971c6) Thanks [@mitul-s](https://github.com/mitul-s)! - adjusted spacing on trace viewer and detail pane
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`2050656`](https://github.com/vercel/workflow/commit/2050656099349ededd11b33256e951cf97d88a76), [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/core@5.0.0-beta.8
+  - @workflow/world@5.0.0-beta.5
+  - @workflow/utils@5.0.0-beta.3
+
 ## 5.0.0-beta.7
 
 ### Patch Changes
