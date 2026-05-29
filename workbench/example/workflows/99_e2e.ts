@@ -2063,6 +2063,10 @@ export async function abortAnyInStepWorkflow() {
     abortFromStep(c2, 1000),
   ]);
 
+  // Step-initiated aborts update workflow-side signal state when replay
+  // processes hook_received at a suspension boundary.
+  await sleep('100ms');
+
   return {
     stepResult,
     c1Aborted: c1.signal.aborted,
@@ -2313,8 +2317,9 @@ export async function abortFetchUncaughtWorkflow() {
 
   const controller = new AbortController();
 
-  // Abort immediately so fetch will throw
-  controller.abort('fetch-abort-test');
+  // Abort without a custom reason so fetch rejects with AbortError. Supplying
+  // a reason makes fetch reject with that value directly, which is retryable.
+  controller.abort();
 
   try {
     await stepThatFetchesWithSignal(controller.signal);

@@ -2824,11 +2824,8 @@ describe('e2e', () => {
         const token = Math.random().toString(36).slice(2);
         const run = await start(await e2e('abortViaHookWorkflow'), [token]);
 
-        // Wait for the hook to be registered
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-        // Resume the hook with a cancellation payload
-        const hook = await getHookByToken(token);
+        // Resume once the hook is observable; fixed delays race slow starts.
+        const hook = await waitForHook(token, { runId: run.runId });
         expect(hook.runId).toBe(run.runId);
         await resumeHook(hook, { reason: 'user cancelled' });
 
@@ -3000,6 +2997,12 @@ describe('e2e', () => {
         // The AbortError is NOT caught in the step — it propagates as FatalError.
         expect(returnValue.threw).toBe(true);
         expect(returnValue.isFatal).toBe(true);
+
+        const world = await getWorld();
+        const { data: events } = await world.events.list({ runId: run.runId });
+        expect(
+          events.some((event) => event.eventType === 'step_retrying')
+        ).toBe(false);
       }
     );
 
@@ -3181,15 +3184,13 @@ describe('e2e', () => {
           if (resumeBeforeAbort) {
             // For "hook-first" variants, the workflow awaits a step before
             // calling abort(). We resume the hook during that window.
-            await new Promise((resolve) => setTimeout(resolve, 5_000));
-            const hook = await getHookByToken(token);
+            const hook = await waitForHook(token, { runId: run.runId });
             expect(hook.runId).toBe(run.runId);
             await resumeHook(hook, { value: 'hello' });
           } else {
             // For "abort-first" variants, abort happens before the hook
-            // is resumed. We wait then resume so the workflow can complete.
-            await new Promise((resolve) => setTimeout(resolve, 5_000));
-            const hook = await getHookByToken(token);
+            // is resumed. Resume once registration is visible.
+            const hook = await waitForHook(token, { runId: run.runId });
             expect(hook.runId).toBe(run.runId);
             await resumeHook(hook, { value: 'hello' });
           }

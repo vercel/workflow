@@ -221,6 +221,38 @@ describe('streams.get', () => {
   });
 });
 
+describe('streams.write error diagnostics', () => {
+  async function getStreamer() {
+    const { createStreamer } = await import('./streamer.js');
+    return createStreamer();
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('includes endpoint and Vercel correlation headers in failed writes', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response('Internal Server Error\nrequest-token', {
+          status: 500,
+          headers: {
+            'x-vercel-id': 'sfo1::abc',
+            'x-vercel-error': 'FUNCTION_INVOCATION_FAILED',
+          },
+        })
+    );
+
+    const streamer = await getStreamer();
+
+    await expect(
+      streamer.streams.write('wrun_test', 'user', 'chunk')
+    ).rejects.toThrow(
+      'Stream write failed: HTTP 500 (PUT https://test.example.com/v2/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
+    );
+  });
+});
+
 describe('writeMulti pagination', () => {
   /**
    * Decode length-prefixed multi-chunk body to count chunks per request.
