@@ -77,8 +77,8 @@ function envBoolean(name: string, fallback: boolean) {
 }
 
 const config: ReproConfig = {
-  attempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 60),
-  concurrency: envNumber('EVENT_LOG_RACE_REPRO_CONCURRENCY', 12),
+  attempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 1500),
+  concurrency: envNumber('EVENT_LOG_RACE_REPRO_CONCURRENCY', 50),
   iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 3),
   sleepMs: envNumber('EVENT_LOG_RACE_REPRO_SLEEP_MS', 5000),
   resumeDelayMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS', 5000),

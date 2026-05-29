@@ -9,11 +9,11 @@ on:
       attempts:
         description: 'Number of workflow runs to start'
         required: false
-        default: '60'
+        default: '1500'
       concurrency:
         description: 'Number of concurrent workflow runs'
         required: false
-        default: '12'
+        default: '50'
       run_timeout_ms:
         description: 'Per-run timeout before classifying as stuck'
         required: false
@@ -92,8 +92,8 @@ jobs:
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           WORKFLOW_VERCEL_PROJECT_SLUG: example-nextjs-workflow-turbopack
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
-          EVENT_LOG_RACE_REPRO_ATTEMPTS: ${{ inputs.attempts || '60' }}
-          EVENT_LOG_RACE_REPRO_CONCURRENCY: ${{ inputs.concurrency || '12' }}
+          EVENT_LOG_RACE_REPRO_ATTEMPTS: ${{ inputs.attempts || '1500' }}
+          EVENT_LOG_RACE_REPRO_CONCURRENCY: ${{ inputs.concurrency || '50' }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms || '150000' }}
           EVENT_LOG_RACE_REPRO_SLEEP_MS: ${{ inputs.sleep_ms || '5000' }}
           EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS: ${{ inputs.resume_delay_ms || '5000' }}
