@@ -282,7 +282,19 @@ export function getDeserializeStream(
           );
           return;
         }
-        const decrypted = await aesGcmDecrypt(keyState.key, payload);
+        let decrypted: Uint8Array;
+        try {
+          decrypted = await aesGcmDecrypt(keyState.key, payload);
+        } catch (error) {
+          // The low-level AES layer only sees the stripped payload, so it
+          // cannot record the outer envelope prefix. We peeked it here
+          // (`encr`), so enrich the diagnostic context with the real format
+          // prefix before propagating — mirroring serialization/encryption.ts.
+          if (RuntimeDecryptionError.is(error) && error.context) {
+            error.context.formatPrefix = format;
+          }
+          throw error;
+        }
         ({ format, payload } = decodeFormatPrefix(decrypted));
       }
 
@@ -937,7 +949,7 @@ export function getWorkflowReducers(
     },
     AbortSignal: (value) => {
       const signal = value as (AbortSignal & AbortInternals) | undefined;
-      const hasAbortSymbol = signal && signal[ABORT_STREAM_NAME];
+      const hasAbortSymbol = signal?.[ABORT_STREAM_NAME];
       const isNativeAbortSignal =
         global.AbortSignal &&
         typeof global.AbortSignal === 'function' &&
