@@ -13,7 +13,6 @@ const TooltipTrigger = TooltipPrimitive.Trigger;
 const TooltipContent = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content> & {
-    /** Render the directional caret arrow (Geist default). */
     showArrow?: boolean;
   }
 >(
@@ -25,7 +24,6 @@ const TooltipContent = React.forwardRef<
       <TooltipPrimitive.Content
         ref={ref}
         sideOffset={sideOffset}
-        // Inverted surface, matching the Geist tooltip.
         className={cn(
           'z-[99999] flex items-center gap-1 rounded-[10px] bg-gray-1000 px-2 py-1.5 !text-label-13 text-background-100 shadow-md select-none',
           className
