@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./version.js', () => ({ version: '0.0.0-test' }));
 
 import { setWorld } from './runtime/world.js';
-import { createReconnectingFramedStream } from './serialization.js';
+import {
+  createReconnectingFramedStream,
+  FRAMED_STREAM_MAX_RECONNECTS,
+} from './serialization.js';
 
 const FRAME_HEADER_SIZE = 4;
 
@@ -237,5 +240,87 @@ describe('createReconnectingFramedStream', () => {
     await reader.cancel('client abort');
 
     expect(cancelSpy).toHaveBeenCalled();
+  });
+
+  it('emits every complete frame packed into a single read', async () => {
+    // One transport read carrying three back-to-back frames must surface as
+    // three separate downstream chunks — exercises the inner drain loop.
+    const packed = new Uint8Array([
+      ...payloadFrame(1),
+      ...payloadFrame(2),
+      ...payloadFrame(3),
+    ]);
+    const { world } = makeWorldWithScriptedStreams({
+      0: () =>
+        scriptedStream([{ kind: 'value', value: packed }, { kind: 'close' }]),
+    });
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream('s', 0);
+    const chunks = await readAll(stream);
+
+    expect(chunks).toEqual([payloadFrame(1), payloadFrame(2), payloadFrame(3)]);
+  });
+
+  it('errors after the maximum consecutive reconnects with no progress', async () => {
+    // Every connection errors before delivering a frame, so no forward
+    // progress is ever made. The wrapper must give up rather than reconnect
+    // forever.
+    const calls: number[] = [];
+    const world = {
+      readFromStream: vi.fn(async (_name: string, startIndex?: number) => {
+        calls.push(startIndex ?? 0);
+        return scriptedStream([
+          { kind: 'error', err: new Error('always fails') },
+        ]);
+      }),
+    } as unknown as World;
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream('s', 0);
+    await expect(readAll(stream)).rejects.toThrow(
+      /exceeded maximum reconnection attempts/
+    );
+    // Initial connect + one connect per allowed reconnect; the following
+    // reconnect throws before opening another stream.
+    expect(calls).toHaveLength(FRAMED_STREAM_MAX_RECONNECTS + 1);
+    // No progress ⇒ every attempt resumes from the original index.
+    expect(calls.every((i) => i === 0)).toBe(true);
+  });
+
+  it('resets the reconnect budget after forward progress', async () => {
+    // Deliver exactly one frame per connection and then error, far more
+    // times than the consecutive-failure cap. Because every reconnect makes
+    // progress, the budget resets and the stream must NOT be capped — it
+    // completes once a connection finally closes cleanly. Without the reset
+    // this would throw at FRAMED_STREAM_MAX_RECONNECTS.
+    const lastIndex = FRAMED_STREAM_MAX_RECONNECTS + 5;
+    const calls: number[] = [];
+    const world = {
+      readFromStream: vi.fn(async (_name: string, startIndex?: number) => {
+        const idx = startIndex ?? 0;
+        calls.push(idx);
+        // Payload encodes the absolute index so ordering can be asserted.
+        return scriptedStream([
+          { kind: 'value', value: payloadFrame(idx) },
+          idx < lastIndex
+            ? { kind: 'error', err: new Error('transient') }
+            : { kind: 'close' },
+        ]);
+      }),
+    } as unknown as World;
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream('s', 0);
+    const chunks = await readAll(stream);
+
+    // One frame per index 0..lastIndex inclusive, in order.
+    expect(chunks.map((c) => c[FRAME_HEADER_SIZE])).toEqual(
+      Array.from({ length: lastIndex + 1 }, (_, i) => i)
+    );
+    // Reconnected once per error — well beyond the cap — without erroring,
+    // and each reconnect resumed at the next index.
+    expect(calls.length).toBeGreaterThan(FRAMED_STREAM_MAX_RECONNECTS + 1);
+    expect(calls).toEqual(Array.from({ length: lastIndex + 1 }, (_, i) => i));
   });
 });

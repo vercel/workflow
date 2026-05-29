@@ -457,11 +457,13 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 
 /**
  * Maximum consecutive reconnect attempts for a single framed stream session.
- * On serverfull backends, reconnects should only happen during transient errors.
- * For serverless backends, we set this constant high enough to cover at least
- * 10 minutes even if the server would be limited to e.g. 1 minute per session.
+ * The counter resets to zero whenever a reconnect makes forward progress (a
+ * frame is delivered), so this bounds *consecutive* failures, not the lifetime
+ * total — a long-lived serverless stream may legitimately reconnect far more
+ * than this many times as long as each reconnect keeps delivering data. We only
+ * give up after this many reconnects in a row produce nothing.
  */
-const FRAMED_STREAM_MAX_RECONNECTS = 50;
+export const FRAMED_STREAM_MAX_RECONNECTS = 50;
 
 /**
  * Wraps the length-prefix-framed byte WorkflowServerReadableStream
@@ -587,7 +589,13 @@ export function createReconnectingFramedStream(
           emitted = true;
         }
 
-        if (emitted) return;
+        if (emitted) {
+          // Forward progress on the current connection — clear the
+          // consecutive-failure budget so a long stream that reconnects
+          // many times (but keeps delivering) is never falsely capped.
+          reconnectCount = 0;
+          return;
+        }
         // Only partial bytes — read more.
       }
     },
