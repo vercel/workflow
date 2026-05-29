@@ -1163,15 +1163,38 @@ export function workflowEntrypoint(
                         // important for crash recovery, to enqueue every
                         // pending step and let queue idempotency dedupe.
                         //
-                        // Recovery exception: if this workflow queue message
-                        // is itself being redelivered, pick up pre-existing
-                        // step_created / step_retrying events from the loaded
-                        // log that never reached step_started. This covers the
-                        // crash window after a handler writes step_created but
-                        // before it queues the step.
+                        // Recovery: pick up pre-existing step_created /
+                        // step_retrying events from the loaded log that
+                        // never reached step_started, and ensure they get
+                        // queued. This covers two windows where a
+                        // step_created lands but its dispatch never does:
+                        //
+                        //  1. Crash window: a handler writes step_created
+                        //     then crashes before queueing the step.
+                        //  2. Stale-snapshot abandon: a tick writes a
+                        //     fenced step_created, then abandons on a
+                        //     *later* fenced write (returns staleSnapshot
+                        //     + re-enqueues) before reaching the queueing
+                        //     code below. The re-enqueued tick sees
+                        //     `hasCreatedEvent: true` and won't re-create
+                        //     the step, so without this recovery nobody
+                        //     dispatches it and the run stalls with a
+                        //     valid fence + an orphaned step_created.
+                        //
+                        // This runs on every invocation (not just
+                        // attempt > 1): the abandon/re-enqueue path
+                        // produces fresh queue messages, not redeliveries,
+                        // so an attempt-gated recovery would miss case 2.
+                        // It is safe to run unconditionally because step
+                        // dispatch is queued with `idempotencyKey:
+                        // step.correlationId`, so re-queueing a step that
+                        // was already dispatched is deduped by the queue.
+                        // Steps this tick just created are queued via
+                        // `createdStepCorrelationIds` below; recovery only
+                        // needs to cover orphans this tick did NOT create.
                         const recoverablePendingStepCorrelationIds =
                           new Set<string>();
-                        if (metadata.attempt > 1 && cachedEvents) {
+                        if (cachedEvents) {
                           const latestStepEvents = new Map<string, string>();
                           for (const event of cachedEvents) {
                             if (
