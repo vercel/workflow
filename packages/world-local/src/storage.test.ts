@@ -1405,18 +1405,18 @@ describe('Storage', () => {
       expect(eventFileReads.length).toBeGreaterThan(0);
     });
 
-    it('evicts old events once the recent-event entry bound is exceeded', async () => {
+    it('evicts old events once the recent-event byte bound is exceeded', async () => {
       const hookId = 'bounded-cache-hook';
       await createHook(storage, testRunId, {
         hookId,
         token: 'bounded-cache-token',
       });
 
-      for (let i = 0; i < 1001; i++) {
+      for (let i = 0; i < 4; i++) {
         await storage.events.create(testRunId, {
           eventType: 'hook_received',
           correlationId: hookId,
-          eventData: { payload: new Uint8Array([i % 256]) },
+          eventData: { payload: new Uint8Array(1024 * 1024) },
         });
       }
 
