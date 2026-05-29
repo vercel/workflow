@@ -391,6 +391,13 @@ export interface CreateEventParams {
   resolveData?: ResolveData;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
+  /**
+   * Optimistic concurrency control fence: when set, the event write is
+   * rejected with a conflict unless the run's materialized `lastKnownEventId`
+   * equals this value. Lets the runtime stop an invocation operating on a stale
+   * event log snapshot from advancing the log.
+   */
+  lastKnownEventId?: string;
 }
 
 /**

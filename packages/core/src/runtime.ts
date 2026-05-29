@@ -19,6 +19,7 @@ import { classifyRunError, isWorldContractError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import { fencedEventCreate } from './runtime/fenced-write.js';
 import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
 import {
   getQueueOverhead,
@@ -796,23 +797,45 @@ export function workflowEntrypoint(
                           },
                         }));
 
+                      // The last known event ID is used for optimistic concurrency
+                      // control, being provided to the World, which will reject if any
+                      // other events arrive between our event log read and event write.
+                      // On fence conflict, bail the write — another invocation has
+                      // the canonical view of the log; trying to retry in place
+                      // here only spins against a moving target and (under stress)
+                      // amplifies the stuck-fence pattern caused by the server-side
+                      // patch-then-PUT non-atomicity. See `runtime/fenced-write.ts`
+                      // for the full reasoning.
+                      let fenceEventId: string | undefined =
+                        events.length > 0
+                          ? events[events.length - 1].eventId
+                          : undefined;
                       for (const waitEvent of waitsToComplete) {
-                        try {
-                          await world.events.create(runId, waitEvent, {
-                            requestId,
-                          });
-                        } catch (err) {
-                          if (EntityConflictError.is(err)) {
-                            runtimeLogger.info(
-                              'Wait already completed, skipping',
-                              {
-                                workflowRunId: runId,
-                                correlationId: waitEvent.correlationId,
-                              }
-                            );
-                            continue;
-                          }
-                          throw err;
+                        const writeResult = await fencedEventCreate({
+                          world,
+                          runId,
+                          event: waitEvent,
+                          requestId,
+                          fenceEventId,
+                          onEntityConflict: () => 'abort',
+                        });
+                        if (writeResult.newFenceEventId) {
+                          fenceEventId = writeResult.newFenceEventId;
+                        }
+                        if (!writeResult.written) {
+                          // Either fence conflict (canonical replay
+                          // elsewhere) or the wait was already completed
+                          // by a concurrent invocation. Both terminal
+                          // for this invocation's attempt; continue with
+                          // remaining waitsToComplete using the latest
+                          // fence we have observed.
+                          runtimeLogger.info(
+                            'Wait completion skipped (fence conflict or already completed)',
+                            {
+                              workflowRunId: runId,
+                              correlationId: waitEvent.correlationId,
+                            }
+                          );
                         }
                       }
 
@@ -886,22 +909,95 @@ export function workflowEntrypoint(
                         replayMs: Date.now() - replayStart,
                       });
 
-                      // Workflow completed
+                      // Workflow completed.
+                      //
+                      // Fence the `run_completed` write against the
+                      // load-time tail of `events`: if a concurrent
+                      // replay with a fresher view has already written
+                      // its own terminal event (run_completed / run_failed),
+                      // CAS rejects this write and we treat the run as
+                      // already-terminal (same shape as the existing
+                      // EntityConflictError / RunExpiredError branches).
                       try {
-                        await world.events.create(
+                        let runCompletedFence =
+                          events.length > 0
+                            ? events[events.length - 1].eventId
+                            : undefined;
+                        try {
+                          const terminalFenceRefresh = eventsCursor
+                            ? await loadWorkflowRunEvents(runId, eventsCursor)
+                            : await loadWorkflowRunEvents(runId);
+                          if (terminalFenceRefresh.events.length > 0) {
+                            const existingIds = new Set(
+                              events.map((e) => e.eventId)
+                            );
+                            for (const event of terminalFenceRefresh.events) {
+                              if (!existingIds.has(event.eventId)) {
+                                events.push(event);
+                              }
+                            }
+                            runCompletedFence =
+                              terminalFenceRefresh.events[
+                                terminalFenceRefresh.events.length - 1
+                              ].eventId;
+                          }
+                          eventsCursor =
+                            terminalFenceRefresh.cursor ?? eventsCursor;
+                          cachedEvents = events;
+                        } catch (refreshErr) {
+                          runtimeLogger.debug(
+                            'Failed to refresh terminal fence before completing workflow run',
+                            {
+                              workflowRunId: runId,
+                              message:
+                                refreshErr instanceof Error
+                                  ? refreshErr.message
+                                  : String(refreshErr),
+                            }
+                          );
+                        }
+                        const terminalEventAfterReplay = events.find(
+                          (e) =>
+                            e.eventType === 'run_completed' ||
+                            e.eventType === 'run_failed' ||
+                            e.eventType === 'run_cancelled'
+                        );
+                        if (terminalEventAfterReplay) {
+                          runtimeLogger.debug(
+                            'Run completed by concurrent handler after replay, exiting',
+                            {
+                              workflowRunId: runId,
+                              eventType: terminalEventAfterReplay.eventType,
+                            }
+                          );
+                          return;
+                        }
+                        const writeResult = await fencedEventCreate({
+                          world,
                           runId,
-                          {
+                          event: {
                             eventType: 'run_completed',
                             specVersion: SPEC_VERSION_CURRENT,
                             eventData: { output: result },
                           },
-                          { requestId }
-                        );
+                          requestId,
+                          fenceEventId: runCompletedFence,
+                          onEntityConflict: () => 'abort',
+                        });
+                        if (!writeResult.written) {
+                          // `written: false` covers both fence conflict
+                          // (another invocation has the canonical view)
+                          // and entity-conflict abort (run already
+                          // terminal). Either way the run is done from
+                          // this invocation's perspective.
+                          runtimeLogger.info(
+                            'Tried completing workflow run, but run has already finished or another invocation is canonical.',
+                            { workflowRunId: runId }
+                          );
+                          return;
+                        }
                       } catch (err) {
-                        if (
-                          EntityConflictError.is(err) ||
-                          RunExpiredError.is(err)
-                        ) {
+                        if (RunExpiredError.is(err)) {
                           runtimeLogger.info(
                             'Tried completing workflow run, but run has already finished.',
                             { workflowRunId: runId, message: err.message }
@@ -935,14 +1031,30 @@ export function workflowEntrypoint(
                           runtimeLogger.debug(suspensionMessage);
                         }
 
-                        // V2: handle suspension without queuing steps
+                        // V2: handle suspension without queuing steps.
+                        //
+                        // Pass the load-time tail eventId + cursor so the
+                        // handler can fence its branch-decision writes
+                        // (step_created, hook_created, hook_disposed,
+                        // wait_created) against this snapshot of the log.
+                        // This extends OCC fencing to the other writes whose
+                        // outcome depends on a branch decision the workflow VM
+                        // made from the loaded log.
                         const suspensionStart = Date.now();
+                        // `cachedEvents` mirrors `events` (assigned right
+                        // before runWorkflow above) and is visible in the
+                        // outer catch scope where `events` is not.
+                        const suspensionFenceEventId =
+                          cachedEvents && cachedEvents.length > 0
+                            ? cachedEvents[cachedEvents.length - 1].eventId
+                            : undefined;
                         const suspensionResult = await handleSuspension({
                           suspension: err,
                           world,
                           run: workflowRun,
                           span,
                           requestId,
+                          fenceEventId: suspensionFenceEventId,
                         });
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
@@ -993,10 +1105,10 @@ export function workflowEntrypoint(
                         // the step, replay still picks the step because
                         // wait_completed is only created on the *next* loop
                         // iteration, which doesn't run until the step
-                        // finishes. Queueing every step in this case lets
-                        // the wait timeout drive a continuation in parallel,
-                        // matching V1's behavior where each step ran in a
-                        // separate function invocation.
+                        // finishes. Queueing every owned step in this case
+                        // lets the wait timeout drive a continuation in
+                        // parallel, matching V1's behavior where each step
+                        // ran in a separate function invocation.
                         const inlineStep:
                           | (typeof pendingSteps)[number]
                           | undefined =
@@ -1004,19 +1116,73 @@ export function workflowEntrypoint(
                             ? ownedPendingSteps[0]
                             : undefined;
 
-                        // Queue every pending step except the one we're
-                        // executing inline. This mirrors V1's unconditional
-                        // enqueue-with-idempotency pattern and is what makes
-                        // crash recovery work: if a prior handler wrote
-                        // step_created events but crashed before enqueuing,
-                        // a later handler (e.g., from flow-message
-                        // redelivery or reenqueueActiveRuns) will enqueue
-                        // the orphaned steps. In the happy path with a
-                        // single owner, concurrent handlers' queue attempts
-                        // dedupe on correlationId. Skipping the inline step
-                        // avoids a queue handler racing against our own
-                        // inline executor.
-                        for (const step of pendingSteps) {
+                        // Queue only steps this handler owns when inline
+                        // execution is possible. A non-owner may have a
+                        // stale replay view where another handler just
+                        // created a step and is about to execute it inline;
+                        // queueing that step here would bypass the ownership
+                        // invariant and can run the step body twice.
+                        //
+                        // When a wait is pending, no handler executes a step
+                        // inline: all step work is queue-driven so the wait
+                        // timeout can race it. In that branch it is safe, and
+                        // important for crash recovery, to enqueue every
+                        // pending step and let queue idempotency dedupe.
+                        //
+                        // Recovery exception: if this workflow queue message
+                        // is itself being redelivered, pick up pre-existing
+                        // step_created / step_retrying events from the loaded
+                        // log that never reached step_started. This covers the
+                        // crash window after a handler writes step_created but
+                        // before it queues the step.
+                        const recoverablePendingStepCorrelationIds =
+                          new Set<string>();
+                        if (metadata.attempt > 1 && cachedEvents) {
+                          const latestStepEvents = new Map<string, string>();
+                          for (const event of cachedEvents) {
+                            if (
+                              event.correlationId &&
+                              (event.eventType === 'step_created' ||
+                                event.eventType === 'step_retrying' ||
+                                event.eventType === 'step_started' ||
+                                event.eventType === 'step_completed' ||
+                                event.eventType === 'step_failed')
+                            ) {
+                              latestStepEvents.set(
+                                event.correlationId,
+                                event.eventType
+                              );
+                            }
+                          }
+                          for (const [
+                            correlationId,
+                            eventType,
+                          ] of latestStepEvents) {
+                            if (
+                              eventType === 'step_created' ||
+                              eventType === 'step_retrying'
+                            ) {
+                              recoverablePendingStepCorrelationIds.add(
+                                correlationId
+                              );
+                            }
+                          }
+                        }
+
+                        const queueablePendingSteps =
+                          suspensionResult.timeoutSeconds !== undefined
+                            ? pendingSteps
+                            : pendingSteps.filter(
+                                (step) =>
+                                  suspensionResult.createdStepCorrelationIds.has(
+                                    step.correlationId
+                                  ) ||
+                                  recoverablePendingStepCorrelationIds.has(
+                                    step.correlationId
+                                  )
+                              );
+
+                        for (const step of queueablePendingSteps) {
                           if (
                             inlineStep &&
                             step.correlationId === inlineStep.correlationId
@@ -1041,7 +1207,8 @@ export function workflowEntrypoint(
                         }
 
                         // Nothing to execute inline — we already queued all
-                        // pending steps above, exit and let the queue drive.
+                        // steps this handler can safely dispatch, exit and
+                        // let the queue drive.
                         if (!inlineStep) {
                           if (suspensionResult.timeoutSeconds !== undefined) {
                             return {
@@ -1200,10 +1367,79 @@ export function workflowEntrypoint(
                         // Serialize the original thrown value so its full
                         // type identity and custom properties round-trip
                         // through the event log.
+                        //
+                        // Fenced for the same reason as run_completed:
+                        // don't let a stale-view replay paper over a
+                        // concurrent terminal write.
                         try {
-                          await world.events.create(
+                          // `cachedEvents` mirrors the local `events`
+                          // (which lives in the try-block above); see
+                          // the suspension catch for the same trick.
+                          let runFailedEvents = cachedEvents ?? [];
+                          let runFailedFence =
+                            runFailedEvents.length > 0
+                              ? runFailedEvents[runFailedEvents.length - 1]
+                                  .eventId
+                              : undefined;
+                          try {
+                            const terminalFenceRefresh = eventsCursor
+                              ? await loadWorkflowRunEvents(runId, eventsCursor)
+                              : await loadWorkflowRunEvents(runId);
+                            if (eventsCursor) {
+                              if (terminalFenceRefresh.events.length > 0) {
+                                const existingIds = new Set(
+                                  runFailedEvents.map((e) => e.eventId)
+                                );
+                                for (const event of terminalFenceRefresh.events) {
+                                  if (!existingIds.has(event.eventId)) {
+                                    runFailedEvents.push(event);
+                                  }
+                                }
+                              }
+                            } else {
+                              runFailedEvents = terminalFenceRefresh.events;
+                            }
+                            if (terminalFenceRefresh.events.length > 0) {
+                              runFailedFence =
+                                terminalFenceRefresh.events[
+                                  terminalFenceRefresh.events.length - 1
+                                ].eventId;
+                            }
+                            eventsCursor =
+                              terminalFenceRefresh.cursor ?? eventsCursor;
+                            cachedEvents = runFailedEvents;
+                          } catch (refreshErr) {
+                            runtimeLogger.debug(
+                              'Failed to refresh terminal fence before failing workflow run',
+                              {
+                                workflowRunId: runId,
+                                message:
+                                  refreshErr instanceof Error
+                                    ? refreshErr.message
+                                    : String(refreshErr),
+                              }
+                            );
+                          }
+                          const terminalEventAfterReplay = runFailedEvents.find(
+                            (e) =>
+                              e.eventType === 'run_completed' ||
+                              e.eventType === 'run_failed' ||
+                              e.eventType === 'run_cancelled'
+                          );
+                          if (terminalEventAfterReplay) {
+                            runtimeLogger.debug(
+                              'Run completed by concurrent handler after replay, exiting',
+                              {
+                                workflowRunId: runId,
+                                eventType: terminalEventAfterReplay.eventType,
+                              }
+                            );
+                            return;
+                          }
+                          const writeResult = await fencedEventCreate({
+                            world,
                             runId,
-                            {
+                            event: {
                               eventType: 'run_failed',
                               specVersion: SPEC_VERSION_CURRENT,
                               eventData: {
@@ -1215,13 +1451,19 @@ export function workflowEntrypoint(
                                 errorCode,
                               },
                             },
-                            { requestId }
-                          );
+                            requestId,
+                            fenceEventId: runFailedFence,
+                            onEntityConflict: () => 'abort',
+                          });
+                          if (!writeResult.written) {
+                            runtimeLogger.info(
+                              'Tried failing workflow run, but run has already finished or another invocation is canonical.',
+                              { workflowRunId: runId }
+                            );
+                            return;
+                          }
                         } catch (failErr) {
-                          if (
-                            EntityConflictError.is(failErr) ||
-                            RunExpiredError.is(failErr)
-                          ) {
+                          if (RunExpiredError.is(failErr)) {
                             runtimeLogger.info(
                               'Tried failing workflow run, but run has already finished.',
                               {

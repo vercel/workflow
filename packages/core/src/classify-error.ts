@@ -1,8 +1,12 @@
 import {
   CorruptedEventLogError,
+  EntityConflictError,
   RUN_ERROR_CODES,
   type RunErrorCode,
+  RunExpiredError,
   StepNotRegisteredError,
+  ThrottleError,
+  TooEarlyError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -20,11 +24,28 @@ const WORLD_CONTRACT_ERROR_CODES = new Set([
  * not enough — we have to enumerate every concrete subclass we want to
  * recognize. Keep in sync with the `WorkflowRuntimeError` class hierarchy
  * in `@workflow/errors`.
+ *
+ * The `WorkflowWorldError` subclasses below (`EntityConflictError`,
+ * `RunExpiredError`, `TooEarlyError`, `ThrottleError`) are infrastructure-
+ * level conditions surfaced by the runtime's own calls into the world
+ * (CAS rejections, run cleanup, retry-after, rate limits). The runtime
+ * normally retries past them; if they reach `classifyRunError`, the
+ * runtime's retry budget exhausted — that's a transient infra failure,
+ * not user code, so `RUNTIME_ERROR` is the truthful classification.
+ *
+ * The bare `WorkflowWorldError` parent is *not* in this list: it can
+ * also surface from user-code `fetch` calls into the workflow API, which
+ * should remain `USER_ERROR` (see the test case on line ~43 of
+ * `classify-error.test.ts`).
  */
 const RUNTIME_ERROR_CHECKS = [
   WorkflowRuntimeError.is,
   StepNotRegisteredError.is,
   WorkflowNotRegisteredError.is,
+  EntityConflictError.is,
+  RunExpiredError.is,
+  TooEarlyError.is,
+  ThrottleError.is,
 ];
 
 /**

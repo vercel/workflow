@@ -50,6 +50,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         stepName,
         args,
       });
+
       ctx.eventsConsumer.subscribe((event) => {
         if (!event) {
           // We've reached the end of the events, so this step has either not been run or is currently running.

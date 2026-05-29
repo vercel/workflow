@@ -156,7 +156,11 @@ export async function resumeHook<T = any>(
           })
         );
 
-        // Create a hook_received event with the payload
+        //  Create a hook_received event with the payload 
+        //
+        // From a concurrency control perspective, this is done unconditionally.
+        // Any other event creations or invocations use the `lastKnownEventId`
+        // fence to ensure hook_received being added won't cause ordering issues.
         await world.events.create(
           hook.runId,
           {
