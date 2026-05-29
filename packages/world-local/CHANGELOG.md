@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#2139](https://github.com/vercel/workflow/pull/2139) [`65336df`](https://github.com/vercel/workflow/commit/65336df9f80f228903216c3e82ea7d499d924734) Thanks [@pranaygp](https://github.com/pranaygp)! - Reduce local stream metadata and pagination I/O by reading only EOF marker bytes and scanning chunk files once.
+
 ## 5.0.0-beta.7
 
 ### Patch Changes
