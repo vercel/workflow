@@ -360,6 +360,7 @@ export function RunDetailView({
     hasMore: hasMoreEventsTab,
     loadingMore: loadingMoreEventsTab,
     loadMore: loadMoreEventsTab,
+    searchByExactId,
   } = useEventsListData(env, runId, {
     sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
@@ -783,6 +784,7 @@ export function RunDetailView({
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
+                    onExactIdSearch={searchByExactId}
                   />
                 </div>
               </ErrorBoundary>
