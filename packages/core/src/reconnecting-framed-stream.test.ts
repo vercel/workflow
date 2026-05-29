@@ -7,6 +7,7 @@ import { setWorld } from './runtime/world.js';
 import {
   createReconnectingFramedStream,
   FRAMED_STREAM_MAX_RECONNECTS,
+  FRAMED_STREAM_MAX_TOTAL_RECONNECTS,
 } from './serialization.js';
 
 const FRAME_HEADER_SIZE = 4;
@@ -322,5 +323,31 @@ describe('createReconnectingFramedStream', () => {
     // and each reconnect resumed at the next index.
     expect(calls.length).toBeGreaterThan(FRAMED_STREAM_MAX_RECONNECTS + 1);
     expect(calls).toEqual(Array.from({ length: lastIndex + 1 }, (_, i) => i));
+  });
+
+  it('errors at the absolute backstop when a world ignores startIndex and loops forever', async () => {
+    // Pathological world: ignores startIndex and always re-delivers a frame
+    // then errors. Every reconnect "makes progress", so the consecutive cap
+    // never trips — only the absolute total backstop can stop the loop. This
+    // guards against a misbehaving backend turning reconnect into a hang.
+    let calls = 0;
+    const world = {
+      readFromStream: vi.fn(async () => {
+        calls++;
+        return scriptedStream([
+          { kind: 'value', value: payloadFrame(0) },
+          { kind: 'error', err: new Error('always errors after one frame') },
+        ]);
+      }),
+    } as unknown as World;
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream('s', 0);
+    await expect(readAll(stream)).rejects.toThrow(
+      /exceeded maximum total reconnection attempts/
+    );
+    // Initial connect + one connect per allowed total reconnect; the next
+    // reconnect throws before opening another stream.
+    expect(calls).toBe(FRAMED_STREAM_MAX_TOTAL_RECONNECTS + 1);
   });
 });

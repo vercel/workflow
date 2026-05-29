@@ -466,6 +466,19 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 export const FRAMED_STREAM_MAX_RECONNECTS = 50;
 
 /**
+ * Absolute backstop on total reconnects for a single session, independent of
+ * progress. The consecutive cap above resets on forward progress, which is
+ * correct for a well-behaved backend that honors `startIndex`. But if a World's
+ * `readFromStream` ever ignored `startIndex` and re-delivered earlier chunks,
+ * "progress" would be reported every reconnect and the consecutive cap would
+ * never trip — turning a bounded failure into an unbounded reconnect loop. This
+ * hard ceiling guarantees the loop always terminates. It is set high enough
+ * (hours of streaming at realistic per-session timeouts) to never interfere
+ * with legitimate long-lived streams.
+ */
+export const FRAMED_STREAM_MAX_TOTAL_RECONNECTS = 1000;
+
+/**
  * Wraps the length-prefix-framed byte WorkflowServerReadableStream
  * with transparent auto-reconnect.
  *
@@ -492,6 +505,7 @@ export function createReconnectingFramedStream(
   let currentStartIndex = startIndex ?? 0;
   let consumedFrames = 0;
   let reconnectCount = 0;
+  let totalReconnectCount = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let buffer = new Uint8Array(0);
 
@@ -506,9 +520,15 @@ export function createReconnectingFramedStream(
 
   async function reconnect(): Promise<void> {
     reconnectCount++;
+    totalReconnectCount++;
     if (reconnectCount > FRAMED_STREAM_MAX_RECONNECTS) {
       throw new Error(
         `Stream "${name}" exceeded maximum reconnection attempts (${FRAMED_STREAM_MAX_RECONNECTS})`
+      );
+    }
+    if (totalReconnectCount > FRAMED_STREAM_MAX_TOTAL_RECONNECTS) {
+      throw new Error(
+        `Stream "${name}" exceeded maximum total reconnection attempts (${FRAMED_STREAM_MAX_TOTAL_RECONNECTS})`
       );
     }
     if (reader) {
