@@ -91,7 +91,9 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           WORKFLOW_VERCEL_PROJECT_SLUG: example-nextjs-workflow-turbopack
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          # This repro should validate the public workflow-server behavior for
+          # the SDK revision under test, not a protected server preview.
+          VERCEL_WORKFLOW_SERVER_URL: ''
           EVENT_LOG_RACE_REPRO_ATTEMPTS: ${{ inputs.attempts || '60' }}
           EVENT_LOG_RACE_REPRO_CONCURRENCY: ${{ inputs.concurrency || '12' }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms || '150000' }}
