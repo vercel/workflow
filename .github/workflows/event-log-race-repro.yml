@@ -65,6 +65,9 @@ jobs:
         with:
           build-packages: 'false'
 
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
       - name: Wait for Vercel deployment
         id: waitForDeployment
         uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
