@@ -64,7 +64,10 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
-  const storage = createStorage(mergedConfig.dataDir, tag);
+  const { clearCache: clearStorageCache, ...storage } = createStorage(
+    mergedConfig.dataDir,
+    tag
+  );
   const recoverActiveRuns = mergedConfig.recoverActiveRuns ?? true;
   return {
     specVersion: SPEC_VERSION_CURRENT,
@@ -94,9 +97,11 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
       await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
     },
     async close() {
+      clearStorageCache();
       await queue.close();
     },
     async clear() {
+      clearStorageCache();
       if (tag) {
         // Selectively delete only files matching this tag
         const basedir = mergedConfig.dataDir;
@@ -159,6 +164,8 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
         // Clear the in-memory write cache so deleted paths are forgotten
         clearCreatedFilesCache();
       } else {
+        // `rm()` removes directories that the write path may have cached.
+        clearCreatedFilesCache();
         await rm(mergedConfig.dataDir, { recursive: true, force: true });
         await initDataDir(mergedConfig.dataDir);
       }

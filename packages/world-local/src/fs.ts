@@ -128,12 +128,16 @@ async function withWindowsRetry<T>(
 // In-memory cache of created files to avoid expensive fs.access() calls
 // This is safe because we only write once per file path (no overwrites without explicit flag)
 const createdFilesCache = new Set<string>();
+// Writes repeatedly target a small fixed set of entity directories. Once one
+// exists in this process, avoid another recursive mkdir syscall per event.
+const createdDirectoriesCache = new Set<string>();
 
 /**
- * Clear the created files cache. Useful for testing or when files are deleted externally.
+ * Clear write-path caches. Useful for testing or when files are deleted externally.
  */
 export function clearCreatedFilesCache(): void {
   createdFilesCache.clear();
+  createdDirectoriesCache.clear();
 }
 
 export { ulidToDate } from '@workflow/world';
@@ -252,10 +256,35 @@ export async function listTaggedFilesByExtension(
 }
 
 export async function ensureDir(dirPath: string): Promise<void> {
+  const resolvedPath = path.resolve(dirPath);
+  if (createdDirectoriesCache.has(resolvedPath)) {
+    return;
+  }
   try {
-    await fs.mkdir(dirPath, { recursive: true });
+    await fs.mkdir(resolvedPath, { recursive: true });
+    createdDirectoriesCache.add(resolvedPath);
   } catch (_error) {
     // Ignore if already exists
+  }
+}
+
+async function withEnsuredDirectory<T>(
+  dirPath: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  await ensureDir(dirPath);
+  try {
+    return await operation();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+
+    // A dev server may outlive an external cleanup of its data directory.
+    // Forget the cached directory and retry once after recreating it.
+    createdDirectoriesCache.delete(path.resolve(dirPath));
+    await ensureDir(dirPath);
+    return operation();
   }
 }
 
@@ -342,10 +371,11 @@ export async function write(
   const tempPath = `${filePath}.tmp.${ulid()}`;
   let tempFileCreated = false;
   try {
-    await ensureDir(path.dirname(filePath));
-    await fs.writeFile(tempPath, data);
-    tempFileCreated = true;
-    await withWindowsRetry(() => fs.rename(tempPath, filePath));
+    await withEnsuredDirectory(path.dirname(filePath), async () => {
+      await fs.writeFile(tempPath, data);
+      tempFileCreated = true;
+      await withWindowsRetry(() => fs.rename(tempPath, filePath));
+    });
     // Track this file in cache so future writes know it exists
     createdFilesCache.add(filePath);
   } catch (error) {
@@ -405,10 +435,11 @@ export async function writeExclusive(
   filePath: string,
   data: string
 ): Promise<boolean> {
-  await ensureDir(path.dirname(filePath));
   try {
-    await fs.writeFile(filePath, data, { flag: 'wx' });
-    return true;
+    return await withEnsuredDirectory(path.dirname(filePath), async () => {
+      await fs.writeFile(filePath, data, { flag: 'wx' });
+      return true;
+    });
   } catch (error: any) {
     if (error.code === 'EEXIST') {
       return false;
@@ -439,6 +470,12 @@ export async function listFilesByExtension(
 interface PaginatedFileSystemQueryConfig<T> {
   directory: string;
   schema: z.ZodType<T>;
+  /**
+   * Optional immutable-item cache, keyed by absolute file path. Event files
+   * are append-only, so world-local can replay events it just persisted
+   * without rereading and reparsing them from disk.
+   */
+  cachedItems?: ReadonlyMap<string, T>;
   filePrefix?: string;
   fileIdFilter?: (fileId: string) => boolean;
   filter?: (item: T) => boolean;
@@ -474,6 +511,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const {
     directory,
     schema,
+    cachedItems,
     filePrefix,
     fileIdFilter,
     filter,
@@ -544,7 +582,11 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     const filePath = path.join(directory, `${fileId}.json`);
     let item: T | null = null;
     try {
-      item = await readJSON(filePath, schema);
+      const cachedItem = cachedItems?.get(filePath);
+      item =
+        cachedItem === undefined
+          ? await readJSON(filePath, schema)
+          : structuredClone(cachedItem);
     } catch (error: unknown) {
       // We don't expect zod errors to happen, but if the JSON does get malformed,
       // we skip the item. Preferably, we'd have a way to mark items as malformed,

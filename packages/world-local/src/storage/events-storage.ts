@@ -36,12 +36,14 @@ import {
   assertSafeEntityId,
   deleteJSON,
   jsonReplacer,
+  jsonReviver,
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
   readJSONWithFallback,
   resolveWithinBase,
   taggedPath,
+  write,
   writeExclusive,
   writeJSON,
 } from '../fs.js';
@@ -164,11 +166,113 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
+export type LocalEventsStorage = Storage['events'] & {
+  clearCache(): void;
+};
+
 export function createEventsStorage(
   basedir: string,
   tag?: string
-): Storage['events'] {
+): LocalEventsStorage {
+  // Events are append-only. Keep a bounded window of locally persisted events
+  // available to immediate replay without rereading JSON files. Payload bytes
+  // and entry count are both bounded so active/waiting runs cannot retain
+  // unbounded histories in a long-lived development server.
+  const maxCachedEventBytes = 4 * 1024 * 1024;
+  const maxCachedEventEntries = 1000;
+  const eventCache = new Map<string, Event>();
+  const cachedEventBytes = new Map<string, number>();
+  const cachedPathsByRunId = new Map<string, Set<string>>();
+  let totalCachedEventBytes = 0;
+
+  function deleteCachedEvent(eventPath: string): void {
+    const event = eventCache.get(eventPath);
+    if (!event) {
+      return;
+    }
+    eventCache.delete(eventPath);
+    totalCachedEventBytes -= cachedEventBytes.get(eventPath) ?? 0;
+    cachedEventBytes.delete(eventPath);
+    const cachedPaths = cachedPathsByRunId.get(event.runId);
+    cachedPaths?.delete(eventPath);
+    if (cachedPaths?.size === 0) {
+      cachedPathsByRunId.delete(event.runId);
+    }
+  }
+
+  function clearRunCache(runId: string): void {
+    for (const cachedPath of cachedPathsByRunId.get(runId) ?? []) {
+      deleteCachedEvent(cachedPath);
+    }
+  }
+
+  function clearCache(): void {
+    eventCache.clear();
+    cachedEventBytes.clear();
+    cachedPathsByRunId.clear();
+    totalCachedEventBytes = 0;
+  }
+
+  function cacheEvent(
+    eventPath: string,
+    cachedEvent: Event,
+    serializedBytes: number
+  ): void {
+    if (serializedBytes > maxCachedEventBytes) {
+      return;
+    }
+
+    while (
+      eventCache.size > 0 &&
+      (eventCache.size >= maxCachedEventEntries ||
+        totalCachedEventBytes + serializedBytes > maxCachedEventBytes)
+    ) {
+      const oldestPath = eventCache.keys().next().value as string;
+      deleteCachedEvent(oldestPath);
+    }
+
+    eventCache.set(eventPath, cachedEvent);
+    cachedEventBytes.set(eventPath, serializedBytes);
+    totalCachedEventBytes += serializedBytes;
+    const cachedPaths =
+      cachedPathsByRunId.get(cachedEvent.runId) ?? new Set<string>();
+    cachedPaths.add(eventPath);
+    cachedPathsByRunId.set(cachedEvent.runId, cachedPaths);
+  }
+
+  async function storeEvent(event: Event): Promise<void> {
+    const eventPath = taggedPath(
+      basedir,
+      'events',
+      `${event.runId}-${event.eventId}`,
+      tag
+    );
+    const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+    const serializedBytes = Buffer.byteLength(serializedEvent);
+    // Decode the serialized snapshot before the asynchronous write yields.
+    // This detaches caller-owned payloads and matches disk read normalization.
+    const cachedEvent =
+      serializedBytes <= maxCachedEventBytes
+        ? EventSchema.safeParse(JSON.parse(serializedEvent, jsonReviver))
+        : undefined;
+    await write(eventPath, serializedEvent);
+
+    if (
+      event.eventType === 'run_completed' ||
+      event.eventType === 'run_failed' ||
+      event.eventType === 'run_cancelled'
+    ) {
+      clearRunCache(event.runId);
+      return;
+    }
+
+    if (cachedEvent?.success) {
+      cacheEvent(eventPath, cachedEvent.data, serializedBytes);
+    }
+  }
+
   return {
+    clearCache,
     async create(runId, data, params): Promise<EventResult> {
       // Validate request-supplied IDs before they're concatenated into
       // filesystem paths. This is the primary defense against path traversal
@@ -324,11 +428,7 @@ export function createEventsStorage(
                     executionContext: runInputData.executionContext,
                   },
                 };
-                const createdCompositeKey = `${effectiveRunId}-${runCreatedEventId}`;
-                await writeJSON(
-                  taggedPath(basedir, 'events', createdCompositeKey, tag),
-                  runCreatedEvent
-                );
+                await storeEvent(runCreatedEvent);
                 currentRun = createdRun;
               } else {
                 // Run already exists (concurrent run_created won the
@@ -404,11 +504,7 @@ export function createEventsStorage(
               createdAt: now,
               specVersion: effectiveSpecVersion,
             };
-            const compositeKey = `${effectiveRunId}-${eventId}`;
-            await writeJSON(
-              taggedPath(basedir, 'events', compositeKey, tag),
-              event
-            );
+            await storeEvent(event);
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
             return {
@@ -962,11 +1058,7 @@ export function createEventsStorage(
             };
 
             // Store the conflict event
-            const compositeKey = `${effectiveRunId}-${eventId}`;
-            await writeJSON(
-              taggedPath(basedir, 'events', compositeKey, tag),
-              conflictEvent
-            );
+            await storeEvent(conflictEvent);
 
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
@@ -1140,11 +1232,7 @@ export function createEventsStorage(
         // modify the Hook entity (which doesn't have a payload field)
 
         // Store event using composite key {runId}-{eventId}
-        const compositeKey = `${effectiveRunId}-${eventId}`;
-        await writeJSON(
-          taggedPath(basedir, 'events', compositeKey, tag),
-          event
-        );
+        await storeEvent(event);
 
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);
@@ -1158,6 +1246,7 @@ export function createEventsStorage(
           const allEvents = await paginatedFileSystemQuery({
             directory: path.join(basedir, 'events'),
             schema: EventSchema,
+            cachedItems: eventCache,
             filePrefix: `${effectiveRunId}-`,
             sortOrder: 'asc',
             limit: 1000,
@@ -1208,6 +1297,7 @@ export function createEventsStorage(
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
+        cachedItems: eventCache,
         filePrefix: `${runId}-`,
         // Events in chronological order (oldest first) by default,
         // different from the default for other list calls.
@@ -1238,6 +1328,7 @@ export function createEventsStorage(
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
+        cachedItems: eventCache,
         // No filePrefix - search all events
         filter: (event) => event.correlationId === correlationId,
         // Events in chronological order (oldest first) by default,
