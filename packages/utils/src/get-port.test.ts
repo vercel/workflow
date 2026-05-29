@@ -243,16 +243,19 @@ describe('getWorkflowPort', () => {
 
   it('should identify workflow server among multiple ports', async () => {
     // Non-workflow server (returns 404 for all requests)
-    const nonWorkflowServer = http.createServer((req, res) => {
+    const nonWorkflowServer = http.createServer((_req, res) => {
       res.writeHead(404);
       res.end();
     });
 
     // Workflow server (returns 200 for health check endpoint)
     const workflowServer = http.createServer((req, res) => {
-      if (req.url?.includes('__health')) {
+      if (req.url?.includes('__health') && req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
+      } else if (req.url?.includes('__health')) {
+        res.writeHead(405, { Allow: 'HEAD' });
+        res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing required headers' }));
@@ -275,11 +278,11 @@ describe('getWorkflowPort', () => {
 
   it('should fall back to first port when probing fails', async () => {
     // Two non-workflow servers (both return 404)
-    const server1 = http.createServer((req, res) => {
+    const server1 = http.createServer((_req, res) => {
       res.writeHead(404);
       res.end();
     });
-    const server2 = http.createServer((req, res) => {
+    const server2 = http.createServer((_req, res) => {
       res.writeHead(404);
       res.end();
     });
@@ -302,9 +305,12 @@ describe('getWorkflowPort', () => {
     });
     // Fast workflow server (returns 200 for health check)
     const fastServer = http.createServer((req, res) => {
-      if (req.url?.includes('__health')) {
+      if (req.url?.includes('__health') && req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
+      } else if (req.url?.includes('__health')) {
+        res.writeHead(405, { Allow: 'HEAD' });
+        res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
         res.end();
@@ -318,21 +324,25 @@ describe('getWorkflowPort', () => {
     await new Promise<void>((resolve) => slowServer.listen(0, resolve));
     await new Promise<void>((resolve) => fastServer.listen(0, resolve));
 
+    const fastAddr = fastServer.address() as AddressInfo;
     const start = Date.now();
-    const port = await getWorkflowPort({ timeout: 100 });
+    const port = await getWorkflowPort({
+      timeout: 100,
+    });
     const elapsed = Date.now() - start;
 
-    const fastAddr = fastServer.address() as AddressInfo;
     expect(port).toBe(fastAddr.port);
-    // Should complete reasonably quickly (Windows CI can be slow)
     expect(elapsed).toBeLessThan(2000);
   });
 
   it('should handle concurrent getWorkflowPort calls', async () => {
     const server = http.createServer((req, res) => {
-      if (req.url?.includes('__health')) {
+      if (req.url?.includes('__health') && req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
+      } else if (req.url?.includes('__health')) {
+        res.writeHead(405, { Allow: 'HEAD' });
+        res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
         res.end();

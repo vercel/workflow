@@ -51,7 +51,7 @@ export const WorkflowRunBaseSchema = z.object({
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
   executionContext: z.record(z.string(), z.any()).optional(),
-  input: SerializedDataSchema,
+  input: SerializedDataSchema.optional(),
   output: SerializedDataSchema.optional(),
   error: StructuredErrorSchema.optional(),
   expiredAt: z.coerce.date().optional(),
@@ -66,28 +66,28 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
   // Non-final states
   WorkflowRunBaseSchema.extend({
     status: z.enum(['pending', 'running']),
-    output: z.undefined(),
-    error: z.undefined(),
-    completedAt: z.undefined(),
+    output: z.undefined().optional(),
+    error: z.undefined().optional(),
+    completedAt: z.undefined().optional(),
   }),
   // Cancelled state
   WorkflowRunBaseSchema.extend({
     status: z.literal('cancelled'),
-    output: z.undefined(),
-    error: z.undefined(),
+    output: z.undefined().optional(),
+    error: z.undefined().optional(),
     completedAt: z.coerce.date(),
   }),
   // Completed state - output can be v1 or v2 format
   WorkflowRunBaseSchema.extend({
     status: z.literal('completed'),
     output: SerializedDataSchema,
-    error: z.undefined(),
+    error: z.undefined().optional(),
     completedAt: z.coerce.date(),
   }),
   // Failed state
   WorkflowRunBaseSchema.extend({
     status: z.literal('failed'),
-    output: z.undefined(),
+    output: z.undefined().optional(),
     error: StructuredErrorSchema,
     completedAt: z.coerce.date(),
   }),

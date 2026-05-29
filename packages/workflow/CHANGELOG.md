@@ -1,5 +1,27 @@
 # workflow
 
+## 4.2.5
+
+### Patch Changes
+
+- [#2056](https://github.com/vercel/workflow/pull/2056) [`7487430`](https://github.com/vercel/workflow/commit/74874309cb416c239c53fe24742fb2739d010c2b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix spurious "Event cursor missing after initial load" warning
+
+- [#1986](https://github.com/vercel/workflow/pull/1986) [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix local workflow port detection, make generated health endpoints respond to HEAD requests, materialize manual webhook response bodies before returning them, wait for step return stream serialization before completing the step, bound Vercel stream and health-check operations so stuck writes or queue sends retry or time out instead of hanging, and stabilize remote Vercel e2e checks around CLI inspection, sleep timing, and hook registration/disposal.
+
+- Updated dependencies [[`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d), [`8407c1e`](https://github.com/vercel/workflow/commit/8407c1e9a408bd60b1f3cd0367222d4f1d5d878d), [`7487430`](https://github.com/vercel/workflow/commit/74874309cb416c239c53fe24742fb2739d010c2b), [`c347509`](https://github.com/vercel/workflow/commit/c3475096e9811b2d20fc0b5bc65e0e24d1b58b49), [`478a9c7`](https://github.com/vercel/workflow/commit/478a9c76183b925e44439b7a5d1f849174804b64), [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8), [`9ebe5e4`](https://github.com/vercel/workflow/commit/9ebe5e47cad339f77833982e45f343c22313c607), [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc), [`5b6a581`](https://github.com/vercel/workflow/commit/5b6a5812350a9db9d1beab529c8edc6d18a1209f), [`6aabd6f`](https://github.com/vercel/workflow/commit/6aabd6fd2ef407c3a57835b2c51ceb881a77935f), [`14326ad`](https://github.com/vercel/workflow/commit/14326adcf9b8f5dce753a739555e162cd03dc19f)]:
+  - @workflow/core@4.2.5
+  - @workflow/errors@4.1.2
+  - @workflow/next@4.0.6
+  - @workflow/sveltekit@4.0.5
+  - @workflow/astro@4.0.5
+  - @workflow/nest@0.0.5
+  - @workflow/utils@4.1.2
+  - @workflow/cli@4.2.5
+  - @workflow/nitro@4.0.6
+  - @workflow/typescript-plugin@4.0.2
+  - @workflow/rollup@4.0.5
+  - @workflow/nuxt@4.0.6
+
 ## 4.2.4
 
 ### Patch Changes

@@ -1065,10 +1065,90 @@ The plugin detects this pattern and correctly identifies the directive inside th
 
 ---
 
+## Lexical `this` Capture in Nested Arrow Steps
+
+When a nested arrow-function step references `this` from an enclosing
+function/method scope, the plugin captures that `this` so the workflow
+runtime can rebind it inside the executing step body. This makes the
+following pattern work — the user's class is responsible for providing
+custom serialization (`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`) so the
+captured `this` can survive the workflow→step boundary:
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
+
+export class ReadFileTool {
+  static [WORKFLOW_SERIALIZE](instance) {
+    return { service: instance.service };
+  }
+  static [WORKFLOW_DESERIALIZE](data) {
+    return new ReadFileTool(data.service);
+  }
+  constructor(service) {
+    this.service = service;
+  }
+  createTool(context) {
+    return tool({
+      execute: async (input) => {
+        'use step';
+        return this.service.readFileContent(input, context);
+      },
+    });
+  }
+}
+```
+
+Output (Workflow Mode) — the proxy reference is wrapped with `.bind(this)`
+so the runtime's step proxy captures the caller's `this` as `thisVal` on the
+invocation queue item:
+```javascript
+createTool(context) {
+  return tool({
+    execute: globalThis[Symbol.for("WORKFLOW_USE_STEP")](
+      "step//./input//_anonymousStep0",
+      () => ({ context })
+    ).bind(this),
+  });
+}
+```
+
+Output (Step Mode) — the step body is hoisted as a regular `function` (not
+an arrow) so the runtime's `stepFn.apply(thisVal, args)` can rebind `this`
+to the value that was captured at call time:
+```javascript
+async function _anonymousStep0(input) {
+  const { context } = (function() { /* closure-var IIFE */ })();
+  return this.service.readFileContent(input, context);
+}
+```
+
+Detection rules:
+- Only `this` references that are **lexically captured by an arrow** count.
+  An arrow function inherits `this` from its enclosing scope; a nested
+  `function`/method/getter/setter introduces its own `this` and is therefore
+  not traversed by the detector.
+- The detector only flags arrows that are themselves step functions. A
+  `this` reference inside a non-step nested arrow inside a step does still
+  count, because the inner arrow inherits `this` from the step function
+  body, which in turn inherits from the enclosing function.
+
+Caveat: capturing `this` only works at runtime if the captured value is
+serializable across the workflow→step boundary. Classes registered with
+`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE` work; ordinary class
+instances without custom serialization will fail at proxy-invocation time.
+
+---
+
 ## Notes
 
 - Arguments and return values must be serializable (JSON-compatible or using custom serialization)
-- The `this` keyword and `arguments` object are not allowed in step functions
+- `this` is syntactically allowed inside step bodies, but it only carries a meaningful value in two shapes that both flow through the runtime's `thisVal` plumbing:
+  1. **Instance-method steps** on a class with custom serialization (e.g. `Counter#add`). Calling `instance.add(...)` captures `instance` as `thisVal` so the step body sees `this === instance`.
+  2. **Nested arrow steps that lexically capture `this`** (see "Lexical `this` Capture in Nested Arrow Steps" above). The compiler emits `.bind(this)` on the proxy in workflow mode and hoists the body as a regular `function` in step mode so `stepFn.apply(thisVal, args)` rebinds correctly.
+
+  Other shapes (a top-level `async function` step that references `this`, an arrow step assigned to a module-level variable, etc.) compile without error but `this` will be whatever the caller of the step proxy passes — typically `null`/`undefined` — so referencing it is rarely useful.
+- `arguments` is allowed inside `function`-form step bodies (it reflects the positional arguments the runtime passes via `stepFn.apply(thisVal, args)`). It does **not** work inside arrow-form steps — arrows don't have their own `arguments` binding, and the compiler doesn't capture the enclosing scope's `arguments` the way it does for `this`. Use rest parameters (`...args`) instead if you need that pattern in an arrow step.
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
 - Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available directly in the step bundle and should not be serialized as closure values

@@ -1,8 +1,8 @@
 # On stable, docs/ is a minimal placeholder that only builds a
-# blank Next.js app and packs per-deployment SDK tarballs. The real
-# docs site is deployed from main. This workflow is kept as a no-op
-# on stable so that any branch protection rules referencing these
-# job names still pass.
+# blank Next.js app. The real docs site is deployed from main, and
+# per-deployment SDK tarballs are built by the separate tarballs/
+# app. This workflow is kept as a no-op on stable so that any
+# branch protection rules referencing these job names still pass.
 name: Docs Checks
 
 on:

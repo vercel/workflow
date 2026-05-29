@@ -2274,6 +2274,148 @@ describe('step function serialization', () => {
     expect(result).toBe('Result: 21');
   });
 
+  it('should dehydrate and hydrate step function with closureVars + boundThis combined', async () => {
+    // The end-to-end shape exercised by the SWC plugin's lexical-`this`
+    // capture: a nested arrow step closes over both lexical `this` AND a
+    // surrounding closure variable. After serialization, the step-bundle
+    // reviver must run the registered body inside the closure-vars
+    // AsyncLocalStorage frame *and* invoke it with `apply(boundThis,
+    // args)`.
+    const stepName = 'step//workflows/test.ts//addToInstance';
+
+    const { __private_getClosureVars } = await import(
+      './step/get-closure-vars.js'
+    );
+    const { contextStorage } = await import('./step/context-storage.js');
+
+    const stepFn = async function (this: { value: number }, amount: number) {
+      const { delta } = __private_getClosureVars() as { delta: number };
+      return this.value + amount + delta;
+    };
+    registerStepFunction(stepName, stepFn);
+
+    Object.defineProperty(stepFn, 'stepId', {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    Object.defineProperty(stepFn, '__closureVarsFn', {
+      value: () => ({ delta: 7 }),
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    // Simulate the `__boundThis` marker that the step proxy's overridden
+    // `.bind` (in step.ts) would attach. Plain object instead of a real
+    // class instance so the test focuses on the reducer/reviver plumbing.
+    const instance = { value: 5 };
+    Object.defineProperty(stepFn, '__boundThis', {
+      value: instance,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    // Round-trip through the workflow→step serialization pipeline.
+    const dehydrated = await dehydrateStepArguments(
+      [stepFn, 3],
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+    const hydrated = (await hydrateStepArguments(
+      dehydrated,
+      'test-run-123',
+      noEncryptionKey,
+      []
+    )) as [(amount: number) => Promise<number>, number];
+
+    expect(typeof hydrated[0]).toBe('function');
+    expect(hydrated[1]).toBe(3);
+
+    // Invoke the rehydrated step function inside a step-context frame
+    // (otherwise the closure-vars wrapper throws). The wrapper must
+    // bind `this` to `instance` *and* expose `delta = 7` via
+    // `__private_getClosureVars()`.
+    const result = await contextStorage.run(
+      {
+        stepMetadata: {
+          stepName,
+          stepId: 'test-step',
+          stepStartedAt: new Date(),
+          attempt: 1,
+        },
+        workflowMetadata: {
+          workflowName: 'workflow//workflows/test.ts//testWorkflow',
+          workflowRunId: 'test-run',
+          workflowStartedAt: new Date(),
+          url: 'http://localhost:3000',
+          features: { encryption: false },
+        },
+        ops: [],
+      },
+      () => hydrated[0](3)
+    );
+
+    // value(5) + amount(3) + delta(7) = 15
+    expect(result).toBe(15);
+  });
+
+  it('should preserve `boundArgs` (partial application) across serialization', async () => {
+    // The step proxy's overridden `.bind` also stashes prefilled args
+    // (`useStep(...).bind(thisArg, x)`) so partial application survives
+    // the round trip. The SWC plugin only ever emits `.bind(this)` today,
+    // so this codifies the safety net for future hand-written callers.
+    const stepName = 'step//workflows/test.ts//partialApply';
+
+    const stepFn = async function (
+      this: { tag: string },
+      prefilled: number,
+      runtimeArg: number
+    ) {
+      return `${this.tag}:${prefilled}+${runtimeArg}`;
+    };
+    registerStepFunction(stepName, stepFn);
+
+    Object.defineProperty(stepFn, 'stepId', {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    Object.defineProperty(stepFn, '__boundThis', {
+      value: { tag: 'bound' },
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    Object.defineProperty(stepFn, '__boundArgs', {
+      value: [10],
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    const dehydrated = await dehydrateStepArguments(
+      [stepFn],
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+    const hydrated = (await hydrateStepArguments(
+      dehydrated,
+      'test-run-123',
+      noEncryptionKey,
+      []
+    )) as [(runtimeArg: number) => Promise<string>];
+
+    // The hydrated proxy should already have `prefilled = 10` baked in,
+    // so the caller only supplies `runtimeArg`.
+    const result = await hydrated[0](32);
+    expect(result).toBe('bound:10+32');
+  });
+
   it('should serialize step function to object through reducer', () => {
     const stepName = 'step//workflows/test.ts//anotherStep';
     const stepFn = async () => 'result';

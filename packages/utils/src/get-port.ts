@@ -21,6 +21,47 @@ function parsePort(value: string, radix = 10): number | undefined {
 const join = (arr: string[], sep: string) => arr.join(sep);
 const PROC_ROOT = join(['', 'proc'], '/');
 
+interface LibuvTcpHandle {
+  type?: string;
+  is_active?: boolean;
+  localEndpoint?: {
+    port?: number;
+  };
+  remoteEndpoint?: unknown;
+}
+
+function getReportedPorts(): number[] {
+  const report = process.report?.getReport?.() as
+    | { libuv?: LibuvTcpHandle[] }
+    | undefined;
+  const handles = report?.libuv;
+
+  if (!handles) {
+    return [];
+  }
+
+  const ports: number[] = [];
+  const seen = new Set<number>();
+
+  for (const handle of handles) {
+    if (
+      handle.type !== 'tcp' ||
+      handle.is_active !== true ||
+      handle.remoteEndpoint !== null
+    ) {
+      continue;
+    }
+
+    const port = parsePort(String(handle.localEndpoint?.port));
+    if (port !== undefined && !seen.has(port)) {
+      ports.push(port);
+      seen.add(port);
+    }
+  }
+
+  return ports;
+}
+
 /**
  * Gets ALL listening ports for the current process on Linux by reading /proc filesystem.
  * Returns ports in order of file descriptor (deterministic ordering).
@@ -205,6 +246,11 @@ export async function getAllPorts(): Promise<number[]> {
   const { pid, platform } = process;
 
   try {
+    const reportedPorts = getReportedPorts();
+    if (reportedPorts.length > 0) {
+      return reportedPorts;
+    }
+
     switch (platform) {
       case 'linux':
         return await getLinuxPorts(pid);

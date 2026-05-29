@@ -6,10 +6,6 @@ inputs:
     description: 'Node.js version to use'
     required: false
     default: '22.x'
-  pnpm-version:
-    description: 'pnpm version to use'
-    required: false
-    default: '10.14.0'
   setup-rust:
     description: 'Whether to setup Rust toolchain'
     required: false
@@ -37,9 +33,7 @@ runs:
         toolchain: stable
 
     - name: Setup pnpm
-      uses: pnpm/action-setup@v3
-      with:
-        version: ${{ inputs.pnpm-version }}
+      uses: pnpm/action-setup@v5
 
     - name: Setup Node.js ${{ inputs.node-version }}
       uses: actions/setup-node@v4

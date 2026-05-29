@@ -1,0 +1,29 @@
+# On stable, the workflow-tarballs Vercel project may not be wired up the
+# same way as on main, and the wait-for-vercel-project action on this branch
+# expects the older Vercel-API interface (team-id / project-id / vercel-token)
+# rather than main's GitHub-Deployments-API project-slug interface. Keep this
+# workflow as a no-op stub so any branch protection rules referencing the job
+# name still pass; the real smoke check runs on main.
+name: Tarballs Checks
+
+on:
+  push:
+    branches:
+      - main
+      - stable
+    tags:
+      - "!*"
+  pull_request:
+
+concurrency:
+  # Unique group for this workflow and branch
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  tarballs-preview-smoke:
+    name: Tarballs Preview Smoke Checks
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: true

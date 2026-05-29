@@ -94,6 +94,12 @@ export function createDevTests(config?: DevTestConfig) {
       await Promise.all([
         fetchWithTimeout('/').catch(() => {}),
         fetchWithTimeout('/api/chat').catch(() => {}),
+        fetchWithTimeout('/.well-known/workflow/v1/flow?__health').catch(
+          () => {}
+        ),
+        fetchWithTimeout('/.well-known/workflow/v1/step?__health').catch(
+          () => {}
+        ),
       ]);
     };
 
@@ -137,16 +143,23 @@ export function createDevTests(config?: DevTestConfig) {
     });
 
     afterEach(async () => {
+      // Restore file contents before clearing any added files. Dev servers can
+      // keep generated imports alive briefly after a rebuild. Next's generated
+      // step route imports deferred copies, so added workflow files need to keep
+      // their real contents until shutdown. Other builders can use empty
+      // placeholders to drop workflow directives while avoiding missing imports.
+      const toRestore = restoreFiles.filter((item) => item.content !== '');
+      const toClear = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
-        restoreFiles.map(async (item) => {
-          if (item.content === '') {
-            await fs.unlink(item.path);
-          } else {
-            await fs.writeFile(item.path, item.content);
-          }
-        })
+        toRestore.map((item) => fs.writeFile(item.path, item.content))
       );
-      await prewarm();
+      if (toClear.length > 0) {
+        await prewarm();
+        if (!supportsDeferredStepCopies) {
+          await Promise.all(toClear.map((item) => fs.writeFile(item.path, '')));
+          await prewarm();
+        }
+      }
       restoreFiles.length = 0;
     });
 
@@ -250,6 +263,8 @@ export async function ${marker}() {
         );
         restoreFiles.push({ path: importedStepFile, content });
 
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
         const copiedStepDir = path.join(
           path.dirname(generatedStep),
           '__workflow_step_files__'
@@ -260,7 +275,19 @@ export async function ${marker}() {
             'copied deferred step files to include imported step hot-reload marker',
           timeoutMs: 50_000,
           check: async () => {
-            await triggerWorkflowRun('importedStepOnlyWorkflow');
+            try {
+              await triggerWorkflowRun('importedStepOnlyWorkflow');
+            } catch (error) {
+              // Turbopack on Windows occasionally caches a stale resolver
+              // failure (e.g. `Could not parse module
+              // '@workflow/core/dist/runtime/start.js'`) after an HMR
+              // cascade and returns 500 to every request until something
+              // invalidates its cache. Rewriting the api file is enough to
+              // force a fresh resolve on the next request, so we treat the
+              // 500 as transient and keep polling instead of bailing out.
+              await fs.writeFile(apiFile, apiFileContent);
+              throw error;
+            }
             const copiedStepFileNames = await fs.readdir(copiedStepDir);
             const copiedStepContents = await Promise.all(
               copiedStepFileNames.map(async (copiedStepFileName) => {
@@ -332,7 +359,7 @@ ${apiFileContent}`
 
     test.skipIf(!supportsDeferredStepCopies)(
       'should include steps discovered from workflow imports',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const workflowFile = path.join(
           appPath,

@@ -5,12 +5,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createVercelWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
+import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
-  process.env.WORKFLOW_E2E_CLI_TIMEOUT_MS ?? '20000'
+  process.env.WORKFLOW_E2E_CLI_TIMEOUT_MS ??
+    (process.env.WORKFLOW_VERCEL_ENV ? '90000' : '20000')
 );
 
 function splitArgs(raw: string): string[] {
@@ -66,11 +68,6 @@ export function hasStepSourceMaps(): boolean {
     return appName !== 'sveltekit';
   }
 
-  // Vite only works in vercel, not on local prod or dev
-  if (appName === 'vite') {
-    return false;
-  }
-
   // NestJS preserves source maps in all builds including prod
   if (appName === 'nest') {
     return true;
@@ -103,7 +100,7 @@ export function hasWorkflowSourceMaps(): boolean {
   // TODO: figure out how to get sourcemaps working in these frameworks too
   if (
     process.env.DEV_TEST_CONFIG &&
-    ['vite', 'astro', 'sveltekit'].includes(appName)
+    ['vite', 'astro', 'sveltekit', 'tanstack-start'].includes(appName)
   ) {
     return false;
   }
@@ -190,20 +187,6 @@ const awaitCommand = async (
     }
   );
 };
-
-/**
- * Returns headers needed to bypass Vercel Deployment Protection.
- * When VERCEL_AUTOMATION_BYPASS_SECRET is set, includes the x-vercel-protection-bypass header.
- */
-export function getProtectionBypassHeaders(): HeadersInit {
-  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  if (bypassSecret) {
-    return {
-      'x-vercel-protection-bypass': bypassSecret,
-    };
-  }
-  return {};
-}
 
 export const cliInspectJson = async (args: string) => {
   const cliAppPath = getWorkbenchAppPath();
@@ -297,7 +280,7 @@ export async function fetchManifest(
 
   const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
   const res = await fetch(url, {
-    headers: getProtectionBypassHeaders(),
+    headers: await getTrustedSourcesHeaders(),
   });
   if (!res.ok) {
     throw new Error(

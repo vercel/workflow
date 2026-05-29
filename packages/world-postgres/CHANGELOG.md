@@ -1,5 +1,21 @@
 # @workflow/world-postgres
 
+## 4.1.2
+
+### Patch Changes
+
+- [#2029](https://github.com/vercel/workflow/pull/2029) [`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d) Thanks [@pranaygp](https://github.com/pranaygp)! - Refresh workflow events after completing elapsed waits so concurrent hook events preserve deterministic replay order.
+
+- [#2069](https://github.com/vercel/workflow/pull/2069) [`096adbf`](https://github.com/vercel/workflow/commit/096adbfd8edf54c052199e049531f7283bf54833) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix race in `events.create()` where concurrent `step_created` / `hook_created` / `wait_created` writes with the same `correlationId` would persist duplicate event rows. Adds a unique partial index and surfaces the violation as `EntityConflictError`.
+
+- [#2019](https://github.com/vercel/workflow/pull/2019) [`be506cc`](https://github.com/vercel/workflow/commit/be506ccbd039881df8953234068aefaabb6fc4c1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `workflow-postgres-setup` now also bootstraps the `graphile_worker` schema, fixing potential race on setup when starting the app and a test runner at the same time
+
+- Updated dependencies [[`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d), [`8407c1e`](https://github.com/vercel/workflow/commit/8407c1e9a408bd60b1f3cd0367222d4f1d5d878d), [`15e44b3`](https://github.com/vercel/workflow/commit/15e44b360535dcf1e5303cb7389db1f4007a24e8), [`c347509`](https://github.com/vercel/workflow/commit/c3475096e9811b2d20fc0b5bc65e0e24d1b58b49), [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8), [`76352f0`](https://github.com/vercel/workflow/commit/76352f0b66514726fb4adde0a618fd1767436799), [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc), [`e428cdb`](https://github.com/vercel/workflow/commit/e428cdb1d55b64956914a165ac57e0da76d1a33c), [`5f50bbc`](https://github.com/vercel/workflow/commit/5f50bbcee6b35ab275e49214c60143dab1f78c03)]:
+  - @workflow/world@4.1.2
+  - @workflow/world-local@4.1.2
+  - @workflow/errors@4.1.2
+  - @workflow/utils@4.1.2
+
 ## 4.1.1
 
 ### Patch Changes
