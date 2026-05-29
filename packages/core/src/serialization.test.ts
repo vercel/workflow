@@ -1,5 +1,6 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
+import { RuntimeDecryptionError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
@@ -3810,8 +3811,8 @@ describe('getDeserializeStream legacy fallback', () => {
     const { stringify } = await import('devalue');
     const encoder = new TextEncoder();
 
-    const line1 = stringify({ hello: 'world' }) + '\n';
-    const line2 = stringify(42) + '\n';
+    const line1 = `${stringify({ hello: 'world' })}\n`;
+    const line2 = `${stringify(42)}\n`;
     const legacyData = encoder.encode(line1 + line2);
 
     const results = await deserializeChunks([legacyData]);
@@ -3824,8 +3825,8 @@ describe('getDeserializeStream legacy fallback', () => {
     const { stringify } = await import('devalue');
     const encoder = new TextEncoder();
 
-    const chunk1 = encoder.encode(stringify('hello') + '\n');
-    const chunk2 = encoder.encode(stringify('world') + '\n');
+    const chunk1 = encoder.encode(`${stringify('hello')}\n`);
+    const chunk2 = encoder.encode(`${stringify('world')}\n`);
 
     const results = await deserializeChunks([chunk1, chunk2]);
     expect(results).toHaveLength(2);
@@ -3992,6 +3993,40 @@ describe('stream encryption round-trip', () => {
     await expect(readPromise).rejects.toThrow(
       'Encrypted stream data encountered but no encryption key is available'
     );
+  });
+
+  it('should error with a RuntimeDecryptionError carrying the encr prefix when a frame is tampered', async () => {
+    const encrypted = await encryptedSerialize([{ secret: true }]);
+    const frame = encrypted[0];
+
+    // Tamper with the last byte (inside the GCM auth tag) to force an
+    // auth-tag verification failure during stream decryption.
+    const tampered = new Uint8Array(frame);
+    tampered[tampered.length - 1] ^= 0xff;
+
+    const deserialize = getDeserializeStream(revivers, cryptoKey);
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    })();
+
+    const writer = deserialize.writable.getWriter();
+    // The write/close may reject because controller.error() aborts the stream.
+    await writer.write(tampered).catch(() => {});
+    await writer.close().catch(() => {});
+
+    const error = await readPromise.catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+    // The stream decrypt path must enrich the context with the real outer
+    // envelope prefix (`encr`), not the nonce bytes — mirroring the regular
+    // payload decryption path.
+    expect(error.context).toMatchObject({
+      operation: 'decrypt',
+      formatPrefix: 'encr',
+    });
   });
 
   it('should not encrypt when cryptoKey is undefined', async () => {
