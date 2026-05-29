@@ -1077,11 +1077,25 @@ export function workflowEntrypoint(
                         // run_failed) and let the canonical invocation
                         // make progress.
                         if (suspensionResult.staleSnapshot) {
+                          // Abandon this replay's (potentially divergent)
+                          // queue results, but re-enqueue an immediate
+                          // tick so the canonical event log gets
+                          // processed. Without the re-enqueue, work that
+                          // arrived after the winning tick's snapshot
+                          // (e.g. a burst of hook_received events that
+                          // each raced this tick) can be left unconsumed
+                          // — the run sits `running` with pending hooks
+                          // and no tick scheduled to advance it. The
+                          // re-enqueue is bounded (one per abandoned
+                          // tick) and converges: the server-side atomic
+                          // fence+event write guarantees the canonical
+                          // replay makes forward progress rather than
+                          // spinning.
                           runtimeLogger.info(
-                            'Replay abandoned: stale event-log snapshot, canonical invocation has the log',
+                            'Replay abandoned (stale snapshot); re-enqueuing a tick for the canonical log',
                             { workflowRunId: runId }
                           );
-                          return;
+                          return { timeoutSeconds: 0 };
                         }
 
                         // Hook conflict: break loop, re-invoke via queue
