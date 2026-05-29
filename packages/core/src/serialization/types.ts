@@ -2,6 +2,8 @@
  * Shared types for the serialization system.
  */
 
+import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+
 // ---- Format Prefix ----
 
 /**
@@ -85,6 +87,12 @@ export interface SerializableSpecial {
     stack?: string;
     cause?: unknown;
     retryAfter: number;
+  };
+  RuntimeDecryptionError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    context?: RuntimeDecryptionErrorContext;
   };
   Request: {
     method: string;

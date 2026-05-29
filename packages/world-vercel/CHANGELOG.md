@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#2142](https://github.com/vercel/workflow/pull/2142) [`ae37315`](https://github.com/vercel/workflow/commit/ae37315cb708b413f2ee9945c90a23a57dfd410d) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent failed stream writes from surfacing as unhandled rejections and include request correlation details in stream errors.
+
 ## 5.0.0-beta.7
 
 ### Minor Changes
