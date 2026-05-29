@@ -104,12 +104,30 @@ jobs:
           EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS: ${{ inputs.resume_delay_ms || '15000' }}
           EVENT_LOG_RACE_REPRO_RESUME_JITTER_MS: ${{ inputs.resume_jitter_ms || '10000' }}
 
+      - name: Fetch previous repro comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments?per_page=100" \
+            --jq '[.[] | select(.body | contains("<!-- event-log-race-repro-results -->"))][-1].body // ""' \
+            > event-log-race-repro-previous-comment.md
+
       - name: Render repro summary
         if: always()
         run: |
+          previous_comment_args=()
+          if [ -f event-log-race-repro-previous-comment.md ]; then
+            previous_comment_args=(--previous-comment event-log-race-repro-previous-comment.md)
+          fi
+
           node .github/scripts/render-event-log-race-repro-results.js \
             event-log-race-repro-results.json \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            "${previous_comment_args[@]}" \
             | tee event-log-race-repro-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update PR comment
