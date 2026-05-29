@@ -1078,23 +1078,49 @@ export function workflowEntrypoint(
                         // make progress.
                         if (suspensionResult.staleSnapshot) {
                           // Abandon this replay's (potentially divergent)
-                          // queue results, but re-enqueue an immediate
-                          // tick so the canonical event log gets
-                          // processed. Without the re-enqueue, work that
-                          // arrived after the winning tick's snapshot
-                          // (e.g. a burst of hook_received events that
-                          // each raced this tick) can be left unconsumed
-                          // — the run sits `running` with pending hooks
-                          // and no tick scheduled to advance it. The
-                          // re-enqueue is bounded (one per abandoned
-                          // tick) and converges: the server-side atomic
-                          // fence+event write guarantees the canonical
-                          // replay makes forward progress rather than
-                          // spinning.
+                          // queue results, but:
+                          //
+                          //  1. Dispatch the steps this tick already wrote
+                          //     a (fenced, atomic, canonical) step_created
+                          //     for before the conflict. Those are owned
+                          //     by this tick — exactly one owner — so
+                          //     queueing them is safe and can't
+                          //     double-dispatch. Skipping them would
+                          //     orphan the step_created (no owner to
+                          //     dispatch it), stalling the run.
+                          //  2. Re-enqueue an immediate tick so the
+                          //     canonical event log (incl. any work that
+                          //     arrived after this tick's snapshot, e.g. a
+                          //     hook burst that each raced this tick) gets
+                          //     processed. Bounded (one re-enqueue per
+                          //     abandoned tick) and converges: the
+                          //     server-side atomic fence+event write means
+                          //     the canonical replay makes forward
+                          //     progress instead of spinning.
                           runtimeLogger.info(
-                            'Replay abandoned (stale snapshot); re-enqueuing a tick for the canonical log',
-                            { workflowRunId: runId }
+                            'Replay abandoned (stale snapshot); dispatching owned steps + re-enqueuing a tick',
+                            {
+                              workflowRunId: runId,
+                              ownedSteps: suspensionResult.pendingSteps.length,
+                            }
                           );
+                          for (const step of suspensionResult.pendingSteps) {
+                            const traceCarrier = await serializeTraceCarrier();
+                            await queueMessage(
+                              world,
+                              getWorkflowQueueName(workflowName),
+                              {
+                                runId,
+                                stepId: step.correlationId,
+                                stepName: step.stepName,
+                                traceCarrier,
+                                requestedAt: new Date(),
+                              },
+                              {
+                                idempotencyKey: step.correlationId,
+                              }
+                            );
+                          }
                           return { timeoutSeconds: 0 };
                         }
 

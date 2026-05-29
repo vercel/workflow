@@ -158,12 +158,22 @@ export async function handleSuspension({
   let hasHookConflict = false;
 
   // Helper to build the early-return result when we detect a stale-snapshot
-  // fence conflict. Once flipped, the entire replay's queue results are
-  // invalid (a stale-snapshot VM decision could be divergent from the
+  // fence conflict. Once flipped, the rest of this replay's queue results
+  // are invalid (a stale-snapshot VM decision could diverge from the
   // canonical replay's), so further writes from this invocation must not
   // happen.
+  //
+  // Crucially, `pendingSteps` carries the steps this tick ALREADY wrote a
+  // (fenced, atomic) `step_created` for before the conflict. Those writes
+  // succeeded against a matching fence, so they're canonical and owned by
+  // this tick — the caller must still dispatch them, or they'd be orphaned
+  // (a step_created with no owner to queue it, stalling the run). Pairing
+  // ownership (createdStepCorrelationIds) with the dispatch avoids the
+  // double-dispatch that an unconditional recovery scan would cause.
   const staleSnapshotResult = (): SuspensionHandlerResult => ({
-    pendingSteps: [],
+    pendingSteps: stepItems.filter((s) =>
+      createdStepCorrelationIds.has(s.correlationId)
+    ),
     createdStepCorrelationIds,
     hasHookConflict: false,
     staleSnapshot: true,
