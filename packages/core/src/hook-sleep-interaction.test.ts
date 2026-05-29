@@ -404,6 +404,127 @@ function defineTests(mode: 'sync' | 'async') {
         'drainStep'
       );
     });
+
+    it('should let a queued hook payload win without mapping the race promises', async () => {
+      await setupHydrateMock();
+      const ops: Promise<any>[] = [];
+      const [payload, setupResult] = await Promise.all([
+        dehydrateStepReturnValue(
+          { value: 'hook-wins' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(undefined, 'wrun_test', undefined, ops),
+      ]);
+      const resumeAt = new Date('2026-05-20T22:16:57.197Z');
+
+      // This is the same ordered durable history as the mapped-race test.
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'setupStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'setupStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'setupStep', result: setupResult },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'wait_completed',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_7',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'drainStep' },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const createHook = createCreateHook(ctx);
+      const sleep = createSleep(ctx);
+      const useStep = createUseStep(ctx);
+
+      const { error } = await runWithDiscontinuation(ctx, async () => {
+        const hook = createHook<{ value: string }>({ token: 'test-token' });
+        const iterator = hook[Symbol.asyncIterator]();
+        const pendingSleep = sleep(resumeAt);
+        const setupStep = useStep('setupStep');
+        const drainStep = useStep('drainStep');
+        const syncNextStep = useStep('syncNextStep');
+
+        await setupStep();
+
+        const result = await Promise.race([iterator.next(), pendingSleep]);
+
+        if (result !== undefined) {
+          await drainStep();
+          return result.value.value;
+        }
+
+        await syncNextStep();
+        return 'sleep';
+      });
+
+      expect(error).toBeDefined();
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+
+      const pendingSteps = [...ctx.invocationsQueue.values()].filter(
+        (i) => i.type === 'step'
+      );
+      expect(pendingSteps).toHaveLength(1);
+      expect(pendingSteps[0].type === 'step' && pendingSteps[0].stepName).toBe(
+        'drainStep'
+      );
+    });
   });
 
   describe(`hook + incomplete step ${label}`, () => {
