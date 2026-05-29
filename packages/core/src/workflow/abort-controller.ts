@@ -205,7 +205,11 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           });
 
           ctx.invocationsQueue.delete(correlationId);
-          return EventConsumerResult.Finished;
+          // Multiple handlers can observe the same pending abort request and
+          // durably record it before replay removes the queue item. Abort is
+          // idempotent, so consume later matching receipts as no-ops instead
+          // of surfacing a corrupted event log after the first receipt.
+          return EventConsumerResult.Consumed;
         }
 
         if (event.eventType === 'hook_disposed') {
