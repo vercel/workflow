@@ -21,6 +21,8 @@ const RESULT_PATH = path.resolve(
   process.cwd(),
   'event-log-race-repro-results.json'
 );
+const WORKFLOW_FILE = 'workflows/101_hook_sleep_repro.ts';
+const WORKFLOW_FN = 'hookSleepStepReproWorkflow';
 
 type Outcome =
   | 'completed'
@@ -106,8 +108,8 @@ async function start<T>(
   const run = await rawStart<T>(...args);
   trackRun(run, {
     testName: 'event-log-race-repro',
-    workflowFile: 'workflows/101_hook_sleep_repro.ts',
-    workflowFn: 'hookSleepReproWorkflow',
+    workflowFile: WORKFLOW_FILE,
+    workflowFn: WORKFLOW_FN,
   });
   return run;
 }
@@ -168,6 +170,16 @@ function hasWakeBranch(value: unknown) {
         'branch' in branch &&
         branch.branch === 'wake'
     )
+  );
+}
+
+function hasHookEvent(value: unknown) {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    'event' in value &&
+    !!value.event &&
+    typeof value.event === 'object'
   );
 }
 
@@ -255,8 +267,8 @@ async function runAttempt(attempt: number): Promise<ReproRunResult> {
   try {
     const workflow = await getWorkflowMetadata(
       deploymentUrl,
-      'workflows/101_hook_sleep_repro.ts',
-      'hookSleepReproWorkflow'
+      WORKFLOW_FILE,
+      WORKFLOW_FN
     );
     const run = await start(workflow, [
       {
@@ -311,14 +323,14 @@ async function runAttempt(attempt: number): Promise<ReproRunResult> {
         30_000,
         `Timed out reading return value for run ${run.runId}`
       );
-      if (!hasWakeBranch(returnValue)) {
+      if (!hasWakeBranch(returnValue) && !hasHookEvent(returnValue)) {
         return {
           ...runResult,
           attempt,
           token,
           outcome: 'other',
-          errorCode: 'NO_WAKE_BRANCH',
-          errorMessage: 'Run completed without taking the hook wake branch.',
+          errorCode: 'NO_HOOK_EVENT',
+          errorMessage: 'Run completed without consuming the hook event.',
         };
       }
     }
