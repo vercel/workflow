@@ -151,6 +151,7 @@ describe('Storage', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     // Clean up test dir
     await fs.rm(testDir, { recursive: true, force: true });
   });
@@ -1329,6 +1330,62 @@ describe('Storage', () => {
       expect(second.data[0]?.eventType).toBe('run_created');
     });
 
+    it('reuses sequential-step events with a relative data directory', async () => {
+      const relativeStorage = createStorage(
+        path.relative(process.cwd(), testDir)
+      );
+      const run = await createRun(relativeStorage, {
+        deploymentId: 'deployment-relative-cache',
+        workflowName: 'relative-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      await updateRun(relativeStorage, run.runId, 'run_started');
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      for (let i = 0; i < 5; i++) {
+        const stepId = `relative_step_${i}`;
+        await createStep(relativeStorage, run.runId, {
+          stepId,
+          stepName: `step-${i}`,
+          input: new Uint8Array([i]),
+        });
+        await updateStep(relativeStorage, run.runId, stepId, 'step_started');
+        await updateStep(relativeStorage, run.runId, stepId, 'step_completed', {
+          result: new Uint8Array([i]),
+        });
+
+        const events = await relativeStorage.events.list({ runId: run.runId });
+        expect(events.data).toHaveLength(2 + (i + 1) * 3);
+      }
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads).toHaveLength(0);
+    });
+
+    it('reuses locally appended events for correlation queries', async () => {
+      const stepId = 'cached-correlation-step';
+      await createStep(storage, testRunId, {
+        stepId,
+        stepName: 'cached-correlation-step',
+        input: new Uint8Array([1]),
+      });
+      await updateStep(storage, testRunId, stepId, 'step_started');
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      const events = await storage.events.listByCorrelationId({
+        correlationId: stepId,
+        pagination: {},
+      });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(events.data).toHaveLength(2);
+      expect(eventFileReads).toHaveLength(0);
+    });
+
     it('reads oversized event payloads from disk instead of retaining them', async () => {
       const created = await storage.events.create(null, {
         eventType: 'run_created',
@@ -1341,6 +1398,30 @@ describe('Storage', () => {
       const readFileSpy = vi.spyOn(fs, 'readFile');
 
       await storage.events.list({ runId: created.event.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('evicts old events once the recent-event entry bound is exceeded', async () => {
+      const hookId = 'bounded-cache-hook';
+      await createHook(storage, testRunId, {
+        hookId,
+        token: 'bounded-cache-token',
+      });
+
+      for (let i = 0; i < 1001; i++) {
+        await storage.events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hookId,
+          eventData: { payload: new Uint8Array([i % 256]) },
+        });
+      }
+
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+      await storage.events.list({ runId: testRunId });
 
       const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
         String(filePath).includes(`${path.sep}events${path.sep}`)

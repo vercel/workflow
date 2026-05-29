@@ -531,8 +531,10 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     assertSafeEntityId('filePrefix', filePrefix);
   }
 
+  const resolvedDirectory = path.resolve(directory);
+
   // 1. Get all JSON files in directory
-  const fileIds = await listJSONFiles(directory);
+  const fileIds = await listJSONFiles(resolvedDirectory);
 
   // 2. Filter by prefix if provided
   const relevantFileIds = filePrefix
@@ -579,7 +581,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const validItems: T[] = [];
 
   for (const fileId of candidateFileIds) {
-    const filePath = path.join(directory, `${fileId}.json`);
+    const filePath = path.join(resolvedDirectory, `${fileId}.json`);
     let item: T | null = null;
     try {
       const cachedItem = cachedItems?.get(filePath);
