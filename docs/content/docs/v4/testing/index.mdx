@@ -356,7 +356,7 @@ For advanced setups that require a running server (e.g. testing against your act
 
 ## Debugging Test Runs
 
-When integration tests fail, the [Workflow SDK CLI and Web UI](/docs/observability/overview) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you would use in development.
+When integration tests fail, the [Workflow SDK CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you would use in development.
 
 Launch the Web UI to visually explore your test workflow runs:
 
@@ -379,7 +379,7 @@ The Web UI shows each step, its inputs and outputs, retry attempts, hook state, 
 ![Workflow SDK Web UI](/o11y-ui.png)
 
 <Callout type="info">
-See the [Observability](/docs/observability/overview) docs for the full set of CLI commands and Web UI features.
+See the [Observability](/docs/observability) docs for the full set of CLI commands and Web UI features.
 </Callout>
 
 ## Best Practices
@@ -412,7 +412,7 @@ Integration tests are the right place to verify that your workflows handle error
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status and wake up sleeping runs
 - [`@workflow/vitest` API Reference](/docs/api-reference/vitest) - Test helpers: `waitForSleep()`, `waitForHook()`, and plugin setup
 - [Vite Integration](/docs/getting-started/vite) - Set up the Vite plugin
-- [Observability](/docs/observability/overview) - Inspect and debug workflow runs with the CLI and Web UI
+- [Observability](/docs/observability) - Inspect and debug workflow runs with the CLI and Web UI
 - [Server-based testing](/docs/testing/server-based) - Integration testing with a running server
 
 ---
