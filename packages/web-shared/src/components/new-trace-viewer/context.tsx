@@ -28,9 +28,7 @@ export function ActiveSpanProvider({
   spans: Span[];
   children: ReactNode;
 }) {
-  const [activeSpanId, setActiveSpanId] = useState<string | null>(
-    spans[0]?.spanId ?? null
-  );
+  const [activeSpanId, setActiveSpanId] = useState<string | null>(null);
 
   useEffect(() => {
     setActiveSpanId((currentSpanId) => {
