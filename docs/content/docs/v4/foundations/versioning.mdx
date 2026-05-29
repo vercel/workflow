@@ -70,7 +70,7 @@ If you deploy a change to `chargeCustomer()` while a run is in the two-day sleep
 Sometimes you deploy because the old code had a bug. The safest fix is usually explicit:
 
 1. Deploy the fixed code.
-2. Find the affected runs in [observability](/docs/observability) or with the CLI.
+2. Find the affected runs in [observability](/docs/observability/overview) or with the CLI.
 3. Cancel the old runs if they are still running.
 4. Rerun them on the latest deployment with the same inputs.
 
@@ -95,7 +95,7 @@ npx workflow cancel \
 
 The `--workflowName` filter expects the generated workflow ID, not only the exported function's short name. Use the `workflowName` value from `workflow inspect runs`, and use [`parseWorkflowName()`](/docs/api-reference/workflow-api/world/observability) when you need display-friendly names.
 
-In the [observability UI](/docs/observability), use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
+In the [observability UI](/docs/observability/overview), use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
 
 If you are writing your own recovery route, call `start()` with the same arguments and `deploymentId: "latest"`:
 
