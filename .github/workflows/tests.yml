@@ -488,7 +488,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: e2e-package-build-artifacts
-          path: .
+          path: packages
 
       - name: Run Initial Build for Next.js canary
         if: ${{ matrix.app.canary }}
@@ -572,7 +572,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: e2e-package-build-artifacts
-          path: .
+          path: packages
 
       - name: Run Initial Build for Next.js canary
         if: ${{ matrix.app.canary }}
@@ -677,7 +677,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: e2e-package-build-artifacts
-          path: .
+          path: packages
 
       - name: Run Initial Build for Next.js canary
         if: ${{ matrix.app.canary }}
