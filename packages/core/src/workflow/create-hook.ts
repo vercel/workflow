@@ -51,7 +51,7 @@ export function createWebhook(
     | Webhook<RequestWithResponse>;
 
   const { url } = getWorkflowMetadata();
-  hook.url = `${url}/.well-known/workflow/v1/webhook/${encodeURIComponent(hook.token)}`;
+  hook.url = `${url}/.well-known/workflow/v2/webhook/${encodeURIComponent(hook.token)}`;
 
   return hook;
 }

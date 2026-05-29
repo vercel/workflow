@@ -66,6 +66,15 @@ describe('@workflow/nitro virtual handlers', () => {
       'import "/tmp/.nitro/workflow/webhook.mjs";'
     );
     expect(webhookSource).toContain('fromWebHandler');
+    expect(
+      nitro.options.handlers.map((h: { route: string }) => h.route)
+    ).toEqual(
+      expect.arrayContaining([
+        '/.well-known/workflow/v2/flow',
+        '/.well-known/workflow/v2/webhook/:token',
+        '/.well-known/workflow/v1/webhook/:token',
+      ])
+    );
   });
 
   it('registers the combined flow + webhook virtual handlers for Nitro v3', async () => {
@@ -89,6 +98,15 @@ describe('@workflow/nitro virtual handlers', () => {
       'import "/tmp/.nitro/workflow/webhook.mjs";'
     );
     expect(webhookSource).not.toContain('fromWebHandler');
+    expect(
+      nitro.options.handlers.map((h: { route: string }) => h.route)
+    ).toEqual(
+      expect.arrayContaining([
+        '/.well-known/workflow/v2/flow',
+        '/.well-known/workflow/v2/webhook/:token',
+        '/.well-known/workflow/v1/webhook/:token',
+      ])
+    );
   });
 
   it('preserves the side-effect import alongside POST so step registrations are not tree-shaken', async () => {
@@ -140,7 +158,7 @@ describe('@workflow/nitro Vercel functionRules', () => {
     await nitroModule.setup(nitro);
 
     const flowRule =
-      nitro.options.vercel.functionRules['/.well-known/workflow/v1/flow'];
+      nitro.options.vercel.functionRules['/.well-known/workflow/v2/flow'];
     expect(flowRule.maxDuration).toBe('max');
     expect(flowRule.experimentalTriggers).toEqual([WORKFLOW_QUEUE_TRIGGER]);
   });
@@ -159,8 +177,9 @@ describe('@workflow/nitro Vercel functionRules', () => {
     await nitroModule.setup(nitro);
 
     const rules = nitro.options.vercel.functionRules;
+    expect(rules).toHaveProperty('/.well-known/workflow/v2/webhook/:token');
     expect(rules).toHaveProperty('/.well-known/workflow/v1/webhook/:token');
-    expect(rules).not.toHaveProperty('/.well-known/workflow/v1/webhook/**');
+    expect(rules).not.toHaveProperty('/.well-known/workflow/v2/webhook/**');
 
     const handlerRoutes = nitro.options.handlers.map(
       (h: { route: string }) => h.route
@@ -186,7 +205,10 @@ describe('@workflow/nitro Vercel functionRules', () => {
       await nitroModule.setup(nitro);
 
       const rules = nitro.options.vercel.functionRules;
-      expect(rules['/.well-known/workflow/v1/flow'].runtime).toBe('nodejs22.x');
+      expect(rules['/.well-known/workflow/v2/flow'].runtime).toBe('nodejs22.x');
+      expect(rules['/.well-known/workflow/v2/webhook/:token'].runtime).toBe(
+        'nodejs22.x'
+      );
       expect(rules['/.well-known/workflow/v1/webhook/:token'].runtime).toBe(
         'nodejs22.x'
       );
@@ -211,6 +233,7 @@ describe('@workflow/nitro Vercel functionRules', () => {
     await nitroModule.setup(nitro);
 
     const rules = nitro.options.vercel.functionRules;
+    expect(rules).not.toHaveProperty('/.well-known/workflow/v2/webhook/:token');
     expect(rules).not.toHaveProperty('/.well-known/workflow/v1/webhook/:token');
     expect(rules).not.toHaveProperty('/.well-known/workflow/v1/manifest.json');
   });
@@ -221,7 +244,7 @@ describe('@workflow/nitro Vercel functionRules', () => {
       preset: 'vercel',
       vercel: {
         functionRules: {
-          '/.well-known/workflow/v1/flow': {
+          '/.well-known/workflow/v2/flow': {
             memory: 3008,
             maxDuration: 10,
             experimentalTriggers: [],
@@ -233,7 +256,7 @@ describe('@workflow/nitro Vercel functionRules', () => {
     await nitroModule.setup(nitro);
 
     const flowRule =
-      nitro.options.vercel.functionRules['/.well-known/workflow/v1/flow'];
+      nitro.options.vercel.functionRules['/.well-known/workflow/v2/flow'];
     // Untouched user field is preserved
     expect(flowRule.memory).toBe(3008);
     // Workflow-required fields win
@@ -302,7 +325,7 @@ describe('@workflow/nitro isNitroV2 detection', () => {
       // v3 path: functionRules wired up, no `compiled` hook
       expect(compiledHooks.length).toBe(0);
       expect(
-        nitro.options.vercel.functionRules['/.well-known/workflow/v1/flow']
+        nitro.options.vercel.functionRules['/.well-known/workflow/v2/flow']
       ).toBeDefined();
     }
   });

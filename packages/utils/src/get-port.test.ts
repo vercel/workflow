@@ -253,7 +253,7 @@ describe('getWorkflowPort', () => {
       if (req.url?.includes('__health')) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
-      } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
+      } else if (req.url?.startsWith('/.well-known/workflow/v2/')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing required headers' }));
       } else {
@@ -305,7 +305,7 @@ describe('getWorkflowPort', () => {
       if (req.url?.includes('__health')) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
-      } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
+      } else if (req.url?.startsWith('/.well-known/workflow/v2/')) {
         res.writeHead(400);
         res.end();
       } else {
@@ -333,7 +333,7 @@ describe('getWorkflowPort', () => {
       if (req.url?.includes('__health')) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
-      } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
+      } else if (req.url?.startsWith('/.well-known/workflow/v2/')) {
         res.writeHead(400);
         res.end();
       } else {

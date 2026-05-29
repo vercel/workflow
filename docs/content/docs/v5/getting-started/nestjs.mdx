@@ -197,7 +197,7 @@ WorkflowModule.forRoot({
 The `.js` local import specifiers in this example are the ESM form.
 </Callout>
 
-The `WorkflowModule` handles workflow bundle building and provides HTTP routing for workflow execution at `.well-known/workflow/v1/`.
+The `WorkflowModule` handles workflow bundle building and provides HTTP routing for workflow execution at `.well-known/workflow/v2/flow`, plus webhook handling at `.well-known/workflow/v2/webhook/:token` with compatibility for existing v1 webhook URLs.
 
 </Step>
 

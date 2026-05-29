@@ -16,13 +16,13 @@ The previous architecture used two separate routes,
 each backed by its own queue trigger:
 
 ```
-Queue: __wkf_workflow_*  -->  /.well-known/workflow/v1/flow   (workflow replay in VM)
+Queue: __wkf_workflow_*  -->  legacy flow handler              (workflow replay in VM)
                                 |
                           suspension (step needed)
                                 |
                           queue step to __wkf_step_*
                                 |
-Queue: __wkf_step_*      -->  /.well-known/workflow/v1/step   (step execution in Node.js)
+Queue: __wkf_step_*      -->  legacy step handler              (step execution in Node.js)
                                 |
                           step completes
                                 |
@@ -35,7 +35,7 @@ Each step required **2 queue messages** (step invoke + workflow continuation) an
 
 ## New Architecture
 
-The two routes are merged into a single handler at `/.well-known/workflow/v1/flow` using `workflowEntrypoint()`. The step route is no longer generated.
+The two routes are merged into a single handler at `/.well-known/workflow/v2/flow` using `workflowEntrypoint()`. A separate step route is no longer generated.
 
 The handler runs an inline execution loop:
 
@@ -183,7 +183,7 @@ All framework builders were updated to use `createCombinedBundle()`:
 ### Generated File Layout
 
 ```
-.well-known/workflow/v1/
+.well-known/workflow/v2/
   flow/
     route.js                  # Handler (workflowEntrypoint)
     __step_registrations.js   # Step function registrations (side effects)
@@ -412,7 +412,7 @@ The V2 combined bundle was initially emitted as CJS by the standalone CLI and Ve
 1. The BOA builder emits `__step_registrations.mjs` and `index.mjs`, writes `"type": "module"` in `package.json`, and sets `handler: "index.mjs"` in `.vc-config.json`.
 2. The standalone builder no longer overrides `format`; it inherits the base builder's `'esm'` default.
 3. The standalone config outputs `step.mjs` / `flow.mjs` instead of `.js`.
-4. The `world-testing` server uses a native `import { POST } from '../.well-known/workflow/v1/flow.mjs'` instead of `createRequire`.
+4. The `world-testing` server uses a native `import { POST } from '../.well-known/workflow/v2/flow.mjs'` instead of `createRequire`.
 5. `createCombinedBundle`'s final esbuild pass (for `bundleFinalOutput: true`) now prepends the same `createRequire(import.meta.url)` banner used by the workflow/webhook bundles so CJS dependencies that call `require()` for Node.js builtins (for example the `events` module referenced by bundled libraries) still resolve at runtime.
 6. To avoid a duplicate `__createRequire` declaration, the inner steps bundle that gets inlined by the final pass skips the banner — only the outer bundle emits it. This is threaded through via a new `skipEsmRequireBanner` option on `createStepsBundle`.
 
@@ -472,7 +472,7 @@ The Redis community-world benchmark still loads an external world package that h
 
 ### Build Output API Flow Handler Drift
 
-The Vercel Build Output API builder still emitted the combined flow function as `index.js`, but the surrounding metadata kept pointing at `index.mjs`. That mismatch meant BOA-based preview deployments published neither `/.well-known/workflow/v1/flow` nor the public manifest, so the Vercel production e2e suite collapsed into manifest `404` errors immediately after deployment.
+The Vercel Build Output API builder still emitted the combined flow function as `index.js`, but the surrounding metadata kept pointing at `index.mjs`. That mismatch meant BOA-based preview deployments published neither `/.well-known/workflow/v2/flow` nor the public manifest, so the Vercel production e2e suite collapsed into manifest `404` errors immediately after deployment.
 
 **Fix**: Updated `packages/builders/src/vercel-build-output-api.ts` to point both `.vc-config.json` and manifest extraction at `flow.func/index.js`, which matches the CommonJS file the builder actually writes.
 
@@ -484,7 +484,7 @@ The first lazy-world-loading fix switched package resolution over to `createRequ
 
 ### Core Logger Still Pulled `debug` Into Webpack Flow Routes
 
-Even after lazy world loading stopped eagerly importing `@workflow/world-vercel`, the generated Next.js webpack flow route still evaluated `packages/core/src/logger.ts` at module load. That file had a top-level `import debug from 'debug'`, which in turn pulled `debug/src/node` and its `tty` dynamic require into `/.well-known/workflow/v1/flow`. Webpack then failed during page-data collection with `Dynamic require of "tty" is not supported`.
+Even after lazy world loading stopped eagerly importing `@workflow/world-vercel`, the generated Next.js webpack flow route still evaluated `packages/core/src/logger.ts` at module load. That file had a top-level `import debug from 'debug'`, which in turn pulled `debug/src/node` and its `tty` dynamic require into `/.well-known/workflow/v2/flow`. Webpack then failed during page-data collection with `Dynamic require of "tty" is not supported`.
 
 **Fix**: Replace the static `debug` dependency in the core logger with lightweight `process.env.DEBUG` matching plus `console.debug`. That keeps verbose opt-in logging for local debugging without forcing webpack to bundle `debug` and its Node-only terminal helpers into the flow route.
 
@@ -541,7 +541,7 @@ Both assumptions break for routes that consume `start` (or any other `getWorldLa
 1. Webpack and Turbopack tree-shake the named import `{ getWorld } from './runtime/world.js'` out of `runtime.ts` once a consumer only uses `start`. `world.ts` is dropped from the bundle entirely, so its module-load `globalThis[GetWorldFnKey] ??= getWorld` registration never fires.
 2. The dynamic-import fallback inside `get-world-lazy.ts` builds the specifier `./world.js` at runtime to evade bundler tracing — but webpack inlines `get-world-lazy.js` into the route bundle, so the relative specifier resolves against `/var/task/<app>/.next/server/app/<route>/route.js` where no sibling `world.js` exists. Node throws `MODULE_NOT_FOUND`.
 
-The symptom: the very first request that goes through `start()` on a cold serverless invocation fails. Once any other code path (typically the queue-driven `/.well-known/workflow/v1/flow` route, which uses `getWorld` directly via `workflowEntrypoint`) has loaded `world.ts`, subsequent `start()` calls succeed for the rest of the process lifetime — making the failure flake-shaped: hard to reproduce in dev where everything tends to be warmed, but reliable on first user traffic into a fresh function instance.
+The symptom: the very first request that goes through `start()` on a cold serverless invocation fails. Once any other code path (typically the queue-driven `/.well-known/workflow/v2/flow` route, which uses `getWorld` directly via `workflowEntrypoint`) has loaded `world.ts`, subsequent `start()` calls succeed for the rest of the process lifetime - making the failure flake-shaped: hard to reproduce in dev where everything tends to be warmed, but reliable on first user traffic into a fresh function instance.
 
 **Fix**: Added `@workflow/core/runtime/world-init`, a server-only side-effect module that imports `./world.js` purely for its module-load side effect (the globalThis registration). It's exported via package conditions:
 

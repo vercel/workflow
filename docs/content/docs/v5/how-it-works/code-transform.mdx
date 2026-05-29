@@ -53,8 +53,8 @@ flowchart LR
     A["Source Code<br/>with directives"] --> B["Step Mode"]
     A --> C["Workflow Mode"]
     A --> D["Client Mode"]
-    B --> E["step.js<br/>(Step Execution)"]
-    C --> F["flow.js<br/>(Workflow Execution)"]
+    B --> E["__step_registrations.js<br/>(Imported by flow)"]
+    C --> F["flow.js<br/>(Combined Execution)"]
     D --> G["Your App Code<br/>(Enables `start`)"]
 ```
 
@@ -62,8 +62,8 @@ flowchart LR
 
 | Mode     | Used In    | Purpose                        | Output API Route                   | Required? |
 |----------|------------|--------------------------------|------------------------------------|-----------|
-| Step     | Build time | Bundles step handlers          | `.well-known/workflow/v1/step`  | Yes       |
-| Workflow | Build time | Bundles workflow orchestrators | `.well-known/workflow/v1/flow`  | Yes       |
+| Step     | Build time | Registers step handlers        | Included in `.well-known/workflow/v2/flow` | Yes |
+| Workflow | Build time | Bundles workflow orchestrators | `.well-known/workflow/v2/flow` | Yes |
 | Client   | Build/Runtime | Provides workflow IDs and types to `start`   | Your application code              | Optional* |
 
 \* Client mode is **recommended** for better developer experience—it provides automatic ID generation and type safety. Without it, you must manually construct workflow IDs or use the build manifest.
@@ -73,7 +73,7 @@ flowchart LR
 <Tabs items={["Step Mode", "Workflow Mode", "Client Mode"]}>
 <Tab value="Step Mode">
 
-**Step Mode** creates the step execution bundle served at `/.well-known/workflow/v1/step`.
+**Step Mode** creates the step registrations imported by the combined handler at `/.well-known/workflow/v2/flow`.
 
 **Input:**
 
@@ -113,7 +113,7 @@ export async function createUser(email: string) {
 </Tab>
 <Tab value="Workflow Mode">
 
-**Workflow Mode** creates the workflow execution bundle served at `/.well-known/workflow/v1/flow`.
+**Workflow Mode** creates the workflow execution bundle served at `/.well-known/workflow/v2/flow`.
 
 **Input:**
 
@@ -211,11 +211,11 @@ The IDs are generated exactly like in workflow mode to ensure they can be direct
 
 ## Generated Files
 
-When you build your application, the Workflow SDK generates three handler files in `.well-known/workflow/v1/`:
+When you build your application, the Workflow SDK generates a combined flow handler and webhook handler in `.well-known/workflow/v2/`, plus a v1 webhook compatibility handler:
 
 ### `flow.js`
 
-Contains all workflow functions transformed in **workflow mode**. This file is imported by your framework to handle workflow execution requests at `POST /.well-known/workflow/v1/flow`.
+Contains all workflow functions transformed in **workflow mode** and imports the step registrations. This file is imported by your framework to handle workflow and step execution requests at `POST /.well-known/workflow/v2/flow`.
 
 **How it's structured:**
 
@@ -245,15 +245,13 @@ Most invalid patterns cause **build-time errors**, catching issues before deploy
   **Why a VM?** Workflow functions must be deterministic to support replay. The VM sandbox prevents accidental use of non-deterministic APIs or side effects. All side effects should be performed in [step functions](/docs/foundations/workflows-and-steps#step-functions) instead.
 </Callout>
 
-### `step.js`
+### `__step_registrations.js`
 
-Contains all step functions transformed in **step mode**. This file is imported by your framework to handle step execution requests at `POST /.well-known/workflow/v1/step`.
+Contains all step functions transformed in **step mode**. It is imported by `flow.js`; it is not exposed as a separate HTTP endpoint.
 
 **What it does:**
 
-- Exports a `POST` handler that accepts Web standard `Request` objects
-- Executes individual steps with full runtime access
-- Returns step results to the orchestration layer
+- Registers individual step functions with full runtime access for the combined flow handler
 
 ### `webhook.js`
 
@@ -336,7 +334,7 @@ These transformations are framework-agnostic—they output standard JavaScript t
 
 If you need to debug transformation issues, you can inspect the generated files:
 
-1. **Look in `.well-known/workflow/v1/`**: Check the generated `flow.js`, `step.js`,`webhook.js`, and other emitted debug files.
+1. **Look in `.well-known/workflow/v2/`**: Check the generated `flow.js`, `__step_registrations.js`, `webhook.js`, and other emitted debug files.
 2. **Check build logs**: Most frameworks log transformation activity during builds
 3. **Verify directives**: Ensure `"use workflow"` and `"use step"` are the first statements in functions
 4. **Check file locations**: Transformations only apply to files in configured source directories

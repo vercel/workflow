@@ -21,7 +21,7 @@
  * `world.js` exists — and Node throws `MODULE_NOT_FOUND`. The symptom is a
  * cold-start regression: the very first user request that goes through
  * `start()` fails until some other code path (typically the queue-driven
- * `/.well-known/workflow/v1/flow` route, which uses `getWorld` directly
+ * `/.well-known/workflow/v2/flow` route, which uses `getWorld` directly
  * via `workflowEntrypoint`) has loaded `world.ts` and populated the
  * cache.
  *

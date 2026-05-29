@@ -58,7 +58,7 @@ Let's build a complete integration for Bun. Bun is unique because it serves as b
 
 ### Step 1: Generate Handler Files
 
-Use the `workflow` CLI to generate the handler bundles. The CLI scans your `workflows/` directory and creates `flow.js`, `step.js`, and `webhook.js`.
+Use the `workflow` CLI to generate the handler bundles. The CLI scans your `workflows/` directory and creates a combined `flow.js` handler plus `webhook.js`.
 
 ```json title="package.json"
 {
@@ -74,9 +74,9 @@ Use the `workflow` CLI to generate the handler bundles. The CLI scans your `work
 
 **What gets generated:**
 
-- `/.well-known/workflow/v1/flow.js` - Handles workflow execution (workflow mode transform)
-- `/.well-known/workflow/v1/step.js` - Handles step execution (step mode transform)
-- `/.well-known/workflow/v1/webhook.js` - Handles webhook delivery
+- `/.well-known/workflow/v2/flow.js` - Handles workflow and step execution
+- `/.well-known/workflow/v2/webhook.js` - Handles webhook delivery
+- `/.well-known/workflow/v1/webhook.js` - Compatibility alias for existing webhook URLs
 
 Each file exports a `POST` function that accepts Web standard `Request` objects.
 
@@ -137,9 +137,8 @@ Wire up the generated handlers to HTTP endpoints using `Bun.serve()`:
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript title="server.ts" lineNumbers
-import flow from "./.well-known/workflow/v1/flow.js";
-import step from "./.well-known/workflow/v1/step.js";
-import * as webhook from "./.well-known/workflow/v1/webhook.js";
+import flow from "./.well-known/workflow/v2/flow.js";
+import * as webhook from "./.well-known/workflow/v2/webhook.js";
 
 import { start } from "workflow/api";
 import { handleUserSignup } from "./workflows/user-signup.js";
@@ -147,13 +146,12 @@ import { handleUserSignup } from "./workflows/user-signup.js";
 const server = Bun.serve({
   port: process.env.PORT,
   routes: {
-    "/.well-known/workflow/v1/flow": {
+    "/.well-known/workflow/v2/flow": {
       POST: (req) => flow.POST(req),
     },
-    "/.well-known/workflow/v1/step": {
-      POST: (req) => step.POST(req),
-    },
     // webhook exports handlers for GET, POST, DELETE, etc.
+    "/.well-known/workflow/v2/webhook/:token": webhook,
+    // Keep accepting webhook URLs created before the v2 endpoint migration.
     "/.well-known/workflow/v1/webhook/:token": webhook,
 
     // Example: Start a workflow
@@ -177,11 +175,11 @@ console.log(`Server listening on http://localhost:${server.port}`);
 
 ## Understanding the Endpoints
 
-Your integration must expose three HTTP endpoints. The generated handlers manage all protocol details—you just route requests.
+Your integration must expose two canonical HTTP endpoints and retain the legacy webhook alias. The generated handlers manage all protocol details - you just route requests.
 
 ### Workflow Endpoint
 
-**Route:** `POST /.well-known/workflow/v1/flow`
+**Route:** `POST /.well-known/workflow/v2/flow`
 
 Executes workflow orchestration logic. The workflow function is "rendered" multiple times during execution—each time it progresses until it encounters the next step.
 
@@ -192,17 +190,15 @@ Executes workflow orchestration logic. The workflow function is "rendered" multi
 - Resuming after a webhook or hook triggers
 - Recovering from failures
 
-### Step Endpoint
-
-**Route:** `POST /.well-known/workflow/v1/step`
-
-Executes individual atomic operations within workflows. Each step runs exactly once per execution (unless retried due to failure). Steps have full runtime access (Node.js APIs, file system, databases, etc.).
+This combined endpoint also executes individual step operations. Steps retain full runtime access (Node.js APIs, file system, databases, etc.).
 
 ### Webhook Endpoint
 
-**Route:** `POST /.well-known/workflow/v1/webhook/:token`
+**Route:** `POST /.well-known/workflow/v2/webhook/:token`
 
 Delivers webhook data to running workflows via [`createWebhook()`](/docs/api-reference/workflow/create-webhook). The `:token` parameter identifies which workflow run should receive the data.
+
+Continue routing `/.well-known/workflow/v1/webhook/:token` to the same handler so previously issued webhook URLs keep working.
 
 <Callout type="info">
   The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to leverage App Router's dynamic routing, while other frameworks generate a single `webhook.js` handler.
@@ -240,16 +236,15 @@ class MyFrameworkBuilder extends BaseBuilder {
   override async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
 
-    await this.createWorkflowsBundle({
-      outfile: "/path/to/.well-known/workflow/v1/flow.js",
+    await this.createCombinedBundle({
+      flowOutfile: "/path/to/.well-known/workflow/v2/flow.js",
+      stepsOutfile: "/path/to/.well-known/workflow/v2/__step_registrations.js",
       format: "esm",
       inputFiles,
     });
 
-    await this.createStepsBundle({
-      outfile: "/path/to/.well-known/workflow/v1/step.js",
-      format: "esm",
-      inputFiles,
+    await this.createWebhookBundle({
+      outfile: "/path/to/.well-known/workflow/v2/webhook.js",
     });
 
     await this.createWebhookBundle({
@@ -344,26 +339,23 @@ module.exports = {
 
 ### HTTP Server
 
-Route the three endpoints to the generated handlers. The exact implementation depends on your framework's routing API.
+Route the canonical endpoints and legacy webhook alias to the generated handlers. The exact implementation depends on your framework's routing API.
 
 In the bun example above, we left routing to the user. Essentially, the user has to serve routes like this:
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript title="server.ts" lineNumbers
-import flow from "./.well-known/workflow/v1/flow.js";
-import step from "./.well-known/workflow/v1/step.js";
-import * as webhook from "./.well-known/workflow/v1/webhook.js";
+import flow from "./.well-known/workflow/v2/flow.js";
+import * as webhook from "./.well-known/workflow/v2/webhook.js";
 
-// Expose the 3 generated routes
+// Expose the generated routes and webhook compatibility alias
 const server = Bun.serve({
   routes: {
-    "/.well-known/workflow/v1/flow": {
+    "/.well-known/workflow/v2/flow": {
       POST: (req) => flow.POST(req),
     },
-    "/.well-known/workflow/v1/step": {
-      POST: (req) => step.POST(req),
-    },
     // webhook exports handlers for GET, POST, DELETE, etc.
+    "/.well-known/workflow/v2/webhook/:token": webhook,
     "/.well-known/workflow/v1/webhook/:token": webhook,
   },
 });
@@ -416,7 +408,7 @@ import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from "@workflow/builders";
 
 For self-hosted or non-Vercel deployments, you are responsible for securing the handler endpoints:
 
-- **Framework middleware** — Add authentication (API keys, JWT, OIDC) in front of the `/.well-known/workflow/v1/*` routes
+- **Framework middleware** - Add authentication (API keys, JWT, OIDC) in front of the `/.well-known/workflow/v2/*` routes and the v1 webhook compatibility route
 - **Network-level security** — Deploy handlers behind a VPC, private network, or firewall rules so only your queue infrastructure can reach them
 - **Rate limiting** — Add request validation and rate limiting to prevent abuse
 
@@ -474,17 +466,17 @@ async function sendOnboardingEmail(user: { id: string; email: string }, callback
 
 Run your build and verify:
 
-- `.well-known/workflow/v1/flow.js` exists
-- `.well-known/workflow/v1/step.js` exists
-- `.well-known/workflow/v1/webhook.js` exists
+- `.well-known/workflow/v2/flow.js` exists
+- `.well-known/workflow/v2/webhook.js` exists
+- `.well-known/workflow/v1/webhook.js` exists as a compatibility alias
 
 ### 2. Test HTTP Endpoints
 
 Start your server and verify routes respond:
 
 ```bash
-curl -X POST http://localhost:3000/.well-known/workflow/v1/flow
-curl -X POST http://localhost:3000/.well-known/workflow/v1/step
+curl -X POST http://localhost:3000/.well-known/workflow/v2/flow
+curl -X POST http://localhost:3000/.well-known/workflow/v2/webhook/test
 curl -X POST http://localhost:3000/.well-known/workflow/v1/webhook/test
 ```
 

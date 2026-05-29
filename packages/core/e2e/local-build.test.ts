@@ -83,7 +83,7 @@ async function readFileIfExists(filePath: string): Promise<string | null> {
  */
 const ESM_STEP_BUNDLE_PROJECTS: Record<string, string> = {
   example:
-    '.vercel/output/functions/.well-known/workflow/v1/step.func/index.mjs',
+    '.vercel/output/functions/.well-known/workflow/v2/flow.func/__step_registrations.mjs',
 };
 
 const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {

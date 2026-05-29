@@ -130,7 +130,7 @@ WorkflowModule.forRoot({
 The `@workflow/nest` package provides:
 
 1. **WorkflowModule** - A NestJS module that handles workflow bundle building and HTTP routing
-2. **WorkflowController** - Handles workflow and step execution requests at `.well-known/workflow/v1/`
+2. **WorkflowController** - Handles workflow and step execution requests at `.well-known/workflow/v2/flow` and webhooks at `.well-known/workflow/v2/webhook/:token` (with v1 webhook compatibility)
 3. **NestLocalBuilder** - Builds workflow bundles (steps.mjs, workflows.mjs) from your source files
 4. **CLI** - Generates `.swcrc` configuration with the SWC plugin properly resolved
 

@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { BaseBuilder } from './base-builder.js';
 import type { WorkflowConfig } from './types.js';
 
@@ -10,6 +11,15 @@ export class StandaloneBuilder extends BaseBuilder {
   }
 
   async build(): Promise<void> {
+    await Promise.all([
+      rm(this.resolvePath('.well-known/workflow/v1/flow.mjs'), {
+        force: true,
+      }),
+      rm(this.resolvePath('.well-known/workflow/v1/step.mjs'), {
+        force: true,
+      }),
+    ]);
+
     const inputFiles = await this.getInputFiles();
     const tsconfigPath = await this.findTsConfigPath();
 
@@ -30,7 +40,8 @@ export class StandaloneBuilder extends BaseBuilder {
       bundleFinalOutput: true,
     });
 
-    await this.buildWebhookFunction();
+    await this.buildWebhookFunction(this.config.webhookBundlePath);
+    await this.buildWebhookFunction('./.well-known/workflow/v1/webhook.mjs');
 
     const manifestDir = this.resolvePath('.well-known/workflow/v1');
     await this.createManifest({
@@ -42,10 +53,10 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.createClientLibrary();
   }
 
-  private async buildWebhookFunction(): Promise<void> {
-    console.log('Creating webhook bundle at', this.config.webhookBundlePath);
+  private async buildWebhookFunction(webhookPath: string): Promise<void> {
+    console.log('Creating webhook bundle at', webhookPath);
 
-    const webhookBundlePath = this.resolvePath(this.config.webhookBundlePath);
+    const webhookBundlePath = this.resolvePath(webhookPath);
     await this.ensureDirectory(webhookBundlePath);
 
     await this.createWebhookBundle({

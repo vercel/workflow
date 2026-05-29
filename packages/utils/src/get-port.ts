@@ -234,7 +234,7 @@ export async function getPort(): Promise<number | undefined> {
 
 // Configuration for HTTP probing
 const PROBE_TIMEOUT_MS = 500;
-const PROBE_ENDPOINT = '/.well-known/workflow/v1/flow?__health';
+const PROBE_ENDPOINT = '/.well-known/workflow/v2/flow?__health';
 
 export interface ProbeOptions {
   endpoint?: string;

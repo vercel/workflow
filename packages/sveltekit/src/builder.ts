@@ -42,21 +42,30 @@ export class SvelteKitBuilder extends BaseBuilder {
   override async build(): Promise<void> {
     // Find SvelteKit routes directory (src/routes or routes)
     const routesDir = await this.findRoutesDirectory();
-    const workflowGeneratedDir = join(routesDir, '.well-known/workflow/v1');
+    const workflowGeneratedDir = join(routesDir, '.well-known/workflow/v2');
+    const manifestGeneratedDir = join(routesDir, '.well-known/workflow/v1');
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
+    await mkdir(manifestGeneratedDir, { recursive: true });
 
     // Add .gitignore to exclude generated files from version control
     if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+      await writeFile(join(manifestGeneratedDir, '.gitignore'), '*');
     }
 
-    // Clean up stale V1 step route directory (may persist via Vercel build cache)
-    await rm(join(workflowGeneratedDir, 'step'), {
-      recursive: true,
-      force: true,
-    });
+    // Remove executable routes that may persist from pre-v2 endpoint builds.
+    await Promise.all([
+      rm(join(manifestGeneratedDir, 'flow'), {
+        recursive: true,
+        force: true,
+      }),
+      rm(join(manifestGeneratedDir, 'step'), {
+        recursive: true,
+        force: true,
+      }),
+    ]);
 
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
@@ -92,12 +101,15 @@ export const POST = async ({request}) => {
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
     await this.buildWebhookRoute({ workflowGeneratedDir });
+    await this.buildWebhookRoute({
+      workflowGeneratedDir: manifestGeneratedDir,
+    });
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow/+server.js');
     const manifestJson = await this.createManifest({
       workflowBundlePath,
-      manifestDir: workflowGeneratedDir,
+      manifestDir: manifestGeneratedDir,
       manifest,
     });
 
@@ -113,7 +125,7 @@ export const POST = async ({request}) => {
         await writeFile(join(staticManifestDir, '.gitignore'), '*');
       }
       await copyFile(
-        join(workflowGeneratedDir, 'manifest.json'),
+        join(manifestGeneratedDir, 'manifest.json'),
         join(staticManifestDir, 'manifest.json')
       );
     }
@@ -124,7 +136,7 @@ export const POST = async ({request}) => {
   }: {
     workflowGeneratedDir: string;
   }) {
-    // Create webhook route: .well-known/workflow/v1/webhook/[token]/+server.js
+    // Create webhook route: .well-known/workflow/v2/webhook/[token]/+server.js
     const webhookRouteFile = join(
       workflowGeneratedDir,
       'webhook/[token]/+server.js'

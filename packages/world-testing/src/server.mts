@@ -4,10 +4,10 @@ import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import * as z from 'zod';
-import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
   type: 'json',
 };
+import { POST as flowPOST } from '../.well-known/workflow/v2/flow.mjs';
 
 if (!process.env.WORKFLOW_TARGET_WORLD) {
   console.error(
@@ -45,7 +45,7 @@ const Invoke = z
 const flowInvocationCounts = new Map<string, number>();
 
 const app = new Hono()
-  .post('/.well-known/workflow/v1/flow', async (ctx) => {
+  .post('/.well-known/workflow/v2/flow', async (ctx) => {
     // Clone the request to read the body for tracking without consuming it.
     // We must increment the invocation counter *before* awaiting flowPOST,
     // otherwise the workflow may complete (and the test may observe the
@@ -118,7 +118,7 @@ const app = new Hono()
     const runId = ctx.req.param('runId');
     const world = await getWorld();
     const allEvents: { eventType: string; correlationId?: string }[] = [];
-    let cursor: string | undefined = undefined;
+    let cursor: string | undefined;
     while (true) {
       const page = await world.events.list({
         runId,

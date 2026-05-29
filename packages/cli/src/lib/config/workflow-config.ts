@@ -1,5 +1,5 @@
-import type { BuildTarget, WorkflowConfig } from './types.js';
 import { resolve } from 'node:path';
+import type { BuildTarget, WorkflowConfig } from './types.js';
 
 function resolveObservabilityCwd(): string {
   const raw = process.env.WORKFLOW_OBSERVABILITY_CWD;
@@ -26,9 +26,9 @@ export const getWorkflowConfig = (
     dirs: ['./workflows'],
     workingDir: resolveObservabilityCwd(),
     buildTarget: buildTarget as BuildTarget,
-    stepsBundlePath: './.well-known/workflow/v1/step.mjs',
-    workflowsBundlePath: './.well-known/workflow/v1/flow.mjs',
-    webhookBundlePath: './.well-known/workflow/v1/webhook.mjs',
+    stepsBundlePath: './.well-known/workflow/v2/__step_registrations.mjs',
+    workflowsBundlePath: './.well-known/workflow/v2/flow.mjs',
+    webhookBundlePath: './.well-known/workflow/v2/webhook.mjs',
     workflowManifestPath: workflowManifest,
 
     // WIP: generate a client library to easily execute workflows/steps
