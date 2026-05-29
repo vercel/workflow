@@ -5,6 +5,7 @@ import {
   RUN_ERROR_CODES,
   type RunErrorCode,
   RunExpiredError,
+  RuntimeDecryptionError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
@@ -20,6 +21,7 @@ import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
+import { shouldRedriveOnDecryptionFailure } from './runtime/decryption-failure.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -1194,6 +1196,35 @@ export function workflowEntrypoint(
                         // type tag works across realms.
                         if (types.isNativeError(err) && errorStack) {
                           (err as Error).stack = errorStack;
+                        }
+
+                        // SDK-level decryption failures are terminal for the
+                        // current attempt's bytes, but may be transient at the
+                        // run level: if the ciphertext came from a truncated /
+                        // corrupted read of remotely-persisted data, a fresh
+                        // queue delivery re-fetches the event log + ref
+                        // payloads and can succeed. On managed Worlds, exit the
+                        // process (which the platform turns into a redelivery)
+                        // for a bounded number of attempts before failing the
+                        // run. See `shouldRedriveOnDecryptionFailure`.
+                        if (
+                          RuntimeDecryptionError.is(err) &&
+                          shouldRedriveOnDecryptionFailure({
+                            world,
+                            error: err,
+                            runId,
+                            workflowName,
+                            attempt: metadata.attempt,
+                          })
+                        ) {
+                          span?.setAttributes({
+                            ...Attribute.WorkflowErrorCode(errorCode),
+                            ...Attribute.WorkflowErrorName(errorName),
+                          });
+                          // Exiting prevents the queue message from being
+                          // acked, so the platform re-delivers and the run
+                          // is replayed from freshly-fetched persisted data.
+                          process.exit(1);
                         }
 
                         // Fail the workflow run via event (event-sourced).

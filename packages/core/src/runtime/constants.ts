@@ -117,3 +117,16 @@ export function _resetReplayTimeoutWarnCacheForTests(): void {
 // handler exits without writing run_failed so the queue retries the message.
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
+
+// Number of queue delivery attempts to allow before permanently failing a run
+// due to an SDK-level decryption failure (RuntimeDecryptionError) encountered
+// while replaying remotely-fetched persisted data.
+//
+// An AES-GCM auth failure is terminal for the *bytes* of the current attempt,
+// so we never continue executing the workflow. But if those bytes came from a
+// transiently truncated or corrupted persisted-data read (e.g. a partial
+// `/refs` response), a fresh queue delivery re-fetches the event log and ref
+// payloads from scratch and can succeed. On attempts 1 through this value the
+// handler exits (on Worlds that support process-exit redelivery) so the queue
+// re-delivers; once exceeded, the run is failed with RUN_ERROR_CODES.RUNTIME_ERROR.
+export const DECRYPTION_FAILURE_MAX_RETRIES = 3;
