@@ -22,45 +22,19 @@ jobs:
     name: Detect CI Scope
     runs-on: ubuntu-latest
     outputs:
-      fast-path: ${{ steps.scope.outputs.fast-path }}
+      fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
+      validation-fast-path: ${{ steps.scope.outputs.validation-fast-path }}
     steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - name: Classify changed files
         id: scope
-        uses: actions/github-script@v7
+        uses: ./.github/actions/detect-ci-scope
         with:
-          script: |
-            if (context.eventName !== 'pull_request') {
-              core.setOutput('fast-path', 'false');
-              return;
-            }
-
-            const files = await github.paginate(github.rest.pulls.listFiles, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-              per_page: 100,
-            });
-            const fastPathPatterns = [
-              /^\.changeset\/[^/]+\.md$/,
-              /^docs\//,
-              /^packages\/web\//,
-              /^packages\/web-shared\//,
-              /^(AGENTS|CONTRIBUTING|LICENSE|README)\.md$/,
-              /^packages\/[^/]+\/README\.md$/,
-            ];
-            const fullCiFiles = files
-              .map((file) => file.filename)
-              .filter(
-                (filename) =>
-                  !fastPathPatterns.some((pattern) => pattern.test(filename))
-              );
-
-            core.setOutput('fast-path', fullCiFiles.length === 0 ? 'true' : 'false');
-            core.info(
-              fullCiFiles.length === 0
-                ? 'Only docs or UI files changed; using the required-check fast path.'
-                : `Full CI required by: ${fullCiFiles.join(', ')}`
-            );
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   # Phase 0: Update PR comment to show tests are running
   pr-comment-start:
@@ -174,7 +148,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     needs: ci-scope
-    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    if: ${{ needs.ci-scope.outputs.validation-fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     strategy:
       fail-fast: false
       matrix:
@@ -286,6 +260,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-package-build-artifacts
+          # Keep this list aligned with package build outputs in turbo.json.
+          # upload-artifact strips the common packages/ root; consumers restore into packages/.
           path: |
             packages/*/dist
             packages/*/.well-known
@@ -1005,11 +981,16 @@ jobs:
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
           FAST_PATH: ${{ needs.ci-scope.outputs.fast-path }}
+          VALIDATION_FAST_PATH: ${{ needs.ci-scope.outputs.validation-fast-path }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
         run: |
           FAILED_JOBS=()
 
           if [[ "$FAST_PATH" == "true" ]]; then
+            if [[ "$VALIDATION_FAST_PATH" != "true" && "$HAS_LABEL" != "true" && "$UNIT_STATUS" != "success" ]]; then
+              echo "UI-only fast path still requires unit tests; unit status was $UNIT_STATUS."
+              exit 1
+            fi
             echo "Docs/UI-only change detected - no runtime E2E lanes are required."
             exit 0
           fi
