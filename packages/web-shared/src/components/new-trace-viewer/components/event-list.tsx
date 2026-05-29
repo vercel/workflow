@@ -3,11 +3,12 @@ import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration } from '../../trace-viewer/util/timing';
 import {
-  WorkflowIcon,
-  WebhookIcon,
   SleepIcon,
   StepForwardIcon,
+  WebhookIcon,
+  WorkflowIcon,
 } from '../icons';
+import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import { getSpanDurationMs } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 
@@ -41,10 +42,12 @@ function getEventStyle(resource: string, isErrored: boolean): EventStyle {
 const EventRow = ({
   span,
   isSelected,
+  isDimmed,
   onSelectSpan,
 }: {
   span: Span;
   isSelected: boolean;
+  isDimmed?: boolean;
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getSpanDurationMs(span);
@@ -58,8 +61,9 @@ const EventRow = ({
   return (
     <li
       className={cn(
-        'relative overflow-clip group after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-gray-alpha-400',
-        ROW_HEIGHT_CLASS
+        'relative overflow-clip group transition-opacity',
+        ROW_HEIGHT_CLASS,
+        isDimmed && 'opacity-35'
       )}
       role="treeitem"
       aria-selected={isSelected}
@@ -91,20 +95,27 @@ const EventRow = ({
 const EventList = ({
   spans,
   activeSpanId,
+  searchResult,
   onSelectSpan,
 }: {
   spans: Span[];
   activeSpanId: string | null;
+  searchResult: SpanSearchResult;
   onSelectSpan: (spanId: string) => void;
 }) => {
   return (
-    <ul id="event-list" role="tree" className="block min-h-0 overflow-visible">
+    <ul
+      id="event-list"
+      role="tree"
+      className="block min-h-0 overflow-visible divide-y divide-gray-alpha-400 border-b border-gray-alpha-400"
+    >
       {spans.map((span) => {
         return (
           <EventRow
             key={span.spanId}
             span={span}
             isSelected={span.spanId === activeSpanId}
+            isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
             onSelectSpan={onSelectSpan}
           />
         );

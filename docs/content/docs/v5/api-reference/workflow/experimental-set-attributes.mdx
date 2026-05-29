@@ -1,0 +1,61 @@
+---
+title: experimental_setAttributes
+description: Attach string metadata to workflow run for observability.
+type: reference
+summary: Use experimental_setAttributes inside a workflow function to set run attributes.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability/attributes
+  - /docs/api-reference/workflow/fatal-error
+---
+
+Attaches string metadata to the current workflow run.
+
+<Callout>
+This API is experimental and may change before the stable attributes API is released.
+</Callout>
+
+```typescript lineNumbers
+import { experimental_setAttributes } from "workflow"
+
+export async function orderWorkflow(orderId: string) {
+  "use workflow"
+
+  await experimental_setAttributes({
+    phase: "received",
+    orderId,
+  })
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { experimental_setAttributes } from "workflow";
+export default experimental_setAttributes;`}
+showSections={['parameters']}
+/>
+
+## Usage
+
+Call `experimental_setAttributes` from a `"use workflow"` function. Calling it from a `"use step"` function or plain application code is not supported.
+
+Attribute values must be strings. Pass `undefined` to remove an attribute:
+
+```typescript lineNumbers
+import { experimental_setAttributes } from "workflow"
+
+export async function cleanupAttributes() {
+  "use workflow"
+
+  await experimental_setAttributes({ staleKey: undefined })
+}
+```
+
+Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code.
+
+Validation errors throw [`FatalError`](/docs/api-reference/workflow/fatal-error) and fail the run before an attribute write is attempted.

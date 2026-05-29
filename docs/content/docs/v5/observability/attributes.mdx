@@ -1,0 +1,65 @@
+---
+title: Attributes
+description: Attach experimental metadata to workflow runs for observability.
+type: reference
+summary: Add string attributes to a workflow run.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability
+  - /docs/api-reference/workflow/experimental-set-attributes
+  - /docs/api-reference/workflow-errors/workflow-world-error
+---
+
+<Callout type="warn">
+This feature is experimental and may change before the stable attributes API is released.
+</Callout>
+
+[`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) attaches plaintext string metadata to the current workflow run. These attributes are displayed in observability CLI/UI.
+In the future, you'll be able to search and filter runs by attributes.
+
+```typescript lineNumbers
+import { experimental_setAttributes } from "workflow"
+
+export async function orderWorkflow(orderId: string) {
+  "use workflow"
+
+  await experimental_setAttributes({ // [!code highlight]
+    phase: "received", // [!code highlight]
+    orderId, // [!code highlight]
+  }) // [!code highlight]
+
+  // ...work...
+
+  await experimental_setAttributes({ phase: "complete" }) // [!code highlight]
+}
+```
+
+## Usage
+
+Call [`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) from a `"use workflow"` function. Calling it from a `"use step"` function or plain application code is not supported.
+
+Values must be strings. Pass `undefined` to remove a key:
+
+```typescript lineNumbers
+import { experimental_setAttributes } from "workflow"
+
+export async function cleanupAttributes() {
+  "use workflow"
+
+  await experimental_setAttributes({ staleKey: undefined }) // [!code highlight]
+}
+```
+
+Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code.
+
+## Experimental Behavior
+
+While attributes are experimental:
+
+- Worlds that do not support attributes log a warning and ignore the call.
+- Storage errors are logged after retries, but do not fail the workflow run.
+- Setting attributes is currently slower than the final API will be, because each write goes through an internal workflow step. Prefer batching related attributes in one call.
+- Reading and querying attributes is not available yet. A query API is planned.
+
+In a future release, using attributes with a World that does not support them, or when the World fails to store them, will fail with a [world error](/docs/api-reference/workflow-errors/workflow-world-error). This can be caught and handled to prevent failing a run.
