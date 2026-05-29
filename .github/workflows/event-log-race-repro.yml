@@ -7,11 +7,23 @@ on:
   workflow_dispatch:
     inputs:
       attempts:
-        description: 'Number of workflow runs to start'
+        description: 'Number of hook/sleep workflow runs to start'
         required: false
         default: '1500'
+      step_fanout_attempts:
+        description: 'Number of parallel-step fanout workflow runs to start'
+        required: false
+        default: '250'
+      step_sleep_race_attempts:
+        description: 'Number of step/sleep race workflow runs to start'
+        required: false
+        default: '250'
       concurrency:
         description: 'Number of concurrent workflow runs'
+        required: false
+        default: '50'
+      step_concurrency:
+        description: 'Number of concurrent step-heavy workflow runs'
         required: false
         default: '50'
       iterations:
@@ -43,7 +55,7 @@ jobs:
   event-log-race-repro:
     name: Event Log Race Repro
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'event-log-race-repro') }}
     permissions:
       contents: read
@@ -97,7 +109,10 @@ jobs:
           WORKFLOW_VERCEL_PROJECT_SLUG: example-nextjs-workflow-turbopack
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
           EVENT_LOG_RACE_REPRO_ATTEMPTS: ${{ inputs.attempts || '1500' }}
+          EVENT_LOG_RACE_REPRO_STEP_FANOUT_ATTEMPTS: ${{ inputs.step_fanout_attempts || '250' }}
+          EVENT_LOG_RACE_REPRO_STEP_SLEEP_RACE_ATTEMPTS: ${{ inputs.step_sleep_race_attempts || '250' }}
           EVENT_LOG_RACE_REPRO_CONCURRENCY: ${{ inputs.concurrency || '50' }}
+          EVENT_LOG_RACE_REPRO_STEP_CONCURRENCY: ${{ inputs.step_concurrency || '50' }}
           EVENT_LOG_RACE_REPRO_ITERATIONS: ${{ inputs.iterations || '5' }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms || '150000' }}
           EVENT_LOG_RACE_REPRO_SLEEP_MS: ${{ inputs.sleep_ms || '5000' }}

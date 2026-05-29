@@ -17,6 +17,12 @@ interface WakePayload {
   sentAt: number;
 }
 
+interface GatePayload {
+  attempt: number;
+  scenario: string;
+  sentAt: number;
+}
+
 interface RaceBranchRecord {
   branch: 'sleep' | 'wake';
   iteration: number;
@@ -27,6 +33,49 @@ interface RaceBranchRecord {
 type RaceBranch =
   | { kind: 'sleep' }
   | { kind: 'hook'; event: IteratorResult<WakePayload> };
+
+interface StepFanoutInput {
+  token: string;
+  rounds?: number;
+  width?: number;
+  stepDelayMs?: number;
+  stepDelayJitterMs?: number;
+  aggregateDelayMs?: number;
+  betweenRoundSleepMs?: number;
+}
+
+interface FanoutStepResult {
+  runId: string;
+  round: number;
+  index: number;
+  completedAt: number;
+}
+
+interface FanoutRoundRecord {
+  runId: string;
+  round: number;
+  count: number;
+  checksum: string;
+  completedAt: number;
+}
+
+interface StepSleepRaceInput {
+  token: string;
+  rounds?: number;
+  stepDelayMs?: number;
+  sleepMs?: number;
+  postRaceSleepMs?: number;
+}
+
+type StepSleepRaceBranch =
+  | { kind: 'sleep' }
+  | { kind: 'step'; value: StepRaceResult };
+
+interface StepRaceResult {
+  runId: string;
+  round: number;
+  completedAt: number;
+}
 
 async function syncStep(input: { runId: string; iteration: number }) {
   'use step';
@@ -51,6 +100,70 @@ async function finalStep(input: { delayMs: number; runId: string }) {
     await new Promise((resolve) => setTimeout(resolve, input.delayMs));
   }
   return { ...input, finishedAt: Date.now() };
+}
+
+async function fanoutStep(input: {
+  delayMs: number;
+  runId: string;
+  round: number;
+  index: number;
+}): Promise<FanoutStepResult> {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return {
+    runId: input.runId,
+    round: input.round,
+    index: input.index,
+    completedAt: Date.now(),
+  };
+}
+
+async function aggregateFanoutStep(input: {
+  delayMs: number;
+  runId: string;
+  round: number;
+  values: FanoutStepResult[];
+}): Promise<FanoutRoundRecord> {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return {
+    runId: input.runId,
+    round: input.round,
+    count: input.values.length,
+    checksum: input.values
+      .map((value) => `${value.round}:${value.index}`)
+      .join(','),
+    completedAt: Date.now(),
+  };
+}
+
+async function racedStep(input: {
+  delayMs: number;
+  runId: string;
+  round: number;
+}): Promise<StepRaceResult> {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return {
+    runId: input.runId,
+    round: input.round,
+    completedAt: Date.now(),
+  };
+}
+
+async function branchMarkerStep(input: {
+  branch: 'sleep' | 'step';
+  runId: string;
+  round: number;
+}) {
+  'use step';
+  return { ...input, markedAt: Date.now() };
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep this close to the shared repro shape.
@@ -131,6 +244,122 @@ export async function hookSleepReproWorkflow(input: ReproInput) {
     }
 
     return { branches, runId: metadata.workflowRunId, sleepMs };
+  } finally {
+    hook.dispose();
+  }
+}
+
+export async function stepFanoutReplayReproWorkflow(input: StepFanoutInput) {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const hook = createHook<GatePayload>({ token: input.token });
+  const iterator = hook[Symbol.asyncIterator]();
+
+  const rounds = input.rounds ?? 4;
+  const width = input.width ?? 4;
+  const stepDelayMs = input.stepDelayMs ?? 0;
+  const stepDelayJitterMs = input.stepDelayJitterMs ?? 50;
+  const aggregateDelayMs = input.aggregateDelayMs ?? 0;
+  const betweenRoundSleepMs = input.betweenRoundSleepMs ?? 0;
+  const roundRecords: FanoutRoundRecord[] = [];
+
+  try {
+    await iterator.next();
+
+    for (let round = 0; round < rounds; round += 1) {
+      const values = await Promise.all(
+        Array.from({ length: width }, (_, index) =>
+          fanoutStep({
+            delayMs: stepDelayMs + ((round + index) % 2) * stepDelayJitterMs,
+            index,
+            round,
+            runId: metadata.workflowRunId,
+          })
+        )
+      );
+
+      roundRecords.push(
+        await aggregateFanoutStep({
+          delayMs: aggregateDelayMs,
+          round,
+          runId: metadata.workflowRunId,
+          values,
+        })
+      );
+
+      if (betweenRoundSleepMs > 0) {
+        await sleep(betweenRoundSleepMs);
+      }
+    }
+
+    return {
+      runId: metadata.workflowRunId,
+      roundRecords,
+      rounds,
+      width,
+    };
+  } finally {
+    hook.dispose();
+  }
+}
+
+export async function stepSleepRaceReproWorkflow(input: StepSleepRaceInput) {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const hook = createHook<GatePayload>({ token: input.token });
+  const iterator = hook[Symbol.asyncIterator]();
+
+  const rounds = input.rounds ?? 4;
+  const stepDelayMs = input.stepDelayMs ?? 0;
+  const sleepMs = input.sleepMs ?? 1000;
+  const postRaceSleepMs = input.postRaceSleepMs ?? 0;
+  const branches: Array<{
+    branch: 'sleep' | 'step';
+    marker: unknown;
+    round: number;
+    value?: StepRaceResult;
+  }> = [];
+
+  try {
+    await iterator.next();
+
+    for (let round = 0; round < rounds; round += 1) {
+      const result = await Promise.race<StepSleepRaceBranch>([
+        racedStep({
+          delayMs: stepDelayMs,
+          round,
+          runId: metadata.workflowRunId,
+        }).then((value) => ({ kind: 'step' as const, value })),
+        sleep(sleepMs).then(() => ({ kind: 'sleep' as const })),
+      ]);
+
+      const marker = await branchMarkerStep({
+        branch: result.kind,
+        round,
+        runId: metadata.workflowRunId,
+      });
+
+      branches.push({
+        branch: result.kind,
+        marker,
+        round,
+        value: result.kind === 'step' ? result.value : undefined,
+      });
+
+      if (postRaceSleepMs > 0) {
+        await sleep(postRaceSleepMs);
+      }
+    }
+
+    return {
+      branches,
+      runId: metadata.workflowRunId,
+      rounds,
+      sleepMs,
+      stepDelayMs,
+    };
   } finally {
     hook.dispose();
   }

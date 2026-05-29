@@ -90,6 +90,17 @@ function summarize(results) {
   return distribution;
 }
 
+function summarizeByScenario(results) {
+  const byScenario = {};
+  for (const result of results) {
+    const scenario = result.scenario ?? 'unknown';
+    byScenario[scenario] ??= emptyDistribution();
+    byScenario[scenario][result.outcome] =
+      (byScenario[scenario][result.outcome] ?? 0) + 1;
+  }
+  return byScenario;
+}
+
 function nonCompletedCount(distribution) {
   return orderedOutcomes
     .filter((outcome) => outcome !== 'completed')
@@ -133,9 +144,21 @@ function renderResult(entry) {
 function renderConfig(entry) {
   const config = entry.config ?? {};
   const attempts = config.attempts ? `${config.attempts} runs` : '';
+  const scenarios = [
+    config.hookSleepAttempts ? `hook ${config.hookSleepAttempts}` : '',
+    config.stepFanoutAttempts ? `fanout ${config.stepFanoutAttempts}` : '',
+    config.stepSleepRaceAttempts ? `race ${config.stepSleepRaceAttempts}` : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
   const concurrency = config.concurrency ? `c${config.concurrency}` : '';
+  const stepConcurrency = config.stepConcurrency
+    ? `step c${config.stepConcurrency}`
+    : '';
   const iterations = config.iterations ? `${config.iterations} iters` : '';
-  return [attempts, concurrency, iterations].filter(Boolean).join(' / ');
+  return [attempts, scenarios, concurrency, stepConcurrency, iterations]
+    .filter(Boolean)
+    .join(' / ');
 }
 
 function renderTiming(entry) {
@@ -154,12 +177,19 @@ function renderTiming(entry) {
 function compactConfig(config = {}) {
   return {
     attempts: config.attempts,
+    hookSleepAttempts: config.hookSleepAttempts,
+    stepFanoutAttempts: config.stepFanoutAttempts,
+    stepSleepRaceAttempts: config.stepSleepRaceAttempts,
     concurrency: config.concurrency,
+    stepConcurrency: config.stepConcurrency,
     iterations: config.iterations,
     sleepMs: config.sleepMs,
     resumeDelayMs: config.resumeDelayMs,
     resumeJitterMs: config.resumeJitterMs,
     runTimeoutMs: config.runTimeoutMs,
+    stepFanoutRounds: config.stepFanoutRounds,
+    stepFanoutWidth: config.stepFanoutWidth,
+    stepRaceRounds: config.stepRaceRounds,
   };
 }
 
@@ -171,6 +201,7 @@ function compactHistoryEntry(entry, keepFailures = false) {
     deploymentUrl: entry.deploymentUrl,
     missingResults: entry.missingResults,
     distribution: entry.distribution ?? emptyDistribution(),
+    scenarioDistribution: entry.scenarioDistribution ?? {},
     failedCount: entry.failedCount ?? 0,
     total: entry.total ?? 0,
     config: compactConfig(entry.config),
@@ -193,12 +224,15 @@ function buildEntry(resultsFile) {
       failedCount: 1,
       total: 0,
       config: {},
+      scenarioDistribution: {},
       failing: [],
     };
   }
 
   const results = resultsFile.results ?? [];
   const distribution = resultsFile.distribution ?? summarize(results);
+  const scenarioDistribution =
+    resultsFile.scenarioDistribution ?? summarizeByScenario(results);
   const failedCount = nonCompletedCount(distribution);
   const total = orderedOutcomes.reduce(
     (sum, outcome) => sum + (distribution[outcome] ?? 0),
@@ -209,6 +243,7 @@ function buildEntry(resultsFile) {
     .slice(0, 20)
     .map((result) => ({
       attempt: result.attempt,
+      scenario: result.scenario,
       outcome: result.outcome,
       status: result.status,
       errorCode: result.errorCode,
@@ -223,6 +258,7 @@ function buildEntry(resultsFile) {
     deploymentUrl: resultsFile.deploymentUrl,
     missingResults: false,
     distribution,
+    scenarioDistribution,
     failedCount,
     total,
     config: compactConfig(resultsFile.config),
@@ -266,6 +302,33 @@ function renderHistoryTable(history) {
   console.log('');
 }
 
+function renderLatestScenarioBreakdown(entry) {
+  if (entry.missingResults) {
+    return;
+  }
+
+  const scenarioEntries = Object.entries(entry.scenarioDistribution ?? {});
+  if (scenarioEntries.length === 0) {
+    return;
+  }
+
+  console.log('### Latest Scenario Breakdown\n');
+  console.log(`| Scenario | Total | ${orderedOutcomes.join(' | ')} |`);
+  console.log(`|:--|--:|${orderedOutcomes.map(() => '--:').join('|')}|`);
+  for (const [scenario, distribution] of scenarioEntries) {
+    const total = orderedOutcomes.reduce(
+      (sum, outcome) => sum + (distribution[outcome] ?? 0),
+      0
+    );
+    console.log(
+      `| ${scenario} | ${total} | ${orderedOutcomes
+        .map((outcome) => renderCount(distribution[outcome]))
+        .join(' | ')} |`
+    );
+  }
+  console.log('');
+}
+
 function renderLatestFailures(entry) {
   if (entry.missingResults) {
     return;
@@ -276,15 +339,15 @@ function renderLatestFailures(entry) {
   }
 
   console.log('### Latest Non-Completed Runs\n');
-  console.log('| Attempt | Outcome | Status | Error code | Run |');
-  console.log('|--:|:--|:--|:--|:--|');
+  console.log('| Scenario | Attempt | Outcome | Status | Error code | Run |');
+  console.log('|:--|--:|:--|:--|:--|:--|');
   for (const result of entry.failing) {
     const run =
       result.dashboardUrl && result.runId
         ? `[${result.runId}](${result.dashboardUrl})`
         : (result.runId ?? '');
     console.log(
-      `| ${result.attempt} | ${result.outcome} | ${result.status ?? ''} | ${result.errorCode ?? ''} | ${run} |`
+      `| ${result.scenario ?? ''} | ${result.attempt} | ${result.outcome} | ${result.status ?? ''} | ${result.errorCode ?? ''} | ${run} |`
     );
   }
   if (entry.truncatedFailingCount > 0) {
@@ -318,6 +381,7 @@ function render(resultsFile, previousComment) {
   console.log('');
 
   renderHistoryTable(history);
+  renderLatestScenarioBreakdown(latest);
   renderLatestFailures(latest);
 }
 
