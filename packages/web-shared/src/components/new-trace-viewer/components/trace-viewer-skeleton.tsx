@@ -55,17 +55,22 @@ export function TraceViewerSkeleton() {
         style={{ gridTemplateColumns: COL_TEMPLATE }}
       >
         {/* Sidebar event rows */}
-        <ul className="block min-h-0 divide-y divide-gray-alpha-400 border-b border-gray-alpha-400">
-          {ROWS.map((row) => (
-            <li key={row.id} className="h-10 flex items-center pl-4 pr-2">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <Skeleton className="w-4 h-4 shrink-0 rounded-sm" />
-                <Skeleton className="h-3.5" style={{ width: `${row.name}%` }} />
-              </div>
-              <Skeleton className="ml-2 h-3.5 w-10 shrink-0" />
-            </li>
-          ))}
-        </ul>
+        <div className="block overflow-visible">
+          <ul className="block divide-y divide-gray-alpha-400 border-b border-gray-alpha-400">
+            {ROWS.map((row) => (
+              <li key={row.id} className="h-10 flex items-center pl-4 pr-2">
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <Skeleton className="w-4 h-4 shrink-0 rounded-sm" />
+                  <Skeleton
+                    className="h-3.5"
+                    style={{ width: `${row.name}%` }}
+                  />
+                </div>
+                <Skeleton className="ml-2 h-3.5 w-10 shrink-0" />
+              </li>
+            ))}
+          </ul>
+        </div>
 
         {/* Gutter */}
         <span aria-hidden className="h-full w-px bg-gray-alpha-400" />
