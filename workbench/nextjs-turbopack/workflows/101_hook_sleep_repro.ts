@@ -157,13 +157,14 @@ async function racedStep(input: {
   };
 }
 
-async function branchMarkerStep(input: {
-  branch: 'sleep' | 'step';
-  runId: string;
-  round: number;
-}) {
+async function stepBranchMarkerStep(input: { runId: string; round: number }) {
   'use step';
-  return { ...input, markedAt: Date.now() };
+  return { ...input, branch: 'step' as const, markedAt: Date.now() };
+}
+
+async function sleepBranchMarkerStep(input: { runId: string; round: number }) {
+  'use step';
+  return { ...input, branch: 'sleep' as const, markedAt: Date.now() };
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep this close to the shared repro shape.
@@ -335,11 +336,16 @@ export async function stepSleepRaceReproWorkflow(input: StepSleepRaceInput) {
         sleep(sleepMs).then(() => ({ kind: 'sleep' as const })),
       ]);
 
-      const marker = await branchMarkerStep({
-        branch: result.kind,
-        round,
-        runId: metadata.workflowRunId,
-      });
+      const marker =
+        result.kind === 'step'
+          ? await stepBranchMarkerStep({
+              round,
+              runId: metadata.workflowRunId,
+            })
+          : await sleepBranchMarkerStep({
+              round,
+              runId: metadata.workflowRunId,
+            });
 
       branches.push({
         branch: result.kind,

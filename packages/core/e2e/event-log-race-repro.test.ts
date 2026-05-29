@@ -26,8 +26,8 @@ const WORKFLOW_FILE = 'workflows/101_hook_sleep_repro.ts';
 type Scenario =
   | 'hook-sleep'
   | 'step-fanout'
-  | 'step-sleep-race-step-wins'
-  | 'step-sleep-race-sleep-wins';
+  | 'step-sleep-race-step-biased'
+  | 'step-sleep-race-sleep-biased';
 
 type Outcome =
   | 'completed'
@@ -276,10 +276,7 @@ function validateFanoutReturn(value: unknown) {
   }
 }
 
-function validateStepRaceReturn(
-  value: unknown,
-  expectedBranch: 'sleep' | 'step'
-) {
+function validateStepRaceReturn(value: unknown) {
   if (!isRecord(value)) {
     return 'Run returned a non-object value.';
   }
@@ -300,8 +297,16 @@ function validateStepRaceReturn(
     if (branch.round !== index) {
       return `Race round ${index} returned unexpected round ${String(branch.round)}.`;
     }
-    if (branch.branch !== expectedBranch) {
-      return `Race round ${index} took ${String(branch.branch)} branch instead of ${expectedBranch}.`;
+    if (branch.branch !== 'sleep' && branch.branch !== 'step') {
+      return `Race round ${index} took unexpected ${String(branch.branch)} branch.`;
+    }
+
+    const marker = branch.marker;
+    if (!isRecord(marker)) {
+      return `Race round ${index} marker was not an object.`;
+    }
+    if (marker.branch !== branch.branch) {
+      return `Race round ${index} marker branch ${String(marker.branch)} did not match returned branch ${String(branch.branch)}.`;
     }
   }
 }
@@ -602,12 +607,12 @@ async function runStepFanoutAttempt(attempt: number): Promise<ReproRunResult> {
 
 async function runStepSleepRaceAttempt(
   attempt: number,
-  expectedBranch: 'sleep' | 'step'
+  bias: 'sleep' | 'step'
 ): Promise<ReproRunResult> {
   const scenario: Scenario =
-    expectedBranch === 'step'
-      ? 'step-sleep-race-step-wins'
-      : 'step-sleep-race-sleep-wins';
+    bias === 'step'
+      ? 'step-sleep-race-step-biased'
+      : 'step-sleep-race-sleep-biased';
   const startedAt = Date.now();
   const token = `event-log-race-${scenario}-${Date.now()}-${attempt}-${Math.random()
     .toString(36)
@@ -624,11 +629,11 @@ async function runStepSleepRaceAttempt(
         postRaceSleepMs: config.stepRacePostSleepMs,
         rounds: config.stepRaceRounds,
         sleepMs:
-          expectedBranch === 'step'
+          bias === 'step'
             ? config.stepRaceStepWinSleepMs
             : config.stepRaceSleepWinSleepMs,
         stepDelayMs:
-          expectedBranch === 'step'
+          bias === 'step'
             ? config.stepRaceStepWinDelayMs
             : config.stepRaceSleepWinDelayMs,
         token,
@@ -644,10 +649,7 @@ async function runStepSleepRaceAttempt(
         30_000,
         `Timed out reading return value for run ${run.runId}`
       );
-      const validationError = validateStepRaceReturn(
-        returnValue,
-        expectedBranch
-      );
+      const validationError = validateStepRaceReturn(returnValue);
       if (validationError) {
         return {
           ...runResult,
@@ -760,7 +762,7 @@ function summarizeByScenario(results: ReproRunResult[]) {
         stuck: 0,
         other: 0,
       },
-      'step-sleep-race-step-wins': {
+      'step-sleep-race-step-biased': {
         completed: 0,
         CORRUPTED_EVENT_LOG: 0,
         USER_ERROR: 0,
@@ -768,7 +770,7 @@ function summarizeByScenario(results: ReproRunResult[]) {
         stuck: 0,
         other: 0,
       },
-      'step-sleep-race-sleep-wins': {
+      'step-sleep-race-sleep-biased': {
         completed: 0,
         CORRUPTED_EVENT_LOG: 0,
         USER_ERROR: 0,
@@ -844,8 +846,8 @@ describe('event log race repro', () => {
     'event log races do not corrupt, stall, or take stale branches',
     { timeout: testTimeoutMs },
     async () => {
-      const stepWinsAttempts = Math.ceil(config.stepSleepRaceAttempts / 2);
-      const sleepWinsAttempts = Math.floor(config.stepSleepRaceAttempts / 2);
+      const stepBiasedAttempts = Math.ceil(config.stepSleepRaceAttempts / 2);
+      const sleepBiasedAttempts = Math.floor(config.stepSleepRaceAttempts / 2);
       const results = [
         ...(await runScenario(
           config.hookSleepAttempts,
@@ -858,12 +860,12 @@ describe('event log race repro', () => {
           runStepFanoutAttempt
         )),
         ...(await runScenario(
-          stepWinsAttempts,
+          stepBiasedAttempts,
           config.stepConcurrency,
           (attempt) => runStepSleepRaceAttempt(attempt, 'step')
         )),
         ...(await runScenario(
-          sleepWinsAttempts,
+          sleepBiasedAttempts,
           config.stepConcurrency,
           (attempt) => runStepSleepRaceAttempt(attempt, 'sleep')
         )),
