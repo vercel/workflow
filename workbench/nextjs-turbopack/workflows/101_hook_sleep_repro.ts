@@ -135,35 +135,3 @@ export async function hookSleepReproWorkflow(input: ReproInput) {
     hook.dispose();
   }
 }
-
-export async function hookSleepStepReproWorkflow(input: ReproInput) {
-  'use workflow';
-
-  const metadata = getWorkflowMetadata();
-  const hook = createHook<WakePayload>({ token: input.token });
-  const iterator = hook[Symbol.asyncIterator]();
-  const sleepMs = input.sleepMs ?? 5000;
-  const finalDelayMs = input.finalDelayMs ?? 0;
-
-  try {
-    await sleep(sleepMs);
-
-    const synced = await syncStep({
-      runId: metadata.workflowRunId,
-      iteration: 0,
-    });
-
-    const event = await iterator.next();
-
-    if (finalDelayMs > 0) {
-      await finalStep({
-        delayMs: finalDelayMs,
-        runId: metadata.workflowRunId,
-      });
-    }
-
-    return { event, runId: metadata.workflowRunId, sleepMs, synced };
-  } finally {
-    hook.dispose();
-  }
-}

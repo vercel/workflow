@@ -94,6 +94,7 @@ function render(resultsFile) {
   console.log('|:--|:--|');
   console.log(`| Attempts | ${config.attempts ?? ''} |`);
   console.log(`| Concurrency | ${config.concurrency ?? ''} |`);
+  console.log(`| Iterations | ${config.iterations ?? ''} |`);
   console.log(`| Sleep | ${config.sleepMs ?? ''}ms |`);
   console.log(`| Resume delay | ${config.resumeDelayMs ?? ''}ms |`);
   console.log(`| Resume jitter | ${config.resumeJitterMs ?? ''}ms |`);

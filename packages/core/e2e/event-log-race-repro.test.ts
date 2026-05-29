@@ -22,7 +22,7 @@ const RESULT_PATH = path.resolve(
   'event-log-race-repro-results.json'
 );
 const WORKFLOW_FILE = 'workflows/101_hook_sleep_repro.ts';
-const WORKFLOW_FN = 'hookSleepStepReproWorkflow';
+const WORKFLOW_FN = 'hookSleepReproWorkflow';
 
 type Outcome =
   | 'completed'
@@ -79,10 +79,10 @@ function envBoolean(name: string, fallback: boolean) {
 const config: ReproConfig = {
   attempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 1500),
   concurrency: envNumber('EVENT_LOG_RACE_REPRO_CONCURRENCY', 50),
-  iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 3),
+  iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 5),
   sleepMs: envNumber('EVENT_LOG_RACE_REPRO_SLEEP_MS', 5000),
-  resumeDelayMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS', 5000),
-  resumeJitterMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_JITTER_MS', 5000),
+  resumeDelayMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS', 15_000),
+  resumeJitterMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_JITTER_MS', 10_000),
   runTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS', 150_000),
   hookTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_HOOK_TIMEOUT_MS', 60_000),
   sleepBranchWaitCount: envNumber(
@@ -170,16 +170,6 @@ function hasWakeBranch(value: unknown) {
         'branch' in branch &&
         branch.branch === 'wake'
     )
-  );
-}
-
-function hasHookEvent(value: unknown) {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    'event' in value &&
-    !!value.event &&
-    typeof value.event === 'object'
   );
 }
 
@@ -323,14 +313,14 @@ async function runAttempt(attempt: number): Promise<ReproRunResult> {
         30_000,
         `Timed out reading return value for run ${run.runId}`
       );
-      if (!hasWakeBranch(returnValue) && !hasHookEvent(returnValue)) {
+      if (!hasWakeBranch(returnValue)) {
         return {
           ...runResult,
           attempt,
           token,
           outcome: 'other',
-          errorCode: 'NO_HOOK_EVENT',
-          errorMessage: 'Run completed without consuming the hook event.',
+          errorCode: 'NO_WAKE_BRANCH',
+          errorMessage: 'Run completed without taking the hook wake branch.',
         };
       }
     }
