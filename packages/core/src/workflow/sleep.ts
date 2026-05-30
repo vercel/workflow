@@ -1,13 +1,68 @@
 import { CorruptedEventLogError } from '@workflow/errors';
 import { parseDurationToDate, withResolvers } from '@workflow/utils';
+import type { Event } from '@workflow/world';
 import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
-import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
+import {
+  type QueueItem,
+  type WaitInvocationQueueItem,
+  WorkflowSuspension,
+} from '../global.js';
 import {
   awaitEarlierHookDeliveries,
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
+
+/**
+ * Validates a `wait_completed` event's recorded `resumeAt` against the
+ * authoritative value for this wait, returning an error message string if the
+ * log is genuinely corrupted, or `null` otherwise.
+ *
+ * The authoritative `resumeAt` is the one recorded in the event log and applied
+ * to the queue item via `wait_created` (`hasCreatedEvent === true`). A
+ * duration-based `sleep(<ms|string>)` otherwise derives `resumeAt` from
+ * `Date.now()` (see {@link parseDurationToDate}), which is wall-clock-relative
+ * and therefore NOT deterministic across replays: the original run computed
+ * `start + duration`, while a replay — whose VM clock has advanced to each
+ * event's `createdAt` — recomputes a different absolute timestamp.
+ *
+ * When this consumer never applied a `wait_created` (`hasCreatedEvent` falsy),
+ * the queue item still holds that freshly-recomputed value, so comparing it
+ * against the recorded `wait_completed.resumeAt` yields a false mismatch on a
+ * perfectly consistent log. The correlationId match already establishes the
+ * wait's identity, so the resumeAt check is skipped in that case.
+ */
+function detectResumeAtMismatch(
+  correlationId: string,
+  event: Extract<Event, { eventType: 'wait_completed' }>,
+  queueItem: QueueItem | undefined
+): string | null {
+  const eventResumeAt = event.eventData?.resumeAt;
+  if (eventResumeAt === undefined) {
+    return null;
+  }
+  if (!queueItem || queueItem.type !== 'wait' || !queueItem.hasCreatedEvent) {
+    // No authoritative recorded resumeAt to compare against.
+    return null;
+  }
+
+  const expectedResumeAt = queueItem.resumeAt;
+  const eventResumeAtDate = new Date(eventResumeAt);
+  const eventResumeAtMs = eventResumeAtDate.getTime();
+  if (eventResumeAtMs === expectedResumeAt.getTime()) {
+    return null;
+  }
+
+  const eventResumeAtForMessage = Number.isFinite(eventResumeAtMs)
+    ? eventResumeAtDate.toISOString()
+    : String(eventResumeAt);
+  return (
+    `Corrupted event log: wait_completed event for ${correlationId} has ` +
+    `resumeAt "${eventResumeAtForMessage}", but the current wait consumer ` +
+    `expects "${expectedResumeAt.toISOString()}"`
+  );
+}
 
 export function createSleep(ctx: WorkflowOrchestratorContext) {
   return async function sleepImpl(
@@ -58,30 +113,17 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
 
       // Check for wait_completed event
       if (event.eventType === 'wait_completed') {
-        const eventResumeAt = event.eventData?.resumeAt;
-        if (eventResumeAt !== undefined) {
-          const queueItem = ctx.invocationsQueue.get(correlationId);
-          const expectedResumeAt =
-            queueItem && queueItem.type === 'wait'
-              ? queueItem.resumeAt
-              : resumeAt;
-          const eventResumeAtDate = new Date(eventResumeAt);
-          const eventResumeAtMs = eventResumeAtDate.getTime();
-          const expectedResumeAtMs = expectedResumeAt.getTime();
-          const eventResumeAtForMessage = Number.isFinite(eventResumeAtMs)
-            ? eventResumeAtDate.toISOString()
-            : String(eventResumeAt);
-
-          if (eventResumeAtMs !== expectedResumeAtMs) {
-            ctx.promiseQueue = ctx.promiseQueue.then(() => {
-              ctx.onWorkflowError(
-                new CorruptedEventLogError(
-                  `Corrupted event log: wait_completed event for ${correlationId} has resumeAt "${eventResumeAtForMessage}", but the current wait consumer expects "${expectedResumeAt.toISOString()}"`
-                )
-              );
-            });
-            return EventConsumerResult.Finished;
-          }
+        const queueItem = ctx.invocationsQueue.get(correlationId);
+        const mismatch = detectResumeAtMismatch(
+          correlationId,
+          event,
+          queueItem
+        );
+        if (mismatch) {
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+            ctx.onWorkflowError(new CorruptedEventLogError(mismatch));
+          });
+          return EventConsumerResult.Finished;
         }
 
         // Remove this wait from the invocations queue (O(1) delete using Map)
