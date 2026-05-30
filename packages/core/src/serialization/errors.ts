@@ -10,8 +10,27 @@
  * into the message string.
  */
 
+import { RuntimeDecryptionError } from '@workflow/errors';
 import { DevalueError } from 'devalue';
 import { runtimeLogger } from '../logger.js';
+
+/**
+ * Rethrow SDK runtime errors that must not be reframed as
+ * `SerializationError`.
+ *
+ * The serialize/dehydrate wrappers catch every throw and reframe it as a
+ * `SerializationError` (which classifies as `USER_ERROR`). That's correct
+ * for genuine serialization failures, but a `RuntimeDecryptionError` from
+ * the AES-GCM layer is an SDK-internal failure that must keep its identity
+ * so the run-failure classifier routes it to `RUNTIME_ERROR`. Call this at
+ * the top of each serialize catch block to let those errors propagate
+ * unchanged.
+ */
+export function rethrowIfRuntimeError(error: unknown): void {
+  if (RuntimeDecryptionError.is(error)) {
+    throw error;
+  }
+}
 
 /**
  * Format a serialization error with context about what failed.
