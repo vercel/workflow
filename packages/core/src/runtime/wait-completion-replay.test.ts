@@ -40,6 +40,7 @@ async function runStaleWaitReplayScenario(options: {
   includePreloadedCursor: boolean;
   preloadedHasMore?: boolean;
   omitWaitCompletionFromDelta?: boolean;
+  restartDeltaAtBeginning?: boolean;
 }) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
@@ -182,7 +183,8 @@ async function runStaleWaitReplayScenario(options: {
       // Cursor reads simulate the optimized delta fetch. Without a cursor, the
       // runtime has fallen back to a full reload from the beginning.
       let data =
-        params.pagination?.cursor === staleEventsCursor
+        params.pagination?.cursor === staleEventsCursor &&
+        !options.restartDeltaAtBeginning
           ? durableEvents.slice(staleEvents.length)
           : [...durableEvents];
       if (
@@ -361,6 +363,27 @@ describe('workflow handler wait completion replay', () => {
       })
     );
     expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
+      'hook_received',
+      'wait_completed',
+    ]);
+    expectHookBranchQueued(result);
+  });
+
+  it('deduplicates a cursor delta that unexpectedly restarts at the beginning', async () => {
+    const result = await runStaleWaitReplayScenario({
+      includePreloadedCursor: true,
+      restartDeltaAtBeginning: true,
+    });
+
+    expect(result.listEvents).toHaveBeenCalledTimes(1);
+    expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'hook_created',
+      'step_created',
+      'step_started',
+      'step_completed',
+      'wait_created',
       'hook_received',
       'wait_completed',
     ]);
