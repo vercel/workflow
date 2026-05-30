@@ -701,6 +701,7 @@ export function workflowEntrypoint(
                           );
                           for (const e of loaded.events) {
                             if (!existingIds.has(e.eventId)) {
+                              existingIds.add(e.eventId);
                               cachedEvents.push(e);
                             }
                           }
@@ -848,6 +849,7 @@ export function workflowEntrypoint(
                             );
                             for (const event of loaded.events) {
                               if (!existingIds.has(event.eventId)) {
+                                existingIds.add(event.eventId);
                                 events.push(event);
                               }
                             }
