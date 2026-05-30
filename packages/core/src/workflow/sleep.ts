@@ -74,6 +74,12 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
     // Calculate the resume time
     const resumeAt = parseDurationToDate(param);
 
+    // [DBG] instrumentation for the reused-sleep hasCreatedEvent state bug.
+    const dbgConsumer = ctx.eventsConsumer as unknown as { eventIndex: number };
+    const dbgSubscribeIndex = dbgConsumer.eventIndex;
+    let dbgSelfHandledWaitCreated = false;
+    let dbgWaitCreatedHandledAtIndex = -1;
+
     // Add wait to invocations queue (using Map for O(1) operations)
     const waitItem: WaitInvocationQueueItem = {
       type: 'wait',
@@ -108,12 +114,40 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
           queueItem.hasCreatedEvent = true;
           queueItem.resumeAt = event.eventData.resumeAt;
         }
+        dbgSelfHandledWaitCreated = true;
+        dbgWaitCreatedHandledAtIndex = dbgConsumer.eventIndex;
         return EventConsumerResult.Consumed;
       }
 
       // Check for wait_completed event
       if (event.eventType === 'wait_completed') {
         const queueItem = ctx.invocationsQueue.get(correlationId);
+        const dbgHasCreated = Boolean(
+          queueItem && queueItem.type === 'wait' && queueItem.hasCreatedEvent
+        );
+        // [DBG] Always emit the diagnostic when the queue item lacks an
+        // authoritative recorded resumeAt — this is the reused-sleep state
+        // bug we're chasing. Bake the full picture into a forced error so it
+        // persists to S3 via run_failed.
+        if (!dbgHasCreated) {
+          const dbg =
+            ` [DBG-REUSED correlationId=${correlationId}` +
+            ` subscribeIndex=${dbgSubscribeIndex}` +
+            ` completedAtIndex=${dbgConsumer.eventIndex}` +
+            ` selfHandledWaitCreated=${dbgSelfHandledWaitCreated}` +
+            ` waitCreatedHandledAtIndex=${dbgWaitCreatedHandledAtIndex}` +
+            ` queueItemPresent=${Boolean(queueItem)}` +
+            ` eventId=${event.eventId}]`;
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+            ctx.onWorkflowError(
+              new CorruptedEventLogError(
+                `Corrupted event log: wait_completed for ${correlationId} had no authoritative resumeAt.${dbg}`
+              )
+            );
+          });
+          return EventConsumerResult.Finished;
+        }
+
         const mismatch = detectResumeAtMismatch(
           correlationId,
           event,
