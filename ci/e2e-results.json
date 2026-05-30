@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-05-30T19:45:33.186Z",
-  "commit": "b659ef7cb36dedf6a3fa21858b9bf117bc10c617",
+  "lastUpdated": "2026-05-30T22:16:44.530Z",
+  "commit": "5dabbeecab4aa9b99884ac51ca6eb303bb00ac07",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "partial",
-      "total": 4216,
-      "passed": 3646,
+      "total": 4488,
+      "passed": 3916,
       "failed": 1,
-      "skipped": 569,
+      "skipped": 571,
       "frameworks": {
         "astro": {
           "total": 272,
@@ -23,8 +23,8 @@
         },
         "fastify": {
           "total": 272,
-          "passed": 220,
-          "failed": 0
+          "passed": 219,
+          "failed": 1
         },
         "hono": {
           "total": 272,
@@ -32,8 +32,8 @@
           "failed": 0
         },
         "nextjs-turbopack": {
-          "total": 680,
-          "passed": 637,
+          "total": 952,
+          "passed": 907,
           "failed": 0
         },
         "nextjs-webpack": {
@@ -48,8 +48,8 @@
         },
         "nuxt": {
           "total": 272,
-          "passed": 219,
-          "failed": 1
+          "passed": 220,
+          "failed": 0
         },
         "sveltekit": {
           "total": 272,
@@ -62,7 +62,7 @@
           "failed": 0
         }
       },
-      "progress": 86
+      "progress": 87
     },
     "postgres": {
       "status": "passing",
@@ -127,14 +127,14 @@
     "vercel": {
       "status": "partial",
       "total": 1632,
-      "passed": 1374,
-      "failed": 1,
+      "passed": 1372,
+      "failed": 3,
       "skipped": 257,
       "frameworks": {
         "astro": {
           "total": 136,
-          "passed": 109,
-          "failed": 0
+          "passed": 108,
+          "failed": 1
         },
         "express": {
           "total": 136,
@@ -158,8 +158,8 @@
         },
         "nextjs-webpack": {
           "total": 136,
-          "passed": 133,
-          "failed": 0
+          "passed": 132,
+          "failed": 1
         },
         "nitro": {
           "total": 136,
