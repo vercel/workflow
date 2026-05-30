@@ -61,7 +61,8 @@ function httpLog(
  *
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-dwhl8w05m.vercel.sh';
 
 /**
  * Resolves the effective workflow-server URL override at call time. The hard-coded
