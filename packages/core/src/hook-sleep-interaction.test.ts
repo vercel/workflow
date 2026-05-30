@@ -55,6 +55,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       promiseQueueHolder.current = value;
     },
     pendingDeliveries: 0,
+    pendingHookDeliveries: new Map(),
   };
   return ctx;
 }
@@ -403,6 +404,251 @@ function defineTests(mode: 'sync' | 'async') {
       expect(pendingSteps[0].type === 'step' && pendingSteps[0].stepName).toBe(
         'drainStep'
       );
+    });
+
+    it('should let a queued hook payload win a race against a step that completes after it in the log', async () => {
+      await setupHydrateMock();
+      const ops: Promise<any>[] = [];
+      const [hookPayload, setupResult, racingStepResult] = await Promise.all([
+        dehydrateStepReturnValue(
+          { value: 'hook-wins' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(undefined, 'wrun_test', undefined, ops),
+        dehydrateStepReturnValue({ slept: true }, 'wrun_test', undefined, ops),
+      ]);
+
+      // Ordered durable history where the hook branch already won the race
+      // against a *step* (not a sleep): the hook payload (evnt_2) precedes
+      // the racing step's completion (evnt_9), and the committed branch is
+      // the hook (drainStep created at evnt_10).
+      //
+      // correlationId allocation order matches the workflow's ULID
+      // generation order:
+      //   createHook            -> CORR_IDS[0]  (hook)
+      //   await setupStep()     -> CORR_IDS[1]  (step)
+      //   racingStep() in race  -> CORR_IDS[2]  (step)
+      //   await drainStep()     -> CORR_IDS[3]  (step, hook branch)
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'setupStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload: hookPayload },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'setupStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'setupStep', result: setupResult },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'racingStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'racingStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_7',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'racingStep', result: racingStepResult },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_8',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'drainStep' },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const createHook = createCreateHook(ctx);
+      const useStep = createUseStep(ctx);
+
+      const { error } = await runWithDiscontinuation(ctx, async () => {
+        const hook = createHook<{ value: string }>({ token: 'test-token' });
+        const iterator = hook[Symbol.asyncIterator]();
+        const setupStep = useStep('setupStep');
+        const racingStep = useStep('racingStep');
+        const drainStep = useStep('drainStep');
+        const syncNextStep = useStep('syncNextStep');
+
+        await setupStep();
+
+        const result = await Promise.race([
+          iterator.next().then((value) => ({ kind: 'hook' as const, value })),
+          racingStep().then(() => ({ kind: 'step' as const })),
+        ]);
+
+        if (result.kind === 'hook') {
+          await drainStep();
+          return result.value.value;
+        }
+
+        await syncNextStep();
+        return 'step';
+      });
+
+      expect(error).toBeDefined();
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+
+      const pendingSteps = [...ctx.invocationsQueue.values()].filter(
+        (i) => i.type === 'step'
+      );
+      expect(pendingSteps).toHaveLength(1);
+      expect(pendingSteps[0].type === 'step' && pendingSteps[0].stepName).toBe(
+        'drainStep'
+      );
+    });
+
+    it('should resolve the earlier-in-log hook payload first when two hooks are raced, regardless of decryption time', async () => {
+      const ops: Promise<any>[] = [];
+      const [firstPayload, secondPayload] = await Promise.all([
+        dehydrateStepReturnValue(
+          { which: 'first' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(
+          { which: 'second' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+      ]);
+
+      // Two distinct hooks, each with a buffered payload. `hookA` is created
+      // first (CORR_IDS[0]) and its hook_received (evnt_2) precedes hookB's
+      // hook_received (evnt_3). A Promise.race between the two must resolve
+      // to hookA — the earlier-in-log payload — even though hookA's payload
+      // is made to hydrate *slower* than hookB's. Resolution order must
+      // follow the event log, not decryption timing.
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'token-a', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[1]}`,
+          eventData: { token: 'token-b', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'token-a', payload: firstPayload },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[1]}`,
+          eventData: { token: 'token-b', payload: secondPayload },
+          createdAt: new Date(),
+        },
+      ]);
+
+      // Make hookA's payload (the earlier one) hydrate SLOWER than hookB's.
+      // If resolution honored the event log, hookA still wins; if it raced
+      // on hydration time, hookB would win.
+      const serialization = await import('./serialization.js');
+      const originalHydrate = serialization.hydrateStepReturnValue;
+      const spy = vi
+        .spyOn(serialization, 'hydrateStepReturnValue')
+        .mockImplementation(async (data, ...rest) => {
+          const resolved = await originalHydrate(
+            data,
+            ...(rest as [any, any, any])
+          );
+          const delay =
+            (resolved as { which?: string })?.which === 'first' ? 100 : 1;
+          await new Promise((r) => setTimeout(r, delay));
+          return resolved;
+        });
+
+      try {
+        const createHook = createCreateHook(ctx);
+
+        const { result, error } = await runWithDiscontinuation(
+          ctx,
+          async () => {
+            const hookA = createHook<{ which: string }>({ token: 'token-a' });
+            const hookB = createHook<{ which: string }>({ token: 'token-b' });
+            const itA = hookA[Symbol.asyncIterator]();
+            const itB = hookB[Symbol.asyncIterator]();
+
+            const winner = await Promise.race([
+              itA.next().then((v) => ({ from: 'a' as const, value: v })),
+              itB.next().then((v) => ({ from: 'b' as const, value: v })),
+            ]);
+            return winner.from;
+          }
+        );
+
+        if (error && !WorkflowSuspension.is(error)) {
+          throw error;
+        }
+        expect(result).toBe('a');
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 

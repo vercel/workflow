@@ -150,6 +150,84 @@ export interface WorkflowOrchestratorContext {
    * to reach 0 before firing, to avoid preempting data delivery.
    */
   pendingDeliveries: number;
+  /**
+   * In-flight buffered hook payload deliveries, keyed by the source
+   * `hook_received` eventId. The value resolves once that delivery has
+   * been observed by its consumer (see below).
+   *
+   * A buffered hook payload (received before the workflow awaited the
+   * hook) resolves through a `ctx.promiseQueue` slot chained at its
+   * log position, but the workflow only observes it via the async hook
+   * iterator (`yield await this`), which adds microtask hops. A
+   * competing `wait_completed` resolves synchronously in its own slot
+   * (no hydration, fewer hops), so without coordination it can preempt
+   * an earlier-in-log hook payload in a `Promise.race` — diverging from
+   * the committed event log.
+   *
+   * Entities that resolve from a later log event (sleep) consult this
+   * map via {@link awaitEarlierHookDeliveries} and defer behind any
+   * delivery whose source eventId is earlier than their own event. The
+   * barrier is a plain promise (not chained onto `promiseQueue`), so it
+   * is decryption-time independent and cannot deadlock the serial queue.
+   *
+   * The barrier resolves on a MACROTASK after the payload is claimed by
+   * its consumer (see hook.ts `markClaimed`). A macrotask runs only after
+   * the full microtask queue has drained, so the consumer's branch
+   * decision — however many await hops deep — always commits before a
+   * deferring entity proceeds. This is hop-count independent. To avoid
+   * deadlocking when a payload is never claimed (the workflow took a
+   * different branch or is suspending), `awaitEarlierHookDeliveries`
+   * bounds its wait with a one-macrotask fallback.
+   */
+  pendingHookDeliveries: Map<string, Promise<void>>;
+}
+
+/**
+ * Awaits all in-flight buffered-hook payload deliveries whose source
+ * `hook_received` event is earlier in the log than `eventId` (ULIDs sort
+ * lexicographically by time, so a plain string compare is log order).
+ * Lets a later entity (e.g. sleep's `wait_completed`) preserve event-log
+ * resolution order against an earlier hook payload, independent of how
+ * long that payload takes to hydrate/decrypt.
+ */
+export async function awaitEarlierHookDeliveries(
+  ctx: WorkflowOrchestratorContext,
+  eventId: string | undefined
+): Promise<void> {
+  // Defensive: tolerate contexts that predate this field (test harnesses).
+  if (
+    eventId === undefined ||
+    !ctx.pendingHookDeliveries ||
+    ctx.pendingHookDeliveries.size === 0
+  ) {
+    return;
+  }
+  const earlier: Promise<void>[] = [];
+  for (const [sourceEventId, settled] of ctx.pendingHookDeliveries) {
+    if (sourceEventId < eventId) {
+      earlier.push(settled);
+    }
+  }
+  if (earlier.length === 0) {
+    return;
+  }
+  // Each barrier resolves when its hook payload's consumer has observed
+  // it (a macrotask after the payload settles; see hook.ts `markClaimed`).
+  // If a payload is never claimed — the workflow took a different branch
+  // or is suspending — its barrier would otherwise never resolve and
+  // deadlock this entity. Bound the wait with a macrotask fallback: a
+  // claim that is going to happen resolves its barrier within one
+  // macrotask of the payload settling, so racing the barriers against a
+  // single `setTimeout(0)` either (a) lets the genuinely-claimed payload
+  // win and commit its branch first, or (b) releases this entity once it
+  // is clear no claim is pending. Either way the committed event-log
+  // branch is honored and we cannot hang.
+  await Promise.race([
+    Promise.all(earlier),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    }),
+  ]);
 }
 
 /**

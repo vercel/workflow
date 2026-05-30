@@ -41,6 +41,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
+    pendingHookDeliveries: new Map(),
   };
   return ctx;
 }

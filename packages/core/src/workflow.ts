@@ -153,6 +153,7 @@ export async function runWorkflow(
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      pendingHookDeliveries: new Map<string, Promise<void>>(),
     };
 
     // Subscribe to the events log to update the timestamp in the vm context
