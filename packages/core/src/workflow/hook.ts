@@ -1,6 +1,6 @@
 import { CorruptedEventLogError, HookConflictError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
-import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
+import type { HookConflictEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
@@ -28,8 +28,25 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       isWebhook,
     });
 
-    // Queue of hook events that have been received but not yet processed
-    const payloadsQueue: HookReceivedEvent[] = [];
+    // Queue of buffered hook payloads (received before the workflow
+    // awaited the hook). Each entry's `payload` promise resolves from a
+    // `ctx.promiseQueue` slot chained at the moment its `hook_received`
+    // was consumed — i.e. at the payload's position in the event log,
+    // exactly like step_completed / immediately-delivered hooks. The
+    // serial queue runs each slot's async hydration to completion before
+    // the next, so an earlier-in-log payload resolves first regardless of
+    // how long it takes to decrypt. `iterator.next()` returns the
+    // pre-wired `payload` promise so the resolution stays anchored to the
+    // early log position rather than being re-scheduled at the (later)
+    // await site.
+    //
+    // `markClaimed` is called when a consumer (`iterator.next()`/`await`)
+    // takes this payload; it releases the cross-entity ordering barrier
+    // (see `ctx.pendingHookDeliveries`). The barrier persists until the
+    // claim so that a later-in-log entity (sleep) which is consumed before
+    // the claim still defers behind this payload.
+    const payloadsQueue: { payload: Promise<T>; markClaimed: () => void }[] =
+      [];
 
     // Queue of promises that resolve to the next hook payload
     const promises: PromiseWithResolvers<T>[] = [];
@@ -147,7 +164,73 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             });
           }
         } else {
-          payloadsQueue.push(event);
+          // No consumer is awaiting yet. Resolve this payload through a
+          // promiseQueue slot chained NOW (at its log position), parking
+          // the value on `payload` for a later `iterator.next()` claim.
+          //
+          // Also register a barrier keyed by the source eventId so a
+          // later-in-log entity that resolves with fewer microtask hops
+          // (notably sleep's synchronous `wait_completed`) defers behind
+          // this delivery and cannot win a `Promise.race` it should lose.
+          // Entities resolving from a later log event consult the barrier
+          // via `awaitEarlierHookDeliveries`.
+          const delivery = withResolvers<T>();
+          const sourceEventId = event.eventId;
+          const deliverySettled = withResolvers<void>();
+          let claimed = false;
+          const releaseBarrier = () => {
+            ctx.pendingHookDeliveries?.delete(sourceEventId);
+            deliverySettled.resolve();
+          };
+          // `markClaimed` is invoked from `createHookPromise` the moment a
+          // consumer (`await hook` / `iterator.next()`) takes this payload.
+          // It releases the ordering barrier, but only after the consumer's
+          // branch decision has actually committed.
+          //
+          // The consumer reaches a buffered payload through a chain of
+          // microtasks whose depth we cannot know (a direct `await hook`, a
+          // `for await` over the async iterator's `yield await this`, etc.),
+          // so counting microtask hops is fragile. Instead, once the
+          // payload settles we release the barrier on the next MACROTASK
+          // (`setTimeout(0)`), which runs only after the entire pending
+          // microtask queue has drained — including the consumer's full
+          // await-chain — regardless of its depth. This is the same
+          // macrotask-boundary technique `scheduleWhenIdle` uses to wait
+          // out multi-round deliveries, and is fully hop-count- and
+          // hydration/decryption-time independent.
+          const markClaimed = () => {
+            if (claimed) {
+              return;
+            }
+            claimed = true;
+            const scheduleRelease = () => {
+              // Host `setTimeout` (matching `scheduleWhenIdle`); a
+              // macrotask runs after the full microtask queue drains.
+              setTimeout(releaseBarrier, 0);
+            };
+            delivery.promise.then(scheduleRelease, scheduleRelease);
+          };
+          ctx.pendingHookDeliveries?.set(
+            sourceEventId,
+            deliverySettled.promise
+          );
+          ctx.pendingDeliveries++;
+          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+            try {
+              const payload = await hydrateStepReturnValue(
+                event.eventData.payload,
+                ctx.runId,
+                ctx.encryptionKey,
+                ctx.globalThis
+              );
+              delivery.resolve(payload as T);
+            } catch (error) {
+              delivery.reject(error);
+            } finally {
+              ctx.pendingDeliveries--;
+            }
+          });
+          payloadsQueue.push({ payload: delivery.promise, markClaimed });
         }
 
         return EventConsumerResult.Consumed;
@@ -190,27 +273,18 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (payloadsQueue.length > 0) {
-        const nextPayload = payloadsQueue.shift();
-        if (nextPayload) {
-          // Chain through ctx.promiseQueue to ensure that async
-          // deserialization (e.g., decryption) resolves in event log order.
-          ctx.pendingDeliveries++;
-          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
-            try {
-              const payload = await hydrateStepReturnValue(
-                nextPayload.eventData.payload,
-                ctx.runId,
-                ctx.encryptionKey,
-                ctx.globalThis
-              );
-              resolvers.resolve(payload as T);
-            } catch (error) {
-              resolvers.reject(error);
-            } finally {
-              ctx.pendingDeliveries--;
-            }
-          });
-          return resolvers.promise;
+        const nextDelivery = payloadsQueue.shift();
+        if (nextDelivery) {
+          // The payload was already scheduled to resolve through a
+          // promiseQueue slot at its log position (buffering branch
+          // above). Return that promise directly so resolution order
+          // stays anchored to the payload's log position, not this later
+          // claim site. Releasing the ordering barrier here (on claim,
+          // after the returned promise's continuations are wired up by
+          // the caller) lets any later entity that was deferring behind
+          // this payload proceed.
+          nextDelivery.markClaimed();
+          return nextDelivery.payload;
         }
       }
 

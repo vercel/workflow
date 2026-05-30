@@ -4,6 +4,7 @@ import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import {
+  awaitEarlierHookDeliveries,
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
@@ -88,7 +89,24 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
 
         // Wait has elapsed - chain through promiseQueue to ensure
         // deterministic ordering of all promise resolutions.
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        //
+        // Unlike step/hook resolutions, this one has no async hydration,
+        // so it would otherwise resolve with fewer microtask hops and
+        // could preempt an earlier-in-log buffered hook payload (which is
+        // observed via the async hook iterator's extra hops) in a
+        // `Promise.race`. Defer behind any in-flight hook delivery whose
+        // `hook_received` is earlier in the log than this `wait_completed`
+        // so the committed branch wins, independent of decryption time.
+        const waitCompletedEventId = event.eventId;
+        ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+          // Defer behind any earlier-in-log buffered hook payload that has
+          // not yet been observed by its consumer. The barrier resolves
+          // only after the hook payload's consumer continuation has run
+          // and taken its branch (see hook.ts `markClaimed`), so the
+          // committed (earlier-in-log) branch wins this `Promise.race`
+          // regardless of microtask-hop count or decryption/hydration
+          // time. Fully timing-independent — no hop-matching heuristic.
+          await awaitEarlierHookDeliveries(ctx, waitCompletedEventId);
           resolve();
         });
         return EventConsumerResult.Finished;
