@@ -4,7 +4,8 @@ import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import {
-  awaitEarlierHookDeliveries,
+  awaitEarlierDeliveries,
+  registerDeliveryBarrier,
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
@@ -87,28 +88,29 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         // Remove this wait from the invocations queue (O(1) delete using Map)
         ctx.invocationsQueue.delete(correlationId);
 
-        // Wait has elapsed - chain through promiseQueue to ensure
-        // deterministic ordering of all promise resolutions.
-        //
-        // Unlike step/hook resolutions, this one has no async hydration,
-        // so it would otherwise resolve with fewer microtask hops and
-        // could preempt an earlier-in-log buffered hook payload (which is
-        // observed via the async hook iterator's extra hops) in a
-        // `Promise.race`. Defer behind any in-flight hook delivery whose
-        // `hook_received` is earlier in the log than this `wait_completed`
-        // so the committed branch wins, independent of decryption time.
-        const waitCompletedEventId = event.eventId;
-        ctx.promiseQueue = ctx.promiseQueue.then(async () => {
-          // Defer behind any earlier-in-log buffered hook payload that has
-          // not yet been observed by its consumer. The barrier resolves
-          // only after the hook payload's consumer continuation has run
-          // and taken its branch (see hook.ts `markClaimed`), so the
-          // committed (earlier-in-log) branch wins this `Promise.race`
-          // regardless of microtask-hop count or decryption/hydration
-          // time. Fully timing-independent — no hop-matching heuristic.
-          await awaitEarlierHookDeliveries(ctx, waitCompletedEventId);
-          resolve();
-        });
+        // This `wait_completed` is a branch-deciding resolution the workflow
+        // may `Promise.race` against a hook payload. Order it deterministically
+        // by event-log position (see `pendingDeliveryBarriers`):
+        //  - Register a 'wait' barrier at this event's index so a LATER-in-log
+        //    hook payload is delivered only after this wait.
+        //  - Before resolving, defer behind every EARLIER-in-log HOOK delivery
+        //    so this wait does not preempt a hook the committed log ordered
+        //    first. Then mark this wait delivered to release later hooks.
+        const eventIndex = ctx.eventsConsumer.eventIndex;
+        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'wait');
+        // Defer + resolve in a DETACHED promise (not chained onto the serial
+        // `promiseQueue`). `awaitEarlierDeliveries` may wait on an earlier
+        // hook delivery whose own resolution is itself driven by the
+        // promiseQueue; blocking a queue slot on it would deadlock the serial
+        // queue. We still anchor to the queue tail first so prior queued
+        // hydration/ordering work runs in event-log order.
+        const queueAtCompletion = ctx.promiseQueue;
+        void queueAtCompletion
+          .then(() => awaitEarlierDeliveries(ctx, eventIndex, ['hook']))
+          .then(() => {
+            barrier.markDelivered();
+            resolve();
+          });
         return EventConsumerResult.Finished;
       }
 

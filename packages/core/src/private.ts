@@ -2,6 +2,7 @@
  * Utils used by the bundler when transforming code
  */
 
+import { withResolvers } from '@workflow/utils';
 import type { CryptoKey } from './encryption.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
@@ -151,83 +152,136 @@ export interface WorkflowOrchestratorContext {
    */
   pendingDeliveries: number;
   /**
-   * In-flight buffered hook payload deliveries, keyed by the source
-   * `hook_received` eventId. The value resolves once that delivery has
-   * been observed by its consumer (see below).
+   * Ordered registry of in-flight "branch-deciding" deliveries — the
+   * resolutions a workflow typically `Promise.race`s on: buffered hook
+   * payloads (`hook_received`) and wait completions (`wait_completed`).
+   * Keyed by the delivery's position (index) in the consumed event log.
    *
-   * A buffered hook payload (received before the workflow awaited the
-   * hook) resolves through a `ctx.promiseQueue` slot chained at its
-   * log position, but the workflow only observes it via the async hook
-   * iterator (`yield await this`), which adds microtask hops. A
-   * competing `wait_completed` resolves synchronously in its own slot
-   * (no hydration, fewer hops), so without coordination it can preempt
-   * an earlier-in-log hook payload in a `Promise.race` — diverging from
-   * the committed event log.
+   * The problem: a buffered hook payload is observed via the async hook
+   * iterator (`yield await this`), costing extra microtask hops, while a
+   * `wait_completed` resolves with fewer hops — and a reused sleep can
+   * resolve in an entirely earlier loop iteration. Either way, the
+   * resolution that the committed event log ordered first can lose a
+   * `Promise.race` to a faster- or already-resolved competitor, diverging
+   * from the log and surfacing as `CorruptedEventLogError`.
    *
-   * Entities that resolve from a later log event (sleep) consult this
-   * map via {@link awaitEarlierHookDeliveries} and defer behind any
-   * delivery whose source eventId is earlier than their own event. The
-   * barrier is a plain promise (not chained onto `promiseQueue`), so it
-   * is decryption-time independent and cannot deadlock the serial queue.
+   * The fix is a strict, deterministic delivery order anchored on
+   * event-log position: a delivery does not resolve to the workflow until
+   * every earlier-in-log delivery of the OPPOSITE kind has been delivered.
+   * (Opposite kind only: sequential same-kind hook payloads must not block
+   * one another, and a wait need not wait behind a later wait.) Because the
+   * gate is "the earlier delivery resolved", not "won a timing race", the
+   * outcome is independent of microtask hops, hydration/decryption time,
+   * and `Promise.race` argument order.
    *
-   * The barrier resolves on a MACROTASK after the payload is claimed by
-   * its consumer (see hook.ts `markClaimed`). A macrotask runs only after
-   * the full microtask queue has drained, so the consumer's branch
-   * decision — however many await hops deep — always commits before a
-   * deferring entity proceeds. This is hop-count independent. To avoid
-   * deadlocking when a payload is never claimed (the workflow took a
-   * different branch or is suspending), `awaitEarlierHookDeliveries`
-   * bounds its wait with a one-macrotask fallback.
+   * Index is used rather than the `eventId` string because `eventId` is an
+   * opaque, world-assigned value not guaranteed to sort in creation order
+   * (only the bundled ULID worlds happen to).
+   *
+   * Optional so older/out-of-tree contexts (and lightweight test harnesses)
+   * that do not initialize it degrade gracefully to the previous behavior.
    */
-  pendingHookDeliveries: Map<string, Promise<void>>;
+  pendingDeliveryBarriers?: Map<number, DeliveryBarrierEntry>;
+}
+
+/** The kind of branch-deciding delivery a barrier represents. */
+export type DeliveryKind = 'hook' | 'wait';
+
+interface DeliveryBarrierEntry {
+  kind: DeliveryKind;
+  /** Resolves once this delivery has resolved to the workflow. */
+  delivered: Promise<void>;
 }
 
 /**
- * Awaits all in-flight buffered-hook payload deliveries whose source
- * `hook_received` event is earlier in the log than `eventId` (ULIDs sort
- * lexicographically by time, so a plain string compare is log order).
- * Lets a later entity (e.g. sleep's `wait_completed`) preserve event-log
- * resolution order against an earlier hook payload, independent of how
- * long that payload takes to hydrate/decrypt.
+ * Awaits, in strict event-log order, every still-registered delivery whose
+ * index is earlier than `eventIndex` AND whose kind is in `deferBehindKinds`,
+ * so that this resolution is handed to the workflow only after all relevant
+ * earlier-in-log deliveries have been. This is what keeps a `Promise.race`
+ * deterministic and aligned with the committed event log, independent of
+ * microtask-hop counts, hydration time, or race-argument order.
+ *
+ * `deferBehindKinds` is the opposite kind(s): a hook defers behind earlier
+ * WAITS (not earlier hooks — those are sequential same-entity payloads), a
+ * wait defers behind earlier HOOKS.
  */
-export async function awaitEarlierHookDeliveries(
+export async function awaitEarlierDeliveries(
   ctx: WorkflowOrchestratorContext,
-  eventId: string | undefined
+  eventIndex: number | undefined,
+  deferBehindKinds: readonly DeliveryKind[]
 ): Promise<void> {
   // Defensive: tolerate contexts that predate this field (test harnesses).
   if (
-    eventId === undefined ||
-    !ctx.pendingHookDeliveries ||
-    ctx.pendingHookDeliveries.size === 0
+    eventIndex === undefined ||
+    !ctx.pendingDeliveryBarriers ||
+    ctx.pendingDeliveryBarriers.size === 0
   ) {
     return;
   }
   const earlier: Promise<void>[] = [];
-  for (const [sourceEventId, settled] of ctx.pendingHookDeliveries) {
-    if (sourceEventId < eventId) {
-      earlier.push(settled);
+  for (const [index, entry] of ctx.pendingDeliveryBarriers) {
+    if (index < eventIndex && deferBehindKinds.includes(entry.kind)) {
+      earlier.push(entry.delivered);
     }
   }
-  if (earlier.length === 0) {
-    return;
+  if (earlier.length > 0) {
+    await Promise.all(earlier);
   }
-  // Each barrier resolves when its hook payload's consumer has observed
-  // it (a macrotask after the payload settles; see hook.ts `markClaimed`).
-  // If a payload is never claimed — the workflow took a different branch
-  // or is suspending — its barrier would otherwise never resolve and
-  // deadlock this entity. Bound the wait with a macrotask fallback: a
-  // claim that is going to happen resolves its barrier within one
-  // macrotask of the payload settling, so racing the barriers against a
-  // single `setTimeout(0)` either (a) lets the genuinely-claimed payload
-  // win and commit its branch first, or (b) releases this entity once it
-  // is clear no claim is pending. Either way the committed event-log
-  // branch is honored and we cannot hang.
-  await Promise.race([
-    Promise.all(earlier),
-    new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    }),
-  ]);
+}
+
+/** Handle for a registered branch-deciding delivery barrier. */
+export interface DeliveryBarrier {
+  /**
+   * Mark this delivery as delivered to the workflow. Resolves its
+   * `delivered` promise so any later-in-log opposite-kind delivery gated on
+   * it (via {@link awaitEarlierDeliveries}) may proceed, and removes it from
+   * the registry. Idempotent.
+   */
+  markDelivered: () => void;
+}
+
+/**
+ * Register a branch-deciding delivery at its event-log index so that later
+ * opposite-kind deliveries can be ordered strictly after it. Returns an inert
+ * handle when `pendingDeliveryBarriers` is not initialized.
+ *
+ * To guarantee a later delivery gated on this one can never hang when this
+ * delivery is abandoned (the workflow took a different branch or is
+ * suspending and never observes it), the barrier auto-resolves at idle.
+ */
+export function registerDeliveryBarrier(
+  ctx: WorkflowOrchestratorContext,
+  eventIndex: number | undefined,
+  kind: DeliveryKind
+): DeliveryBarrier {
+  const barriers = ctx.pendingDeliveryBarriers;
+  if (!barriers || eventIndex === undefined) {
+    return { markDelivered: () => {} };
+  }
+
+  let done = false;
+  const { promise, resolve } = withResolvers<void>();
+  const entry: DeliveryBarrierEntry = { kind, delivered: promise };
+  barriers.set(eventIndex, entry);
+
+  const finish = () => {
+    if (done) {
+      return;
+    }
+    done = true;
+    if (barriers.get(eventIndex) === entry) {
+      barriers.delete(eventIndex);
+    }
+    resolve();
+  };
+
+  // Safety net: if this delivery is never delivered to the workflow (its
+  // branch was not taken / the run is suspending), resolve at idle so a
+  // later opposite-kind delivery gated on it cannot deadlock and the
+  // registry cannot leak an entry per abandoned delivery.
+  scheduleWhenIdle(ctx, finish);
+
+  return { markDelivered: finish };
 }
 
 /**

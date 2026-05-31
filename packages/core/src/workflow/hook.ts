@@ -6,6 +6,8 @@ import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import { webhookLogger } from '../logger.js';
 import {
+  awaitEarlierDeliveries,
+  registerDeliveryBarrier,
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
@@ -28,25 +30,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       isWebhook,
     });
 
-    // Queue of buffered hook payloads (received before the workflow
-    // awaited the hook). Each entry's `payload` promise resolves from a
-    // `ctx.promiseQueue` slot chained at the moment its `hook_received`
-    // was consumed — i.e. at the payload's position in the event log,
-    // exactly like step_completed / immediately-delivered hooks. The
-    // serial queue runs each slot's async hydration to completion before
-    // the next, so an earlier-in-log payload resolves first regardless of
-    // how long it takes to decrypt. `iterator.next()` returns the
-    // pre-wired `payload` promise so the resolution stays anchored to the
-    // early log position rather than being re-scheduled at the (later)
-    // await site.
-    //
-    // `markClaimed` is called when a consumer (`iterator.next()`/`await`)
-    // takes this payload; it releases the cross-entity ordering barrier
-    // (see `ctx.pendingHookDeliveries`). The barrier persists until the
-    // claim so that a later-in-log entity (sleep) which is consumed before
-    // the claim still defers behind this payload.
-    const payloadsQueue: { payload: Promise<T>; markClaimed: () => void }[] =
-      [];
+    // Queue of buffered hook payloads (received before the workflow awaited
+    // the hook). Each entry's `claim()` builds the consumer-facing promise
+    // from the captured hydration outcome and orders it deterministically by
+    // event-log position against any concurrent branch-deciding resolution
+    // (see `ctx.pendingDeliveryBarriers`).
+    const payloadsQueue: { claim: () => Promise<T> }[] = [];
 
     // Queue of promises that resolve to the next hook payload
     const promises: PromiseWithResolvers<T>[] = [];
@@ -140,13 +129,28 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_received') {
+        // Register a 'hook' delivery barrier at this event's log index so a
+        // later-in-log `wait_completed` is delivered only after this hook,
+        // and so this hook is delivered only after every earlier-in-log
+        // `wait_completed` — keeping any `Promise.race` against a wait
+        // deterministic and aligned with the committed event log, regardless
+        // of microtask-hop count, hydration time, or race-argument order.
+        // See `ctx.pendingDeliveryBarriers`.
+        const eventIndex = ctx.eventsConsumer.eventIndex;
+        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook');
+
         if (promises.length > 0) {
           const next = promises.shift();
           if (next) {
-            // Reconstruct the payload from the event data.
-            // Chain through ctx.promiseQueue to ensure that async
-            // deserialization (e.g., decryption) resolves in event log order.
+            // A consumer is already awaiting. Hydrate through a promiseQueue
+            // slot (so async deserialization stays in event-log order), then
+            // defer behind earlier waits before resolving. The deferral runs
+            // OFF the serial queue (it may wait on an earlier wait delivery
+            // and blocking a queue slot on that would deadlock the queue).
             ctx.pendingDeliveries++;
+            let hydrateOutcome:
+              | { ok: true; value: T }
+              | { ok: false; error: unknown };
             ctx.promiseQueue = ctx.promiseQueue.then(async () => {
               try {
                 const payload = await hydrateStepReturnValue(
@@ -155,65 +159,50 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                   ctx.encryptionKey,
                   ctx.globalThis
                 );
-                next.resolve(payload as T);
+                hydrateOutcome = { ok: true, value: payload as T };
               } catch (error) {
-                next.reject(error);
+                hydrateOutcome = { ok: false, error };
               } finally {
                 ctx.pendingDeliveries--;
               }
+              void awaitEarlierDeliveries(ctx, eventIndex, ['wait']).then(
+                () => {
+                  barrier.markDelivered();
+                  if (hydrateOutcome.ok) {
+                    next.resolve(hydrateOutcome.value);
+                  } else {
+                    next.reject(hydrateOutcome.error);
+                  }
+                }
+              );
             });
           }
         } else {
-          // No consumer is awaiting yet. Resolve this payload through a
-          // promiseQueue slot chained NOW (at its log position), parking
-          // the value on `payload` for a later `iterator.next()` claim.
-          //
-          // Also register a barrier keyed by the source eventId so a
-          // later-in-log entity that resolves with fewer microtask hops
-          // (notably sleep's synchronous `wait_completed`) defers behind
-          // this delivery and cannot win a `Promise.race` it should lose.
-          // Entities resolving from a later log event consult the barrier
-          // via `awaitEarlierHookDeliveries`.
-          const delivery = withResolvers<T>();
-          const sourceEventId = event.eventId;
-          const deliverySettled = withResolvers<void>();
-          let claimed = false;
-          const releaseBarrier = () => {
-            ctx.pendingHookDeliveries?.delete(sourceEventId);
-            deliverySettled.resolve();
-          };
-          // `markClaimed` is invoked from `createHookPromise` the moment a
-          // consumer (`await hook` / `iterator.next()`) takes this payload.
-          // It releases the ordering barrier, but only after the consumer's
-          // branch decision has actually committed.
-          //
-          // The consumer reaches a buffered payload through a chain of
-          // microtasks whose depth we cannot know (a direct `await hook`, a
-          // `for await` over the async iterator's `yield await this`, etc.),
-          // so counting microtask hops is fragile. Instead, once the
-          // payload settles we release the barrier on the next MACROTASK
-          // (`setTimeout(0)`), which runs only after the entire pending
-          // microtask queue has drained — including the consumer's full
-          // await-chain — regardless of its depth. This is the same
-          // macrotask-boundary technique `scheduleWhenIdle` uses to wait
-          // out multi-round deliveries, and is fully hop-count- and
-          // hydration/decryption-time independent.
-          const markClaimed = () => {
-            if (claimed) {
-              return;
-            }
-            claimed = true;
-            const scheduleRelease = () => {
-              // Host `setTimeout` (matching `scheduleWhenIdle`); a
-              // macrotask runs after the full microtask queue drains.
-              setTimeout(releaseBarrier, 0);
-            };
-            delivery.promise.then(scheduleRelease, scheduleRelease);
-          };
-          ctx.pendingHookDeliveries?.set(
-            sourceEventId,
-            deliverySettled.promise
-          );
+          // No consumer is awaiting yet. Hydrate through a promiseQueue slot
+          // at this log position and park the OUTCOME (value or error) for a
+          // later `iterator.next()` / `await hook` claim. We capture the
+          // outcome rather than eagerly resolving/rejecting a promise no
+          // consumer has attached to — a rejected unclaimed promise (e.g. a
+          // buffered encrypted payload with no key) would otherwise surface
+          // as an unhandled rejection and crash the process. `claim()` builds
+          // the consumer-facing promise on demand.
+          let outcome:
+            | { ok: true; value: T }
+            | { ok: false; error: unknown }
+            | undefined;
+          const hydrated = withResolvers<void>();
+
+          const claim = (): Promise<T> =>
+            hydrated.promise
+              .then(() => awaitEarlierDeliveries(ctx, eventIndex, ['wait']))
+              .then(() => {
+                barrier.markDelivered();
+                if (outcome && !outcome.ok) {
+                  throw outcome.error;
+                }
+                return (outcome as { ok: true; value: T }).value;
+              });
+
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
@@ -223,14 +212,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                 ctx.encryptionKey,
                 ctx.globalThis
               );
-              delivery.resolve(payload as T);
+              outcome = { ok: true, value: payload as T };
             } catch (error) {
-              delivery.reject(error);
+              outcome = { ok: false, error };
             } finally {
               ctx.pendingDeliveries--;
+              hydrated.resolve();
             }
           });
-          payloadsQueue.push({ payload: delivery.promise, markClaimed });
+          payloadsQueue.push({ claim });
         }
 
         return EventConsumerResult.Consumed;
@@ -275,16 +265,13 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (payloadsQueue.length > 0) {
         const nextDelivery = payloadsQueue.shift();
         if (nextDelivery) {
-          // The payload was already scheduled to resolve through a
-          // promiseQueue slot at its log position (buffering branch
-          // above). Return that promise directly so resolution order
-          // stays anchored to the payload's log position, not this later
-          // claim site. Releasing the ordering barrier here (on claim,
-          // after the returned promise's continuations are wired up by
-          // the caller) lets any later entity that was deferring behind
-          // this payload proceed.
-          nextDelivery.markClaimed();
-          return nextDelivery.payload;
+          // The payload was hydrated through a promiseQueue slot at its log
+          // position (buffering branch above). `claim()` builds the
+          // consumer-facing promise from that outcome, deferring behind any
+          // earlier-in-log wait and marking this hook delivered — so
+          // resolution order stays anchored to the event log, not this later
+          // claim site.
+          return nextDelivery.claim();
         }
       }
 
