@@ -348,7 +348,8 @@ function assertEventPaginationProgress(
   runId: string,
   hasMore: boolean,
   cursor: string | null,
-  requestedCursors: Set<string>
+  requestedCursors: Set<string>,
+  addedNewEvents: boolean
 ): void {
   if (!hasMore) {
     return;
@@ -361,6 +362,19 @@ function assertEventPaginationProgress(
   }
   if (requestedCursors.has(cursor)) {
     throw eventPaginationContractError(runId, 'repeated a cursor');
+  }
+  // A non-final page over an ascending cursor must surface at least one event
+  // we have not already seen. The existing guards above only catch a cursor
+  // that repeats a value we requested before; a backend that keeps handing
+  // back fresh cursors with empty or fully-overlapping pages would otherwise
+  // spin `while (hasMore)` forever while `appendUniqueEvents` keeps the result
+  // flat. Treating zero forward progress as a contract violation bounds the
+  // loop without an arbitrary page cap.
+  if (!addedNewEvents) {
+    throw eventPaginationContractError(
+      runId,
+      'reported more pages without making progress'
+    );
   }
 }
 
@@ -449,13 +463,15 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
+        const eventsBeforeAppend = loadedEvents.length;
         appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,
           hasMore,
           response.cursor,
-          requestedCursors
+          requestedCursors,
+          loadedEvents.length > eventsBeforeAppend
         );
         // Preserve the last non-null cursor across pages. A World may
         // legitimately return `{ data: [], cursor: null, hasMore: false }`

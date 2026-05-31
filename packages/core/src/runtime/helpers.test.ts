@@ -283,4 +283,60 @@ describe('loadWorkflowRunEvents', () => {
     });
     expect(eventsListMock).toHaveBeenCalledTimes(1);
   });
+
+  it('fails when a page advances the cursor but adds no new events', async () => {
+    // A backend that keeps returning fresh cursors with empty pages would
+    // never repeat a cursor, so the cursor-based guards never trip. Zero
+    // forward progress must still bound the loop on the first such page.
+    eventsListMock.mockResolvedValue({
+      data: [],
+      cursor: 'eid:evnt_a',
+      hasMore: true,
+    });
+
+    await expect(loadWorkflowRunEvents('wrun_test')).rejects.toMatchObject({
+      code: 'WORLD_CONTRACT_ERROR',
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails when a non-final page is entirely overlapping events', async () => {
+    // Real events on page 1, then a page that re-serves only already-seen
+    // events while still claiming `hasMore` with a brand-new cursor.
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a'), makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b',
+      hasMore: true,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a'), makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b_again',
+      hasMore: true,
+    });
+
+    await expect(loadWorkflowRunEvents('wrun_test')).rejects.toMatchObject({
+      code: 'WORLD_CONTRACT_ERROR',
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('still completes when a trailing empty page closes pagination', async () => {
+    // Regression guard: an empty final page is legitimate as long as it does
+    // not claim `hasMore`, and must not be mistaken for non-progression.
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: 'eid:evnt_a',
+      hasMore: true,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [],
+      cursor: null,
+      hasMore: false,
+    });
+
+    const result = await loadWorkflowRunEvents('wrun_test');
+
+    expect(result.events.map((event) => event.eventId)).toEqual(['evnt_a']);
+    expect(eventsListMock).toHaveBeenCalledTimes(2);
+  });
 });
