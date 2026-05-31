@@ -2351,4 +2351,44 @@ describe('e2e', () => {
       expect(returnValue).toBe(133);
     }
   );
+
+  /**
+   * Regression test for the scheduleWhenIdle premature-suspension bug.
+   *
+   * Stresses replay with setup steps followed by a moderately wide outer Promise.all
+   * where each item advances through multiple sequential waves. A few
+   * phase-one steps lag 2-3s behind the rest of the batch, while fast items
+   * continue through later waves.
+   *
+   * Expected (after fix): status === 'completed', completed === 12.
+   * Before fix: run can fail with WorkflowRuntimeError "Unconsumed event in
+   * event log" for one of the next-wave steps because
+   * scheduleWhenIdle fires WorkflowSuspension in the gap between fast
+   * hydrations completing and the next useStep callback registering.
+   *
+   * PR with full context: https://github.com/vercel/workflow/pull/1961/changes#top
+   */
+  test.skipIf(
+    process.env.APP_NAME !== 'nextjs-turbopack' ||
+      !process.env.WORKFLOW_VERCEL_ENV
+  )(
+    'scheduleWhenIdle - concurrent multi-wave workflow completes without unconsumed event error',
+    { timeout: 600_000 },
+    async () => {
+      const run = await start(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/96_many_steps.ts',
+          'concurrentMultiWaveWorkflow'
+        ),
+        []
+      );
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({ totalItems: 12, completed: 12 });
+
+      const { json } = await cliInspectJson(`runs ${run.runId}`);
+      expect(json.status).toBe('completed');
+    }
+  );
 });

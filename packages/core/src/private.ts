@@ -7,6 +7,20 @@ import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { Serializable } from './schemas.js';
 
+/**
+ * Delay applied before firing WorkflowSuspension when this idle cycle has
+ * observed in-flight replay deliveries. Inlined to 100ms on stable (the
+ * `DEFERRED_CHECK_DELAY_MS` export from `events-consumer.ts` only exists on
+ * 5.x). Conceptually mirrors that propagation guard.
+ *
+ * TODO: Replace this wall-clock heuristic with a deterministic counter that
+ * tracks VM-resumption work in flight (e.g. promises waiting to cross the VM
+ * boundary into the workflow context, plus any follow-up `subscribe()` calls
+ * not yet registered). Once such a counter exists, `scheduleWhenIdle` can wait
+ * on it directly instead of guessing how long propagation needs.
+ */
+const REPLAY_PROPAGATION_DELAY_MS = 100;
+
 export type StepFunction<
   Args extends Serializable[] = any[],
   Result extends Serializable | unknown = unknown,
@@ -156,22 +170,78 @@ export interface WorkflowOrchestratorContext {
  * Schedule a callback to fire only after all pending data deliveries
  * (step results, hook payloads) and async deserialization have completed.
  * Uses a polling loop: setTimeout(0) → check pendingDeliveries →
- * if > 0, wait for promiseQueue → repeat. This handles the multi-round
- * delivery pattern where each hook payload delivery cycle appends new
- * async work to the promiseQueue.
+ * if > 0, wait for promiseQueue → repeat.
+ *
+ * When pendingDeliveries reaches 0, do not fire immediately. Promise
+ * resolutions can resume workflow code across the VM boundary and register
+ * follow-up work after the host-side delivery has already decremented the
+ * counter. Yield once, then re-drain promiseQueue before deciding the workflow
+ * is truly idle.
+ *
+ * If this schedule cycle actually observed in-flight deliveries, add the same
+ * small non-zero delay used by EventsConsumer before suspending. That preserves
+ * the fast path for ordinary "new work needs to be scheduled" suspensions while
+ * giving replay propagation enough time to register follow-up callbacks after
+ * hydrated results cross the VM boundary.
+ *
+ * Unlike `EventsConsumer`'s deferred unconsumed-event check, this
+ * propagation timer is not cancelled when a follow-up `useStep`/hook/sleep
+ * registers during the wait. If a callback arrives mid-wait and consumes
+ * the pending `*_created` event, the suspension still fires after the delay,
+ * but it is harmless: the matching invocation already has
+ * `hasCreatedEvent=true`, so the suspension handler will not re-create the
+ * step, and the run simply continues replay from the persisted event log.
  */
 export function scheduleWhenIdle(
   ctx: WorkflowOrchestratorContext,
   fn: () => void
 ): void {
+  let sawPendingDeliveries = false;
+
+  const fireWhenReady = () => {
+    if (!sawPendingDeliveries) {
+      fn();
+      return;
+    }
+
+    setTimeout(() => {
+      if (ctx.pendingDeliveries > 0) {
+        // sawPendingDeliveries is already true on this branch (fireWhenReady's
+        // early return covers the false case), so no need to re-assign here.
+        ctx.promiseQueue.then(() => {
+          setTimeout(check, 0);
+        });
+      } else {
+        fn();
+      }
+    }, REPLAY_PROPAGATION_DELAY_MS);
+  };
+
+  const runWhenStillIdle = () => {
+    ctx.promiseQueue
+      .then(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+      .then(() => ctx.promiseQueue)
+      .then(() => {
+        if (ctx.pendingDeliveries > 0) {
+          sawPendingDeliveries = true;
+          ctx.promiseQueue.then(() => {
+            setTimeout(check, 0);
+          });
+        } else {
+          fireWhenReady();
+        }
+      });
+  };
+
   const check = () => {
     if (ctx.pendingDeliveries > 0) {
+      sawPendingDeliveries = true;
       // Still delivering data — wait for queue to drain, then re-check
       ctx.promiseQueue.then(() => {
         setTimeout(check, 0);
       });
     } else {
-      fn();
+      runWhenStillIdle();
     }
   };
   setTimeout(check, 0);
