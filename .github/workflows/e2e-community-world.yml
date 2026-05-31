@@ -100,12 +100,15 @@ jobs:
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
 
-      # Community world adapters dispatch created runs from an in-process queue
-      # worker started via `getWorld().start()`. The shipped workbench has no
-      # instrumentation file (matches the getting-started docs, #1959), so start
-      # the world here for the E2E lane only. Without this, runs stay `pending`
-      # and the suite hangs until the job timeout.
+      # Adapters with an in-process queue worker (mongodb, redis) only dispatch
+      # created runs once `getWorld().start()` has been called. The shipped
+      # workbench has no instrumentation file (matches the getting-started docs,
+      # #1959), so start the world here for the E2E lane only. Without this, runs
+      # stay `pending` and the suite hangs until the job timeout. Worlds that
+      # dispatch without an explicit start (e.g. turso) don't get this — adding it
+      # changes their setup/init and is unnecessary.
       - name: Restore world kickstart (CI only)
+        if: ${{ inputs.service-type == 'mongodb' || inputs.service-type == 'redis' }}
         run: cp .github/fixtures/community-world-instrumentation.ts "workbench/${{ inputs.app-name }}/instrumentation.ts"
 
       - name: Set environment variables
@@ -118,14 +121,21 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           echo "Waiting for dev server to start..." && sleep 15
 
-          # Fast-fail preflight: a representative workflow run must complete within
-          # ~2 min. If the world isn't dispatching runs (e.g. the kickstart above
-          # failed), bail now instead of letting every test burn its 60s timeout
-          # and pushing the job to its hard limit.
-          echo "Running community-world dispatch preflight (${{ inputs.world-id }})..."
-          if ! timeout 150 pnpm vitest run packages/core/e2e/e2e.test.ts -t "addTenWorkflow" --reporter=default; then
-            echo "::error::Community world '${{ inputs.world-id }}' preflight failed — workflow runs are not being dispatched. Aborting before the job timeout."
-            exit 1
+          # Fast-fail preflight (worlds with an in-process worker only). When such
+          # a world isn't dispatching, runs stay `pending` and every test burns its
+          # full timeout, so the suite would hang for the entire job timeout. Run
+          # one representative set under a short wall-clock cap and bail only if it
+          # *times out* (exit 124 — the hang signature). Ordinary test failures
+          # don't abort; they're left to the full suite below.
+          if [[ "$SERVICE_TYPE" == "mongodb" || "$SERVICE_TYPE" == "redis" ]]; then
+            echo "Running community-world dispatch preflight ($WORLD_ID)..."
+            rc=0
+            timeout 150 pnpm vitest run packages/core/e2e/e2e.test.ts -t "addTenWorkflow" --reporter=default || rc=$?
+            if [[ $rc -eq 124 ]]; then
+              echo "::error::Community world '$WORLD_ID' preflight timed out — workflow runs are not being dispatched. Aborting before the job timeout."
+              exit 1
+            fi
+            echo "Preflight finished without hanging (exit $rc); continuing to full suite."
           fi
 
           pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
@@ -134,6 +144,8 @@ jobs:
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ inputs.app-name }}
+          SERVICE_TYPE: ${{ inputs.service-type }}
+          WORLD_ID: ${{ inputs.world-id }}
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
 
