@@ -44,7 +44,10 @@ jobs:
   e2e:
     name: E2E ${{ inputs.world-name }}
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # Intentionally NOT continue-on-error: real test failures (and hangs caught by
+    # the preflight) surface as a red job + a ⚠️ warning on the PR comment. This job
+    # is non-blocking because it is excluded from e2e-required-check in tests.yml,
+    # not because failures are swallowed.
     # Successful community runs historically finish in ~12-15 min. Cap at 20 so a
     # regression can't burn 30 min; the preflight below fails much faster than this.
     timeout-minutes: 20
@@ -138,9 +141,15 @@ jobs:
             echo "Preflight finished without hanging (exit $rc); continuing to full suite."
           fi
 
-          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
+          # Run both suites regardless of individual outcomes (so both result
+          # artifacts are produced for the summary), then fail the step if either
+          # suite failed. The job is non-blocking via its exclusion from
+          # e2e-required-check, so this surfaces failures without gating merges.
+          fail=0
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || fail=1
           sleep 10
-          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}.json || fail=1
+          exit $fail
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ inputs.app-name }}
