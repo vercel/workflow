@@ -1,5 +1,19 @@
 # @workflow/world-vercel
 
+## 4.3.0
+
+### Minor Changes
+
+- [#1978](https://github.com/vercel/workflow/pull/1978) [`17cf939`](https://github.com/vercel/workflow/commit/17cf939d48e163f1cc93942a9db1069793da1176) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `@workflow/world-vercel/run-id` sub-export with `encode`/`decode` helpers that produce ULID-shaped workflow run IDs carrying a tag bit, a 5-bit version, and a 6-bit Vercel region ID.
+
+### Patch Changes
+
+- [#2142](https://github.com/vercel/workflow/pull/2142) [`3113738`](https://github.com/vercel/workflow/commit/31137386eaed044aa6c75c04cd0bafc2e49edf1e) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent failed stream writes from surfacing as unhandled rejections and include request correlation details in stream errors.
+
+- Updated dependencies [[`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c)]:
+  - @workflow/world@4.1.3
+  - @workflow/errors@4.1.2
+
 ## 4.2.0
 
 ### Minor Changes
