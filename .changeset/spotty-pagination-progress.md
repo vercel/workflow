@@ -2,4 +2,4 @@
 '@workflow/core': patch
 ---
 
-Fail event pagination cleanly when a page reports more results but adds no new events, bounding the load loop against non-progressing cursor responses.
+Further harden event pagination code, failing cleanly when a page reports more results but adds no new events and would get stuck in a loop
