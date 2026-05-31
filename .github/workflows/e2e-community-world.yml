@@ -45,7 +45,9 @@ jobs:
     name: E2E ${{ inputs.world-name }}
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 30
+    # Successful community runs historically finish in ~12-15 min. Cap at 20 so a
+    # regression can't burn 30 min; the preflight below fails much faster than this.
+    timeout-minutes: 20
 
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -98,6 +100,14 @@ jobs:
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
 
+      # Community world adapters dispatch created runs from an in-process queue
+      # worker started via `getWorld().start()`. The shipped workbench has no
+      # instrumentation file (matches the getting-started docs, #1959), so start
+      # the world here for the E2E lane only. Without this, runs stay `pending`
+      # and the suite hangs until the job timeout.
+      - name: Restore world kickstart (CI only)
+        run: cp .github/fixtures/community-world-instrumentation.ts "workbench/${{ inputs.app-name }}/instrumentation.ts"
+
       - name: Set environment variables
         run: |
           echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
@@ -105,7 +115,19 @@ jobs:
       - name: Run E2E Tests
         run: |
           cd workbench/${{ inputs.app-name }} && pnpm dev &
+          cd "$GITHUB_WORKSPACE"
           echo "Waiting for dev server to start..." && sleep 15
+
+          # Fast-fail preflight: a representative workflow run must complete within
+          # ~2 min. If the world isn't dispatching runs (e.g. the kickstart above
+          # failed), bail now instead of letting every test burn its 60s timeout
+          # and pushing the job to its hard limit.
+          echo "Running community-world dispatch preflight (${{ inputs.world-id }})..."
+          if ! timeout 150 pnpm vitest run packages/core/e2e/e2e.test.ts -t "addTenWorkflow" --reporter=default; then
+            echo "::error::Community world '${{ inputs.world-id }}' preflight failed — workflow runs are not being dispatched. Aborting before the job timeout."
+            exit 1
+          fi
+
           pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
           sleep 10
           pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}.json || true

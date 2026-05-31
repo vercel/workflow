@@ -688,15 +688,15 @@ jobs:
           if-no-files-found: ignore
 
   # Community World E2E Tests (dynamically generated from worlds-manifest.json)
-  # Temporarily disabled: the MongoDB/Redis community worlds stopped dispatching
-  # runs after the workbench world-kickstart (`getWorld().start()`) was removed
-  # in #1963, so these jobs hang until the 30-minute timeout on every run. Kept
-  # off the required check until the follow-up PR restores the kickstart in the
-  # community E2E lane and adds a fast-fail preflight.
+  # Non-blocking on stable (continue-on-error in the reusable workflow; surfaced
+  # as a warning in the summary). The community world adapters need an in-process
+  # queue worker, which the reusable workflow starts via a CI-only instrumentation
+  # kickstart. A fast-fail preflight there guards against the 30-minute hang that
+  # occurred when that kickstart was missing (see e2e-community-world.yml).
   getCommunityWorldsMatrix:
     name: Get Community Worlds Matrix
     runs-on: ubuntu-latest
-    if: false
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
@@ -715,7 +715,7 @@ jobs:
 
   e2e-community:
     name: E2E Community World (${{ matrix.world.name }})
-    if: false
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getCommunityWorldsMatrix
     strategy:
       fail-fast: false
