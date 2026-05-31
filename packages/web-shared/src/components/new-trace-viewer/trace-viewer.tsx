@@ -29,6 +29,7 @@ import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
 import type { Trace } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
+import { Kbd } from '../ui/kbd';
 import EventList from './components/event-list';
 import { SplitPane } from './components/split-pane';
 import {
@@ -36,6 +37,12 @@ import {
   Timeline,
   TimelineHeader,
 } from './components/timeline';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '../ui/tooltip';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { DetailPanel } from './detail-panel';
 import { searchSpans } from './search';
@@ -154,9 +161,11 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
 
 export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
   return (
-    <ActiveSpanProvider spans={trace.spans}>
-      <NewTraceViewerContent trace={trace} />
-    </ActiveSpanProvider>
+    <TooltipProvider delayDuration={300}>
+      <ActiveSpanProvider spans={trace.spans}>
+        <NewTraceViewerContent trace={trace} />
+      </ActiveSpanProvider>
+    </TooltipProvider>
   );
 }
 
@@ -634,22 +643,42 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               {selectedSpanName}
             </span>
             <div className="flex items-center gap-0.5 shrink-0">
-              <IconButton
-                aria-label="Navigate to previous span"
-                aria-keyshortcuts="K"
-                onClick={handleSelectPrevSpan}
-                disabled={!prevSpanId}
-              >
-                <ChevronUp className="w-4 h-4" />
-              </IconButton>
-              <IconButton
-                aria-label="Navigate to next span"
-                aria-keyshortcuts="J"
-                onClick={handleSelectNextSpan}
-                disabled={!nextSpanId}
-              >
-                <ChevronDown className="w-4 h-4" />
-              </IconButton>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <IconButton
+                    aria-label="Navigate up"
+                    aria-keyshortcuts="K"
+                    onClick={handleSelectPrevSpan}
+                    disabled={!prevSpanId}
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </IconButton>
+                </TooltipTrigger>
+                {prevSpanId ? (
+                  <TooltipContent>
+                    Navigate up
+                    <Kbd>K</Kbd>
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <IconButton
+                    aria-label="Navigate down"
+                    aria-keyshortcuts="J"
+                    onClick={handleSelectNextSpan}
+                    disabled={!nextSpanId}
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </IconButton>
+                </TooltipTrigger>
+                {nextSpanId ? (
+                  <TooltipContent>
+                    Navigate down
+                    <Kbd>J</Kbd>
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
               <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
               <IconButton
                 aria-label="Close span details"

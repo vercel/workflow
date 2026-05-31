@@ -785,6 +785,7 @@ export function RunDetailView({
                   <NewTraceViewer
                     run={run}
                     events={allEvents ?? []}
+                    loading={loading}
                     sidebarData={sidebarData}
                   />
                 </div>
