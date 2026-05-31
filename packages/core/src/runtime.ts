@@ -600,7 +600,15 @@ export function workflowEntrypoint(
                     );
 
                     if (sawAllWaitCompletions) {
-                      events.push(...newEvents.events);
+                      const existingIds = new Set(
+                        events.map((event) => event.eventId)
+                      );
+                      for (const event of newEvents.events) {
+                        if (!existingIds.has(event.eventId)) {
+                          existingIds.add(event.eventId);
+                          events.push(event);
+                        }
+                      }
                     } else {
                       const loadedEvents = await getWorkflowRunEvents(
                         workflowRun.runId
