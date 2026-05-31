@@ -186,15 +186,14 @@ describe('createSleep', () => {
     const sleep = createSleep(ctx);
     const slept = sleep(5_000);
 
-    // The bug raises CorruptedEventLogError (and never resolves the sleep).
-    // The fix lets the sleep resolve with no error. Race the two outcomes
-    // against a short grace period.
+    // The bug raises CorruptedEventLogError (and never resolves the sleep);
+    // the fix lets the sleep resolve with no error. Race the two terminal
+    // outcomes directly — no timing guard — so a regression surfaces as the
+    // error branch (or a hang caught by the test timeout), never a flaky race
+    // against a fixed grace period.
     const outcome = await Promise.race([
       sleepError.promise.then((err) => ({ kind: 'error' as const, err })),
       slept.then(() => ({ kind: 'resolved' as const })),
-      new Promise<{ kind: 'timeout' }>((r) =>
-        setTimeout(() => r({ kind: 'timeout' as const }), 250)
-      ),
     ]);
 
     if (outcome.kind === 'error') {
