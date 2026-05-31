@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.1.3
+
+### Patch Changes
+
+- [#1979](https://github.com/vercel/workflow/pull/1979) [`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c) Thanks [@adamiBs](https://github.com/adamiBs)! - Make `run.input` and `step.input` `.optional()` on the World snapshot schemas so consumers no longer fail validation when the service externalizes payloads as `RemoteRef` blobs.
+
 ## 4.1.2
 
 ### Patch Changes
