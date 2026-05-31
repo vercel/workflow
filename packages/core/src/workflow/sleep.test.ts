@@ -47,6 +47,7 @@ function setupWorkflowContext(
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
+    pendingDeliveryBarriers: new Map(),
   };
   return Object.assign(ctx, { updateTimestamp: context.updateTimestamp });
 }
