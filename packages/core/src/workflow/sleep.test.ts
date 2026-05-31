@@ -206,6 +206,37 @@ describe('createSleep', () => {
     expect(ctx.invocationsQueue.size).toBe(0);
   });
 
+  it('flags an invalid wait_completed.resumeAt even when no wait_created was applied', async () => {
+    // Counterpart to the test above: skipping the equality check without a
+    // recorded value must NOT also swallow a malformed resumeAt. A non-finite
+    // resumeAt is corrupt data regardless of `hasCreatedEvent` — the original
+    // run always records a valid parseDurationToDate(...) Date, so a consistent
+    // log never carries one. Here there is no `wait_created` (hasCreatedEvent
+    // stays false) yet the Invalid Date must still raise.
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { resumeAt: new Date(Number.NaN) },
+        createdAt: new Date(DEFAULT_FIXED_TIMESTAMP + 5_100),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const sleep = createSleep(ctx);
+    void sleep(5_000);
+
+    const workflowError = await errorReceived.promise;
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError?.message).toContain('wait_completed');
+    expect(workflowError?.message).toContain('Invalid Date');
+    expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
+  });
+
   it('should invoke workflow error handler when wait_completed resumeAt is invalid', async () => {
     const ctx = setupWorkflowContext([
       {

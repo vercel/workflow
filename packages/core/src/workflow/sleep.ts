@@ -32,7 +32,12 @@ import {
  * the queue item still holds that freshly-recomputed value, so comparing it
  * against the recorded `wait_completed.resumeAt` yields a false mismatch on a
  * perfectly consistent log. The correlationId match already establishes the
- * wait's identity, so the resumeAt check is skipped in that case.
+ * wait's identity, so the equality check is skipped in that case.
+ *
+ * A non-finite / unparseable `resumeAt`, however, is malformed irrespective of
+ * any authoritative value — the original run always records a valid
+ * `parseDurationToDate(...)` Date, so a consistent log never carries one. That
+ * is flagged unconditionally, before the `hasCreatedEvent` gate.
  */
 function detectResumeAtMismatch(
   correlationId: string,
@@ -43,25 +48,34 @@ function detectResumeAtMismatch(
   if (eventResumeAt === undefined) {
     return null;
   }
+
+  const eventResumeAtDate = new Date(eventResumeAt);
+  const eventResumeAtMs = eventResumeAtDate.getTime();
+
+  // An Invalid/non-finite resumeAt is corrupt data regardless of whether an
+  // authoritative recorded value exists, so do not gate this on
+  // `hasCreatedEvent` — a consistent log never produces one.
+  if (!Number.isFinite(eventResumeAtMs)) {
+    return (
+      `Corrupted event log: wait_completed event for ${correlationId} has ` +
+      `invalid resumeAt "${String(eventResumeAt)}"`
+    );
+  }
+
   if (!queueItem || queueItem.type !== 'wait' || !queueItem.hasCreatedEvent) {
-    // No authoritative recorded resumeAt to compare against.
+    // No authoritative recorded resumeAt to compare a finite value against.
     return null;
   }
 
   const expectedResumeAt = queueItem.resumeAt;
-  const eventResumeAtDate = new Date(eventResumeAt);
-  const eventResumeAtMs = eventResumeAtDate.getTime();
   if (eventResumeAtMs === expectedResumeAt.getTime()) {
     return null;
   }
 
-  const eventResumeAtForMessage = Number.isFinite(eventResumeAtMs)
-    ? eventResumeAtDate.toISOString()
-    : String(eventResumeAt);
   return (
     `Corrupted event log: wait_completed event for ${correlationId} has ` +
-    `resumeAt "${eventResumeAtForMessage}", but the current wait consumer ` +
-    `expects "${expectedResumeAt.toISOString()}"`
+    `resumeAt "${eventResumeAtDate.toISOString()}", but the current wait ` +
+    `consumer expects "${expectedResumeAt.toISOString()}"`
   );
 }
 
