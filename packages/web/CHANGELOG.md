@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.7
+
+### Patch Changes
+
+- [#2107](https://github.com/vercel/workflow/pull/2107) [`e313c66`](https://github.com/vercel/workflow/commit/e313c66d21ac56717aad4162bac8430c1f907ae1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow lookup of exact step ID (`step_`), wait ID (`wait_`), hook ID (`hook_`), or event ID (`evnt_`) in the event list UI.
+
 ## 4.1.6
 
 ### Patch Changes
