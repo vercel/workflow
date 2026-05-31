@@ -38,6 +38,8 @@ const DEFAULT_STEP_MAX_RETRIES = 3;
 export interface StepExecutorParams {
   world: World;
   workflowRunId: string;
+  /** Deployment that owns the workflow run, for forwarded writable streams. */
+  workflowDeploymentId?: string;
   workflowName: string;
   workflowStartedAt: number;
   stepId: string;
@@ -294,7 +296,10 @@ export async function executeStep(
             step.input,
             workflowRunId,
             encryptionKey,
-            ops
+            ops,
+            globalThis,
+            {},
+            params.workflowDeploymentId
           );
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
@@ -328,6 +333,7 @@ export async function executeStep(
                 : `http://localhost:${port ?? 3000}`,
               features: { encryption: !!encryptionKey },
             },
+            workflowDeploymentId: params.workflowDeploymentId,
             ops,
             closureVars: hydratedInput.closureVars,
             encryptionKey,
