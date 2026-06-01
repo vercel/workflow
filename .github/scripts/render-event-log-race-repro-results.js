@@ -142,6 +142,10 @@ const INFRA_CODE_NOTES = {
     'Resume lost the race: the run already completed (sleep budget elapsed) before the harness delivered the hook resume. Expected under load.',
   NO_WAKE_BRANCH:
     'Sleep branch won the race, so the hook-wake path was not exercised this run. Coverage loss, not corruption.',
+  SLOW_COMPLETION:
+    'Run completed, but only after the poll budget (within the grace window) — slow under load, not wedged. Not an SDK failure.',
+  CANCELLED:
+    'Run was cancelled (superseded or aborted) rather than completing — not an SDK failure.',
   HARNESS_ERROR:
     'Repro driver/transport error (e.g. `fetch failed`) talking to the deployment — not an SDK failure.',
 };
@@ -512,7 +516,7 @@ function renderInfraBreakdown(entry) {
 
   console.log('### Infra (non-gating)\n');
   console.log(
-    `${entry.infraCount} harness-side non-completion${entry.infraCount === 1 ? '' : 's'} that do **not** fail the job:\n`
+    `${entry.infraCount} harness-side non-completion${entry.infraCount === 1 ? ' that does' : 's that do'} **not** fail the job:\n`
   );
   console.log('| Error code | Count | What it means | Examples |');
   console.log('|:--|--:|:--|:--|');
@@ -549,7 +553,7 @@ function render(resultsFile, previousComment) {
   const infraNote =
     latestInfra > 0
       ? ` ${latestInfra} non-gating infra non-completion${latestInfra === 1 ? '' : 's'}` +
-        `${infraDigest ? ` (${infraDigest})` : ''} are reported but do not fail the job.`
+        `${infraDigest ? ` (${infraDigest})` : ''} ${latestInfra === 1 ? 'is reported but does' : 'are reported but do'} not fail the job.`
       : '';
 
   console.log('<!-- event-log-race-repro-results -->');
