@@ -1,5 +1,7 @@
 import {
+  CorruptedEventLogError,
   EntityConflictError,
+  ReplayDivergenceError,
   RUN_ERROR_CODES,
   RunExpiredError,
   WorkflowRuntimeError,
@@ -8,6 +10,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
@@ -17,14 +20,17 @@ import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
   MAX_QUEUE_DELIVERIES,
+  REPLAY_DIVERGENCE_MAX_RETRIES,
   REPLAY_TIMEOUT_MAX_RETRIES,
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
 import {
   getQueueOverhead,
+  getWorkflowQueueName,
   getWorkflowRunEvents,
   handleHealthCheckMessage,
   parseHealthCheckPayload,
+  queueMessage,
   withHealthCheck,
 } from './runtime/helpers.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
@@ -121,6 +127,7 @@ export function workflowEntrypoint(
         runId,
         traceCarrier: traceContext,
         requestedAt,
+        replayDivergence,
         runInput,
       } = WorkflowInvokePayloadSchema.parse(message_);
       const { requestId } = metadata;
@@ -680,18 +687,66 @@ export function workflowEntrypoint(
                     return;
                   }
 
-                  // This is a user code error or a WorkflowRuntimeError
-                  // (e.g., corrupted event log). Fail the workflow run.
+                  let terminalError = err;
+                  if (ReplayDivergenceError.is(err)) {
+                    const divergenceCount = (replayDivergence?.count ?? 0) + 1;
 
-                  // Record exception for OTEL error tracking
-                  if (err instanceof Error) {
-                    span?.recordException?.(err);
+                    if (divergenceCount <= REPLAY_DIVERGENCE_MAX_RETRIES) {
+                      runtimeLogger.warn(
+                        'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
+                        {
+                          workflowRunId: runId,
+                          errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
+                          divergenceEventId: err.eventId,
+                          priorDivergenceEventId: replayDivergence?.eventId,
+                          divergenceCount,
+                          deliveryAttempt: metadata.attempt,
+                          maxRecoveryReplays: REPLAY_DIVERGENCE_MAX_RETRIES,
+                          errorMessage: err.message,
+                        }
+                      );
+                      await queueMessage(
+                        world,
+                        getWorkflowQueueName(workflowName),
+                        {
+                          runId,
+                          traceCarrier: traceContext,
+                          requestedAt: new Date(),
+                          replayDivergence: {
+                            eventId: err.eventId,
+                            count: divergenceCount,
+                          },
+                        },
+                        {
+                          deploymentId: workflowRun.deploymentId,
+                          specVersion:
+                            workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
+                        }
+                      );
+                      return;
+                    }
+
+                    terminalError = new CorruptedEventLogError(
+                      `Workflow replay diverged ${divergenceCount} times after ${REPLAY_DIVERGENCE_MAX_RETRIES} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
+                      { cause: err }
+                    );
                   }
 
-                  const normalizedError = await normalizeUnknownError(err);
-                  const errorName = normalizedError.name || getErrorName(err);
+                  // This is a user code error or a terminal
+                  // WorkflowRuntimeError. Fail the workflow run.
+
+                  // Record exception for OTEL error tracking
+                  if (terminalError instanceof Error) {
+                    span?.recordException?.(terminalError);
+                  }
+
+                  const normalizedError =
+                    await normalizeUnknownError(terminalError);
+                  const errorName =
+                    normalizedError.name || getErrorName(terminalError);
                   const errorMessage = normalizedError.message;
-                  let errorStack = normalizedError.stack || getErrorStack(err);
+                  let errorStack =
+                    normalizedError.stack || getErrorStack(terminalError);
 
                   // Remap error stack using source maps to show original source locations
                   if (errorStack) {
@@ -708,7 +763,7 @@ export function workflowEntrypoint(
                   // Classify the error: WorkflowRuntimeError indicates
                   // an SDK/runtime issue, and selected subclasses use
                   // more specific codes for backend tracking.
-                  const errorCode = classifyRunError(err);
+                  const errorCode = classifyRunError(terminalError);
 
                   runtimeLogger.error('Error while running workflow', {
                     workflowRunId: runId,
