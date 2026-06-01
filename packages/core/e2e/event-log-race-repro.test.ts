@@ -324,6 +324,40 @@ function validateStepRaceReturn(value: unknown) {
   }
 }
 
+// When a run never reaches a terminal state we still want the summary to say
+// *where* it wedged, not just that it did. Fetch the event log and describe the
+// latest event (type, step, elapsed) so the "stuck" row is directly
+// inspectable. Best-effort: any failure here falls back to a duration-only note.
+async function describeStuckRun(
+  world: Awaited<ReturnType<typeof getWorld>>,
+  runId: string,
+  startedAt: number
+): Promise<string | undefined> {
+  try {
+    const { data: events } = await world.events.list({ runId });
+    if (!events.length) {
+      return undefined;
+    }
+    const latest = events[events.length - 1];
+    const elapsedS = (
+      ((latest.createdAt?.getTime?.() ?? Date.now()) - startedAt) /
+      1000
+    ).toFixed(1);
+    let detail = latest.eventType;
+    const data =
+      'eventData' in latest
+        ? (latest as { eventData?: unknown }).eventData
+        : undefined;
+    const stepName = (data as { stepName?: string } | undefined)?.stepName;
+    if (stepName) {
+      detail += ` (${stepName})`;
+    }
+    return `stuck after ${events.length} events; latest ${detail} at +${elapsedS}s`;
+  } catch {
+    return undefined;
+  }
+}
+
 async function pollTerminalRun(
   run: Run<unknown>,
   startedAt: number,
@@ -388,6 +422,7 @@ async function pollTerminalRun(
     runId: run.runId,
     outcome: 'stuck',
     status: lastStatus,
+    errorMessage: await describeStuckRun(world, run.runId, startedAt),
     durationMs: Date.now() - startedAt,
     dashboardUrl: getDashboardUrl(run.runId),
   };
