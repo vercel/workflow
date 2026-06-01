@@ -2,4 +2,4 @@
 '@workflow/core': patch
 ---
 
-Fix a spurious `CorruptedEventLogError` on replay when a duration-based `sleep()`'s `wait_completed` is validated without a recorded `wait_created` value.
+Harden `wait_completed.resumeAt` validation so it only runs the equality check when an authoritative recorded value exists (a `wait_created` was applied, or the sleep used an absolute `Date`), preventing a spurious `CorruptedEventLogError` while still rejecting malformed `resumeAt` values.

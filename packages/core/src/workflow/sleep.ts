@@ -43,6 +43,16 @@ import {
  * any authoritative value — the original run always records a valid
  * `parseDurationToDate(...)` Date, so a consistent log never carries one. That
  * is flagged unconditionally, before the `hasCreatedEvent` gate.
+ *
+ * Note on when the no-`wait_created` state actually arises: instrumented
+ * stress reproductions showed every such case was a `wait_completed` whose
+ * correlationId has NO matching `wait_created` anywhere in the log — a
+ * divergent-replay artifact of the hook-vs-sleep race fixed in #2171 (a
+ * non-deterministic race shifted the deterministic ULID sequence, so a sleep
+ * got a correlationId absent from the committed log). With #2171 the race is
+ * deterministic and this no longer occurs (0 of 300 stress runs, vs readily
+ * reproduced with #2171 reverted). This gate is therefore defensive hardening
+ * of the validation path, not a fix for an independently-reachable bug.
  */
 function detectResumeAtMismatch(
   correlationId: string,
