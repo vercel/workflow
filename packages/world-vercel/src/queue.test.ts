@@ -327,13 +327,13 @@ describe('createQueue', () => {
     });
   });
 
-  describe('strict concurrency (ENFORCE_STRICT_CONCURRENCY)', () => {
+  describe('strict concurrency (WORKFLOW_ENFORCE_STRICT_CONCURRENCY)', () => {
     let originalDeploymentId: string | undefined;
     let originalStrict: string | undefined;
 
     beforeEach(() => {
       originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
-      originalStrict = process.env.ENFORCE_STRICT_CONCURRENCY;
+      originalStrict = process.env.WORKFLOW_ENFORCE_STRICT_CONCURRENCY;
       process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
     });
@@ -345,14 +345,14 @@ describe('createQueue', () => {
         delete process.env.VERCEL_DEPLOYMENT_ID;
       }
       if (originalStrict !== undefined) {
-        process.env.ENFORCE_STRICT_CONCURRENCY = originalStrict;
+        process.env.WORKFLOW_ENFORCE_STRICT_CONCURRENCY = originalStrict;
       } else {
-        delete process.env.ENFORCE_STRICT_CONCURRENCY;
+        delete process.env.WORKFLOW_ENFORCE_STRICT_CONCURRENCY;
       }
     });
 
     it('appends runId to the physical flow topic while keeping the logical queueName', async () => {
-      process.env.ENFORCE_STRICT_CONCURRENCY = '1';
+      process.env.WORKFLOW_ENFORCE_STRICT_CONCURRENCY = '1';
 
       const queue = createQueue();
       await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
@@ -365,7 +365,7 @@ describe('createQueue', () => {
     });
 
     it('re-enqueues delayed flow messages to the same per-run physical topic', async () => {
-      process.env.ENFORCE_STRICT_CONCURRENCY = '1';
+      process.env.WORKFLOW_ENFORCE_STRICT_CONCURRENCY = '1';
 
       let capturedHandler: (
         message: unknown,
@@ -394,7 +394,7 @@ describe('createQueue', () => {
     });
 
     it('does not rewrite the topic when the flag is unset', async () => {
-      delete process.env.ENFORCE_STRICT_CONCURRENCY;
+      delete process.env.WORKFLOW_ENFORCE_STRICT_CONCURRENCY;
 
       const queue = createQueue();
       await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
@@ -403,7 +403,7 @@ describe('createQueue', () => {
     });
 
     it('does not rewrite step topics even when the flag is set', async () => {
-      process.env.ENFORCE_STRICT_CONCURRENCY = '1';
+      process.env.WORKFLOW_ENFORCE_STRICT_CONCURRENCY = '1';
 
       const queue = createQueue();
       await queue.queue('__wkf_step_myStep', {
@@ -417,7 +417,7 @@ describe('createQueue', () => {
     });
 
     it('does not rewrite health check topics (no runId) even when the flag is set', async () => {
-      process.env.ENFORCE_STRICT_CONCURRENCY = '1';
+      process.env.WORKFLOW_ENFORCE_STRICT_CONCURRENCY = '1';
 
       const queue = createQueue();
       await queue.queue('__wkf_workflow_health_check', {

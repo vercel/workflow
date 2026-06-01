@@ -405,10 +405,13 @@ Two queue topics are created per deployment:
 | `step.func` | `__wkf_step_*` | Step execution (long-running, `maxDuration: max`) |
 | `flow.func` | `__wkf_workflow_*` | Workflow orchestration (`maxDuration: 60`) |
 
-If you're building a framework integration that targets Vercel, you should write these triggers into the `.vc-config.json` for each generated function. The `STEP_QUEUE_TRIGGER` and `WORKFLOW_QUEUE_TRIGGER` constants are exported from `@workflow/builders` for this purpose:
+If you're building a framework integration that targets Vercel, you should write these triggers into the `.vc-config.json` for each generated function. Use `getWorkflowQueueTrigger()` for flow functions so `WORKFLOW_ENFORCE_STRICT_CONCURRENCY=1` is reflected in the generated trigger configuration:
 
 ```typescript
-import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from "@workflow/builders";
+import { getWorkflowQueueTrigger, STEP_QUEUE_TRIGGER } from "@workflow/builders";
+
+const flowTriggers = [getWorkflowQueueTrigger()];
+const stepTriggers = [STEP_QUEUE_TRIGGER];
 ```
 
 
