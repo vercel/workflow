@@ -6,7 +6,8 @@ import { parseEnvironmentFlag } from './environment-flag.js';
 export const DEFERRED_BUILDER_MIN_VERSION = '16.2.0-canary.48';
 
 export const WORKFLOW_DEFERRED_ENTRIES = [
-  '/.well-known/workflow/v1/flow',
+  '/.well-known/workflow/v2/flow',
+  '/.well-known/workflow/v2/webhook/[token]',
   '/.well-known/workflow/v1/webhook/[token]',
 ] as const;
 

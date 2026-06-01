@@ -171,7 +171,7 @@ export async function POST(request: Request) {
 
 - **`respondWith: "manual"`** gives you control over the HTTP response from inside a step. Use this when you need to validate the request before responding.
 - **`for await` on a webhook** lets you process multiple events from the same URL. Use `break` to stop listening after a terminal event.
-- **Webhooks auto-generate URLs** at `/.well-known/workflow/v1/webhook/:token`. Pass this URL to external services.
+- **Webhooks auto-generate URLs** at `/.well-known/workflow/v2/webhook/:token`. Pass this URL to external services. Existing v1 webhook URLs remain supported.
 - **Race webhooks against `sleep()`** for deadlines. If the callback doesn't arrive in time, the workflow can take a fallback action.
 - **For large payloads**, use a hook + reference token instead of passing the data through the workflow. The event log serializes all step inputs/outputs, so large payloads hurt performance.
 

@@ -37,7 +37,7 @@ Call `world.start()` to initialize graphile-worker workers. When `.start()` is c
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
 
-The worker targets the HTTP-compatible workflow endpoints directly: `.well-known/workflow/v1/flow` for workflows and `.well-known/workflow/v1/step` for steps.
+The worker targets the combined HTTP-compatible workflow endpoint directly: `.well-known/workflow/v2/flow` handles workflow and step queue messages.
 
 
 In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):

@@ -99,11 +99,11 @@ function resolveLocalBaseUrl(
 
 async function testHttpHealthEndpoint(
   baseUrl: string,
-  endpoint: 'flow' | 'step',
+  endpoint: 'flow',
   verbose: boolean
 ): Promise<{ ok: boolean; status?: number; error?: string }> {
   try {
-    const healthUrl = `${baseUrl}/.well-known/workflow/v1/${endpoint}?__health`;
+    const healthUrl = `${baseUrl}/.well-known/workflow/v2/${endpoint}?__health`;
     if (verbose) {
       logger.debug(`Testing HTTP health at: ${healthUrl}`);
     }

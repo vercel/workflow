@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import type { WorkflowManifest } from '@workflow/builders';
 import Watchpack from 'watchpack';
@@ -36,11 +36,25 @@ export async function getNextBuilderEager() {
       );
 
       const outputDir = await this.findAppDirectory();
-      const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');
+      const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v2');
+      const manifestGeneratedDir = join(outputDir, '.well-known/workflow/v1');
 
       // Ensure output directories exist
       await mkdir(workflowGeneratedDir, { recursive: true });
+      await mkdir(manifestGeneratedDir, { recursive: true });
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+      await writeFile(join(manifestGeneratedDir, '.gitignore'), '*');
+      await Promise.all([
+        rm(join(manifestGeneratedDir, 'flow'), {
+          recursive: true,
+          force: true,
+        }),
+        rm(join(manifestGeneratedDir, 'step'), {
+          recursive: true,
+          force: true,
+        }),
+        rm(join(manifestGeneratedDir, 'config.json'), { force: true }),
+      ]);
 
       const inputFiles = await this.getInputFiles();
       const tsconfigPath = await this.findTsConfigPath();
@@ -54,6 +68,9 @@ export async function getNextBuilderEager() {
       // V2: Build combined route (replaces separate step + flow routes)
       const combinedResult = await this.buildCombinedFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
+      await this.buildWebhookRoute({
+        workflowGeneratedDir: manifestGeneratedDir,
+      });
 
       const writeManifest = async (
         sourceManifest: WorkflowManifest | undefined
@@ -68,7 +85,7 @@ export async function getNextBuilderEager() {
         const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
         const manifestJson = await this.createManifest({
           workflowBundlePath,
-          manifestDir: workflowGeneratedDir,
+          manifestDir: manifestGeneratedDir,
           manifest,
         });
 
@@ -83,7 +100,7 @@ export async function getNextBuilderEager() {
             await writeFile(join(publicManifestDir, '.gitignore'), '*');
           }
           await copyFile(
-            join(workflowGeneratedDir, 'manifest.json'),
+            join(manifestGeneratedDir, 'manifest.json'),
             join(publicManifestDir, 'manifest.json')
           );
         }
@@ -102,11 +119,16 @@ export async function getNextBuilderEager() {
             'Invariant: expected steps build context in watch mode'
           );
         }
+        if (!combinedResult?.interimBundleCtx || !combinedResult.bundleFinal) {
+          throw new Error(
+            'Invariant: expected workflows build context in watch mode'
+          );
+        }
 
         // Use stepsCtx for the watch rebuild (workflow interim ctx from combined)
         let workflowsCtx = {
-          interimBundleCtx: combinedResult?.interimBundleCtx!,
-          bundleFinal: combinedResult?.bundleFinal!,
+          interimBundleCtx: combinedResult.interimBundleCtx,
+          bundleFinal: combinedResult.bundleFinal,
         };
 
         const normalizePath = (pathname: string) =>
@@ -429,7 +451,7 @@ export async function getNextBuilderEager() {
       };
 
       await writeFile(
-        join(outputDir, '.well-known/workflow/v1/config.json'),
+        join(outputDir, '.well-known/workflow/v2/config.json'),
         JSON.stringify(generatedConfig, null, 2)
       );
     }

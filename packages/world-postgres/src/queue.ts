@@ -219,11 +219,11 @@ export function createQueue(
     throw new Error('Unable to resolve base URL for workflow queue.');
   }
 
-  function getQueueRoute(queueName: ValidQueueName): 'flow' | 'step' {
-    if (queueName.startsWith('__wkf_step_')) {
-      return 'step';
-    }
-    if (queueName.startsWith('__wkf_workflow_')) {
+  function getQueueRoute(queueName: ValidQueueName): 'flow' {
+    if (
+      queueName.startsWith('__wkf_step_') ||
+      queueName.startsWith('__wkf_workflow_')
+    ) {
       return 'flow';
     }
     throw new Error('Unknown queue name prefix');
@@ -253,7 +253,7 @@ export function createQueue(
     const pathname = getQueueRoute(queueName);
 
     const response = await fetch(
-      `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+      `${baseUrl}/.well-known/workflow/v2/${pathname}`,
       {
         method: 'POST',
         duplex: 'half',

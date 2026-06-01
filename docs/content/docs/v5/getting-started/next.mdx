@@ -85,7 +85,7 @@ If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-refere
 (formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
 internal paths to prevent the proxy handler from running on them.
 
-If you see `[local world] Queue operation failed` with `Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer`, your proxy matcher is still intercepting Workflow's internal `POST /.well-known/workflow/v1/flow` request. This is especially easy to miss in Next.js 16, where `proxy.ts` replaced `middleware.ts`.
+If you see `[local world] Queue operation failed` with `Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer`, your proxy matcher is still intercepting Workflow's internal `POST /.well-known/workflow/v2/flow` request. This is especially easy to miss in Next.js 16, where `proxy.ts` replaced `middleware.ts`.
 
 Add `.well-known/workflow/*` to your matcher exclusion list:
 

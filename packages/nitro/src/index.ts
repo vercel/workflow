@@ -211,6 +211,11 @@ export default {
 
       addVirtualHandler(
         nitro,
+        '/.well-known/workflow/v2/webhook/:token',
+        'workflow/webhook.mjs'
+      );
+      addVirtualHandler(
+        nitro,
         '/.well-known/workflow/v1/webhook/:token',
         'workflow/webhook.mjs'
       );
@@ -220,7 +225,7 @@ export default {
       // handler — no separate step route needed.
       addVirtualHandler(
         nitro,
-        '/.well-known/workflow/v1/flow',
+        '/.well-known/workflow/v2/flow',
         'workflow/workflows.mjs'
       );
 
@@ -243,7 +248,7 @@ export default {
         const runtime = nitro.options.workflow?.runtime;
         const rules = nitro.options.vercel.functionRules;
 
-        const flowPath = '/.well-known/workflow/v1/flow';
+        const flowPath = '/.well-known/workflow/v2/flow';
         rules[flowPath] = {
           ...rules[flowPath],
           ...(runtime && { runtime }),
@@ -255,8 +260,12 @@ export default {
         };
 
         if (runtime) {
-          const webhookPath = '/.well-known/workflow/v1/webhook/:token';
-          rules[webhookPath] = { ...rules[webhookPath], runtime };
+          for (const webhookPath of [
+            '/.well-known/workflow/v2/webhook/:token',
+            '/.well-known/workflow/v1/webhook/:token',
+          ]) {
+            rules[webhookPath] = { ...rules[webhookPath], runtime };
+          }
 
           if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
             const manifestPath = '/.well-known/workflow/v1/manifest.json';

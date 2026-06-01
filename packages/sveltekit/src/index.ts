@@ -21,7 +21,7 @@ process.on('beforeExit', () => {
   // The separate step route was removed.
   for (const { file, config } of [
     {
-      file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
+      file: '.vercel/output/functions/.well-known/workflow/v2/flow.func/.vc-config.json',
       config: {
         maxDuration: 'max',
         experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],

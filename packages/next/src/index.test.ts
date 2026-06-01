@@ -41,8 +41,8 @@ vi.mock('./builder.js', () => ({
   getNextBuilder: getNextBuilderMock,
   shouldUseDeferredBuilder: shouldUseDeferredBuilderMock,
   WORKFLOW_DEFERRED_ENTRIES: [
-    '/.well-known/workflow/v1/flow',
-    '/.well-known/workflow/v1/step',
+    '/.well-known/workflow/v2/flow',
+    '/.well-known/workflow/v2/webhook/[token]',
     '/.well-known/workflow/v1/webhook/[token]',
   ],
 }));

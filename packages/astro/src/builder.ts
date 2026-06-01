@@ -10,12 +10,16 @@ import {
 
 const WORKFLOW_ROUTES = [
   {
-    src: '^/\\.well-known/workflow/v1/flow/?$',
-    dest: '/.well-known/workflow/v1/flow',
+    src: '^/\\.well-known/workflow/v2/flow/?$',
+    dest: '/.well-known/workflow/v2/flow',
+  },
+  {
+    src: '^/\\.well-known/workflow/v2/webhook/([^/]+?)/?$',
+    dest: '/.well-known/workflow/v2/webhook/[token]',
   },
   {
     src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
-    dest: '/.well-known/workflow/v1/webhook/[token]',
+    dest: '/.well-known/workflow/v2/webhook/[token]',
   },
 ];
 
@@ -37,18 +41,24 @@ export class LocalBuilder extends BaseBuilder {
 
   override async build(): Promise<void> {
     const pagesDir = resolve(this.config.workingDir, 'src/pages');
-    const workflowGeneratedDir = join(pagesDir, '.well-known/workflow/v1');
+    const workflowGeneratedDir = join(pagesDir, '.well-known/workflow/v2');
+    const manifestGeneratedDir = join(pagesDir, '.well-known/workflow/v1');
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
+    await mkdir(manifestGeneratedDir, { recursive: true });
 
     // Add .gitignore to exclude generated files from version control
     if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+      await writeFile(join(manifestGeneratedDir, '.gitignore'), '*');
     }
 
-    // Clean up stale V1 step route (may persist via Vercel build cache)
-    await rm(join(workflowGeneratedDir, 'step.js'), { force: true });
+    // Remove executable routes that may persist from pre-v2 endpoint builds.
+    await Promise.all([
+      rm(join(manifestGeneratedDir, 'flow.js'), { force: true }),
+      rm(join(manifestGeneratedDir, 'step.js'), { force: true }),
+    ]);
 
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
@@ -83,12 +93,15 @@ export const prerender = false;`
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
     await this.buildWebhookRoute({ workflowGeneratedDir });
+    await this.buildWebhookRoute({
+      workflowGeneratedDir: manifestGeneratedDir,
+    });
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow.js');
     const manifestJson = await this.createManifest({
       workflowBundlePath,
-      manifestDir: workflowGeneratedDir,
+      manifestDir: manifestGeneratedDir,
       manifest,
     });
 
@@ -96,7 +109,7 @@ export const prerender = false;`
     // Astro maps `foo.json.js` to the URL `/foo.json`
     if (this.shouldExposePublicManifest && manifestJson) {
       await writeFile(
-        join(workflowGeneratedDir, 'manifest.json.js'),
+        join(manifestGeneratedDir, 'manifest.json.js'),
         `export function GET() {
   return new Response(${JSON.stringify(manifestJson)}, {
     headers: { "content-type": "application/json" },
@@ -113,7 +126,7 @@ export const prerender = false;\n`
   }: {
     workflowGeneratedDir: string;
   }) {
-    // Create webhook route: .well-known/workflow/v1/webhook/[token].js
+    // Create webhook route: .well-known/workflow/v2/webhook/[token].js
     const webhookRouteFile = join(workflowGeneratedDir, 'webhook/[token].js');
 
     await this.createWebhookBundle({

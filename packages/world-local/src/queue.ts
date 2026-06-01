@@ -91,11 +91,11 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
 }
 
 function getQueueRoute(queueName: ValidQueueName): {
-  pathname: 'flow' | 'step';
+  pathname: 'flow';
   prefix: '__wkf_step_' | '__wkf_workflow_';
 } {
   if (queueName.startsWith('__wkf_step_')) {
-    return { pathname: 'step', prefix: '__wkf_step_' };
+    return { pathname: 'flow', prefix: '__wkf_step_' };
   }
   if (queueName.startsWith('__wkf_workflow_')) {
     return { pathname: 'flow', prefix: '__wkf_workflow_' };
@@ -182,7 +182,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
           if (directHandler) {
             const req = new Request(
-              `http://localhost/.well-known/workflow/v1/${pathname}`,
+              `http://localhost/.well-known/workflow/v2/${pathname}`,
               {
                 method: 'POST',
                 headers,
@@ -194,7 +194,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             const baseUrl = await resolveBaseUrl(config);
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
             response = await fetch(
-              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+              `${baseUrl}/.well-known/workflow/v2/${pathname}`,
               {
                 method: 'POST',
                 duplex: 'half',

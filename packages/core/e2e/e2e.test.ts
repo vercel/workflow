@@ -417,7 +417,7 @@ describe('e2e', () => {
       // Attempt to resume via the public webhook endpoint — should get 404
       const res = await fetch(
         new URL(
-          `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
+          `/.well-known/workflow/v2/webhook/${encodeURIComponent(token)}`,
           deploymentUrl
         ),
         {
@@ -472,7 +472,7 @@ describe('e2e', () => {
     // Webhook with default response
     const res = await fetch(
       new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
+        `/.well-known/workflow/v2/webhook/${encodeURIComponent(token)}`,
         deploymentUrl
       ),
       {
@@ -485,7 +485,7 @@ describe('e2e', () => {
     const body = await res.text();
     expect(body).toBe('');
 
-    // Webhook with static response
+    // The legacy v1 webhook path remains usable for existing external integrations.
     const res2 = await fetch(
       new URL(
         `/.well-known/workflow/v1/webhook/${encodeURIComponent(token2)}`,
@@ -504,7 +504,7 @@ describe('e2e', () => {
     // Webhook with manual response
     const res3 = await fetch(
       new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token3)}`,
+        `/.well-known/workflow/v2/webhook/${encodeURIComponent(token3)}`,
         deploymentUrl
       ),
       {
@@ -521,7 +521,7 @@ describe('e2e', () => {
     expect(returnValue).toHaveLength(3);
     expect(returnValue[0].url).toBe(
       new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
+        `/.well-known/workflow/v2/webhook/${encodeURIComponent(token)}`,
         deploymentUrl
       ).href
     );
@@ -539,7 +539,7 @@ describe('e2e', () => {
 
     expect(returnValue[2].url).toBe(
       new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token3)}`,
+        `/.well-known/workflow/v2/webhook/${encodeURIComponent(token3)}`,
         deploymentUrl
       ).href
     );
@@ -549,7 +549,7 @@ describe('e2e', () => {
 
   test('webhook route with invalid token', { timeout: 60_000 }, async () => {
     const invalidWebhookUrl = new URL(
-      `/.well-known/workflow/v1/webhook/${encodeURIComponent('invalid')}`,
+      `/.well-known/workflow/v2/webhook/${encodeURIComponent('invalid')}`,
       deploymentUrl
     );
     const res = await fetch(invalidWebhookUrl, {
@@ -1920,7 +1920,7 @@ describe('e2e', () => {
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
       const flowHealthUrl = new URL(
-        '/.well-known/workflow/v1/flow?__health',
+        '/.well-known/workflow/v2/flow?__health',
         deploymentUrl
       );
       const flowRes = await fetch(flowHealthUrl, {
@@ -1932,7 +1932,7 @@ describe('e2e', () => {
       const flowBody = await flowRes.json();
       expect(flowBody).toEqual({
         healthy: true,
-        endpoint: '/.well-known/workflow/v1/flow',
+        endpoint: '/.well-known/workflow/v2/flow',
         // specVersion comes from the World's declared specVersion (e.g. 3
         // for world-vercel) or falls back to SPEC_VERSION_CURRENT (2).
         specVersion: expect.any(Number),

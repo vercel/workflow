@@ -2,12 +2,12 @@ import { createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, type QueuePayload } from '@workflow/world';
+import { createLocalWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLocalWorld } from '@workflow/world-local';
 import { stepEntrypoint } from '../../core/dist/runtime/step-handler.js';
-import { createQueue } from './queue.js';
 import { MessageData } from './message.js';
+import { createQueue } from './queue.js';
 
 const transport = new JsonTransport();
 const createdQueues: Array<ReturnType<typeof createQueue>> = [];
@@ -77,7 +77,7 @@ describe('postgres queue http execution', () => {
     delete process.env.PORT;
   });
 
-  it('uses the workflow http step route when the real runtime step handler would fail in-process with Step not found', async () => {
+  it('uses the combined workflow HTTP route when a step cannot execute in-process', async () => {
     const requests: Array<{
       method: string | undefined;
       url: string | undefined;
@@ -121,7 +121,7 @@ describe('postgres queue http execution', () => {
     expect(requests).toEqual([
       expect.objectContaining({
         method: 'POST',
-        url: '/.well-known/workflow/v1/step',
+        url: '/.well-known/workflow/v2/flow',
         headers: expect.objectContaining({
           'x-vqs-queue-name': '__wkf_step_test-step',
           'x-vqs-message-attempt': '1',
@@ -164,7 +164,7 @@ describe('postgres queue http execution', () => {
     expect(requests).toEqual([
       expect.objectContaining({
         method: 'POST',
-        url: '/.well-known/workflow/v1/step',
+        url: '/.well-known/workflow/v2/flow',
       }),
     ]);
   });
@@ -274,7 +274,7 @@ describe('postgres queue http execution', () => {
       await expect(task(payload, {} as any)).resolves.toBeUndefined();
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:3000/.well-known/workflow/v1/flow',
+        'http://localhost:3000/.well-known/workflow/v2/flow',
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
@@ -413,7 +413,7 @@ async function startWorkflowHttpServer(
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/.well-known/workflow/v1/step') {
+    if (req.method === 'POST' && req.url === '/.well-known/workflow/v2/flow') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;

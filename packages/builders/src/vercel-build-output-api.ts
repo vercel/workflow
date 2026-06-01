@@ -1,4 +1,4 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
@@ -7,10 +7,32 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
     const outputDir = resolve(this.config.workingDir, '.vercel/output');
     const functionsDir = join(outputDir, 'functions');
-    const workflowGeneratedDir = join(functionsDir, '.well-known/workflow/v1');
+    const workflowGeneratedDir = join(functionsDir, '.well-known/workflow/v2');
+    const manifestGeneratedDir = join(functionsDir, '.well-known/workflow/v1');
+
+    await Promise.all([
+      rm(join(functionsDir, '.well-known/workflow/v1/flow.func'), {
+        recursive: true,
+        force: true,
+      }),
+      rm(join(functionsDir, '.well-known/workflow/v1/step.func'), {
+        recursive: true,
+        force: true,
+      }),
+      rm(join(functionsDir, '.well-known/workflow/v1/webhook'), {
+        recursive: true,
+        force: true,
+      }),
+      rm(join(workflowGeneratedDir, 'manifest.json'), {
+        force: true,
+      }),
+    ]);
 
     // Ensure output directories exist
-    await mkdir(workflowGeneratedDir, { recursive: true });
+    await Promise.all([
+      mkdir(workflowGeneratedDir, { recursive: true }),
+      mkdir(manifestGeneratedDir, { recursive: true }),
+    ]);
 
     const inputFiles = await this.getInputFiles();
     const tsconfigPath = await this.findTsConfigPath();
@@ -50,7 +72,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     );
     const manifestJson = await this.createManifest({
       workflowBundlePath,
-      manifestDir: workflowGeneratedDir,
+      manifestDir: manifestGeneratedDir,
       manifest,
     });
 
@@ -66,7 +88,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
         await writeFile(join(staticManifestDir, '.gitignore'), '*');
       }
       await copyFile(
-        join(workflowGeneratedDir, 'manifest.json'),
+        join(manifestGeneratedDir, 'manifest.json'),
         join(staticManifestDir, 'manifest.json')
       );
     }
@@ -105,8 +127,12 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       version: 3,
       routes: [
         {
+          src: '^\\/\\.well-known\\/workflow\\/v2\\/webhook\\/([^\\/]+)$',
+          dest: '/.well-known/workflow/v2/webhook/[token]',
+        },
+        {
           src: '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$',
-          dest: '/.well-known/workflow/v1/webhook/[token]',
+          dest: '/.well-known/workflow/v2/webhook/[token]',
         },
       ],
     };
@@ -117,9 +143,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     );
 
     console.log(`Build Output API created at ${outputDir}`);
-    console.log('Combined function available at /.well-known/workflow/v1/flow');
+    console.log('Combined function available at /.well-known/workflow/v2/flow');
     console.log(
-      'Webhook function available at /.well-known/workflow/v1/webhook/[token]'
+      'Webhook function available at /.well-known/workflow/v2/webhook/[token] (also accepts v1 webhook URLs)'
     );
   }
 }

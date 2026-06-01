@@ -2,15 +2,15 @@
 const DEV_TEST_CONFIGS = {
   'nextjs-turbopack': {
     generatedStepPath:
-      'app/.well-known/workflow/v1/flow/__step_registrations.js',
-    generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
+      'app/.well-known/workflow/v2/flow/__step_registrations.js',
+    generatedWorkflowPath: 'app/.well-known/workflow/v2/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
   },
   'nextjs-webpack': {
     generatedStepPath:
-      'app/.well-known/workflow/v1/flow/__step_registrations.js',
-    generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
+      'app/.well-known/workflow/v2/flow/__step_registrations.js',
+    generatedWorkflowPath: 'app/.well-known/workflow/v2/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
   },
@@ -28,8 +28,8 @@ const DEV_TEST_CONFIGS = {
   },
   sveltekit: {
     generatedStepPath:
-      'src/routes/.well-known/workflow/v1/flow/__step_registrations.js',
-    generatedWorkflowPath: 'src/routes/.well-known/workflow/v1/flow/+server.js',
+      'src/routes/.well-known/workflow/v2/flow/__step_registrations.js',
+    generatedWorkflowPath: 'src/routes/.well-known/workflow/v2/flow/+server.js',
     apiFilePath: 'src/routes/api/chat/+server.ts',
     apiFileImportPath: '../../../..',
     workflowsDir: 'src/workflows',
@@ -67,8 +67,8 @@ const DEV_TEST_CONFIGS = {
   },
   astro: {
     generatedStepPath:
-      'src/pages/.well-known/workflow/v1/__step_registrations.js',
-    generatedWorkflowPath: 'src/pages/.well-known/workflow/v1/flow.js',
+      'src/pages/.well-known/workflow/v2/__step_registrations.js',
+    generatedWorkflowPath: 'src/pages/.well-known/workflow/v2/flow.js',
     apiFilePath: 'src/pages/api/chat.ts',
     apiFileImportPath: '../..',
     workflowsDir: 'src/workflows',

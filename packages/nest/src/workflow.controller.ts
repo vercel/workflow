@@ -84,9 +84,9 @@ function getOutDir(): string {
  * Controller that handles the well-known workflow endpoints.
  * Dynamically imports the generated bundles and handles request/response conversion.
  */
-@Controller('.well-known/workflow/v1')
+@Controller('.well-known/workflow')
 export class WorkflowController {
-  @Post('flow')
+  @Post('v2/flow')
   async handleFlow(@Req() req: any, @Res() res: any) {
     const outDir = getOutDir();
     // Import step registrations (side effects) before the combined handler
@@ -99,7 +99,7 @@ export class WorkflowController {
     await sendWebResponse(res, webResponse);
   }
 
-  @All('webhook/:token')
+  @All('v2/webhook/:token')
   async handleWebhook(@Req() req: any, @Res() res: any) {
     const outDir = getOutDir();
     const { POST } = await import(
@@ -110,7 +110,12 @@ export class WorkflowController {
     await sendWebResponse(res, webResponse);
   }
 
-  @Get('manifest.json')
+  @All('v1/webhook/:token')
+  async handleLegacyWebhook(@Req() req: any, @Res() res: any) {
+    return this.handleWebhook(req, res);
+  }
+
+  @Get('v1/manifest.json')
   async handleManifest(@Res() res: any) {
     if (process.env.WORKFLOW_PUBLIC_MANIFEST !== '1') {
       if (typeof res.code === 'function') {
