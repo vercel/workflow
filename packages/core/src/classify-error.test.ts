@@ -1,6 +1,7 @@
 import {
   CorruptedEventLogError,
   HookConflictError,
+  ReplayDivergenceError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
   WorkflowNotRegisteredError,
@@ -15,6 +16,16 @@ describe('classifyRunError', () => {
     expect(
       classifyRunError(new CorruptedEventLogError('corrupted event log'))
     ).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+  });
+
+  it('classifies ReplayDivergenceError as REPLAY_DIVERGENCE', () => {
+    expect(
+      classifyRunError(
+        new ReplayDivergenceError('replay took another path', {
+          eventId: 'event-1',
+        })
+      )
+    ).toBe(RUN_ERROR_CODES.REPLAY_DIVERGENCE);
   });
 
   it('classifies WorkflowRuntimeError as RUNTIME_ERROR', () => {

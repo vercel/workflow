@@ -3680,7 +3680,7 @@ describe('runWorkflow', () => {
           workflowRun,
           events
         )
-      ).rejects.toThrow('Unconsumed event in event log');
+      ).rejects.toThrow('Replay could not consume event');
     });
 
     it('should reject with WorkflowRuntimeError for duplicate step_completed blocking subsequent events', async () => {

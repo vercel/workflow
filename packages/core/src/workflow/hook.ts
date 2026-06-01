@@ -1,4 +1,4 @@
-import { CorruptedEventLogError, HookConflictError } from '@workflow/errors';
+import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
@@ -74,8 +74,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (typeof eventToken === 'string' && eventToken !== token) {
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
-            new CorruptedEventLogError(
-              `Corrupted event log: hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current hook consumer expects "${token}"`
+            new ReplayDivergenceError(
+              `Replay divergence: hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current hook consumer expects "${token}"`,
+              { eventId: event.eventId }
             )
           );
         });
@@ -163,11 +164,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.Finished;
       }
 
-      // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      // This replay installed a different consumer than the stored event needs.
       ctx.promiseQueue = ctx.promiseQueue.then(() => {
         ctx.onWorkflowError(
-          new CorruptedEventLogError(
-            `Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`
+          new ReplayDivergenceError(
+            `Replay divergence: Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`,
+            { eventId: event.eventId }
           )
         );
       });

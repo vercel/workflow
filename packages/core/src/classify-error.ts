@@ -1,5 +1,6 @@
 import {
   CorruptedEventLogError,
+  ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
   RuntimeDecryptionError,
@@ -67,6 +68,10 @@ export function isWorldContractError(err: unknown): err is WorkflowWorldError {
 }
 
 export function classifyRunError(err: unknown): RunErrorCode {
+  if (ReplayDivergenceError.is(err)) {
+    return RUN_ERROR_CODES.REPLAY_DIVERGENCE;
+  }
+
   if (CorruptedEventLogError.is(err)) {
     return RUN_ERROR_CODES.CORRUPTED_EVENT_LOG;
   }
