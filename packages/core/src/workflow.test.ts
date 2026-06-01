@@ -373,7 +373,7 @@ describe('runWorkflow', () => {
     ]);
   });
 
-  it('should not let a future recorded step advance Date before choosing that step branch', async () => {
+  it('should repeatedly replay a recorded step branch without looking ahead through Date', async () => {
     const ops: Promise<any>[] = [];
     const workflowRunId = 'wrun_123';
     const workflowRun: WorkflowRun = {
@@ -473,8 +473,7 @@ describe('runWorkflow', () => {
       },
     ];
 
-    const result = await runWorkflow(
-      `const start = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("startQueuedLogicalRunStep");
+    const workflowCode = `const start = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("startQueuedLogicalRunStep");
        const drain = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("drainLogicalRunRuntimeStep");
        const settle = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("settleQueueActionStep");
        async function workflow() {
@@ -483,20 +482,45 @@ describe('runWorkflow', () => {
            return await drain();
          }
          return await settle();
-       }${getWorkflowTransformCode('workflow')}`,
-      workflowRun,
-      events,
-      noEncryptionKey
-    );
+       }${getWorkflowTransformCode('workflow')}`;
 
-    expect(
-      await hydrateWorkflowReturnValue(
-        result as any,
-        workflowRunId,
-        noEncryptionKey,
-        ops
-      )
-    ).toBe('drained');
+    const replayCount = 200;
+    const outcomes = await Promise.all(
+      Array.from({ length: replayCount }, async () => {
+        try {
+          const result = await runWorkflow(
+            workflowCode,
+            workflowRun,
+            events,
+            noEncryptionKey
+          );
+          const value = await hydrateWorkflowReturnValue(
+            result as any,
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          );
+          return value === 'drained'
+            ? 'drained'
+            : `unexpected replay result: ${String(value)}`;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      })
+    );
+    const failures = outcomes.filter((outcome) => outcome !== 'drained');
+
+    expect({
+      replayCount,
+      drainedCount: outcomes.length - failures.length,
+      failureCount: failures.length,
+      firstFailure: failures[0],
+    }).toEqual({
+      replayCount,
+      drainedCount: replayCount,
+      failureCount: 0,
+      firstFailure: undefined,
+    });
   });
 
   // TODO: Date.now determinism is currently broken in the workflow!!
