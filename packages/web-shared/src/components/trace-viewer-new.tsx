@@ -13,10 +13,16 @@ const NewTraceViewer = ({
   run,
   events,
   sidebarData,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
 }: {
   run: WorkflowRun;
   events: Event[];
   sidebarData: SidebarDataContextValue;
+  onLoadMore?: () => void | Promise<void>;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
 }) => {
   // Build trace only when actual data changes — no timer-driven rebuilds.
   // Active span widths are animated imperatively by useLiveTick at 60fps.
@@ -40,7 +46,12 @@ const NewTraceViewer = ({
   return (
     <SidebarDataProvider value={sidebarData}>
       <div className="relative w-full h-full flex">
-        <NewTraceViewerComponent trace={trace as Trace} />
+        <NewTraceViewerComponent
+          trace={trace as Trace}
+          onLoadMore={onLoadMore}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
+        />
       </div>
     </SidebarDataProvider>
   );
