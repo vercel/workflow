@@ -1,7 +1,7 @@
 import { runInContext } from 'node:vm';
 import {
-  CorruptedEventLogError,
   ERROR_SLUGS,
+  ReplayDivergenceError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -127,8 +127,9 @@ export async function runWorkflow(
     const eventsConsumer = new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
-          new CorruptedEventLogError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          new ReplayDivergenceError(
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            { eventId: event.eventId }
           )
         );
       },
@@ -759,8 +760,9 @@ export async function runWorkflow(
 
       return dehydrated;
     } catch (err) {
-      // Let WorkflowSuspension propagate — handled separately by the runtime
-      if (WorkflowSuspension.is(err)) {
+      // Control-flow signals are handled by the runtime and do not mean the
+      // workflow has terminally failed.
+      if (WorkflowSuspension.is(err) || ReplayDivergenceError.is(err)) {
         throw err;
       }
 
