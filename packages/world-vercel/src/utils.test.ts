@@ -1,5 +1,13 @@
+import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getHeaders, getHttpConfig, getHttpUrl } from './utils.js';
+import { z } from 'zod';
+import {
+  getHeaders,
+  getHttpConfig,
+  getHttpUrl,
+  MAX_BODY_PARSE_RETRIES,
+  makeRequest,
+} from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
@@ -144,5 +152,108 @@ describe('getHttpConfig (proxied path)', () => {
     // The trusted-sources bypass header is meaningless on the proxied
     // path (api.vercel.com is public) and must NOT be attached.
     expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
+  });
+});
+
+describe('makeRequest body-parse retry', () => {
+  const schema = z.object({ value: z.string() });
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_WORKFLOW_SERVER_URL;
+    delete process.env.VERCEL_OIDC_TOKEN;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  /** Build a minimal Response-like object exercising the fields makeRequest reads. */
+  function cborResponse(data: unknown) {
+    const bytes = encode(data);
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: {
+        get: (k: string) =>
+          k.toLowerCase() === 'content-type' ? 'application/cbor' : null,
+      },
+      // parseResponseBody does `new Uint8Array(await response.arrayBuffer())`;
+      // a copy of the encoded bytes' buffer is a valid ArrayBuffer.
+      arrayBuffer: async () =>
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ),
+    };
+  }
+
+  /** A 2xx response whose body read fails transiently (truncated stream). */
+  function truncatedBodyResponse() {
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: {
+        get: (k: string) =>
+          k.toLowerCase() === 'content-type' ? 'application/cbor' : null,
+      },
+      arrayBuffer: async () => {
+        throw new TypeError('terminated');
+      },
+    };
+  }
+
+  it('retries an idempotent GET when the body read fails, then succeeds', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(truncatedBodyResponse())
+      .mockResolvedValueOnce(cborResponse({ value: 'ok' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    });
+
+    expect(result).toEqual({ value: 'ok' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws PARSE_ERROR after exhausting retries for a GET', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(truncatedBodyResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ code: 'PARSE_ERROR' });
+
+    // Initial attempt + MAX_BODY_PARSE_RETRIES retries.
+    expect(fetchMock).toHaveBeenCalledTimes(MAX_BODY_PARSE_RETRIES + 1);
+  });
+
+  it('does NOT retry a non-idempotent POST on body-parse failure', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(truncatedBodyResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'POST' },
+        data: { eventType: 'run_started' },
+        schema,
+      })
+    ).rejects.toMatchObject({ code: 'PARSE_ERROR' });
+
+    // A write must not be replayed — exactly one attempt.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
