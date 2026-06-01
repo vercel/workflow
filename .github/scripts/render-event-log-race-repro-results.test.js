@@ -11,6 +11,9 @@ const {
   infraCount,
   buildEntry,
   summarize,
+  breakdownByCode,
+  truncateMessage,
+  describeFailure,
 } = require('./render-event-log-race-repro-results.js');
 
 const SCRIPT = path.join(__dirname, 'render-event-log-race-repro-results.js');
@@ -88,11 +91,12 @@ test('buildEntry treats an all-infra run as zero regressions', () => {
   assert.strictEqual(entry.failedCount, 0, 'no regressions should be counted');
   assert.strictEqual(entry.infraCount, 1231);
   assert.strictEqual(entry.total, 2000);
-  // Regressions sort ahead of infra so they are never truncated away.
-  assert.ok(entry.failing.every((r) => r.outcome === 'infra'));
+  // No gating regressions listed; the infra flood is summarised by code only.
+  assert.strictEqual(entry.regressions.length, 0);
+  assert.strictEqual(entry.infraBreakdown.counts.HOOK_RESUME_FAILED, 1231);
 });
 
-test('buildEntry surfaces regressions ahead of infra rows', () => {
+test('buildEntry lists regressions in full and never via the infra path', () => {
   const results = [
     ...Array.from({ length: 30 }, (_, i) => ({
       attempt: i,
@@ -109,11 +113,92 @@ test('buildEntry surfaces regressions ahead of infra rows', () => {
   ];
   const entry = buildEntry({ results });
   assert.strictEqual(entry.failedCount, 1);
+  assert.strictEqual(entry.regressions.length, 1);
+  assert.strictEqual(entry.regressions[0].outcome, 'CORRUPTED_EVENT_LOG');
+  // Infra rows are summarised, not listed as regressions.
+  assert.ok(entry.regressions.every((r) => r.outcome !== 'infra'));
+});
+
+test('buildEntry keeps every gating regression even past the infra flood', () => {
+  // 50 stuck regressions interleaved with 500 infra rows — all 50 must survive.
+  const results = [
+    ...Array.from({ length: 500 }, (_, i) => ({
+      attempt: i,
+      scenario: 'hook-sleep',
+      outcome: 'infra',
+      errorCode: 'HOOK_RESUME_FAILED',
+    })),
+    ...Array.from({ length: 50 }, (_, i) => ({
+      attempt: 1000 + i,
+      scenario: 'hook-sleep',
+      outcome: 'stuck',
+      status: 'running',
+      durationMs: 150000,
+    })),
+  ];
+  const entry = buildEntry({ results });
+  assert.strictEqual(entry.failedCount, 50);
+  assert.strictEqual(entry.regressions.length, 50);
+  assert.strictEqual(entry.truncatedRegressionCount, 0);
+  // Stuck runs get a synthesised, inspectable detail line from their duration.
   assert.strictEqual(
-    entry.failing[0].outcome,
-    'CORRUPTED_EVENT_LOG',
-    'regression must appear first despite being last in the input'
+    entry.regressions[0].message,
+    'no terminal state after 150000ms'
   );
+});
+
+test('breakdownByCode counts by errorCode and keeps example links', () => {
+  const { counts, examples } = breakdownByCode([
+    { outcome: 'infra', errorCode: 'HOOK_RESUME_FAILED', runId: 'a' },
+    { outcome: 'infra', errorCode: 'HOOK_RESUME_FAILED', runId: 'b' },
+    { outcome: 'infra', errorCode: 'NO_WAKE_BRANCH', runId: 'c' },
+    { outcome: 'stuck', durationMs: 1000, runId: 'd' },
+  ]);
+  assert.strictEqual(counts.HOOK_RESUME_FAILED, 2);
+  assert.strictEqual(counts.NO_WAKE_BRANCH, 1);
+  // No errorCode falls back to a parenthesised outcome key.
+  assert.strictEqual(counts['(stuck)'], 1);
+  assert.strictEqual(examples.HOOK_RESUME_FAILED.length, 2);
+  assert.strictEqual(examples.HOOK_RESUME_FAILED[0].runId, 'a');
+});
+
+test('describeFailure synthesises a message for stuck runs without one', () => {
+  assert.strictEqual(
+    describeFailure({ outcome: 'stuck', durationMs: 150578 }),
+    'no terminal state after 150578ms'
+  );
+  assert.strictEqual(
+    describeFailure({ outcome: 'infra', errorMessage: 'fetch  failed\n' }),
+    'fetch failed'
+  );
+});
+
+test('truncateMessage collapses whitespace and caps length', () => {
+  assert.strictEqual(truncateMessage('  a\n  b  '), 'a b');
+  const long = 'x'.repeat(500);
+  const out = truncateMessage(long);
+  assert.ok(out.length <= 160);
+  assert.ok(out.endsWith('…'));
+});
+
+test('a slow run that completed past the budget is infra, not gating', () => {
+  // Mirrors the observed false positive: a run flagged at the poll budget that
+  // actually completed during the grace window is reclassified SLOW_COMPLETION.
+  const results = [
+    { attempt: 1, scenario: 'step-fanout', outcome: 'completed' },
+    {
+      attempt: 2,
+      scenario: 'step-fanout',
+      outcome: 'infra',
+      errorCode: 'SLOW_COMPLETION',
+      durationMs: 151849,
+    },
+  ];
+  const entry = buildEntry({ results });
+  assert.strictEqual(entry.failedCount, 0);
+  assert.strictEqual(entry.infraCount, 1);
+  assert.strictEqual(entry.regressions.length, 0);
+  assert.strictEqual(entry.infraBreakdown.counts.SLOW_COMPLETION, 1);
 });
 
 test('summarize buckets infra outcomes', () => {

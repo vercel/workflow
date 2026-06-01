@@ -123,6 +123,96 @@ function infraCount(distribution) {
   return distribution.infra ?? 0;
 }
 
+// Human-readable, one-line explanations keyed by outcome (for gating
+// regressions) and by errorCode (for non-gating `infra` noise). Rendered next
+// to the counts so a human reading the PR comment knows what each row means
+// without spelunking the test source.
+const OUTCOME_NOTES = {
+  CORRUPTED_EVENT_LOG:
+    'Event log failed an integrity/ordering check — a real durability regression.',
+  USER_ERROR: 'Workflow surfaced a user-visible error during the run.',
+  RUNTIME_ERROR: 'Runtime/platform error thrown while executing the run.',
+  stuck:
+    'Run never reached a terminal state before the timeout — possible wedged event log. Open the linked run and check its latest event.',
+  other: 'Uncategorised non-completion — inspect the linked run.',
+};
+
+const INFRA_CODE_NOTES = {
+  HOOK_RESUME_FAILED:
+    'Resume lost the race: the run already completed (sleep budget elapsed) before the harness delivered the hook resume. Expected under load.',
+  NO_WAKE_BRANCH:
+    'Sleep branch won the race, so the hook-wake path was not exercised this run. Coverage loss, not corruption.',
+  SLOW_COMPLETION:
+    'Run completed, but only after the poll budget (within the grace window) — slow under load, not wedged. Not an SDK failure.',
+  CANCELLED:
+    'Run was cancelled (superseded or aborted) rather than completing — not an SDK failure.',
+  HARNESS_ERROR:
+    'Repro driver/transport error (e.g. `fetch failed`) talking to the deployment — not an SDK failure.',
+};
+
+const MAX_MESSAGE_LENGTH = 160;
+// Gating regressions are always listed in full (normally a handful); this cap
+// is only a runaway guard. Infra noise can number in the thousands, so we keep
+// counts for every code but only a few example links per code.
+const REGRESSION_ROW_CAP = 200;
+const INFRA_EXAMPLES_PER_CODE = 3;
+
+function truncateMessage(message) {
+  if (!message) {
+    return '';
+  }
+  const oneLine = String(message).replace(/\s+/g, ' ').trim();
+  return oneLine.length > MAX_MESSAGE_LENGTH
+    ? `${oneLine.slice(0, MAX_MESSAGE_LENGTH - 1)}…`
+    : oneLine;
+}
+
+// A stuck run carries no errorMessage, so synthesise one from its duration.
+function describeFailure(result) {
+  const explicit = truncateMessage(result.errorMessage);
+  if (explicit) {
+    return explicit;
+  }
+  if (result.outcome === 'stuck' && result.durationMs) {
+    return `no terminal state after ${result.durationMs}ms`;
+  }
+  return '';
+}
+
+function projectFailure(result) {
+  return {
+    attempt: result.attempt,
+    scenario: result.scenario,
+    outcome: result.outcome,
+    status: result.status,
+    errorCode: result.errorCode,
+    message: describeFailure(result),
+    durationMs: result.durationMs,
+    runId: result.runId,
+    dashboardUrl: result.dashboardUrl,
+  };
+}
+
+// Count non-completions by a stable key (errorCode, falling back to the
+// outcome) and retain a few example runs per key for inspection links.
+function breakdownByCode(results) {
+  const counts = {};
+  const examples = {};
+  for (const result of results) {
+    const key = result.errorCode || `(${result.outcome})`;
+    counts[key] = (counts[key] ?? 0) + 1;
+    examples[key] ??= [];
+    if (examples[key].length < INFRA_EXAMPLES_PER_CODE) {
+      examples[key].push({
+        runId: result.runId,
+        dashboardUrl: result.dashboardUrl,
+        message: describeFailure(result),
+      });
+    }
+  }
+  return { counts, examples };
+}
+
 function compactTimestamp(value) {
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) {
@@ -224,9 +314,16 @@ function compactHistoryEntry(entry, keepFailures = false) {
     infraCount: entry.infraCount ?? infraCount(entry.distribution ?? {}),
     total: entry.total ?? 0,
     config: compactConfig(entry.config),
-    failing: keepFailures ? (entry.failing ?? []) : [],
-    truncatedFailingCount: keepFailures
-      ? (entry.truncatedFailingCount ?? 0)
+    // Per-code counts are tiny, so keep them on every history entry. The full
+    // regression list and example links are only kept for the latest entry.
+    regressionBreakdown: entry.regressionBreakdown ?? {
+      counts: {},
+      examples: {},
+    },
+    infraBreakdown: entry.infraBreakdown ?? { counts: {}, examples: {} },
+    regressions: keepFailures ? (entry.regressions ?? []) : [],
+    truncatedRegressionCount: keepFailures
+      ? (entry.truncatedRegressionCount ?? 0)
       : 0,
   };
 }
@@ -244,7 +341,10 @@ function buildEntry(resultsFile) {
       total: 0,
       config: {},
       scenarioDistribution: {},
-      failing: [],
+      regressions: [],
+      truncatedRegressionCount: 0,
+      regressionBreakdown: { counts: {}, examples: {} },
+      infraBreakdown: { counts: {}, examples: {} },
     };
   }
 
@@ -258,22 +358,23 @@ function buildEntry(resultsFile) {
     (sum, outcome) => sum + (distribution[outcome] ?? 0),
     0
   );
-  // Surface regressions before infra so the 20-row cap never hides a real
-  // failure behind a flood of harness-timing `infra` rows.
-  const nonCompleted = results
-    .filter((result) => result.outcome !== 'completed')
-    .sort(
-      (a, b) => Number(a.outcome === 'infra') - Number(b.outcome === 'infra')
-    );
-  const failing = nonCompleted.slice(0, 20).map((result) => ({
-    attempt: result.attempt,
-    scenario: result.scenario,
-    outcome: result.outcome,
-    status: result.status,
-    errorCode: result.errorCode,
-    runId: result.runId,
-    dashboardUrl: result.dashboardUrl,
-  }));
+  // Gating regressions (stuck / corruption / errors) are what a human must
+  // act on, so list every one of them in full. Infra noise can be thousands of
+  // rows, so we keep per-code counts plus a few example links instead.
+  const regressionResults = results.filter(
+    (result) => result.outcome !== 'completed' && result.outcome !== 'infra'
+  );
+  const infraResults = results.filter((result) => result.outcome === 'infra');
+
+  const regressions = regressionResults
+    .slice(0, REGRESSION_ROW_CAP)
+    .map(projectFailure);
+  const truncatedRegressionCount = Math.max(
+    0,
+    regressionResults.length - regressions.length
+  );
+  const regressionBreakdown = breakdownByCode(regressionResults);
+  const infraBreakdown = breakdownByCode(infraResults);
 
   return {
     timestamp,
@@ -287,8 +388,10 @@ function buildEntry(resultsFile) {
     infraCount: infra,
     total,
     config: compactConfig(resultsFile.config),
-    failing,
-    truncatedFailingCount: Math.max(0, nonCompleted.length - failing.length),
+    regressions,
+    truncatedRegressionCount,
+    regressionBreakdown,
+    infraBreakdown,
   };
 }
 
@@ -350,30 +453,81 @@ function renderLatestScenarioBreakdown(entry) {
   console.log('');
 }
 
-function renderLatestFailures(entry) {
+function runLink(result) {
+  if (result.dashboardUrl && result.runId) {
+    return `[${result.runId}](${result.dashboardUrl})`;
+  }
+  return result.runId ?? '';
+}
+
+// Every gating regression, listed in full with its message, duration and a
+// direct dashboard link — this is the table a human acts on.
+function renderRegressions(entry) {
   if (entry.missingResults) {
     return;
   }
 
-  if (entry.failing.length === 0) {
+  const regressions = entry.regressions ?? [];
+  if (regressions.length === 0) {
+    console.log('### Event-Log Regressions\n');
+    console.log('None — no gating outcomes in the latest run. ✅\n');
     return;
   }
 
-  console.log('### Latest Non-Completed Runs\n');
-  console.log('| Scenario | Attempt | Outcome | Status | Error code | Run |');
-  console.log('|:--|--:|:--|:--|:--|:--|');
-  for (const result of entry.failing) {
-    const run =
-      result.dashboardUrl && result.runId
-        ? `[${result.runId}](${result.dashboardUrl})`
-        : (result.runId ?? '');
+  console.log(`### 🚨 Event-Log Regressions (${entry.failedCount})\n`);
+  console.log(
+    'These gate the job. Each row links to the workflow run on the dashboard.\n'
+  );
+  console.log(
+    '| Scenario | Attempt | Outcome | Status | Duration | Detail | Run |'
+  );
+  console.log('|:--|--:|:--|:--|--:|:--|:--|');
+  for (const result of regressions) {
+    const duration =
+      typeof result.durationMs === 'number' ? `${result.durationMs}ms` : '';
+    const detail =
+      result.message || OUTCOME_NOTES[result.outcome] || result.errorCode || '';
     console.log(
-      `| ${result.scenario ?? ''} | ${result.attempt} | ${result.outcome} | ${result.status ?? ''} | ${result.errorCode ?? ''} | ${run} |`
+      `| ${result.scenario ?? ''} | ${result.attempt} | ${result.outcome} | ${result.status ?? ''} | ${duration} | ${detail} | ${runLink(result)} |`
     );
   }
-  if (entry.truncatedFailingCount > 0) {
+  if (entry.truncatedRegressionCount > 0) {
     console.log(
-      `\nShowing 20 of ${entry.failing.length + entry.truncatedFailingCount} non-completed runs.`
+      `\nShowing ${regressions.length} of ${regressions.length + entry.truncatedRegressionCount} regressions (capped). See the run logs artifact for the full list.`
+    );
+  }
+  console.log('');
+}
+
+// Non-gating harness noise, grouped by error code with a plain-language note
+// and a couple of example runs so a human can confirm the classification.
+function renderInfraBreakdown(entry) {
+  if (entry.missingResults) {
+    return;
+  }
+
+  const breakdown = entry.infraBreakdown ?? { counts: {}, examples: {} };
+  const codes = Object.keys(breakdown.counts ?? {});
+  if (codes.length === 0) {
+    return;
+  }
+
+  codes.sort((a, b) => breakdown.counts[b] - breakdown.counts[a]);
+
+  console.log('### Infra (non-gating)\n');
+  console.log(
+    `${entry.infraCount} harness-side non-completion${entry.infraCount === 1 ? ' that does' : 's that do'} **not** fail the job:\n`
+  );
+  console.log('| Error code | Count | What it means | Examples |');
+  console.log('|:--|--:|:--|:--|');
+  for (const code of codes) {
+    const note = INFRA_CODE_NOTES[code] ?? 'Harness-side non-completion.';
+    const examples = (breakdown.examples?.[code] ?? [])
+      .map((example) => runLink(example))
+      .filter(Boolean)
+      .join('<br>');
+    console.log(
+      `| ${code} | ${breakdown.counts[code]} | ${note} | ${examples} |`
     );
   }
   console.log('');
@@ -388,11 +542,18 @@ function render(resultsFile, previousComment) {
 
   const latestInfra =
     latest.infraCount ?? infraCount(latest.distribution ?? {});
+
+  // Compact "904 HOOK_RESUME_FAILED, 61 NO_WAKE_BRANCH" style summary of the
+  // infra noise so the headline says *why* the non-completions happened.
+  const infraCounts = latest.infraBreakdown?.counts ?? {};
+  const infraDigest = Object.keys(infraCounts)
+    .sort((a, b) => infraCounts[b] - infraCounts[a])
+    .map((code) => `${infraCounts[code]} ${code}`)
+    .join(', ');
   const infraNote =
     latestInfra > 0
-      ? ` ${latestInfra} run${latestInfra === 1 ? '' : 's'} hit harness-side ` +
-        '`infra` outcomes (hook-resume timing races / transport errors); ' +
-        'these are reported but do not fail the job.'
+      ? ` ${latestInfra} non-gating infra non-completion${latestInfra === 1 ? '' : 's'}` +
+        `${infraDigest ? ` (${infraDigest})` : ''} ${latestInfra === 1 ? 'is reported but does' : 'are reported but do'} not fail the job.`
       : '';
 
   console.log('<!-- event-log-race-repro-results -->');
@@ -401,8 +562,8 @@ function render(resultsFile, previousComment) {
     latest.missingResults
       ? 'No result file was produced by the latest repro job.'
       : latest.failedCount === 0
-        ? `No event-log regressions in the latest repro job.${infraNote}`
-        : `${latest.failedCount} of ${latest.total} latest repro runs hit event-log regressions.${infraNote}`
+        ? `✅ No event-log regressions in the latest repro job.${infraNote}`
+        : `🚨 ${latest.failedCount} of ${latest.total} latest repro runs hit event-log regressions — see the linked runs below.${infraNote}`
   );
   console.log('');
   console.log(historyMarkerStart);
@@ -410,9 +571,10 @@ function render(resultsFile, previousComment) {
   console.log(historyMarkerEnd);
   console.log('');
 
+  renderRegressions(latest);
+  renderInfraBreakdown(latest);
   renderHistoryTable(history);
   renderLatestScenarioBreakdown(latest);
-  renderLatestFailures(latest);
 }
 
 function main() {
@@ -446,6 +608,9 @@ module.exports = {
   regressionCount,
   infraCount,
   buildEntry,
+  breakdownByCode,
+  truncateMessage,
+  describeFailure,
 };
 
 if (require.main === module) {
