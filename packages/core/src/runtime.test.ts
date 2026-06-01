@@ -276,10 +276,7 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
-  it('propagates (does not fail the run) when run_started response parsing fails', async () => {
-    // A parse failure that survives the adapter's retries is still transient.
-    // It must propagate to the queue handler for a retry instead of recording
-    // a terminal run_failed event.
+  it('records run_failed when run_started response parsing fails', async () => {
     const createdEvents: unknown[] = [];
     const parseError = new WorkflowWorldError(
       'Failed to parse response body for POST /v3/runs/wrun_parse/events (Content-Type: application/cbor):\n\nError: unexpected end of file',
@@ -346,106 +343,16 @@ describe('workflowEntrypoint replay guards', () => {
       }${getWorkflowTransformCode('workflow')}`
     );
 
-    await expect(handler(new Request('https://example.test'))).rejects.toThrow(
-      /Failed to parse response body/
-    );
+    const response = await handler(new Request('https://example.test'));
 
-    expect(createdEvents).not.toContainEqual(
-      expect.objectContaining({ eventType: 'run_failed' })
-    );
-  });
-
-  it('propagates (does not fail the run) when events.list parsing fails during replay', async () => {
-    // Regression: a sporadic failure reading/decoding the events.list response
-    // body during replay must be retried by the queue, not turned into a
-    // terminal run_failed. Contrast with the SCHEMA_VALIDATION case above,
-    // which is a genuine contract violation and stays fatal.
-    const createdEvents: unknown[] = [];
-    const workflowRun: WorkflowRun = {
-      runId: 'wrun_events_parse',
-      workflowName: 'workflow',
-      status: 'running',
-      input: await dehydrateWorkflowArguments(
-        [],
-        'wrun_events_parse',
-        undefined,
-        []
-      ),
-      createdAt: new Date('2024-01-01T00:00:00.000Z'),
-      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
-      startedAt: new Date('2024-01-01T00:00:00.000Z'),
-      deploymentId: 'test-deployment',
-    };
-    const parseError = new WorkflowWorldError(
-      'Failed to parse response body for GET /v3/runs/wrun_events_parse/events (Content-Type: application/cbor):\n\nError: unexpected end of file',
-      { code: 'PARSE_ERROR' }
-    );
-
-    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-      if (data.eventType !== 'run_started') {
-        createdEvents.push(data);
-      }
-      return data.eventType === 'run_started'
-        ? { run: workflowRun }
-        : {
-            event: {
-              eventId: `event-${createdEvents.length}`,
-              runId: workflowRun.runId,
-              createdAt: new Date(),
-              ...data,
-            },
-          };
-    });
-
-    setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
-      createQueueHandler: vi.fn(
-        (
-          _prefix: string,
-          handler: (message: unknown, metadata: unknown) => Promise<unknown>
-        ) => {
-          return async () => {
-            await handler(
-              {
-                runId: workflowRun.runId,
-                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
-              },
-              {
-                requestId: 'req_test',
-                attempt: 1,
-                queueName: '__wkf_workflow_workflow',
-                messageId: 'msg_test',
-              }
-            );
-            return new Response(null, { status: 204 });
-          };
-        }
-      ),
-      events: {
-        create: eventsCreate,
-        list: vi.fn(async () => {
-          throw parseError;
+    expect(response.status).toBe(204);
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
         }),
-      },
-      runs: {
-        get: vi.fn(async () => workflowRun),
-      },
-      queue: vi.fn(),
-      getEncryptionKeyForRun: vi.fn(async () => undefined),
-    } as any);
-
-    const handler = workflowEntrypoint(
-      `async function workflow() {
-        return 'done';
-      }${getWorkflowTransformCode('workflow')}`
-    );
-
-    await expect(handler(new Request('https://example.test'))).rejects.toThrow(
-      /Failed to parse response body/
-    );
-
-    expect(createdEvents).not.toContainEqual(
-      expect.objectContaining({ eventType: 'run_failed' })
+      })
     );
   });
 

@@ -4,28 +4,13 @@ import {
   type RunErrorCode,
   RuntimeDecryptionError,
   StepNotRegisteredError,
-  ThrottleError,
-  TooEarlyError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
 
-// Codes that represent a genuine, non-recoverable disagreement about the
-// world protocol: the server returned a structurally valid response whose
-// *shape* is wrong. Retrying these would replay the same poison response,
-// so they fail the run.
-//
-// `PARSE_ERROR` is deliberately NOT in this set. A parse failure means we
-// could not read or decode the response body at all (a truncated/terminated
-// stream, a connection reset mid-body, or a gateway returning a 200 with an
-// HTML error page). The world-vercel HTTP client already retries these
-// in-process for idempotent reads; when those retries are exhausted (or the
-// request was a non-idempotent write that is never retried in-process), the
-// error must propagate to the queue handler so the whole run is replayed —
-// which is safe because replay is idempotent. See `isRetryableWorldError`
-// and its callers in `runtime.ts`.
 const WORLD_CONTRACT_ERROR_CODES = new Set([
+  'PARSE_ERROR',
   'SCHEMA_VALIDATION',
   RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
 ]);
@@ -72,57 +57,13 @@ export function isWorldContractError(err: unknown): err is WorkflowWorldError {
   const cause = 'cause' in err ? err.cause : undefined;
   return (
     (err.code !== undefined && WORLD_CONTRACT_ERROR_CODES.has(err.code)) ||
+    err.message.startsWith('Failed to parse response body for ') ||
     err.message.startsWith('Schema validation failed for ') ||
     (typeof cause === 'object' &&
       cause !== null &&
       'name' in cause &&
       cause.name === 'ZodError')
   );
-}
-
-/**
- * True when an error is a transient infrastructure failure that should
- * propagate to the queue handler for an automatic retry (re-replaying the
- * whole run), rather than being recorded as a terminal `run_failed` event.
- *
- * The replay loop loads the event log (`events.list`) and talks to the world
- * on every iteration. The world-vercel HTTP client retries transient failures
- * in-process where it safely can (idempotent reads), but some still reach the
- * runtime: exhausted retries, and non-idempotent writes (which are never
- * retried in-process). Those are not broken runs — replaying via the queue
- * recovers them — so they must propagate instead of failing the run.
- *
- * Retryable:
- *  - `ThrottleError` (429) and `TooEarlyError` (425): the backend explicitly
- *    asked us to back off. (These subclass `WorkflowWorldError` but override
- *    `name`, so the `WorkflowWorldError.is` branch below does not catch them.)
- *  - `WorkflowWorldError` with HTTP 5xx: server-side failure.
- *  - `WorkflowWorldError` with no HTTP status that is not a contract error:
- *    a response-body parse failure (`PARSE_ERROR`).
- *
- * Not retryable (these fall through to `run_failed`):
- *  - World *contract* violations (schema validation): a well-formed response
- *    of the wrong shape — replaying yields the same poison response.
- *  - Client errors (4xx other than 425/429): the request itself is wrong.
- *  - User-code errors, `WorkflowRuntimeError`, corrupted event logs.
- */
-export function isRetryableWorldError(err: unknown): boolean {
-  if (ThrottleError.is(err) || TooEarlyError.is(err)) {
-    return true;
-  }
-  if (!WorkflowWorldError.is(err)) {
-    return false;
-  }
-  // Read `status` while `err` is still narrowed to WorkflowWorldError.
-  // `isWorldContractError` is an `err is WorkflowWorldError` guard, so its
-  // negative branch would narrow `err` to `never` and lose `.status`.
-  const status = err.status;
-  if (isWorldContractError(err)) {
-    return false;
-  }
-  // A WorkflowWorldError that is not a contract violation: retry on a server
-  // error (5xx) or a status-less response-body parse failure.
-  return status === undefined || status >= 500;
 }
 
 export function classifyRunError(err: unknown): RunErrorCode {
