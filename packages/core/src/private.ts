@@ -163,7 +163,7 @@ export interface WorkflowOrchestratorContext {
    * resolve in an entirely earlier loop iteration. Either way, the
    * resolution that the committed event log ordered first can lose a
    * `Promise.race` to a faster- or already-resolved competitor, diverging
-   * from the log and surfacing as `CorruptedEventLogError`.
+   * from the log and surfacing as `ReplayDivergenceError`.
    *
    * The fix is a strict, deterministic delivery order anchored on
    * event-log position: a delivery does not resolve to the workflow until
