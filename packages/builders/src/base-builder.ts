@@ -1360,6 +1360,7 @@ export const OPTIONS = handler;`;
         topic: string;
         consumer: string;
         maxDeliveries?: number;
+        maxConcurrency?: number;
         retryAfterSeconds?: number;
         initialDelaySeconds?: number;
       }>;
