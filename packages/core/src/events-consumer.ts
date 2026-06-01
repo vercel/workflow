@@ -86,6 +86,19 @@ export class EventsConsumer {
     process.nextTick(this.consume);
   }
 
+  private notifyConsumedEvent(event: Event) {
+    if (!this.onConsumedEvent) {
+      return;
+    }
+    try {
+      this.onConsumedEvent(event);
+    } catch (error) {
+      eventsLogger.error('onConsumedEvent callback threw an error', {
+        error,
+      });
+    }
+  }
+
   private consume = () => {
     const currentEvent = this.events[this.eventIndex] ?? null;
     for (let i = 0; i < this.callbacks.length; i++) {
@@ -101,7 +114,7 @@ export class EventsConsumer {
         handled === EventConsumerResult.Finished
       ) {
         if (currentEvent !== null) {
-          this.onConsumedEvent?.(currentEvent);
+          this.notifyConsumedEvent(currentEvent);
         }
         // consumer handled this event, so increase the event index
         this.eventIndex++;

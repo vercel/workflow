@@ -485,29 +485,30 @@ describe('runWorkflow', () => {
        }${getWorkflowTransformCode('workflow')}`;
 
     const replayCount = 200;
-    const outcomes = await Promise.all(
-      Array.from({ length: replayCount }, async () => {
-        try {
-          const result = await runWorkflow(
-            workflowCode,
-            workflowRun,
-            events,
-            noEncryptionKey
-          );
-          const value = await hydrateWorkflowReturnValue(
-            result as any,
-            workflowRunId,
-            noEncryptionKey,
-            ops
-          );
-          return value === 'drained'
+    const outcomes: string[] = [];
+    for (let replayIndex = 0; replayIndex < replayCount; replayIndex++) {
+      try {
+        const result = await runWorkflow(
+          workflowCode,
+          workflowRun,
+          events,
+          noEncryptionKey
+        );
+        const value = await hydrateWorkflowReturnValue(
+          result as any,
+          workflowRunId,
+          noEncryptionKey,
+          ops
+        );
+        outcomes.push(
+          value === 'drained'
             ? 'drained'
-            : `unexpected replay result: ${String(value)}`;
-        } catch (error) {
-          return error instanceof Error ? error.message : String(error);
-        }
-      })
-    );
+            : `unexpected replay result: ${String(value)}`
+        );
+      } catch (error) {
+        outcomes.push(error instanceof Error ? error.message : String(error));
+      }
+    }
     const failures = outcomes.filter((outcome) => outcome !== 'drained');
 
     expect({
