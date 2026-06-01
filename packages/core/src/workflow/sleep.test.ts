@@ -206,6 +206,41 @@ describe('createSleep', () => {
     expect(ctx.invocationsQueue.size).toBe(0);
   });
 
+  it('still flags a mismatched absolute-Date wait_completed.resumeAt without wait_created', async () => {
+    // An absolute `sleep(Date)` recomputes the same resumeAt on every replay
+    // (it is deterministic), so it remains an authoritative value to validate
+    // against even without a recorded `wait_created`. A genuine mismatch must
+    // still raise — the no-wait_created skip applies only to non-deterministic
+    // duration-based sleeps.
+    const expectedResumeAt = new Date(DEFAULT_FIXED_TIMESTAMP + 5_000);
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { resumeAt: new Date(DEFAULT_FIXED_TIMESTAMP + 6_000) },
+        createdAt: new Date(DEFAULT_FIXED_TIMESTAMP + 6_100),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const outcome = await Promise.race([
+      errorReceived.promise.then((err) => ({ kind: 'error' as const, err })),
+      createSleep(ctx)(expectedResumeAt).then(() => ({
+        kind: 'resolved' as const,
+      })),
+    ]);
+
+    expect(outcome.kind).toBe('error');
+    if (outcome.kind === 'error') {
+      expect(outcome.err).toBeInstanceOf(CorruptedEventLogError);
+      expect(outcome.err.message).toContain('resumeAt');
+    }
+  });
+
   it('flags an invalid wait_completed.resumeAt even when no wait_created was applied', async () => {
     // Counterpart to the test above: skipping the equality check without a
     // recorded value must NOT also swallow a malformed resumeAt. A non-finite

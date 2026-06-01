@@ -29,10 +29,15 @@ import {
  * event's `createdAt` — recomputes a different absolute timestamp.
  *
  * When this consumer never applied a `wait_created` (`hasCreatedEvent` falsy),
- * the queue item still holds that freshly-recomputed value, so comparing it
- * against the recorded `wait_completed.resumeAt` yields a false mismatch on a
- * perfectly consistent log. The correlationId match already establishes the
- * wait's identity, so the equality check is skipped in that case.
+ * the queue item normally still holds that freshly-recomputed value, so
+ * comparing it against the recorded `wait_completed.resumeAt` would yield a
+ * false mismatch on a perfectly consistent log. The correlationId match
+ * already establishes the wait's identity, so the equality check is skipped in
+ * that case — BUT only when `resumeAt` is non-deterministic (a duration-based
+ * `sleep(<ms|string>)`). For an absolute `sleep(Date)` the queue item's
+ * `resumeAt` is recomputed identically on every replay
+ * (`resumeAtIsDeterministic`), so it remains a valid authoritative value to
+ * validate against even without a `wait_created`.
  *
  * A non-finite / unparseable `resumeAt`, however, is malformed irrespective of
  * any authoritative value — the original run always records a valid
@@ -62,8 +67,20 @@ function detectResumeAtMismatch(
     );
   }
 
-  if (!queueItem || queueItem.type !== 'wait' || !queueItem.hasCreatedEvent) {
-    // No authoritative recorded resumeAt to compare a finite value against.
+  if (!queueItem || queueItem.type !== 'wait') {
+    return null;
+  }
+
+  // We can validate a finite resumeAt only when we have an authoritative value
+  // for it: either a recorded `wait_created` was applied (`hasCreatedEvent`),
+  // or the wait's `resumeAt` is deterministic (an absolute `sleep(Date)`, whose
+  // value is recomputed identically every replay). For a non-deterministic
+  // duration-based sleep without a `wait_created`, the queue item holds a
+  // wall-clock-recomputed value that legitimately differs from the recorded
+  // one, so skip the equality check to avoid a false `CorruptedEventLogError`.
+  const hasAuthoritativeResumeAt =
+    queueItem.hasCreatedEvent || queueItem.resumeAtIsDeterministic;
+  if (!hasAuthoritativeResumeAt) {
     return null;
   }
 
@@ -89,11 +106,23 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
     // Calculate the resume time
     const resumeAt = parseDurationToDate(param);
 
+    // A `Date` (or date-like) param yields a deterministic absolute resumeAt —
+    // recomputed identically on every replay. A duration (`number`/string)
+    // yields `Date.now() + duration`, which varies by replay (the VM clock
+    // advances to each event's createdAt). Only the deterministic case can be
+    // validated against the event log without a recorded `wait_created`.
+    const resumeAtIsDeterministic =
+      param instanceof Date ||
+      (typeof param === 'object' &&
+        param !== null &&
+        typeof (param as { getTime?: unknown }).getTime === 'function');
+
     // Add wait to invocations queue (using Map for O(1) operations)
     const waitItem: WaitInvocationQueueItem = {
       type: 'wait',
       correlationId,
       resumeAt,
+      resumeAtIsDeterministic,
     };
     ctx.invocationsQueue.set(correlationId, waitItem);
 

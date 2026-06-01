@@ -26,6 +26,15 @@ export interface WaitInvocationQueueItem {
   correlationId: string;
   resumeAt: Date;
   hasCreatedEvent?: boolean;
+  /**
+   * Whether `resumeAt` is deterministic across replays. True when the sleep
+   * was given an absolute `Date` (the same value is recomputed every replay);
+   * false for duration-based `sleep(<ms|string>)`, whose `resumeAt` is
+   * `Date.now() + duration` and therefore varies by replay. Used to decide
+   * whether `resumeAt` can be validated against the event log even before a
+   * `wait_created` is applied.
+   */
+  resumeAtIsDeterministic?: boolean;
 }
 
 export type QueueItem =
