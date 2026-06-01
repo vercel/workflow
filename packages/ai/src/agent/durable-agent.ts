@@ -1656,7 +1656,21 @@ async function executeTool(
         );
       }
     }
-    throw parseError;
+    // Input that fails to parse or validate (even after repair) is recoverable,
+    // exactly like a tool execution error below: feed the error back to the model
+    // as an error-text result so the agent can correct the call and retry, instead
+    // of aborting the entire stream. This aligns with AI SDK's streamText behavior
+    // for tool failures. Reaches here both for malformed JSON and for the
+    // re-thrown "Invalid input for tool ..." schema-validation error above.
+    return {
+      type: 'tool-result' as const,
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      output: {
+        type: 'error-text' as const,
+        value: getErrorMessage(parseError),
+      },
+    };
   }
 
   return recordSpan({
