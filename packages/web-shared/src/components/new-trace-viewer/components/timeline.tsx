@@ -6,14 +6,15 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
-import type { Segment, SegmentStatus, TimeMarker } from '../utils';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
+import type { Segment, SegmentStatus, TimeMarker } from '../utils';
 import {
   computeSpanGaps,
   computeSpanSegments,
   getResourceColor,
   getSpanDurationMs,
 } from '../utils';
+import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -365,10 +366,6 @@ export { TimelineBar };
 // DeltaIndicator (Alt-key gap overlay)
 // ---------------------------------------------------------------------------
 
-// Row and indicator sizes are local to DeltaIndicator since it's the only
-// place that needs to compute Y positions from a row index. ROW_HEIGHT must
-// match the `h-10` (40px) row used in TimelineBar.
-const DELTA_ROW_HEIGHT_PX = 40;
 const DELTA_CAP_HEIGHT_PX = 8;
 // Vertical offset to sit the indicator inside the gap between row N and N+1,
 // aligned with where the bar starts in the next row (rows center a 24px bar
@@ -386,7 +383,7 @@ const DeltaIndicator = memo(function DeltaIndicator({
   label: string;
   rowIndex: number;
 }) {
-  const centerY = DELTA_ROW_OFFSET_PX + (rowIndex + 1) * DELTA_ROW_HEIGHT_PX;
+  const centerY = DELTA_ROW_OFFSET_PX + (rowIndex + 1) * ROW_HEIGHT_PX;
 
   return (
     <div
@@ -473,6 +470,11 @@ export function Timeline({
   const [containerWidth, setContainerWidth] = useState(0);
   const viewDuration = viewEnd - viewStart;
   const timelineWidth = Math.max(0, containerWidth - TIMELINE_PADDING_PX * 2);
+  const { start, end } = useRowWindow(
+    containerRef,
+    spans.length,
+    ROW_HEIGHT_PX
+  );
 
   useEffect(() => {
     const el = containerRef.current;
@@ -490,7 +492,11 @@ export function Timeline({
   );
 
   return (
-    <div ref={containerRef} className="relative h-full overflow-hidden">
+    <div
+      ref={containerRef}
+      className="relative h-full overflow-hidden"
+      style={{ minHeight: spans.length * ROW_HEIGHT_PX }}
+    >
       <div
         aria-hidden
         className="absolute inset-y-0 pointer-events-none"
@@ -518,18 +524,20 @@ export function Timeline({
           />
         </div>
       )}
-      {spans.map((span) => (
-        <TimelineBar
-          key={span.spanId}
-          span={span}
-          viewStart={viewStart}
-          viewDuration={viewDuration}
-          containerWidth={timelineWidth}
-          isSelected={selectedId === span.spanId}
-          isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
-          onSelect={onSelect}
-        />
-      ))}
+      <div style={{ transform: `translateY(${start * ROW_HEIGHT_PX}px)` }}>
+        {spans.slice(start, end).map((span) => (
+          <TimelineBar
+            key={span.spanId}
+            span={span}
+            viewStart={viewStart}
+            viewDuration={viewDuration}
+            containerWidth={timelineWidth}
+            isSelected={selectedId === span.spanId}
+            isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
       {altHeld && (
         <div
           aria-hidden

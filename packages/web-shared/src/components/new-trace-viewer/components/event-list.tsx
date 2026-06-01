@@ -1,4 +1,5 @@
 import { Circle } from 'lucide-react';
+import { useRef } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration } from '../../trace-viewer/util/timing';
@@ -11,6 +12,7 @@ import {
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import { getSpanDurationMs } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
+import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
 interface EventStyle {
   icon: React.ComponentType<{ className?: string }>;
@@ -103,23 +105,29 @@ const EventList = ({
   searchResult: SpanSearchResult;
   onSelectSpan: (spanId: string) => void;
 }) => {
+  const listRef = useRef<HTMLUListElement>(null);
+  const { start, end } = useRowWindow(listRef, spans.length, ROW_HEIGHT_PX);
+
   return (
     <ul
+      ref={listRef}
       id="event-list"
       role="tree"
       className="block min-h-0 overflow-visible divide-y divide-gray-alpha-400 border-b border-gray-alpha-400"
+      style={{
+        paddingTop: start * ROW_HEIGHT_PX,
+        paddingBottom: (spans.length - end) * ROW_HEIGHT_PX,
+      }}
     >
-      {spans.map((span) => {
-        return (
-          <EventRow
-            key={span.spanId}
-            span={span}
-            isSelected={span.spanId === activeSpanId}
-            isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
-            onSelectSpan={onSelectSpan}
-          />
-        );
-      })}
+      {spans.slice(start, end).map((span) => (
+        <EventRow
+          key={span.spanId}
+          span={span}
+          isSelected={span.spanId === activeSpanId}
+          isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
+          onSelectSpan={onSelectSpan}
+        />
+      ))}
     </ul>
   );
 };
