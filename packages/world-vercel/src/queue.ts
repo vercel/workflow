@@ -175,6 +175,31 @@ function getHeadersFromPayload(
   return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
+/**
+ * Resolves the physical VQS topic for a message.
+ *
+ * Normally this is just the logical queue name. When `ENFORCE_STRICT_CONCURRENCY`
+ * is enabled, flow (workflow) messages get a per-run topic by appending the
+ * run id. VQS scopes `maxConcurrency` per concrete topic, so a per-run topic
+ * combined with `maxConcurrency: 1` on the flow trigger enforces at most one
+ * orchestrator invocation per run at a time. Step topics and health checks
+ * (which carry no `runId`) keep their shared topic.
+ */
+function getPhysicalQueueName(
+  queueName: ValidQueueName,
+  payload: QueuePayload
+): string {
+  if (
+    process.env.ENFORCE_STRICT_CONCURRENCY === '1' &&
+    queueName.startsWith('__wkf_workflow_') &&
+    'runId' in payload &&
+    typeof payload.runId === 'string'
+  ) {
+    return `${queueName}_${payload.runId}`;
+  }
+  return queueName;
+}
+
 type QueueFunction = (
   queueName: ValidQueueName,
   payload: QueuePayload,
@@ -236,11 +261,16 @@ export function createQueue(config?: APIConfig): Queue {
     // preserving Uint8Array values (workflow input in specVersion >= 2).
     const wrapper = {
       payload,
+      // Keep the logical queue name so the handler and re-enqueue path
+      // resolve the same per-run physical topic on the next invocation.
       queueName,
       // Store deploymentId in the message so it can be preserved when re-enqueueing
       deploymentId: opts?.deploymentId,
     };
-    const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
+    const sanitizedQueueName = getPhysicalQueueName(queueName, payload).replace(
+      /[^A-Za-z0-9-_]/g,
+      '-'
+    );
     try {
       const { messageId } = await client.send(sanitizedQueueName, wrapper, {
         idempotencyKey: opts?.idempotencyKey,

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { getWorkflowQueueTrigger } from '@workflow/builders';
 import fs from 'fs-extra';
 
 import { SvelteKitBuilder } from './builder.js';
@@ -21,15 +22,7 @@ process.on('beforeExit', () => {
       file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
       config: {
         maxDuration: 'max',
-        experimentalTriggers: [
-          {
-            type: 'queue/v2beta',
-            topic: '__wkf_workflow_*',
-            consumer: 'default',
-            retryAfterSeconds: 5,
-            initialDelaySeconds: 0,
-          },
-        ],
+        experimentalTriggers: [getWorkflowQueueTrigger()],
       },
     },
     {
