@@ -15,7 +15,11 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { classifyRunError, isWorldContractError } from './classify-error.js';
+import {
+  classifyRunError,
+  isRetryableWorldError,
+  isWorldContractError,
+} from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
@@ -1152,6 +1156,29 @@ export function workflowEntrypoint(
                           // Loop back to replay which will re-evaluate
                         }
                       } else {
+                        // Transient infrastructure failures (e.g. a world
+                        // response-body parse failure that survived the
+                        // adapter's in-process retries, a 5xx, or a
+                        // rate-limit) must not fail the run. Re-throw so the
+                        // error propagates to the queue handler, which replays
+                        // the whole run — safe because replay is idempotent.
+                        // Genuine world contract violations, user-code errors,
+                        // and runtime errors fall through to run_failed below.
+                        if (isRetryableWorldError(err)) {
+                          runtimeLogger.warn(
+                            'Transient world error during replay; propagating to queue for retry.',
+                            {
+                              workflowRunId: runId,
+                              loopIteration,
+                              error:
+                                err instanceof Error
+                                  ? err.message
+                                  : String(err),
+                            }
+                          );
+                          throw err;
+                        }
+
                         // User code error from runWorkflow — create run_failed.
                         if (err instanceof Error) {
                           span?.recordException?.(err);

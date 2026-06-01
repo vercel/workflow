@@ -3,12 +3,18 @@ import {
   HookConflictError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
+  ThrottleError,
+  TooEarlyError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
-import { classifyRunError } from './classify-error.js';
+import {
+  classifyRunError,
+  isRetryableWorldError,
+  isWorldContractError,
+} from './classify-error.js';
 
 describe('classifyRunError', () => {
   it('classifies CorruptedEventLogError as CORRUPTED_EVENT_LOG', () => {
@@ -60,15 +66,18 @@ describe('classifyRunError', () => {
     ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
   });
 
-  it('classifies world response parse failures as WORLD_CONTRACT_ERROR', () => {
-    expect(
-      classifyRunError(
-        new WorkflowWorldError(
-          'Failed to parse response body for GET /v3/runs/wrun/events',
-          { code: 'PARSE_ERROR' }
-        )
-      )
-    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  it('does NOT classify world response parse failures as WORLD_CONTRACT_ERROR', () => {
+    // A parse failure is transient (truncated stream, gateway HTML, connection
+    // reset). It must stay retryable so it propagates to the queue instead of
+    // failing the run.
+    const parseError = new WorkflowWorldError(
+      'Failed to parse response body for GET /v3/runs/wrun/events',
+      { code: 'PARSE_ERROR' }
+    );
+    expect(isWorldContractError(parseError)).toBe(false);
+    expect(classifyRunError(parseError)).not.toBe(
+      RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
+    );
   });
 
   it('classifies string throw as USER_ERROR', () => {
@@ -104,5 +113,56 @@ describe('classifyRunError', () => {
     );
     native.name = 'OperationError';
     expect(classifyRunError(native)).toBe(RUN_ERROR_CODES.USER_ERROR);
+  });
+});
+
+describe('isRetryableWorldError', () => {
+  it('treats response-body parse failures as retryable', () => {
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError(
+          'Failed to parse response body for GET /v3/runs/wrun/events',
+          { code: 'PARSE_ERROR' }
+        )
+      )
+    ).toBe(true);
+  });
+
+  it('treats world 5xx errors as retryable', () => {
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('Bad Gateway', { status: 502 })
+      )
+    ).toBe(true);
+  });
+
+  it('treats throttle and too-early errors as retryable', () => {
+    expect(isRetryableWorldError(new ThrottleError('rate limited'))).toBe(true);
+    expect(isRetryableWorldError(new TooEarlyError('too early'))).toBe(true);
+  });
+
+  it('does NOT treat schema validation (contract) errors as retryable', () => {
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('Schema validation failed for GET /events', {
+          code: 'SCHEMA_VALIDATION',
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('does NOT treat client (4xx) errors as retryable', () => {
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('Bad Request', { status: 400 })
+      )
+    ).toBe(false);
+  });
+
+  it('does NOT treat plain user/runtime errors as retryable', () => {
+    expect(isRetryableWorldError(new Error('boom'))).toBe(false);
+    expect(
+      isRetryableWorldError(new WorkflowRuntimeError('runtime boom'))
+    ).toBe(false);
   });
 });
