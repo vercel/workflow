@@ -8,7 +8,11 @@ import {
   getSerializeStream,
   WorkflowServerWritableStream,
 } from '../serialization.js';
-import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
+import {
+  STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
+} from '../symbols.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { contextStorage } from './context-storage.js';
 
@@ -82,6 +86,16 @@ export function getWritable<W = any>(
     value: runId,
     writable: false,
   });
+  if (ctx.workflowDeploymentId) {
+    Object.defineProperty(
+      serialize.writable,
+      STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+      {
+        value: ctx.workflowDeploymentId,
+        writable: false,
+      }
+    );
+  }
 
   // Return the writable side of the transform stream
   return serialize.writable;
