@@ -1,3 +1,4 @@
+import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
 import type {
   Event,
   HealthCheckPayload,
@@ -306,6 +307,76 @@ export async function healthCheck(
   }
 }
 
+function eventPaginationContractError(
+  runId: string,
+  message: string
+): WorkflowWorldError {
+  return new WorkflowWorldError(
+    `Event pagination ${message} for workflow run "${runId}".`,
+    { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+  );
+}
+
+function recordRequestedEventCursor(
+  runId: string,
+  cursor: string | null,
+  requestedCursors: Set<string>
+): void {
+  if (!cursor) {
+    return;
+  }
+  if (requestedCursors.has(cursor)) {
+    throw eventPaginationContractError(runId, 'did not advance');
+  }
+  requestedCursors.add(cursor);
+}
+
+function appendUniqueEvents(
+  target: Event[],
+  targetIds: Set<string>,
+  events: Event[]
+): void {
+  for (const event of events) {
+    if (!targetIds.has(event.eventId)) {
+      targetIds.add(event.eventId);
+      target.push(event);
+    }
+  }
+}
+
+function assertEventPaginationProgress(
+  runId: string,
+  hasMore: boolean,
+  cursor: string | null,
+  requestedCursors: Set<string>
+): void {
+  if (!hasMore) {
+    return;
+  }
+  if (cursor === null) {
+    throw eventPaginationContractError(
+      runId,
+      'returned more pages without a cursor'
+    );
+  }
+  if (requestedCursors.has(cursor)) {
+    throw eventPaginationContractError(runId, 'repeated a cursor');
+  }
+}
+
+function shouldRetryWithoutEventCursor(
+  error: unknown,
+  cursor: string | null,
+  alreadyRetried: boolean
+): boolean {
+  return (
+    cursor !== null &&
+    !alreadyRetried &&
+    WorkflowWorldError.is(error) &&
+    error.status === 400
+  );
+}
+
 /**
  * Loads workflow run events by iterating through all pages of paginated
  * results. Events are returned in chronological (ascending) order for
@@ -330,9 +401,12 @@ export async function loadWorkflowRunEvents(
       });
 
       const loadedEvents: Event[] = [];
+      const loadedEventIds = new Set<string>();
+      const requestedCursors = new Set<string>();
       let cursor: string | null = afterCursor ?? null;
       let hasMore = true;
       let pagesLoaded = 0;
+      let retriedWithoutCursor = false;
 
       const world = await getWorldLazy();
       const loadStart = Date.now();
@@ -341,16 +415,48 @@ export async function loadWorkflowRunEvents(
         // to lazyload the data from the world instead so that we can optimize and make the event log loading
         // much faster and memory efficient
         const pageStart = Date.now();
-        const response = await world.events.list({
-          runId,
-          pagination: {
-            sortOrder: 'asc',
-            cursor: cursor ?? undefined,
-          },
-        });
+        const requestedCursor = cursor;
+        recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
 
-        loadedEvents.push(...response.data);
+        let response: Awaited<ReturnType<typeof world.events.list>>;
+        try {
+          response = await world.events.list({
+            runId,
+            pagination: {
+              sortOrder: 'asc',
+              cursor: requestedCursor ?? undefined,
+            },
+          });
+        } catch (error) {
+          if (
+            shouldRetryWithoutEventCursor(
+              error,
+              requestedCursor,
+              retriedWithoutCursor
+            )
+          ) {
+            runtimeLogger.warn(
+              'Event cursor was rejected; retrying with a full event reload.',
+              { workflowRunId: runId }
+            );
+            loadedEvents.length = 0;
+            loadedEventIds.clear();
+            requestedCursors.clear();
+            cursor = null;
+            retriedWithoutCursor = true;
+            continue;
+          }
+          throw error;
+        }
+
+        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
         hasMore = response.hasMore;
+        assertEventPaginationProgress(
+          runId,
+          hasMore,
+          response.cursor,
+          requestedCursors
+        );
         // Preserve the last non-null cursor across pages. A World may
         // legitimately return `{ data: [], cursor: null, hasMore: false }`
         // on a trailing empty page — for example when the previous page's

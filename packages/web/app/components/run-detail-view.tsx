@@ -366,6 +366,7 @@ export function RunDetailView({
     hasMore: hasMoreEventsTab,
     loadingMore: loadingMoreEventsTab,
     loadMore: loadMoreEventsTab,
+    searchByExactId,
   } = useEventsListData(env, runId, {
     sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
@@ -787,6 +788,7 @@ export function RunDetailView({
                   <NewTraceViewer
                     run={run}
                     events={allEvents ?? []}
+                    loading={loading}
                     sidebarData={sidebarData}
                     onLoadMore={loadMoreTraceData}
                     hasMore={hasMoreTraceData}
@@ -813,6 +815,7 @@ export function RunDetailView({
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
+                    onExactIdSearch={searchByExactId}
                   />
                 </div>
               </ErrorBoundary>

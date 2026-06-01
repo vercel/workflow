@@ -1,4 +1,8 @@
-import { SerializationError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  RuntimeDecryptionError,
+  SerializationError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
@@ -27,7 +31,10 @@ import {
   type EncryptionKeyParam,
   encrypt,
 } from './serialization/encryption.js';
-import { formatSerializationError } from './serialization/errors.js';
+import {
+  formatSerializationError,
+  rethrowIfRuntimeError,
+} from './serialization/errors.js';
 import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -129,8 +136,17 @@ const FRAME_HEADER_SIZE = 4;
  * arguments" instead of generic "workflow value"), so they unwrap the
  * inner SerializationError and reformat with the original cause. Errors
  * that aren't already SerializationError flow through unchanged.
+ *
+ * `RuntimeDecryptionError` is an exception: it must keep its identity (and
+ * `context`) so the run-failure classifier routes it to `RUNTIME_ERROR`,
+ * so this rethrows it unchanged before any unwrapping. Note this guard
+ * must run before the generic `WorkflowRuntimeError` unwrap below, since
+ * `RuntimeDecryptionError` extends `WorkflowRuntimeError` and carries a
+ * `cause` (the underlying DOMException) that would otherwise be unwrapped
+ * and reframed as a `SerializationError`.
  */
 function unwrapSerializationCause(error: unknown): unknown {
+  rethrowIfRuntimeError(error);
   if (error instanceof SerializationError && error.cause !== undefined) {
     return error.cause;
   }
@@ -181,6 +197,13 @@ export function getSerializeStream(
         frame.set(prefixed, FRAME_HEADER_SIZE);
         controller.enqueue(frame);
       } catch (error) {
+        // Encryption failures must keep their RuntimeDecryptionError
+        // identity (RUNTIME_ERROR) rather than be reframed as a
+        // SerializationError (USER_ERROR).
+        if (RuntimeDecryptionError.is(error)) {
+          controller.error(error);
+          return;
+        }
         const { message, hint } = formatSerializationError(
           'stream chunk',
           error
@@ -245,14 +268,33 @@ export function getDeserializeStream(
       if (format === SerializationFormat.ENCRYPTED) {
         if (!keyState.key) {
           controller.error(
-            new WorkflowRuntimeError(
+            new RuntimeDecryptionError(
               'Encrypted stream data encountered but no encryption key is available. ' +
-                'Encryption is not configured or no key was provided for this run.'
+                'Encryption is not configured or no key was provided for this run.',
+              {
+                context: {
+                  operation: 'decrypt',
+                  byteLength: payload.byteLength,
+                  formatPrefix: 'encr',
+                },
+              }
             )
           );
           return;
         }
-        const decrypted = await aesGcmDecrypt(keyState.key, payload);
+        let decrypted: Uint8Array;
+        try {
+          decrypted = await aesGcmDecrypt(keyState.key, payload);
+        } catch (error) {
+          // The low-level AES layer only sees the stripped payload, so it
+          // cannot record the outer envelope prefix. We peeked it here
+          // (`encr`), so enrich the diagnostic context with the real format
+          // prefix before propagating — mirroring serialization/encryption.ts.
+          if (RuntimeDecryptionError.is(error) && error.context) {
+            error.context.formatPrefix = format;
+          }
+          throw error;
+        }
         ({ format, payload } = decodeFormatPrefix(decrypted));
       }
 
@@ -907,7 +949,7 @@ export function getWorkflowReducers(
     },
     AbortSignal: (value) => {
       const signal = value as (AbortSignal & AbortInternals) | undefined;
-      const hasAbortSymbol = signal && signal[ABORT_STREAM_NAME];
+      const hasAbortSymbol = signal?.[ABORT_STREAM_NAME];
       const isNativeAbortSignal =
         global.AbortSignal &&
         typeof global.AbortSignal === 'function' &&
