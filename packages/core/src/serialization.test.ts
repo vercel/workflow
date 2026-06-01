@@ -42,6 +42,7 @@ import {
   ABORT_STREAM_NAME,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
@@ -519,6 +520,10 @@ describe('workflow arguments', () => {
       value: 'wrun_parent',
       writable: false,
     });
+    Object.defineProperty(userWritable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: 'dpl_parent',
+      writable: false,
+    });
 
     expect(userWritable.locked).toBe(false);
     const serialized = await dehydrateWorkflowArguments(
@@ -536,6 +541,122 @@ describe('workflow arguments', () => {
     const text = new TextDecoder().decode(serialized as Uint8Array);
     expect(text).toContain('strm_parentstreamname');
     expect(text).toContain('wrun_parent');
+    expect(text).toContain('dpl_parent');
+  });
+
+  it('uses the forwarded stream deployment to resolve its encryption key', async () => {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const getEncryptionKeyForRun = vi
+      .fn()
+      .mockResolvedValue(new Uint8Array(32).fill(7));
+    const runsGet = vi.fn();
+    const world = {
+      ...makeMockWorld(),
+      runs: { get: runsGet },
+      getEncryptionKeyForRun,
+    } as any;
+    vi.mocked(getWorldLazy).mockReturnValue(world);
+
+    try {
+      const parentWritable = new WritableStream();
+      Object.defineProperty(parentWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_parentstreamname',
+        writable: false,
+      });
+      Object.defineProperty(parentWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_parent',
+        writable: false,
+      });
+      Object.defineProperty(
+        parentWritable,
+        STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+        {
+          value: 'dpl_parent',
+          writable: false,
+        }
+      );
+
+      const serialized = await dehydrateStepArguments(
+        parentWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops,
+        globalThis,
+        {},
+        'dpl_child'
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('cross-deployment');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith('wrun_parent', {
+        deploymentId: 'dpl_parent',
+      });
+      expect(runsGet).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
+  });
+
+  it('loads the owner run for forwarded descriptors from older deployments', async () => {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const parentRun = {
+      runId: 'wrun_parent',
+      deploymentId: 'dpl_parent',
+    };
+    const getEncryptionKeyForRun = vi
+      .fn()
+      .mockResolvedValue(new Uint8Array(32).fill(9));
+    const runsGet = vi.fn().mockResolvedValue(parentRun);
+    const world = {
+      ...makeMockWorld(),
+      runs: { get: runsGet },
+      getEncryptionKeyForRun,
+    } as any;
+    vi.mocked(getWorldLazy).mockReturnValue(world);
+
+    try {
+      const legacyWritable = new WritableStream();
+      Object.defineProperty(legacyWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_legacyparent',
+        writable: false,
+      });
+      Object.defineProperty(legacyWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_parent',
+        writable: false,
+      });
+
+      const serialized = await dehydrateStepArguments(
+        legacyWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('legacy-descriptor');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(runsGet).toHaveBeenCalledWith('wrun_parent');
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith(parentRun);
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
   });
 
   it('should work with ReadableStream', async () => {

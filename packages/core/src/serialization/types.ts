@@ -169,6 +169,12 @@ export interface SerializableSpecial {
      * belongs to the receiving run (the normal in-run case).
      */
     runId?: string;
+    /**
+     * The deployment that owns the server stream. Carried with `runId`
+     * so a child running on a newer deployment can encrypt chunks with
+     * the parent's key without fetching the parent run first.
+     */
+    deploymentId?: string;
   };
   AbortController: {
     streamName: string;

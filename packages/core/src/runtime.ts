@@ -375,6 +375,7 @@ export function workflowEntrypoint(
                         stepResult = await executeStep({
                           world,
                           workflowRunId: runId,
+                          workflowDeploymentId: bgRun.deploymentId,
                           workflowName,
                           workflowStartedAt: bgStartedAt,
                           stepId: incomingStepId,
@@ -1066,6 +1067,7 @@ export function workflowEntrypoint(
                           stepResult = await executeStep({
                             world,
                             workflowRunId: runId,
+                            workflowDeploymentId: workflowRun.deploymentId,
                             workflowName,
                             workflowStartedAt,
                             stepId: inlineStep.correlationId,
