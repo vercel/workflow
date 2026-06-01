@@ -562,7 +562,7 @@ function NewTraceViewerContent({
     <div
       data-pane="pane-root"
       data-has-detail={activeSpan ? '' : undefined}
-      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,420px,100%)]"
+      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,360px,100%)]"
     >
       <div
         id="trace-parent"
