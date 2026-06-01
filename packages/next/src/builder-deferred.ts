@@ -55,7 +55,7 @@ export async function getNextBuilderDeferred() {
   const {
     BaseBuilder: BaseBuilderClass,
     STEP_QUEUE_TRIGGER,
-    WORKFLOW_QUEUE_TRIGGER,
+    getWorkflowQueueTrigger,
     applySwcTransform,
     detectWorkflowPatterns,
     getImportPath,
@@ -1117,7 +1117,7 @@ export async function getNextBuilderDeferred() {
         },
         workflows: {
           maxDuration: 'max',
-          experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+          experimentalTriggers: [getWorkflowQueueTrigger()],
         },
       };
 
