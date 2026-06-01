@@ -35,10 +35,12 @@ export const WORKFLOW_QUEUE_TRIGGER = {
  * the route's `experimentalTriggers` config.
  */
 export function getWorkflowQueueTrigger() {
+  // TEMP(ci-default-on): force strict concurrency ON regardless of the env var so
+  // CI exercises maxConcurrency across all e2e jobs. REVERT BEFORE MERGE — restore
+  // the `...(process.env.ENFORCE_STRICT_CONCURRENCY === '1' && { maxConcurrency: 1 })`
+  // gate.
   return {
     ...WORKFLOW_QUEUE_TRIGGER,
-    ...(process.env.ENFORCE_STRICT_CONCURRENCY === '1' && {
-      maxConcurrency: 1,
-    }),
+    maxConcurrency: 1,
   };
 }

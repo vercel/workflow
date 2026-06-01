@@ -189,8 +189,10 @@ function getPhysicalQueueName(
   queueName: ValidQueueName,
   payload: QueuePayload
 ): string {
+  // TEMP(ci-default-on): ignore ENFORCE_STRICT_CONCURRENCY so CI exercises the
+  // per-run topic across all e2e jobs. REVERT BEFORE MERGE — restore the
+  // `process.env.ENFORCE_STRICT_CONCURRENCY === '1' &&` condition below.
   if (
-    process.env.ENFORCE_STRICT_CONCURRENCY === '1' &&
     queueName.startsWith('__wkf_workflow_') &&
     'runId' in payload &&
     typeof payload.runId === 'string'
