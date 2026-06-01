@@ -24,6 +24,14 @@ export const STREAM_TYPE_SYMBOL = Symbol.for('WORKFLOW_STREAM_TYPE');
 export const STREAM_SERVER_RUN_ID_SYMBOL = Symbol.for(
   'WORKFLOW_STREAM_SERVER_RUN_ID'
 );
+/**
+ * Stamped alongside `STREAM_SERVER_RUN_ID_SYMBOL` when the deployment that
+ * owns a forwarded writable stream is known. Cross-deployment consumers use
+ * it to resolve the owning run's encryption key without loading the run first.
+ */
+export const STREAM_SERVER_DEPLOYMENT_ID_SYMBOL = Symbol.for(
+  'WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID'
+);
 export const BODY_INIT_SYMBOL = Symbol.for('BODY_INIT');
 export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
   'WEBHOOK_RESPONSE_WRITABLE'

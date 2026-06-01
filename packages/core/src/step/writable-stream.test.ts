@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
+import { STREAM_SERVER_DEPLOYMENT_ID_SYMBOL } from '../symbols.js';
 
 vi.mock('../runtime/world.js', () => ({
   getWorld: vi.fn(),
@@ -107,5 +108,36 @@ describe('step-level getWritable', () => {
         ),
       ])
     ).resolves.not.toThrow();
+  });
+
+  it('tags a writable with its owning deployment for child workflow forwarding', async () => {
+    const { contextStorage } = await import('./context-storage.js');
+    const ops: Promise<void>[] = [];
+    const ctx = {
+      stepMetadata: {
+        stepName: 'test-step',
+        stepId: 'step_001',
+        stepStartedAt: new Date(),
+        attempt: 1,
+      },
+      workflowMetadata: {
+        workflowName: 'test-workflow',
+        workflowRunId: 'wrun_test123',
+        workflowStartedAt: new Date(),
+      },
+      workflowDeploymentId: 'dpl_parent',
+      ops,
+      encryptionKey: undefined,
+    };
+
+    const writable = await contextStorage.run(ctx, async () => {
+      const { getWritable } = await import('./writable-stream.js');
+      return getWritable<string>();
+    });
+
+    expect((writable as any)[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL]).toBe(
+      'dpl_parent'
+    );
+    await Promise.all(ops);
   });
 });

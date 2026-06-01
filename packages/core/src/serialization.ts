@@ -36,6 +36,7 @@ import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
@@ -663,6 +664,11 @@ export interface SerializableSpecial {
      * belongs to the receiving run (the normal in-run case).
      */
     runId?: string;
+    /**
+     * The deployment that owns the server stream. Carried with `runId`
+     * so a child on a newer deployment can resolve the parent's key.
+     */
+    deploymentId?: string;
   };
 }
 
@@ -947,7 +953,17 @@ export function getExternalReducers(
         typeof existingName === 'string' &&
         typeof existingRunId === 'string'
       ) {
-        return { name: existingName, runId: existingRunId };
+        const descriptor: SerializableSpecial['WritableStream'] = {
+          name: existingName,
+          runId: existingRunId,
+        };
+        const existingDeploymentId = (value as any)[
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
+        ];
+        if (typeof existingDeploymentId === 'string') {
+          descriptor.deploymentId = existingDeploymentId;
+        }
+        return descriptor;
       }
 
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
@@ -1008,6 +1024,10 @@ export function getWorkflowReducers(
       // reviver opens the writable against the original stream.
       const foreignRunId = value[STREAM_SERVER_RUN_ID_SYMBOL];
       if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
+      if (typeof foreignDeploymentId === 'string') {
+        s.deploymentId = foreignDeploymentId;
+      }
       return s;
     },
   };
@@ -1094,6 +1114,12 @@ function getStepReducers(
 
       const s: SerializableSpecial['WritableStream'] = { name };
       if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignDeploymentId = (value as any)[
+        STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
+      ];
+      if (typeof foreignDeploymentId === 'string') {
+        s.deploymentId = foreignDeploymentId;
+      }
       return s;
     },
   };
@@ -1220,6 +1246,24 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
+ * Resolve the encrypt-only key needed when a child writes into another run's
+ * stream. New descriptors include the owner's deployment ID; descriptors
+ * created by older SDK versions fall back to loading the owning run.
+ */
+async function getForwardedWritableEncryptionKey(
+  runId: string,
+  deploymentId: string | undefined
+): Promise<CryptoKey | undefined> {
+  const world = getWorld();
+  if (!world.getEncryptionKeyForRun) return undefined;
+
+  const rawKey = deploymentId
+    ? await world.getEncryptionKeyForRun(runId, { deploymentId })
+    : await world.getEncryptionKeyForRun(await world.runs.get(runId));
+  return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
+}
+
+/**
  * Revivers for deserialization boundary from the client side,
  * receiving the return value from the workflow handler.
  *
@@ -1319,11 +1363,7 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : (async () => {
-              const world = getWorld();
-              const rawKey = await world.getEncryptionKeyForRun?.(targetRunId);
-              return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
-            })();
+          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
 
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
@@ -1354,6 +1394,16 @@ export function getExternalRevivers(
         value: targetRunId,
         writable: false,
       });
+      if (typeof value.deploymentId === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+          {
+            value: value.deploymentId,
+            writable: false,
+          }
+        );
+      }
 
       return serialize.writable;
     },
@@ -1469,6 +1519,12 @@ export function getWorkflowRevivers(
           writable: false,
         };
       }
+      if (typeof value.deploymentId === 'string') {
+        descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
+          value: value.deploymentId,
+          writable: false,
+        };
+      }
       return Object.create(global.WritableStream.prototype, descriptor);
     },
   };
@@ -1487,7 +1543,8 @@ function getStepRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  deploymentId?: string
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1624,7 +1681,7 @@ function getStepRevivers(
         return userReadable;
       } else {
         const transform = getDeserializeStream(
-          getStepRevivers(global, ops, runId, cryptoKey),
+          getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
           cryptoKey
         );
         const state = createFlushableState();
@@ -1655,14 +1712,16 @@ function getStepRevivers(
       // so the receiving run can never decrypt anything else on the
       // owning run's stream — it can only contribute new writes.
       const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
+      const targetDeploymentId =
+        typeof value.deploymentId === 'string'
+          ? value.deploymentId
+          : targetRunId === runId
+            ? deploymentId
+            : undefined;
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : (async () => {
-              const world = getWorld();
-              const rawKey = await world.getEncryptionKeyForRun?.(targetRunId);
-              return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
-            })();
+          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
 
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
@@ -1699,6 +1758,16 @@ function getStepRevivers(
         value: targetRunId,
         writable: false,
       });
+      if (targetDeploymentId) {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+          {
+            value: targetDeploymentId,
+            writable: false,
+          }
+        );
+      }
 
       return serialize.writable;
     },
@@ -2000,7 +2069,8 @@ export async function hydrateStepArguments(
   key: CryptoKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  deploymentId?: string
 ) {
   // Decrypt if needed
   const decrypted = await maybeDecrypt(value, key);
@@ -2010,7 +2080,7 @@ export async function hydrateStepArguments(
   // via devalue's unflatten().
   if (!(decrypted instanceof Uint8Array)) {
     return unflatten(decrypted as any[], {
-      ...getStepRevivers(global, ops, runId, key),
+      ...getStepRevivers(global, ops, runId, key, deploymentId),
       ...extraRevivers,
     });
   }
@@ -2020,7 +2090,7 @@ export async function hydrateStepArguments(
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
     const obj = parse(str, {
-      ...getStepRevivers(global, ops, runId, key),
+      ...getStepRevivers(global, ops, runId, key, deploymentId),
       ...extraRevivers,
     });
     return obj;
