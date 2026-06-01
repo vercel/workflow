@@ -485,8 +485,8 @@ describe('runWorkflow', () => {
        }${getWorkflowTransformCode('workflow')}`;
 
     const replayCount = 200;
-    const outcomes: string[] = [];
-    for (let replayIndex = 0; replayIndex < replayCount; replayIndex++) {
+    const maxConcurrentReplays = 8;
+    const replay = async () => {
       try {
         const result = await runWorkflow(
           workflowCode,
@@ -500,14 +500,26 @@ describe('runWorkflow', () => {
           noEncryptionKey,
           ops
         );
-        outcomes.push(
-          value === 'drained'
-            ? 'drained'
-            : `unexpected replay result: ${String(value)}`
-        );
+        return value === 'drained'
+          ? 'drained'
+          : `unexpected replay result: ${String(value)}`;
       } catch (error) {
-        outcomes.push(error instanceof Error ? error.message : String(error));
+        return error instanceof Error ? error.message : String(error);
       }
+    };
+    const outcomes: string[] = [];
+    for (
+      let replayIndex = 0;
+      replayIndex < replayCount;
+      replayIndex += maxConcurrentReplays
+    ) {
+      const batchSize = Math.min(
+        maxConcurrentReplays,
+        replayCount - replayIndex
+      );
+      outcomes.push(
+        ...(await Promise.all(Array.from({ length: batchSize }, replay)))
+      );
     }
     const failures = outcomes.filter((outcome) => outcome !== 'drained');
 
