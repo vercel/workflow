@@ -10,14 +10,20 @@ import type { WorkflowOrchestratorContext } from '../private.js';
 import { createContext } from '../vm/index.js';
 import { createSleep } from './sleep.js';
 
+const DEFAULT_FIXED_TIMESTAMP = 1753481739458;
+
 // Helper to setup context to simulate a workflow run
-function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
+function setupWorkflowContext(
+  events: Event[]
+): WorkflowOrchestratorContext & { updateTimestamp: (ts: number) => void } {
   const context = createContext({
     seed: 'test',
-    fixedTimestamp: 1753481739458,
+    fixedTimestamp: DEFAULT_FIXED_TIMESTAMP,
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
-  const workflowStartedAt = context.globalThis.Date.now();
+  // The workflow's ULID seed (correlationIds) is derived from the original
+  // start time and is stable across replays, even if the wall clock advances.
+  const workflowStartedAt = DEFAULT_FIXED_TIMESTAMP;
   const ctx: WorkflowOrchestratorContext = {
     runId: 'wrun_test',
     encryptionKey: undefined,
@@ -43,7 +49,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     pendingDeliveries: 0,
     pendingDeliveryBarriers: new Map(),
   };
-  return ctx;
+  return Object.assign(ctx, { updateTimestamp: context.updateTimestamp });
 }
 
 describe('createSleep', () => {
@@ -140,6 +146,94 @@ describe('createSleep', () => {
     expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('wait_completed');
     expect(workflowError?.message).toContain('resumeAt');
+    expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
+  });
+
+  it('does not flag wait_completed.resumeAt when no wait_created was applied and the replay clock advanced', async () => {
+    // Production replay divergence (reused-sleep): a `wait_completed` is
+    // consumed by a sleep consumer that never consumed a `wait_created`
+    // (hasCreatedEvent=false), so the queue item still holds the value freshly
+    // computed by parseDurationToDate(duration) = Date.now() + duration.
+    //
+    // Because `sleep(<number|string>)` resumeAt is wall-clock-relative and the
+    // VM clock advances to each event's createdAt during replay, that fresh
+    // value differs from the absolute resumeAt the ORIGINAL run recorded into
+    // the event. The recorded resumeAt is the source of truth; the consumer's
+    // recomputed value is non-deterministic and must NOT be treated as the
+    // expected value. Captured from production: hasCreatedEvent=false with an
+    // ~18-42s delta between the recomputed and recorded resumeAt.
+    const recordedResumeAt = new Date(DEFAULT_FIXED_TIMESTAMP + 5_000);
+
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { resumeAt: recordedResumeAt },
+        createdAt: new Date(DEFAULT_FIXED_TIMESTAMP + 5_100),
+      },
+    ]);
+
+    // Simulate replay drift: the wall clock has advanced 30s by the time the
+    // workflow re-invokes sleep(5000), so parseDurationToDate computes a
+    // resumeAt 30s ahead of the recorded one (the correlationId ULID seed is
+    // unchanged — it derives from the original start time).
+    ctx.updateTimestamp(DEFAULT_FIXED_TIMESTAMP + 30_000);
+
+    const sleepError = withResolvers<Error>();
+    ctx.onWorkflowError = sleepError.resolve;
+
+    const sleep = createSleep(ctx);
+    const slept = sleep(5_000);
+
+    // The bug raises CorruptedEventLogError (and never resolves the sleep);
+    // the fix lets the sleep resolve with no error. Race the two terminal
+    // outcomes directly — no timing guard — so a regression surfaces as the
+    // error branch (or a hang caught by the test timeout), never a flaky race
+    // against a fixed grace period.
+    const outcome = await Promise.race([
+      sleepError.promise.then((err) => ({ kind: 'error' as const, err })),
+      slept.then(() => ({ kind: 'resolved' as const })),
+    ]);
+
+    if (outcome.kind === 'error') {
+      throw new Error(
+        `Unexpected workflow error on consistent replay: ${outcome.err.message}`
+      );
+    }
+    expect(outcome.kind).toBe('resolved');
+    expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
+  it('flags an invalid wait_completed.resumeAt even when no wait_created was applied', async () => {
+    // Counterpart to the test above: skipping the equality check without a
+    // recorded value must NOT also swallow a malformed resumeAt. A non-finite
+    // resumeAt is corrupt data regardless of `hasCreatedEvent` — the original
+    // run always records a valid parseDurationToDate(...) Date, so a consistent
+    // log never carries one. Here there is no `wait_created` (hasCreatedEvent
+    // stays false) yet the Invalid Date must still raise.
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { resumeAt: new Date(Number.NaN) },
+        createdAt: new Date(DEFAULT_FIXED_TIMESTAMP + 5_100),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const sleep = createSleep(ctx);
+    void sleep(5_000);
+
+    const workflowError = await errorReceived.promise;
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError?.message).toContain('wait_completed');
+    expect(workflowError?.message).toContain('Invalid Date');
     expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
   });
 
