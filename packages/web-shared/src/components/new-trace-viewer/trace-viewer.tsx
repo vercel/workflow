@@ -615,15 +615,12 @@ function NewTraceViewerContent({
               searchResult={searchResult}
               onSelectSpan={handleSelectSpan}
             />
-            <div
-              ref={loadMoreSentinelRef}
-              className="flex items-center justify-center gap-2 py-3 text-sm text-gray-800"
-            >
-              {onLoadMore && (hasMore || isLoadingMore) ? (
-                <>
+            <div ref={loadMoreSentinelRef} className="flex justify-center">
+              {isLoadingMore ? (
+                <div className="flex items-center justify-center gap-2 py-3 text-sm text-gray-800">
                   <Spinner size={14} />
                   <span>Loading spans…</span>
-                </>
+                </div>
               ) : null}
             </div>
           </div>
