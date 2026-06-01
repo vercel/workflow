@@ -355,8 +355,8 @@ describe('runWorkflow', () => {
     );
     // Timestamps:
     // - Initial: 0s (from startedAt)
-    // - After step 1 completes (at 2s), timestamp advances to step2_created (2.5s)
-    // - After step 2 completes (at 4s), timestamp advances to step3_created (4.5s)
+    // - After step 1 completes, timestamp advances to the consumed completion at 2s
+    // - After step 2 completes, timestamp advances to the consumed completion at 4s
     // - After step 3 completes: 6s
     expect(
       await hydrateWorkflowReturnValue(
@@ -367,10 +367,136 @@ describe('runWorkflow', () => {
       )
     ).toEqual([
       new Date('2024-01-01T00:00:00.000Z'),
-      1704067202500, // 2.5s (step2_created timestamp)
-      1704067204500, // 4.5s (step3_created timestamp)
+      1704067202000,
+      1704067204000,
       new Date('2024-01-01T00:00:06.000Z'),
     ]);
+  });
+
+  it('should not let a future recorded step advance Date before choosing that step branch', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'wrun_123';
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        workflowRunId,
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const startStepId = 'step_01HK153X00SP082GGA0AAJC6PJ';
+    const branchStepId = 'step_01HK153X00SP082GGA0AAJC6PK';
+    const events: Event[] = [
+      {
+        eventId: 'event-run-created',
+        runId: workflowRunId,
+        eventType: 'run_created',
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      },
+      {
+        eventId: 'event-run-started',
+        runId: workflowRunId,
+        eventType: 'run_started',
+        createdAt: new Date('2024-01-01T00:00:00.500Z'),
+      },
+      {
+        eventId: 'event-start-created',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: startStepId,
+        eventData: { stepName: 'startQueuedLogicalRunStep' },
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+      {
+        eventId: 'event-start-started',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: startStepId,
+        eventData: { stepName: 'startQueuedLogicalRunStep' },
+        createdAt: new Date('2024-01-01T00:00:01.500Z'),
+      },
+      {
+        eventId: 'event-start-completed',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: startStepId,
+        eventData: {
+          stepName: 'startQueuedLogicalRunStep',
+          result: await dehydrateStepReturnValue(
+            'started',
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:02.000Z'),
+      },
+      {
+        eventId: 'event-drain-created',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: branchStepId,
+        eventData: { stepName: 'drainLogicalRunRuntimeStep' },
+        createdAt: new Date('2024-01-01T00:00:02.500Z'),
+      },
+      {
+        eventId: 'event-drain-started',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: branchStepId,
+        eventData: { stepName: 'drainLogicalRunRuntimeStep' },
+        createdAt: new Date('2024-01-01T00:00:03.000Z'),
+      },
+      {
+        eventId: 'event-drain-completed',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: branchStepId,
+        eventData: {
+          stepName: 'drainLogicalRunRuntimeStep',
+          result: await dehydrateStepReturnValue(
+            'drained',
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:03.500Z'),
+      },
+    ];
+
+    const result = await runWorkflow(
+      `const start = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("startQueuedLogicalRunStep");
+       const drain = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("drainLogicalRunRuntimeStep");
+       const settle = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("settleQueueActionStep");
+       async function workflow() {
+         await start();
+         if (Date.now() < 1704067202250) {
+           return await drain();
+         }
+         return await settle();
+       }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      noEncryptionKey
+    );
+
+    expect(
+      await hydrateWorkflowReturnValue(
+        result as any,
+        workflowRunId,
+        noEncryptionKey,
+        ops
+      )
+    ).toBe('drained');
   });
 
   // TODO: Date.now determinism is currently broken in the workflow!!

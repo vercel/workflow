@@ -20,6 +20,12 @@ type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
 export interface EventsConsumerOptions {
   /**
+   * Callback invoked after an event has been consumed. Consumers such as the
+   * deterministic workflow clock must not observe events that are merely
+   * inspected while waiting for user code to subscribe to the next operation.
+   */
+  onConsumedEvent?: (event: Event) => void;
+  /**
    * Callback invoked when a non-null event cannot be consumed by any registered
    * callback, indicating an orphaned or invalid event in the event log. The
    * check is deferred until after the promise queue has drained, ensuring that
@@ -40,6 +46,7 @@ export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[] = [];
   readonly callbacks: EventConsumerCallback[] = [];
+  private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
   private getPromiseQueue: () => Promise<void>;
   private pendingUnconsumedCheck: Promise<void> | null = null;
@@ -49,6 +56,7 @@ export class EventsConsumer {
   constructor(events: Event[], options: EventsConsumerOptions) {
     this.events = events;
     this.eventIndex = 0;
+    this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
   }
@@ -92,6 +100,9 @@ export class EventsConsumer {
         handled === EventConsumerResult.Consumed ||
         handled === EventConsumerResult.Finished
       ) {
+        if (currentEvent !== null) {
+          this.onConsumedEvent?.(currentEvent);
+        }
         // consumer handled this event, so increase the event index
         this.eventIndex++;
 
