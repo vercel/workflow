@@ -14,6 +14,7 @@ import {
   dehydrateWorkflowArguments,
 } from '../serialization.js';
 import { createContext } from '../vm/index.js';
+import { clearEventCache } from './event-cache.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({
@@ -343,6 +344,7 @@ function expectHookBranchQueued(
 describe('workflow handler wait completion replay', () => {
   afterEach(() => {
     setWorld(undefined);
+    clearEventCache();
     vi.restoreAllMocks();
   });
 

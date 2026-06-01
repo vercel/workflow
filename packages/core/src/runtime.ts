@@ -21,6 +21,13 @@ import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
 import {
+  deleteCachedRunEvents,
+  getCachedRunEvents,
+  isEventCacheEnabled,
+  setCachedRunEvents,
+} from './runtime/event-cache.js';
+import {
+  appendUniqueEvents,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -674,16 +681,52 @@ export function workflowEntrypoint(
                       // The server always returns a cursor when there are events (even on the
                       // final page), so we can reliably use it for incremental loading.
                       let events: Event[];
+                      let crossInvocationCacheHit = false;
                       if (cachedEvents === null) {
-                        // First iteration: use preloaded events if available,
-                        // otherwise do a full load with cursor.
+                        // First iteration: prefer preloaded events from
+                        // run_started, then the cross-invocation cache
+                        // (process-wide LRU keyed by runId), then fall
+                        // back to a cold full load.
                         if (preloadedEvents) {
                           events = preloadedEvents;
                           eventsCursor = preloadedEventsCursor ?? null;
                         } else {
-                          const loaded = await loadWorkflowRunEvents(runId);
-                          events = loaded.events;
-                          eventsCursor = loaded.cursor;
+                          const crossCached = getCachedRunEvents(runId);
+                          if (crossCached && crossCached.cursor) {
+                            // HOT PATH: delta-fetch only events created
+                            // after the cached cursor. We always delta
+                            // against the server (never serve purely from
+                            // cache) so we stay correct against writers on
+                            // other instances. The shouldRetryWithoutEventCursor
+                            // path in loadWorkflowRunEvents transparently
+                            // recovers if the cached cursor is stale (400).
+                            const delta = await loadWorkflowRunEvents(
+                              runId,
+                              crossCached.cursor
+                            );
+                            // Copy-on-read: never share the cache's array
+                            // with the runtime, which mutates `events` on
+                            // the wait_completed merge path.
+                            const merged = [...crossCached.events];
+                            const seen = new Set(merged.map((e) => e.eventId));
+                            appendUniqueEvents(merged, seen, delta.events);
+                            events = merged;
+                            eventsCursor = delta.cursor ?? crossCached.cursor;
+                            crossInvocationCacheHit = true;
+                            runtimeLogger.debug(
+                              'Event cache hit; delta-loaded events',
+                              {
+                                workflowRunId: runId,
+                                cachedCount: crossCached.events.length,
+                                deltaCount: delta.events.length,
+                                totalCount: events.length,
+                              }
+                            );
+                          } else {
+                            const loaded = await loadWorkflowRunEvents(runId);
+                            events = loaded.events;
+                            eventsCursor = loaded.cursor;
+                          }
                         }
                       } else if (eventsCursor) {
                         // Subsequent iteration: fetch only new events since last cursor
@@ -766,6 +809,11 @@ export function workflowEntrypoint(
                             eventType: terminalRunEvent.eventType,
                           }
                         );
+                        // Run is terminal; free the cached events early.
+                        // LRU eviction would handle this passively, but
+                        // explicit eviction frees memory sooner for the
+                        // common case of long-lived warm instances.
+                        deleteCachedRunEvents(runId);
                         return;
                       }
 
@@ -870,6 +918,24 @@ export function workflowEntrypoint(
                       // Update cache reference (may have been set for first time)
                       cachedEvents = events;
 
+                      // Update the cross-invocation event cache so the
+                      // next resume on this warm instance can delta-fetch
+                      // from this cursor instead of doing a full reload.
+                      // Hand the cache its own copy of the array — the
+                      // runtime continues to mutate `events` (e.g. on the
+                      // wait_completed merge path) and shared ownership
+                      // would corrupt the cached state.
+                      if (eventsCursor && isEventCacheEnabled()) {
+                        setCachedRunEvents(runId, {
+                          events: [...events],
+                          cursor: eventsCursor,
+                        });
+                      }
+
+                      span?.setAttributes({
+                        'workflow.events.cache_hit': crossInvocationCacheHit,
+                      });
+
                       // Replay workflow
                       runtimeLogger.debug('Starting workflow replay', {
                         workflowRunId: runId,
@@ -917,6 +983,8 @@ export function workflowEntrypoint(
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('completed'),
                       });
+                      // Run is terminal; free cached events eagerly.
+                      deleteCachedRunEvents(runId);
                       return;
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
@@ -1259,6 +1327,8 @@ export function workflowEntrypoint(
                           ...Attribute.WorkflowErrorMessage(errorMessage),
                           ...Attribute.ErrorType(errorName),
                         });
+                        // Run is terminal; free cached events eagerly.
+                        deleteCachedRunEvents(runId);
                         return;
                       }
                     }

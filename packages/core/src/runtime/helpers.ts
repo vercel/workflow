@@ -331,7 +331,7 @@ function recordRequestedEventCursor(
   requestedCursors.add(cursor);
 }
 
-function appendUniqueEvents(
+export function appendUniqueEvents(
   target: Event[],
   targetIds: Set<string>,
   events: Event[]
