@@ -181,6 +181,26 @@ test('truncateMessage collapses whitespace and caps length', () => {
   assert.ok(out.endsWith('…'));
 });
 
+test('a slow run that completed past the budget is infra, not gating', () => {
+  // Mirrors the observed false positive: a run flagged at the poll budget that
+  // actually completed during the grace window is reclassified SLOW_COMPLETION.
+  const results = [
+    { attempt: 1, scenario: 'step-fanout', outcome: 'completed' },
+    {
+      attempt: 2,
+      scenario: 'step-fanout',
+      outcome: 'infra',
+      errorCode: 'SLOW_COMPLETION',
+      durationMs: 151849,
+    },
+  ];
+  const entry = buildEntry({ results });
+  assert.strictEqual(entry.failedCount, 0);
+  assert.strictEqual(entry.infraCount, 1);
+  assert.strictEqual(entry.regressions.length, 0);
+  assert.strictEqual(entry.infraBreakdown.counts.SLOW_COMPLETION, 1);
+});
+
 test('summarize buckets infra outcomes', () => {
   const distribution = summarize([
     { outcome: 'completed' },

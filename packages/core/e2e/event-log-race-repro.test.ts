@@ -54,6 +54,7 @@ interface ReproConfig {
   resumeDelayMs: number;
   resumeJitterMs: number;
   runTimeoutMs: number;
+  stuckGraceMs: number;
   hookTimeoutMs: number;
   sleepBranchWaitCount: number;
   sleepBranchWaitMs: number;
@@ -127,6 +128,10 @@ const config: ReproConfig = {
   resumeDelayMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS', 15_000),
   resumeJitterMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_JITTER_MS', 10_000),
   runTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS', 150_000),
+  // Generous grace after the poll budget: a run that finishes within it was
+  // slow (non-gating SLOW_COMPLETION), not wedged. Only a run still
+  // non-terminal after budget + grace is treated as a gating `stuck` wedge.
+  stuckGraceMs: envNumber('EVENT_LOG_RACE_REPRO_STUCK_GRACE_MS', 120_000),
   hookTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_HOOK_TIMEOUT_MS', 60_000),
   sleepBranchWaitCount: envNumber(
     'EVENT_LOG_RACE_REPRO_SLEEP_BRANCH_WAIT_COUNT',
@@ -364,24 +369,46 @@ async function pollTerminalRun(
   scenario: Scenario
 ): Promise<ReproRunResult> {
   const world = await getWorld();
-  const deadline = startedAt + config.runTimeoutMs;
+  const budgetDeadline = startedAt + config.runTimeoutMs;
+  // Two-phase wait. A run that crosses the finish line only during the grace
+  // window was *slow* (preview deployments under load routinely complete just
+  // past the budget), not wedged — those are reported as non-gating `infra`
+  // (`SLOW_COMPLETION`) instead of failing the job. Only a run that is still
+  // non-terminal after the grace window is treated as a genuine wedge
+  // (gating `stuck`).
+  const graceDeadline = budgetDeadline + config.stuckGraceMs;
   let lastStatus: string | undefined;
 
-  while (Date.now() < deadline) {
+  while (Date.now() < graceDeadline) {
     const runData = await world.runs.get(run.runId);
     lastStatus = runData.status;
+    const durationMs = Date.now() - startedAt;
+    const pastBudget = durationMs >= config.runTimeoutMs;
 
     if (runData.status === 'completed') {
-      return {
-        attempt: -1,
-        scenario,
-        token: '',
-        runId: run.runId,
-        outcome: 'completed',
-        status: runData.status,
-        durationMs: Date.now() - startedAt,
-        dashboardUrl: getDashboardUrl(run.runId),
-      };
+      return pastBudget
+        ? {
+            attempt: -1,
+            scenario,
+            token: '',
+            runId: run.runId,
+            outcome: 'infra',
+            status: runData.status,
+            errorCode: 'SLOW_COMPLETION',
+            errorMessage: `completed after ${durationMs}ms, exceeding the ${config.runTimeoutMs}ms poll budget`,
+            durationMs,
+            dashboardUrl: getDashboardUrl(run.runId),
+          }
+        : {
+            attempt: -1,
+            scenario,
+            token: '',
+            runId: run.runId,
+            outcome: 'completed',
+            status: runData.status,
+            durationMs,
+            dashboardUrl: getDashboardUrl(run.runId),
+          };
     }
 
     if (runData.status === 'failed') {
@@ -393,7 +420,7 @@ async function pollTerminalRun(
         outcome: classifyFailure(runData.errorCode),
         status: runData.status,
         errorCode: runData.errorCode,
-        durationMs: Date.now() - startedAt,
+        durationMs,
         dashboardUrl: getDashboardUrl(run.runId),
       };
     }
@@ -407,12 +434,13 @@ async function pollTerminalRun(
         outcome: 'infra',
         status: runData.status,
         errorCode: 'CANCELLED',
-        durationMs: Date.now() - startedAt,
+        durationMs,
         dashboardUrl: getDashboardUrl(run.runId),
       };
     }
 
-    await sleep(1000);
+    // Poll tightly within the budget; back off during the grace tail.
+    await sleep(pastBudget ? 5000 : 1000);
   }
 
   return {
@@ -886,6 +914,9 @@ const testTimeoutMs =
     Math.ceil(
       Math.floor(config.stepSleepRaceAttempts / 2) / config.stepConcurrency
     ) +
+  // Headroom for a wave whose slow runs spill into the post-budget grace
+  // window before being classified.
+  config.stuckGraceMs +
   60_000;
 
 describe('event log race repro', () => {
