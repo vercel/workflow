@@ -21,10 +21,23 @@ describe('Docs sitemap guard', () => {
     expect(fs.existsSync(localizedSitemap)).toBe(true);
   });
 
-  it('keeps sitemap link in llms markdown route', () => {
+  it('keeps sitemap link in page-level markdown output', () => {
     const llmsRoute = read('docs/app/[lang]/llms.mdx/[[...slug]]/route.ts');
+    const hasLocalSitemapLink = llmsRoute.includes('sitemap.md');
+    const usesGeistdocsMarkdownRoute =
+      llmsRoute.includes('@vercel/geistdocs/routes/llms') &&
+      llmsRoute.includes('createDocsMarkdownRoute');
 
-    expect(llmsRoute).toContain('## Sitemap');
-    expect(llmsRoute).toContain('sitemap.md');
+    if (hasLocalSitemapLink) {
+      expect(llmsRoute).toContain('sitemap.md');
+      return;
+    }
+
+    expect(usesGeistdocsMarkdownRoute).toBe(true);
+
+    const geistdocsSource = read(
+      'docs/node_modules/@vercel/geistdocs/dist/source.js'
+    );
+    expect(geistdocsSource).toContain('/sitemap.md');
   });
 });
