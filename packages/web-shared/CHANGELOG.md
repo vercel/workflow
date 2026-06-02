@@ -1,5 +1,21 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- [#2205](https://github.com/vercel/workflow/pull/2205) [`445ec8c`](https://github.com/vercel/workflow/commit/445ec8c7e6b83c27953d6f2ebcaafa54ca024eae) Thanks [@mitul-s](https://github.com/mitul-s)! - Add virtualization to the trace viewer
+
+- [#2163](https://github.com/vercel/workflow/pull/2163) [`ab7e5ab`](https://github.com/vercel/workflow/commit/ab7e5ab7ba5e67d5c161bb944a6ebe0172dd8949) Thanks [@mitul-s](https://github.com/mitul-s)! - Add keyboard-shortcut tooltips to the up/down span navigation buttons in the trace viewer detail panel.
+
+- [#2200](https://github.com/vercel/workflow/pull/2200) [`f0f002a`](https://github.com/vercel/workflow/commit/f0f002ae05e6b4a66eb72e1b1c48fda1bcd0f412) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix new trace viewer getting stuck on the first page: re-wire pagination so it auto-loads pages up to an event cap and scroll-loads the rest for very large runs.
+
+- [#2164](https://github.com/vercel/workflow/pull/2164) [`0606949`](https://github.com/vercel/workflow/commit/0606949e4a5c79b8382da5ece916501e85202e92) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a loading skeleton to the new trace viewer that matches the real layout's dimensions, and start with the detail panel closed instead of pre-selecting the first span. The skeleton is also exported as `TraceViewerSkeleton` for consumers that need to render it standalone.
+
+- Updated dependencies [[`1ee63b8`](https://github.com/vercel/workflow/commit/1ee63b870afbf9754eb1022b1bb5f02d0ab042f9), [`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd)]:
+  - @workflow/core@5.0.0-beta.11
+  - @workflow/world@5.0.0-beta.6
+
 ## 5.0.0-beta.10
 
 ### Patch Changes

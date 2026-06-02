@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- [#2180](https://github.com/vercel/workflow/pull/2180) [`1ee63b8`](https://github.com/vercel/workflow/commit/1ee63b870afbf9754eb1022b1bb5f02d0ab042f9) Thanks [@pranaygp](https://github.com/pranaygp)! - Harden runtime event pagination against rejected, repeated, or overlapping cursor responses.
+
+- [#2191](https://github.com/vercel/workflow/pull/2191) [`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix forwarded writable stream encryption when child workflows execute on a newer deployment than their parent.
+
+- Updated dependencies [[`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd), [`7994629`](https://github.com/vercel/workflow/commit/7994629b8bd0781369a4d55b7034b2b722a8c556)]:
+  - @workflow/world@5.0.0-beta.6
+  - @workflow/world-vercel@5.0.0-beta.10
+  - @workflow/errors@5.0.0-beta.6
+  - @workflow/world-local@5.0.0-beta.12
+
 ## 5.0.0-beta.10
 
 ### Patch Changes

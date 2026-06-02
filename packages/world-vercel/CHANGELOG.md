@@ -1,5 +1,15 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- [#2204](https://github.com/vercel/workflow/pull/2204) [`7994629`](https://github.com/vercel/workflow/commit/7994629b8bd0781369a4d55b7034b2b722a8c556) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry transient response-body read/decode failures (truncated or terminated streams, gateway non-CBOR bodies) on idempotent requests inside the HTTP client, so a sporadic `events.list` parse failure no longer surfaces as a fatal error.
+
+- Updated dependencies [[`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd)]:
+  - @workflow/world@5.0.0-beta.6
+  - @workflow/errors@5.0.0-beta.6
+
 ## 5.0.0-beta.9
 
 ### Patch Changes

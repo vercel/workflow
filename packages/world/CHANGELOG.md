@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#2191](https://github.com/vercel/workflow/pull/2191) [`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix forwarded writable stream encryption when child workflows execute on a newer deployment than their parent.
+
 ## 5.0.0-beta.5
 
 ### Patch Changes
