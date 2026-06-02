@@ -674,6 +674,34 @@ export function workflowEntrypoint(
                   ? await importKey(rawKey)
                   : undefined;
 
+                // Log the full event log (identities + ordering only, no
+                // payloads) that this replay is about to consume. Replay
+                // divergence ("Replay could not consume event ...") and
+                // corrupted-event-log errors are a function of which events are
+                // present and in what order, so capturing that snapshot for
+                // every replay lets us reconstruct, after the fact, exactly what
+                // the runtime saw when a divergence/corruption was raised —
+                // including whether the event log handed back by the world was
+                // itself incomplete or mis-ordered. Payloads (eventData) are
+                // intentionally omitted: they can be large, encrypted, or
+                // contain user data, and are not needed to diagnose a
+                // branching/ordering divergence.
+                runtimeLogger.info('Workflow replay event log', {
+                  workflowRunId: runId,
+                  eventCount: events.length,
+                  eventsCursor,
+                  eventLog: events.map((event, index) => ({
+                    index,
+                    eventId: event.eventId,
+                    eventType: event.eventType,
+                    correlationId: event.correlationId,
+                    createdAt:
+                      event.createdAt instanceof Date
+                        ? event.createdAt.toISOString()
+                        : event.createdAt,
+                  })),
+                });
+
                 // --- User code execution ---
                 // Only errors from runWorkflow() (user workflow code) should
                 // produce run_failed. Infrastructure errors (network, server)
