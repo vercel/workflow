@@ -1,4 +1,6 @@
+import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -89,6 +91,10 @@ export default {
         });
       }
 
+      if (nitro.options.dev) {
+        addDashboardHandler(nitro);
+      }
+
       addVirtualHandler(
         nitro,
         '/.well-known/workflow/v1/webhook/:token',
@@ -128,6 +134,74 @@ export default {
     }
   },
 } satisfies NitroModule;
+
+const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
+
+function addDashboardHandler(nitro: Nitro) {
+  const route = '/_workflow';
+  nitro.options.handlers.push({ route, handler: DASHBOARD_VIRTUAL_ID });
+
+  // Resolve `@workflow/web/server` relative to this module so consumers don't
+  // need a direct dependency on `@workflow/web`. The path is inlined into the
+  // virtual handler as a file:// URL so Node can `import()` it at runtime
+  // regardless of where the generated Nitro bundle ends up.
+  const require_ = createRequire(import.meta.url);
+  let webServerUrl: string;
+  try {
+    webServerUrl = pathToFileURL(require_.resolve('@workflow/web/server')).href;
+  } catch {
+    webServerUrl = '@workflow/web/server';
+  }
+
+  const handlerSource = /* js */ `
+    const __workflowWebServerUrl = ${JSON.stringify(webServerUrl)};
+    let serverPromise = null;
+    async function getDashboardUrl() {
+      if (!serverPromise) {
+        serverPromise = (async () => {
+          const { startServer } = await import(/* @vite-ignore */ /* webpackIgnore: true */ __workflowWebServerUrl);
+          const server = await startServer(0);
+          const address = server.address();
+          const port = typeof address === 'object' && address ? address.port : 3456;
+          return 'http://localhost:' + port;
+        })().catch((error) => {
+          serverPromise = null;
+          throw error;
+        });
+      }
+      return serverPromise;
+    }
+  `;
+
+  if (!nitro.routing) {
+    nitro.options.virtual[DASHBOARD_VIRTUAL_ID] = /* js */ `
+      import { fromWebHandler } from "h3";
+      ${handlerSource}
+      export default fromWebHandler(async () => {
+        try {
+          const url = await getDashboardUrl();
+          return Response.redirect(url, 302);
+        } catch (error) {
+          console.error('Failed to start workflow dashboard:', error);
+          return new Response('Failed to start workflow dashboard: ' + error.message, { status: 500 });
+        }
+      });
+    `;
+  } else {
+    nitro.options.virtual[DASHBOARD_VIRTUAL_ID] = /* js */ `
+      ${handlerSource}
+      export default async () => {
+        try {
+          const url = await getDashboardUrl();
+          return Response.redirect(url, 302);
+        } catch (error) {
+          console.error('Failed to start workflow dashboard:', error);
+          return new Response('Failed to start workflow dashboard: ' + error.message, { status: 500 });
+        }
+      };
+    `;
+  }
+}
 
 function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
   nitro.options.handlers.push({
