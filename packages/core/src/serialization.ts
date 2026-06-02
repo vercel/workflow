@@ -8,6 +8,7 @@ import {
   decrypt as aesGcmDecrypt,
   encrypt as aesGcmEncrypt,
   type CryptoKey,
+  importKey,
 } from './encryption.js';
 
 /**
@@ -35,6 +36,8 @@ import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
@@ -643,6 +646,8 @@ export interface SerializableSpecial {
   StepFunction: {
     stepId: string;
     closureVars?: Record<string, any>;
+    boundThis?: unknown;
+    boundArgs?: unknown[];
   };
   URL: string;
   URLSearchParams: string;
@@ -650,7 +655,21 @@ export interface SerializableSpecial {
   Uint8ClampedArray: string; // base64 string
   Uint16Array: string; // base64 string
   Uint32Array: string; // base64 string
-  WritableStream: { name: string };
+  WritableStream: {
+    name: string;
+    /**
+     * The runId of the workflow run that owns the underlying server
+     * stream. Present only when the writable was forwarded across a
+     * `start()` boundary (parent → child). When omitted, the writable
+     * belongs to the receiving run (the normal in-run case).
+     */
+    runId?: string;
+    /**
+     * The deployment that owns the server stream. Carried with `runId`
+     * so a child on a newer deployment can resolve the parent's key.
+     */
+    deploymentId?: string;
+  };
 }
 
 type Reducers = {
@@ -816,14 +835,35 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
 
       // Check if the step function has closure variables
       const closureVarsFn = (value as any).__closureVarsFn;
-      if (closureVarsFn && typeof closureVarsFn === 'function') {
-        // Invoke the closure variables function and serialize along with stepId
-        const closureVars = closureVarsFn();
-        return { stepId, closureVars };
+      const closureVars =
+        closureVarsFn && typeof closureVarsFn === 'function'
+          ? closureVarsFn()
+          : undefined;
+
+      // `__boundThis` / `__boundArgs` are marker properties added by the
+      // step proxy's overridden `.bind` (see step.ts) to record the
+      // bound receiver and any prefilled arguments. Use `in` for
+      // `__boundThis` so we round-trip even when the bound `this` is
+      // `undefined`/`null`. `__boundArgs` is only set when the user
+      // actually supplied prefilled args, so a missing property means
+      // "no prefilled args".
+      const hasBoundThis = '__boundThis' in (value as any);
+      const boundThis = hasBoundThis ? (value as any).__boundThis : undefined;
+      const boundArgs = (value as any).__boundArgs as unknown[] | undefined;
+
+      const payload: {
+        stepId: string;
+        closureVars?: Record<string, any>;
+        boundThis?: unknown;
+        boundArgs?: unknown[];
+      } = { stepId };
+      if (closureVars !== undefined) payload.closureVars = closureVars;
+      if (hasBoundThis) payload.boundThis = boundThis;
+      if (Array.isArray(boundArgs) && boundArgs.length > 0) {
+        payload.boundArgs = boundArgs;
       }
 
-      // No closure variables - return object with just stepId
-      return { stepId };
+      return payload;
     },
     URL: (value) => value instanceof global.URL && value.href,
     URLSearchParams: (value) => {
@@ -898,6 +938,34 @@ export function getExternalReducers(
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
+      // Fast path: when the writable is already backed by a workflow
+      // server stream (e.g. it came from a step-context `getWritable()`
+      // or was hydrated from a workflow input by `getStepRevivers`),
+      // forward its underlying `(runId, name)` to the receiving run.
+      // The receiving run's step-side reviver opens a server writable
+      // against the original `(runId, name)` and resolves that run's
+      // encryption key directly, so writes land on the original stream
+      // for the full lifetime of the receiving run — no in-process
+      // bridge tied to the dehydrating step's lifetime.
+      const existingName = (value as any)[STREAM_NAME_SYMBOL];
+      const existingRunId = (value as any)[STREAM_SERVER_RUN_ID_SYMBOL];
+      if (
+        typeof existingName === 'string' &&
+        typeof existingRunId === 'string'
+      ) {
+        const descriptor: SerializableSpecial['WritableStream'] = {
+          name: existingName,
+          runId: existingRunId,
+        };
+        const existingDeploymentId = (value as any)[
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
+        ];
+        if (typeof existingDeploymentId === 'string') {
+          descriptor.deploymentId = existingDeploymentId;
+        }
+        return descriptor;
+      }
+
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
 
@@ -950,7 +1018,17 @@ export function getWorkflowReducers(
       if (!name) {
         throw new Error('WritableStream `name` is not set');
       }
-      return { name };
+      const s: SerializableSpecial['WritableStream'] = { name };
+      // When the handle was forwarded from another run (parent → child
+      // via `start()`), preserve the foreign runId so the step-side
+      // reviver opens the writable against the original stream.
+      const foreignRunId = value[STREAM_SERVER_RUN_ID_SYMBOL];
+      if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
+      if (typeof foreignDeploymentId === 'string') {
+        s.deploymentId = foreignDeploymentId;
+      }
+      return s;
     },
   };
 }
@@ -1018,6 +1096,7 @@ function getStepReducers(
       if (!(value instanceof global.WritableStream)) return false;
 
       let name = value[STREAM_NAME_SYMBOL];
+      const foreignRunId = (value as any)[STREAM_SERVER_RUN_ID_SYMBOL];
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
@@ -1033,7 +1112,15 @@ function getStepReducers(
         );
       }
 
-      return { name };
+      const s: SerializableSpecial['WritableStream'] = { name };
+      if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignDeploymentId = (value as any)[
+        STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
+      ];
+      if (typeof foreignDeploymentId === 'string') {
+        s.deploymentId = foreignDeploymentId;
+      }
+      return s;
     },
   };
 }
@@ -1159,6 +1246,24 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
+ * Resolve the encrypt-only key needed when a child writes into another run's
+ * stream. New descriptors include the owner's deployment ID; descriptors
+ * created by older SDK versions fall back to loading the owning run.
+ */
+async function getForwardedWritableEncryptionKey(
+  runId: string,
+  deploymentId: string | undefined
+): Promise<CryptoKey | undefined> {
+  const world = getWorld();
+  if (!world.getEncryptionKeyForRun) return undefined;
+
+  const rawKey = deploymentId
+    ? await world.getEncryptionKeyForRun(runId, { deploymentId })
+    : await world.getEncryptionKeyForRun(await world.runs.get(runId));
+  return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
+}
+
+/**
  * Revivers for deserialization boundary from the client side,
  * receiving the return value from the workflow handler.
  *
@@ -1251,13 +1356,22 @@ export function getExternalRevivers(
       }
     },
     WritableStream: (value) => {
+      // Same handling as `getStepRevivers.WritableStream` — see comments
+      // there for the cross-run case (writable carries `runId` from
+      // parent → child forwarding via `start()`).
+      const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
+      const targetKey: EncryptionKeyParam =
+        targetRunId === runId
+          ? cryptoKey
+          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
+
       const serialize = getSerializeStream(
-        getExternalReducers(global, ops, runId, cryptoKey),
-        cryptoKey
+        getExternalReducers(global, ops, targetRunId, targetKey),
+        targetKey
       );
       const serverWritable = new WorkflowServerWritableStream(
         value.name,
-        runId
+        targetRunId
       );
 
       // Create flushable state for this stream
@@ -1271,6 +1385,25 @@ export function getExternalRevivers(
 
       // Start polling to detect when user releases lock
       pollWritableLock(serialize.writable, state);
+
+      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+        value: value.name,
+        writable: false,
+      });
+      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: targetRunId,
+        writable: false,
+      });
+      if (typeof value.deploymentId === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+          {
+            value: value.deploymentId,
+            writable: false,
+          }
+        );
+      }
 
       return serialize.writable;
     },
@@ -1313,11 +1446,20 @@ export function getWorkflowRevivers(
         );
       }
 
-      if (closureVars) {
-        // For step functions with closure variables, create a wrapper that provides them
-        return useStep(stepId, () => closureVars);
+      const proxy = closureVars
+        ? useStep(stepId, () => closureVars)
+        : useStep(stepId);
+
+      // If the serialized payload includes `boundThis` (and optionally
+      // `boundArgs`), re-bind the freshly-created proxy so a step proxy
+      // that was constructed with `.bind(this, …)` in the workflow
+      // bundle continues to carry that receiver and any prefilled
+      // arguments after being deserialized in another bundle.
+      if ('boundThis' in value) {
+        const boundArgs = Array.isArray(value.boundArgs) ? value.boundArgs : [];
+        return (proxy as any).bind(value.boundThis, ...boundArgs);
       }
-      return useStep(stepId);
+      return proxy;
     },
     Request: (value) => {
       Object.setPrototypeOf(value, global.Request.prototype);
@@ -1362,12 +1504,28 @@ export function getWorkflowRevivers(
       });
     },
     WritableStream: (value) => {
-      return Object.create(global.WritableStream.prototype, {
+      const descriptor: PropertyDescriptorMap = {
         [STREAM_NAME_SYMBOL]: {
           value: value.name,
           writable: false,
         },
-      });
+      };
+      // Preserve the foreign runId, if present, so that when the
+      // handle is later passed to a step the workflow reducer can
+      // forward it through to the step reviver.
+      if (typeof value.runId === 'string') {
+        descriptor[STREAM_SERVER_RUN_ID_SYMBOL] = {
+          value: value.runId,
+          writable: false,
+        };
+      }
+      if (typeof value.deploymentId === 'string') {
+        descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
+          value: value.deploymentId,
+          writable: false,
+        };
+      }
+      return Object.create(global.WritableStream.prototype, descriptor);
     },
   };
 }
@@ -1385,16 +1543,36 @@ function getStepRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  deploymentId?: string
 ): Revivers {
   return {
     ...getCommonRevivers(global),
 
     // StepFunction reviver for step context - returns raw step function
-    // with closure variable support via AsyncLocalStorage
+    // with closure variable support via AsyncLocalStorage.
+    //
+    // Handles four independent flags from the serialized payload:
+    //   - `closureVars`: invoke the body inside an AsyncLocalStorage frame
+    //     so the SWC-emitted `WORKFLOW_STEP_CONTEXT_STORAGE` IIFE in the
+    //     hoisted body can pull the closure variables back out.
+    //   - `boundThis`:   a `this` value captured by
+    //     `useStep(...).bind(this)` in the workflow bundle (lexical-`this`
+    //     arrow steps). The wrapper invokes the body via
+    //     `stepFn.apply(boundThis, args)` so the body sees the same
+    //     `this` it would have had in the workflow bundle. Property
+    //     presence — not truthiness — is significant because
+    //     `bind(null)` and `bind(undefined)` are both legal and should
+    //     round-trip faithfully.
+    //   - `boundArgs`:   prefilled args from
+    //     `useStep(...).bind(thisArg, x, y)`. Prepended to the call args
+    //     so partial application survives serialization.
     StepFunction: (value) => {
       const stepId = value.stepId;
       const closureVars = value.closureVars;
+      const hasBoundThis = 'boundThis' in value;
+      const boundThis = hasBoundThis ? value.boundThis : undefined;
+      const boundArgs = Array.isArray(value.boundArgs) ? value.boundArgs : [];
 
       const stepFn = getStepFunction(stepId);
       if (!stepFn) {
@@ -1403,47 +1581,47 @@ function getStepRevivers(
         );
       }
 
-      // If closure variables were serialized, return a wrapper function
-      // that sets up AsyncLocalStorage context when invoked
-      if (closureVars) {
-        const wrappedStepFn = ((...args: any[]) => {
-          // Get the current context from AsyncLocalStorage
-          const currentContext = contextStorage.getStore();
+      // Fast path: nothing to wrap.
+      if (!closureVars && !hasBoundThis && boundArgs.length === 0) {
+        return stepFn;
+      }
 
+      const wrappedStepFn = function (this: unknown, ...args: any[]) {
+        const callThis = hasBoundThis ? boundThis : this;
+        const callArgs = boundArgs.length > 0 ? [...boundArgs, ...args] : args;
+        if (closureVars) {
+          const currentContext = contextStorage.getStore();
           if (!currentContext) {
             throw new Error(
               'Cannot call step function with closure variables outside step context'
             );
           }
-
-          // Create a new context with the closure variables merged in
           const newContext = {
             ...currentContext,
             closureVars,
           };
-
-          // Run the step function with the new context that includes closure vars
-          return contextStorage.run(newContext, () => stepFn(...args));
-        }) as any;
-
-        // Copy properties from original step function
-        Object.defineProperty(wrappedStepFn, 'name', {
-          value: stepFn.name,
-        });
-        Object.defineProperty(wrappedStepFn, 'stepId', {
-          value: stepId,
-          writable: false,
-          enumerable: false,
-          configurable: false,
-        });
-        if (stepFn.maxRetries !== undefined) {
-          wrappedStepFn.maxRetries = stepFn.maxRetries;
+          return contextStorage.run(newContext, () =>
+            stepFn.apply(callThis, callArgs)
+          );
         }
+        return stepFn.apply(callThis, callArgs);
+      } as any;
 
-        return wrappedStepFn;
+      // Copy properties from original step function
+      Object.defineProperty(wrappedStepFn, 'name', {
+        value: stepFn.name,
+      });
+      Object.defineProperty(wrappedStepFn, 'stepId', {
+        value: stepId,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      });
+      if (stepFn.maxRetries !== undefined) {
+        wrappedStepFn.maxRetries = stepFn.maxRetries;
       }
 
-      return stepFn;
+      return wrappedStepFn;
     },
 
     Request: (value) => {
@@ -1503,7 +1681,7 @@ function getStepRevivers(
         return userReadable;
       } else {
         const transform = getDeserializeStream(
-          getStepRevivers(global, ops, runId, cryptoKey),
+          getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
           cryptoKey
         );
         const state = createFlushableState();
@@ -1521,13 +1699,37 @@ function getStepRevivers(
       }
     },
     WritableStream: (value) => {
+      // Same-run case: the writable belongs to the current run. Use the
+      // local cryptoKey and write to the local runId's server stream.
+      //
+      // Cross-run case (parent → child via `start()`): the descriptor
+      // carries the original `runId` and `name`. Open a server writable
+      // against the original `(runId, name)` and resolve THAT run's key
+      // for encryption. The resolution is async but doesn't need to
+      // block reviver return — `getSerializeStream` accepts the
+      // `Promise<CryptoKey | undefined>` directly and awaits it lazily
+      // on the first chunk written. The key is imported encrypt-only
+      // so the receiving run can never decrypt anything else on the
+      // owning run's stream — it can only contribute new writes.
+      const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
+      const targetDeploymentId =
+        typeof value.deploymentId === 'string'
+          ? value.deploymentId
+          : targetRunId === runId
+            ? deploymentId
+            : undefined;
+      const targetKey: EncryptionKeyParam =
+        targetRunId === runId
+          ? cryptoKey
+          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
+
       const serialize = getSerializeStream(
-        getStepReducers(global, ops, runId, cryptoKey),
-        cryptoKey
+        getStepReducers(global, ops, targetRunId, targetKey),
+        targetKey
       );
       const serverWritable = new WorkflowServerWritableStream(
         value.name,
-        runId
+        targetRunId
       );
 
       // Create flushable state for this stream
@@ -1541,6 +1743,31 @@ function getStepRevivers(
 
       // Start polling to detect when user releases lock
       pollWritableLock(serialize.writable, state);
+
+      // Record the underlying `(runId, name)` so downstream reducers can
+      // recognize that this writable is already backed by a workflow
+      // server stream. When forwarded across `start()` again — e.g.
+      // the child passes this writable on to a grandchild — the
+      // external reducer needs both to emit the original `runId` in
+      // the descriptor.
+      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+        value: value.name,
+        writable: false,
+      });
+      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: targetRunId,
+        writable: false,
+      });
+      if (targetDeploymentId) {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+          {
+            value: targetDeploymentId,
+            writable: false,
+          }
+        );
+      }
 
       return serialize.writable;
     },
@@ -1842,7 +2069,8 @@ export async function hydrateStepArguments(
   key: CryptoKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  deploymentId?: string
 ) {
   // Decrypt if needed
   const decrypted = await maybeDecrypt(value, key);
@@ -1852,7 +2080,7 @@ export async function hydrateStepArguments(
   // via devalue's unflatten().
   if (!(decrypted instanceof Uint8Array)) {
     return unflatten(decrypted as any[], {
-      ...getStepRevivers(global, ops, runId, key),
+      ...getStepRevivers(global, ops, runId, key, deploymentId),
       ...extraRevivers,
     });
   }
@@ -1862,7 +2090,7 @@ export async function hydrateStepArguments(
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
     const obj = parse(str, {
-      ...getStepRevivers(global, ops, runId, key),
+      ...getStepRevivers(global, ops, runId, key, deploymentId),
       ...extraRevivers,
     });
     return obj;

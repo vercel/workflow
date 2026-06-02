@@ -688,6 +688,11 @@ jobs:
           if-no-files-found: ignore
 
   # Community World E2E Tests (dynamically generated from worlds-manifest.json)
+  # Non-blocking on stable (continue-on-error in the reusable workflow; surfaced
+  # as a warning in the summary). The community world adapters need an in-process
+  # queue worker, which the reusable workflow starts via a CI-only instrumentation
+  # kickstart. A fast-fail preflight there guards against the 30-minute hang that
+  # occurred when that kickstart was missing (see e2e-community-world.yml).
   getCommunityWorldsMatrix:
     name: Get Community Worlds Matrix
     runs-on: ubuntu-latest
@@ -822,11 +827,13 @@ jobs:
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
-  # Final required check: passes only when unit + all E2E jobs succeed
+  # Final required check: passes only when unit + all E2E jobs succeed.
+  # Community worlds are intentionally excluded — they are temporarily disabled
+  # (see getCommunityWorldsMatrix above).
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [unit, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows, e2e-community]
+    needs: [unit, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -839,7 +846,6 @@ jobs:
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
-          COMMUNITY_STATUS: ${{ needs.e2e-community.result }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
         run: |
           FAILED_JOBS=()
@@ -856,7 +862,6 @@ jobs:
             [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
             [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
             [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
-            [[ "$COMMUNITY_STATUS" == "skipped" ]] || echo "Warning: e2e-community was not skipped ($COMMUNITY_STATUS)"
           else
             echo "Standard PR - checking all jobs"
             [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
@@ -865,7 +870,6 @@ jobs:
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
             [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
-            [[ "$COMMUNITY_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-community ($COMMUNITY_STATUS)")
           fi
 
           if [[ ${#FAILED_JOBS[@]} -gt 0 ]]; then

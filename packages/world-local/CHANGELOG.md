@@ -1,5 +1,40 @@
 # @workflow/world-local
 
+## 4.1.4
+
+### Patch Changes
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f)]:
+  - @workflow/world@4.1.4
+  - @workflow/errors@4.1.3
+
+## 4.1.3
+
+### Patch Changes
+
+- [#2139](https://github.com/vercel/workflow/pull/2139) [`2aecfdb`](https://github.com/vercel/workflow/commit/2aecfdb7ff8f33cc8c630592a1f27d8d7630d5a8) Thanks [@pranaygp](https://github.com/pranaygp)! - Reduce local stream metadata and pagination I/O by reading only EOF marker bytes and scanning chunk files once.
+
+- Updated dependencies [[`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c)]:
+  - @workflow/world@4.1.3
+  - @workflow/errors@4.1.2
+
+## 4.1.2
+
+### Patch Changes
+
+- [#2029](https://github.com/vercel/workflow/pull/2029) [`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d) Thanks [@pranaygp](https://github.com/pranaygp)! - Refresh workflow events after completing elapsed waits so concurrent hook events preserve deterministic replay order.
+
+- [#1985](https://github.com/vercel/workflow/pull/1985) [`76352f0`](https://github.com/vercel/workflow/commit/76352f0b66514726fb4adde0a618fd1767436799) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve the local queue error message when a Next.js proxy intercepts workflow routes.
+
+- [#1898](https://github.com/vercel/workflow/pull/1898) [`e428cdb`](https://github.com/vercel/workflow/commit/e428cdb1d55b64956914a165ac57e0da76d1a33c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix local-world recovery isolation in Vitest and support custom test directories
+
+- [#1829](https://github.com/vercel/workflow/pull/1829) [`5f50bbc`](https://github.com/vercel/workflow/commit/5f50bbcee6b35ab275e49214c60143dab1f78c03) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix path traversal via request-supplied IDs in the `world-local` storage backend.
+
+- Updated dependencies [[`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d), [`8407c1e`](https://github.com/vercel/workflow/commit/8407c1e9a408bd60b1f3cd0367222d4f1d5d878d), [`15e44b3`](https://github.com/vercel/workflow/commit/15e44b360535dcf1e5303cb7389db1f4007a24e8), [`c347509`](https://github.com/vercel/workflow/commit/c3475096e9811b2d20fc0b5bc65e0e24d1b58b49), [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8), [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc)]:
+  - @workflow/world@4.1.2
+  - @workflow/errors@4.1.2
+  - @workflow/utils@4.1.2
+
 ## 4.1.1
 
 ### Patch Changes

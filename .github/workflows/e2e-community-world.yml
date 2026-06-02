@@ -44,8 +44,13 @@ jobs:
   e2e:
     name: E2E ${{ inputs.world-name }}
     runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 30
+    # Intentionally NOT continue-on-error: real test failures (and hangs caught by
+    # the preflight) surface as a red job + a ⚠️ warning on the PR comment. This job
+    # is non-blocking because it is excluded from e2e-required-check in tests.yml,
+    # not because failures are swallowed.
+    # Successful community runs historically finish in ~12-15 min. Cap at 20 so a
+    # regression can't burn 30 min; the preflight below fails much faster than this.
+    timeout-minutes: 20
 
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -98,6 +103,17 @@ jobs:
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
 
+      # Adapters with an in-process queue worker (mongodb, redis) only dispatch
+      # created runs once `getWorld().start()` has been called. The shipped
+      # workbench has no instrumentation file (matches the getting-started docs,
+      # #1959), so start the world here for the E2E lane only. Without this, runs
+      # stay `pending` and the suite hangs until the job timeout. Worlds that
+      # dispatch without an explicit start (e.g. turso) don't get this — adding it
+      # changes their setup/init and is unnecessary.
+      - name: Restore world kickstart (CI only)
+        if: ${{ inputs.service-type == 'mongodb' || inputs.service-type == 'redis' }}
+        run: cp .github/fixtures/community-world-instrumentation.ts "workbench/${{ inputs.app-name }}/instrumentation.ts"
+
       - name: Set environment variables
         run: |
           echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
@@ -105,13 +121,40 @@ jobs:
       - name: Run E2E Tests
         run: |
           cd workbench/${{ inputs.app-name }} && pnpm dev &
+          cd "$GITHUB_WORKSPACE"
           echo "Waiting for dev server to start..." && sleep 15
-          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
+
+          # Fast-fail preflight (worlds with an in-process worker only). When such
+          # a world isn't dispatching, runs stay `pending` and every test burns its
+          # full timeout, so the suite would hang for the entire job timeout. Run
+          # one representative set under a short wall-clock cap and bail only if it
+          # *times out* (exit 124 — the hang signature). Ordinary test failures
+          # don't abort; they're left to the full suite below.
+          if [[ "$SERVICE_TYPE" == "mongodb" || "$SERVICE_TYPE" == "redis" ]]; then
+            echo "Running community-world dispatch preflight ($WORLD_ID)..."
+            rc=0
+            timeout 150 pnpm vitest run packages/core/e2e/e2e.test.ts -t "addTenWorkflow" --reporter=default || rc=$?
+            if [[ $rc -eq 124 ]]; then
+              echo "::error::Community world '$WORLD_ID' preflight timed out — workflow runs are not being dispatched. Aborting before the job timeout."
+              exit 1
+            fi
+            echo "Preflight finished without hanging (exit $rc); continuing to full suite."
+          fi
+
+          # Run both suites regardless of individual outcomes (so both result
+          # artifacts are produced for the summary), then fail the step if either
+          # suite failed. The job is non-blocking via its exclusion from
+          # e2e-required-check, so this surfaces failures without gating merges.
+          fail=0
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || fail=1
           sleep 10
-          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}.json || fail=1
+          exit $fail
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ inputs.app-name }}
+          SERVICE_TYPE: ${{ inputs.service-type }}
+          WORLD_ID: ${{ inputs.world-id }}
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
 

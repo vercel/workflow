@@ -1,5 +1,22 @@
 # @workflow/errors
 
+## 4.1.3
+
+### Patch Changes
+
+- [#2208](https://github.com/vercel/workflow/pull/2208) [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f) Thanks [@pranaygp](https://github.com/pranaygp)! - Retry transient workflow replay divergence before classifying repeated divergence as a corrupted event log.
+
+## 4.1.2
+
+### Patch Changes
+
+- [#2046](https://github.com/vercel/workflow/pull/2046) [`8407c1e`](https://github.com/vercel/workflow/commit/8407c1e9a408bd60b1f3cd0367222d4f1d5d878d) Thanks [@pranaygp](https://github.com/pranaygp)! - Report corrupted event logs with a distinct `CorruptedEventLogError` type and `CORRUPTED_EVENT_LOG` run error code.
+
+- [#2060](https://github.com/vercel/workflow/pull/2060) [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8) Thanks [@pranaygp](https://github.com/pranaygp)! - Record fatal world response contract failures as non-retryable workflow errors.
+
+- Updated dependencies [[`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc)]:
+  - @workflow/utils@4.1.2
+
 ## 4.1.1
 
 ### Patch Changes

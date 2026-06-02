@@ -6,6 +6,8 @@ import type { StepMetadata } from './get-step-metadata.js';
 export type StepContext = {
   stepMetadata: StepMetadata;
   workflowMetadata: WorkflowMetadata;
+  /** Deployment that owns the current workflow run, used for forwarded streams. */
+  workflowDeploymentId?: string;
   ops: Promise<void>[];
   closureVars?: Record<string, any>;
   encryptionKey?: CryptoKey;

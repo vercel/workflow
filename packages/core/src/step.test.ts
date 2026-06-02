@@ -1,6 +1,6 @@
 import {
-  CorruptedEventLogError,
   FatalError,
+  ReplayDivergenceError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
@@ -39,6 +39,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
+    pendingDeliveryBarriers: new Map(),
   };
 }
 
@@ -286,6 +287,65 @@ describe('createUseStep', () => {
       stepName: 'calculate',
       args: [],
       closureVars: { count: 42, prefix: 'Result: ' },
+    });
+  });
+
+  // The SWC plugin emits `useStep(stepId, closureFn).bind(this)` for nested
+  // arrow steps that lexically capture `this`. The runtime relies on the
+  // step proxy being a regular `function` (not an arrow) so that `.bind(this)`
+  // works and the bound `this` is recorded as `thisVal` on the queue item.
+  it('captures `this` via .bind(this) on the step proxy (lexical-this support)', async () => {
+    const ctx = setupWorkflowContext([]);
+    let workflowErrorReject: (err: Error) => void;
+    const workflowErrorPromise = new Promise<Error>((_, reject) => {
+      workflowErrorReject = reject;
+    });
+    ctx.onWorkflowError = (err) => {
+      workflowErrorReject(err);
+    };
+
+    const useStep = createUseStep(ctx);
+
+    // Simulate the SWC plugin output:
+    //   globalThis[Symbol.for('WORKFLOW_USE_STEP')]("step_id").bind(this)
+    // executed inside an enclosing method whose `this` is `instance`.
+    const instance = { name: 'enclosing-this' };
+    const stepProxy = useStep('step//input.js//withThis', () => ({ x: 42 }));
+    const boundStep = stepProxy.bind(instance);
+
+    // The bound proxy MUST retain the `stepId` and `__closureVarsFn`
+    // metadata that `getStepFunctionReducer` reads when serializing step
+    // function references — otherwise a bound proxy that flows through
+    // workflow serialization (e.g. as a step argument or return value)
+    // would be treated as a non-serializable plain function.
+    expect((boundStep as any).stepId).toBe('step//input.js//withThis');
+    expect((boundStep as any).__closureVarsFn).toBe(
+      (stepProxy as any).__closureVarsFn
+    );
+    // `__boundThis` is the marker the reducer uses to serialize the
+    // captured `this`, so a deserialized proxy in another bundle can
+    // re-bind to the same value.
+    expect((boundStep as any).__boundThis).toBe(instance);
+
+    let error: Error | undefined;
+    try {
+      await Promise.race([boundStep(7), workflowErrorPromise]);
+    } catch (err_) {
+      error = err_ as Error;
+    }
+
+    expect(error).toBeInstanceOf(WorkflowSuspension);
+
+    // The bound `this` should have been captured on the queue item so the
+    // step runtime can `apply(thisVal, args)` when executing the step.
+    expect(ctx.invocationsQueue.size).toBe(1);
+    const queueItem = [...ctx.invocationsQueue.values()][0];
+    expect(queueItem).toMatchObject({
+      type: 'step',
+      stepName: 'step//input.js//withThis',
+      args: [7],
+      thisVal: instance,
+      closureVars: { x: 42 },
     });
   });
 
@@ -564,7 +624,7 @@ describe('createUseStep', () => {
     expect(error?.stack).toContain('fallbackFunction');
   });
 
-  it('should invoke workflow error handler with CorruptedEventLogError for unexpected event type', async () => {
+  it('should invoke workflow error handler with ReplayDivergenceError for unexpected event type', async () => {
     // Simulate a corrupted event log where a step receives an unexpected event type
     // (e.g., a wait_completed event when expecting step_completed/step_failed)
     const ctx = setupWorkflowContext([
@@ -588,7 +648,7 @@ describe('createUseStep', () => {
     const stepPromise = add(1, 2);
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('Unexpected event type for step');
     expect(workflowError?.message).toContain('step_01K11TFZ62YS0YYFDQ3E8B9YCV');
     expect(workflowError?.message).toContain('add');

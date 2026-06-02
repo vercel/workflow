@@ -1,4 +1,4 @@
-import { CorruptedEventLogError, FatalError } from '@workflow/errors';
+import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
@@ -88,8 +88,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         if (typeof eventStepName === 'string' && eventStepName !== stepName) {
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
             ctx.onWorkflowError(
-              new CorruptedEventLogError(
-                `Corrupted event log: step event ${event.eventType} for ${correlationId} belongs to "${eventStepName}", but the current step consumer is "${stepName}"`
+              new ReplayDivergenceError(
+                `Replay divergence: step event ${event.eventType} for ${correlationId} belongs to "${eventStepName}", but the current step consumer is "${stepName}"`,
+                { eventId: event.eventId }
               )
             );
           });
@@ -106,8 +107,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             // but the step was never invoked in the workflow during replay.
             ctx.promiseQueue = ctx.promiseQueue.then(() => {
               reject(
-                new CorruptedEventLogError(
-                  `Corrupted event log: step ${correlationId} (${stepName}) created but not found in invocation queue`
+                new ReplayDivergenceError(
+                  `Replay divergence: step ${correlationId} (${stepName}) created but not found in invocation queue`,
+                  { eventId: event.eventId }
                 )
               );
             });
@@ -188,11 +190,12 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.Finished;
         }
 
-        // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+        // This replay installed a different consumer than the stored event needs.
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
-            new CorruptedEventLogError(
-              `Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`
+            new ReplayDivergenceError(
+              `Replay divergence: Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`,
+              { eventId: event.eventId }
             )
           );
         });
@@ -226,6 +229,76 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         configurable: false,
       });
     }
+
+    // Override `.bind` so the bound function preserves the step proxy
+    // metadata that `getStepFunctionReducer` relies on for serialization.
+    // Without this override, `Function.prototype.bind` would return a new
+    // function that doesn't inherit `stepId`, `__closureVarsFn`, or any
+    // other own properties of the original proxy — so the StepFunction
+    // reducer would refuse to serialize it (it'd look like a plain
+    // function), and a `useStep(...).bind(this)` proxy that flowed
+    // through workflow serialization would silently break.
+    //
+    // The override stashes three pieces of state on the bound function so
+    // the round trip is faithful:
+    //   - `stepId`             — already set on the original proxy.
+    //   - `__closureVarsFn`    — only when the original proxy had one.
+    //   - `__boundThis`        — the receiver passed to `.bind(thisArg, …)`.
+    //                            Always set (even when `thisArg` is
+    //                            `null`/`undefined`) so the reducer can
+    //                            distinguish "was bound" from "wasn't".
+    //   - `__boundArgs`        — only when the user supplied prefilled
+    //                            arguments (`.bind(thisArg, x, y)`). The
+    //                            SWC plugin only ever emits `.bind(this)`
+    //                            today, so this is rare in practice; we
+    //                            still capture it so the partial args
+    //                            survive serialization rather than
+    //                            silently disappearing on the step side.
+    Object.defineProperty(stepFunction, 'bind', {
+      value: function (
+        this: typeof stepFunction,
+        thisArg: unknown,
+        ...partialArgs: unknown[]
+      ) {
+        const bound = Function.prototype.bind.call(
+          this,
+          thisArg,
+          ...partialArgs
+        );
+        Object.defineProperty(bound, 'stepId', {
+          value: stepName,
+          writable: false,
+          enumerable: false,
+          configurable: false,
+        });
+        if (closureVarsFn) {
+          Object.defineProperty(bound, '__closureVarsFn', {
+            value: closureVarsFn,
+            writable: false,
+            enumerable: false,
+            configurable: false,
+          });
+        }
+        Object.defineProperty(bound, '__boundThis', {
+          value: thisArg,
+          writable: false,
+          enumerable: false,
+          configurable: false,
+        });
+        if (partialArgs.length > 0) {
+          Object.defineProperty(bound, '__boundArgs', {
+            value: partialArgs,
+            writable: false,
+            enumerable: false,
+            configurable: false,
+          });
+        }
+        return bound;
+      },
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
 
     return stepFunction;
   };

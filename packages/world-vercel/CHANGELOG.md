@@ -1,5 +1,55 @@
 # @workflow/world-vercel
 
+## 4.3.2
+
+### Patch Changes
+
+- [#2204](https://github.com/vercel/workflow/pull/2204) [`5655fcb`](https://github.com/vercel/workflow/commit/5655fcbd4d5ed45c6669666fef8c817a286eec33) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry transient response-body read/decode failures (truncated or terminated streams, gateway non-CBOR bodies) on idempotent requests inside the HTTP client, so a sporadic `events.list` parse failure no longer surfaces as a fatal error.
+
+## 4.3.1
+
+### Patch Changes
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f)]:
+  - @workflow/world@4.1.4
+  - @workflow/errors@4.1.3
+
+## 4.3.0
+
+### Minor Changes
+
+- [#1978](https://github.com/vercel/workflow/pull/1978) [`17cf939`](https://github.com/vercel/workflow/commit/17cf939d48e163f1cc93942a9db1069793da1176) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `@workflow/world-vercel/run-id` sub-export with `encode`/`decode` helpers that produce ULID-shaped workflow run IDs carrying a tag bit, a 5-bit version, and a 6-bit Vercel region ID.
+
+### Patch Changes
+
+- [#2142](https://github.com/vercel/workflow/pull/2142) [`3113738`](https://github.com/vercel/workflow/commit/31137386eaed044aa6c75c04cd0bafc2e49edf1e) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent failed stream writes from surfacing as unhandled rejections and include request correlation details in stream errors.
+
+- Updated dependencies [[`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c)]:
+  - @workflow/world@4.1.3
+  - @workflow/errors@4.1.2
+
+## 4.2.0
+
+### Minor Changes
+
+- [#1897](https://github.com/vercel/workflow/pull/1897) [`677867b`](https://github.com/vercel/workflow/commit/677867bd1919476625bd30da9fecde4405d19463) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Switch the workflow-server Deployment Protection bypass to OIDC Trusted Sources. The `VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS` env var is no longer used; the `x-vercel-trusted-oidc-idp-token` header is now sourced from `getVercelOidcToken()`.
+
+### Patch Changes
+
+- [#2029](https://github.com/vercel/workflow/pull/2029) [`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d) Thanks [@pranaygp](https://github.com/pranaygp)! - Refresh workflow events after completing elapsed waits so concurrent hook events preserve deterministic replay order.
+
+- [#1999](https://github.com/vercel/workflow/pull/1999) [`a350e8d`](https://github.com/vercel/workflow/commit/a350e8ddf21b39b242a83c7e8c478d5ce5bd2001) Thanks [@pranaygp](https://github.com/pranaygp)! - Release failed VQS workflow handler messages on the configured retry cadence.
+
+- [#2060](https://github.com/vercel/workflow/pull/2060) [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8) Thanks [@pranaygp](https://github.com/pranaygp)! - Record fatal world response contract failures as non-retryable workflow errors.
+
+- [#1986](https://github.com/vercel/workflow/pull/1986) [`16f2c23`](https://github.com/vercel/workflow/commit/16f2c236d3b64643f07f5e85906c0112b7c132cc) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix local workflow port detection, make generated health endpoints respond to HEAD requests, materialize manual webhook response bodies before returning them, wait for step return stream serialization before completing the step, bound Vercel stream and health-check operations so stuck writes or queue sends retry or time out instead of hanging, and stabilize remote Vercel e2e checks around CLI inspection, sleep timing, and hook registration/disposal.
+
+- [#1987](https://github.com/vercel/workflow/pull/1987) [`ecfccc3`](https://github.com/vercel/workflow/commit/ecfccc37c0ab19f2aff7fef9e6b6d62005b6c9c6) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update to new queue client version
+
+- Updated dependencies [[`a434184`](https://github.com/vercel/workflow/commit/a4341848589f6b02f4dea048a58a05c72f0d816d), [`8407c1e`](https://github.com/vercel/workflow/commit/8407c1e9a408bd60b1f3cd0367222d4f1d5d878d), [`15e44b3`](https://github.com/vercel/workflow/commit/15e44b360535dcf1e5303cb7389db1f4007a24e8), [`c347509`](https://github.com/vercel/workflow/commit/c3475096e9811b2d20fc0b5bc65e0e24d1b58b49), [`ca5f355`](https://github.com/vercel/workflow/commit/ca5f355999320f3a37b7e2bb32ced09dab2a94a8)]:
+  - @workflow/world@4.1.2
+  - @workflow/errors@4.1.2
+
 ## 4.1.2
 
 ### Patch Changes
