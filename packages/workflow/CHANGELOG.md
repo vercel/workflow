@@ -1,5 +1,26 @@
 # workflow
 
+## 4.3.0
+
+### Minor Changes
+
+- [#2059](https://github.com/vercel/workflow/pull/2059) [`9092640`](https://github.com/vercel/workflow/commit/90926400131be4003e65d970deb5d67ae29778a2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - A `WritableStream` from a workflow's `getWritable()` can now be passed as an argument to a child workflow via `start()`; the child's writes land on the parent run's stream directly for the full lifetime of the child run.
+
+### Patch Changes
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`1e32d05`](https://github.com/vercel/workflow/commit/1e32d05758d590134f04f82ea41ab9add96104d5), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f), [`9092640`](https://github.com/vercel/workflow/commit/90926400131be4003e65d970deb5d67ae29778a2)]:
+  - @workflow/core@4.3.0
+  - @workflow/errors@4.1.3
+  - @workflow/cli@4.2.7
+  - @workflow/next@4.0.8
+  - @workflow/nitro@4.0.8
+  - @workflow/typescript-plugin@4.0.2
+  - @workflow/astro@4.0.7
+  - @workflow/nest@0.0.7
+  - @workflow/rollup@4.0.7
+  - @workflow/sveltekit@4.0.7
+  - @workflow/nuxt@4.0.8
+
 ## 4.2.6
 
 ### Patch Changes
