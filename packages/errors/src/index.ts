@@ -87,6 +87,7 @@ export const ERROR_SLUGS = {
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   STEP_NOT_REGISTERED: 'step-not-registered',
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
+  RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -320,6 +321,67 @@ export class CorruptedEventLogError extends WorkflowRuntimeError {
 
   static is(value: unknown): value is CorruptedEventLogError {
     return isError(value) && value.name === 'CorruptedEventLogError';
+  }
+}
+
+/**
+ * Optional structured context attached to a {@link RuntimeDecryptionError},
+ * carried over from the underlying decrypt call site to help diagnose the
+ * failure without poking through stacks.
+ */
+export interface RuntimeDecryptionErrorContext {
+  /** The operation that failed — useful to tell encrypt vs decrypt apart. */
+  operation?: 'encrypt' | 'decrypt';
+  /** Byte length of the input payload at the time of the failure. */
+  byteLength?: number;
+  /**
+   * The first 4 bytes of the input payload, decoded as UTF-8 if printable.
+   * Useful for telling apart truncated-but-valid-looking encrypted payloads
+   * from completely unrelated corruption (e.g. an HTML error page surfaced
+   * as a 200 OK).
+   */
+  formatPrefix?: string;
+}
+
+/**
+ * Thrown when the SDK's built-in AES-GCM encryption layer fails to encrypt
+ * or decrypt a workflow payload.
+ *
+ * This is an internal SDK failure — user code never invokes the SDK's
+ * encryption primitives directly. Common causes:
+ *
+ * - A ciphertext / auth tag mismatch, typically surfaced as the native Web
+ *   Crypto `OperationError: The operation failed for an operation-specific
+ *   reason`. Usually caused by ciphertext mutation or truncation in transit
+ *   between storage and read (truncated HTTP response, edge-cache miss
+ *   returning a partial 200, proxy drop during streaming, etc.).
+ * - A key resolution mismatch (wrong deployment, missing key material).
+ * - A malformed encrypted envelope (too short to contain the GCM nonce
+ *   and tag).
+ *
+ * Extends {@link WorkflowRuntimeError} so the run-failure classifier
+ * routes it to `RUNTIME_ERROR`.
+ */
+export class RuntimeDecryptionError extends WorkflowRuntimeError {
+  /** Optional structured context about the failed encrypt/decrypt call. */
+  readonly context?: RuntimeDecryptionErrorContext;
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & { context?: RuntimeDecryptionErrorContext }
+  ) {
+    super(message, {
+      cause: options?.cause,
+      slug: ERROR_SLUGS.RUNTIME_DECRYPTION_FAILED,
+    });
+    this.name = 'RuntimeDecryptionError';
+    if (options?.context !== undefined) {
+      this.context = options.context;
+    }
+  }
+
+  static is(value: unknown): value is RuntimeDecryptionError {
+    return isError(value) && value.name === 'RuntimeDecryptionError';
   }
 }
 
@@ -843,6 +905,9 @@ const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
 const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookConflictError'
 );
+const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
+  '@workflow/errors//RuntimeDecryptionError'
+);
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -864,6 +929,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, HOOK_CONFLICT_ERROR_KEY)) {
     Object.defineProperty(globalThis, HOOK_CONFLICT_ERROR_KEY, {
       value: HookConflictError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RUNTIME_DECRYPTION_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RUNTIME_DECRYPTION_ERROR_KEY, {
+      value: RuntimeDecryptionError,
       writable: false,
       enumerable: false,
       configurable: false,

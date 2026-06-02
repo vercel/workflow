@@ -3177,7 +3177,7 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
 }
 
 //////////////////////////////////////////////////////////
-// Workflow Attributes MVP — workflow-body-only API.
+// Workflow Attributes MVP — workflow and step API.
 
 /**
  * Calls `experimental_setAttributes` directly from the workflow body.
@@ -3193,6 +3193,29 @@ export async function experimentalSetAttributesWorkflow(input: number) {
   await experimental_setAttributes({ phase: 'done' });
   await experimental_setAttributes({ source: undefined });
   return tripled;
+}
+
+async function setAttributesFromStep(input: number) {
+  'use step';
+  await experimental_setAttributes({
+    phase: 'step-started',
+    source: 'step-body',
+    input: String(input),
+  });
+  await experimental_setAttributes({ phase: 'step-done' });
+  return input * 4;
+}
+
+/**
+ * Calls `experimental_setAttributes` from inside a normal user step. Step
+ * bodies already run in host context, so the helper posts directly to the
+ * world instead of creating a nested `__builtin_set_attributes` step.
+ */
+export async function experimentalSetAttributesInsideStepWorkflow(
+  input: number
+) {
+  'use workflow';
+  return setAttributesFromStep(input);
 }
 
 /**

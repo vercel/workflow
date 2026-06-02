@@ -1,5 +1,20 @@
 # @workflow/world-local
 
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- [#2168](https://github.com/vercel/workflow/pull/2168) [`3128dfc`](https://github.com/vercel/workflow/commit/3128dfce809839a53c7cb6cc2337a9c31e0bf8a5) Thanks [@allenzhou101](https://github.com/allenzhou101)! - Skip past abandoned `5.0.0-beta.8/9/10` npm slots from the November 2025 5.x attempt so the next Changesets publish lands on a fresh `5.0.0-beta.11`.
+
+- Updated dependencies [[`8d0928b`](https://github.com/vercel/workflow/commit/8d0928b2a2ce61b6c05cb8930d29f176b3a83970)]:
+  - @workflow/errors@5.0.0-beta.6
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#2139](https://github.com/vercel/workflow/pull/2139) [`65336df`](https://github.com/vercel/workflow/commit/65336df9f80f228903216c3e82ea7d499d924734) Thanks [@pranaygp](https://github.com/pranaygp)! - Reduce local stream metadata and pagination I/O by reading only EOF marker bytes and scanning chunk files once.
+
 ## 5.0.0-beta.7
 
 ### Patch Changes

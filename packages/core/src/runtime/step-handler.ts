@@ -546,7 +546,10 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   step.input,
                   workflowRunId,
                   encryptionKey,
-                  ops
+                  ops,
+                  globalThis,
+                  {},
+                  process.env.VERCEL_DEPLOYMENT_ID
                 );
                 const durationMs = Date.now() - startTime;
                 hydrateSpan?.setAttributes({
@@ -589,6 +592,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         : `http://localhost:${port ?? 3000}`,
                       features: { encryption: !!encryptionKey },
                     },
+                    workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                     ops,
                     closureVars: hydratedInput.closureVars,
                     encryptionKey,

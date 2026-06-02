@@ -1,5 +1,40 @@
 # workflow
 
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies [[`8d0928b`](https://github.com/vercel/workflow/commit/8d0928b2a2ce61b6c05cb8930d29f176b3a83970)]:
+  - @workflow/errors@5.0.0-beta.6
+  - @workflow/core@5.0.0-beta.10
+  - @workflow/cli@5.0.0-beta.10
+  - @workflow/next@5.0.0-beta.10
+  - @workflow/nitro@5.0.0-beta.10
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/astro@5.0.0-beta.10
+  - @workflow/nest@5.0.0-beta.10
+  - @workflow/rollup@5.0.0-beta.10
+  - @workflow/sveltekit@5.0.0-beta.10
+  - @workflow/nuxt@5.0.0-beta.10
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- [#2157](https://github.com/vercel/workflow/pull/2157) [`409b103`](https://github.com/vercel/workflow/commit/409b1033d9b7dfab9c26fda9a17494c08e43d0ae) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow `experimental_setAttributes()` to be called from step functions.
+
+- Updated dependencies [[`4b5f017`](https://github.com/vercel/workflow/commit/4b5f017635b28ff164047bce8ccf4a5981748704), [`409b103`](https://github.com/vercel/workflow/commit/409b1033d9b7dfab9c26fda9a17494c08e43d0ae), [`ae37315`](https://github.com/vercel/workflow/commit/ae37315cb708b413f2ee9945c90a23a57dfd410d)]:
+  - @workflow/core@5.0.0-beta.9
+  - @workflow/cli@5.0.0-beta.9
+  - @workflow/next@5.0.0-beta.9
+  - @workflow/nitro@5.0.0-beta.9
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/astro@5.0.0-beta.9
+  - @workflow/nest@5.0.0-beta.9
+  - @workflow/rollup@5.0.0-beta.9
+  - @workflow/sveltekit@5.0.0-beta.9
+  - @workflow/nuxt@5.0.0-beta.9
+
 ## 5.0.0-beta.8
 
 ### Patch Changes

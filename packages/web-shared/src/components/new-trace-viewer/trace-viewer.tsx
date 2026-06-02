@@ -13,11 +13,13 @@ import {
 import {
   type ReactNode,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { ErrorBoundary } from '../error-boundary';
 import {
@@ -27,19 +29,32 @@ import {
 import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
 import type { Trace } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import { IconButton } from '../ui/icon-button';
+import { Spinner } from '../ui/spinner';
+import { Kbd } from '../ui/kbd';
 import EventList from './components/event-list';
 import { SplitPane } from './components/split-pane';
 import {
+  TIMELINE_PADDING_PX,
   Timeline,
   TimelineHeader,
-  TIMELINE_PADDING_PX,
 } from './components/timeline';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '../ui/tooltip';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { DetailPanel } from './detail-panel';
+import { searchSpans } from './search';
 import { computeRootBounds, computeTimeMarkers } from './utils';
 
 interface NewTraceViewerProps {
   trace: Trace;
+  onLoadMore?: () => void | Promise<void>;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
 }
 
 const MIN_VIEWPORT_MS = 0.001;
@@ -142,22 +157,39 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
       spanId: activeSpan.spanId,
       rawEvents,
     };
-  }, [activeSpan, sidebar?.events]);
+  }, [activeSpan, sidebar]);
 }
 
 // ---------------------------------------------------------------------------
 // Root component
 // ---------------------------------------------------------------------------
 
-export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
+export function NewTraceViewer({
+  trace,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: NewTraceViewerProps): ReactNode {
   return (
-    <ActiveSpanProvider spans={trace.spans}>
-      <NewTraceViewerContent trace={trace} />
-    </ActiveSpanProvider>
+    <TooltipProvider delayDuration={300}>
+      <ActiveSpanProvider spans={trace.spans}>
+        <NewTraceViewerContent
+          trace={trace}
+          onLoadMore={onLoadMore}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
+        />
+      </ActiveSpanProvider>
+    </TooltipProvider>
   );
 }
 
-function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
+function NewTraceViewerContent({
+  trace,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: NewTraceViewerProps): ReactNode {
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
 
@@ -165,17 +197,24 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const selectedSpan = useSelectedSpanInfo();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
-  const filteredSpans = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return trace.spans;
-    return trace.spans.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) || s.resource.toLowerCase().includes(q)
-    );
-  }, [trace.spans, searchQuery]);
+  const searchResult = useMemo(
+    () => searchSpans(trace.spans, deferredSearchQuery),
+    [trace.spans, deferredSearchQuery]
+  );
 
   const root = useMemo(() => computeRootBounds(trace.spans), [trace.spans]);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const loadMore = useCallback(() => {
+    void onLoadMore?.();
+  }, [onLoadMore]);
+  const loadMoreSentinelRef = useLoadMoreOnScroll(loadMore, {
+    hasMore: Boolean(onLoadMore && hasMore),
+    isLoadingMore: Boolean(isLoadingMore),
+    rootRef: scrollContainerRef,
+  });
 
   const { viewport, setViewport, animateTo } = useAnimatedViewport({
     start: root.startTime,
@@ -204,7 +243,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     });
 
     prevRootRef.current = { start: newStart, end: newEnd };
-  }, [root.startTime, root.duration]);
+  }, [root.startTime, root.duration, setViewport]);
 
   const viewDuration = viewport.end - viewport.start;
 
@@ -472,7 +511,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [root.startTime, root.duration]);
+  }, [root.startTime, root.duration, setViewport]);
 
   // Derive the selected span name and metadata for the panel header
   const selectedSpanName = useMemo(() => {
@@ -496,13 +535,13 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
   const { prevSpanId, nextSpanId } = useMemo(() => {
     if (!activeSpanId) return { prevSpanId: null, nextSpanId: null };
-    const i = filteredSpans.findIndex((s) => s.spanId === activeSpanId);
+    const i = trace.spans.findIndex((s) => s.spanId === activeSpanId);
     if (i === -1) return { prevSpanId: null, nextSpanId: null };
     return {
-      prevSpanId: filteredSpans[i - 1]?.spanId ?? null,
-      nextSpanId: filteredSpans[i + 1]?.spanId ?? null,
+      prevSpanId: trace.spans[i - 1]?.spanId ?? null,
+      nextSpanId: trace.spans[i + 1]?.spanId ?? null,
     };
-  }, [activeSpanId, filteredSpans]);
+  }, [activeSpanId, trace.spans]);
 
   const handleSelectPrevSpan = useCallback(() => {
     if (prevSpanId) handleSelectSpan(prevSpanId);
@@ -530,6 +569,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         className="grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
         <SplitPane
+          scrollContainerRef={scrollContainerRef}
           startHeader={
             <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
               <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
@@ -539,6 +579,13 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && searchQuery) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setSearchQuery('');
+                  }
+                }}
                 placeholder="Search spans..."
                 aria-label="Search spans"
                 className="flex-1 min-w-0 bg-transparent text-sm text-gray-1000 placeholder:text-gray-800 outline-none"
@@ -548,9 +595,11 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                   type="button"
                   aria-label="Clear search"
                   onClick={() => setSearchQuery('')}
-                  className="shrink-0 p-0.5 rounded-sm text-gray-800 hover:text-gray-1000 hover:bg-gray-200 transition-colors"
+                  className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-base text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
                 >
-                  <X className="w-3 h-3" />
+                  <kbd className="inline-flex h-5 min-h-5 min-w-5 items-center justify-center rounded border border-gray-alpha-400 bg-background-100 px-1 font-sans text-[13px] font-medium leading-[1.7em] text-gray-900">
+                    Esc
+                  </kbd>
                 </button>
               )}
             </div>
@@ -561,11 +610,21 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         >
           <div className="block overflow-visible">
             <EventList
-              spans={filteredSpans}
+              spans={trace.spans}
               activeSpanId={activeSpanId}
+              searchResult={searchResult}
               onSelectSpan={handleSelectSpan}
             />
+            <div ref={loadMoreSentinelRef} className="flex justify-center">
+              {isLoadingMore ? (
+                <div className="flex items-center justify-center gap-2 py-3 text-sm text-gray-800">
+                  <Spinner size={14} />
+                  <span>Loading spans…</span>
+                </div>
+              ) : null}
+            </div>
           </div>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: timeline hover and wheel gestures are pointer-only annotations */}
           <div
             ref={timelineRef}
             className="block min-h-0 overflow-visible relative"
@@ -574,42 +633,43 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             onMouseLeave={handleTimelineMouseLeave}
           >
             <Timeline
-              spans={filteredSpans}
+              spans={trace.spans}
               viewStart={viewport.start}
               viewEnd={viewport.end}
               markers={timeMarkers}
               selectedId={activeSpanId}
+              searchResult={searchResult}
               onSelect={handleSelectSpan}
               hoverFraction={hoverFraction}
               altHeld={altHeld}
             />
           </div>
         </SplitPane>
-        <div className="absolute right-3 bottom-3 z-[5] flex items-center border border-gray-alpha-400 rounded-lg bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
-          <button
-            type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+        <div className="absolute right-3 bottom-3 z-[5] flex items-center border border-gray-alpha-400 rounded-md bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
+          <IconButton
+            variant="muted"
+            size="small"
             onClick={zoomOut}
             aria-label="Zoom out"
           >
             <ZoomOut className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+          </IconButton>
+          <IconButton
+            variant="muted"
+            size="small"
             onClick={resetZoom}
             aria-label="Reset zoom"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+          </IconButton>
+          <IconButton
+            variant="muted"
+            size="small"
             onClick={zoomIn}
             aria-label="Zoom in"
           >
             <ZoomIn className="w-4 h-4" />
-          </button>
+          </IconButton>
         </div>
       </div>
 
@@ -622,36 +682,50 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               {selectedSpanName}
             </span>
             <div className="flex items-center gap-0.5 shrink-0">
-              <button
-                type="button"
-                aria-label="Navigate to previous span"
-                aria-keyshortcuts="K"
-                onClick={handleSelectPrevSpan}
-                disabled={!prevSpanId}
-                className="p-1 rounded text-gray-1000 transition-colors enabled:hover:bg-gray-alpha-100 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <ChevronUp className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                aria-label="Navigate to next span"
-                aria-keyshortcuts="J"
-                onClick={handleSelectNextSpan}
-                disabled={!nextSpanId}
-                className="p-1 rounded text-gray-1000 transition-colors enabled:hover:bg-gray-alpha-100 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <ChevronDown className="w-4 h-4" />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <IconButton
+                    aria-label="Navigate up"
+                    aria-keyshortcuts="K"
+                    onClick={handleSelectPrevSpan}
+                    disabled={!prevSpanId}
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </IconButton>
+                </TooltipTrigger>
+                {prevSpanId ? (
+                  <TooltipContent>
+                    Navigate up
+                    <Kbd>K</Kbd>
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <IconButton
+                    aria-label="Navigate down"
+                    aria-keyshortcuts="J"
+                    onClick={handleSelectNextSpan}
+                    disabled={!nextSpanId}
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </IconButton>
+                </TooltipTrigger>
+                {nextSpanId ? (
+                  <TooltipContent>
+                    Navigate down
+                    <Kbd>J</Kbd>
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
               <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
-              <button
-                type="button"
+              <IconButton
                 aria-label="Close span details"
                 aria-keyshortcuts="Escape"
-                className="p-1 rounded text-gray-1000 hover:bg-gray-alpha-100 transition-colors"
                 onClick={clearActiveSpan}
               >
                 <X className="w-4 h-4" />
-              </button>
+              </IconButton>
             </div>
           </div>
           {/* Panel body */}

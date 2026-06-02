@@ -375,6 +375,7 @@ export function workflowEntrypoint(
                         stepResult = await executeStep({
                           world,
                           workflowRunId: runId,
+                          workflowDeploymentId: bgRun.deploymentId,
                           workflowName,
                           workflowStartedAt: bgStartedAt,
                           stepId: incomingStepId,
@@ -701,6 +702,7 @@ export function workflowEntrypoint(
                           );
                           for (const e of loaded.events) {
                             if (!existingIds.has(e.eventId)) {
+                              existingIds.add(e.eventId);
                               cachedEvents.push(e);
                             }
                           }
@@ -848,6 +850,7 @@ export function workflowEntrypoint(
                             );
                             for (const event of loaded.events) {
                               if (!existingIds.has(event.eventId)) {
+                                existingIds.add(event.eventId);
                                 events.push(event);
                               }
                             }
@@ -1064,6 +1067,7 @@ export function workflowEntrypoint(
                           stepResult = await executeStep({
                             world,
                             workflowRunId: runId,
+                            workflowDeploymentId: workflowRun.deploymentId,
                             workflowName,
                             workflowStartedAt,
                             stepId: inlineStep.correlationId,
