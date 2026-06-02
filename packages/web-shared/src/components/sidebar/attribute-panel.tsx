@@ -594,6 +594,12 @@ const resolvableAttributes = [
   'eventData',
 ];
 
+const PLACEHOLDER_TIMESTAMPS = [
+  'createdAt',
+  'startedAt',
+  'completedAt',
+] as const;
+
 // Attributes whose displayFn renders its own section header via DetailCard,
 // so the outer AttributeBlock should not duplicate the label.
 const selfHeaderedAttributes = new Set([
@@ -758,9 +764,19 @@ export const AttributePanel = ({
     return result;
   }, [data, moduleSpecifier]);
   const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
-  const basicAttributes = Object.keys(displayData)
-    .filter((key) => !resolvableAttributes.includes(key))
-    .sort(sortByAttributeOrder);
+  const basicAttributes = useMemo(() => {
+    const present = Object.keys(displayData).filter(
+      (key) => !resolvableAttributes.includes(key)
+    );
+
+    if (resource === 'run' || resource === 'step') {
+      for (const key of PLACEHOLDER_TIMESTAMPS) {
+        if (!present.includes(key)) present.push(key);
+      }
+    }
+
+    return present.sort(sortByAttributeOrder);
+  }, [displayData, resource]);
   const resolvedAttributes = useMemo(() => {
     const present = Object.keys(displayData)
       .filter((key) => resolvableAttributes.includes(key))
@@ -781,11 +797,12 @@ export const AttributePanel = ({
     return present.sort(sortByAttributeOrder);
   }, [displayData, isLoading, resource]);
 
-  // Filter out attributes that return null
   const visibleBasicAttributes = basicAttributes.filter((attribute) => {
     const displayFn =
       attributeToDisplayFn[attribute as keyof typeof attributeToDisplayFn];
     if (!displayFn) return false;
+    if ((PLACEHOLDER_TIMESTAMPS as readonly string[]).includes(attribute))
+      return true;
     const displayValue = displayFn(
       displayData[attribute as keyof typeof displayData]
     );
@@ -851,9 +868,18 @@ export const AttributePanel = ({
           {visibleBasicAttributes.length > 0 && (
             <div className="flex flex-col overflow-hidden divide-y divide-gray-alpha-400 mb-3">
               {orderedBasicAttributes.map((attribute) => {
-                const displayValue = attributeToDisplayFn[
+                const rawDisplayValue = attributeToDisplayFn[
                   attribute as keyof typeof attributeToDisplayFn
                 ]?.(displayData[attribute as keyof typeof displayData]);
+                const isPlaceholderTimestamp =
+                  (PLACEHOLDER_TIMESTAMPS as readonly string[]).includes(
+                    attribute
+                  ) && rawDisplayValue == null;
+                const displayValue = isPlaceholderTimestamp ? (
+                  <span className="text-gray-700">—</span>
+                ) : (
+                  rawDisplayValue
+                );
                 const isModuleSpecifier = attribute === 'moduleSpecifier';
                 const isCopyableBasicAttribute =
                   copyableBasicAttributes.has(attribute as AttributeKey) &&
