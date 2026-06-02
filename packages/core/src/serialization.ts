@@ -1,5 +1,5 @@
 import { types } from 'node:util';
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -289,6 +289,13 @@ export function getSerializeStream(
         frame.set(prefixed, FRAME_HEADER_SIZE);
         controller.enqueue(frame);
       } catch (error) {
+        // Encryption failures must keep their RuntimeDecryptionError
+        // identity (RUNTIME_ERROR) rather than be reframed as a
+        // SerializationError (USER_ERROR).
+        if (RuntimeDecryptionError.is(error)) {
+          controller.error(error);
+          return;
+        }
         controller.error(
           new WorkflowRuntimeError(
             formatSerializationError('stream chunk', error),
@@ -352,14 +359,33 @@ export function getDeserializeStream(
       if (format === SerializationFormat.ENCRYPTED) {
         if (!keyState.key) {
           controller.error(
-            new WorkflowRuntimeError(
+            new RuntimeDecryptionError(
               'Encrypted stream data encountered but no encryption key is available. ' +
-                'Encryption is not configured or no key was provided for this run.'
+                'Encryption is not configured or no key was provided for this run.',
+              {
+                context: {
+                  operation: 'decrypt',
+                  byteLength: payload.byteLength,
+                  formatPrefix: 'encr',
+                },
+              }
             )
           );
           return;
         }
-        const decrypted = await aesGcmDecrypt(keyState.key, payload);
+        let decrypted: Uint8Array;
+        try {
+          decrypted = await aesGcmDecrypt(keyState.key, payload);
+        } catch (error) {
+          // The low-level AES layer only sees the stripped payload, so it
+          // cannot record the outer envelope prefix. We peeked it here
+          // (`encr`), so enrich the diagnostic context with the real format
+          // prefix before propagating — mirroring serialization/encryption.ts.
+          if (RuntimeDecryptionError.is(error) && error.context) {
+            error.context.formatPrefix = format;
+          }
+          throw error;
+        }
         ({ format, payload } = decodeFormatPrefix(decrypted));
       }
 
@@ -1822,14 +1848,31 @@ export async function maybeDecrypt(
 
   if (isEncrypted(data)) {
     if (!key) {
-      throw new WorkflowRuntimeError(
+      throw new RuntimeDecryptionError(
         'Encrypted data encountered but no encryption key is available. ' +
-          'Encryption is not configured or no key was provided for this run.'
+          'Encryption is not configured or no key was provided for this run.',
+        {
+          context: {
+            operation: 'decrypt',
+            byteLength: data.byteLength,
+            formatPrefix: 'encr',
+          },
+        }
       );
     }
     // Strip the 'encr' format prefix — the prefix is a core framing concern
     const { payload } = decodeFormatPrefix(data);
-    return aesGcmDecrypt(key, payload);
+    try {
+      return await aesGcmDecrypt(key, payload);
+    } catch (error) {
+      // The low-level AES layer only sees the stripped payload, so it
+      // cannot record the outer envelope prefix. Enrich the diagnostic
+      // context with the real format prefix before propagating.
+      if (RuntimeDecryptionError.is(error) && error.context) {
+        error.context.formatPrefix = 'encr';
+      }
+      throw error;
+    }
   }
 
   return data;
@@ -1874,6 +1917,9 @@ export async function dehydrateWorkflowArguments(
     // Encrypt if world supports encryption
     return maybeEncrypt(serialized, key);
   } catch (error) {
+    // Encryption failures must keep their RuntimeDecryptionError identity
+    // (RUNTIME_ERROR) rather than be reframed as serialization failures.
+    if (RuntimeDecryptionError.is(error)) throw error;
     throw new WorkflowRuntimeError(
       formatSerializationError('workflow arguments', error),
       { slug: 'serialization-failed', cause: error }
@@ -1956,6 +2002,9 @@ export async function dehydrateWorkflowReturnValue(
     // Encrypt if world supports encryption
     return maybeEncrypt(serialized, key);
   } catch (error) {
+    // Encryption failures must keep their RuntimeDecryptionError identity
+    // (RUNTIME_ERROR) rather than be reframed as serialization failures.
+    if (RuntimeDecryptionError.is(error)) throw error;
     throw new WorkflowRuntimeError(
       formatSerializationError('workflow return value', error),
       { slug: 'serialization-failed', cause: error }
@@ -2044,6 +2093,9 @@ export async function dehydrateStepArguments(
     // Encrypt if world supports encryption
     return maybeEncrypt(serialized, key);
   } catch (error) {
+    // Encryption failures must keep their RuntimeDecryptionError identity
+    // (RUNTIME_ERROR) rather than be reframed as serialization failures.
+    if (RuntimeDecryptionError.is(error)) throw error;
     throw new WorkflowRuntimeError(
       formatSerializationError('step arguments', error),
       { slug: 'serialization-failed', cause: error }
@@ -2134,6 +2186,9 @@ export async function dehydrateStepReturnValue(
     // Encrypt if world supports encryption
     return maybeEncrypt(serialized, key);
   } catch (error) {
+    // Encryption failures must keep their RuntimeDecryptionError identity
+    // (RUNTIME_ERROR) rather than be reframed as serialization failures.
+    if (RuntimeDecryptionError.is(error)) throw error;
     throw new WorkflowRuntimeError(
       formatSerializationError('step return value', error),
       { slug: 'serialization-failed', cause: error }
