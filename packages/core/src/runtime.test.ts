@@ -367,6 +367,52 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
+  it('does not replay or redrive a snapshot that already contains run_failed', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_already_failed',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_already_failed',
+        undefined,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const events: Event[] = [
+      {
+        eventId: 'event-failed',
+        runId: workflowRun.runId,
+        eventType: 'run_failed',
+        eventData: {
+          error: { message: 'failure already recorded' },
+        },
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+    ];
+    const createdEvents: unknown[] = [];
+    const queuedMessages: unknown[] = [];
+
+    await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        await new Promise(() => {});
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      { createdEvents, queuedMessages }
+    );
+
+    expect(createdEvents).toEqual([
+      expect.objectContaining({ eventType: 'run_started' }),
+    ]);
+    expect(queuedMessages).toEqual([]);
+  });
+
   it('redrives an initial replay divergence and fails after the recovery budget', async () => {
     const ops: Promise<any>[] = [];
     const workflowRun: WorkflowRun = {
