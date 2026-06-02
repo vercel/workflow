@@ -117,3 +117,8 @@ export function _resetReplayTimeoutWarnCacheForTests(): void {
 // handler exits without writing run_failed so the queue retries the message.
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
+
+// A replay-consumer mismatch can be caused by a transient divergent replay
+// rather than an invalid persisted history. Queue bounded recovery replays
+// before recording terminal corruption for a run that cannot replay.
+export const REPLAY_DIVERGENCE_MAX_RETRIES = 3;

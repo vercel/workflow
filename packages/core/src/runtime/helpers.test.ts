@@ -1,3 +1,4 @@
+import { WorkflowWorldError } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getWorkflowQueueName, loadWorkflowRunEvents } from './helpers.js';
@@ -203,5 +204,83 @@ describe('loadWorkflowRunEvents', () => {
     // Preserving the input cursor avoids the runtime treating "no new events
     // since last poll" as "I have no idea where I am in the log."
     expect(result.cursor).toBe('eid:evnt_z');
+  });
+
+  it('deduplicates overlapping pages from a restarted continuation read', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a'), makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b',
+      hasMore: true,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_b'), makeEvent('evnt_c')],
+      cursor: 'eid:evnt_c',
+      hasMore: false,
+    });
+
+    const result = await loadWorkflowRunEvents('wrun_test');
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+  });
+
+  it('retries a rejected continuation cursor as a full load once', async () => {
+    eventsListMock.mockRejectedValueOnce(
+      new WorkflowWorldError('invalid cursor', { status: 400 })
+    );
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a'), makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b',
+      hasMore: false,
+    });
+
+    const result = await loadWorkflowRunEvents('wrun_test', 'opaque-cursor');
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+    ]);
+    expect(eventsListMock).toHaveBeenNthCalledWith(1, {
+      runId: 'wrun_test',
+      pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
+    });
+    expect(eventsListMock).toHaveBeenNthCalledWith(2, {
+      runId: 'wrun_test',
+      pagination: { sortOrder: 'asc', cursor: undefined },
+    });
+  });
+
+  it('fails instead of looping when pagination repeats a cursor', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: 'eid:evnt_a',
+      hasMore: true,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: 'eid:evnt_a',
+      hasMore: true,
+    });
+
+    await expect(loadWorkflowRunEvents('wrun_test')).rejects.toMatchObject({
+      code: 'WORLD_CONTRACT_ERROR',
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails when a response reports more pages without a cursor', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: null,
+      hasMore: true,
+    });
+
+    await expect(loadWorkflowRunEvents('wrun_test')).rejects.toMatchObject({
+      code: 'WORLD_CONTRACT_ERROR',
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
   });
 });

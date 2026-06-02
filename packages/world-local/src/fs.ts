@@ -375,6 +375,19 @@ export async function readBuffer(filePath: string): Promise<Buffer> {
   return content;
 }
 
+export async function readFirstByte(
+  filePath: string
+): Promise<number | undefined> {
+  const file = await fs.open(filePath, 'r');
+  try {
+    const byte = Buffer.allocUnsafe(1);
+    const { bytesRead } = await file.read(byte, 0, 1, 0);
+    return bytesRead === 0 ? undefined : byte[0];
+  } finally {
+    await file.close();
+  }
+}
+
 export async function deleteJSON(filePath: string): Promise<void> {
   try {
     await fs.unlink(filePath);

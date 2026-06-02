@@ -10,6 +10,8 @@ export const RUN_ERROR_CODES = {
   RUNTIME_ERROR: 'RUNTIME_ERROR',
   /** Event log contains orphaned or mismatched events and cannot be replayed */
   CORRUPTED_EVENT_LOG: 'CORRUPTED_EVENT_LOG',
+  /** One replay could not consume the event log deterministically; retryable */
+  REPLAY_DIVERGENCE: 'REPLAY_DIVERGENCE',
   /** Run exceeded the maximum number of queue deliveries */
   MAX_DELIVERIES_EXCEEDED: 'MAX_DELIVERIES_EXCEEDED',
   /** Workflow replay exceeded the maximum allowed duration */

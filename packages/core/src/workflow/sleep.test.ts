@@ -1,4 +1,4 @@
-import { CorruptedEventLogError } from '@workflow/errors';
+import { ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -26,8 +26,9 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         ctx.onWorkflowError(
-          new CorruptedEventLogError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          new ReplayDivergenceError(
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            { eventId: event.eventId }
           )
         );
       },
@@ -136,7 +137,7 @@ describe('createSleep', () => {
     void sleep('1s');
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('wait_completed');
     expect(workflowError?.message).toContain('resumeAt');
     expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
@@ -173,7 +174,7 @@ describe('createSleep', () => {
     void sleep('1s');
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('wait_completed');
     expect(workflowError?.message).toContain('Invalid Date');
   });
@@ -193,7 +194,7 @@ describe('createSleep', () => {
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
   });
 
-  it('should invoke workflow error handler with CorruptedEventLogError for unexpected event type', async () => {
+  it('should invoke workflow error handler with ReplayDivergenceError for unexpected event type', async () => {
     // Simulate a corrupted event log where a sleep/wait receives an unexpected event type
     // (e.g., a step_completed event when expecting wait_created/wait_completed)
     const ctx = setupWorkflowContext([
@@ -219,7 +220,7 @@ describe('createSleep', () => {
     const sleepPromise = sleep('1s');
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('Unexpected event type for wait');
     expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
     expect(workflowError?.message).toContain('step_completed');
@@ -286,7 +287,7 @@ describe('createSleep', () => {
     const sleepPromise = sleep('1s');
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('Unexpected event type for wait');
     expect(workflowError?.message).toContain('hook_received');
   });
@@ -361,11 +362,11 @@ describe('createSleep', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should raise CorruptedEventLogError when duplicate wait_completed events exist in the event log', async () => {
+  it('should raise ReplayDivergenceError when duplicate wait_completed events cannot be consumed', async () => {
     // When the event log has 2 wait_completed for a single wait_created,
     // the first wait_completed removes the callback (Finished), but the second
     // wait_completed has no consumer. The onUnconsumedEvent callback should
-    // trigger a CorruptedEventLogError via onWorkflowError.
+    // trigger a ReplayDivergenceError via onWorkflowError.
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -407,7 +408,7 @@ describe('createSleep', () => {
 
     // The duplicate wait_completed at index 2 is orphaned and triggers the error
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+    expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('evnt_2');
   });
 

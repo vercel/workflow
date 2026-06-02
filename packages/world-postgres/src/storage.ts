@@ -8,8 +8,10 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AttributeChange,
   Event,
   EventResult,
+  ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
   ListEventsParams,
@@ -25,6 +27,8 @@ import type {
   WorkflowRunWithoutData,
 } from '@workflow/world';
 import {
+  ATTRIBUTE_MAX_PER_RUN,
+  AttributeValidationError,
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
@@ -32,6 +36,7 @@ import {
   SPEC_VERSION_CURRENT,
   StepSchema,
   stripEventDataRefs,
+  validateAttributeChanges,
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -140,6 +145,88 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
         cursor: values.at(-1)?.runId ?? null,
       };
     }) as Storage['runs']['list'],
+
+    experimentalSetAttributes: async (
+      runId: string,
+      changes: AttributeChange[],
+      options?: { allowReservedAttributes?: boolean }
+    ): Promise<ExperimentalSetAttributesResult> => {
+      // Load existing attributes so the SDK-shape validator can produce
+      // a precise error message (cap, duplicate keys, reserved prefix,
+      // byte length). The authoritative cap enforcement happens inside
+      // the UPDATE statement below — see the `WHERE` clause — so the
+      // race between this read and the UPDATE cannot push the row past
+      // the per-run cap.
+      const [existing] = await drizzle
+        .select({ attributes: runs.attributes })
+        .from(runs)
+        .where(eq(runs.runId, runId))
+        .limit(1);
+      if (!existing) {
+        throw new WorkflowRunNotFoundError(runId);
+      }
+
+      try {
+        validateAttributeChanges(changes, {
+          existingKeys: Object.keys(existing.attributes ?? {}),
+          allowReservedAttributes: options?.allowReservedAttributes,
+        });
+      } catch (err) {
+        if (err instanceof AttributeValidationError) throw err;
+        throw err;
+      }
+
+      // Build a single SQL expression that applies all changes
+      // atomically. Sets fold into nested `jsonb_set` calls; removes
+      // fold into chained `-` (delete) operators.
+      let expr = sql`COALESCE(${runs.attributes}, '{}'::jsonb)`;
+      for (const { key, value } of changes) {
+        if (value === null) {
+          expr = sql`${expr} - ${key}`;
+        } else {
+          expr = sql`jsonb_set(${expr}, ARRAY[${key}]::text[], to_jsonb(${value}::text), true)`;
+        }
+      }
+
+      // Atomic cap enforcement: only commit the UPDATE if the
+      // post-merge key count fits the per-run cap. Computed against
+      // the *current* row state, so two concurrent writers adding
+      // disjoint keys at the cap boundary cannot both succeed.
+      // Drizzle re-renders `expr` twice in the SQL (`SET attributes =
+      // ...` + the count check); `jsonb_set` is cheap so the
+      // duplication is harmless.
+      const [updated] = await drizzle
+        .update(runs)
+        .set({
+          attributes: expr as any,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(runs.runId, runId),
+            sql`(SELECT COUNT(*) FROM jsonb_object_keys(${expr})) <= ${ATTRIBUTE_MAX_PER_RUN}`
+          )
+        )
+        .returning({ attributes: runs.attributes });
+
+      if (!updated) {
+        // Either the run vanished mid-call, or the cap-check WHERE
+        // clause rejected the UPDATE. Re-read to disambiguate.
+        const [stillThere] = await drizzle
+          .select({ attributes: runs.attributes })
+          .from(runs)
+          .where(eq(runs.runId, runId))
+          .limit(1);
+        if (!stillThere) {
+          throw new WorkflowRunNotFoundError(runId);
+        }
+        throw new AttributeValidationError(
+          `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} after concurrent write`
+        );
+      }
+
+      return { attributes: updated.attributes ?? {} };
+    },
   };
 }
 

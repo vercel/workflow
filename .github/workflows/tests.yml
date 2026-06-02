@@ -18,11 +18,30 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  ci-scope:
+    name: Detect CI Scope
+    runs-on: ubuntu-latest
+    outputs:
+      fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
+      validation-fast-path: ${{ steps.scope.outputs.validation-fast-path }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Classify changed files
+        id: scope
+        uses: ./.github/actions/detect-ci-scope
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
   # Phase 0: Update PR comment to show tests are running
   pr-comment-start:
     name: Create PR Comment
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    needs: ci-scope
+    if: github.event_name == 'pull_request' && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 2
 
     steps:
@@ -128,7 +147,8 @@ jobs:
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.validation-fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     strategy:
       fail-fast: false
       matrix:
@@ -156,7 +176,8 @@ jobs:
     name: Node.js Module Build Errors Test
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -192,6 +213,8 @@ jobs:
   vitest-plugin:
     name: Vitest Plugin Tests
     runs-on: ubuntu-latest
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -213,10 +236,47 @@ jobs:
         run: pnpm test
         working-directory: workbench/vitest
 
+  e2e-package-build:
+    name: Build Shared E2E Packages
+    runs-on: ubuntu-latest
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    timeout-minutes: 30
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment and build packages
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Upload package build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          # Keep this list aligned with package build outputs in turbo.json.
+          # upload-artifact strips the common packages/ root; consumers restore into packages/.
+          path: |
+            packages/*/dist
+            packages/*/.well-known
+            packages/*/src/version.ts
+            packages/swc-plugin-workflow/swc_plugin_workflow.wasm
+            packages/swc-plugin-workflow/build-hash.json
+          include-hidden-files: true
+          retention-days: 1
+
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
       id-token: write
       contents: read
@@ -336,7 +396,8 @@ jobs:
   getTestMatrix:
     name: Get Test Matrix
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
 
@@ -362,8 +423,8 @@ jobs:
     name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
-    needs: getTestMatrix
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, getTestMatrix, e2e-package-build]
     strategy:
       fail-fast: false
       matrix: ${{fromJson(needs.getTestMatrix.outputs.matrix)}}
@@ -398,7 +459,15 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Initial Build
+      - name: Download shared package builds
+        if: ${{ !matrix.app.canary }}
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      - name: Run Initial Build for Next.js canary
+        if: ${{ matrix.app.canary }}
         run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Prepare workbench path
@@ -438,8 +507,8 @@ jobs:
     name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
-    needs: getTestMatrix
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, getTestMatrix, e2e-package-build]
     strategy:
       fail-fast: false
       matrix: ${{fromJson(needs.getTestMatrix.outputs.matrix)}}
@@ -474,7 +543,15 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Initial Build
+      - name: Download shared package builds
+        if: ${{ !matrix.app.canary }}
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      - name: Run Initial Build for Next.js canary
+        if: ${{ matrix.app.canary }}
         run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Prepare workbench path
@@ -518,8 +595,8 @@ jobs:
     name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
-    needs: getTestMatrix
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, getTestMatrix, e2e-package-build]
     strategy:
       fail-fast: false
       matrix: ${{fromJson(needs.getTestMatrix.outputs.matrix)}}
@@ -571,7 +648,15 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Initial Build
+      - name: Download shared package builds
+        if: ${{ !matrix.app.canary }}
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      - name: Run Initial Build for Next.js canary
+        if: ${{ matrix.app.canary }}
         run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Setup PostgreSQL Database
@@ -618,7 +703,8 @@ jobs:
     name: E2E Windows Tests
     runs-on: windows-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -805,8 +891,8 @@ jobs:
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
-    if: always() && !cancelled()
+    needs: [ci-scope, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
     steps:
@@ -880,7 +966,7 @@ jobs:
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [unit, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -888,14 +974,26 @@ jobs:
       - name: Validate E2E job statuses
         env:
           UNIT_STATUS: ${{ needs.unit.result }}
+          BUILD_STATUS: ${{ needs.e2e-package-build.result }}
           VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
+          FAST_PATH: ${{ needs.ci-scope.outputs.fast-path }}
+          VALIDATION_FAST_PATH: ${{ needs.ci-scope.outputs.validation-fast-path }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
         run: |
           FAILED_JOBS=()
+
+          if [[ "$FAST_PATH" == "true" ]]; then
+            if [[ "$VALIDATION_FAST_PATH" != "true" && "$HAS_LABEL" != "true" && "$UNIT_STATUS" != "success" ]]; then
+              echo "UI-only fast path still requires unit tests; unit status was $UNIT_STATUS."
+              exit 1
+            fi
+            echo "Docs/UI-only change detected - no runtime E2E lanes are required."
+            exit 0
+          fi
 
           # When workflow-server-test label is present, only check vercel-prod (others should be skipped)
           # Otherwise, all jobs must succeed
@@ -912,6 +1010,7 @@ jobs:
           else
             echo "Standard PR - checking all jobs"
             [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
+            [[ "$BUILD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-package-build ($BUILD_STATUS)")
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
