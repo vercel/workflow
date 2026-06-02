@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
-  HookConflictError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowWorldError,
@@ -1426,9 +1425,14 @@ describe('e2e', () => {
       expect(run2Error.cause.message).toContain(
         'already in use by another workflow'
       );
-      expect(HookConflictError.is(run2Error.cause)).toBe(true);
-      assert(HookConflictError.is(run2Error.cause));
-      expect(run2Error.cause.conflictingRunId).toBe(run1.runId);
+      // The conflicting run's id is surfaced through the error. On `stable`,
+      // failed runs flatten the thrown value to a plain Error across the
+      // `run.returnValue` boundary, so the typed `HookConflictError` identity
+      // (and its structured `conflictingRunId` field) is not reconstructed on
+      // the client — that hydration pipeline only exists on `main`. The
+      // conflicting run id still reaches the caller via the message, which is
+      // what we assert here.
+      expect(run2Error.cause.message).toContain(run1.runId);
 
       // Verify workflow 2 failed
       const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
