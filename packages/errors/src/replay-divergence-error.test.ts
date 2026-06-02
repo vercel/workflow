@@ -13,4 +13,11 @@ describe('ReplayDivergenceError', () => {
     expect(err.message).toContain('replay-divergence');
     expect(ReplayDivergenceError.is(err)).toBe(true);
   });
+
+  test('does not treat an error without an event id as replay divergence', () => {
+    const err = new WorkflowRuntimeError('not a replay signal');
+    err.name = 'ReplayDivergenceError';
+
+    expect(ReplayDivergenceError.is(err)).toBe(false);
+  });
 });

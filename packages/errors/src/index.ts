@@ -344,7 +344,11 @@ export class ReplayDivergenceError extends WorkflowRuntimeError {
   }
 
   static is(value: unknown): value is ReplayDivergenceError {
-    return isError(value) && value.name === 'ReplayDivergenceError';
+    return (
+      isError(value) &&
+      value.name === 'ReplayDivergenceError' &&
+      typeof (value as { eventId?: unknown }).eventId === 'string'
+    );
   }
 }
 
