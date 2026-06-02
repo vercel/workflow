@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this NestJS app, run `npm i workflow @workflow/nest` and `npm i -D @swc/cli @swc/core`. Configure `nest-cli.json` with `compilerOptions.builder: &quot;swc&quot;` and `deleteOutDir: true`. Run `npx @workflow/nest init`, add `.swcrc` to `.gitignore`, and set package scripts `prebuild: &quot;npx @workflow/nest init --force&quot;` and `start:dev: &quot;npx @workflow/nest init --force && nest start --watch&quot;`. Import `WorkflowModule.forRoot()` from `@workflow/nest` in `src/app.module.ts` (use `{ moduleType: &quot;commonjs&quot;, distDir: &quot;dist&quot; }` if compiling CommonJS). Create `src/workflows/user-signup.ts` with `&quot;use workflow&quot;`, `sleep`, and `&quot;use step&quot;` helpers. Add a `POST /signup` controller method that reads `email`, calls `start(handleUserSignup, [email])` from `workflow/api`, and returns JSON. Run `npm run start:dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/signup`, and inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 This guide will walk through setting up your first workflow in a NestJS app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
 
 <Callout>

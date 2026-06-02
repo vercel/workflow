@@ -5,6 +5,10 @@ type: guide
 summary: Convert an AI SDK Agent into a DurableAgent backed by a workflow, with tools as retryable steps.
 ---
 
+<CopyPrompt
+  text="Convert this stateless AI SDK agent to a durable Workflow agent. Install/use `@workflow/ai` and `workflow`. Replace the manual `streamText` loop with `new DurableAgent(...)` from `@workflow/ai/agent`. Keep the orchestration inside an exported workflow function with `&quot;use workflow&quot;`; define side-effectful tools as helper functions with `&quot;use step&quot;`; pass `messages`, `tools`, and `stopWhen`/agent options to the durable agent; stream output through `getWritable<UIMessageChunk>()` when the UI needs live updates; and expose an API route that starts or reconnects to the run. Verify tool retries, stream output, and resume/reconnect behavior."
+/>
+
 Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically.
 
 ## When to use this

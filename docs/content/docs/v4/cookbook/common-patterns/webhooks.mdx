@@ -5,6 +5,10 @@ type: guide
 summary: Create webhook endpoints that your workflow can await, process incoming requests in steps, and respond to the caller — all within durable workflow context.
 ---
 
+<CopyPrompt
+  text="Implement durable webhook handling for this workflow. Use `createWebhook()` from `workflow` inside the &quot;use workflow&quot; function when the workflow needs a generated callback URL. Use `createWebhook({ respondWith: &quot;manual&quot; })` when the workflow must validate the request before sending an HTTP response. Await the webhook request, pass the `RequestWithResponse` into a &quot;use step&quot; function for validation and side effects, and call `request.respondWith(Response.json(...))` on every code path. Race the webhook against `sleep()` for deadlines and throw `FatalError` for permanent timeout/failure paths. For fixed public callbacks or large payloads, use `defineHook()` plus `resumeHook()` from `workflow/api` and pass only a token or blob reference into the hook payload. Verify success response, invalid response, timeout, duplicate callback, and large-payload behavior."
+/>
+
 Use webhooks when external services push events to your application via HTTP callbacks. The workflow creates a webhook URL, suspends with zero compute cost, and resumes when a request arrives.
 
 ## When to use this

@@ -14,6 +14,10 @@ related:
   - /docs/deploying/world/vercel-world
 ---
 
+<CopyPrompt
+  text="Refactor this Temporal TypeScript code to Workflow SDK. Run `npm i workflow`. Replace Temporal workflow functions with exported async functions containing `&quot;use workflow&quot;`. Replace Activities with helper functions containing `&quot;use step&quot;`. Replace timers with `sleep()` from `workflow`. Replace Signals with `defineHook()` plus `resumeHook()` from `workflow/api`, or `createWebhook()` when an HTTP callback URL is needed. Replace Child Workflows with `start(childWorkflow, args)` and coordinate completion with hooks or `getRun()`. Remove Temporal workers; instead expose API routes or server functions that call `start()` and `getRun()` from `workflow/api`. Preserve idempotency and retries with normal errors, `RetryableError`, and `FatalError`, then add a verification path for each migrated workflow."
+/>
+
 <Callout type="info">
 Install the Workflow SDK migration skill:
 

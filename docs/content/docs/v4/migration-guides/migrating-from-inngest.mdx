@@ -14,6 +14,10 @@ related:
   - /docs/deploying/world/vercel-world
 ---
 
+<CopyPrompt
+  text="Migrate this Inngest code to Workflow SDK. Run `npm i workflow`. Replace each `inngest.createFunction` handler with an exported async function that contains `&quot;use workflow&quot;`. Replace each `step.run()` callback with a helper function that contains `&quot;use step&quot;`. Replace `step.sleep()` with `sleep()` from `workflow`. Replace event waits with `defineHook()` or `createWebhook()` from `workflow`, and resume them from server routes with `resumeHook()` or webhook requests. Start runs from API routes or server code with `start(workflowFn, args)` from `workflow/api`, and use `getRun(runId)` where callers need status, streams, cancellation, or results. Preserve retries by throwing normal errors for retryable failures and `FatalError` for permanent failures. Add a local test or route call that starts the migrated workflow and verifies the same observable behavior as the Inngest function."
+/>
+
 <Callout type="info">
 Install the Workflow SDK migration skill:
 

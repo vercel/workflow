@@ -14,6 +14,10 @@ related:
   - /docs/deploying/world/vercel-world
 ---
 
+<CopyPrompt
+  text="Convert this trigger.dev setup to Workflow SDK. Run `npm i workflow`. Replace each `task()` or job entrypoint with an exported async workflow function containing `&quot;use workflow&quot;`. Replace trigger.dev task bodies that do side effects with `&quot;use step&quot;` helper functions. Replace waits/delays with `sleep()` from `workflow`. Replace external triggers or resume points with `defineHook()`/`resumeHook()` or `createWebhook()`. Replace run creation/status calls with `start()` and `getRun()` from `workflow/api`. Replace metadata/progress streaming with `getWritable()` from `workflow` when the UI needs live updates. Preserve retry semantics with normal errors, `RetryableError`, and `FatalError`, then add a local verification that starts the migrated workflow and checks the expected result or stream."
+/>
+
 <Callout type="info">
 Install the Workflow SDK migration skill:
 

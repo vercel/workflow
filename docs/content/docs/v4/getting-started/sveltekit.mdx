@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this SvelteKit app, run `npm i workflow`. In `vite.config.ts`, import `workflowPlugin` from `workflow/sveltekit` and add it to `plugins` with `sveltekit()`. Add the TypeScript plugin `{ &quot;name&quot;: &quot;workflow&quot; }` to `tsconfig.json` if TypeScript is used. Create `workflows/user-signup.ts` exporting `handleUserSignup(email)` with `&quot;use workflow&quot;`, `sleep` from `workflow`, and `&quot;use step&quot;` helpers that create a user and send emails. Add `src/routes/api/signup/+server.ts` with a POST `RequestHandler` that reads `{ email }`, calls `start(handleUserSignup, [email])` from `workflow/api`, and returns `json({ message: &quot;User signup workflow started&quot; })`. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:5173/api/signup`, then inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 <Steps>
 
 <Step>

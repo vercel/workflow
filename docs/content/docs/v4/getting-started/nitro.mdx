@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this Nitro app, run `npm i workflow`. In `nitro.config.ts`, use `defineConfig` from `nitro`, set `serverDir: &quot;./server&quot;`, and add `modules: [&quot;workflow/nitro&quot;]`. Add the TypeScript plugin `{ &quot;name&quot;: &quot;workflow&quot; }` to `tsconfig.json` if TypeScript is used. Create `workflows/user-signup.ts` with `handleUserSignup(email)`, `&quot;use workflow&quot;`, `sleep` from `workflow`, and `&quot;use step&quot;` helpers. Add `server/api/signup.post.ts` using `defineEventHandler` from `nitro/h3` and `start` from `workflow/api` to start the workflow from `{ email }`. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/api/signup`, then inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 <Steps>
 
 <Step>

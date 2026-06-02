@@ -5,6 +5,10 @@ type: guide
 summary: Use defineHook with the tool call ID to suspend an agent for human approval, with an optional timeout.
 ---
 
+<CopyPrompt
+  text="Add a human approval gate to this AI workflow. Define a typed hook with `defineHook()` from `workflow` for approval payloads. At the approval point, create the hook once with a stable token, await it inside the `&quot;use workflow&quot;` function, and branch on approved/rejected input. Add a server route that receives the human decision and calls `resumeHook(token, payload)` from `workflow/api`. If the approval should expire, race the hook against `sleep()` from `workflow`. Update the UI to show the pending approval and call the resume route. Verify approve, reject, timeout, and duplicate resume behavior."
+/>
+
 Use this pattern when an AI agent needs human confirmation before performing a consequential action like booking, purchasing, or publishing. The workflow suspends without consuming resources until the human responds.
 
 ## When to use this

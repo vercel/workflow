@@ -11,6 +11,10 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
+<CopyPrompt
+  text="Make this Chat SDK bot durable with Workflow SDK. Install/use `workflow`. Create one exported workflow function with &quot;use workflow&quot; per chat thread. Store the Chat SDK thread ID, Workflow run ID, and any serialized conversation state in the project data store. Use `defineHook()` from `workflow` for incoming turns and call `resumeHook()` from `workflow/api` from the Chat SDK webhook or message handler. Put provider calls, database writes, and outbound platform messages in &quot;use step&quot; helper functions. Start a new run with `start(workflowFn, [initialThreadState])` when no run exists, otherwise resume the existing hook. Use `getRun(runId)` for status, cancellation, or stream reads. Verify first message, follow-up message, restart/reconnect, duplicate webhook, and failed-send retry behavior."
+/>
+
 [Chat SDK](https://chat-sdk.dev/) is a unified TypeScript SDK for building bots across Slack, Microsoft Teams, Google Chat, Discord, Telegram, GitHub, Linear, and WhatsApp. Write the bot once, deploy to every platform. It handles webhook verification, event normalization, subscriptions, and cross-platform features like cards and modals.
 
 Workflow SDK complements it by making bot **sessions** durable. Each conversation thread maps to a long-running workflow run that:
