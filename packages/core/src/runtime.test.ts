@@ -522,4 +522,78 @@ describe('workflowEntrypoint replay guards', () => {
       })
     );
   });
+
+  it('replays attribute events before executing a step that loses the same race', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_attribute_step_race',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_attribute_step_race',
+        undefined,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const workflowCode = `
+      const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+      const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
+      const slowStep = useStep("slowStep");
+      async function workflow() {
+        await Promise.race([
+          setAttributes([{ key: "winner", value: "attribute" }]),
+          slowStep(),
+        ]);
+        return "attribute won";
+      }${getWorkflowTransformCode('workflow')}`;
+
+    const firstAttemptEvents: any[] = [];
+    const firstAttemptMessages: unknown[] = [];
+    await runWorkflowHandlerWithEvents(workflowCode, workflowRun, [], {
+      createdEvents: firstAttemptEvents,
+      queuedMessages: firstAttemptMessages,
+    });
+
+    expect(firstAttemptEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'attr_set' })
+    );
+    expect(firstAttemptEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'step_created' })
+    );
+    expect(firstAttemptMessages).toEqual([]);
+
+    const replayEvents = firstAttemptEvents
+      .filter(
+        (event) =>
+          event.eventType === 'attr_set' || event.eventType === 'step_created'
+      )
+      .map((event, index) => ({
+        ...event,
+        eventId: `event-${index}`,
+        runId: workflowRun.runId,
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      })) as Event[];
+    const replayCreatedEvents: unknown[] = [];
+    const replayQueuedMessages: unknown[] = [];
+
+    await runWorkflowHandlerWithEvents(
+      workflowCode,
+      workflowRun,
+      replayEvents,
+      {
+        createdEvents: replayCreatedEvents,
+        queuedMessages: replayQueuedMessages,
+      }
+    );
+
+    expect(replayCreatedEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_completed' })
+    );
+    expect(replayQueuedMessages).toEqual([]);
+  });
 });

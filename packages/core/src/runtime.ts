@@ -970,7 +970,10 @@ export function workflowEntrypoint(
                         }
 
                         // Native workflow attribute events are resolved through
-                        // replay; re-invoke now that their events are durable.
+                        // replay. Re-invoke before processing pending steps:
+                        // in Promise.race([setAttributes(), step()]), the
+                        // durable attribute event can win without executing
+                        // the losing step.
                         if (suspensionResult.hasAttributeEvents) {
                           return { timeoutSeconds: 0 };
                         }
