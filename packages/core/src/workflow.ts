@@ -168,6 +168,9 @@ export async function runWorkflow(
     const promiseQueueHolder = { current: Promise.resolve() };
 
     const eventsConsumer = new EventsConsumer(events, {
+      onConsumedEvent: (event) => {
+        updateTimestamp(+event.createdAt);
+      },
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
           new CorruptedEventLogError(
@@ -197,16 +200,6 @@ export async function runWorkflow(
       },
       pendingDeliveries: 0,
     };
-
-    // Subscribe to the events log to update the timestamp in the vm context
-    workflowContext.eventsConsumer.subscribe((event) => {
-      const createdAt = event?.createdAt;
-      if (createdAt) {
-        updateTimestamp(+createdAt);
-      }
-      // Never consume events - this is only a passive subscriber
-      return EventConsumerResult.NotConsumed;
-    });
 
     // Consume run lifecycle events - these are structural events that don't
     // need special handling in the workflow, but must be consumed to advance
