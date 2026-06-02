@@ -22,7 +22,7 @@ import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from '@/components/ui/tooltip';
+} from '@vercel/geistdocs/components/tooltip';
 import { BenchmarkHistoryChart } from './BenchmarkHistoryChart';
 import { formatTime, type World } from './types';
 

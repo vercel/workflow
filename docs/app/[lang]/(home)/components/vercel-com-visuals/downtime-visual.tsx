@@ -4,7 +4,7 @@ import type { JSX } from 'react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion, useInView } from 'motion/react';
-import { Spinner } from '@/components/ui/spinner';
+import { Spinner } from '@vercel/geistdocs/components/spinner';
 
 export function DowntimeVisual(): JSX.Element {
   return (
