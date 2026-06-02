@@ -1,58 +1,192 @@
-import { type InferPageType, loader } from 'fumadocs-core/source';
-import { lucideIconsPlugin } from 'fumadocs-core/source/lucide-icons';
+import {
+  createVersionedSources,
+  type GeistdocsSourceBundle,
+} from '@vercel/geistdocs/source';
 import { v4docs, v5docs } from '@/.source/server';
-import { basePath } from '@/geistdocs';
-import { i18n } from './i18n';
+import { config } from './config';
 
-// See https://fumadocs.dev/docs/headless/source-api for more info
-export const source = loader({
-  i18n,
-  baseUrl: '/docs',
-  source: v4docs.toFumadocsSource(),
-  plugins: [lucideIconsPlugin()],
+type Source = GeistdocsSourceBundle['source'];
+type Page = NonNullable<ReturnType<Source['getPage']>>;
+
+const COOKBOOK_DOCS_PREFIX_RE = /\/docs\/cookbook(?=\/|$)/g;
+const DOCS_PREFIX_RE = /\/docs(?=\/|$)/g;
+
+const rewriteCookbookUrlForVersion = (url: string, versionPrefix: string) =>
+  url.replace(COOKBOOK_DOCS_PREFIX_RE, `${versionPrefix}/cookbook`);
+
+const rewriteDocsUrlsForVersion = (text: string, versionPrefix: string) => {
+  if (!versionPrefix) {
+    return text.replace(COOKBOOK_DOCS_PREFIX_RE, '/cookbook');
+  }
+
+  return text
+    .replace(COOKBOOK_DOCS_PREFIX_RE, `${versionPrefix}/cookbook`)
+    .replace(DOCS_PREFIX_RE, `${versionPrefix}/docs`);
+};
+
+const isCookbookPage = (page: Pick<Page, 'url'>) =>
+  page.url === '/docs/cookbook' || page.url.startsWith('/docs/cookbook/');
+
+const withUrl = (page: Page, url: string): Page => ({ ...page, url });
+
+const versionedSources = createVersionedSources({
+  config,
+  current: 'v4',
+  versions: [
+    {
+      id: 'v4',
+      label: 'v4 (Latest)',
+      docs: v4docs,
+      baseUrl: '/docs',
+      markdown: {
+        transform: (markdown) => rewriteDocsUrlsForVersion(markdown, ''),
+      },
+    },
+    {
+      id: 'v5',
+      label: 'v5 (Pre-release)',
+      docs: v5docs,
+      baseUrl: '/docs',
+      routePrefix: '/v5',
+      markdown: {
+        transform: (markdown) => rewriteDocsUrlsForVersion(markdown, '/v5'),
+      },
+    },
+  ],
 });
 
-export const v5Source = loader({
-  i18n,
-  baseUrl: '/docs',
-  source: v5docs.toFumadocsSource(),
-  plugins: [lucideIconsPlugin()],
-});
-
-export const getPageImage = (page: InferPageType<typeof source>) => {
-  const segments = [...page.slugs, 'image.png'];
+const createDocsRouteSource = (
+  bundle: GeistdocsSourceBundle,
+  options: { id: string; label: string; versionPrefix?: string }
+): GeistdocsSourceBundle => {
+  const { id, label, versionPrefix = '' } = options;
+  const baseSource = bundle.source;
+  const mapPage = (page: Page) =>
+    versionPrefix ? withUrl(page, `${versionPrefix}${page.url}`) : page;
 
   return {
-    segments,
-    url: basePath
-      ? `${basePath}/og/${segments.join('/')}`
-      : `/og/${segments.join('/')}`,
+    ...bundle,
+    id,
+    label,
+    baseUrl: `${versionPrefix}/docs`,
+    source: {
+      ...baseSource,
+      getPage: ((slug?: string[], lang?: string) => {
+        if (slug?.[0] === 'cookbook') {
+          return undefined;
+        }
+
+        return baseSource.getPage(slug, lang);
+      }) as Source['getPage'],
+      getPages: ((lang?: string) =>
+        baseSource
+          .getPages(lang)
+          .filter((page) => !isCookbookPage(page))
+          .map(mapPage)) as Source['getPages'],
+      generateParams: ((...args: Parameters<Source['generateParams']>) =>
+        baseSource
+          .generateParams(...args)
+          .filter(
+            (params) =>
+              !(Array.isArray(params.slug) && params.slug[0] === 'cookbook')
+          )) as unknown as Source['generateParams'],
+    },
   };
 };
 
-export const getLLMText = async (page: InferPageType<typeof source>) => {
-  const processed = await page.data.getText('processed');
-  const { title, description, product, type, summary, prerequisites, related } =
-    page.data;
+const resolveCookbookSlug = (slug?: string[]) => {
+  if (!slug?.length) {
+    return ['cookbook'];
+  }
 
-  const frontmatter = [
-    '---',
-    `title: ${title}`,
-    description && `description: ${description}`,
-    product && `product: ${product}`,
-    type && `type: ${type}`,
-    summary && `summary: ${summary}`,
-    prerequisites?.length &&
-      `prerequisites:\n${prerequisites.map((p) => `  - ${p}`).join('\n')}`,
-    related?.length && `related:\n${related.map((r) => `  - ${r}`).join('\n')}`,
-    '---',
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-  return `${frontmatter}
-
-# ${title}
-
-${processed}`;
+  return slug[0] === 'cookbook' ? slug : ['cookbook', ...slug];
 };
+
+const createCookbookRouteSource = (
+  bundle: GeistdocsSourceBundle,
+  options: { id: string; label: string; versionPrefix?: string }
+): GeistdocsSourceBundle => {
+  const { id, label, versionPrefix = '' } = options;
+  const baseSource = bundle.source;
+  const mapPage = (page: Page) =>
+    withUrl(page, rewriteCookbookUrlForVersion(page.url, versionPrefix));
+
+  return {
+    ...bundle,
+    id,
+    label,
+    baseUrl: `${versionPrefix}/cookbook`,
+    source: {
+      ...baseSource,
+      getPage: ((slug?: string[], lang?: string) => {
+        const page = baseSource.getPage(resolveCookbookSlug(slug), lang);
+
+        return page && isCookbookPage(page) ? mapPage(page) : undefined;
+      }) as Source['getPage'],
+      getPages: ((lang?: string) =>
+        baseSource
+          .getPages(lang)
+          .filter(isCookbookPage)
+          .map(mapPage)) as Source['getPages'],
+      generateParams: ((...args: Parameters<Source['generateParams']>) =>
+        baseSource
+          .generateParams(...args)
+          .filter(
+            (params) =>
+              Array.isArray(params.slug) && params.slug[0] === 'cookbook'
+          )
+          .map((params) => ({
+            ...params,
+            slug: Array.isArray(params.slug)
+              ? params.slug.slice(1)
+              : params.slug,
+          }))) as unknown as Source['generateParams'],
+    },
+  };
+};
+
+export const versions = versionedSources;
+
+export const geistdocsSource = createDocsRouteSource(versionedSources.current, {
+  id: 'docs',
+  label: 'Docs',
+});
+
+export const cookbookSource = createCookbookRouteSource(
+  versionedSources.current,
+  {
+    id: 'cookbook',
+    label: 'Cookbook',
+  }
+);
+
+export const v5GeistdocsSource = createDocsRouteSource(
+  versionedSources.byId.v5,
+  {
+    id: 'v5-docs',
+    label: 'v5 Docs',
+    versionPrefix: '/v5',
+  }
+);
+
+export const v5CookbookSource = createCookbookRouteSource(
+  versionedSources.byId.v5,
+  {
+    id: 'v5-cookbook',
+    label: 'v5 Cookbook',
+    versionPrefix: '/v5',
+  }
+);
+
+export const currentSources = [geistdocsSource, cookbookSource];
+export const allSources = [
+  geistdocsSource,
+  cookbookSource,
+  v5GeistdocsSource,
+  v5CookbookSource,
+];
+
+export const source = versionedSources.current.source;
+export const v5Source = versionedSources.byId.v5.source;
+export const getPageImage = versionedSources.current.getPageImage;
+export const getLLMText = versionedSources.current.getPageMarkdown;

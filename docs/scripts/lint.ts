@@ -10,6 +10,13 @@ import {
 } from 'next-validate-link';
 import { source } from '../lib/geistdocs/source';
 
+type RawDocsPage = ReturnType<typeof source.getPages>[number] & {
+  absolutePath: string;
+  data: ReturnType<typeof source.getPages>[number]['data'] & {
+    getText(kind: 'raw'): Promise<string>;
+  };
+};
+
 const DOCS_DIR = fileURLToPath(new URL('..', import.meta.url));
 const STATIC_APP_LINK_FILES = [
   'geistdocs.tsx',
@@ -18,9 +25,10 @@ const STATIC_APP_LINK_FILES = [
 const KNOWN_APP_PATHS = new Set(['/', '/docs', '/cookbook', '/worlds']);
 
 async function checkLinks() {
+  const docsPages = source.getPages() as RawDocsPage[];
   // Pre-fetch all page content and headings
   const pages = await Promise.all(
-    source.getPages().map(async (page) => {
+    docsPages.map(async (page) => {
       const raw = await page.data.getText('raw');
       return {
         page,
@@ -72,7 +80,8 @@ function getHeadingsFromMarkdown(content: string): string[] {
 }
 
 function getFiles() {
-  const promises = source.getPages().map(
+  const docsPages = source.getPages() as RawDocsPage[];
+  const promises = docsPages.map(
     async (page): Promise<FileObject> => ({
       path: page.absolutePath,
       content: await page.data.getText('raw'),
@@ -115,7 +124,10 @@ function getInternalHrefLiterals(content: string): string[] {
 
   let match = hrefPattern.exec(content);
   while (match !== null) {
-    hrefs.push(match[2]);
+    const href = match[2];
+    if (href) {
+      hrefs.push(href);
+    }
     match = hrefPattern.exec(content);
   }
 

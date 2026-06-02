@@ -1,148 +1,69 @@
-import { Step, Steps } from 'fumadocs-ui/components/steps';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
-import { createRelativeLink } from 'fumadocs-ui/mdx';
-import type { Metadata } from 'next';
-import type { ComponentProps } from 'react';
-import { notFound, permanentRedirect } from 'next/navigation';
-import { AgentTraces } from '@/components/custom/agent-traces';
-import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
-import { AskAI } from '@/components/geistdocs/ask-ai';
-import { CopyPage } from '@/components/geistdocs/copy-page';
-import {
-  DocsBody,
-  DocsDescription,
-  DocsPage,
-  DocsTitle,
-} from '@/components/geistdocs/docs-page';
-import { EditSource } from '@/components/geistdocs/edit-source';
-import { Feedback } from '@/components/geistdocs/feedback';
+import { MobileDocsBar } from '@vercel/geistdocs/mobile-docs-bar';
+import { createDocsPage } from '@vercel/geistdocs/pages/docs';
+import type { ComponentProps, ComponentType } from 'react';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
-import { MobileDocsBar } from '@/components/geistdocs/mobile-docs-bar';
-import { OpenInChat } from '@/components/geistdocs/open-in-chat';
-import { ScrollTop } from '@/components/geistdocs/scroll-top';
-import { PreviewInstallServer } from '@/components/preview-install-server';
-import * as AccordionComponents from '@/components/ui/accordion';
-import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
-import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
-import {
-  getLLMText,
-  getPageImage,
-  source,
-  v5Source,
-} from '@/lib/geistdocs/source';
-import { TSDoc } from '@/lib/tsdoc';
+import { config } from '@/lib/geistdocs/config';
+import { rewriteCookbookUrlForVersion } from '@/lib/geistdocs/cookbook-source';
+import { source, v5GeistdocsSource } from '@/lib/geistdocs/source';
 
-const WorldTestingPerformanceNoop = () => null;
+const VERSION_PREFIX = '/v5';
 
-const Page = async ({ params }: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
-  const { slug, lang } = await params;
+const getPageUrl = ({ page }: { page: { url: string } }) =>
+  `${VERSION_PREFIX}${page.url}`;
 
-  if (Array.isArray(slug) && slug[0] === 'cookbook') {
-    const rest = slug.slice(1).join('/');
-    const legacyPath = `/docs/cookbook${rest ? `/${rest}` : ''}`;
-    permanentRedirect(`/${lang}${rewriteCookbookUrl(legacyPath)}`);
-  }
+const docsPage = createDocsPage({
+  config,
+  source: v5GeistdocsSource,
+  getPageUrl,
+  mdx: ({ link }) => getMDXComponents({ a: link }),
+  resolveLink: ({ link }) => {
+    const Link = link as ComponentType<ComponentProps<'a'>>;
+    const V5Link = (props: ComponentProps<'a'>) => {
+      let href = props.href;
 
-  const page = v5Source.getPage(slug, lang);
-  if (!page) {
-    notFound();
-  }
+      if (typeof href === 'string') {
+        href = rewriteCookbookUrlForVersion(href, VERSION_PREFIX);
+        if (href.startsWith('/docs')) {
+          href = `${VERSION_PREFIX}${href}`;
+        }
+      }
 
-  const markdown = await getLLMText(page);
-  const MDX = page.data.body;
+      return <Link {...props} href={href} />;
+    };
 
-  // Inline MDX links use /docs/... paths (matching the source baseUrl). When
-  // browsing under /v5/docs/..., those links would escape to the v4 route.
-  // Rewrite /docs/... → /v5/docs/... so all inline links stay inside the v5
-  // context, matching how the sidebar tree is rewritten by rewriteNodeUrls in
-  // version-source.ts.
-  const baseLink = createRelativeLink(v5Source, page);
-  function v5Link(props: ComponentProps<typeof baseLink>) {
-    const href =
-      typeof props.href === 'string' && props.href.startsWith('/docs/')
-        ? `/v5${props.href}`
-        : props.href;
-    return baseLink({ ...props, href });
-  }
+    return V5Link;
+  },
+  openGraph: {
+    images: true,
+  },
+  tableOfContentPopover: {
+    enabled: false,
+  },
+  renderTop: ({ data }) => <MobileDocsBar toc={data.toc} />,
+  metadata: ({ metadata, page, params }) => {
+    const pageUrl = getPageUrl({ page });
 
-  return (
-    <DocsPage
-      full={page.data.full}
-      tableOfContent={{
-        style: 'clerk',
-        footer: (
-          <div className="my-3 space-y-3">
-            <Separator />
-            <EditSource path={page.path} />
-            <ScrollTop />
-            <Feedback />
-            <CopyPage text={markdown} />
-            <AskAI href={page.url} />
-            <OpenInChat href={page.url} />
-          </div>
-        ),
-      }}
-      tableOfContentPopover={{ enabled: false }}
-      toc={page.data.toc}
-    >
-      <MobileDocsBar toc={page.data.toc} />
-      <DocsTitle>{page.data.title}</DocsTitle>
-      <DocsDescription>{page.data.description}</DocsDescription>
-      <DocsBody>
-        <MDX
-          components={getMDXComponents({
-            a: v5Link,
-            AgentTraces,
-            FluidComputeCallout,
-            Badge,
-            TSDoc,
-            Step,
-            Steps,
-            ...AccordionComponents,
-            Tabs,
-            Tab,
-            PreviewInstall: PreviewInstallServer,
-            WorldTestingPerformance: WorldTestingPerformanceNoop,
-          })}
-        />
-      </DocsBody>
-    </DocsPage>
-  );
-};
+    return {
+      ...metadata,
+      title: `${page.data.title} · Pre-release`,
+      alternates: {
+        ...metadata.alternates,
+        canonical: source.getPage(params.slug, params.lang)
+          ? page.url
+          : pageUrl,
+        types: {
+          ...metadata.alternates?.types,
+          'text/markdown': `${pageUrl}.md`,
+        },
+      },
+      robots: {
+        index: false,
+        follow: true,
+      },
+    };
+  },
+});
 
-export const generateStaticParams = () =>
-  v5Source
-    .generateParams()
-    .filter(
-      (params) => !(Array.isArray(params.slug) && params.slug[0] === 'cookbook')
-    );
-
-export const generateMetadata = async ({
-  params,
-}: PageProps<'/[lang]/v5/docs/[[...slug]]'>): Promise<Metadata> => {
-  const { slug, lang } = await params;
-  const page = v5Source.getPage(slug, lang);
-  if (!page) notFound();
-  return {
-    title: `${page.data.title} · Pre-release`,
-    description: page.data.description,
-    openGraph: {
-      images: getPageImage(page).url,
-    },
-    // Pre-release pages are not canonical. If the page also exists in v4,
-    // point search engines at the v4 URL. Otherwise (v5-only pages) point
-    // to the v5 URL as the self-canonical.
-    alternates: {
-      canonical: source.getPage(slug, lang)
-        ? `/${lang}${page.url}`
-        : `/${lang}/v5${page.url}`,
-    },
-    robots: {
-      index: false,
-      follow: true,
-    },
-  };
-};
-
-export default Page;
+export default docsPage.Page;
+export const generateStaticParams = docsPage.generateStaticParams;
+export const generateMetadata = docsPage.generateMetadata;

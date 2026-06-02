@@ -17,49 +17,6 @@ const config: NextConfig = {
     '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
   },
 
-  async rewrites() {
-    const markdownAcceptHeader =
-      '(?=.*(?:text/plain|text/markdown))(?!.*text/html.*(?:text/plain|text/markdown)).*';
-
-    return {
-      beforeFiles: [
-        {
-          source: '/docs/:path*',
-          destination: '/llms.mdx/:path*',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-        {
-          source: '/cookbook',
-          destination: '/llms.mdx/cookbook',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-        {
-          source: '/cookbook/:path*',
-          destination: '/llms.mdx/cookbook/:path*',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-      ],
-    };
-  },
-
   async redirects() {
     return [
       {

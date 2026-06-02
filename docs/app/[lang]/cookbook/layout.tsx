@@ -1,5 +1,6 @@
 import { DocsLayout } from '@/components/geistdocs/docs-layout';
 import { getCookbookTree } from '@/lib/geistdocs/cookbook-source';
+import { LATEST_VERSION } from '@/lib/geistdocs/versions';
 
 const Layout = async ({
   children,
@@ -9,7 +10,12 @@ const Layout = async ({
 
   return (
     <div className="bg-background-100">
-      <DocsLayout tree={getCookbookTree(lang)}>{children}</DocsLayout>
+      <DocsLayout
+        currentVersion={LATEST_VERSION.id}
+        tree={getCookbookTree(lang)}
+      >
+        {children}
+      </DocsLayout>
     </div>
   );
 };

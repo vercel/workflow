@@ -1,61 +1,28 @@
-import { DynamicLink } from 'fumadocs-core/dynamic-link';
-import { TypeTable } from 'fumadocs-ui/components/type-table';
-import defaultMdxComponents from 'fumadocs-ui/mdx';
+import { createMdxComponents } from '@vercel/geistdocs/mdx';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import type { MDXComponents } from 'mdx/types';
-import {
-  Callout,
-  CalloutContainer,
-  CalloutDescription,
-  CalloutTitle,
-} from './callout';
-import { CodeBlock } from './code-block';
-import {
-  CodeBlockTab,
-  CodeBlockTabs,
-  CodeBlockTabsList,
-  CodeBlockTabsTrigger,
-} from './code-block-tabs';
-import { Mermaid } from './mermaid';
-import { Video } from './video';
+import { AgentTraces } from '@/components/custom/agent-traces';
+import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
+import { PreviewInstallServer } from '@/components/preview-install-server';
+import * as AccordionComponents from '@/components/ui/accordion';
+import { Badge } from '@/components/ui/badge';
+import { TSDoc } from '@/lib/tsdoc';
 
-export const getMDXComponents = (
-  components?: MDXComponents
-): MDXComponents => ({
-  ...defaultMdxComponents,
+const WorldTestingPerformance = () => null;
 
-  pre: CodeBlock,
-
-  a: ({ href, ...props }) =>
-    href.startsWith('/') ? (
-      <DynamicLink
-        className="font-normal text-primary no-underline"
-        href={`/[lang]${href}`}
-        {...props}
-      />
-    ) : (
-      <a
-        href={href}
-        {...props}
-        className="font-normal text-primary no-underline"
-      />
-    ),
-
-  CodeBlockTabs,
-  CodeBlockTabsList,
-  CodeBlockTabsTrigger,
-  CodeBlockTab,
-
-  TypeTable,
-
-  Callout,
-  CalloutContainer,
-  CalloutTitle,
-  CalloutDescription,
-
-  Mermaid,
-
-  Video,
-
-  // User components last to allow overwriting defaults
-  ...components,
-});
+export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
+  createMdxComponents({
+    AgentTraces,
+    FluidComputeCallout,
+    Badge,
+    TSDoc,
+    Step,
+    Steps,
+    ...AccordionComponents,
+    Tabs,
+    Tab,
+    PreviewInstall: PreviewInstallServer,
+    WorldTestingPerformance,
+    ...components,
+  });
