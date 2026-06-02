@@ -1,3 +1,4 @@
+import { publishWorkflowBackendDeprecations } from '~/lib/deprecation-context';
 import { fetchStreams } from '~/lib/rpc-client';
 import type { EnvMap, ServerActionError } from '~/lib/types';
 import { unwrapOrThrow, WorkflowWebAPIError } from './workflow-errors';
@@ -35,6 +36,18 @@ export async function readStream(
     }
     const url = `/api/stream/${encodeURIComponent(streamId)}?${params.toString()}`;
     const response = await fetch(url, { signal });
+    const encodedNotices = response.headers.get(
+      'X-Workflow-Backend-Deprecations'
+    );
+    if (encodedNotices) {
+      try {
+        publishWorkflowBackendDeprecations(
+          JSON.parse(decodeURIComponent(encodedNotices))
+        );
+      } catch {
+        // Malformed diagnostic metadata must not interrupt stream reads.
+      }
+    }
     if (!response.ok) {
       const errorData = await response.json().catch(() => null);
       if (errorData && isServerActionError(errorData)) {

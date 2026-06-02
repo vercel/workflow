@@ -5,6 +5,7 @@
  * These functions are called from React Router route loaders/actions.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import * as workflowRunHelpers from '@workflow/core/runtime';
@@ -16,7 +17,7 @@ import {
 } from '@workflow/core/runtime/helpers';
 import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-hook';
 
-import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
   Event,
@@ -26,7 +27,10 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
-import { type APIConfig, createVercelWorld } from '@workflow/world-vercel';
+import {
+  createVercelWorld,
+  type WorkflowBackendDeprecationNotice,
+} from '@workflow/world-vercel';
 
 /**
  * Environment variable map for world configuration.
@@ -380,8 +384,32 @@ export interface ServerActionError {
  * Result wrapper for server actions that can return either data or error
  */
 export type ServerActionResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: ServerActionError };
+  | {
+      success: true;
+      data: T;
+      deprecations?: WorkflowBackendDeprecationNotice[];
+    }
+  | {
+      success: false;
+      error: ServerActionError;
+      deprecations?: WorkflowBackendDeprecationNotice[];
+    };
+
+const workflowBackendDeprecations = new AsyncLocalStorage<
+  WorkflowBackendDeprecationNotice[]
+>();
+
+export async function collectWorkflowBackendDeprecations<T>(
+  operation: () => Promise<T>
+): Promise<{ result: T; deprecations: WorkflowBackendDeprecationNotice[] }> {
+  const collected: WorkflowBackendDeprecationNotice[] = [];
+  const result = await workflowBackendDeprecations.run(collected, operation);
+  const unique = new Map<string, WorkflowBackendDeprecationNotice>();
+  for (const notice of collected) {
+    unique.set(JSON.stringify(notice), notice);
+  }
+  return { result, deprecations: [...unique.values()] };
+}
 
 /**
  * Cache for World instances.
@@ -412,6 +440,9 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
       token:
         userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
         process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+      onDeprecation: (notice) => {
+        workflowBackendDeprecations.getStore()?.push(notice);
+      },
       projectConfig: {
         environment:
           userEnvMap.WORKFLOW_VERCEL_ENV || process.env.WORKFLOW_VERCEL_ENV,
@@ -736,6 +767,7 @@ export async function fetchEvent(
  */
 export async function fetchEventsByCorrelationId(
   worldEnv: EnvMap,
+  runId: string,
   correlationId: string,
   params: {
     cursor?: string;
@@ -749,6 +781,7 @@ export async function fetchEventsByCorrelationId(
     const world = await getWorldFromEnv(worldEnv);
     const result = await world.events.listByCorrelationId({
       correlationId,
+      runId,
       pagination: { cursor, limit, sortOrder },
       resolveData: withData ? 'all' : 'none',
     });
@@ -762,6 +795,7 @@ export async function fetchEventsByCorrelationId(
       error,
       'world.events.listByCorrelationId',
       {
+        runId,
         correlationId,
         ...params,
       }

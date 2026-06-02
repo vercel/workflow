@@ -1,15 +1,15 @@
 'use client';
 
-import type { Event } from '@workflow/world';
 import type {
   ExactIdSearchResult,
   ExactWorkflowSearchIdKind,
 } from '@workflow/web-shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   hydrateResourceIO,
   hydrateResourceIOWithKey,
 } from '@workflow/web-shared';
+import type { Event } from '@workflow/world';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
 import {
   fetchEvent,
@@ -179,7 +179,7 @@ export function useEventsListData(
         }
 
         const { error: fetchError, result } = await unwrapServerActionResult(
-          fetchEventsByCorrelationId(env, id, {
+          fetchEventsByCorrelationId(env, runId, id, {
             cursor: nextCursor,
             sortOrder,
             limit: 100,

@@ -1,4 +1,6 @@
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
+import type { WorkflowBackendDeprecationNotice } from '@workflow/world-vercel';
+import { publishWorkflowBackendDeprecations } from '~/lib/deprecation-context';
 import type { ServerActionError } from '~/lib/types';
 
 /**
@@ -76,13 +78,20 @@ export async function unwrapServerActionResult<T>(
     success: boolean;
     data?: T;
     error?: ServerActionError;
+    deprecations?: WorkflowBackendDeprecationNotice[];
   }>
 ): Promise<
   { error: WorkflowWebAPIError; result: null } | { error: null; result: T }
 > {
-  let result: { success: boolean; data?: T; error?: ServerActionError };
+  let result: {
+    success: boolean;
+    data?: T;
+    error?: ServerActionError;
+    deprecations?: WorkflowBackendDeprecationNotice[];
+  };
   try {
     result = await promise;
+    publishWorkflowBackendDeprecations(result.deprecations);
   } catch (error) {
     result = {
       success: false,
@@ -115,6 +124,7 @@ export async function unwrapOrThrow<T>(
     success: boolean;
     data?: T;
     error?: ServerActionError;
+    deprecations?: WorkflowBackendDeprecationNotice[];
   }>
 ): Promise<T> {
   const { error, result } = await unwrapServerActionResult(promise);

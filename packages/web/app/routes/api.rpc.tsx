@@ -9,6 +9,7 @@
 import { decode, encode } from 'cbor-x';
 import {
   cancelRun,
+  collectWorkflowBackendDeprecations,
   fetchEvent,
   fetchEvents,
   fetchEventsByCorrelationId,
@@ -45,6 +46,7 @@ const handlers = {
   fetchEventsByCorrelationId: (p: any) =>
     fetchEventsByCorrelationId(
       p.worldEnv ?? {},
+      p.runId,
       p.correlationId,
       p.params ?? {}
     ),
@@ -107,8 +109,14 @@ export async function action({ request }: Route.ActionArgs) {
   }
 
   try {
-    const result = await handlers[method as RpcMethod](params ?? {});
-    return cborResponse(result);
+    const { result, deprecations } = await collectWorkflowBackendDeprecations(
+      () => handlers[method as RpcMethod](params ?? {})
+    );
+    return cborResponse(
+      deprecations.length > 0 && typeof result === 'object' && result !== null
+        ? { ...result, deprecations }
+        : result
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return cborResponse(

@@ -434,6 +434,8 @@ export interface ListEventsParams {
 
 export interface ListEventsByCorrelationIdParams {
   correlationId: string;
+  /** Restrict matching events to one workflow run when the backend supports run-scoped queries. */
+  runId?: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
 }

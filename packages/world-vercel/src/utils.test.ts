@@ -1,3 +1,4 @@
+import { RunExpiredError, WorkflowWorldError } from '@workflow/errors';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -5,6 +6,7 @@ import {
   getHeaders,
   getHttpConfig,
   getHttpUrl,
+  inspectWorkflowBackendDeprecationResponse,
   MAX_BODY_PARSE_RETRIES,
   makeRequest,
 } from './utils.js';
@@ -152,6 +154,157 @@ describe('getHttpConfig (proxied path)', () => {
     // The trusted-sources bypass header is meaningless on the proxied
     // path (api.vercel.com is public) and must NOT be attached.
     expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
+  });
+});
+
+describe('workflow backend deprecation notices', () => {
+  const schema = z.object({ value: z.string() });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function successResponse(headers: HeadersInit) {
+    return new Response(encode({ value: 'ok' }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/cbor',
+        ...headers,
+      },
+    });
+  }
+
+  it('parses standard headers and lets callbacks own presentation', async () => {
+    const onDeprecation = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        successResponse({
+          Deprecation: '@32472144000',
+          Sunset: 'Fri, 01 Jan 3000 00:00:00 GMT',
+          'X-API-Endpoint-Preferred': '/api/v3/runs/[runId]/events',
+          Link: '<https://example.com/migrate>; rel="deprecation"',
+        })
+      )
+    );
+
+    await makeRequest({
+      endpoint: '/v2/events?correlationId=step_1',
+      schema,
+      config: { onDeprecation },
+    });
+
+    expect(onDeprecation).toHaveBeenCalledWith({
+      endpoint: '/v2/events',
+      state: 'scheduled',
+      deprecationDate: '2999-01-01',
+      sunsetDate: '3000-01-01',
+      preferredVersion: undefined,
+      preferredEndpoint: '/api/v3/runs/[runId]/events',
+      documentationUrl: 'https://example.com/migrate',
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('falls back to legacy headers and deduplicates built-in warnings', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const response = new Response(null, {
+      headers: {
+        'X-API-Deprecated': 'true',
+        'X-API-Deprecation-Date': '2026-03-01',
+        'X-API-Version-Preferred': 'v3',
+      },
+    });
+
+    const first = inspectWorkflowBackendDeprecationResponse(
+      response,
+      '/v2/events?correlationId=step_1'
+    );
+    inspectWorkflowBackendDeprecationResponse(
+      response,
+      '/v2/events?correlationId=step_2'
+    );
+
+    expect(first).toMatchObject({
+      endpoint: '/v2/events',
+      state: 'deprecated',
+      deprecationDate: '2026-03-01',
+      preferredVersion: 'v3',
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('Update `workflow`');
+  });
+
+  it('does not fail an operation when an onDeprecation callback throws', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(successResponse({ 'X-API-Deprecated': 'true' }))
+    );
+
+    await expect(
+      makeRequest({
+        endpoint: '/v2/events',
+        schema,
+        config: {
+          onDeprecation: () => {
+            throw new Error('presentation failed');
+          },
+        },
+      })
+    ).resolves.toEqual({ value: 'ok' });
+  });
+
+  it('classifies a removed endpoint 410 separately from run expiration', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json(
+          { message: 'Endpoint removed' },
+          {
+            status: 410,
+            headers: {
+              'X-API-Sunset': 'true',
+              'X-API-Deprecated': 'true',
+              'X-API-Sunset-Date': '2026-06-01',
+            },
+          }
+        )
+      )
+    );
+
+    const error = await makeRequest({
+      endpoint: '/v2/events',
+      schema,
+      config: { onDeprecation: vi.fn() },
+    }).catch((cause) => cause);
+
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect(error).toMatchObject({
+      name: 'WorkflowWorldError',
+      status: 410,
+      code: 'WORKFLOW_SERVER_ENDPOINT_SUNSET',
+    });
+    expect(RunExpiredError.is(error)).toBe(false);
+  });
+
+  it('keeps ordinary 410 responses mapped to RunExpiredError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ message: 'Run expired' }, { status: 410 })
+        )
+    );
+
+    const error = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      schema,
+    }).catch((cause) => cause);
+
+    expect(RunExpiredError.is(error)).toBe(true);
   });
 });
 

@@ -9,6 +9,7 @@ import {
   type APIConfig,
   getHttpConfig,
   type HttpConfig,
+  inspectRawWorkflowBackendResponse,
   makeRequest,
 } from './utils.js';
 
@@ -126,6 +127,12 @@ export function createStreamer(config?: APIConfig): Streamer {
           body: chunk,
           headers: httpConfig.headers,
         });
+        inspectRawWorkflowBackendResponse(
+          response,
+          url.pathname,
+          config,
+          url.toString()
+        );
         const text = await response.text();
         if (!response.ok) {
           throw createStreamRequestError('write', url, response, text);
@@ -164,6 +171,12 @@ export function createStreamer(config?: APIConfig): Streamer {
             body,
             headers: httpConfig.headers,
           });
+          inspectRawWorkflowBackendResponse(
+            response,
+            url.pathname,
+            config,
+            url.toString()
+          );
           const text = await response.text();
           if (!response.ok) {
             throw createStreamRequestError('write', url, response, text);
@@ -182,6 +195,12 @@ export function createStreamer(config?: APIConfig): Streamer {
           method: 'PUT',
           headers: httpConfig.headers,
         });
+        inspectRawWorkflowBackendResponse(
+          response,
+          url.pathname,
+          config,
+          url.toString()
+        );
         const text = await response.text();
         if (!response.ok) {
           throw createStreamRequestError('close', url, response, text);
@@ -197,6 +216,12 @@ export function createStreamer(config?: APIConfig): Streamer {
         const response = await fetch(url, {
           headers: httpConfig.headers,
         });
+        inspectRawWorkflowBackendResponse(
+          response,
+          url.pathname,
+          config,
+          url.toString()
+        );
         if (!response.ok) {
           throw new Error(`Failed to fetch stream: ${response.status}`);
         }
@@ -244,6 +269,12 @@ export function createStreamer(config?: APIConfig): Streamer {
         const response = await fetch(url, {
           headers: httpConfig.headers,
         });
+        inspectRawWorkflowBackendResponse(
+          response,
+          url.pathname,
+          config,
+          url.toString()
+        );
         if (!response.ok) {
           throw new Error(`Failed to list streams: ${response.status}`);
         }

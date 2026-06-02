@@ -126,6 +126,7 @@ export async function fetchEvent(
 
 export async function fetchEventsByCorrelationId(
   worldEnv: EnvMap,
+  runId: string,
   correlationId: string,
   params: {
     cursor?: string;
@@ -136,6 +137,7 @@ export async function fetchEventsByCorrelationId(
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   return rpc('fetchEventsByCorrelationId', {
     worldEnv,
+    runId,
     correlationId,
     params,
   });
