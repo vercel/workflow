@@ -201,6 +201,17 @@ describe('Storage', () => {
         expect(run.executionContext).toBeUndefined();
         expect(run.input).toEqual(new Uint8Array());
       });
+
+      it('should seed initial attributes from run_created', async () => {
+        const run = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'attributed-workflow',
+          input: new Uint8Array(),
+          attributes: { tenant: 't1', phase: 'created' },
+        });
+
+        expect(run.attributes).toEqual({ tenant: 't1', phase: 'created' });
+      });
     });
 
     describe('get', () => {
@@ -291,6 +302,64 @@ describe('Storage', () => {
             error: 'Something went wrong',
           })
         ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
+      });
+
+      it('should materialize attr_set events and preserve event history', async () => {
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          attributes: { stale: 'remove' },
+        });
+
+        const result = await storage.events.create(created.runId, {
+          eventType: 'attr_set',
+          specVersion: 4,
+          correlationId: 'attr_1',
+          eventData: {
+            changes: [
+              { key: 'phase', value: 'ready' },
+              { key: 'stale', value: null },
+            ],
+            writer: { type: 'workflow' },
+          },
+        });
+
+        expect(result.event?.eventType).toBe('attr_set');
+        expect(result.run?.attributes).toEqual({ phase: 'ready' });
+        expect((await storage.runs.get(created.runId)).attributes).toEqual({
+          phase: 'ready',
+        });
+      });
+
+      it('should allow reserved native attributes only with the opt-in flag', async () => {
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+
+        await expect(
+          storage.events.create(created.runId, {
+            eventType: 'attr_set',
+            specVersion: 4,
+            eventData: {
+              changes: [{ key: '$system', value: 'nope' }],
+              writer: { type: 'workflow' },
+            },
+          })
+        ).rejects.toThrow(/reserved prefix/);
+
+        const result = await storage.events.create(created.runId, {
+          eventType: 'attr_set',
+          specVersion: 4,
+          eventData: {
+            changes: [{ key: '$system', value: 'ok' }],
+            writer: { type: 'workflow' },
+            allowReservedAttributes: true,
+          },
+        });
+        expect(result.run?.attributes).toEqual({ $system: 'ok' });
       });
     });
 
@@ -2135,6 +2204,40 @@ describe('Storage', () => {
       expect(waitCreatedEvents).toHaveLength(1);
     });
 
+    it('should reject duplicate correlated workflow attr_set events', async () => {
+      await storage.events.create(testRunId, {
+        eventType: 'attr_set',
+        correlationId: 'attr_dup_1',
+        eventData: {
+          changes: [{ key: 'phase', value: 'running' }],
+          writer: { type: 'workflow' },
+        },
+      });
+
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_dup_1',
+          eventData: {
+            changes: [{ key: 'phase', value: 'running' }],
+            writer: { type: 'workflow' },
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter(
+          (event) =>
+            event.eventType === 'attr_set' &&
+            event.correlationId === 'attr_dup_1'
+        )
+      ).toHaveLength(1);
+    });
+
     it('should reject sequential duplicate step_created calls', async () => {
       // Sequential (non-racing) duplicates must also be rejected — the
       // constraint file persists across calls.
@@ -2448,6 +2551,28 @@ describe('Storage', () => {
         createHook(storage, run.runId, {
           hookId: 'new_hook',
           token: 'new-token',
+        })
+      ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject attr_set on completed run', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_after_complete',
+          eventData: {
+            changes: [{ key: 'phase', value: 'too-late' }],
+            writer: { type: 'workflow' },
+          },
         })
       ).rejects.toThrow(/terminal/i);
     });

@@ -3177,13 +3177,12 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
 }
 
 //////////////////////////////////////////////////////////
-// Workflow Attributes MVP — workflow and step API.
+// Workflow Attributes - native workflow and step events.
 
 /**
  * Calls `experimental_setAttributes` directly from the workflow body.
- * The call is dispatched through the `__builtin_set_attributes` step
- * bridge, so the mutation gets a `step_created`/`step_completed` event
- * pair. The third call sets a key to `undefined` and the test verifies
+ * Each call appends a native `attr_set` event. The third call sets a key
+ * to `undefined` and the test verifies
  * the key is absent from the final attribute map.
  */
 export async function experimentalSetAttributesWorkflow(input: number) {
@@ -3208,8 +3207,8 @@ async function setAttributesFromStep(input: number) {
 
 /**
  * Calls `experimental_setAttributes` from inside a normal user step. Step
- * bodies already run in host context, so the helper posts directly to the
- * world instead of creating a nested `__builtin_set_attributes` step.
+ * bodies already run in host context, so the helper appends an attributed
+ * `attr_set` event without creating a nested internal step.
  */
 export async function experimentalSetAttributesInsideStepWorkflow(
   input: number
@@ -3221,15 +3220,8 @@ export async function experimentalSetAttributesInsideStepWorkflow(
 /**
  * Fire-and-forget pattern: `void experimental_setAttributes(...)` lets
  * the workflow body proceed without blocking on the attribute write.
- * Each `void` call queues a step on the workflow's next suspension —
- * any later `await` on a runtime primitive (a step, a sleep, a hook).
- * This is the canonical pattern for observability / tracking metadata
- * where the workflow doesn't depend on the write.
- *
- * Note: a `void` call placed *immediately before* `return` (with no
- * later `await`) is currently unreliable — the step is committed but
- * the queue worker skips it once `run_completed` lands. See the
- * `test.todo(...)` for `fire-and-forget` in `packages/core/e2e/e2e.test.ts`.
+ * Each `void` call commits a native event on suspension or final drain,
+ * including the final write immediately before return.
  */
 export async function experimentalSetAttributesFireAndForgetWorkflow() {
   'use workflow';

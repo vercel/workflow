@@ -31,6 +31,7 @@ async function createRun(
     workflowName: string;
     input: Uint8Array;
     executionContext?: Record<string, unknown>;
+    attributes?: Record<string, string>;
   }
 ): Promise<WorkflowRun> {
   const result = await events.create(null, {
@@ -204,6 +205,17 @@ describe('Storage (Postgres integration)', () => {
 
         expect(run.executionContext).toBeUndefined();
         expect(run.input).toEqual(new Uint8Array());
+      });
+
+      it('should seed initial attributes from run_created', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'attributed-workflow',
+          input: new Uint8Array(),
+          attributes: { tenant: 't1', phase: 'created' },
+        });
+
+        expect(run.attributes).toEqual({ tenant: 't1', phase: 'created' });
       });
     });
 
@@ -401,6 +413,64 @@ describe('Storage (Postgres integration)', () => {
           { key: 'a', value: null },
         ]);
         expect(result.attributes).toEqual({ b: '2' });
+      });
+    });
+
+    describe('native attr_set events', () => {
+      it('materializes writes and removals on the run', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+          attributes: { stale: 'remove' },
+        });
+        const result = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'attr_1',
+          eventData: {
+            changes: [
+              { key: 'phase', value: 'ready' },
+              { key: 'stale', value: null },
+            ],
+            writer: { type: 'workflow' },
+          },
+        });
+
+        expect(result.event?.eventType).toBe('attr_set');
+        expect(result.run?.attributes).toEqual({ phase: 'ready' });
+        expect((await runs.get(run.runId)).attributes).toEqual({
+          phase: 'ready',
+        });
+      });
+
+      it('requires reserved-key opt-in on native events', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+        });
+        await expect(
+          events.create(run.runId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: '$system', value: 'nope' }],
+              writer: { type: 'workflow' },
+            },
+          })
+        ).rejects.toThrow(/reserved prefix/);
+
+        const result = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [{ key: '$system', value: 'ok' }],
+            writer: { type: 'workflow' },
+            allowReservedAttributes: true,
+          },
+        });
+        expect(result.run?.attributes).toEqual({ $system: 'ok' });
       });
     });
   });
@@ -1244,6 +1314,39 @@ describe('Storage (Postgres integration)', () => {
       ).rejects.toMatchObject({ name: 'EntityConflictError' });
     });
 
+    it('should reject duplicate correlated workflow attr_set events', async () => {
+      await events.create(testRunId, {
+        eventType: 'attr_set',
+        correlationId: 'attr_dup_1',
+        eventData: {
+          changes: [{ key: 'phase', value: 'running' }],
+          writer: { type: 'workflow' },
+        },
+      });
+      await expect(
+        events.create(testRunId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_dup_1',
+          eventData: {
+            changes: [{ key: 'phase', value: 'running' }],
+            writer: { type: 'workflow' },
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        evts.data.filter(
+          (event) =>
+            event.eventType === 'attr_set' &&
+            event.correlationId === 'attr_dup_1'
+        )
+      ).toHaveLength(1);
+    });
+
     it('should reject duplicate wait_created with EntityConflictError', async () => {
       // Sequential duplicate wait_created — the wait_created insert path
       // uses `INSERT ... onConflictDoNothing()` plus an existence check, so
@@ -1763,6 +1866,28 @@ describe('Storage (Postgres integration)', () => {
         createHook(events, run.runId, {
           hookId: 'new_hook',
           token: 'new-token',
+        })
+      ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject attr_set on completed run', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_after_complete',
+          eventData: {
+            changes: [{ key: 'phase', value: 'too-late' }],
+            writer: { type: 'workflow' },
+          },
         })
       ).rejects.toThrow(/terminal/i);
     });

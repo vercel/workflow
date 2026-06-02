@@ -14,6 +14,7 @@ import {
 } from '@workflow/world';
 import { importKey } from '../encryption.js';
 import type {
+  AttributeInvocationQueueItem,
   HookInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
@@ -52,6 +53,8 @@ export interface SuspensionHandlerResult {
   timeoutSeconds?: number;
   /** Whether a hook conflict was detected (should re-invoke immediately) */
   hasHookConflict: boolean;
+  /** Whether native workflow attribute events were written for replay. */
+  hasAttributeEvents: boolean;
 }
 
 /**
@@ -80,6 +83,9 @@ export async function handleSuspension({
   );
   const waitItems = suspension.steps.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
+  );
+  const attributeItems = suspension.steps.filter(
+    (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
   );
 
   // Split hooks by what actions they need
@@ -367,6 +373,44 @@ export async function handleSuspension({
     }
   }
 
+  for (const queueItem of attributeItems) {
+    ops.push(
+      (async () => {
+        try {
+          await world.events.create(
+            runId,
+            {
+              eventType: 'attr_set',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: queueItem.correlationId,
+              eventData: {
+                changes: queueItem.changes,
+                writer: { type: 'workflow' },
+                ...(queueItem.allowReservedAttributes
+                  ? { allowReservedAttributes: true }
+                  : {}),
+              },
+            },
+            { requestId }
+          );
+        } catch (err) {
+          if (EntityConflictError.is(err)) {
+            runtimeLogger.info(
+              'Workflow attribute event already exists, continuing',
+              {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              }
+            );
+          } else {
+            throw err;
+          }
+        }
+      })()
+    );
+  }
+
   waitUntil(
     Promise.all(ops).catch((opErr) => {
       const isAbortError =
@@ -401,5 +445,6 @@ export async function handleSuspension({
     createdStepCorrelationIds,
     timeoutSeconds: hasHookConflict ? 0 : (minTimeoutSeconds ?? undefined),
     hasHookConflict,
+    hasAttributeEvents: attributeItems.length > 0,
   };
 }

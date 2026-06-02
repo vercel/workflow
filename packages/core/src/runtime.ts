@@ -522,6 +522,7 @@ export function workflowEntrypoint(
                                   deploymentId: runInput.deploymentId,
                                   workflowName: runInput.workflowName,
                                   executionContext: runInput.executionContext,
+                                  attributes: runInput.attributes,
                                 },
                               }
                             : {}),
@@ -959,10 +960,18 @@ export function workflowEntrypoint(
                           pendingSteps: suspensionResult.pendingSteps.length,
                           timeoutSeconds: suspensionResult.timeoutSeconds,
                           hasHookConflict: suspensionResult.hasHookConflict,
+                          hasAttributeEvents:
+                            suspensionResult.hasAttributeEvents,
                         });
 
                         // Hook conflict: break loop, re-invoke via queue
                         if (suspensionResult.hasHookConflict) {
+                          return { timeoutSeconds: 0 };
+                        }
+
+                        // Native workflow attribute events are resolved through
+                        // replay; re-invoke now that their events are durable.
+                        if (suspensionResult.hasAttributeEvents) {
                           return { timeoutSeconds: 0 };
                         }
 

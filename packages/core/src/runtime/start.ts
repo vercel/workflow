@@ -8,10 +8,12 @@ import {
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { normalizeAttributeChanges } from '../attribute-changes.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
@@ -38,6 +40,13 @@ export interface StartOptionsBase {
    * The spec version to use for the workflow run. Defaults to the latest version.
    */
   specVersion?: number;
+
+  /**
+   * Plaintext attributes to seed on the run as it is created.
+   *
+   * Available for native-attributes runs (spec version 4 and later).
+   */
+  attributes?: Record<string, string>;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -182,6 +191,18 @@ export async function start<TArgs extends unknown[], TResult>(
         world.specVersion ??
         SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
       const v1Compat = isLegacySpecVersion(specVersion);
+      let attributes: Record<string, string> | undefined;
+      if (opts.attributes && Object.keys(opts.attributes).length > 0) {
+        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
+          throw new WorkflowRuntimeError(
+            'Initial workflow attributes require a World that supports spec version 4 or later.'
+          );
+        }
+        const changes = normalizeAttributeChanges(opts.attributes);
+        attributes = Object.fromEntries(
+          changes.map(({ key, value }) => [key, value as string])
+        );
+      }
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
@@ -227,6 +248,7 @@ export async function start<TArgs extends unknown[], TResult>(
               workflowName: workflowName,
               input: workflowArguments,
               executionContext,
+              ...(attributes ? { attributes } : {}),
             },
           },
           { v1Compat }
@@ -244,6 +266,7 @@ export async function start<TArgs extends unknown[], TResult>(
                     workflowName,
                     specVersion,
                     executionContext,
+                    ...(attributes ? { attributes } : {}),
                   },
                 }
               : {}),
