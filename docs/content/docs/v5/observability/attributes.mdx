@@ -20,6 +20,7 @@ In the future, you'll be able to search and filter runs by attributes.
 
 You can also seed attributes without a follow-up write when starting a run:
 
+{/* @skip-typecheck: abbreviated usage; orderWorkflow is defined below */}
 ```typescript lineNumbers
 const run = await start(orderWorkflow, ["ord_123"], {
   attributes: { source: "checkout" }, // [!code highlight]
