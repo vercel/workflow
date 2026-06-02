@@ -93,6 +93,30 @@ export {
   setWorld,
 } from './runtime/world.js';
 
+function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+  const terminalEvent = events.find(
+    (event) =>
+      event.runId === runId &&
+      (event.eventType === 'run_completed' ||
+        event.eventType === 'run_failed' ||
+        event.eventType === 'run_cancelled')
+  );
+
+  if (!terminalEvent) {
+    return false;
+  }
+
+  runtimeLogger.info(
+    'Workflow event log already contains a terminal run event, skipping replay',
+    {
+      workflowRunId: runId,
+      eventType: terminalEvent.eventType,
+      eventId: terminalEvent.eventId,
+    }
+  );
+  return true;
+}
+
 /**
  * Function that creates a single route which handles any workflow execution
  * request and routes to the appropriate workflow function.
@@ -534,6 +558,13 @@ export function workflowEntrypoint(
                   throw err;
                 }
 
+                // The materialized run returned by run_started can race a
+                // terminal event in the loaded snapshot. Do not replay a run
+                // whose event log already establishes its terminal outcome.
+                if (hasRecordedTerminalRunEvent(events, runId)) {
+                  return;
+                }
+
                 // Check for any elapsed waits and create wait_completed events
                 const now = Date.now();
 
@@ -627,6 +658,12 @@ export function workflowEntrypoint(
                       workflowRun.runId
                     );
                     events = loadedEvents.events;
+                  }
+
+                  // A concurrent terminal write may have landed while
+                  // committing an elapsed wait and refreshing the snapshot.
+                  if (hasRecordedTerminalRunEvent(events, runId)) {
+                    return;
                   }
                 }
 
