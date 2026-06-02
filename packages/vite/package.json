@@ -1,7 +1,7 @@
 {
   "name": "@workflow/vite",
   "description": "Vite plugin for Workflow SDK",
-  "version": "4.0.6",
+  "version": "4.0.8",
   "type": "module",
   "main": "dist/index.js",
   "files": [

@@ -1,5 +1,13 @@
 # @workflow/world
 
+## 4.1.4
+
+### Patch Changes
+
+- [#2191](https://github.com/vercel/workflow/pull/2191) [`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix forwarded writable stream encryption when child workflows execute on a newer deployment than their parent.
+
+- [#2208](https://github.com/vercel/workflow/pull/2208) [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f) Thanks [@pranaygp](https://github.com/pranaygp)! - Retry transient workflow replay divergence before classifying repeated divergence as a corrupted event log.
+
 ## 4.1.3
 
 ### Patch Changes

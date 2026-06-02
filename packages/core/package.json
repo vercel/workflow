@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.2.6",
+  "version": "4.3.1",
   "description": "Core runtime and engine for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",

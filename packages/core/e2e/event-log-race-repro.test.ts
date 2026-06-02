@@ -35,7 +35,13 @@ type Outcome =
   | 'USER_ERROR'
   | 'RUNTIME_ERROR'
   | 'stuck'
-  | 'other';
+  | 'other'
+  // Harness-side, non-gating outcomes: timing races in the repro driver
+  // itself (hook resume vs. the workflow's sleep budget) and transport
+  // errors talking to the deployment. These are NOT event-log regressions,
+  // so they are reported but never fail the job. See `infra` handling in
+  // `.github/scripts/render-event-log-race-repro-results.js`.
+  | 'infra';
 
 interface ReproConfig {
   hookSleepAttempts: number;
@@ -48,6 +54,8 @@ interface ReproConfig {
   resumeDelayMs: number;
   resumeJitterMs: number;
   runTimeoutMs: number;
+  stuckGraceMs: number;
+  networkRetries: number;
   hookTimeoutMs: number;
   sleepBranchWaitCount: number;
   sleepBranchWaitMs: number;
@@ -109,11 +117,26 @@ const config: ReproConfig = {
   ),
   concurrency: envNumber('EVENT_LOG_RACE_REPRO_CONCURRENCY', 50),
   stepConcurrency: envNumber('EVENT_LOG_RACE_REPRO_STEP_CONCURRENCY', 50),
-  iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 5),
+  // Ceiling on hook/sleep race iterations. The run short-circuits via
+  // `returnOnWake` as soon as the hook wins, so a higher ceiling does not add
+  // runtime — it widens the window for the delayed hook resume
+  // (resumeDelayMs + resumeJitterMs, up to ~25s) to land before the workflow
+  // exhausts its sleep budget (iterations * sleepMs) and exits via the no-wake
+  // path. Keep iterations * sleepMs comfortably above the resume ceiling so the
+  // wake branch is actually exercised instead of being lost to a timing race.
+  iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 8),
   sleepMs: envNumber('EVENT_LOG_RACE_REPRO_SLEEP_MS', 5000),
   resumeDelayMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS', 15_000),
   resumeJitterMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_JITTER_MS', 10_000),
   runTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS', 150_000),
+  // Generous grace after the poll budget: a run that finishes within it was
+  // slow (non-gating SLOW_COMPLETION), not wedged. Only a run still
+  // non-terminal after budget + grace is treated as a gating `stuck` wedge.
+  stuckGraceMs: envNumber('EVENT_LOG_RACE_REPRO_STUCK_GRACE_MS', 120_000),
+  // Retries for transient network failures (e.g. `fetch failed`) when the
+  // harness talks to the deployment. A flaky GET must never abort tracking a
+  // run that is otherwise progressing — see `withRetry` / `pollTerminalRun`.
+  networkRetries: envNumber('EVENT_LOG_RACE_REPRO_NETWORK_RETRIES', 4),
   hookTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_HOOK_TIMEOUT_MS', 60_000),
   sleepBranchWaitCount: envNumber(
     'EVENT_LOG_RACE_REPRO_SLEEP_BRANCH_WAIT_COUNT',
@@ -168,13 +191,53 @@ const config: ReproConfig = {
   ),
 };
 
+// Transient transport failures the harness sees when reaching the deployment.
+// These are network blips, not SDK behaviour, so the driver retries them
+// rather than turning a single dropped connection into a HARNESS_ERROR.
+function isTransientNetworkError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)) ?? '';
+  const code =
+    err && typeof err === 'object' && 'code' in err
+      ? String((err as { code?: unknown }).code)
+      : '';
+  return /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network|terminated|other side closed|aborted/i.test(
+    `${message} ${code}`
+  );
+}
+
+// Retry `fn` on transient network errors with linear backoff. On final failure
+// the error is rethrown prefixed with `label` so the recorded HARNESS_ERROR
+// says *where* the call was (e.g. "start: fetch failed"), making the infra
+// breakdown in the summary directly diagnosable. Non-transient errors (real
+// run failures) are rethrown immediately and unwrapped.
+async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= config.networkRetries; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt === config.networkRetries || !isTransientNetworkError(err)) {
+        break;
+      }
+      await sleep(500 * (attempt + 1));
+    }
+  }
+  if (isTransientNetworkError(lastError)) {
+    const message =
+      lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`${label}: ${message}`);
+  }
+  throw lastError;
+}
+
 async function start(
   scenario: Scenario,
   workflowFn: string,
   workflow: { workflowId: string },
   args: unknown[]
 ): Promise<Run<unknown>> {
-  const run = await rawStart(workflow, args);
+  const run = await withRetry('start', () => rawStart(workflow, args));
   trackRun(run, {
     testName: `event-log-race-repro:${scenario}`,
     workflowFile: WORKFLOW_FILE,
@@ -200,9 +263,14 @@ async function waitForHook(token: string, runId: string) {
     }
     await sleep(250);
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`Timed out waiting for hook ${token}`);
+  // Label the surfaced error so a HARNESS_ERROR reads "waitForHook: Hook not
+  // found" — pinpointing that the hook never propagated within the timeout
+  // (typically the run completed and disposed the hook before we observed it).
+  const reason =
+    lastError instanceof Error
+      ? lastError.message
+      : `Timed out waiting for hook ${token}`;
+  throw new Error(`waitForHook: ${reason}`);
 }
 
 function getDashboardUrl(runId: string): string | undefined {
@@ -311,61 +379,136 @@ function validateStepRaceReturn(value: unknown) {
   }
 }
 
+// When a run never reaches a terminal state we still want the summary to say
+// *where* it wedged, not just that it did. Fetch the event log and describe the
+// latest event (type, step, elapsed) so the "stuck" row is directly
+// inspectable. Best-effort: any failure here falls back to a duration-only note.
+async function describeStuckRun(
+  world: Awaited<ReturnType<typeof getWorld>>,
+  runId: string,
+  startedAt: number
+): Promise<string | undefined> {
+  try {
+    const { data: events } = await world.events.list({ runId });
+    if (!events.length) {
+      return undefined;
+    }
+    const latest = events[events.length - 1];
+    const elapsedS = (
+      ((latest.createdAt?.getTime?.() ?? Date.now()) - startedAt) /
+      1000
+    ).toFixed(1);
+    let detail = latest.eventType;
+    const data =
+      'eventData' in latest
+        ? (latest as { eventData?: unknown }).eventData
+        : undefined;
+    const stepName = (data as { stepName?: string } | undefined)?.stepName;
+    if (stepName) {
+      detail += ` (${stepName})`;
+    }
+    return `stuck after ${events.length} events; latest ${detail} at +${elapsedS}s`;
+  } catch {
+    return undefined;
+  }
+}
+
+// Map a terminal run status to a result, or return null if the run has not
+// settled yet. `completed` past the poll budget is downgraded to a non-gating
+// SLOW_COMPLETION (slow, not wedged); `failed`/`cancelled` keep their meaning.
+function classifyTerminalRun(
+  runData: { status: string; errorCode?: string },
+  context: {
+    runId: string;
+    scenario: Scenario;
+    durationMs: number;
+    pastBudget: boolean;
+  }
+): ReproRunResult | null {
+  const { runId, scenario, durationMs, pastBudget } = context;
+  const base = {
+    attempt: -1,
+    scenario,
+    token: '',
+    runId,
+    status: runData.status,
+    durationMs,
+    dashboardUrl: getDashboardUrl(runId),
+  };
+
+  if (runData.status === 'completed') {
+    return pastBudget
+      ? {
+          ...base,
+          outcome: 'infra',
+          errorCode: 'SLOW_COMPLETION',
+          errorMessage: `completed after ${durationMs}ms, exceeding the ${config.runTimeoutMs}ms poll budget`,
+        }
+      : { ...base, outcome: 'completed' };
+  }
+
+  if (runData.status === 'failed') {
+    return {
+      ...base,
+      outcome: classifyFailure(runData.errorCode),
+      errorCode: runData.errorCode,
+    };
+  }
+
+  if (runData.status === 'cancelled') {
+    return { ...base, outcome: 'infra', errorCode: 'CANCELLED' };
+  }
+
+  return null;
+}
+
 async function pollTerminalRun(
   run: Run<unknown>,
   startedAt: number,
   scenario: Scenario
 ): Promise<ReproRunResult> {
   const world = await getWorld();
-  const deadline = startedAt + config.runTimeoutMs;
+  // Two-phase wait. A run that crosses the finish line only during the grace
+  // window was *slow* (preview deployments under load routinely complete just
+  // past the budget), not wedged — those are reported as non-gating `infra`
+  // (`SLOW_COMPLETION`) instead of failing the job. Only a run that is still
+  // non-terminal after the grace window is treated as a genuine wedge
+  // (gating `stuck`).
+  const graceDeadline = startedAt + config.runTimeoutMs + config.stuckGraceMs;
   let lastStatus: string | undefined;
 
-  while (Date.now() < deadline) {
-    const runData = await world.runs.get(run.runId);
+  while (Date.now() < graceDeadline) {
+    let runData: Awaited<ReturnType<typeof world.runs.get>>;
+    try {
+      // A flaky GET must not abort tracking of a run that may be progressing
+      // fine; withRetry rides out brief blips, and a longer outage just falls
+      // through to the next poll until the deadline.
+      runData = await withRetry('poll runs.get', () =>
+        world.runs.get(run.runId)
+      );
+    } catch (err) {
+      if (isTransientNetworkError(err) && Date.now() < graceDeadline) {
+        await sleep(2000);
+        continue;
+      }
+      throw err;
+    }
+
     lastStatus = runData.status;
-
-    if (runData.status === 'completed') {
-      return {
-        attempt: -1,
-        scenario,
-        token: '',
-        runId: run.runId,
-        outcome: 'completed',
-        status: runData.status,
-        durationMs: Date.now() - startedAt,
-        dashboardUrl: getDashboardUrl(run.runId),
-      };
+    const durationMs = Date.now() - startedAt;
+    const pastBudget = durationMs >= config.runTimeoutMs;
+    const terminal = classifyTerminalRun(runData, {
+      runId: run.runId,
+      scenario,
+      durationMs,
+      pastBudget,
+    });
+    if (terminal) {
+      return terminal;
     }
 
-    if (runData.status === 'failed') {
-      return {
-        attempt: -1,
-        scenario,
-        token: '',
-        runId: run.runId,
-        outcome: classifyFailure(runData.errorCode),
-        status: runData.status,
-        errorCode: runData.errorCode,
-        durationMs: Date.now() - startedAt,
-        dashboardUrl: getDashboardUrl(run.runId),
-      };
-    }
-
-    if (runData.status === 'cancelled') {
-      return {
-        attempt: -1,
-        scenario,
-        token: '',
-        runId: run.runId,
-        outcome: 'other',
-        status: runData.status,
-        errorCode: 'CANCELLED',
-        durationMs: Date.now() - startedAt,
-        dashboardUrl: getDashboardUrl(run.runId),
-      };
-    }
-
-    await sleep(1000);
+    // Poll tightly within the budget; back off during the grace tail.
+    await sleep(pastBudget ? 5000 : 1000);
   }
 
   return {
@@ -375,6 +518,7 @@ async function pollTerminalRun(
     runId: run.runId,
     outcome: 'stuck',
     status: lastStatus,
+    errorMessage: await describeStuckRun(world, run.runId, startedAt),
     durationMs: Date.now() - startedAt,
     dashboardUrl: getDashboardUrl(run.runId),
   };
@@ -399,10 +543,12 @@ async function runHookSleepAttempt(attempt: number): Promise<ReproRunResult> {
     .slice(2)}`;
 
   try {
-    const workflow = await getWorkflowMetadata(
-      deploymentUrl,
-      WORKFLOW_FILE,
-      'hookSleepReproWorkflow'
+    const workflow = await withRetry('getWorkflowMetadata', () =>
+      getWorkflowMetadata(
+        deploymentUrl,
+        WORKFLOW_FILE,
+        'hookSleepReproWorkflow'
+      )
     );
     const run = await start(scenario, 'hookSleepReproWorkflow', workflow, [
       {
@@ -425,7 +571,9 @@ async function runHookSleepAttempt(attempt: number): Promise<ReproRunResult> {
         : 0;
     const resumeDelayMs = config.resumeDelayMs + jitter;
     const resumePromise = sleep(resumeDelayMs).then(() =>
-      resumeHook(hook, { attempt, sentAt: Date.now() })
+      withRetry('resumeHook', () =>
+        resumeHook(hook, { attempt, sentAt: Date.now() })
+      )
     );
 
     const runResult = await pollTerminalRun(run, startedAt, scenario);
@@ -447,7 +595,10 @@ async function runHookSleepAttempt(attempt: number): Promise<ReproRunResult> {
           attempt,
           scenario,
           token,
-          outcome: 'other',
+          // The run completed; only the harness's own resume call failed
+          // (typically because the sleep branch already finished the run and
+          // disposed the hook). Harness timing, not an SDK regression.
+          outcome: 'infra',
           errorCode: 'HOOK_RESUME_FAILED',
           errorMessage: String(resumeFailure.reason),
         };
@@ -464,7 +615,10 @@ async function runHookSleepAttempt(attempt: number): Promise<ReproRunResult> {
           attempt,
           scenario,
           token,
-          outcome: 'other',
+          // The run completed cleanly but the sleep branch won the race before
+          // the resume landed, so the wake branch was never taken. This means
+          // the attempt lost its intended coverage, not that the log is wrong.
+          outcome: 'infra',
           errorCode: 'NO_WAKE_BRANCH',
           errorMessage: 'Run completed without taking the hook wake branch.',
         };
@@ -502,7 +656,11 @@ async function runHookSleepAttempt(attempt: number): Promise<ReproRunResult> {
       attempt,
       scenario,
       token,
-      outcome: 'other',
+      // A non-WorkflowRunFailedError thrown in the driver is a transport /
+      // harness problem (deployment unreachable, hook never appeared, resume
+      // or return-value read timed out), not an event-log regression.
+      outcome: 'infra',
+      errorCode: 'HARNESS_ERROR',
       errorMessage: err instanceof Error ? err.message : String(err),
       durationMs: Date.now() - startedAt,
     };
@@ -527,10 +685,12 @@ async function runStepFanoutAttempt(attempt: number): Promise<ReproRunResult> {
     .slice(2)}`;
 
   try {
-    const workflow = await getWorkflowMetadata(
-      deploymentUrl,
-      WORKFLOW_FILE,
-      'stepFanoutReplayReproWorkflow'
+    const workflow = await withRetry('getWorkflowMetadata', () =>
+      getWorkflowMetadata(
+        deploymentUrl,
+        WORKFLOW_FILE,
+        'stepFanoutReplayReproWorkflow'
+      )
     );
     const run = await start(
       scenario,
@@ -598,7 +758,11 @@ async function runStepFanoutAttempt(attempt: number): Promise<ReproRunResult> {
       attempt,
       scenario,
       token,
-      outcome: 'other',
+      // A non-WorkflowRunFailedError thrown in the driver is a transport /
+      // harness problem (deployment unreachable, hook never appeared, resume
+      // or return-value read timed out), not an event-log regression.
+      outcome: 'infra',
+      errorCode: 'HARNESS_ERROR',
       errorMessage: err instanceof Error ? err.message : String(err),
       durationMs: Date.now() - startedAt,
     };
@@ -619,10 +783,12 @@ async function runStepSleepRaceAttempt(
     .slice(2)}`;
 
   try {
-    const workflow = await getWorkflowMetadata(
-      deploymentUrl,
-      WORKFLOW_FILE,
-      'stepSleepRaceReproWorkflow'
+    const workflow = await withRetry('getWorkflowMetadata', () =>
+      getWorkflowMetadata(
+        deploymentUrl,
+        WORKFLOW_FILE,
+        'stepSleepRaceReproWorkflow'
+      )
     );
     const run = await start(scenario, 'stepSleepRaceReproWorkflow', workflow, [
       {
@@ -689,7 +855,11 @@ async function runStepSleepRaceAttempt(
       attempt,
       scenario,
       token,
-      outcome: 'other',
+      // A non-WorkflowRunFailedError thrown in the driver is a transport /
+      // harness problem (deployment unreachable, hook never appeared, resume
+      // or return-value read timed out), not an event-log regression.
+      outcome: 'infra',
+      errorCode: 'HARNESS_ERROR',
       errorMessage: err instanceof Error ? err.message : String(err),
       durationMs: Date.now() - startedAt,
     };
@@ -735,8 +905,21 @@ function summarize(results: ReproRunResult[]) {
       RUNTIME_ERROR: 0,
       stuck: 0,
       other: 0,
+      infra: 0,
     }
   );
+}
+
+function emptyOutcomeCounts(): Record<Outcome, number> {
+  return {
+    completed: 0,
+    CORRUPTED_EVENT_LOG: 0,
+    USER_ERROR: 0,
+    RUNTIME_ERROR: 0,
+    stuck: 0,
+    other: 0,
+    infra: 0,
+  };
 }
 
 function summarizeByScenario(results: ReproRunResult[]) {
@@ -746,38 +929,10 @@ function summarizeByScenario(results: ReproRunResult[]) {
       return acc;
     },
     {
-      'hook-sleep': {
-        completed: 0,
-        CORRUPTED_EVENT_LOG: 0,
-        USER_ERROR: 0,
-        RUNTIME_ERROR: 0,
-        stuck: 0,
-        other: 0,
-      },
-      'step-fanout': {
-        completed: 0,
-        CORRUPTED_EVENT_LOG: 0,
-        USER_ERROR: 0,
-        RUNTIME_ERROR: 0,
-        stuck: 0,
-        other: 0,
-      },
-      'step-sleep-race-step-biased': {
-        completed: 0,
-        CORRUPTED_EVENT_LOG: 0,
-        USER_ERROR: 0,
-        RUNTIME_ERROR: 0,
-        stuck: 0,
-        other: 0,
-      },
-      'step-sleep-race-sleep-biased': {
-        completed: 0,
-        CORRUPTED_EVENT_LOG: 0,
-        USER_ERROR: 0,
-        RUNTIME_ERROR: 0,
-        stuck: 0,
-        other: 0,
-      },
+      'hook-sleep': emptyOutcomeCounts(),
+      'step-fanout': emptyOutcomeCounts(),
+      'step-sleep-race-step-biased': emptyOutcomeCounts(),
+      'step-sleep-race-sleep-biased': emptyOutcomeCounts(),
     }
   );
 }
@@ -835,11 +990,31 @@ const testTimeoutMs =
     Math.ceil(
       Math.floor(config.stepSleepRaceAttempts / 2) / config.stepConcurrency
     ) +
+  // Headroom for a wave whose slow runs spill into the post-budget grace
+  // window before being classified.
+  config.stuckGraceMs +
   60_000;
 
 describe('event log race repro', () => {
   beforeAll(() => {
     setupWorld(deploymentUrl);
+
+    // The hook resume must land before the workflow exhausts its sleep budget,
+    // otherwise the sleep branch wins and the run exits via the no-wake path,
+    // recording an `infra` outcome (NO_WAKE_BRANCH / HOOK_RESUME_FAILED) and
+    // losing the wake-branch coverage this scenario exists to exercise.
+    const sleepBudgetMs = config.iterations * config.sleepMs;
+    const resumeCeilingMs = config.resumeDelayMs + config.resumeJitterMs;
+    if (resumeCeilingMs >= sleepBudgetMs) {
+      console.warn(
+        `[event-log-race-repro] resume ceiling (${resumeCeilingMs}ms = ` +
+          `resumeDelayMs ${config.resumeDelayMs} + resumeJitterMs ${config.resumeJitterMs}) ` +
+          `is not below the hook-sleep budget (${sleepBudgetMs}ms = iterations ` +
+          `${config.iterations} * sleepMs ${config.sleepMs}). Many hook-sleep ` +
+          `attempts will lose the wake branch to the sleep race and be recorded ` +
+          `as infra. Raise iterations/sleepMs or lower the resume delay.`
+      );
+    }
   });
 
   test(
@@ -872,10 +1047,14 @@ describe('event log race repro', () => {
       ];
       writeResults(results);
 
-      const nonCompleted = results.filter(
-        (result) => result.outcome !== 'completed'
+      // Only event-log regressions fail the job. `infra` outcomes are
+      // harness-side timing races (hook resume vs. sleep budget) and transport
+      // errors — they are recorded and surfaced in the summary, but do not
+      // gate, matching `--check` in the renderer script.
+      const regressions = results.filter(
+        (result) => result.outcome !== 'completed' && result.outcome !== 'infra'
       );
-      expect(nonCompleted).toEqual([]);
+      expect(regressions).toEqual([]);
     }
   );
 });

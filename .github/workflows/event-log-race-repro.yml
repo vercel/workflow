@@ -27,9 +27,9 @@ on:
         required: false
         default: '50'
       iterations:
-        description: 'Hook/sleep race iterations per workflow run'
+        description: 'Hook/sleep race iterations per workflow run (ceiling; the run returns as soon as the wake branch wins, so this mainly widens the window for the resume to land before the sleep budget is exhausted)'
         required: false
-        default: '5'
+        default: '8'
       run_timeout_ms:
         description: 'Per-run timeout before classifying as stuck'
         required: false
@@ -113,7 +113,7 @@ jobs:
           EVENT_LOG_RACE_REPRO_STEP_SLEEP_RACE_ATTEMPTS: ${{ inputs.step_sleep_race_attempts || '250' }}
           EVENT_LOG_RACE_REPRO_CONCURRENCY: ${{ inputs.concurrency || '50' }}
           EVENT_LOG_RACE_REPRO_STEP_CONCURRENCY: ${{ inputs.step_concurrency || '50' }}
-          EVENT_LOG_RACE_REPRO_ITERATIONS: ${{ inputs.iterations || '5' }}
+          EVENT_LOG_RACE_REPRO_ITERATIONS: ${{ inputs.iterations || '8' }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms || '150000' }}
           EVENT_LOG_RACE_REPRO_SLEEP_MS: ${{ inputs.sleep_ms || '5000' }}
           EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS: ${{ inputs.resume_delay_ms || '15000' }}
