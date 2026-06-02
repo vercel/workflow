@@ -96,9 +96,10 @@ export {
 function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
   const terminalEvent = events.find(
     (event) =>
-      event.eventType === 'run_completed' ||
-      event.eventType === 'run_failed' ||
-      event.eventType === 'run_cancelled'
+      event.runId === runId &&
+      (event.eventType === 'run_completed' ||
+        event.eventType === 'run_failed' ||
+        event.eventType === 'run_cancelled')
   );
 
   if (!terminalEvent) {
