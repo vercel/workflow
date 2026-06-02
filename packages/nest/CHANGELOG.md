@@ -1,5 +1,86 @@
 # @workflow/nest
 
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.11
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.10
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.9
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`0d0bb01`](https://github.com/vercel/workflow/commit/0d0bb013d7073f964bb3aea7869e84ed762bf7a9), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/builders@5.0.0-beta.8
+
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.7
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.6
+
+## 5.0.0-beta.5
+
+### Minor Changes
+
+- [#1842](https://github.com/vercel/workflow/pull/1842) [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `sourcemap` option to builders for disabling or customising source map emission on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option: `true`, `false`, `'inline'`, `'linked'`, `'external'`, `'both'`. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
+
+  Setting `sourcemap: false` drops inline source maps from the step, workflow and webhook bundles, and skips the source-map-support runtime shim on the Vercel step function — helpful for staying under the Vercel 250MB function size limit.
+
+  Exposed per framework: `nitro.options.workflow.sourcemap`, `NestBuilderOptions.sourcemap`, `withWorkflow({ workflows: { sourcemap } })`, and the `sourcemap` option on `workflowPlugin()` for SvelteKit and Astro.
+
+  Minor semantics change: when the `sourcemap` option (or `WORKFLOW_SOURCEMAP`) is set explicitly, it now applies to **all** generated bundles. Previously, the final workflow wrapper and webhook bundles could only be toggled via the legacy `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1` env var, which continues to work but is narrower in scope.
+
+### Patch Changes
+
+- [#1338](https://github.com/vercel/workflow/pull/1338) [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Merge flow and step routes into a single combined handler that executes steps inline when possible, reducing function invocations and queue overhead.
+
+- Updated dependencies [[`e0ec429`](https://github.com/vercel/workflow/commit/e0ec429bb3baa4b3cb96373149a78dd514ebfe18), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`00a011d`](https://github.com/vercel/workflow/commit/00a011dee43b3ba7c399a97b9ed072cf4ce66816), [`96e92c6`](https://github.com/vercel/workflow/commit/96e92c63702718c2beee0d42a0ed94534b48b2a1), [`7830169`](https://github.com/vercel/workflow/commit/78301695eae3641ec4235d2066eba48f7448c5be), [`1d4f83a`](https://github.com/vercel/workflow/commit/1d4f83a29acc974fd4bbafe7a6ff64f8936219de), [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61), [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82), [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`0c997ce`](https://github.com/vercel/workflow/commit/0c997ce571c9fb5d728d460d773040c1354d401e)]:
+  - @workflow/builders@5.0.0-beta.5
+  - @workflow/swc-plugin@5.0.0-beta.4
+
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.4
+
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1686](https://github.com/vercel/workflow/pull/1686) [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `client` transform mode from SWC plugin. The `client` and `step` modes were nearly identical — both preserved step function bodies, replaced workflow bodies with throw stubs, and emitted the same JSON manifest. The only differences were the step registration mechanism (simple property assignment vs. IIFE) and whether DCE ran. Step mode now absorbs all client-mode behaviors: hoisted variable references for object property steps (so `.stepId` is accessible), and dead code elimination. All integrations that previously used `mode: 'client'` now use `mode: 'step'`.
+
+- Updated dependencies [[`baba580`](https://github.com/vercel/workflow/commit/baba580794f636fa371d86634a2eac7bf367da12), [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c)]:
+  - @workflow/builders@5.0.0-beta.3
+  - @workflow/swc-plugin@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

@@ -1,0 +1,75 @@
+---
+title: Resilient run start
+description: Overhaul run start logic to tolerate world storage unavailability, as long as the queue is healthy, and significantly speeds up run start.
+---
+
+# Resilient `start()`
+
+## Motivation
+
+When `world` storage is unavailable but the queue is up, `start()` previously failed entirely because `world.events.create(run_created)` is called before `world.queue()`. This change decouples run creation from queue dispatch so that runs can still be accepted when storage is degraded.
+
+Additionally, the runtime previously called `world.runs.get(runId)` before `run_started`, adding an extra round-trip. By always calling `run_started` directly, we save that round-trip and can return pre-loaded events in the response to skip the initial `events.list` call, reducing TTFB.
+
+## Design
+
+### `start()` changes
+
+- `world.events.create` (run_created) and `world.queue` are now called **in parallel** via `Promise.allSettled`.
+- If `events.create` errors with **429 or 5xx**, we log a warning saying that run creation failed but the run was accepted — creation will be re-tried async by the runtime when it processes the queue message. The returned `Run` instance is marked with `resilientStart = true`.
+- If `events.create` errors with **409** (EntityConflictError), the run already exists (e.g., the queue handler's resilient start path created it first due to a cold-start race). This is treated as success.
+- If `world.queue` fails, we still throw — the run truly failed and was not enqueued.
+- The queue invocation now receives all the run inputs (`input`, `deploymentId`, `workflowName`, `specVersion`, `executionContext`) via `runInput` so the runtime can create the run later if needed.
+- When the runtime re-enqueues itself, it does **not** pass these inputs — only the first queue cycle carries them.
+
+### `workflowEntrypoint` changes
+
+- When calling `world.events.create` with `run_started`, we now also always pass the run input that was sent through the queue, if available. The world is responsible for creating the run if it doesn't already exist.
+
+### `Run.returnValue` polling
+
+- When `resilientStart` is true on the Run instance (run_created failed), the `pollReturnValue` loop retries on `WorkflowRunNotFoundError` up to 3 times (1s + 3s + 6s = 10s total) to give the queue time to deliver and the runtime to create the run via `run_started`.
+- When `resilientStart` is false (normal path), 404 fails immediately — no delay for the common case of a wrong run ID.
+
+### World contract changes
+
+- Posting `run_started` to a **non-existent** run is now allowed when the run input is sent along with the payload. The world creates a `run_created` event first (so the event log is consistent), then creates the `run_started` event normally.
+- When `run_started` encounters an **already-running** run, all worlds return `{ run }` with `event: undefined` instead of throwing. No duplicate event is created.
+
+### Queue transport changes
+
+`Uint8Array` values (the serialized workflow input in `runInput`) don't survive plain JSON serialization. Each world uses a transport that preserves binary data:
+
+- **world-vercel**: CBOR transport — CBOR-encodes the entire queue payload into a `Buffer` and uses `BufferTransport` from `@vercel/queue`. Uint8Array survives natively.
+- **world-local**: `TypedJsonTransport` — encodes Uint8Array as `{ __type: 'Uint8Array', data: '<base64>' }`.
+- **world-postgres**: Inline typed JSON transport — same tagged-envelope approach as world-local.
+
+## Decisions
+
+1. **Parallel not sequential**: We chose `Promise.allSettled` over sequential calls to minimize latency in the happy path.
+
+2. **Already-running returns run without event**: When `run_started` encounters an already-running run, all worlds return `{ run }` with `event: undefined` (no `events` array) instead of throwing. The runtime detects this by checking for `result.event === undefined`. This avoids an extra `world.runs.get` round-trip.
+
+3. **Events in 200 response**: We only return events on the 200 path (first caller). On the already-running path, we fall back to the normal `events.list` call. This is correct because only on 200 can we be certain we know the full event history.
+
+4. **Conditional 404 retry on Run.returnValue**: Only when `resilientStart = true` (run_created failed). Normal runs fail fast on 404.
+
+## Known concerns
+
+### Cold-start race on Vercel
+
+On Vercel, the parallel dispatch can cause the queue message to be processed before `run_created` completes, if `run_created` hits a cold-start lambda. When this happens:
+
+1. The runtime's resilient start path creates the run from `run_started`.
+2. The original `run_created` arrives and gets 409 (EntityConflictError).
+3. `start()` treats the 409 as success (the run exists).
+
+The `resilientStart` flag is NOT set on the Run instance in this case (409 is not a retryable error), so `returnValue` fails fast on 404.
+
+### Atomicity of run entity creation
+
+The normal `run_created` path and the resilient start path can race on creating the run entity. In `world-local`, both paths use `writeExclusive` (O_CREAT|O_EXCL) — atomic at the OS level, so exactly one writer wins and the other gets EEXIST. The normal path throws `EntityConflictError` on conflict (handled by `start()` as 409); the resilient start path re-reads the run from disk on conflict.
+
+In `world-postgres`, the resilient start path uses `onConflictDoNothing` plus a re-read on conflict for the same effect, with the same outcome on either side of the race.
+
+The narrow crash window in `world-postgres` between the run insert and the event insert is acceptable — if the run insert succeeds but the event insert crashes, the run exists and `run_started` will still proceed normally (the event log will be missing a `run_created` entry, but the run itself is functional).

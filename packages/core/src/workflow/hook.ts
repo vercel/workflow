@@ -1,4 +1,4 @@
-import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
@@ -66,6 +66,23 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.NotConsumed;
       }
 
+      const eventToken =
+        'eventData' in event && event.eventData && 'token' in event.eventData
+          ? event.eventData.token
+          : undefined;
+
+      if (typeof eventToken === 'string' && eventToken !== token) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          ctx.onWorkflowError(
+            new ReplayDivergenceError(
+              `Replay divergence: hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current hook consumer expects "${token}"`,
+              { eventId: event.eventId }
+            )
+          );
+        });
+        return EventConsumerResult.Finished;
+      }
+
       // Check for hook_created event to mark this hook as already created
       if (event.eventType === 'hook_created') {
         const queueItem = ctx.invocationsQueue.get(correlationId);
@@ -84,7 +101,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Chain through promiseQueue to ensure deterministic ordering.
         const conflictEvent = event as HookConflictEvent;
         const conflictError = new HookConflictError(
-          conflictEvent.eventData.token
+          conflictEvent.eventData.token,
+          conflictEvent.eventData.conflictingRunId
         );
 
         // Mark that we have a conflict so future awaits also reject
@@ -146,11 +164,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.Finished;
       }
 
-      // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      // This replay installed a different consumer than the stored event needs.
       ctx.promiseQueue = ctx.promiseQueue.then(() => {
         ctx.onWorkflowError(
-          new WorkflowRuntimeError(
-            `Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`
+          new ReplayDivergenceError(
+            `Replay divergence: Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`,
+            { eventId: event.eventId }
           )
         );
       });

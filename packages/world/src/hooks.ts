@@ -23,6 +23,7 @@ export const HookSchema = z.object({
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
   isWebhook: z.boolean().optional(),
+  isSystem: z.boolean().optional(),
 });
 
 /**
@@ -53,6 +54,8 @@ export type Hook = z.infer<typeof HookSchema> & {
   specVersion?: number;
   /** Whether this hook is resumable via the public webhook endpoint. undefined = legacy (treated as true for backwards compat). */
   isWebhook?: boolean;
+  /** Whether this hook is a system-managed hook (e.g., for abort signals). */
+  isSystem?: boolean;
 };
 
 // Request types

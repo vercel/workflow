@@ -1,0 +1,17 @@
+{
+  "title": "Getting Started",
+  "pages": [
+    "next",
+    "astro",
+    "express",
+    "fastify",
+    "hono",
+    "nitro",
+    "nuxt",
+    "sveltekit",
+    "tanstack-start",
+    "vite",
+    "python"
+  ],
+  "defaultOpen": true
+}

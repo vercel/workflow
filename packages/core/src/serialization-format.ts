@@ -405,6 +405,36 @@ export const observabilityRevivers: Revivers = {
   ReadableStream: streamToStreamRef,
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
+  AbortController: (value: any) =>
+    `<AbortController(aborted: ${value.aborted})>`,
+  AbortSignal: (value: any) => `<AbortSignal(aborted: ${value.aborted})>`,
+  // DOMException needs an explicit reviver: without one, devalue.parse
+  // throws on the `["DOMException", ...]` tag and `hydrateStepIO`'s
+  // try/catch leaves the raw flat-encoded string in the UI. AbortController
+  // synthesizes a DOMException as the default `signal.reason` when abort()
+  // is called with no arg — so any abort that round-trips through a step
+  // boundary surfaces here. Reconstruct as a real DOMException when the
+  // global is available (modern browsers + Node 18+), else fall back to
+  // an Error preserving name/message/stack/cause for display.
+  DOMException: (value: {
+    message: string;
+    name: string;
+    stack?: string;
+    cause?: unknown;
+  }) => {
+    const G = globalThis as { DOMException?: typeof DOMException };
+    if (typeof G.DOMException === 'function') {
+      const e = new G.DOMException(value.message, value.name);
+      if (value.stack !== undefined) e.stack = value.stack;
+      if ('cause' in value) (e as { cause?: unknown }).cause = value.cause;
+      return e;
+    }
+    const e: Error & { cause?: unknown } = new Error(value.message);
+    e.name = value.name;
+    if (value.stack !== undefined) e.stack = value.stack;
+    if ('cause' in value) e.cause = value.cause;
+    return e;
+  },
   StepFunction: serializedStepFunctionToString,
   WorkflowFunction: (value: { workflowId: string }) =>
     `<workflow:${value.workflowId}>`,
@@ -420,10 +450,11 @@ export const observabilityRevivers: Revivers = {
  * Hydrate the data fields of a step resource.
  */
 function hydrateStepIO<
-  T extends { stepId?: string; input?: any; output?: any },
+  T extends { stepId?: string; input?: any; output?: any; error?: any },
 >(resource: T, revivers: Revivers): T {
   let hydratedInput = resource.input;
   let hydratedOutput = resource.output;
+  let hydratedError = resource.error;
 
   if (resource.input != null) {
     try {
@@ -441,18 +472,34 @@ function hydrateStepIO<
     }
   }
 
-  return { ...resource, input: hydratedInput, output: hydratedOutput };
+  // The `error` field is `SerializedData` (Uint8Array) produced by
+  // `dehydrateStepError`. Hydrate it so observability tools (CLI, web UI)
+  // can read `step.error.message`, `step.error.stack`, etc.
+  if (resource.error != null) {
+    try {
+      hydratedError = hydrateData(resource.error, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
+  return {
+    ...resource,
+    input: hydratedInput,
+    output: hydratedOutput,
+    error: hydratedError,
+  };
 }
 
 /**
  * Hydrate the data fields of a workflow run resource.
  */
-function hydrateWorkflowIO<T extends { input?: any; output?: any }>(
-  resource: T,
-  revivers: Revivers
-): T {
+function hydrateWorkflowIO<
+  T extends { input?: any; output?: any; error?: any },
+>(resource: T, revivers: Revivers): T {
   let hydratedInput = resource.input;
   let hydratedOutput = resource.output;
+  let hydratedError = resource.error;
 
   if (resource.input != null) {
     try {
@@ -470,7 +517,23 @@ function hydrateWorkflowIO<T extends { input?: any; output?: any }>(
     }
   }
 
-  return { ...resource, input: hydratedInput, output: hydratedOutput };
+  // The `error` field is `SerializedData` (Uint8Array) produced by
+  // `dehydrateRunError`. Hydrate it so observability tools (CLI, web UI)
+  // can read `run.error.message`, `run.error.stack`, etc.
+  if (resource.error != null) {
+    try {
+      hydratedError = hydrateData(resource.error, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
+  return {
+    ...resource,
+    input: hydratedInput,
+    output: hydratedOutput,
+    error: hydratedError,
+  };
 }
 
 /**
@@ -524,6 +587,18 @@ function hydrateEventData<T extends { eventId?: string; eventData?: any }>(
   if ('payload' in eventData && eventData.payload != null) {
     try {
       eventData.payload = hydrateData(eventData.payload, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
+  // step_failed / step_retrying / run_failed events have eventData.error
+  // (the thrown value, serialized via the error pipeline). Without this,
+  // event listings in o11y tooling would surface the raw `Uint8Array`
+  // payload instead of a hydrated `{ name, message, stack, … }` object.
+  if ('error' in eventData && eventData.error != null) {
+    try {
+      eventData.error = hydrateData(eventData.error, revivers);
     } catch {
       // Leave un-hydrated
     }

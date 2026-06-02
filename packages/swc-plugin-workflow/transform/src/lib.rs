@@ -3,10 +3,10 @@ mod naming;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use swc_core::{
-    common::{errors::HANDLER, SyntaxContext, DUMMY_SP},
+    common::{DUMMY_SP, SyntaxContext, errors::HANDLER},
     ecma::{
         ast::*,
-        visit::{noop_visit_mut_type, noop_visit_type, Visit, VisitMut, VisitMutWith, VisitWith},
+        visit::{Visit, VisitMut, VisitMutWith, VisitWith, noop_visit_mut_type, noop_visit_type},
     },
 };
 
@@ -360,7 +360,14 @@ pub struct StepTransform {
     object_property_step_functions:
         Vec<(String, String, FnExpr, swc_core::common::Span, String, bool)>,
     // Track nested step functions inside workflow functions for hoisting in step mode
-    // (fn_name, fn_expr, span, closure_vars, was_arrow, parent_workflow_name)
+    // (fn_name, fn_expr, span, closure_vars, was_arrow, parent_workflow_name, references_lexical_this)
+    //
+    // `references_lexical_this` is set when the original step function was an
+    // arrow whose body references the enclosing `this`. In step mode such a
+    // step is hoisted as a regular `function` (not an arrow) so the runtime
+    // can rebind `this` via `stepFn.apply(thisVal, args)`. In workflow mode
+    // the proxy reference is wrapped with `.bind(this)` so the step proxy
+    // captures the caller's `this` and forwards it as `thisVal`.
     nested_step_functions: Vec<(
         String,
         FnExpr,
@@ -368,6 +375,7 @@ pub struct StepTransform {
         Vec<String>,
         bool,
         String,
+        bool,
     )>,
     // Counter for anonymous function names
     #[allow(dead_code)]
@@ -375,6 +383,15 @@ pub struct StepTransform {
     // Track object properties that need to be converted to initializer calls in workflow mode
     // (parent_var_name, prop_name, step_id)
     object_property_workflow_conversions: Vec<(String, String, String)>,
+    // Map from a step's bare name (e.g. "_anonymousStep0") to the full
+    // namespaced step name used to compute its registered step ID
+    // (e.g. "myWorkflow/_anonymousStep0"). Steps not present in this map
+    // use their bare name (which produces the same ID as the registered
+    // one). Populated when a nested step is hoisted out of a workflow
+    // function so that the `__internal_workflows` manifest comment matches
+    // the actual runtime step ID used by both the step-mode registration
+    // and the workflow-mode `WORKFLOW_USE_STEP` proxy lookup.
+    nested_step_full_names: HashMap<String, String>,
     // Current context: variable name being processed when visiting object properties
     #[allow(dead_code)]
     current_var_context: Option<String>,
@@ -1319,7 +1336,15 @@ impl ClosureVariableCollector {
 fn is_global_identifier(name: &str) -> bool {
     matches!(
         name,
-        "console"
+        // `arguments` is a per-function intrinsic binding, not a closure
+        // variable. Treat it as a global so the closure-variable collector
+        // doesn't try to serialize it and the hoisted body doesn't end up
+        // with `const { arguments } = ...` (which is a syntax error in
+        // strict mode anyway). Hoisted `function`-form steps see their own
+        // `arguments` reflecting the positional args passed via
+        // `stepFn.apply(thisVal, args)`.
+        "arguments"
+            | "console"
             | "process"
             | "global"
             | "globalThis"
@@ -1453,6 +1478,97 @@ impl VisitMut for ClosureVariableNormalizer {
     noop_visit_mut_type!();
 }
 
+// Visitor that detects whether an arrow-function body references its lexical
+// `this` (i.e. a `this` whose binding comes from an enclosing function/method).
+//
+// Arrow functions inherit `this` lexically; regular `function` expressions and
+// methods introduce their own `this` binding. So when scanning an arrow body
+// we recurse into nested arrows but stop at non-arrow function/method/class
+// member boundaries (a `this` inside one of those is bound by the inner
+// function, not by the outer scope).
+//
+// Class bodies are also boundaries: `this` inside class property initializers,
+// methods, getters/setters, constructors, and static blocks is bound to the
+// class instance/static class, not to the enclosing arrow. We still traverse
+// `extends` expressions and computed-key expressions because those are
+// evaluated in the surrounding scope.
+struct LexicalThisDetector {
+    found: bool,
+}
+
+impl LexicalThisDetector {
+    fn new() -> Self {
+        Self { found: false }
+    }
+
+    fn detect_in_arrow(arrow: &ArrowExpr) -> bool {
+        let mut detector = Self::new();
+        // Walk both params (default values, destructuring initializers can
+        // contain `this`, e.g. `(x = this.foo) => ...`) and the body.
+        for param in &arrow.params {
+            param.visit_with(&mut detector);
+        }
+        arrow.body.visit_with(&mut detector);
+        detector.found
+    }
+}
+
+impl Visit for LexicalThisDetector {
+    noop_visit_type!();
+
+    fn visit_this_expr(&mut self, _: &ThisExpr) {
+        self.found = true;
+    }
+
+    // Do not descend into nested non-arrow functions / methods / getters /
+    // setters / constructors / class static blocks — those introduce their
+    // own `this` binding.
+    fn visit_function(&mut self, _: &Function) {}
+    fn visit_constructor(&mut self, _: &Constructor) {}
+    fn visit_getter_prop(&mut self, _: &GetterProp) {}
+    fn visit_setter_prop(&mut self, _: &SetterProp) {}
+    fn visit_method_prop(&mut self, _: &MethodProp) {}
+    fn visit_class_method(&mut self, _: &ClassMethod) {}
+    fn visit_private_method(&mut self, _: &PrivateMethod) {}
+    fn visit_static_block(&mut self, _: &StaticBlock) {}
+
+    // Class declarations / expressions: `this` inside a class body member is
+    // bound to the class instance/static class, not the enclosing arrow. We
+    // still need to visit `extends` clauses and computed property keys
+    // because those are evaluated in the outer scope.
+    fn visit_class(&mut self, class: &Class) {
+        if let Some(super_class) = &class.super_class {
+            super_class.visit_with(self);
+        }
+        for member in &class.body {
+            // For each member, only walk the parts evaluated in the outer
+            // scope (computed keys); the value/body is evaluated with `this`
+            // bound to the class.
+            match member {
+                ClassMember::ClassProp(p) => {
+                    if let PropName::Computed(computed) = &p.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::PrivateProp(_) => { /* private name keys are not expressions */ }
+                ClassMember::Method(m) => {
+                    if let PropName::Computed(computed) = &m.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::PrivateMethod(_) => { /* private name keys are not expressions */ }
+                ClassMember::Constructor(c) => {
+                    if let PropName::Computed(computed) = &c.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::StaticBlock(_) => { /* `this` inside is class itself */ }
+                ClassMember::Empty(_) | ClassMember::TsIndexSignature(_) | ClassMember::AutoAccessor(_) => {}
+            }
+        }
+    }
+}
+
 impl StepTransform {
     fn process_stmt(&mut self, stmt: &mut Stmt) {
         match stmt {
@@ -1498,6 +1614,7 @@ impl StepTransform {
                                     self.current_parent_function_name
                                         .clone()
                                         .unwrap_or_default(),
+                                    false, // Regular functions have their own `this`
                                 ));
 
                                 // Keep the original function declaration with the directive stripped,
@@ -1508,12 +1625,12 @@ impl StepTransform {
                             }
                             TransformMode::Workflow => {
                                 // Include parent workflow name in step ID
+                                let parent_workflow = self
+                                    .current_workflow_function_name
+                                    .clone()
+                                    .unwrap_or_default();
                                 let step_fn_name =
-                                    if let Some(parent) = &self.current_workflow_function_name {
-                                        format!("{}/{}", parent, fn_name)
-                                    } else {
-                                        fn_name.clone()
-                                    };
+                                    self.record_nested_step_name(&fn_name, &parent_workflow);
                                 let step_id = self.create_id(
                                     Some(&step_fn_name),
                                     fn_decl.function.span,
@@ -1723,6 +1840,7 @@ impl StepTransform {
             nested_step_functions: Vec::new(),
             anonymous_fn_counter: 0,
             object_property_workflow_conversions: Vec::new(),
+            nested_step_full_names: HashMap::new(),
             current_var_context: None,
             module_imports: HashSet::new(),
             current_class_name: None,
@@ -1752,6 +1870,32 @@ impl StepTransform {
 
     // Create an identifier by combining module path and function name or line number
     // with appropriate prefix based on function type
+    /// Compute the namespaced step name for a nested step extracted from a
+    /// workflow function, and record the mapping so that the
+    /// `__internal_workflows` manifest emits the same step ID that is
+    /// registered at runtime in step mode and looked up by the
+    /// `WORKFLOW_USE_STEP` proxy in workflow mode.
+    ///
+    /// `fn_name` is the bare step name (e.g. `_anonymousStep0`).
+    /// `parent_workflow_name` is the enclosing workflow function's name
+    /// (empty if there is no enclosing workflow). When `parent_workflow_name`
+    /// is non-empty, the returned name is `parent/fn_name`; otherwise it is
+    /// just `fn_name`. The mapping is recorded only when a prefix is added.
+    fn record_nested_step_name(
+        &mut self,
+        fn_name: &str,
+        parent_workflow_name: &str,
+    ) -> String {
+        if parent_workflow_name.is_empty() {
+            fn_name.to_string()
+        } else {
+            let full = format!("{}/{}", parent_workflow_name, fn_name);
+            self.nested_step_full_names
+                .insert(fn_name.to_string(), full.clone());
+            full
+        }
+    }
+
     fn create_id(
         &self,
         fn_name: Option<&str>,
@@ -3872,6 +4016,42 @@ impl StepTransform {
         })
     }
 
+    // Wrap an expression with `.bind(this)` so the resulting proxy captures
+    // the caller's lexical `this`. Used when the original step was an arrow
+    // function whose body referenced the enclosing function's `this`.
+    fn wrap_with_bind_this(expr: Expr) -> Expr {
+        Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(expr),
+                prop: MemberProp::Ident(IdentName::new("bind".into(), DUMMY_SP)),
+            }))),
+            args: vec![ExprOrSpread {
+                spread: None,
+                expr: Box::new(Expr::This(ThisExpr { span: DUMMY_SP })),
+            }],
+            type_args: None,
+        })
+    }
+
+    // Same as `create_step_proxy_reference` but wrapped with `.bind(this)`
+    // when `bind_this` is true.
+    fn create_step_proxy_reference_maybe_bound(
+        &self,
+        step_id: &str,
+        closure_vars: &[String],
+        bind_this: bool,
+    ) -> Expr {
+        let proxy = self.create_step_proxy_reference(step_id, closure_vars);
+        if bind_this {
+            Self::wrap_with_bind_this(proxy)
+        } else {
+            proxy
+        }
+    }
+
     // Create a proxy reference: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id", closure_fn) (workflow mode)
     fn create_step_proxy_reference(&self, step_id: &str, closure_vars: &[String]) -> Expr {
         let mut args = vec![ExprOrSpread {
@@ -4517,7 +4697,18 @@ impl StepTransform {
                 .step_function_names
                 .iter()
                 .map(|fn_name| {
-                    let step_id = self.create_id(Some(fn_name), DUMMY_SP, false);
+                    // If this step was hoisted out of a workflow function it
+                    // is registered (and looked up) under a namespaced name
+                    // like "myWorkflow/_anonymousStep0". The manifest must
+                    // report the same step ID so downstream tooling (e.g.
+                    // builders consuming `__internal_workflows`) sees the
+                    // correct ID.
+                    let id_name = self
+                        .nested_step_full_names
+                        .get(fn_name)
+                        .map(|s| s.as_str())
+                        .unwrap_or(fn_name.as_str());
+                    let step_id = self.create_id(Some(id_name), DUMMY_SP, false);
                     format!("\"{}\":{{\"stepId\":\"{}\"}}", fn_name, step_id)
                 })
                 .collect();
@@ -4852,6 +5043,7 @@ impl VisitMut for StepTransform {
                         closure_vars,
                         was_arrow,
                         parent_workflow_name,
+                        references_lexical_this,
                     ) in nested_functions
                     {
                         // Generate hoisted name including parent workflow function name
@@ -4914,8 +5106,13 @@ impl VisitMut for StepTransform {
                             }
                         }
 
-                        // Create the appropriate hoisted declaration based on original function type
-                        let hoisted_decl = if was_arrow {
+                        // Create the appropriate hoisted declaration based on original function type.
+                        //
+                        // If the original arrow body referenced lexical `this`, we
+                        // hoist as a regular `function` (not an arrow) so that the
+                        // workflow runtime's `stepFn.apply(thisVal, args)` can
+                        // rebind `this` to the value captured at call time.
+                        let hoisted_decl = if was_arrow && !references_lexical_this {
                             // Convert back to arrow function: var name = async () => { ... };
                             let arrow_expr = self.convert_fn_expr_to_arrow(&fn_expr);
                             ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
@@ -4955,11 +5152,8 @@ impl VisitMut for StepTransform {
                         current_insert_pos += 1;
 
                         // Create a registration call or stepId assignment with parent workflow name in the step ID
-                        let step_fn_name = if parent_workflow_name.is_empty() {
-                            fn_name.clone()
-                        } else {
-                            format!("{}/{}", parent_workflow_name, fn_name)
-                        };
+                        let step_fn_name =
+                            self.record_nested_step_name(&fn_name, &parent_workflow_name);
                         let step_id = self.create_id(Some(&step_fn_name), span, false);
 
                         // Insert inline IIFE registration right after the hoisted declaration
@@ -5922,6 +6116,14 @@ impl VisitMut for StepTransform {
 
                 // Note: workflowId assignments are now handled in visit_mut_module_items
 
+                // Run dead-code elimination after nested step functions have
+                // been hoisted to the module top level. Running DCE earlier
+                // (e.g. inside `visit_mut_module_items`) would incorrectly
+                // strip imports referenced only by hoisted step bodies — such
+                // as a step nested inside a workflow function that references
+                // a module-level import.
+                self.remove_dead_code(&mut module.body);
+
                 // Add metadata comment at the beginning of the file
                 let metadata_comment = self.generate_metadata_comment();
                 if !metadata_comment.is_empty() {
@@ -6066,23 +6268,18 @@ impl VisitMut for StepTransform {
         self.in_module_level = old_in_module;
     }
 
-    // Add forbidden expression checks
-    fn visit_mut_this_expr(&mut self, expr: &mut ThisExpr) {
-        if self.in_step_function {
-            emit_error(WorkflowErrorKind::ForbiddenExpression {
-                span: expr.span,
-                expr: "this",
-                directive: "use step",
-            });
-        } else if self.in_workflow_function {
-            emit_error(WorkflowErrorKind::ForbiddenExpression {
-                span: expr.span,
-                expr: "this",
-                directive: "use workflow",
-            });
-        }
-    }
-
+    // Forbidden-expression check for `super` inside step/workflow bodies.
+    //
+    // Note: corresponding checks for `this` and `arguments` were removed
+    // because they were dead in practice (the `'use step'` / `'use workflow'`
+    // directives are stripped during the module-level traversal before this
+    // visitor runs over function bodies, so `in_step_function` /
+    // `in_workflow_function` are never observed as `true` here for those
+    // expressions). The existing `step-with-this-arguments-super` fixture
+    // documents that `this`, `arguments`, and `super` are allowed in step
+    // bodies. `super` is left flagged here for now — the same caveat applies
+    // — but the wording in `spec.md` reflects the actual runtime behavior
+    // for the other two.
     fn visit_mut_super(&mut self, sup: &mut Super) {
         if self.in_step_function {
             emit_error(WorkflowErrorKind::ForbiddenExpression {
@@ -6096,24 +6293,6 @@ impl VisitMut for StepTransform {
                 expr: "super",
                 directive: "use workflow",
             });
-        }
-    }
-
-    fn visit_mut_ident(&mut self, ident: &mut Ident) {
-        if ident.sym == *"arguments" {
-            if self.in_step_function {
-                emit_error(WorkflowErrorKind::ForbiddenExpression {
-                    span: ident.span,
-                    expr: "arguments",
-                    directive: "use step",
-                });
-            } else if self.in_workflow_function {
-                emit_error(WorkflowErrorKind::ForbiddenExpression {
-                    span: ident.span,
-                    expr: "arguments",
-                    directive: "use workflow",
-                });
-            }
         }
     }
 
@@ -7045,8 +7224,10 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // Perform dead code elimination in workflow and step mode
-        self.remove_dead_code(items);
+        // Note: dead-code elimination runs once at the end of
+        // `visit_mut_program` (after nested step functions have been hoisted
+        // to the module top level). Running it here would prematurely strip
+        // imports referenced only by hoisted step bodies.
     }
 
     fn visit_mut_fn_decl(&mut self, fn_decl: &mut FnDecl) {
@@ -7095,12 +7276,24 @@ impl VisitMut for StepTransform {
 
         // Track parent function name for nested step hoisting
         let old_parent_name = self.current_parent_function_name.clone();
-        self.current_parent_function_name = Some(fn_name);
+        self.current_parent_function_name = Some(fn_name.clone());
+
+        // For non-exported workflow functions, set current_workflow_function_name
+        // so that nested step IDs are namespaced under the workflow name. Exported
+        // workflow functions set this in `visit_mut_export_decl`. Without this,
+        // step IDs registered in step mode (via `visit_mut_object_lit`) would not
+        // match the IDs looked up in workflow mode (via `WORKFLOW_USE_STEP`),
+        // producing a runtime "step not found" failure.
+        let old_workflow_name = self.current_workflow_function_name.clone();
+        if self.workflow_function_names.contains(&fn_name) {
+            self.current_workflow_function_name = Some(fn_name);
+        }
 
         fn_decl.visit_mut_children_with(self);
 
         // Restore parent function name
         self.current_parent_function_name = old_parent_name;
+        self.current_workflow_function_name = old_workflow_name;
     }
 
     fn visit_mut_stmt(&mut self, stmt: &mut Stmt) {
@@ -7308,9 +7501,9 @@ impl VisitMut for StepTransform {
 
                                                 if let Some(body) = &mut fn_expr.function.body {
                                                     let error_msg = format!(
-                                                            "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
-                                                            name, name
-                                                        );
+                                                        "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
+                                                        name, name
+                                                    );
                                                     let error_expr = Expr::New(NewExpr {
                                                         span: DUMMY_SP,
                                                         ctxt: SyntaxContext::empty(),
@@ -7586,6 +7779,30 @@ impl VisitMut for StepTransform {
                                     // It's valid - proceed with transformation
                                     self.workflow_function_names.insert(name.clone());
 
+                                    // Visit the function body with workflow context so that
+                                    // any nested steps (including those inside callback
+                                    // object literals) are extracted and namespaced under
+                                    // this workflow's name. This must happen before the
+                                    // body is replaced (in step mode) or the directive is
+                                    // removed (in workflow mode).
+                                    let old_in_workflow = self.in_workflow_function;
+                                    let old_workflow_name =
+                                        self.current_workflow_function_name.clone();
+                                    let old_parent_name =
+                                        self.current_parent_function_name.clone();
+                                    let old_in_module = self.in_module_level;
+                                    self.in_workflow_function = true;
+                                    self.current_workflow_function_name = Some(name.clone());
+                                    self.current_parent_function_name = Some(name.clone());
+                                    self.in_module_level = false;
+                                    if let Some(body) = &mut fn_expr.function.body {
+                                        body.visit_mut_with(self);
+                                    }
+                                    self.in_workflow_function = old_in_workflow;
+                                    self.current_workflow_function_name = old_workflow_name;
+                                    self.current_parent_function_name = old_parent_name;
+                                    self.in_module_level = old_in_module;
+
                                     match self.mode {
                                         TransformMode::Step => {
                                             // In step mode, transform workflow function with throw error
@@ -7657,6 +7874,13 @@ impl VisitMut for StepTransform {
 
                                 // Check if we're inside any function (nested), not just workflow functions
                                 if !self.in_module_level {
+                                    // Detect whether the arrow body references the
+                                    // enclosing function's `this`. If so, we need to
+                                    // hoist as a regular function (so `apply(thisVal,
+                                    // args)` rebinds) and `.bind(this)` the workflow-
+                                    // mode proxy reference.
+                                    let references_lexical_this =
+                                        LexicalThisDetector::detect_in_arrow(arrow_expr);
                                     match self.mode {
                                         TransformMode::Step => {
                                             // Hoist arrow function to module scope
@@ -7727,6 +7951,7 @@ impl VisitMut for StepTransform {
                                                 self.current_parent_function_name
                                                     .clone()
                                                     .unwrap_or_default(),
+                                                references_lexical_this,
                                             ));
 
                                             // Keep the original arrow with the directive stripped,
@@ -7739,13 +7964,12 @@ impl VisitMut for StepTransform {
                                         TransformMode::Workflow => {
                                             // Replace with proxy reference (not a function call)
                                             // Include parent workflow name in step ID
-                                            let step_fn_name = if let Some(parent) =
-                                                &self.current_workflow_function_name
-                                            {
-                                                format!("{}/{}", parent, name)
-                                            } else {
-                                                name.clone()
-                                            };
+                                            let parent_workflow = self
+                                                .current_workflow_function_name
+                                                .clone()
+                                                .unwrap_or_default();
+                                            let step_fn_name = self
+                                                .record_nested_step_name(&name, &parent_workflow);
                                             let step_id = self.create_id(
                                                 Some(&step_fn_name),
                                                 arrow_expr.span,
@@ -7759,10 +7983,13 @@ impl VisitMut for StepTransform {
                                                     &self.module_imports,
                                                     &self.declared_identifiers,
                                                 );
-                                            *init = Box::new(self.create_step_proxy_reference(
-                                                &step_id,
-                                                &closure_vars,
-                                            ));
+                                            *init = Box::new(
+                                                self.create_step_proxy_reference_maybe_bound(
+                                                    &step_id,
+                                                    &closure_vars,
+                                                    references_lexical_this,
+                                                ),
+                                            );
                                         }
                                         TransformMode::Detect => {}
                                     }
@@ -7819,6 +8046,29 @@ impl VisitMut for StepTransform {
                                 } else {
                                     // It's valid - proceed with transformation
                                     self.workflow_function_names.insert(name.clone());
+
+                                    // Visit the arrow body with workflow context so that any
+                                    // nested steps (including those inside callback object
+                                    // literals like `tools: () => ({ exec: async () => {
+                                    // 'use step'; ... } })`) are extracted and namespaced
+                                    // under this workflow's name. This must happen before
+                                    // the body is replaced (in step mode) or the directive
+                                    // is removed (in workflow mode).
+                                    let old_in_workflow = self.in_workflow_function;
+                                    let old_workflow_name =
+                                        self.current_workflow_function_name.clone();
+                                    let old_parent_name =
+                                        self.current_parent_function_name.clone();
+                                    let old_in_module = self.in_module_level;
+                                    self.in_workflow_function = true;
+                                    self.current_workflow_function_name = Some(name.clone());
+                                    self.current_parent_function_name = Some(name.clone());
+                                    self.in_module_level = false;
+                                    arrow_expr.body.visit_mut_with(self);
+                                    self.in_workflow_function = old_in_workflow;
+                                    self.current_workflow_function_name = old_workflow_name;
+                                    self.current_parent_function_name = old_parent_name;
+                                    self.in_module_level = old_in_module;
 
                                     match self.mode {
                                         TransformMode::Step => {
@@ -8611,6 +8861,7 @@ impl VisitMut for StepTransform {
                                     self.current_parent_function_name
                                         .clone()
                                         .unwrap_or_default(),
+                                    false, // Regular functions have their own `this`
                                 ));
 
                                 // Keep the original function with the directive stripped,
@@ -8622,16 +8873,12 @@ impl VisitMut for StepTransform {
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
                                 // Use current_parent_function_name to match step mode's ID generation
+                                let parent_workflow = self
+                                    .current_parent_function_name
+                                    .clone()
+                                    .unwrap_or_default();
                                 let step_fn_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}/{}", parent, name)
-                                        } else {
-                                            name.clone()
-                                        }
-                                    } else {
-                                        name.clone()
-                                    };
+                                    self.record_nested_step_name(&name, &parent_workflow);
                                 let step_id = self.create_id(
                                     Some(&step_fn_name),
                                     fn_expr.function.span,
@@ -8658,6 +8905,11 @@ impl VisitMut for StepTransform {
                         let name = format!("_anonymousStep{}", self.anonymous_fn_counter);
                         self.anonymous_fn_counter += 1;
                         self.step_function_names.insert(name.clone());
+
+                        // Detect whether the arrow body references the
+                        // enclosing function's `this` (lexical capture).
+                        let references_lexical_this =
+                            LexicalThisDetector::detect_in_arrow(arrow_expr);
 
                         match self.mode {
                             TransformMode::Step => {
@@ -8719,6 +8971,7 @@ impl VisitMut for StepTransform {
                                     self.current_parent_function_name
                                         .clone()
                                         .unwrap_or_default(),
+                                    references_lexical_this,
                                 ));
 
                                 // Keep the original arrow with the directive stripped,
@@ -8730,16 +8983,12 @@ impl VisitMut for StepTransform {
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
                                 // Use current_parent_function_name to match step mode's ID generation
+                                let parent_workflow = self
+                                    .current_parent_function_name
+                                    .clone()
+                                    .unwrap_or_default();
                                 let step_fn_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}/{}", parent, name)
-                                        } else {
-                                            name.clone()
-                                        }
-                                    } else {
-                                        name.clone()
-                                    };
+                                    self.record_nested_step_name(&name, &parent_workflow);
                                 let step_id =
                                     self.create_id(Some(&step_fn_name), arrow_expr.span, false);
 
@@ -8749,7 +8998,11 @@ impl VisitMut for StepTransform {
                                         &self.module_imports,
                                         &self.declared_identifiers,
                                     );
-                                *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
+                                *expr = self.create_step_proxy_reference_maybe_bound(
+                                    &step_id,
+                                    &closure_vars,
+                                    references_lexical_this,
+                                );
                                 return; // Don't visit children since we replaced the expr
                             }
                             TransformMode::Detect => {}
@@ -9211,6 +9464,13 @@ impl VisitMut for StepTransform {
                                             self.anonymous_fn_counter += 1;
                                             self.step_function_names.insert(generated_name.clone());
 
+                                            // Detect lexical `this` capture so we
+                                            // can hoist as a regular function (step
+                                            // mode) and `.bind(this)` the proxy
+                                            // (workflow mode).
+                                            let references_lexical_this =
+                                                LexicalThisDetector::detect_in_arrow(arrow_expr);
+
                                             match self.mode {
                                                 TransformMode::Step => {
                                                     // Hoist to module scope
@@ -9280,6 +9540,7 @@ impl VisitMut for StepTransform {
                                                         self.current_workflow_function_name
                                                             .clone()
                                                             .unwrap_or_default(),
+                                                        references_lexical_this,
                                                     ));
 
                                                     // Keep the original arrow with the directive stripped
@@ -9293,13 +9554,15 @@ impl VisitMut for StepTransform {
                                                         &mut arrow_expr.body,
                                                     );
                                                     // Include parent workflow name in step ID
-                                                    let step_fn_name = if let Some(parent) =
-                                                        &self.current_workflow_function_name
-                                                    {
-                                                        format!("{}/{}", parent, generated_name)
-                                                    } else {
-                                                        generated_name.clone()
-                                                    };
+                                                    let parent_workflow = self
+                                                        .current_workflow_function_name
+                                                        .clone()
+                                                        .unwrap_or_default();
+                                                    let step_fn_name = self
+                                                        .record_nested_step_name(
+                                                            &generated_name,
+                                                            &parent_workflow,
+                                                        );
                                                     let step_id = self.create_id(
                                                         Some(&step_fn_name),
                                                         arrow_expr.span,
@@ -9309,9 +9572,10 @@ impl VisitMut for StepTransform {
                                                     // Collect closure variables
                                                     let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
                                                     *kv_prop.value = self
-                                                        .create_step_proxy_reference(
+                                                        .create_step_proxy_reference_maybe_bound(
                                                             &step_id,
                                                             &closure_vars,
+                                                            references_lexical_this,
                                                         );
                                                 }
                                                 TransformMode::Detect => {}
@@ -9357,6 +9621,7 @@ impl VisitMut for StepTransform {
                                                         self.current_workflow_function_name
                                                             .clone()
                                                             .unwrap_or_default(),
+                                                        false, // Regular functions have their own `this`
                                                     ));
 
                                                     // Keep the original function with the directive stripped
@@ -9370,13 +9635,15 @@ impl VisitMut for StepTransform {
                                                         &mut fn_expr.function.body,
                                                     );
                                                     // Include parent workflow name in step ID
-                                                    let step_fn_name = if let Some(parent) =
-                                                        &self.current_workflow_function_name
-                                                    {
-                                                        format!("{}/{}", parent, generated_name)
-                                                    } else {
-                                                        generated_name.clone()
-                                                    };
+                                                    let parent_workflow = self
+                                                        .current_workflow_function_name
+                                                        .clone()
+                                                        .unwrap_or_default();
+                                                    let step_fn_name = self
+                                                        .record_nested_step_name(
+                                                            &generated_name,
+                                                            &parent_workflow,
+                                                        );
                                                     let step_id = self.create_id(
                                                         Some(&step_fn_name),
                                                         fn_expr.function.span,
@@ -9442,6 +9709,7 @@ impl VisitMut for StepTransform {
                                                 self.current_workflow_function_name
                                                     .clone()
                                                     .unwrap_or_default(),
+                                                false, // Methods have their own `this`
                                             ));
 
                                             // Keep the original method with the directive stripped
@@ -9455,13 +9723,14 @@ impl VisitMut for StepTransform {
                                                 &mut method_prop.function.body,
                                             );
                                             // Include parent workflow name in step ID
-                                            let step_fn_name = if let Some(parent) =
-                                                &self.current_workflow_function_name
-                                            {
-                                                format!("{}/{}", parent, generated_name)
-                                            } else {
-                                                generated_name.clone()
-                                            };
+                                            let parent_workflow = self
+                                                .current_workflow_function_name
+                                                .clone()
+                                                .unwrap_or_default();
+                                            let step_fn_name = self.record_nested_step_name(
+                                                &generated_name,
+                                                &parent_workflow,
+                                            );
                                             let step_id = self.create_id(
                                                 Some(&step_fn_name),
                                                 method_prop.function.span,

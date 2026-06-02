@@ -1,0 +1,110 @@
+---
+title: getWorkflowMetadata
+description: Access run IDs and timing information within workflow functions.
+type: reference
+summary: Call getWorkflowMetadata inside a workflow to access the run ID and timing information.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+---
+
+Returns additional metadata available in the current workflow function.
+
+You may want to use this function when you need to:
+
+* Log workflow run IDs
+* Access timing information of a workflow
+* Detect whether encryption is enabled for the current run
+
+<Callout>
+If you need to access step context, take a look at [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
+</Callout>
+
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+async function testWorkflow() {
+    "use workflow"
+
+    const ctx = getWorkflowMetadata() // [!code highlight]
+    console.log(ctx.workflowRunId)
+}
+```
+
+### Detecting Workflow Runtime
+
+You can use `getWorkflowMetadata` to detect whether your code is running inside a workflow context. This is useful when building shared utilities that need to behave differently inside and outside of workflows.
+
+Since `getWorkflowMetadata` throws when called outside a workflow, you can wrap it in a try-catch:
+
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+function isInWorkflow(): boolean {
+    try {
+        getWorkflowMetadata()
+        return true
+    } catch {
+        return false
+    }
+}
+```
+
+For example, a logging utility could include the workflow run ID when available:
+
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+function log(message: string) {
+    try {
+        const { workflowRunId } = getWorkflowMetadata()
+        console.log(`[workflow:${workflowRunId}] ${message}`)
+    } catch {
+        console.log(message)
+    }
+}
+```
+
+### Detecting Encryption
+
+The `features` object indicates which capabilities are active for the current run. Library authors can use `features.encryption` to control whether sensitive data is included in step return values, which are serialized to the event log:
+
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+declare function getUserProfile(userId: string): Promise<{ name: string; ssn: string }>; // @setup
+
+async function fetchUserProfile(userId: string) {
+    "use step"
+
+    const { features } = getWorkflowMetadata() // [!code highlight]
+    const profile = await getUserProfile(userId)
+
+    if (!features.encryption) { // [!code highlight]
+        // Omit sensitive fields from the return value,
+        // since it will be stored unencrypted in the event log
+        const { ssn, ...safe } = profile
+        return safe
+    }
+
+    return profile
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { getWorkflowMetadata } from "workflow";
+export default getWorkflowMetadata;`}
+showSections={['parameters']}
+/>
+
+### Returns
+
+<TSDoc
+definition={`
+import type { WorkflowMetadata } from "workflow";
+export default WorkflowMetadata;`}
+/>

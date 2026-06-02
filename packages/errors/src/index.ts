@@ -1,6 +1,11 @@
 import { parseDurationToDate } from '@workflow/utils';
-import type { StructuredError } from '@workflow/world';
+
 import type { StringValue } from 'ms';
+
+// Note: `Ansi` helpers live under the `@workflow/errors/ansi` subpath so the
+// main entry point doesn't pull `chalk` (and its ESM machinery) into every
+// consumer — most places that `import from '@workflow/errors'` only want the
+// error classes and never render framed messages.
 
 const BASE_URL = 'https://workflow-sdk.dev/err';
 
@@ -21,6 +26,53 @@ function isError(value: unknown): value is { name: string; message: string } {
 
 /**
  * @internal
+ * Compose a framed-detail body for an error message — same `╰▶` /
+ * `├▶` box-drawing structure used by `ContextViolationError` (in
+ * `@workflow/core`), so every error class with a hint or docs slug
+ * renders consistently:
+ *
+ *     <title>
+ *     ├▶ hint: <hint>
+ *     ╰▶ docs: https://workflow-sdk.dev/err/<slug>
+ *
+ * Plain text only — no ANSI here, since `@workflow/errors`'s main entry
+ * stays chalk-free. The runtime logger renders the same chars with
+ * dim styling at log time.
+ *
+ * Returns just `title` when there are no details to frame. Multi-line
+ * detail values are indented under their branch so the tree stays
+ * readable.
+ */
+function appendFramedDetails(
+  title: string,
+  details: ReadonlyArray<{ label: 'hint' | 'docs'; value: string }>
+): string {
+  if (details.length === 0) return title;
+  const lines = [title];
+  details.forEach((detail, index) => {
+    const isLast = index === details.length - 1;
+    const head = isLast ? '╰▶ ' : '├▶ ';
+    const cont = isLast ? '   ' : '│  ';
+    const text = `${detail.label}: ${detail.value}`;
+    text
+      .split('\n')
+      .forEach((line, i) => lines.push(`${i === 0 ? head : cont}${line}`));
+  });
+  return lines.join('\n');
+}
+
+function buildFramedDetails(
+  hint: string | undefined,
+  slug: ErrorSlug | undefined
+): ReadonlyArray<{ label: 'hint' | 'docs'; value: string }> {
+  const out: Array<{ label: 'hint' | 'docs'; value: string }> = [];
+  if (hint) out.push({ label: 'hint', value: hint });
+  if (slug) out.push({ label: 'docs', value: `${BASE_URL}/${slug}` });
+  return out;
+}
+
+/**
+ * @internal
  * All the slugs of the errors used for documentation links.
  */
 export const ERROR_SLUGS = {
@@ -33,8 +85,10 @@ export const ERROR_SLUGS = {
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
+  REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
+  RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -67,11 +121,20 @@ export class WorkflowError extends Error {
   readonly cause?: unknown;
 
   constructor(message: string, options?: WorkflowErrorOptions) {
-    const msgDocs = options?.slug
-      ? `${message}\n\nLearn more: ${BASE_URL}/${options.slug}`
-      : message;
+    const msgDocs = appendFramedDetails(
+      message,
+      buildFramedDetails(undefined, options?.slug)
+    );
     super(msgDocs, { cause: options?.cause });
-    this.cause = options?.cause;
+    // Only set `cause` when actually provided. Assigning `undefined`
+    // unconditionally makes `cause` an enumerable own property, which
+    // pollutes `util.inspect(err)` output with `{ cause: undefined, … }`
+    // on every no-cause subclass. The `super(...)` call above already
+    // conditionally sets non-enumerable `.cause` when `options.cause`
+    // is provided.
+    if (options?.cause !== undefined) {
+      this.cause = options.cause;
+    }
 
     if (options?.cause instanceof Error) {
       this.stack = `${this.stack}\nCaused by: ${options.cause.stack}`;
@@ -150,24 +213,46 @@ export class WorkflowWorldError extends WorkflowError {
  */
 export class WorkflowRunFailedError extends WorkflowError {
   runId: string;
-  declare cause: Error & { code?: string };
+  /**
+   * The high-level error category (e.g. USER_ERROR, RUNTIME_ERROR) for the
+   * failed run, from the run_failed event's `errorCode` field.
+   */
+  errorCode?: string;
+  /**
+   * The original thrown value from the failed workflow run, hydrated through
+   * the workflow serialization pipeline. Preserves the original type identity
+   * (Error subclasses, FatalError, custom classes with WORKFLOW_SERIALIZE, etc.)
+   * and custom properties (cause chains, etc.).
+   *
+   * Note: any JavaScript value can be thrown, so this is typed as `unknown`.
+   * Typical values are Error instances, but strings, objects, etc. are also
+   * possible.
+   */
+  declare cause: unknown;
 
-  constructor(runId: string, error: StructuredError) {
-    // Create a proper Error instance from the StructuredError to set as cause
-    // NOTE: custom error types do not get serialized/deserialized. Everything is an Error
-    const causeError = new Error(error.message);
-    if (error.stack) {
-      causeError.stack = error.stack;
-    }
-    if (error.code) {
-      (causeError as any).code = error.code;
-    }
+  constructor(
+    runId: string,
+    error: unknown,
+    options: { errorCode?: string } = {}
+  ) {
+    // Derive a human-readable message from the hydrated thrown value.
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : error && typeof error === 'object' && 'message' in error
+            ? String((error as { message: unknown }).message)
+            : 'Unknown error';
 
-    super(`Workflow run "${runId}" failed: ${error.message}`, {
-      cause: causeError,
+    super(`Workflow run "${runId}" failed: ${message}`, {
+      cause: error,
     });
     this.name = 'WorkflowRunFailedError';
     this.runId = runId;
+    if (options.errorCode !== undefined) {
+      this.errorCode = options.errorCode;
+    }
   }
 
   static is(value: unknown): value is WorkflowRunFailedError {
@@ -214,6 +299,215 @@ export class WorkflowRuntimeError extends WorkflowError {
 
   static is(value: unknown): value is WorkflowRuntimeError {
     return isError(value) && value.name === 'WorkflowRuntimeError';
+  }
+}
+
+/**
+ * Thrown when the persisted workflow event log cannot be replayed because it
+ * contains orphaned, duplicate, or mismatched events.
+ *
+ * This is a runtime/infrastructure failure rather than user code throwing.
+ * When this reaches run failure handling, it is recorded with the distinct
+ * `CORRUPTED_EVENT_LOG` code so worlds and backends can track it separately
+ * from generic runtime failures.
+ */
+export class CorruptedEventLogError extends WorkflowRuntimeError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, {
+      ...options,
+      slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG,
+    });
+    this.name = 'CorruptedEventLogError';
+  }
+
+  static is(value: unknown): value is CorruptedEventLogError {
+    return isError(value) && value.name === 'CorruptedEventLogError';
+  }
+}
+
+/**
+ * Thrown when the current workflow replay cannot follow the path described by
+ * the recorded event log. A single divergence does not prove that the
+ * persisted history is invalid: a subsequent replay may observe or schedule
+ * work correctly, so the runtime may redeliver before declaring corruption.
+ */
+export class ReplayDivergenceError extends WorkflowRuntimeError {
+  readonly eventId: string;
+
+  constructor(message: string, options: ErrorOptions & { eventId: string }) {
+    super(message, {
+      ...options,
+      slug: ERROR_SLUGS.REPLAY_DIVERGENCE,
+    });
+    this.name = 'ReplayDivergenceError';
+    this.eventId = options.eventId;
+  }
+
+  static is(value: unknown): value is ReplayDivergenceError {
+    return (
+      isError(value) &&
+      value.name === 'ReplayDivergenceError' &&
+      typeof (value as { eventId?: unknown }).eventId === 'string'
+    );
+  }
+}
+
+/**
+ * Optional structured context attached to a {@link RuntimeDecryptionError},
+ * carried over from the underlying decrypt call site to help diagnose the
+ * failure without poking through stacks.
+ */
+export interface RuntimeDecryptionErrorContext {
+  /** The operation that failed — useful to tell encrypt vs decrypt apart. */
+  operation?: 'encrypt' | 'decrypt';
+  /** Byte length of the input payload at the time of the failure. */
+  byteLength?: number;
+  /**
+   * The first 4 bytes of the input payload, decoded as UTF-8 if printable.
+   * Useful for telling apart truncated-but-valid-looking encrypted payloads
+   * from completely unrelated corruption (e.g. an HTML error page surfaced
+   * as a 200 OK).
+   */
+  formatPrefix?: string;
+}
+
+/**
+ * Thrown when the SDK's built-in AES-GCM encryption layer fails to encrypt
+ * or decrypt a workflow payload.
+ *
+ * This is an internal SDK failure — user code never invokes the SDK's
+ * encryption primitives directly. Common causes:
+ *
+ * - A ciphertext / auth tag mismatch, typically surfaced as the native Web
+ *   Crypto `OperationError: The operation failed for an operation-specific
+ *   reason`. Usually caused by ciphertext mutation or truncation in transit
+ *   between storage and read (truncated HTTP response, edge-cache miss
+ *   returning a partial 200, proxy drop during streaming, etc.).
+ * - A key resolution mismatch (wrong deployment, missing key material).
+ * - A malformed encrypted envelope (too short to contain the GCM nonce
+ *   and tag).
+ *
+ * Extends {@link WorkflowRuntimeError} so the run-failure classifier
+ * routes it to `RUNTIME_ERROR`.
+ */
+export class RuntimeDecryptionError extends WorkflowRuntimeError {
+  /** Optional structured context about the failed encrypt/decrypt call. */
+  readonly context?: RuntimeDecryptionErrorContext;
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & { context?: RuntimeDecryptionErrorContext }
+  ) {
+    super(message, {
+      cause: options?.cause,
+      slug: ERROR_SLUGS.RUNTIME_DECRYPTION_FAILED,
+    });
+    this.name = 'RuntimeDecryptionError';
+    if (options?.context !== undefined) {
+      this.context = options.context;
+    }
+  }
+
+  static is(value: unknown): value is RuntimeDecryptionError {
+    return isError(value) && value.name === 'RuntimeDecryptionError';
+  }
+}
+
+interface WorkflowBuildErrorOptions extends ErrorOptions {
+  /**
+   * An optional actionable hint appended to the main message, explaining how
+   * the user can resolve the failure. Shown after a blank line.
+   */
+  hint?: string;
+}
+
+/**
+ * Thrown when the workflow build pipeline (esbuild, SWC transform, file
+ * discovery, bundler integration) fails in a way the user can act on.
+ *
+ * This is distinct from `WorkflowRuntimeError` (which is raised at runtime
+ * by the workflow engine) — `WorkflowBuildError` fires during `pnpm build`,
+ * `next build`, or equivalent, before any workflow has started executing.
+ *
+ * Prefer attaching a short, actionable `hint` (e.g. `run \`pnpm install workflow\``)
+ * as plain text — the rendering layer is responsible for any styling or
+ * "hint:" label. Keeping `hint` plain keeps it useful in non-TTY contexts
+ * (CI logs, structured error serialization) where ANSI escapes are noise.
+ */
+export class WorkflowBuildError extends WorkflowError {
+  readonly hint?: string;
+
+  constructor(message: string, options?: WorkflowBuildErrorOptions) {
+    // Pass `hint` framed alongside the title so `WorkflowError`'s
+    // constructor sees a complete `${title}\n├▶ hint: …` body before
+    // it appends the `╰▶ docs: …` line. Build errors don't carry a
+    // slug today, but this keeps the layout consistent if one is
+    // added later.
+    const body = appendFramedDetails(
+      message,
+      buildFramedDetails(options?.hint, undefined)
+    );
+    super(body, { cause: options?.cause });
+    this.name = 'WorkflowBuildError';
+    this.hint = options?.hint;
+  }
+
+  static is(value: unknown): value is WorkflowBuildError {
+    return isError(value) && value.name === 'WorkflowBuildError';
+  }
+}
+
+interface SerializationErrorOptions extends ErrorOptions {
+  /**
+   * An optional actionable hint appended to the main message, explaining how
+   * the user can resolve the failure (e.g. "register the class with…" or
+   * "move this call inside a step").
+   */
+  hint?: string;
+}
+
+/**
+ * Thrown when a value cannot be serialized into or deserialized out of the
+ * workflow event log.
+ *
+ * This usually indicates a user-facing mistake: passing a non-serializable
+ * value (class without `WORKFLOW_SERIALIZE`, locked stream, direct workflow
+ * function reference) into a step boundary, or an unregistered class
+ * returning from a step.
+ *
+ * Internal invariants (corrupted buffers, unknown format bytes) should use
+ * `WorkflowRuntimeError` instead — this class is scoped to things the user
+ * can fix in their own code.
+ */
+export class SerializationError extends WorkflowError {
+  readonly hint?: string;
+  /**
+   * Serialization errors are deterministic — if a step returns a non-POJO,
+   * replaying the step will always produce the same non-serializable value.
+   * Retrying is guaranteed to fail, so these errors are surfaced as fatal
+   * and skip the step-retry loop. `FatalError.is()` recognizes any error
+   * with `fatal: true` (see `packages/errors/src/index.ts`), so no other
+   * wiring is required for user-thrown SerializationErrors.
+   */
+  readonly fatal = true;
+
+  constructor(message: string, options?: SerializationErrorOptions) {
+    // The hint carries its own docs URL (pointing at the foundations
+    // serialization page, which is what users actually need to see what
+    // round-trips), so we don't add a separate `╰▶ docs:` line here.
+    // Avoids two URLs on the message — one already-actionable, the other
+    // pointing at a generic error explainer.
+    const body = appendFramedDetails(
+      message,
+      buildFramedDetails(options?.hint, undefined)
+    );
+    super(body, { cause: options?.cause });
+    this.name = 'SerializationError';
+    this.hint = options?.hint;
+  }
+
+  static is(value: unknown): value is SerializationError {
+    return isError(value) && value.name === 'SerializationError';
   }
 }
 
@@ -320,13 +614,22 @@ export class WorkflowRunNotFoundError extends WorkflowError {
  */
 export class HookConflictError extends WorkflowError {
   token: string;
+  // TODO: Make this required once all persisted hook_conflict events and World
+  // implementations always include the active hook owner's run ID.
+  conflictingRunId?: string;
 
-  constructor(token: string) {
-    super(`Hook token "${token}" is already in use by another workflow`, {
-      slug: ERROR_SLUGS.HOOK_CONFLICT,
-    });
+  constructor(token: string, conflictingRunId?: string) {
+    super(
+      `Hook token "${token}" is already in use by another workflow${conflictingRunId ? ` (run "${conflictingRunId}")` : ''}`,
+      {
+        slug: ERROR_SLUGS.HOOK_CONFLICT,
+      }
+    );
     this.name = 'HookConflictError';
     this.token = token;
+    if (conflictingRunId !== undefined) {
+      this.conflictingRunId = conflictingRunId;
+    }
   }
 
   static is(value: unknown): value is HookConflictError {
@@ -543,6 +846,13 @@ export class RunNotSupportedError extends WorkflowError {
  * A fatal error is an error that cannot be retried.
  * It will cause the step to fail and the error will
  * be bubbled up to the workflow logic.
+ *
+ * Any error can opt into the non-retry behavior by setting a `fatal: true`
+ * own property. This is how structured error classes that aren't direct
+ * `FatalError` subclasses (e.g. context-violation errors) signal to the
+ * step handler that retrying will never help — the user's code is calling
+ * a workflow-only API from the wrong context, or similar — and burning
+ * retry attempts just produces a wall of duplicated log output.
  */
 export class FatalError extends Error {
   fatal = true;
@@ -553,7 +863,9 @@ export class FatalError extends Error {
   }
 
   static is(value: unknown): value is FatalError {
-    return isError(value) && value.name === 'FatalError';
+    if (!isError(value)) return false;
+    if (value.name === 'FatalError') return true;
+    return (value as { fatal?: unknown }).fatal === true;
   }
 }
 
@@ -597,3 +909,65 @@ export const VERCEL_403_ERROR_MESSAGE =
   'Your current vercel account does not have access to this resource. Use `vercel login` or `vercel switch` to ensure you are linked to the right account.';
 
 export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
+
+// ---------------------------------------------------------------------------
+// Cross-realm class registration
+// ---------------------------------------------------------------------------
+//
+// `FatalError`, `RetryableError`, and `HookConflictError` are not built-ins, so different realms
+// (e.g. the workflow VM context vs. the host context that runs the queue
+// handler) bundle and load their own copies of this module — meaning each
+// realm has its own distinct class identity. Cross-realm `instanceof` fails
+// because the prototype chains never meet.
+//
+// To let serialization revivers reconstruct a value as the *consumer's*
+// FatalError (so user-code `err instanceof FatalError` passes), each bundled
+// copy of this module self-registers its class on `globalThis` via a known
+// Symbol.for key. Revivers in `@workflow/core` look up the class via the
+// consumer's globalThis at hydration time.
+//
+// First registration in a given realm wins. The descriptor is non-writable
+// and non-configurable to make accidental clobbering loud.
+const FATAL_ERROR_KEY = Symbol.for('@workflow/errors//FatalError');
+const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
+const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
+  '@workflow/errors//HookConflictError'
+);
+const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
+  '@workflow/errors//RuntimeDecryptionError'
+);
+
+if (typeof globalThis !== 'undefined') {
+  if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
+    Object.defineProperty(globalThis, FATAL_ERROR_KEY, {
+      value: FatalError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RETRYABLE_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RETRYABLE_ERROR_KEY, {
+      value: RetryableError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, HOOK_CONFLICT_ERROR_KEY)) {
+    Object.defineProperty(globalThis, HOOK_CONFLICT_ERROR_KEY, {
+      value: HookConflictError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RUNTIME_DECRYPTION_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RUNTIME_DECRYPTION_ERROR_KEY, {
+      value: RuntimeDecryptionError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+}

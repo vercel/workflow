@@ -27,7 +27,7 @@ const registeredSteps = (globalSymbols[RegisteredStepsKey] ??= new Map<
   StepFunction
 >());
 
-const BUILTIN_STEP_NAMES = new Set([
+const BUILTIN_RESPONSE_STEP_NAMES = new Set([
   '__builtin_response_array_buffer',
   '__builtin_response_json',
   '__builtin_response_text',
@@ -70,7 +70,7 @@ function getStepIdAliasCandidates(stepId: string): string[] {
 }
 
 function getBuiltinResponseStepAlias(stepId: string): StepFunction | undefined {
-  if (!BUILTIN_STEP_NAMES.has(stepId)) {
+  if (!BUILTIN_RESPONSE_STEP_NAMES.has(stepId)) {
     return undefined;
   }
 

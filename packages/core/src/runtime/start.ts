@@ -23,7 +23,7 @@ import { waitedUntil } from '../util.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
-import { getWorld } from './world.js';
+import { getWorldLazy } from './get-world-lazy.js';
 
 /**
  * Timeout for the cross-deployment capability probe done before
@@ -161,7 +161,7 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
-      const world = opts?.world ?? (await getWorld());
+      const world = opts?.world ?? (await getWorldLazy());
       const currentDeploymentId = await world.getDeploymentId();
       let deploymentId = opts.deploymentId ?? currentDeploymentId;
 

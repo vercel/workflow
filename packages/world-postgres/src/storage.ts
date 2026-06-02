@@ -8,23 +8,27 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AttributeChange,
   Event,
   EventResult,
+  ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
   ListEventsParams,
   ListHooksParams,
   PaginatedResponse,
   ResolveData,
+  SerializedData,
   Step,
   StepWithoutData,
   Storage,
-  StructuredError,
   Wait,
   WorkflowRun,
   WorkflowRunWithoutData,
 } from '@workflow/world';
 import {
+  ATTRIBUTE_MAX_PER_RUN,
+  AttributeValidationError,
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
@@ -32,6 +36,7 @@ import {
   SPEC_VERSION_CURRENT,
   StepSchema,
   stripEventDataRefs,
+  validateAttributeChanges,
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -42,51 +47,31 @@ import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
 
 /**
- * Parse legacy errorJson (text column with JSON-stringified StructuredError).
- * Used for backwards compatibility when reading from deprecated error column.
+ * Read helper for the deprecated `error` text column (legacy: JSON-stringified
+ * `StructuredError`). In the current event-sourced model, the `error` field on
+ * entities is `SerializedData` (Uint8Array) produced by the new error
+ * serialization pipeline; legacy text-column records pre-date that pipeline
+ * and cannot be hydrated back into the original thrown value.
+ *
+ * Returns `null` unconditionally so downstream consumers treat legacy errors
+ * as absent rather than receiving a shape that `hydrateStepError` /
+ * `hydrateRunError` can't process. Callers that need to inspect the raw
+ * legacy payload should read the `errorJson` column directly.
  */
-function parseErrorJson(errorJson: string | null): StructuredError | null {
-  if (!errorJson) return null;
-  try {
-    const parsed = JSON.parse(errorJson);
-    if (typeof parsed === 'object' && parsed.message !== undefined) {
-      return {
-        message: parsed.message,
-        stack: parsed.stack,
-        code: parsed.code,
-      };
-    }
-    // Not a structured error object, treat as plain string
-    return { message: String(parsed) };
-  } catch {
-    // Not JSON, treat as plain string error message
-    return { message: errorJson };
-  }
+function parseErrorJson(_errorJson: string | null): SerializedData | null {
+  return null;
 }
 
 /**
- * Deserialize run data, handling legacy error fields.
- * The error field should already be deserialized from CBOR or fallback to errorJson.
- * This function only handles very old legacy fields (errorStack, errorCode).
+ * Pass-through helper kept for backwards compatibility with the run read path.
+ * In the current event-sourced model, `error` is already `SerializedData`
+ * (Uint8Array) on the entity, and any legacy `errorStack` / `errorCode`
+ * fields are no longer populated by the current write path.
  */
 function deserializeRunError(run: any): WorkflowRun {
-  const { errorStack, errorCode, ...rest } = run;
-
-  // If no legacy fields, return as-is (error is already a StructuredError or undefined)
-  if (!errorStack && !errorCode) {
-    return rest as WorkflowRun;
-  }
-
-  // Very old legacy: separate errorStack/errorCode fields
-  const existingError = rest.error as StructuredError | undefined;
-  return {
-    ...rest,
-    error: {
-      message: existingError?.message || '',
-      stack: existingError?.stack || errorStack,
-      code: existingError?.code || errorCode,
-    },
-  } as WorkflowRun;
+  // Drop any stale legacy-only fields we might still encounter on read.
+  const { errorStack: _errorStack, ...rest } = run;
+  return rest as WorkflowRun;
 }
 
 /**
@@ -160,6 +145,88 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
         cursor: values.at(-1)?.runId ?? null,
       };
     }) as Storage['runs']['list'],
+
+    experimentalSetAttributes: async (
+      runId: string,
+      changes: AttributeChange[],
+      options?: { allowReservedAttributes?: boolean }
+    ): Promise<ExperimentalSetAttributesResult> => {
+      // Load existing attributes so the SDK-shape validator can produce
+      // a precise error message (cap, duplicate keys, reserved prefix,
+      // byte length). The authoritative cap enforcement happens inside
+      // the UPDATE statement below — see the `WHERE` clause — so the
+      // race between this read and the UPDATE cannot push the row past
+      // the per-run cap.
+      const [existing] = await drizzle
+        .select({ attributes: runs.attributes })
+        .from(runs)
+        .where(eq(runs.runId, runId))
+        .limit(1);
+      if (!existing) {
+        throw new WorkflowRunNotFoundError(runId);
+      }
+
+      try {
+        validateAttributeChanges(changes, {
+          existingKeys: Object.keys(existing.attributes ?? {}),
+          allowReservedAttributes: options?.allowReservedAttributes,
+        });
+      } catch (err) {
+        if (err instanceof AttributeValidationError) throw err;
+        throw err;
+      }
+
+      // Build a single SQL expression that applies all changes
+      // atomically. Sets fold into nested `jsonb_set` calls; removes
+      // fold into chained `-` (delete) operators.
+      let expr = sql`COALESCE(${runs.attributes}, '{}'::jsonb)`;
+      for (const { key, value } of changes) {
+        if (value === null) {
+          expr = sql`${expr} - ${key}`;
+        } else {
+          expr = sql`jsonb_set(${expr}, ARRAY[${key}]::text[], to_jsonb(${value}::text), true)`;
+        }
+      }
+
+      // Atomic cap enforcement: only commit the UPDATE if the
+      // post-merge key count fits the per-run cap. Computed against
+      // the *current* row state, so two concurrent writers adding
+      // disjoint keys at the cap boundary cannot both succeed.
+      // Drizzle re-renders `expr` twice in the SQL (`SET attributes =
+      // ...` + the count check); `jsonb_set` is cheap so the
+      // duplication is harmless.
+      const [updated] = await drizzle
+        .update(runs)
+        .set({
+          attributes: expr as any,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(runs.runId, runId),
+            sql`(SELECT COUNT(*) FROM jsonb_object_keys(${expr})) <= ${ATTRIBUTE_MAX_PER_RUN}`
+          )
+        )
+        .returning({ attributes: runs.attributes });
+
+      if (!updated) {
+        // Either the run vanished mid-call, or the cap-check WHERE
+        // clause rejected the UPDATE. Re-read to disambiguate.
+        const [stillThere] = await drizzle
+          .select({ attributes: runs.attributes })
+          .from(runs)
+          .where(eq(runs.runId, runId))
+          .limit(1);
+        if (!stillThere) {
+          throw new WorkflowRunNotFoundError(runId);
+        }
+        throw new AttributeValidationError(
+          `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} after concurrent write`
+        );
+      }
+
+      return { attributes: updated.attributes ?? {} };
+    },
   };
 }
 
@@ -292,7 +359,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .prepare('events_get_step_for_validation');
 
   const getHookByToken = drizzle
-    .select({ hookId: Schema.hooks.hookId })
+    .select({ hookId: Schema.hooks.hookId, runId: Schema.hooks.runId })
     .from(Schema.hooks)
     .where(eq(Schema.hooks.token, sql.placeholder('token')))
     .limit(1)
@@ -648,7 +715,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // for concurrent invocations: replay is deterministic, so letting
         // multiple callers proceed with the same run is safe.  We skip
         // preloaded events here because this is a rare race-condition path
-        // — the runtime falls back to getAllWorkflowRunEvents().
+        // — the runtime falls back to loadWorkflowRunEvents().
         if (currentRun?.status === 'running') {
           const [fullRun] = await drizzle
             .select()
@@ -729,22 +796,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Uses conditional UPDATE to prevent failing an already-terminal run.
       if (data.eventType === 'run_failed') {
         const eventData = (data as any).eventData as {
-          error: any;
+          error: unknown;
           errorCode?: string;
         };
-        const errorMessage =
-          typeof eventData.error === 'string'
-            ? eventData.error
-            : (eventData.error?.message ?? 'Unknown error');
+        // The error field is SerializedData (Uint8Array) produced by
+        // dehydrateRunError. We store it verbatim in the error_cbor column;
+        // consumers hydrate via hydrateRunError.
         const [runValue] = await drizzle
           .update(Schema.runs)
           .set({
             status: 'failed',
-            error: {
-              message: errorMessage,
-              stack: eventData.error?.stack,
-              code: eventData.errorCode,
-            },
+            error: eventData.error as SerializedData,
+            errorCode: eventData.errorCode,
             completedAt: now,
             updatedAt: now,
           })
@@ -959,22 +1022,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Uses conditional UPDATE to prevent failing an already-terminal step.
       if (data.eventType === 'step_failed') {
         const eventData = (data as any).eventData as {
-          error?: any;
-          stack?: string;
+          error?: unknown;
         };
-        const errorMessage =
-          typeof eventData.error === 'string'
-            ? eventData.error
-            : (eventData.error?.message ?? 'Unknown error');
-
+        // The error field is SerializedData (Uint8Array) produced by
+        // dehydrateStepError. We store it verbatim in the error_cbor column;
+        // consumers hydrate via hydrateStepError.
         const [stepValue] = await drizzle
           .update(Schema.steps)
           .set({
             status: 'failed',
-            error: {
-              message: errorMessage,
-              stack: eventData.stack,
-            },
+            error: eventData.error as SerializedData,
             completedAt: now,
           })
           .where(
@@ -1010,23 +1067,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Uses conditional UPDATE to prevent retrying an already-terminal step.
       if (data.eventType === 'step_retrying') {
         const eventData = (data as any).eventData as {
-          error?: any;
-          stack?: string;
+          error?: unknown;
           retryAfter?: Date;
         };
-        const errorMessage =
-          typeof eventData.error === 'string'
-            ? eventData.error
-            : (eventData.error?.message ?? 'Unknown error');
-
         const [stepValue] = await drizzle
           .update(Schema.steps)
           .set({
             status: 'pending',
-            error: {
-              message: errorMessage,
-              stack: eventData.stack,
-            },
+            error: eventData.error as SerializedData,
             retryAfter: eventData.retryAfter,
           })
           .where(
@@ -1065,6 +1113,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           token: string;
           metadata?: any;
           isWebhook?: boolean;
+          isSystem?: boolean;
         };
 
         // Check for duplicate token using prepared statement
@@ -1076,6 +1125,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           // This allows the workflow to continue and fail gracefully when the hook is awaited
           const conflictEventData = {
             token: eventData.token,
+            conflictingRunId: existingHook.runId,
           };
 
           const [conflictValue] = await drizzle
@@ -1127,6 +1177,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             // Propagate specVersion from the event to the hook entity
             specVersion: effectiveSpecVersion,
             isWebhook: eventData.isWebhook,
+            isSystem: eventData.isSystem ?? false,
           })
           .onConflictDoNothing()
           .returning();
@@ -1240,17 +1291,53 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             ? data.eventData
             : undefined;
 
-      const [value] = await drizzle
-        .insert(events)
-        .values({
-          runId: effectiveRunId,
-          eventId,
-          correlationId: data.correlationId,
-          eventType: data.eventType,
-          eventData: storedEventData,
-          specVersion: effectiveSpecVersion,
-        })
-        .returning({ createdAt: events.createdAt });
+      let value: { createdAt: Date } | undefined;
+      try {
+        [value] = await drizzle
+          .insert(events)
+          .values({
+            runId: effectiveRunId,
+            eventId,
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          })
+          .returning({ createdAt: events.createdAt });
+      } catch (err) {
+        // Translate unique-violation on the entity-creation partial index
+        // (workflow_events_entity_creation_unique) into EntityConflictError
+        // so the runtime's existing dedup catch path can handle it. Without
+        // this, two concurrent invocations producing identical
+        // correlationIds (e.g. snapshot runtime deterministic ULIDs) would
+        // surface as unhandled DB errors instead of dedup signals.
+        // Drizzle wraps the underlying pg error in DrizzleQueryError; the
+        // pg error (with .code === '23505') lives on .cause. We additionally
+        // gate on the violated constraint name so other 23505 violations on
+        // these event types (e.g. the events primary key, or any future
+        // unique constraint we might add) don't get misclassified as a
+        // correlationId conflict.
+        const isEntityCreatingEvent =
+          data.eventType === 'step_created' ||
+          data.eventType === 'hook_created' ||
+          data.eventType === 'wait_created';
+        const pgErr = (err as { code?: string; constraint?: string }).code
+          ? (err as { code?: string; constraint?: string })
+          : ((err as { cause?: { code?: string; constraint?: string } })
+              .cause ?? {});
+        const pgCode = pgErr.code;
+        const pgConstraint = pgErr.constraint;
+        if (
+          isEntityCreatingEvent &&
+          pgCode === '23505' &&
+          pgConstraint === 'workflow_events_entity_creation_unique'
+        ) {
+          throw new EntityConflictError(
+            `${data.eventType} for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+          );
+        }
+        throw err;
+      }
       if (!value) {
         throw new EntityConflictError(`Event ${eventId} could not be created`);
       }
@@ -1275,6 +1362,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
       let allEvents: Event[] | undefined;
+      let cursor: string | null | undefined;
+      let hasMore: boolean | undefined;
       if (data.eventType === 'run_started' && run) {
         const eventRows = await drizzle
           .select()
@@ -1286,6 +1375,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
+        cursor = allEvents.at(-1)?.eventId ?? null;
+        hasMore = false;
       }
 
       return {
@@ -1295,6 +1386,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         hook,
         wait,
         events: allEvents,
+        cursor,
+        hasMore,
       };
     },
     async get(

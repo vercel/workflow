@@ -37,8 +37,8 @@ export function createWorld(
       'postgres://world:world@localhost:5432/world',
     jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
     queueConcurrency:
-      parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '10', 10) ||
-      10,
+      parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
+      50,
   }
 ): World & { start(): Promise<void> } {
   const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();

@@ -7,6 +7,7 @@ import { stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
+import { hashToken } from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -83,17 +84,19 @@ describe('stripEventDataRefs', () => {
     expect(result.eventData).not.toHaveProperty('error');
   });
 
-  it('should strip error from step_failed, keep stack', () => {
+  it('should strip error from step_failed, leaving no eventData when it was the only field', () => {
+    // step_failed eventData only holds the (opaque, large) `error` payload.
+    // When resolveData is 'none' the error is stripped; since nothing else
+    // remains, eventData is dropped from the event entirely.
     const event = {
       ...baseEvent,
       eventType: 'step_failed' as const,
       correlationId: 'step_1',
-      eventData: { error: 'failed', stack: 'Error: failed\n  at ...' },
+      eventData: { error: new Uint8Array([1, 2, 3]) },
     } as Event;
 
     const result = stripEventDataRefs(event, 'none') as any;
-    expect(result.eventData).toEqual({ stack: 'Error: failed\n  at ...' });
-    expect(result.eventData).not.toHaveProperty('error');
+    expect(result).not.toHaveProperty('eventData');
   });
 
   it('should not strip anything when resolveData is "all"', () => {
@@ -268,13 +271,26 @@ describe('Storage', () => {
           input: new Uint8Array(),
         });
 
+        // The `error` field is now opaque SerializedData (Uint8Array) produced
+        // by dehydrateRunError. The storage layer persists it verbatim; the
+        // original thrown value is reconstructed by hydrateRunError at read
+        // time on the consumer side.
+        const serializedError = new Uint8Array([1, 2, 3]);
         const updated = await updateRun(storage, created.runId, 'run_failed', {
-          error: 'Something went wrong',
+          error: serializedError,
         });
 
         expect(updated.status).toBe('failed');
-        expect(updated.error?.message).toBe('Something went wrong');
+        expect(updated.error).toEqual(serializedError);
         expect(updated.completedAt).toBeInstanceOf(Date);
+      });
+
+      it('should reject run_failed on non-existent run', async () => {
+        await expect(
+          updateRun(storage, 'wrun_nonexistent', 'run_failed', {
+            error: 'Something went wrong',
+          })
+        ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
       });
     });
 
@@ -480,16 +496,19 @@ describe('Storage', () => {
           input: new Uint8Array([1]),
         });
 
+        // The `error` field is now opaque SerializedData (Uint8Array) produced
+        // by dehydrateStepError. The storage layer persists it verbatim.
+        const serializedError = new Uint8Array([1, 2, 3]);
         const updated = await updateStep(
           storage,
           testRunId,
           'step_123',
           'step_failed',
-          { error: 'Step failed' }
+          { error: serializedError }
         );
 
         expect(updated.status).toBe('failed');
-        expect(updated.error?.message).toBe('Step failed');
+        expect(updated.error).toEqual(serializedError);
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
     });
@@ -1340,6 +1359,36 @@ describe('Storage', () => {
         expect((result.event as any).eventData.token).toBe(
           'duplicate-test-token'
         );
+        expect((result.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
+        expect(result.hook).toBeUndefined();
+      });
+
+      it('should return hook_conflict event when the token claim cannot provide a run ID', async () => {
+        const token = 'legacy-duplicate-test-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        await fs.writeFile(
+          path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`),
+          '{'
+        );
+
+        const result = await storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_conflict');
+        expect((result.event as any).eventData.token).toBe(token);
+        expect(
+          (result.event as any).eventData.conflictingRunId
+        ).toBeUndefined();
         expect(result.hook).toBeUndefined();
       });
 
@@ -1377,6 +1426,9 @@ describe('Storage', () => {
         });
 
         expect(conflictResult.event.eventType).toBe('hook_conflict');
+        expect((conflictResult.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(conflictResult.hook).toBeUndefined();
 
         // Dispose the first hook via hook_disposed event
@@ -1419,6 +1471,9 @@ describe('Storage', () => {
 
         expect(result.event.eventType).toBe('hook_conflict');
         expect((result.event as any).eventData.token).toBe(token);
+        expect((result.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(result.hook).toBeUndefined();
       });
 
@@ -1448,6 +1503,11 @@ describe('Storage', () => {
 
         expect(created).toHaveLength(1);
         expect(conflicts).toHaveLength(4);
+        for (const conflict of conflicts) {
+          expect(conflict.value.event.eventData.conflictingRunId).toBe(
+            testRunId
+          );
+        }
       });
     });
 
@@ -1987,6 +2047,112 @@ describe('Storage', () => {
     });
   });
 
+  describe('concurrent entity-creation races', () => {
+    let testRunId: string;
+    beforeEach(async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+      await updateRun(storage, testRunId, 'run_started');
+    });
+
+    it('should reject concurrent step_created with the same correlationId', async () => {
+      // Two concurrent step_created calls with identical correlationIds
+      // (as produced by the snapshot runtime's deterministic ULIDs across
+      // concurrent VM invocations of the same resumption) must produce
+      // exactly one step_created event in the log — not two. Without an
+      // atomic guard the second writer overwrites the entity and persists
+      // a duplicate event, causing downstream issues like double-queued
+      // step messages.
+      const results = await Promise.allSettled([
+        createStep(storage, testRunId, {
+          stepId: 'step_dup_1',
+          stepName: 'test-step',
+          input: new Uint8Array([1]),
+        }),
+        createStep(storage, testRunId, {
+          stepId: 'step_dup_1',
+          stepName: 'test-step',
+          input: new Uint8Array([2]),
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+
+      // Verify only one step_created event exists in the log.
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const stepCreatedEvents = events.data.filter(
+        (e) =>
+          e.eventType === 'step_created' && e.correlationId === 'step_dup_1'
+      );
+      expect(stepCreatedEvents).toHaveLength(1);
+    });
+
+    it('should reject concurrent wait_created with the same correlationId', async () => {
+      // wait_created previously used a TOCTOU read-then-check pattern that
+      // could let both concurrent writers through. The atomic claim now
+      // guarantees exactly one winner.
+      const results = await Promise.allSettled([
+        createWait(storage, testRunId, {
+          waitId: 'wait_dup_1',
+          resumeAt: new Date('2099-01-01'),
+        }),
+        createWait(storage, testRunId, {
+          waitId: 'wait_dup_1',
+          resumeAt: new Date('2099-01-02'),
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+
+      // Verify only one wait_created event exists in the log.
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const waitCreatedEvents = events.data.filter(
+        (e) =>
+          e.eventType === 'wait_created' && e.correlationId === 'wait_dup_1'
+      );
+      expect(waitCreatedEvents).toHaveLength(1);
+    });
+
+    it('should reject sequential duplicate step_created calls', async () => {
+      // Sequential (non-racing) duplicates must also be rejected — the
+      // constraint file persists across calls.
+      await createStep(storage, testRunId, {
+        stepId: 'step_seq_dup',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await expect(
+        createStep(storage, testRunId, {
+          stepId: 'step_seq_dup',
+          stepName: 'test-step',
+          input: new Uint8Array(),
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+    });
+  });
+
   describe('run terminal state validation', () => {
     describe('completed run', () => {
       it('should reject run_started on completed run', async () => {
@@ -2390,17 +2556,20 @@ describe('Storage', () => {
       });
       await updateStep(storage, testRunId, 'step_retry_1', 'step_started');
 
+      // The `error` field is opaque SerializedData (Uint8Array) produced by
+      // dehydrateStepError. The storage layer persists it verbatim.
+      const serializedError = new Uint8Array([9, 9, 9]);
       const result = await storage.events.create(testRunId, {
         eventType: 'step_retrying',
         correlationId: 'step_retry_1',
         eventData: {
-          error: 'Temporary failure',
+          error: serializedError,
           retryAfter: new Date(Date.now() + 5000),
         },
       });
 
       expect(result.step?.status).toBe('pending');
-      expect(result.step?.error?.message).toBe('Temporary failure');
+      expect(result.step?.error).toEqual(serializedError);
       expect(result.step?.retryAfter).toBeInstanceOf(Date);
     });
 
@@ -2926,6 +3095,128 @@ describe('Storage', () => {
 
       expect(result.run).toBeDefined();
       expect(result.run!.runId).toMatch(/^wrun_/);
+    });
+  });
+
+  // Regression tests for VULN-916: path-traversal via request-controlled IDs.
+  //
+  // Prior to the fix, a client could supply a `runId` like `../../../package`
+  // and cause the backend to read/write files outside the storage root, since
+  // the IDs flowed straight into `path.join(basedir, 'runs', ...)`. The
+  // sanitization in `assertSafeEntityId` rejects any separator/`..`/leading
+  // dot before the value is used in a filesystem path.
+  describe('path traversal prevention (VULN-916)', () => {
+    const traversalIds = [
+      '../../../package',
+      '../runs/wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      '../nonexistent/wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'a/b',
+      'a\\b',
+      '.hidden',
+      '.locks',
+    ];
+
+    for (const runId of traversalIds) {
+      it(`rejects traversal runId on events.create: ${JSON.stringify(runId)}`, async () => {
+        await expect(
+          storage.events.create(runId, { eventType: 'run_started' })
+        ).rejects.toThrow(/Unsafe runId/);
+      });
+
+      it(`rejects traversal runId on runs.get: ${JSON.stringify(runId)}`, async () => {
+        await expect(storage.runs.get(runId)).rejects.toThrow(/Unsafe runId/);
+      });
+
+      it(`rejects traversal runId on steps.list: ${JSON.stringify(runId)}`, async () => {
+        await expect(storage.steps.list({ runId } as any)).rejects.toThrow(
+          /Unsafe runId/
+        );
+      });
+
+      it(`rejects traversal runId on events.list: ${JSON.stringify(runId)}`, async () => {
+        await expect(storage.events.list({ runId } as any)).rejects.toThrow(
+          /Unsafe runId/
+        );
+      });
+    }
+
+    it('rejects traversal stepId on steps.get', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(storage.steps.get(run.runId, '../escape')).rejects.toThrow(
+        /Unsafe stepId/
+      );
+    });
+
+    it('rejects traversal correlationId on events.create', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'step_started',
+          correlationId: '../escape',
+        })
+      ).rejects.toThrow(/Unsafe correlationId/);
+    });
+
+    // Empty correlationId would be accepted by the event schema (which only
+    // requires `z.string()`) and produce composite keys like `${runId}-`,
+    // leaving malformed entities/events in storage. Reject it up front.
+    it('rejects empty correlationId on step_created', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'step_created',
+          correlationId: '',
+          eventData: { stepName: 'step', input: new Uint8Array() },
+        })
+      ).rejects.toThrow(/Unsafe correlationId/);
+    });
+
+    it('rejects empty correlationId on hook_created', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_created',
+          correlationId: '',
+          eventData: { token: 'tok' },
+        })
+      ).rejects.toThrow(/Unsafe correlationId/);
+    });
+
+    it('rejects empty correlationId on wait_created', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'wait_created',
+          correlationId: '',
+          eventData: { resumeAt: new Date(Date.now() + 1000) },
+        })
+      ).rejects.toThrow(/Unsafe correlationId/);
+    });
+
+    it('rejects traversal hookId on hooks.get', async () => {
+      await expect(storage.hooks.get('../escape')).rejects.toThrow(
+        /Unsafe hookId/
+      );
     });
   });
 });

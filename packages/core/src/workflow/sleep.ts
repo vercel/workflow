@@ -1,4 +1,4 @@
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { ReplayDivergenceError } from '@workflow/errors';
 import { parseDurationToDate, withResolvers } from '@workflow/utils';
 import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
@@ -57,6 +57,33 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
 
       // Check for wait_completed event
       if (event.eventType === 'wait_completed') {
+        const eventResumeAt = event.eventData?.resumeAt;
+        if (eventResumeAt !== undefined) {
+          const queueItem = ctx.invocationsQueue.get(correlationId);
+          const expectedResumeAt =
+            queueItem && queueItem.type === 'wait'
+              ? queueItem.resumeAt
+              : resumeAt;
+          const eventResumeAtDate = new Date(eventResumeAt);
+          const eventResumeAtMs = eventResumeAtDate.getTime();
+          const expectedResumeAtMs = expectedResumeAt.getTime();
+          const eventResumeAtForMessage = Number.isFinite(eventResumeAtMs)
+            ? eventResumeAtDate.toISOString()
+            : String(eventResumeAt);
+
+          if (eventResumeAtMs !== expectedResumeAtMs) {
+            ctx.promiseQueue = ctx.promiseQueue.then(() => {
+              ctx.onWorkflowError(
+                new ReplayDivergenceError(
+                  `Replay divergence: wait_completed event for ${correlationId} has resumeAt "${eventResumeAtForMessage}", but the current wait consumer expects "${expectedResumeAt.toISOString()}"`,
+                  { eventId: event.eventId }
+                )
+              );
+            });
+            return EventConsumerResult.Finished;
+          }
+        }
+
         // Remove this wait from the invocations queue (O(1) delete using Map)
         ctx.invocationsQueue.delete(correlationId);
 
@@ -68,11 +95,12 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.Finished;
       }
 
-      // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      // This replay installed a different consumer than the stored event needs.
       ctx.promiseQueue = ctx.promiseQueue.then(() => {
         ctx.onWorkflowError(
-          new WorkflowRuntimeError(
-            `Unexpected event type for wait ${correlationId} "${event.eventType}"`
+          new ReplayDivergenceError(
+            `Replay divergence: Unexpected event type for wait ${correlationId} "${event.eventType}"`,
+            { eventId: event.eventId }
           )
         );
       });

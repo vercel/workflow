@@ -4,8 +4,20 @@ import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
 import { LocalBuilder, VercelBuilder } from './builder.js';
 
-export function workflowPlugin(): AstroIntegration {
-  const builder = new LocalBuilder();
+export interface WorkflowPluginOptions {
+  /**
+   * Controls how source maps are emitted for workflow bundles. Accepts the
+   * same values as esbuild's `sourcemap` option: `true`/`'inline'` (default),
+   * `'linked'`, `'external'`, `'both'`, or `false` to omit source maps. Can
+   * also be set via the `WORKFLOW_SOURCEMAP` environment variable.
+   */
+  sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+}
+
+export function workflowPlugin(
+  options: WorkflowPluginOptions = {}
+): AstroIntegration {
+  const builder = new LocalBuilder({ sourcemap: options.sourcemap });
   const enqueue = createBuildQueue();
 
   return {
@@ -40,7 +52,9 @@ export function workflowPlugin(): AstroIntegration {
       },
       'astro:build:done': async () => {
         if (process.env.VERCEL_DEPLOYMENT_ID) {
-          const vercelBuilder = new VercelBuilder();
+          const vercelBuilder = new VercelBuilder({
+            sourcemap: options.sourcemap,
+          });
           await vercelBuilder.build();
         }
       },

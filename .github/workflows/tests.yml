@@ -18,16 +18,35 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  ci-scope:
+    name: Detect CI Scope
+    runs-on: ubuntu-latest
+    outputs:
+      fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
+      validation-fast-path: ${{ steps.scope.outputs.validation-fast-path }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Classify changed files
+        id: scope
+        uses: ./.github/actions/detect-ci-scope
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
   # Phase 0: Update PR comment to show tests are running
   pr-comment-start:
     name: Create PR Comment
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    needs: ci-scope
+    if: github.event_name == 'pull_request' && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 2
 
     steps:
       - name: Find existing test comment
-        uses: peter-evans/find-comment@v3
+        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -38,8 +57,11 @@ jobs:
         if: steps.find-comment.outputs.comment-id != ''
         id: get-comment
         uses: actions/github-script@v7
+        env:
+          STARTED_AT: ${{ github.run_started_at }}
         with:
           script: |
+            const fs = require('fs');
             const comment = await github.rest.issues.getComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -49,15 +71,32 @@ jobs:
             // Check if there are actual results (tables)
             if (body.includes('|') && body.includes('Passed')) {
               // Extract results section (everything after header)
-              let resultsSection = body
+              const resultsSection = body
                 .replace(/<!-- e2e-test-results -->\n## 🧪 E2E Test Results\n\n> ⚠️ \*\*Results below are stale\*\*[^\n]*\n\n/g, '')
                 .replace(/<!-- e2e-test-results -->\n## 🧪 E2E Test Results\n\n/g, '')
                 .replace(/⏳ \*\*Tests are running\.\.\.\*\*\n\n---\n_Started at:[^_]*_\n\n---\n\n/g, '')
                 .replace(/⏳ \*\*Tests are running\.\.\.\*\*\n\n---\n_Started at:[^_]*_/g, '')
                 .trim();
               if (resultsSection && resultsSection.includes('|')) {
+                // Write the full stale-banner message to disk and pass the
+                // path to the sticky-pull-request-comment action below.
+                // Inlining the previous results via `message:` blew past
+                // ARG_MAX once the matrix doubled (snapshot + replay).
+                const startedAt = process.env.STARTED_AT;
+                const message =
+                  '<!-- e2e-test-results -->\n' +
+                  '## 🧪 E2E Test Results\n\n' +
+                  '> ⚠️ **Results below are stale** and not from the latest commit. This comment will be updated when CI completes on the latest run.\n\n' +
+                  '⏳ **Tests are running...**\n\n' +
+                  '---\n' +
+                  `_Started at: ${startedAt}_\n\n` +
+                  '---\n\n' +
+                  resultsSection +
+                  '\n';
+                const path = `${process.env.RUNNER_TEMP}/stale-comment.md`;
+                fs.writeFileSync(path, message);
                 core.setOutput('has-results', 'true');
-                core.setOutput('previous-results', resultsSection);
+                core.setOutput('stale-comment-path', path);
               } else {
                 core.setOutput('has-results', 'false');
               }
@@ -67,7 +106,7 @@ jobs:
 
       - name: Create new test comment
         if: steps.find-comment.outputs.comment-id == ''
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: e2e-test-results
           message: |
@@ -79,31 +118,18 @@ jobs:
             This comment will be updated with the results when the tests complete.
 
             ---
-            _Started at: ${{ github.event.pull_request.updated_at }}_
+            _Started at: ${{ github.run_started_at }}_
 
       - name: Update existing test comment with stale warning
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results == 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: e2e-test-results
-          message: |
-            <!-- e2e-test-results -->
-            ## 🧪 E2E Test Results
-
-            > ⚠️ **Results below are stale** and not from the latest commit. This comment will be updated when CI completes on the latest run.
-
-            ⏳ **Tests are running...**
-
-            ---
-            _Started at: ${{ github.event.pull_request.updated_at }}_
-
-            ---
-
-            ${{ steps.get-comment.outputs.previous-results }}
+          path: ${{ steps.get-comment.outputs.stale-comment-path }}
 
       - name: Update existing test comment without results
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results != 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: e2e-test-results
           message: |
@@ -115,13 +141,14 @@ jobs:
             This comment will be updated with the results when the tests complete.
 
             ---
-            _Started at: ${{ github.event.pull_request.updated_at }}_
+            _Started at: ${{ github.run_started_at }}_
 
   unit:
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.validation-fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     strategy:
       fail-fast: false
       matrix:
@@ -149,7 +176,8 @@ jobs:
     name: Node.js Module Build Errors Test
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -160,7 +188,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -185,6 +213,8 @@ jobs:
   vitest-plugin:
     name: Vitest Plugin Tests
     runs-on: ubuntu-latest
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -206,10 +236,52 @@ jobs:
         run: pnpm test
         working-directory: workbench/vitest
 
+  e2e-package-build:
+    name: Build Shared E2E Packages
+    runs-on: ubuntu-latest
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    timeout-minutes: 30
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment and build packages
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Upload package build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          # Keep this list aligned with package build outputs in turbo.json.
+          # upload-artifact strips the common packages/ root; consumers restore into packages/.
+          path: |
+            packages/*/dist
+            packages/*/.well-known
+            packages/*/src/version.ts
+            packages/swc-plugin-workflow/swc_plugin_workflow.wasm
+            packages/swc-plugin-workflow/build-hash.json
+          include-hidden-files: true
+          retention-days: 1
+
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    permissions:
+      id-token: write
+      contents: read
+      deployments: read
+      statuses: read
     strategy:
       fail-fast: false
       matrix:
@@ -247,10 +319,14 @@ jobs:
           - name: "astro"
             project-id: "prj_YDAXj3K8LM0hgejuIMhioz2yLgTI"
             project-slug: "workbench-astro-workflow"
+          - name: "tanstack-start"
+            project-id: "prj_643jeVugTMq5ivsOFQHcbLG1qcnu"
+            project-slug: "workbench-tanstack-start-workflow"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.canary != true && (matrix.app.name == 'nextjs-turbopack' || matrix.app.name == 'nextjs-webpack') && '0' || '' }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -267,11 +343,9 @@ jobs:
 
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
-        uses: ./.github/actions/wait-for-vercel-project
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
-          team-id: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
-          project-id: ${{ matrix.app.project-id }}
-          vercel-token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          project-slug: ${{ matrix.app.project-slug }}
           timeout: 1000
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
@@ -288,11 +362,17 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # The trusted-sources OIDC token (x-vercel-trusted-oidc-idp-token)
+          # is minted on demand inside `scripts/trusted-sources-headers.mjs`
+          # via the runner's ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars
+          # (exposed when `permissions: id-token: write` is set on the job),
+          # and re-minted before its 5-minute expiry. This lets long e2e
+          # suites keep a fresh token throughout the run instead of using
+          # a single pre-minted token that would expire mid-suite.
+          # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
           # Point PRs at the protected workflow-server preview; unset on main
           # so production runs hit the public vercel-workflow.com URL.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref == 'refs/heads/main' && '' || secrets.VERCEL_WORKFLOW_SERVER_URL }}
-          VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS: ${{ github.ref == 'refs/heads/main' && '' || secrets.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -316,7 +396,8 @@ jobs:
   getTestMatrix:
     name: Get Test Matrix
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
 
@@ -331,6 +412,7 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |
@@ -338,11 +420,11 @@ jobs:
           echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
 
   e2e-local-dev:
-    name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
+    name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
-    needs: getTestMatrix
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, getTestMatrix, e2e-package-build]
     strategy:
       fail-fast: false
       matrix: ${{fromJson(needs.getTestMatrix.outputs.matrix)}}
@@ -351,6 +433,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -369,14 +452,22 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="canary"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Initial Build
+      - name: Download shared package builds
+        if: ${{ !matrix.app.canary }}
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      - name: Run Initial Build for Next.js canary
+        if: ${{ matrix.app.canary }}
         run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Prepare workbench path
@@ -390,11 +481,10 @@ jobs:
           cd "$WORKBENCH_APP_PATH" && pnpm dev &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-local-dev-$APP_NAME-$CANARY_SUFFIX.json"
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
-          CANARY_SUFFIX: ${{ matrix.app.canary && 'canary' || 'stable' }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
@@ -402,25 +492,23 @@ jobs:
 
       - name: Generate E2E summary
         if: always()
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Dev ($APP_NAME)" >> $GITHUB_STEP_SUMMARY || true
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Dev (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
+          path: e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
           retention-days: 7
           if-no-files-found: ignore
 
   e2e-local-prod:
-    name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
+    name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
-    needs: getTestMatrix
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, getTestMatrix, e2e-package-build]
     strategy:
       fail-fast: false
       matrix: ${{fromJson(needs.getTestMatrix.outputs.matrix)}}
@@ -429,6 +517,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -447,14 +536,22 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="canary"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Initial Build
+      - name: Download shared package builds
+        if: ${{ !matrix.app.canary }}
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      - name: Run Initial Build for Next.js canary
+        if: ${{ matrix.app.canary }}
         run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Prepare workbench path
@@ -473,36 +570,33 @@ jobs:
         run: |
           cd "$WORKBENCH_APP_PATH" && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-local-prod-$APP_NAME-$CANARY_SUFFIX.json"
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
-          CANARY_SUFFIX: ${{ matrix.app.canary && 'canary' || 'stable' }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
         if: always()
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Prod ($APP_NAME)" >> $GITHUB_STEP_SUMMARY || true
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Prod (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
+          path: e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
           retention-days: 7
           if-no-files-found: ignore
 
   e2e-local-postgres:
-    name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
+    name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
-    needs: getTestMatrix
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, getTestMatrix, e2e-package-build]
     strategy:
       fail-fast: false
       matrix: ${{fromJson(needs.getTestMatrix.outputs.matrix)}}
@@ -528,6 +622,7 @@ jobs:
       WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
+      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -546,14 +641,22 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="canary"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Initial Build
+      - name: Download shared package builds
+        if: ${{ !matrix.app.canary }}
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      - name: Run Initial Build for Next.js canary
+        if: ${{ matrix.app.canary }}
         run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Setup PostgreSQL Database
@@ -575,27 +678,24 @@ jobs:
         run: |
           cd "$WORKBENCH_APP_PATH" && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-local-postgres-$APP_NAME-$CANARY_SUFFIX.json"
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
-          CANARY_SUFFIX: ${{ matrix.app.canary && 'canary' || 'stable' }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
         if: always()
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Postgres ($APP_NAME)" >> $GITHUB_STEP_SUMMARY || true
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Postgres (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
+          path: e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -603,7 +703,8 @@ jobs:
     name: E2E Windows Tests
     runs-on: windows-latest
     timeout-minutes: 30
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -616,13 +717,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
         with:
           toolchain: stable
           target: wasm32-unknown-unknown
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -643,15 +744,67 @@ jobs:
           $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..
+
+          # Fail-fast guards: if the Next.js dev server gets into a corrupted
+          # state during HMR (a recurring Turbopack-on-Windows issue where
+          # `packages/core/dist/*.js` becomes "MODULE_UNPARSABLE" and every
+          # subsequent request returns 500), the e2e suite would otherwise burn
+          # the full 30-minute job window polling stuck workflow runs before
+          # finally being cancelled. Below we (1) bail out if `dev.test.ts`
+          # fails, since that's the first thing to start hitting 500s, and
+          # (2) probe the server before the long e2e run to catch any other
+          # silent breakage.
+          #
+          # Get-DevServerStatus returns the HTTP status code of GET /api/chat,
+          # or 0 if the request never produced a response. /api/chat is a
+          # POST-only endpoint, so a healthy dev server responds with 405
+          # Method Not Allowed; we only treat 5xx (and no-response) as
+          # unhealthy.
+          function Get-DevServerStatus {
+            try {
+              $resp = Invoke-WebRequest -Uri "http://localhost:3000/api/chat" -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+              return [int]$resp.StatusCode
+            } catch {
+              if ($_.Exception.Response) {
+                try { return [int]$_.Exception.Response.StatusCode } catch { return 0 }
+              }
+              return 0
+            }
+          }
+
+          $devExit = 0
           pnpm vitest run packages/core/e2e/dev.test.ts
+          $devExit = $LASTEXITCODE
+          if ($devExit -ne 0) {
+            Write-Host "::warning title=dev.test.ts failed::dev.test.ts exited with code $devExit. Skipping the remainder of the e2e suite to avoid waiting for the 30-minute job timeout."
+            Stop-Job $job -ErrorAction SilentlyContinue
+            exit $devExit
+          }
+
+          # Sanity-check the server before kicking off the long e2e suite. This
+          # catches the case where Turbopack quietly went sideways (e.g. lost
+          # track of files in `packages/core/dist` after HMR on Windows) and is
+          # returning 500 for every request. Without this check the e2e suite
+          # would burn the full 30-minute job window polling stuck workflow
+          # runs before getting cancelled.
+          $status = Get-DevServerStatus
+          Write-Host "[health-check:pre-e2e] GET /api/chat -> $status"
+          if ($status -eq 0 -or $status -ge 500) {
+            Write-Host "::error title=Next.js dev server unhealthy::Dev server returned $status before e2e tests. Aborting to avoid the 30-minute job timeout. See the 'Print Next.js server logs' step for the underlying Turbopack error."
+            Stop-Job $job -ErrorAction SilentlyContinue
+            exit 1
+          }
+
           pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack.json
-          Stop-Job $job
+          $e2eExit = $LASTEXITCODE
+          Stop-Job $job -ErrorAction SilentlyContinue
+          exit $e2eExit
         shell: powershell
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
-          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
+          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
 
       - name: Print Next.js server logs
         if: always()
@@ -711,6 +864,7 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |
@@ -731,15 +885,14 @@ jobs:
       world-package: ${{ matrix.world.package }}
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
-      setup-command: ${{ matrix.world.setup-command }}
     secrets: inherit
 
   # Final job: Aggregate all E2E results and update PR comment
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
-    if: always() && !cancelled()
+    needs: [ci-scope, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
     steps:
@@ -785,14 +938,14 @@ jobs:
 
       - name: Update PR comment with results
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: e2e-test-results
           path: e2e-summary.md
 
       - name: Append failure notice to PR comment
         if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: e2e-test-results
           append: true
@@ -813,7 +966,7 @@ jobs:
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [unit, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -821,14 +974,26 @@ jobs:
       - name: Validate E2E job statuses
         env:
           UNIT_STATUS: ${{ needs.unit.result }}
+          BUILD_STATUS: ${{ needs.e2e-package-build.result }}
           VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
+          FAST_PATH: ${{ needs.ci-scope.outputs.fast-path }}
+          VALIDATION_FAST_PATH: ${{ needs.ci-scope.outputs.validation-fast-path }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
         run: |
           FAILED_JOBS=()
+
+          if [[ "$FAST_PATH" == "true" ]]; then
+            if [[ "$VALIDATION_FAST_PATH" != "true" && "$HAS_LABEL" != "true" && "$UNIT_STATUS" != "success" ]]; then
+              echo "UI-only fast path still requires unit tests; unit status was $UNIT_STATUS."
+              exit 1
+            fi
+            echo "Docs/UI-only change detected - no runtime E2E lanes are required."
+            exit 0
+          fi
 
           # When workflow-server-test label is present, only check vercel-prod (others should be skipped)
           # Otherwise, all jobs must succeed
@@ -845,6 +1010,7 @@ jobs:
           else
             echo "Standard PR - checking all jobs"
             [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
+            [[ "$BUILD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-package-build ($BUILD_STATUS)")
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
@@ -895,9 +1061,8 @@ jobs:
             --branch "${{ github.ref_name }}"
 
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: ./.github/actions/publish-to-gh-pages
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs-data
-          destination_dir: ci
-          keep_files: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          source-dir: ./docs-data
+          destination-dir: ci

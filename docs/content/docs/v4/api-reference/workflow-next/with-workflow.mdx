@@ -1,0 +1,139 @@
+---
+title: withWorkflow
+description: Configure webpack/turbopack to transform workflow directives in Next.js.
+type: reference
+summary: Wrap your Next.js config with withWorkflow to enable workflow directive transformation.
+prerequisites:
+  - /docs/getting-started/next
+---
+
+Configures webpack/turbopack loaders to transform workflow code (`"use step"`/`"use workflow"` directives)
+
+## Usage
+
+To enable `"use step"` and `"use workflow"` directives while developing locally or deploying to production, wrap your `nextConfig` with `withWorkflow`.
+
+```typescript title="next.config.ts" lineNumbers
+import { withWorkflow } from "workflow/next"; // [!code highlight]
+import type { NextConfig } from "next";
+ 
+const nextConfig: NextConfig = {
+  // … rest of your Next.js config
+};
+
+// not required but allows configuring workflow options
+const workflowConfig = {} 
+
+export default withWorkflow(nextConfig, workflowConfig); // [!code highlight]
+```
+
+<Callout type="warn">
+If a package in `serverExternalPackages` contains workflow code (`"use step"`,
+`"use workflow"`, or serialization classes), `withWorkflow()` automatically
+removes it from `serverExternalPackages` for the current build and prints a
+warning. This ensures the package still gets transformed by the Workflow
+compiler. Remove that package from `serverExternalPackages` in your
+`next.config` to silence the warning.
+</Callout>
+
+### Monorepos and Workspace Imports
+
+By default, Next.js detects the correct workspace root automatically. If your Next.js app lives in a subdirectory such as `apps/web` and workspace resolution is not working correctly, you can set `outputFileTracingRoot` as a workaround:
+
+```typescript title="apps/web/next.config.ts" lineNumbers
+import { resolve } from "node:path";
+import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
+
+const nextConfig: NextConfig = {
+  outputFileTracingRoot: resolve(process.cwd(), "../.."),
+};
+
+export default withWorkflow(nextConfig);
+```
+
+<Callout type="info">
+Use the smallest directory that contains every workspace package imported by your workflows. If your app already lives at the repository root, you do not need to set `outputFileTracingRoot`.
+</Callout>
+
+## Options
+
+`withWorkflow` accepts an optional second argument to configure the Next.js integration.
+
+```typescript title="next.config.ts" lineNumbers
+import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
+
+const nextConfig: NextConfig = {};
+
+export default withWorkflow(nextConfig, {
+  workflows: {
+    lazyDiscovery: true,
+    local: {
+      port: 4000,
+    },
+    sourcemap: false,
+  },
+});
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `workflows.lazyDiscovery` | `boolean` | `false` | When `true`, defers workflow discovery until files are requested instead of scanning eagerly at startup. Useful for large projects where startup time matters. |
+| `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
+| `workflows.sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. See [Source maps](#source-maps) below. |
+
+### Source maps
+
+The step bundle and intermediate workflow bundle default to `'inline'` source maps so that stack traces from step errors and workflow VM errors point at your source files. The `sourcemap` option lets you change that:
+
+| Value | Behavior |
+| --- | --- |
+| `true` / `'inline'` | Base64-encode the source map and append it to the bundle (default). |
+| `'linked'` | Write a separate `.map` file and add a `sourceMappingURL` comment. |
+| `'external'` | Write a separate `.map` file without the comment. |
+| `'both'` | Emit both inline and external source maps. |
+| `false` | Omit source maps entirely. |
+
+Setting `sourcemap: false` is the main escape hatch for users hitting the Vercel 250MB function size limit — it drops the inline source map from every bundle and also skips the source-map-support runtime shim on the Vercel step function. The tradeoff is that workflow VM stack traces will reference generated code (e.g. `evalmachine.<anonymous>`) rather than your source files.
+
+<Callout type="info">
+Setting `sourcemap` explicitly affects **all** generated bundles (steps, workflows, webhook). The legacy `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1` environment variable is narrower — it only toggles source maps on the final workflow wrapper and webhook bundle (which default to off). It continues to work, but new code should use the `sourcemap` option or the `WORKFLOW_SOURCEMAP` environment variable instead.
+</Callout>
+
+The option can also be set via the `WORKFLOW_SOURCEMAP` environment variable, which accepts the same values plus `'0'` / `'1'` as aliases for `false` / `true`. Precedence is: explicit config > `WORKFLOW_SOURCEMAP` > per-bundle default.
+
+<Callout type="info">
+The `workflows.local` options only affect local development. When deployed to Vercel, the runtime ignores `local` settings and uses the Vercel world automatically.
+</Callout>
+
+## Exporting a Function
+
+
+If you are exporting a function in your `next.config` you will need to ensure you call the function returned from `withWorkflow`.
+
+```typescript title="next.config.ts" lineNumbers
+import { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
+import createNextIntlPlugin from "next-intl/plugin";
+
+const withNextIntl = createNextIntlPlugin();
+
+export default async function config(
+  phase: string,
+  ctx: {
+    defaultConfig: NextConfig
+  }
+): Promise<NextConfig> {
+  let nextConfig: NextConfig | typeof config = {};
+
+  for (const configModifier of [withNextIntl, withWorkflow]) {
+    nextConfig = configModifier(nextConfig);
+
+    if (typeof nextConfig === "function") {
+      nextConfig = await nextConfig(phase, ctx);
+    }
+  }
+  return nextConfig;
+}
+``` 

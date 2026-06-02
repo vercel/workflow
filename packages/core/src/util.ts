@@ -2,15 +2,15 @@ import { waitUntil } from '@vercel/functions';
 import { pluralize } from '@workflow/utils';
 
 /**
- * Builds a workflow suspension log message based on the counts of steps, hooks, and waits.
- * @param runId - The workflow run ID
+ * Builds a workflow suspension log message based on the counts of steps,
+ * hooks, and waits. The structured logger attaches the run context, so the
+ * message itself only describes what's being enqueued.
  * @param stepCount - Number of steps to be enqueued
  * @param hookCount - Number of hooks to be enqueued
  * @param waitCount - Number of waits to be enqueued
  * @returns The formatted log message or null if all counts are 0
  */
 export function buildWorkflowSuspensionMessage(
-  runId: string,
   stepCount: number,
   hookCount: number,
   waitCount: number
@@ -42,7 +42,7 @@ export function buildWorkflowSuspensionMessage(
   }
   const resumeMsg = resumeMsgParts.join(' and ');
 
-  return `[Workflows] "${runId}" - ${parts.join(' and ')} to be enqueued\n  Workflow will suspend and resume when ${resumeMsg}`;
+  return `${parts.join(' and ')} to be enqueued\n  Workflow will suspend and resume when ${resumeMsg}`;
 }
 
 /**
@@ -64,6 +64,33 @@ export function getWorkflowRunStreamId(runId: string, namespace?: string) {
     'base64url'
   );
   return `${streamId}_${encodedNamespace}`;
+}
+
+/**
+ * Generate a stream ID for an abort signal's backing stream.
+ * Uses the "_system_abort" namespace to isolate from user-defined streams.
+ *
+ * @param id - A unique identifier (typically a ULID)
+ * @returns The stream ID in format: `strm_{id}_system_abort`
+ */
+export function getAbortStreamId(id: string) {
+  return `strm_${id}_system_abort`;
+}
+
+const ABORT_TOKEN_PREFIX = 'abrt_';
+
+/**
+ * Derive the abort stream name from a hook token.
+ * Hook tokens use the format `abrt_{id}`, and the corresponding stream is
+ * `strm_{id}_system_abort`.
+ */
+export function getAbortStreamIdFromToken(hookToken: string): string {
+  if (!hookToken.startsWith(ABORT_TOKEN_PREFIX)) {
+    throw new Error(
+      `Invalid abort hook token format: expected "abrt_" prefix, got "${hookToken}"`
+    );
+  }
+  return getAbortStreamId(hookToken.slice(ABORT_TOKEN_PREFIX.length));
 }
 
 /**
