@@ -1,5 +1,16 @@
 # @workflow/vitest
 
+## 4.0.8
+
+### Patch Changes
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`1e32d05`](https://github.com/vercel/workflow/commit/1e32d05758d590134f04f82ea41ab9add96104d5), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f), [`9092640`](https://github.com/vercel/workflow/commit/90926400131be4003e65d970deb5d67ae29778a2)]:
+  - @workflow/core@4.3.0
+  - @workflow/world@4.1.4
+  - @workflow/builders@4.0.8
+  - @workflow/world-local@4.1.4
+  - @workflow/rollup@4.0.7
+
 ## 4.0.7
 
 ### Patch Changes
