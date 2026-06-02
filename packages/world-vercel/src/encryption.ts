@@ -15,7 +15,6 @@ import { getVercelOidcToken } from '@vercel/oidc';
 import type { WorkflowRun, World } from '@workflow/world';
 import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
-import { getProtectionBypassHeader } from './utils.js';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
@@ -125,7 +124,6 @@ export async function fetchRunKey(
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
-        ...getProtectionBypassHeader(),
       },
       // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
       dispatcher: getDispatcher(),

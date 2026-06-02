@@ -1,7 +1,9 @@
+import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
 import type {
   Event,
   HealthCheckPayload,
   ValidQueueName,
+  WorkflowRun,
   World,
 } from '@workflow/world';
 import {
@@ -11,11 +13,12 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
+import { type CryptoKey, importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
-import { getWorld } from './world.js';
+import { getWorldLazy } from './get-world-lazy.js';
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
@@ -107,7 +110,7 @@ export async function handleHealthCheckMessage(
   endpoint: 'workflow' | 'step',
   worldSpecVersion?: number
 ): Promise<void> {
-  const world = await getWorld();
+  const world = await getWorldLazy();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
   const response = JSON.stringify({
     healthy: true,
@@ -321,66 +324,194 @@ export async function healthCheck(
   }
 }
 
-/**
- * Loads all workflow run events by iterating through all pages of paginated results.
- * This ensures that *all* events are loaded into memory before running the workflow.
- * Events must be in chronological order (ascending) for proper workflow replay.
- */
-export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
-  return trace('workflow.loadEvents', async (span) => {
-    span?.setAttributes({
-      ...Attribute.WorkflowRunId(runId),
-    });
+function eventPaginationContractError(
+  runId: string,
+  message: string
+): WorkflowWorldError {
+  return new WorkflowWorldError(
+    `Event pagination ${message} for workflow run "${runId}".`,
+    { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+  );
+}
 
-    const allEvents: Event[] = [];
-    let cursor: string | null = null;
-    let hasMore = true;
-    let pagesLoaded = 0;
+function recordRequestedEventCursor(
+  runId: string,
+  cursor: string | null,
+  requestedCursors: Set<string>
+): void {
+  if (!cursor) {
+    return;
+  }
+  if (requestedCursors.has(cursor)) {
+    throw eventPaginationContractError(runId, 'did not advance');
+  }
+  requestedCursors.add(cursor);
+}
 
-    const world = await getWorld();
-    const loadStart = Date.now();
-    while (hasMore) {
-      // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
-      // to lazyload the data from the world instead so that we can optimize and make the event log loading
-      // much faster and memory efficient
-      const pageStart = Date.now();
-      const response = await world.events.list({
-        runId,
-        pagination: {
-          sortOrder: 'asc', // Required: events must be in chronological order for replay
-          cursor: cursor ?? undefined,
-        },
-      });
-
-      allEvents.push(...response.data);
-      hasMore = response.hasMore;
-      cursor = response.cursor;
-      pagesLoaded++;
-
-      runtimeLogger.debug('Loaded event page', {
-        workflowRunId: runId,
-        page: pagesLoaded,
-        pageEvents: response.data.length,
-        totalEvents: allEvents.length,
-        hasMore,
-        pageMs: Date.now() - pageStart,
-      });
+function appendUniqueEvents(
+  target: Event[],
+  targetIds: Set<string>,
+  events: Event[]
+): void {
+  for (const event of events) {
+    if (!targetIds.has(event.eventId)) {
+      targetIds.add(event.eventId);
+      target.push(event);
     }
+  }
+}
 
-    runtimeLogger.debug('Event loading complete', {
-      workflowRunId: runId,
-      totalEvents: allEvents.length,
-      pagesLoaded,
-      totalMs: Date.now() - loadStart,
-    });
+function assertEventPaginationProgress(
+  runId: string,
+  hasMore: boolean,
+  cursor: string | null,
+  requestedCursors: Set<string>
+): void {
+  if (!hasMore) {
+    return;
+  }
+  if (cursor === null) {
+    throw eventPaginationContractError(
+      runId,
+      'returned more pages without a cursor'
+    );
+  }
+  if (requestedCursors.has(cursor)) {
+    throw eventPaginationContractError(runId, 'repeated a cursor');
+  }
+}
 
-    span?.setAttributes({
-      ...Attribute.WorkflowEventsCount(allEvents.length),
-      ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
-    });
+function shouldRetryWithoutEventCursor(
+  error: unknown,
+  cursor: string | null,
+  alreadyRetried: boolean
+): boolean {
+  return (
+    cursor !== null &&
+    !alreadyRetried &&
+    WorkflowWorldError.is(error) &&
+    error.status === 400
+  );
+}
 
-    return allEvents;
-  });
+/**
+ * Loads workflow run events by iterating through all pages of paginated
+ * results. Events are returned in chronological (ascending) order for
+ * deterministic workflow replay.
+ *
+ * @param runId - The workflow run ID.
+ * @param afterCursor - If provided, only events after this cursor are
+ *   returned (incremental load). If omitted, all events are returned.
+ *   The returned cursor can be passed back in on a subsequent call for
+ *   incremental loading.
+ */
+export async function loadWorkflowRunEvents(
+  runId: string,
+  afterCursor?: string
+): Promise<{ events: Event[]; cursor: string | null }> {
+  const incremental = afterCursor !== undefined;
+  return trace(
+    incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
+    async (span) => {
+      span?.setAttributes({
+        ...Attribute.WorkflowRunId(runId),
+      });
+
+      const loadedEvents: Event[] = [];
+      const loadedEventIds = new Set<string>();
+      const requestedCursors = new Set<string>();
+      let cursor: string | null = afterCursor ?? null;
+      let hasMore = true;
+      let pagesLoaded = 0;
+      let retriedWithoutCursor = false;
+
+      const world = await getWorldLazy();
+      const loadStart = Date.now();
+      while (hasMore) {
+        // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
+        // to lazyload the data from the world instead so that we can optimize and make the event log loading
+        // much faster and memory efficient
+        const pageStart = Date.now();
+        const requestedCursor = cursor;
+        recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
+
+        let response: Awaited<ReturnType<typeof world.events.list>>;
+        try {
+          response = await world.events.list({
+            runId,
+            pagination: {
+              sortOrder: 'asc',
+              cursor: requestedCursor ?? undefined,
+            },
+          });
+        } catch (error) {
+          if (
+            shouldRetryWithoutEventCursor(
+              error,
+              requestedCursor,
+              retriedWithoutCursor
+            )
+          ) {
+            runtimeLogger.warn(
+              'Event cursor was rejected; retrying with a full event reload.',
+              { workflowRunId: runId }
+            );
+            loadedEvents.length = 0;
+            loadedEventIds.clear();
+            requestedCursors.clear();
+            cursor = null;
+            retriedWithoutCursor = true;
+            continue;
+          }
+          throw error;
+        }
+
+        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
+        hasMore = response.hasMore;
+        assertEventPaginationProgress(
+          runId,
+          hasMore,
+          response.cursor,
+          requestedCursors
+        );
+        // Preserve the last non-null cursor across pages. A World may
+        // legitimately return `{ data: [], cursor: null, hasMore: false }`
+        // on a trailing empty page — for example when the previous page's
+        // underlying DB query hit the limit exactly and returned a
+        // `LastEvaluatedKey` "just in case". Overwriting with that null
+        // would lose the position past the last real event we loaded and
+        // force the runtime into the "no cursor after initial load" full-
+        // reload fallback on every subsequent replay iteration.
+        cursor = response.cursor ?? cursor;
+        pagesLoaded++;
+
+        runtimeLogger.debug('Loaded event page', {
+          workflowRunId: runId,
+          incremental,
+          page: pagesLoaded,
+          pageEvents: response.data.length,
+          totalEvents: loadedEvents.length,
+          hasMore,
+          pageMs: Date.now() - pageStart,
+        });
+      }
+
+      runtimeLogger.debug('Event load complete', {
+        workflowRunId: runId,
+        incremental,
+        totalEvents: loadedEvents.length,
+        pagesLoaded,
+        totalMs: Date.now() - loadStart,
+      });
+
+      span?.setAttributes({
+        ...Attribute.WorkflowEventsCount(loadedEvents.length),
+        ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+      });
+
+      return { events: loadedEvents, cursor };
+    }
+  );
 }
 
 /**
@@ -477,4 +608,48 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
   } catch {
     return;
   }
+}
+
+/**
+ * Returns a memoized accessor for the per-run AES-256 encryption key.
+ *
+ * The first call resolves the key via `world.getEncryptionKeyForRun` (which
+ * may do HKDF derivation locally on Vercel, or a network fetch from
+ * external contexts) and imports it as a `CryptoKey`; subsequent calls
+ * await the same cached promise. If the world doesn't support encryption
+ * or the run has no key configured, the cached value is `undefined`.
+ *
+ * Used by step / workflow handlers to defer the (potentially expensive)
+ * key fetch until the first code path that actually needs it — typically
+ * input hydration on the success path, or error dehydration on a failure
+ * path. Both paths can race-call the accessor without triggering duplicate
+ * fetches.
+ *
+ * Errors thrown by `getEncryptionKeyForRun` propagate to every caller
+ * (the cached promise rejects). This is intentional: when encryption is
+ * configured, we never want to silently fall back to plaintext
+ * serialization. A propagated error in an event-emission path leaves the
+ * outer try/catch to log and surface the issue; the queue's redelivery
+ * semantics will retry the key fetch on the next attempt.
+ */
+export function memoizeEncryptionKey(
+  world: World,
+  runOrId: WorkflowRun | string
+): () => Promise<CryptoKey | undefined> {
+  let cached: Promise<CryptoKey | undefined> | undefined;
+  return () => {
+    if (!cached) {
+      cached = (async () => {
+        // The `getEncryptionKeyForRun` overload set takes either a
+        // `WorkflowRun` or a `runId: string` (with optional context). Branch
+        // here so TypeScript picks the right overload for each shape.
+        const rawKey =
+          typeof runOrId === 'string'
+            ? await world.getEncryptionKeyForRun?.(runOrId)
+            : await world.getEncryptionKeyForRun?.(runOrId);
+        return rawKey ? await importKey(rawKey) : undefined;
+      })();
+    }
+    return cached;
+  };
 }

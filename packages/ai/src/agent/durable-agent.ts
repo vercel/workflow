@@ -858,15 +858,20 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     let effectiveAbortSignal =
       options.abortSignal ?? this.generationSettings.abortSignal;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    // The workflow VM replaces setTimeout with a throwing stub, so the
+    // timeout path is skipped there. The VM sets WORKFLOW_CONTEXT on its
+    // globalThis before user code runs; its absence means real timers work.
+    const inWorkflowVm =
+      (globalThis as any)[Symbol.for('WORKFLOW_CONTEXT')] !== undefined;
     if (
       options.timeout !== undefined &&
-      typeof AbortController !== 'undefined'
+      typeof AbortController !== 'undefined' &&
+      !inWorkflowVm
     ) {
       const timeoutController = new AbortController();
       timeoutId = setTimeout(() => timeoutController.abort(), options.timeout);
       const timeoutSignal = timeoutController.signal;
       if (effectiveAbortSignal) {
-        // Combine: whichever fires first wins
         const combined = new AbortController();
         effectiveAbortSignal.addEventListener('abort', () => combined.abort(), {
           once: true,

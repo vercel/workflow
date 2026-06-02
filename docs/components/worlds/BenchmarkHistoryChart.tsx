@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { Minus, TrendingDown, TrendingUp } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Minus, TrendingDown, TrendingUp } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Area,
   CartesianGrid,
@@ -9,19 +9,19 @@ import {
   Line,
   XAxis,
   YAxis,
-} from "recharts";
-import type { ChartConfig } from "@/components/ui/chart";
-import { ChartContainer, ChartTooltip } from "@/components/ui/chart";
+} from 'recharts';
+import type { ChartConfig } from '@/components/ui/chart';
+import { ChartContainer, ChartTooltip } from '@/components/ui/chart';
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatTime } from "./types";
+} from '@/components/ui/dialog';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { formatTime } from './types';
 
 interface BenchmarkHistoryPoint {
   label: string;
@@ -47,24 +47,24 @@ interface BenchmarkHistoryChartProps {
 
 const chartConfig = {
   workflowTime: {
-    label: "Time",
-    color: "var(--ds-blue-800)",
+    label: 'Time',
+    color: 'var(--ds-blue-800)',
   },
   range: {
-    label: "Range",
-    color: "var(--ds-blue-800)",
+    label: 'Range',
+    color: 'var(--ds-blue-800)',
   },
   ttfb: {
-    label: "TTFB",
-    color: "var(--ds-green-800)",
+    label: 'TTFB',
+    color: 'var(--ds-green-800)',
   },
   slurp: {
-    label: "Slurp",
-    color: "var(--ds-purple-900)",
+    label: 'Slurp',
+    color: 'var(--ds-purple-900)',
   },
 } satisfies ChartConfig;
 
-type HistoryMode = "releases" | "commits";
+type HistoryMode = 'releases' | 'commits';
 
 export function BenchmarkHistoryChart({
   worldId,
@@ -72,7 +72,7 @@ export function BenchmarkHistoryChart({
   open,
   onOpenChange,
 }: BenchmarkHistoryChartProps) {
-  const [mode, setMode] = useState<HistoryMode>("releases");
+  const [mode, setMode] = useState<HistoryMode>('releases');
   const [data, setData] = useState<BenchmarkHistoryPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +96,7 @@ export function BenchmarkHistoryChart({
 
     try {
       const res = await fetch(
-        `/api/benchmark-history?worldId=${encodeURIComponent(worldId)}&metricName=${encodeURIComponent(metricName)}&mode=${mode}`,
+        `/api/benchmark-history?worldId=${encodeURIComponent(worldId)}&metricName=${encodeURIComponent(metricName)}&mode=${mode}`
       );
 
       if (!res.ok) {
@@ -110,7 +110,7 @@ export function BenchmarkHistoryChart({
       // Only show error if we have no cached data to fall back on
       if (!cached) {
         setError(
-          err instanceof Error ? err.message : "Failed to fetch history",
+          err instanceof Error ? err.message : 'Failed to fetch history'
         );
       }
     } finally {
@@ -129,7 +129,7 @@ export function BenchmarkHistoryChart({
 
   // Check if we have workflow min/max data (for showing range)
   const hasWorkflowRange = data.some(
-    (d) => d.workflowMin !== undefined && d.workflowMax !== undefined,
+    (d) => d.workflowMin !== undefined && d.workflowMax !== undefined
   );
 
   // Calculate stats for the chart - use workflowTime when available
@@ -153,10 +153,10 @@ export function BenchmarkHistoryChart({
         })()
       : null;
 
-  const modeLabel = mode === "releases" ? "releases" : "commits";
+  const modeLabel = mode === 'releases' ? 'releases' : 'commits';
 
   const getGitHubUrl = (point: BenchmarkHistoryPoint) => {
-    if (mode === "releases") {
+    if (mode === 'releases') {
       return `https://github.com/vercel/workflow/releases/tag/workflow@${point.label}`;
     }
     return `https://github.com/vercel/workflow/commit/${point.commit}`;
@@ -221,51 +221,51 @@ export function BenchmarkHistoryChart({
             stats &&
             (() => {
               const statCards = [
-                { label: "Samples", value: String(stats.samples ?? "—") },
-                { label: "Time", value: formatTime(stats.current) },
+                { label: 'Samples', value: String(stats.samples ?? '—') },
+                { label: 'Time', value: formatTime(stats.current) },
                 ...(isStreamBenchmark && stats.ttfb !== undefined
                   ? [
                       {
-                        label: "TTFB",
+                        label: 'TTFB',
                         value: formatTime(stats.ttfb),
-                        colorClass: "text-green-900 dark:text-green-600",
+                        colorClass: 'text-green-900 dark:text-green-600',
                       },
                     ]
                   : []),
                 ...(isStreamBenchmark && stats.slurp !== undefined
                   ? [
                       {
-                        label: "Slurp",
+                        label: 'Slurp',
                         value: formatTime(stats.slurp),
-                        colorClass: "text-purple-900",
+                        colorClass: 'text-purple-900',
                       },
                     ]
                   : []),
                 {
-                  label: "Trend",
+                  label: 'Trend',
                   value: `${Math.abs(stats.trendPercent).toFixed(1)}%`,
                   colorClass:
                     stats.trendPercent < -1
-                      ? "text-green-900 dark:text-green-600"
+                      ? 'text-green-900 dark:text-green-600'
                       : stats.trendPercent > 1
-                        ? "text-red-900 dark:text-red-800"
-                        : "text-muted-foreground",
+                        ? 'text-red-900 dark:text-red-800'
+                        : 'text-muted-foreground',
                   icon:
                     stats.trendPercent < -1
-                      ? "down"
+                      ? 'down'
                       : stats.trendPercent > 1
-                        ? "up"
-                        : "flat",
+                        ? 'up'
+                        : 'flat',
                 },
               ];
 
               return (
                 <div
-                  className={loading ? "opacity-50 pointer-events-none" : ""}
+                  className={loading ? 'opacity-50 pointer-events-none' : ''}
                 >
                   {/* Stats summary */}
                   <div
-                    className={`grid gap-3 mb-6 ${isStreamBenchmark ? "grid-cols-5" : "grid-cols-3"}`}
+                    className={`grid gap-3 mb-6 ${isStreamBenchmark ? 'grid-cols-5' : 'grid-cols-3'}`}
                   >
                     {statCards.map((stat) => (
                       <div
@@ -273,16 +273,16 @@ export function BenchmarkHistoryChart({
                         className="p-3 bg-background-200 rounded-lg"
                       >
                         <div
-                          className={`text-lg font-semibold font-mono flex items-center gap-2 ${stat.colorClass ?? ""}`}
+                          className={`text-lg font-semibold font-mono flex items-center gap-2 ${stat.colorClass ?? ''}`}
                         >
                           {stat.value}
-                          {stat.icon === "down" && (
+                          {stat.icon === 'down' && (
                             <TrendingDown className="h-5 w-5" />
                           )}
-                          {stat.icon === "up" && (
+                          {stat.icon === 'up' && (
                             <TrendingUp className="h-5 w-5" />
                           )}
-                          {stat.icon === "flat" && (
+                          {stat.icon === 'flat' && (
                             <Minus className="h-5 w-5" />
                           )}
                         </div>
@@ -350,7 +350,7 @@ export function BenchmarkHistoryChart({
                         tickMargin={8}
                         tick={{ fontSize: 10 }}
                         width={55}
-                        domain={[0, "auto"]}
+                        domain={[0, 'auto']}
                       />
                       <ChartTooltip
                         isAnimationActive={false}
@@ -375,7 +375,7 @@ export function BenchmarkHistoryChart({
                                     className="h-2.5 w-2.5 rounded-[2px]"
                                     style={{
                                       backgroundColor:
-                                        "var(--color-workflowTime)",
+                                        'var(--color-workflowTime)',
                                     }}
                                   />
                                   <span className="text-xs text-muted-foreground">
@@ -384,7 +384,7 @@ export function BenchmarkHistoryChart({
                                   <span className="font-mono font-medium text-xs">
                                     {point.workflowTime !== undefined
                                       ? formatTime(point.workflowTime)
-                                      : "—"}
+                                      : '—'}
                                   </span>
                                 </div>
                                 {point.ttfb !== undefined && (
@@ -392,7 +392,7 @@ export function BenchmarkHistoryChart({
                                     <div
                                       className="h-2.5 w-2.5 rounded-[2px]"
                                       style={{
-                                        backgroundColor: "var(--color-ttfb)",
+                                        backgroundColor: 'var(--color-ttfb)',
                                       }}
                                     />
                                     <span className="text-xs text-muted-foreground">
@@ -408,7 +408,7 @@ export function BenchmarkHistoryChart({
                                     <div
                                       className="h-2.5 w-2.5 rounded-[2px]"
                                       style={{
-                                        backgroundColor: "var(--color-slurp)",
+                                        backgroundColor: 'var(--color-slurp)',
                                       }}
                                     />
                                     <span className="text-xs text-muted-foreground">
@@ -421,7 +421,7 @@ export function BenchmarkHistoryChart({
                                 )}
                                 {hasRange && (
                                   <div className="text-xs text-muted-foreground">
-                                    Range: {formatTime(point.workflowMin!)} –{" "}
+                                    Range: {formatTime(point.workflowMin!)} –{' '}
                                     {formatTime(point.workflowMax!)}
                                   </div>
                                 )}
@@ -432,7 +432,7 @@ export function BenchmarkHistoryChart({
                                 )}
                                 <div className="text-xs text-muted-foreground">
                                   {new Date(
-                                    point.timestamp,
+                                    point.timestamp
                                   ).toLocaleDateString()}
                                 </div>
                                 <div className="text-xs text-muted-foreground mt-1">
@@ -486,17 +486,17 @@ export function BenchmarkHistoryChart({
                         strokeWidth={2}
                         isAnimationActive={false}
                         dot={{
-                          fill: "var(--color-workflowTime)",
-                          stroke: "var(--ds-background-100)",
+                          fill: 'var(--color-workflowTime)',
+                          stroke: 'var(--ds-background-100)',
                           strokeWidth: 1,
                           r: 2.5,
-                          cursor: "pointer",
+                          cursor: 'pointer',
                         }}
                         activeDot={{
                           r: 4,
-                          fill: "var(--color-workflowTime)",
+                          fill: 'var(--color-workflowTime)',
                           strokeWidth: 0,
-                          cursor: "pointer",
+                          cursor: 'pointer',
                           onClick: (_, event) => {
                             const point = (
                               event as unknown as {
@@ -504,7 +504,7 @@ export function BenchmarkHistoryChart({
                               }
                             ).payload;
                             if (point) {
-                              window.open(getGitHubUrl(point), "_blank");
+                              window.open(getGitHubUrl(point), '_blank');
                             }
                           },
                         }}
@@ -520,13 +520,13 @@ export function BenchmarkHistoryChart({
                           strokeDasharray="4 4"
                           isAnimationActive={false}
                           dot={{
-                            fill: "var(--color-ttfb)",
+                            fill: 'var(--color-ttfb)',
                             strokeWidth: 0,
                             r: 2.5,
                           }}
                           activeDot={{
                             r: 4,
-                            fill: "var(--color-ttfb)",
+                            fill: 'var(--color-ttfb)',
                             strokeWidth: 0,
                           }}
                         />
@@ -542,13 +542,13 @@ export function BenchmarkHistoryChart({
                           strokeDasharray="2 2"
                           isAnimationActive={false}
                           dot={{
-                            fill: "var(--color-slurp)",
+                            fill: 'var(--color-slurp)',
                             strokeWidth: 0,
                             r: 2.5,
                           }}
                           activeDot={{
                             r: 4,
-                            fill: "var(--color-slurp)",
+                            fill: 'var(--color-slurp)',
                             strokeWidth: 0,
                           }}
                         />

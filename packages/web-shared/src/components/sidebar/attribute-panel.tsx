@@ -3,7 +3,6 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
@@ -20,10 +19,11 @@ import {
   isStructuredErrorWithStack,
 } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
-import { Spinner } from '../ui/spinner';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import { ConversationView } from './conversation-view';
-import { CopyableDataBlock } from './copyable-data-block';
+import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
 /**
@@ -151,7 +151,7 @@ function ConversationWithTabs({
   );
 
   return (
-    <DetailCard summary={`Input (${conversation.length} messages)`}>
+    <DetailCard summary="Input">
       <TabbedContainer
         tabs={conversationTabs}
         activeTab={activeTab}
@@ -180,51 +180,8 @@ function ConversationWithTabs({
  * Render a value with the shared DataInspector (ObjectInspector with
  * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
  */
-/**
- * Inline display for an encrypted field — no expand, just a flat label
- * with the lucide Lock icon matching the title bar Decrypt button.
- */
 function EncryptedFieldBlock() {
-  const ctx = useContext(DecryptClickContext);
-  if (ctx) {
-    return (
-      <button
-        type="button"
-        onClick={ctx.onDecrypt}
-        disabled={ctx.isDecrypting}
-        className="flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs cursor-pointer transition-colors"
-        style={{
-          borderColor: 'var(--ds-gray-400)',
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-700)',
-          opacity: ctx.isDecrypting ? 0.6 : 1,
-        }}
-        title="Click to decrypt"
-      >
-        {ctx.isDecrypting ? (
-          <Spinner size={12} />
-        ) : (
-          <Lock className="h-3 w-3" />
-        )}
-        <span className="font-medium">
-          {ctx.isDecrypting ? 'Decrypting…' : 'Decrypt'}
-        </span>
-      </button>
-    );
-  }
-  return (
-    <div
-      className="flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-700)',
-      }}
-    >
-      <Lock className="h-3 w-3" />
-      <span className="font-medium">Encrypted</span>
-    </div>
-  );
+  return <EncryptedDataBlock />;
 }
 
 /**
@@ -269,7 +226,9 @@ type AttributeKey =
   | 'workflowCoreVersion'
   | 'receivedCount'
   | 'lastReceivedAt'
-  | 'disposedAt';
+  | 'disposedAt'
+  | 'isSystem'
+  | 'errorCode';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -318,8 +277,30 @@ const sortByAttributeOrder = (a: string, b: string): number => {
  * Display names for attributes that should render differently from their key.
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
+  moduleSpecifier: 'Module',
+  workflowName: 'Workflow Name',
+  stepName: 'Step Name',
+  stepId: 'Step ID',
+  hookId: 'Hook ID',
+  attempt: 'Attempts',
+  eventId: 'Event ID',
+  runId: 'Run ID',
+  token: 'Token',
+  eventType: 'Event Type',
+  correlationId: 'Correlation ID',
+  deploymentId: 'Deployment ID',
+  specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
-  receivedCount: 'times resolved',
+  createdAt: 'Created',
+  startedAt: 'Started',
+  updatedAt: 'Updated',
+  completedAt: 'Completed',
+  expiredAt: 'Expired',
+  retryAfter: 'Retry After',
+  resumeAt: 'Resume',
+  lastReceivedAt: 'Last Received',
+  disposedAt: 'Disposed',
+  receivedCount: 'Times Resolved',
 };
 
 /**
@@ -406,22 +387,21 @@ const attributeToDisplayFn: Record<
   (value: unknown, context?: DisplayContext) => null | string | ReactNode
 > = {
   // Names that need pretty-printing
-  workflowName: (value: unknown) =>
-    parseWorkflowName(String(value))?.shortName ?? '?',
+  workflowName: (_value: unknown) => null,
   moduleSpecifier: (value: unknown) => getModuleSpecifierFromName(value),
-  stepName: (value: unknown) =>
-    parseStepName(String(value))?.shortName ?? String(value),
+  stepName: (_value: unknown) => null,
   // IDs
-  runId: (value: unknown) => String(value),
+  runId: (_value: unknown) => null,
   stepId: (value: unknown) => String(value),
   hookId: (value: unknown) => String(value),
   eventId: (value: unknown) => String(value),
   // Run/step details
-  status: (value: unknown) => String(value),
+  status: (_value: unknown) => null,
   attempt: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
   isWebhook: (value: unknown) => String(value),
+  isSystem: (value: unknown) => String(value),
   receivedCount: (value: unknown) => String(value),
   lastReceivedAt: localMillisecondTimeOrNull,
   disposedAt: localMillisecondTimeOrNull,
@@ -437,23 +417,36 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
+  // Attributes MVP — string-string metadata attached to the run.
+  // Rendered as a JSON block; if empty/missing, hidden by the
+  // hasDisplayContent gate above.
+  attributes: (value: unknown) => {
+    if (!hasDisplayContent(value)) return null;
+    return JsonBlock(value);
+  },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
-  updatedAt: timestampWithTooltipOrNull,
+  updatedAt: (_value: unknown) => null,
   completedAt: timestampWithTooltipOrNull,
-  expiredAt: timestampWithTooltipOrNull,
+  expiredAt: (_value: unknown) => null,
   retryAfter: timestampWithTooltipOrNull,
   resumeAt: timestampWithTooltipOrNull,
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) return <EncryptedDataBlock />;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return JsonBlock(value);
   },
   input: (value: unknown, context?: DisplayContext) => {
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) {
+      return (
+        <DetailCard summary="Input">
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
+    }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
@@ -462,8 +455,6 @@ const attributeToDisplayFn: Record<
         closureVars?: Record<string, unknown>;
         thisVal?: unknown;
       };
-      const argCount = Array.isArray(args) ? args.length : 0;
-      const argLabel = argCount === 1 ? 'argument' : 'arguments';
       const hasClosureVars = hasDisplayContent(closureVars);
       const hasThisVal = hasDisplayContent(thisVal);
       const hasArgs = hasDisplayContent(args);
@@ -492,22 +483,12 @@ const attributeToDisplayFn: Record<
 
       // Don't render an empty "Input (0 arguments)" card when no input exists.
       if (!hasArgs && !hasClosureVars && !hasThisVal) {
-        return (
-          <DetailCard
-            summary="Input (no data)"
-            disabled
-            summaryClassName="text-base py-2"
-          />
-        );
+        return <DetailCard summary="Input (no data)" disabled />;
       }
 
       return (
         <>
-          <DetailCard
-            summary={`Input (${argCount} ${argLabel})`}
-            summaryClassName="text-base py-2"
-            contentClassName="mt-0"
-          >
+          <DetailCard summary="Input">
             {Array.isArray(args)
               ? args.map((v, i) => (
                   <div className="mt-2 first:mt-0" key={i}>
@@ -522,30 +503,18 @@ const attributeToDisplayFn: Record<
             </DetailCard>
           )}
           {hasThisVal && (
-            <DetailCard summary="this">{JsonBlock(thisVal)}</DetailCard>
+            <DetailCard summary="Context">{JsonBlock(thisVal)}</DetailCard>
           )}
         </>
       );
     }
 
     // Fallback: treat as plain array or object
-    const argCount = Array.isArray(value) ? value.length : 0;
-    const argLabel = argCount === 1 ? 'argument' : 'arguments';
     if (!hasDisplayContent(value)) {
-      return (
-        <DetailCard
-          summary="Input (no data)"
-          disabled
-          summaryClassName="text-base py-2"
-        />
-      );
+      return <DetailCard summary="Input (no data)" disabled />;
     }
     return (
-      <DetailCard
-        summary={`Input (${argCount} ${argLabel})`}
-        summaryClassName="text-base py-2"
-        contentClassName="mt-0"
-      >
+      <DetailCard summary="Input">
         {Array.isArray(value)
           ? value.map((v, i) => (
               <div className="mt-2 first:mt-0" key={i}>
@@ -557,21 +526,25 @@ const attributeToDisplayFn: Record<
     );
   },
   output: (value: unknown) => {
+    if (isEncryptedMarker(value)) {
+      return (
+        <DetailCard summary="Output">
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
+    }
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return (
-      <DetailCard
-        summary="Output"
-        summaryClassName="text-base py-2"
-        contentClassName="mt-0"
-      >
-        {JsonBlock(value)}
-      </DetailCard>
-    );
+    return <DetailCard summary="Output">{JsonBlock(value)}</DetailCard>;
   },
   error: (value: unknown) => {
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) {
+      return (
+        <DetailCard summary="Error" defaultOpen>
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
+    }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
 
@@ -579,31 +552,37 @@ const attributeToDisplayFn: Record<
     // pre-formatted text. Otherwise fall back to the raw JSON viewer.
     if (isStructuredErrorWithStack(value)) {
       return (
-        <DetailCard
-          summary="Error"
-          summaryClassName="text-base py-2"
-          contentClassName="mt-0"
-        >
+        <DetailCard summary="Error" defaultOpen>
           <ErrorStackBlock value={value} />
         </DetailCard>
       );
     }
 
     return (
-      <DetailCard
-        summary="Error"
-        summaryClassName="text-base py-2"
-        contentClassName="mt-0"
-      >
+      <DetailCard summary="Error" defaultOpen>
         {JsonBlock(value)}
       </DetailCard>
     );
   },
   eventData: (value: unknown) => {
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) {
+      return (
+        <DetailCard summary="Event Data" defaultOpen>
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
+    }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
-    return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
+    return (
+      <DetailCard summary="Event Data" defaultOpen>
+        {JsonBlock(value)}
+      </DetailCard>
+    );
+  },
+  errorCode: (value: unknown) => {
+    if (typeof value !== 'string' || value.length === 0) return null;
+    return String(value);
   },
 };
 
@@ -614,6 +593,15 @@ const resolvableAttributes = [
   'metadata',
   'eventData',
 ];
+
+// Attributes whose displayFn renders its own section header via DetailCard,
+// so the outer AttributeBlock should not duplicate the label.
+const selfHeaderedAttributes = new Set([
+  'input',
+  'output',
+  'error',
+  'eventData',
+]);
 
 const ExpiredDataMessage = () => (
   <div
@@ -628,6 +616,13 @@ const ExpiredDataMessage = () => (
   </div>
 );
 
+const copyableBasicAttributes = new Set<AttributeKey>([
+  'stepId',
+  'hookId',
+  'eventId',
+  'deploymentId',
+]);
+
 export const AttributeBlock = ({
   attribute,
   value,
@@ -641,24 +636,26 @@ export const AttributeBlock = ({
   inline?: boolean;
   context?: DisplayContext;
 }) => {
+  const decryptCtx = useContext(DecryptClickContext);
   const isExpandableLoadingTarget =
     attribute === 'input' ||
     attribute === 'output' ||
     attribute === 'eventData';
   if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
-    return (
-      <div
-        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
-      >
-        <span
-          className={`${attribute === 'input' || attribute === 'output' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
-          {attribute}
-        </span>
-        <Skeleton className="h-9 w-full rounded-md" />
-      </div>
-    );
+    const label =
+      attribute === 'eventData'
+        ? 'Event Data'
+        : attribute === 'output'
+          ? 'Output'
+          : 'Input';
+    if (decryptCtx?.hasEncryptedData) {
+      return (
+        <DetailCard summary={label} defaultOpen={attribute === 'eventData'}>
+          <EncryptedFieldBlock />
+        </DetailCard>
+      );
+    }
+    return <DetailCard summary={label} />;
   }
 
   const displayFn =
@@ -687,6 +684,10 @@ export const AttributeBlock = ({
     );
   }
 
+  if (selfHeaderedAttributes.has(attribute)) {
+    return <>{displayValue}</>;
+  }
+
   return (
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
@@ -697,14 +698,8 @@ export const AttributeBlock = ({
           />
         </div>
       )}
-      <div
-        key={attribute}
-        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'gap-2 my-3.5' : 'gap-0'}`}
-      >
-        <span
-          className={`${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+      <div key={attribute} className="my-2 flex flex-col gap-0">
+        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
         <span className="text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
@@ -773,7 +768,9 @@ export const AttributePanel = ({
 
     if (!isLoading) return present;
 
-    // During loading, ensure input/output appear so their skeletons render
+    if (resource === 'sleep') return present;
+
+    // During loading, ensure sections appear so their skeletons render
     // in the correct position (above the events section).
     const loadingDefaults = ['input', 'output'];
     for (const key of loadingDefaults) {
@@ -782,7 +779,7 @@ export const AttributePanel = ({
       }
     }
     return present.sort(sortByAttributeOrder);
-  }, [displayData, isLoading]);
+  }, [displayData, isLoading, resource]);
 
   // Filter out attributes that return null
   const visibleBasicAttributes = basicAttributes.filter((attribute) => {
@@ -838,125 +835,121 @@ export const AttributePanel = ({
       });
   }, []);
 
+  const outerDecryptCtx = useContext(DecryptClickContext);
+  const decryptValue = onDecrypt
+    ? {
+        onDecrypt,
+        isDecrypting,
+        hasEncryptedData: outerDecryptCtx?.hasEncryptedData,
+      }
+    : outerDecryptCtx;
+
   return (
     <RunClickContext.Provider value={onRunClick}>
       <StreamClickContext.Provider value={onStreamClick}>
-        <DecryptClickContext.Provider
-          value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
-        >
-          <div>
-            {/* Basic attributes in a vertical layout with border */}
-            {visibleBasicAttributes.length > 0 && (
-              <div
-                className="mb-3 flex flex-col overflow-hidden rounded-lg border"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                }}
-              >
-                {orderedBasicAttributes.map((attribute, index) => {
-                  const displayValue = attributeToDisplayFn[
-                    attribute as keyof typeof attributeToDisplayFn
-                  ]?.(displayData[attribute as keyof typeof displayData]);
-                  const isModuleSpecifier = attribute === 'moduleSpecifier';
-                  const moduleSpecifierValue =
-                    typeof displayValue === 'string'
-                      ? displayValue
-                      : String(
-                          displayValue ?? displayData.moduleSpecifier ?? ''
-                        );
-                  const shouldCapitalizeLabel =
-                    attribute !== 'workflowCoreVersion';
-                  const showResumeAtSkeleton =
-                    isLoading && resource === 'sleep' && !displayData.resumeAt;
-                  const showDivider =
-                    index < orderedBasicAttributes.length - 1 ||
-                    showResumeAtSkeleton;
+        <DecryptClickContext.Provider value={decryptValue}>
+          {visibleBasicAttributes.length > 0 && (
+            <div className="flex flex-col overflow-hidden divide-y divide-gray-alpha-400 mb-3">
+              {orderedBasicAttributes.map((attribute) => {
+                const displayValue = attributeToDisplayFn[
+                  attribute as keyof typeof attributeToDisplayFn
+                ]?.(displayData[attribute as keyof typeof displayData]);
+                const isModuleSpecifier = attribute === 'moduleSpecifier';
+                const isCopyableBasicAttribute =
+                  copyableBasicAttributes.has(attribute as AttributeKey) &&
+                  typeof displayValue === 'string';
+                const moduleSpecifierValue =
+                  typeof displayValue === 'string'
+                    ? displayValue
+                    : String(displayValue ?? displayData.moduleSpecifier ?? '');
 
-                  return (
-                    <div key={attribute} className="py-1">
-                      <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                        <span
-                          className={
-                            shouldCapitalizeLabel
-                              ? 'text-[14px] first-letter:uppercase'
-                              : 'text-[14px]'
-                          }
-                          style={{ color: 'var(--ds-gray-700)' }}
-                        >
-                          {getAttributeDisplayName(attribute)}
-                        </span>
-                        {isModuleSpecifier ? (
-                          <button
-                            type="button"
-                            className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                            style={{
-                              color: 'var(--ds-gray-1000)',
-                              background: 'transparent',
-                              border: 'none',
-                              padding: 0,
-                            }}
-                            title={moduleSpecifierValue}
-                            onClick={() =>
-                              handleCopyModuleSpecifier(moduleSpecifierValue)
-                            }
-                          >
-                            {moduleSpecifierValue}
-                          </button>
-                        ) : (
-                          <span
-                            className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                            style={{ color: 'var(--ds-gray-1000)' }}
-                          >
-                            {displayValue}
-                          </span>
-                        )}
-                      </div>
-                      {showDivider ? (
-                        <div
-                          className="mx-2.5 border-b"
-                          style={{ borderColor: 'var(--ds-gray-300)' }}
-                        />
-                      ) : null}
-                    </div>
-                  );
-                })}
-                {isLoading && resource === 'sleep' && !displayData.resumeAt && (
-                  <div className="py-1">
-                    <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                      <span
-                        className="text-[14px] first-letter:uppercase"
-                        style={{ color: 'var(--ds-gray-700)' }}
-                      >
-                        resumeAt
-                      </span>
-                      <Skeleton className="h-4 w-[55%]" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-            {error ? (
-              <ErrorCard
-                title="Failed to load resource details"
-                details={error.message}
-                className="my-4"
-              />
-            ) : hasExpired ? (
-              <ExpiredDataMessage />
-            ) : (
-              <>
-                {resolvedAttributes.map((attribute) => (
-                  <AttributeBlock
-                    isLoading={isLoading}
+                return (
+                  <div
+                    className="flex items-center justify-between py-2"
                     key={attribute}
-                    attribute={attribute}
-                    value={displayData[attribute as keyof typeof displayData]}
-                    context={displayContext}
-                  />
-                ))}
-              </>
-            )}
-          </div>
+                  >
+                    <span className="text-label-14 text-gray-900">
+                      {getAttributeDisplayName(attribute)}
+                    </span>
+                    {isModuleSpecifier ? (
+                      <button
+                        type="button"
+                        className="min-w-0 max-w-[70%] truncate text-right text-label-13 font-mono"
+                        style={{
+                          color: 'var(--ds-gray-1000)',
+                          background: 'transparent',
+                          border: 'none',
+                          padding: 0,
+                        }}
+                        title={moduleSpecifierValue}
+                        onClick={() =>
+                          handleCopyModuleSpecifier(moduleSpecifierValue)
+                        }
+                      >
+                        {moduleSpecifierValue}
+                      </button>
+                    ) : isCopyableBasicAttribute ? (
+                      <div
+                        className="flex min-w-0 max-w-[70%] items-center justify-end gap-1 text-right text-[13px] font-mono"
+                        style={{
+                          color: 'var(--ds-gray-1000)',
+                        }}
+                        title={displayValue}
+                      >
+                        <MiddleTruncate
+                          value={displayValue}
+                          className="flex-1"
+                        />
+                        <CopyButton
+                          copyText={displayValue}
+                          ariaLabel={`Copy ${getAttributeDisplayName(attribute)}`}
+                          className="shrink-0 -mr-1"
+                        />
+                      </div>
+                    ) : (
+                      <span className="text-right text-label-13 font-mono">
+                        {displayValue}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              {isLoading && resource === 'sleep' && !displayData.resumeAt && (
+                <div className="py-1">
+                  <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                    <span
+                      className="text-[14px] first-letter:uppercase"
+                      style={{ color: 'var(--ds-gray-700)' }}
+                    >
+                      resumeAt
+                    </span>
+                    <Skeleton className="h-4 w-[55%]" />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {error ? (
+            <ErrorCard
+              title="Failed to load resource details"
+              details={error.message}
+              className="my-4"
+            />
+          ) : hasExpired ? (
+            <ExpiredDataMessage />
+          ) : resolvedAttributes.length > 0 ? (
+            <>
+              {resolvedAttributes.map((attribute) => (
+                <AttributeBlock
+                  isLoading={isLoading}
+                  key={attribute}
+                  attribute={attribute}
+                  value={displayData[attribute as keyof typeof displayData]}
+                  context={displayContext}
+                />
+              ))}
+            </>
+          ) : null}
         </DecryptClickContext.Provider>
       </StreamClickContext.Provider>
     </RunClickContext.Provider>

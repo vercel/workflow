@@ -15,6 +15,13 @@ export {
 } from './components/workflow-traces/trace-span-construction';
 export type { EventAnalysis } from './lib/event-analysis';
 export {
+  parseExactWorkflowSearchId,
+  looksLikeWorkflowIdSearchInput,
+  type ExactWorkflowSearchId,
+  type ExactWorkflowSearchIdKind,
+  type ExactIdSearchResult,
+} from './lib/exact-event-search-id';
+export {
   analyzeEvents,
   hasPendingHooksFromEvents,
   hasPendingStepsFromEvents,
@@ -50,6 +57,7 @@ export {
   STREAM_REF_TYPE,
   truncateId,
 } from './lib/hydration';
+export type { DecodedStreamChunkSource } from './lib/stream-display';
 export type { ToastAdapter } from './lib/toast';
 export { ToastProvider, useToast } from './lib/toast';
 export type { StreamStep } from './lib/utils';

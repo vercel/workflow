@@ -1,5 +1,117 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- [#2205](https://github.com/vercel/workflow/pull/2205) [`445ec8c`](https://github.com/vercel/workflow/commit/445ec8c7e6b83c27953d6f2ebcaafa54ca024eae) Thanks [@mitul-s](https://github.com/mitul-s)! - Add virtualization to the trace viewer
+
+- [#2163](https://github.com/vercel/workflow/pull/2163) [`ab7e5ab`](https://github.com/vercel/workflow/commit/ab7e5ab7ba5e67d5c161bb944a6ebe0172dd8949) Thanks [@mitul-s](https://github.com/mitul-s)! - Add keyboard-shortcut tooltips to the up/down span navigation buttons in the trace viewer detail panel.
+
+- [#2200](https://github.com/vercel/workflow/pull/2200) [`f0f002a`](https://github.com/vercel/workflow/commit/f0f002ae05e6b4a66eb72e1b1c48fda1bcd0f412) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix new trace viewer getting stuck on the first page: re-wire pagination so it auto-loads pages up to an event cap and scroll-loads the rest for very large runs.
+
+- [#2164](https://github.com/vercel/workflow/pull/2164) [`0606949`](https://github.com/vercel/workflow/commit/0606949e4a5c79b8382da5ece916501e85202e92) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a loading skeleton to the new trace viewer that matches the real layout's dimensions, and start with the detail panel closed instead of pre-selecting the first span. The skeleton is also exported as `TraceViewerSkeleton` for consumers that need to render it standalone.
+
+- Updated dependencies [[`1ee63b8`](https://github.com/vercel/workflow/commit/1ee63b870afbf9754eb1022b1bb5f02d0ab042f9), [`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd)]:
+  - @workflow/core@5.0.0-beta.11
+  - @workflow/world@5.0.0-beta.6
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- [#2107](https://github.com/vercel/workflow/pull/2107) [`ad5c068`](https://github.com/vercel/workflow/commit/ad5c068d7fa3e9d2696edacecbb823c2af92201c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow lookup of exact step ID (`step_`), wait ID (`wait_`), hook ID (`hook_`), or event ID (`evnt_`) in the event list UI.
+
+- Updated dependencies [[`8d0928b`](https://github.com/vercel/workflow/commit/8d0928b2a2ce61b6c05cb8930d29f176b3a83970)]:
+  - @workflow/core@5.0.0-beta.10
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- [#2144](https://github.com/vercel/workflow/pull/2144) [`b33c5ef`](https://github.com/vercel/workflow/commit/b33c5ef120adf0aa8d9e8b00c5fa68db0f3fba52) Thanks [@mitul-s](https://github.com/mitul-s)! - Improve new trace viewer search matching and highlighting, and add a reusable Geist-style icon button.
+
+- [#2041](https://github.com/vercel/workflow/pull/2041) [`799cc09`](https://github.com/vercel/workflow/commit/799cc09df36913ea9419d0cba052a1ebbf728910) Thanks [@mitul-s](https://github.com/mitul-s)! - Update zoom factor on the trace viewer timeline
+
+- [#2143](https://github.com/vercel/workflow/pull/2143) [`e8e5292`](https://github.com/vercel/workflow/commit/e8e52925ad9603b6d613a5bb94d7c17e4a7f26be) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix `Button` hover, focus, and corner radius to match Geist. The dark-mode hover no longer relies on an unregistered Tailwind variant (it previously turned the inverted button's background dark/transparent depending on the consumer), the focus-visible ring is now rendered, and the `xs` size uses Geist's 4px tiny radius. Styles are written to work under both Tailwind v3 and v4.
+
+- Updated dependencies [[`4b5f017`](https://github.com/vercel/workflow/commit/4b5f017635b28ff164047bce8ccf4a5981748704), [`409b103`](https://github.com/vercel/workflow/commit/409b1033d9b7dfab9c26fda9a17494c08e43d0ae), [`ae37315`](https://github.com/vercel/workflow/commit/ae37315cb708b413f2ee9945c90a23a57dfd410d)]:
+  - @workflow/core@5.0.0-beta.9
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#2108](https://github.com/vercel/workflow/pull/2108) [`8633ebb`](https://github.com/vercel/workflow/commit/8633ebb9b32f28cce4344329840aca47e22d3197) Thanks [@mitul-s](https://github.com/mitul-s)! - Use the `blur-[4px]` arbitrary-value utility on the encrypted data preview instead of Tailwind v4's `blur-xs` utility, so the component renders correctly for consumers on Tailwind v3.
+
+- [#2087](https://github.com/vercel/workflow/pull/2087) [`a490f58`](https://github.com/vercel/workflow/commit/a490f584e0a739f74f179930c2f84c5ff809d5b2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix the "Queued for" duration shown in the events list for retried steps. It now measures from `step_created` to the first `step_started` instead of the last, so the displayed value reflects actual queue time rather than queue time plus all retry waits.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- [#1973](https://github.com/vercel/workflow/pull/1973) [`34481af`](https://github.com/vercel/workflow/commit/34481af4b6c5b321275f874f93012e639d7971c6) Thanks [@mitul-s](https://github.com/mitul-s)! - adjusted spacing on trace viewer and detail pane
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`2050656`](https://github.com/vercel/workflow/commit/2050656099349ededd11b33256e951cf97d88a76), [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/core@5.0.0-beta.8
+  - @workflow/world@5.0.0-beta.5
+  - @workflow/utils@5.0.0-beta.3
+
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- [#2036](https://github.com/vercel/workflow/pull/2036) [`753e39e`](https://github.com/vercel/workflow/commit/753e39e3bb4544021d3d47c537650396d36a7541) Thanks [@mitul-s](https://github.com/mitul-s)! - trace viewer bug fix + file cleanup
+
+- [#2022](https://github.com/vercel/workflow/pull/2022) [`5a393a6`](https://github.com/vercel/workflow/commit/5a393a6ffc87dcee7d68ca94db6b006e07c836a3) Thanks [@mitul-s](https://github.com/mitul-s)! - updated colours on the trace viewer
+
+- [#2045](https://github.com/vercel/workflow/pull/2045) [`366f9cc`](https://github.com/vercel/workflow/commit/366f9cc967db9184a6929bb99525bacc24f940e0) Thanks [@mitul-s](https://github.com/mitul-s)! - Add reduced motion for the trace viewer
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b), [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335)]:
+  - @workflow/core@5.0.0-beta.7
+  - @workflow/world@5.0.0-beta.4
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#2006](https://github.com/vercel/workflow/pull/2006) [`23943f1`](https://github.com/vercel/workflow/commit/23943f11c38537fd9a1b95073414584c76610c83) Thanks [@tomdale](https://github.com/tomdale)! - Use a typed Tailwind duration utility in the trace viewer controls.
+
+- Updated dependencies [[`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837)]:
+  - @workflow/core@5.0.0-beta.6
+  - @workflow/world@5.0.0-beta.3
+
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#1955](https://github.com/vercel/workflow/pull/1955) [`f20c706`](https://github.com/vercel/workflow/commit/f20c70672e4f9c4aad60779ba9624521a5403cc7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show hook name on trace viewer + no toast on decrypt
+
+- [#1952](https://github.com/vercel/workflow/pull/1952) [`b940748`](https://github.com/vercel/workflow/commit/b940748743ac4c5a04f07b7191555c2a09655b90) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix old trace viewer layout to be in a row rather than column
+
+- [#1942](https://github.com/vercel/workflow/pull/1942) [`c80b747`](https://github.com/vercel/workflow/commit/c80b747af8a98682ae5ed998d9f574ea5f78385f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix "Unknown type FatalError" / "Failed to load resource details" in the o11y UI by adding the missing reviver entries (`FatalError`, `RetryableError`, the built-in `Error` subclasses, `AggregateError`, and `DOMException`) to `getWebRevivers()` so it stays in sync with the runtime reducer set.
+
+- Updated dependencies [[`aee5699`](https://github.com/vercel/workflow/commit/aee56993c777e6fc8d40af8d90ec3d4fbd86cdfe), [`e7ea068`](https://github.com/vercel/workflow/commit/e7ea0684f44b3743dbc56543ea103786ab7144bc), [`74b13cd`](https://github.com/vercel/workflow/commit/74b13cd3ed3412d4e99af55587c69dc458fa5400), [`aee5699`](https://github.com/vercel/workflow/commit/aee56993c777e6fc8d40af8d90ec3d4fbd86cdfe), [`3535caf`](https://github.com/vercel/workflow/commit/3535caf44924cf9561e8b768c418fe1eb37d96cf), [`5374148`](https://github.com/vercel/workflow/commit/537414849b0f7022640879786ff85c918672e7d0), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`00a011d`](https://github.com/vercel/workflow/commit/00a011dee43b3ba7c399a97b9ed072cf4ce66816), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104), [`aee5699`](https://github.com/vercel/workflow/commit/aee56993c777e6fc8d40af8d90ec3d4fbd86cdfe), [`9f3516e`](https://github.com/vercel/workflow/commit/9f3516ec28f15d8bb5bfa9ee57aed858301fa4fd), [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`72911f7`](https://github.com/vercel/workflow/commit/72911f7356238b0ef803455641f8ef5c9dd1545c)]:
+  - @workflow/core@5.0.0-beta.5
+  - @workflow/world@5.0.0-beta.2
+  - @workflow/utils@5.0.0-beta.2
+
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- [#1883](https://github.com/vercel/workflow/pull/1883) [`640a050`](https://github.com/vercel/workflow/commit/640a0505b88ff5499994155fd7360179cb9abf4f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Polish the new trace viewer: add detail pane, middle-truncate component, timeline tweaks, and various UI cleanups.
+
+- Updated dependencies []:
+  - @workflow/core@5.0.0-beta.4
+
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1852](https://github.com/vercel/workflow/pull/1852) [`9ea1254`](https://github.com/vercel/workflow/commit/9ea125427f4d96acf142b8b8deca0594e7ee1e7b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decode UTF-8 typed array stream chunks in the web stream viewer.
+
+- Updated dependencies [[`7d07fab`](https://github.com/vercel/workflow/commit/7d07fab692ba79d0339b093a45f5beecb219639e), [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
+  - @workflow/core@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

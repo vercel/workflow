@@ -1,5 +1,92 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies [[`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd)]:
+  - @workflow/world@5.0.0-beta.6
+  - @workflow/errors@5.0.0-beta.6
+  - @workflow/world-local@5.0.0-beta.12
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies [[`8d0928b`](https://github.com/vercel/workflow/commit/8d0928b2a2ce61b6c05cb8930d29f176b3a83970), [`3128dfc`](https://github.com/vercel/workflow/commit/3128dfce809839a53c7cb6cc2337a9c31e0bf8a5)]:
+  - @workflow/errors@5.0.0-beta.6
+  - @workflow/world-local@5.0.0-beta.11
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- Updated dependencies [[`65336df`](https://github.com/vercel/workflow/commit/65336df9f80f228903216c3e82ea7d499d924734)]:
+  - @workflow/world-local@5.0.0-beta.8
+
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- [#2134](https://github.com/vercel/workflow/pull/2134) [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `experimental_setAttributes()` workflow-level helper for attaching string key/value metadata to a workflow run, surfaced as `run.attributes`
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8), [`657e8bb`](https://github.com/vercel/workflow/commit/657e8bb9629e7002c7658b98c32761e01e714474)]:
+  - @workflow/world@5.0.0-beta.5
+  - @workflow/world-local@5.0.0-beta.7
+  - @workflow/errors@5.0.0-beta.5
+  - @workflow/utils@5.0.0-beta.3
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#2038](https://github.com/vercel/workflow/pull/2038) [`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Refresh workflow events after completing elapsed waits so concurrent hook events preserve deterministic replay order.
+
+- [#2019](https://github.com/vercel/workflow/pull/2019) [`738ec5e`](https://github.com/vercel/workflow/commit/738ec5e81dc75e2c2d7574796cc3b2c7ad20feff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `workflow-postgres-setup` now also bootstraps the `graphile_worker` schema, fixing potential race on setup when starting the app and a test runner at the same time
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b)]:
+  - @workflow/world@5.0.0-beta.4
+  - @workflow/world-local@5.0.0-beta.6
+  - @workflow/errors@5.0.0-beta.4
+
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#2012](https://github.com/vercel/workflow/pull/2012) [`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837) Thanks [@pranaygp](https://github.com/pranaygp)! - Expose the active run ID on hook token conflict errors.
+
+- Updated dependencies [[`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837), [`c145bf5`](https://github.com/vercel/workflow/commit/c145bf56d98faa7b27fa1d9d4a5ead57dda6b058)]:
+  - @workflow/errors@5.0.0-beta.3
+  - @workflow/world@5.0.0-beta.3
+  - @workflow/world-local@5.0.0-beta.5
+
+## 5.0.0-beta.4
+
+### Major Changes
+
+- [#1851](https://github.com/vercel/workflow/pull/1851) [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Run and step errors are now serialized through the workflow serialization pipeline, preserving original class identity and cause chains on `WorkflowRunFailedError.cause`. Pre-upgrade failed runs in the `world-postgres` legacy `error` text column surface as `error: undefined` on read; the original payload is still readable directly from the `errorJson` column for manual inspection.
+
+### Patch Changes
+
+- [#1338](https://github.com/vercel/workflow/pull/1338) [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Increase default concurrency to 50
+
+- [#1878](https://github.com/vercel/workflow/pull/1878) [`7c45e9e`](https://github.com/vercel/workflow/commit/7c45e9e2130a96cf6ec9dfc89e06deecc0747587) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix race in `events.create()` where concurrent `step_created` / `hook_created` / `wait_created` writes with the same `correlationId` would persist duplicate event rows. Adds a unique partial index and surfaces the violation as `EntityConflictError`.
+
+- Updated dependencies [[`540a2ef`](https://github.com/vercel/workflow/commit/540a2efb99c137b0d60c7368376e9533ea662a4c), [`92dc826`](https://github.com/vercel/workflow/commit/92dc82608ab7526e930eeedd4752c68872bae639), [`5374148`](https://github.com/vercel/workflow/commit/537414849b0f7022640879786ff85c918672e7d0), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104), [`2f52d14`](https://github.com/vercel/workflow/commit/2f52d14f3844c999f6b89baeb8e04289d6dd34a9), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`c1163eb`](https://github.com/vercel/workflow/commit/c1163eb146991a4924d80bcc9cfcc8bb89e05067)]:
+  - @workflow/errors@5.0.0-beta.2
+  - @workflow/world-local@5.0.0-beta.4
+  - @workflow/world@5.0.0-beta.2
+  - @workflow/utils@5.0.0-beta.2
+
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- Updated dependencies [[`3ad8ee7`](https://github.com/vercel/workflow/commit/3ad8ee7e33e4639cf0e4778c1e87b96a17a74c56)]:
+  - @workflow/world-local@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

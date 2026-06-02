@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { useVersion } from '@/hooks/geistdocs/use-version';
 import { IconArrowUpRight } from '@/components/geistcn-fallbacks/geistcn-assets/icons/icon-arrow-up-right';
-import { nav } from '@/geistdocs';
 import { cn } from '@/lib/utils';
 import { SearchButton } from './search';
 
@@ -71,10 +71,25 @@ function MobileMenuButton({
   );
 }
 
-export const MobileMenu = () => {
+interface MobileMenuProps {
+  items: { label: string; href: string }[];
+}
+
+export const MobileMenu = ({ items }: MobileMenuProps) => {
   const [show, setShow] = useState(false);
   const pathname = usePathname();
   const previousPathname = useRef(pathname);
+  const { activeVersion } = useVersion();
+
+  const resolveHref = (href: string) => {
+    if (
+      !href.startsWith('http') &&
+      (href.startsWith('/docs') || href.startsWith('/cookbook'))
+    ) {
+      return `${activeVersion.prefix}${href}`;
+    }
+    return href;
+  };
 
   // Close on route change
   useEffect(() => {
@@ -139,10 +154,10 @@ export const MobileMenu = () => {
 
         {/* Navigation */}
         <nav className="px-1">
-          {nav.map(({ label, href }) => (
+          {items.map(({ label, href }) => (
             <NavLink
               external={href.startsWith('http')}
-              href={href}
+              href={resolveHref(href)}
               key={href}
               onClick={close}
             >

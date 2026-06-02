@@ -59,11 +59,59 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 // ---------------------------------------------------------------------------
 
 /**
+ * Build a reviver for one of the built-in `Error` subclasses (e.g.
+ * `TypeError`, `RangeError`). The constructor for the named subclass is
+ * resolved off `globalThis` at call time so the produced instance has the
+ * correct prototype chain in the consumer realm. Falls back to a generic
+ * `Error` (with `name` set) if the global isn't available, which keeps the
+ * o11y UI rendering even on exotic browsers.
+ *
+ * `cause` is passed through `ErrorOptions` to the constructor when present,
+ * matching `getCommonRevivers` in `@workflow/core` so the resulting `cause`
+ * property has the same semantics (non-enumerable, set by the engine) as a
+ * freshly thrown Error in the consumer realm. The `'cause' in value` check
+ * preserves the distinction between "no cause" and "cause is undefined".
+ */
+function makeWebErrorSubclassReviver(
+  name:
+    | 'EvalError'
+    | 'RangeError'
+    | 'ReferenceError'
+    | 'SyntaxError'
+    | 'TypeError'
+    | 'URIError'
+) {
+  return (value: { message: string; stack?: string; cause?: unknown }) => {
+    const opts = 'cause' in value ? { cause: value.cause } : undefined;
+    const Ctor = (globalThis as Record<string, any>)[name] as
+      | ErrorConstructor
+      | undefined;
+    let error: Error;
+    if (typeof Ctor === 'function') {
+      error = new Ctor(value.message, opts);
+    } else {
+      // Fallback path: no built-in subclass available (exotic env). Construct
+      // a plain Error with the right `name` and copy `cause` manually since
+      // the base Error constructor is what we actually called.
+      error = Object.assign(new Error(value.message, opts), { name });
+    }
+    if (value.stack !== undefined) error.stack = value.stack;
+    return error;
+  };
+}
+
+/**
  * Get the web-specific revivers for hydrating serialized data.
  *
  * Uses `atob()` for base64 decoding (no Node.js Buffer dependency).
  * All types are revived as real instances (Date, Map, Set, URL,
  * URLSearchParams, Headers, Error, etc.).
+ *
+ * NOTE: this set must mirror the keys in `SerializableSpecial` (see
+ * `@workflow/core/serialization/types`). Any reducer key added on the
+ * serialization side that isn't covered here will cause `devalue.unflatten`
+ * to throw `Unknown type X`, which `hydrateResourceIO` swallows and
+ * surfaces as a "Failed to load resource details" banner in the o11y UI.
  */
 export function getWebRevivers(): Revivers {
   function reviveArrayBuffer(value: string): ArrayBuffer {
@@ -83,10 +131,93 @@ export function getWebRevivers(): Revivers {
     BigUint64Array: (value: string) =>
       new BigUint64Array(reviveArrayBuffer(value)),
     Date: (value) => new Date(value),
+
+    // Error family. The reducer side (see
+    // `packages/core/src/serialization/reducers/common.ts`) emits a tagged
+    // entry for each built-in Error subclass plus the workflow-specific
+    // `FatalError` / `RetryableError` and `AggregateError`. Without
+    // matching revivers here, `devalue.unflatten` throws "Unknown type X"
+    // — which surfaces in the web o11y UI as "Failed to load resource
+    // details: Unknown type FatalError".
     Error: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts);
+      error.name = value.name;
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    EvalError: makeWebErrorSubclassReviver('EvalError'),
+    RangeError: makeWebErrorSubclassReviver('RangeError'),
+    ReferenceError: makeWebErrorSubclassReviver('ReferenceError'),
+    SyntaxError: makeWebErrorSubclassReviver('SyntaxError'),
+    TypeError: makeWebErrorSubclassReviver('TypeError'),
+    URIError: makeWebErrorSubclassReviver('URIError'),
+    AggregateError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const Ctor = (
+        globalThis as { AggregateError?: AggregateErrorConstructor }
+      ).AggregateError;
+      const error =
+        typeof Ctor === 'function'
+          ? new Ctor(value.errors, value.message, opts)
+          : Object.assign(new Error(value.message, opts), {
+              name: 'AggregateError',
+              errors: value.errors,
+            });
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    // `FatalError` and `RetryableError` are not built-in browser globals,
+    // so we can't resolve a constructor from globalThis. The web o11y UI
+    // doesn't need `instanceof FatalError` to pass (no user code runs
+    // here) — it just needs `name`, `message`, `stack`, and any extra
+    // enumerable fields to render. Construct a plain `Error` with `name`
+    // set; ObjectInspector reads `constructor.name` for the displayed
+    // class label, but we don't have the real class, so we emit a tagged
+    // Error whose `name` field carries the class identity. This matches
+    // how the existing base `Error` reviver presents unknown subclasses.
+    FatalError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts);
+      error.name = 'FatalError';
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    RetryableError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        retryAfter?: Date;
+      };
+      error.name = 'RetryableError';
+      if (value.stack !== undefined) error.stack = value.stack;
+      // `retryAfter` is serialized as an epoch ms number (see the runtime
+      // RetryableError reducer for the rationale around realm-safety).
+      // Rehydrate as a Date so o11y consumers can render it directly.
+      // Guard against payloads from older runtime versions that predate
+      // the field — without this check, `new Date(undefined)` would
+      // produce an Invalid Date rather than omitting the property.
+      if (value.retryAfter != null) {
+        error.retryAfter = new Date(value.retryAfter);
+      }
+      return error;
+    },
+    DOMException: (value) => {
+      // Modern browsers and Node 18+ expose `DOMException` on globalThis.
+      // `AbortController.abort()` with no argument synthesizes one as the
+      // signal's reason, so this is a common payload for any aborted step.
+      const G = globalThis as { DOMException?: typeof DOMException };
+      if (typeof G.DOMException === 'function') {
+        const e = new G.DOMException(value.message, value.name);
+        if (value.stack !== undefined) e.stack = value.stack;
+        if ('cause' in value) (e as { cause?: unknown }).cause = value.cause;
+        return e;
+      }
       const error = new Error(value.message);
       error.name = value.name;
-      error.stack = value.stack;
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) {
+        (error as Error & { cause?: unknown }).cause = value.cause;
+      }
       return error;
     },
     Float32Array: (value: string) => new Float32Array(reviveArrayBuffer(value)),

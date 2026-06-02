@@ -65,6 +65,8 @@ const EventResultResolveWireSchema = z.object({
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
   events: z.array(EventSchema).optional(),
+  cursor: z.string().nullable().optional(),
+  hasMore: z.boolean().optional(),
 });
 
 const EventResultLazyWireSchema = z.object({
@@ -73,6 +75,8 @@ const EventResultLazyWireSchema = z.object({
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
   events: z.array(EventSchema).optional(),
+  cursor: z.string().nullable().optional(),
+  hasMore: z.boolean().optional(),
 });
 
 // Schema for events returned with `remoteRefBehavior=lazy`.
@@ -466,6 +470,8 @@ async function createWorkflowRunEventInner(
       step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
       hook: wireResult.hook,
       events: wireResult.events,
+      cursor: wireResult.cursor,
+      hasMore: wireResult.hasMore,
     };
   }
 
@@ -481,10 +487,10 @@ async function createWorkflowRunEventInner(
     schema: EventResultLazyWireSchema,
   });
 
-  // Transform wire format to interface format.
-  // The run entity from the wire may have error as a string (legacy) or
-  // undefined (lazy ref mode), so deserializeError normalizes it into the
-  // StructuredError shape expected by WorkflowRun consumers.
+  // Transform wire format to interface format. In the current event-sourced
+  // model, the run/step error fields are SerializedData (Uint8Array) — the
+  // deserializeError/deserializeStep helpers are pass-throughs that handle
+  // any legacy wire-format variants.
   return {
     event: wireResult.event
       ? stripEventAndLegacyRefs(wireResult.event, resolveData)
@@ -495,5 +501,7 @@ async function createWorkflowRunEventInner(
     step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
     hook: wireResult.hook,
     events: wireResult.events,
+    cursor: wireResult.cursor,
+    hasMore: wireResult.hasMore,
   };
 }

@@ -14,6 +14,11 @@ export function WorldTestingPerformanceMDX({
 }) {
   const { worldId, world, meta } = useWorldData();
   return (
-    <WorldTestingPerformance worldId={worldId} world={world} meta={meta} showBenchmarks={showBenchmarks} />
+    <WorldTestingPerformance
+      worldId={worldId}
+      world={world}
+      meta={meta}
+      showBenchmarks={showBenchmarks}
+    />
   );
 }

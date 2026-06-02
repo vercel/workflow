@@ -1,5 +1,49 @@
 # @workflow/web
 
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- [#2200](https://github.com/vercel/workflow/pull/2200) [`f0f002a`](https://github.com/vercel/workflow/commit/f0f002ae05e6b4a66eb72e1b1c48fda1bcd0f412) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix new trace viewer getting stuck on the first page: re-wire pagination so it auto-loads pages up to an event cap and scroll-loads the rest for very large runs.
+
+- [#2164](https://github.com/vercel/workflow/pull/2164) [`0606949`](https://github.com/vercel/workflow/commit/0606949e4a5c79b8382da5ece916501e85202e92) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a loading skeleton to the new trace viewer that matches the real layout's dimensions, and start with the detail panel closed instead of pre-selecting the first span. The skeleton is also exported as `TraceViewerSkeleton` for consumers that need to render it standalone.
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- [#2107](https://github.com/vercel/workflow/pull/2107) [`ad5c068`](https://github.com/vercel/workflow/commit/ad5c068d7fa3e9d2696edacecbb823c2af92201c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow lookup of exact step ID (`step_`), wait ID (`wait_`), hook ID (`hook_`), or event ID (`evnt_`) in the event list UI.
+
+## 5.0.0-beta.9
+
+## 5.0.0-beta.8
+
+## 5.0.0-beta.7
+
+## 5.0.0-beta.6
+
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#1955](https://github.com/vercel/workflow/pull/1955) [`f20c706`](https://github.com/vercel/workflow/commit/f20c70672e4f9c4aad60779ba9624521a5403cc7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show hook name on trace viewer + no toast on decrypt
+
+- [#1815](https://github.com/vercel/workflow/pull/1815) [`45d1eb2`](https://github.com/vercel/workflow/commit/45d1eb23402f034faf1c5a8a8e8925f9ca7e910d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Configure `vercelPreset()` from `@vercel/react-router/vite` in `react-router.config.ts` when building the `packages/web` project for the Vercel deployment, enabling per-route bundle splitting, function-level configuration, and an accurate Deployment Summary.
+
+  The preset is gated on a new `WORKFLOW_WEB_VERCEL_BUILD` environment variable (rather than the ambient `VERCEL` var) so that the standard build layout consumed by `server.js` (self-hosted deployments and the CLI's in-process server via `@workflow/web/server`) is still produced when the package is packed as a tarball by the `docs` Vercel deployment. Set `WORKFLOW_WEB_VERCEL_BUILD=1` in the web Vercel project's environment variables to enable the preset there. The existing `VERCEL`-based checks in `vite.config.ts` have been migrated to this same variable for consistency.
+
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- [#1883](https://github.com/vercel/workflow/pull/1883) [`640a050`](https://github.com/vercel/workflow/commit/640a0505b88ff5499994155fd7360179cb9abf4f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Polish the new trace viewer: add detail pane, middle-truncate component, timeline tweaks, and various UI cleanups.
+
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1852](https://github.com/vercel/workflow/pull/1852) [`9ea1254`](https://github.com/vercel/workflow/commit/9ea125427f4d96acf142b8b8deca0594e7ee1e7b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decode UTF-8 typed array stream chunks in the web stream viewer.
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

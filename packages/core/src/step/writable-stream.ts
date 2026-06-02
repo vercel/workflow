@@ -1,3 +1,4 @@
+import { throwNotInWorkflowOrStepContext } from '../context-errors.js';
 import {
   createFlushableState,
   flushablePipe,
@@ -8,8 +9,13 @@ import {
   getSerializeStream,
   WorkflowServerWritableStream,
 } from '../serialization.js';
+import {
+  STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
+} from '../symbols.js';
 import { getWorkflowRunStreamId } from '../util.js';
-import { contextStorage } from './context-storage.js';
+import { type CachedWritable, contextStorage } from './context-storage.js';
 
 /**
  * The options for {@link getWritable}.
@@ -37,8 +43,10 @@ export function getWritable<W = any>(
 ): WritableStream<W> {
   const ctx = contextStorage.getStore();
   if (!ctx) {
-    throw new Error(
-      '`getWritable()` can only be called inside a workflow or step function'
+    throwNotInWorkflowOrStepContext(
+      'getWritable()',
+      'https://workflow-sdk.dev/docs/api-reference/workflow/get-writable',
+      getWritable
     );
   }
 
@@ -46,7 +54,25 @@ export function getWritable<W = any>(
   const runId = ctx.workflowMetadata.workflowRunId;
   const name = getWorkflowRunStreamId(runId, namespace);
 
-  // Create a transform stream that serializes chunks and pipes to the workflow server
+  // Cache the writable per (runId, namespace) within the step context.
+  //
+  // The previous behavior — constructing a fresh TransformStream and
+  // background pipe on every call — produced non-deterministic chunk
+  // ordering when callers acquired a new writer per write (e.g. a
+  // per-chunk loop). Each pipe flushed to the same (runId, name) server
+  // stream independently, and on Vercel the 50-100ms HTTP latency
+  // turned the race window from microseconds into something prod-visible.
+  //
+  // Sharing a single TransformStream + pipe across calls makes the
+  // unsafe pattern correct: writes go through one serial sink in the
+  // order the user wrote them. See
+  // https://github.com/vercel/workflow/issues/2058.
+  const cache = (ctx.writables ??= new Map<string, CachedWritable>());
+  const cached = cache.get(name);
+  if (cached) {
+    return cached.writable as WritableStream<W>;
+  }
+
   const serialize = getSerializeStream(
     getExternalReducers(globalThis, ctx.ops, runId, ctx.encryptionKey),
     ctx.encryptionKey
@@ -66,6 +92,33 @@ export function getWritable<W = any>(
 
   pollWritableLock(serialize.writable, state);
 
-  // Return the writable side of the transform stream
-  return serialize.writable;
+  // Tag the writable with its underlying `(runId, name)` so downstream
+  // reducers can recognize that it's already backed by a workflow
+  // server stream. Calling `start(child, [args, theWritable])` from
+  // the same step uses these tags to emit `{ name, runId }` in the
+  // dehydrated descriptor, so the child's reviver can open the
+  // writable against the original `(runId, name)` directly — no
+  // in-process bridge tied to this step's lifetime.
+  Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+    value: name,
+    writable: false,
+  });
+  Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+    value: runId,
+    writable: false,
+  });
+  if (ctx.workflowDeploymentId) {
+    Object.defineProperty(
+      serialize.writable,
+      STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+      {
+        value: ctx.workflowDeploymentId,
+        writable: false,
+      }
+    );
+  }
+
+  cache.set(name, { writable: serialize.writable, state });
+
+  return serialize.writable as WritableStream<W>;
 }

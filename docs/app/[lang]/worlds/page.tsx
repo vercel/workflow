@@ -101,9 +101,6 @@ export default async function WorldsPage() {
               <div className="flex items-center gap-3 text-xs text-muted-foreground uppercase tracking-wider">
                 <div className="w-16" />
                 <div className="flex-1" />
-                <div className="w-14 text-right text-gray-1000 font-medium font-mono">
-                  Perf
-                </div>
               </div>
 
               {/* Benchmark bars */}

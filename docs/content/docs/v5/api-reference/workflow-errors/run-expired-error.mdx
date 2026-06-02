@@ -1,0 +1,58 @@
+---
+title: RunExpiredError
+description: Thrown when a workflow run has expired and can no longer be operated on.
+type: reference
+summary: Catch RunExpiredError when a workflow run has expired and can no longer accept operations.
+related:
+  - /docs/api-reference/workflow-errors/workflow-world-error
+  - /docs/api-reference/workflow-errors/entity-conflict-error
+---
+
+`RunExpiredError` is thrown by world implementations when a workflow run has expired and can no longer be operated on. It corresponds to HTTP 410 Gone semantics.
+
+<Callout>
+The Workflow runtime handles this error automatically. You will only encounter it when interacting with world storage APIs directly.
+</Callout>
+
+```typescript lineNumbers
+import { RunExpiredError } from "workflow/errors"
+declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
+declare const runId: string; // @setup
+declare const event: any; // @setup
+
+try {
+  await world.events.create(runId, event);
+} catch (error) {
+  if (RunExpiredError.is(error)) { // [!code highlight]
+    console.log("Run has expired and can no longer accept events");
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface RunExpiredError {
+  /** The error message. */
+  message: string;
+}
+export default RunExpiredError;`}
+/>
+
+### Static Methods
+
+#### `RunExpiredError.is(value)`
+
+Type-safe check for `RunExpiredError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { RunExpiredError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (RunExpiredError.is(error)) {
+  // error is typed as RunExpiredError
+}
+```

@@ -1,0 +1,95 @@
+---
+title: resumeWebhook
+description: Resume a paused workflow by sending an HTTP request to a webhook token.
+type: reference
+summary: Use resumeWebhook to forward an HTTP request to a webhook token and resume a paused workflow.
+prerequisites:
+  - /docs/foundations/hooks
+related:
+  - /docs/api-reference/workflow-api/resume-hook
+---
+
+Resumes a workflow run by sending an HTTP `Request` to a webhook identified by its token.
+
+This function creates a `hook_received` event and re-triggers the workflow to continue execution. It's designed to be called from API routes or server actions that receive external HTTP requests.
+
+<Callout type="warn">
+`resumeWebhook` is a runtime function that must be called from outside a workflow function.
+</Callout>
+
+```typescript lineNumbers
+import { resumeWebhook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token");
+
+  if (!token) {
+    return new Response("Missing token", { status: 400 });
+  }
+
+  try {
+    const response = await resumeWebhook(token, request); // [!code highlight]
+    return response;
+  } catch (error) {
+    return new Response("Webhook not found", { status: 404 });
+  }
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { resumeWebhook } from "workflow/api";
+export default resumeWebhook;`}
+showSections={['parameters']}
+/>
+
+### Returns
+
+Returns a `Promise<Response>` that resolves to:
+
+- `Response`: The HTTP response from the workflow's `respondWith()` call
+
+Throws an error if the webhook token is not found or invalid.
+
+## Usage Note
+
+<Callout type="warn">
+In most cases, you should not need to call `resumeWebhook()` directly. When you use `createWebhook()`, the framework automatically generates a random webhook token and provides a public URL at `/.well-known/workflow/v1/webhook/:token`. External systems can send HTTP requests directly to that URL.
+
+For server-side hook resumption with deterministic tokens, use [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) with [`createHook()`](/docs/api-reference/workflow/create-hook) instead.
+</Callout>
+
+## Example
+
+Forward an incoming HTTP request to a webhook by token:
+
+```typescript lineNumbers
+import { resumeWebhook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token");
+
+  if (!token) {
+    return new Response("Token required", { status: 400 });
+  }
+
+  try {
+    const response = await resumeWebhook(token, request); // [!code highlight]
+    return response; // Returns the workflow's custom response
+  } catch (error) {
+    return new Response("Webhook not found", { status: 404 });
+  }
+}
+```
+
+## Related Functions
+
+- [`createWebhook()`](/docs/api-reference/workflow/create-webhook) - Create a webhook in a workflow
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with arbitrary payload
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper
