@@ -1,14 +1,14 @@
 {
-  "lastUpdated": "2026-06-02T03:20:11.035Z",
-  "commit": "3867270be8cdbb633e5174d11297f49df27ab965",
+  "lastUpdated": "2026-06-02T04:07:12.234Z",
+  "commit": "275316fac4c1d03f61978078bb70c813a3fcf89b",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
-      "status": "partial",
+      "status": "passing",
       "total": 4488,
-      "passed": 3916,
-      "failed": 1,
+      "passed": 3917,
+      "failed": 0,
       "skipped": 571,
       "frameworks": {
         "astro": {
@@ -33,8 +33,8 @@
         },
         "nextjs-turbopack": {
           "total": 952,
-          "passed": 906,
-          "failed": 1
+          "passed": 907,
+          "failed": 0
         },
         "nextjs-webpack": {
           "total": 816,
@@ -126,10 +126,10 @@
     },
     "vercel": {
       "status": "partial",
-      "total": 1360,
-      "passed": 1103,
-      "failed": 11,
-      "skipped": 246,
+      "total": 1632,
+      "passed": 1374,
+      "failed": 1,
+      "skipped": 257,
       "frameworks": {
         "astro": {
           "total": 136,
@@ -143,8 +143,8 @@
         },
         "fastify": {
           "total": 136,
-          "passed": 108,
-          "failed": 1
+          "passed": 109,
+          "failed": 0
         },
         "hono": {
           "total": 136,
@@ -156,6 +156,11 @@
           "passed": 133,
           "failed": 0
         },
+        "nextjs-webpack": {
+          "total": 136,
+          "passed": 132,
+          "failed": 1
+        },
         "nitro": {
           "total": 136,
           "passed": 109,
@@ -163,8 +168,13 @@
         },
         "nuxt": {
           "total": 136,
-          "passed": 108,
-          "failed": 1
+          "passed": 109,
+          "failed": 0
+        },
+        "sveltekit": {
+          "total": 136,
+          "passed": 128,
+          "failed": 0
         },
         "vite": {
           "total": 136,
@@ -172,7 +182,7 @@
           "failed": 0
         }
       },
-      "progress": 81
+      "progress": 84
     }
   }
 }
