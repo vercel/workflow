@@ -21,7 +21,7 @@ catalog:
   semver: 7.7.4
   typescript: ^5.9.3
   ulid: ~3.0.1
-  undici: 7.22.0
+  undici: 7.26.0
   vitest: ^4.0.18
   zod: 4.3.6
 

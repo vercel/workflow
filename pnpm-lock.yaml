@@ -49,8 +49,8 @@ catalogs:
       specifier: ~3.0.1
       version: 3.0.1
     undici:
-      specifier: 7.22.0
-      version: 7.22.0
+      specifier: 7.26.0
+      version: 7.26.0
     vitest:
       specifier: ^4.0.18
       version: 4.0.18
@@ -1343,7 +1343,7 @@ importers:
         version: 3.0.1
       undici:
         specifier: 'catalog:'
-        version: 7.22.0
+        version: 7.26.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -1490,7 +1490,7 @@ importers:
         version: 1.6.0
       undici:
         specifier: 'catalog:'
-        version: 7.22.0
+        version: 7.26.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -14808,6 +14808,10 @@ packages:
     resolution: {integrity: sha512-RqslV2Us5BrllB+JeiZnK4peryVTndy9Dnqq62S3yYRRTj0tFQCwEniUy2167skdGOy3vqRzEvl1Dm4sV2ReDg==}
     engines: {node: '>=20.18.1'}
 
+  undici@7.26.0:
+    resolution: {integrity: sha512-3O9Tf67pGhgOv9jM35AbhkXAKi13f3oy3aE4CSgr+TckGeY+/iu97ZXN+J7DpHPzLbVApFd1IFhcnBjREYXYcg==}
+    engines: {node: '>=20.18.1'}
+
   unenv@2.0.0-rc.24:
     resolution: {integrity: sha512-i7qRCmY42zmCwnYlh9H2SvLEypEFGye5iRmEMKjcGi7zk9UquigRjFtTLz0TYqr0ZGLZhaMHl/foy1bZR+Cwlw==}
 
@@ -23201,14 +23205,6 @@ snapshots:
   '@vitest/mocker@3.2.4(vite@7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))':
     dependencies:
       '@vitest/spy': 3.2.4
-      estree-walker: 3.0.3
-      magic-string: 0.30.21
-    optionalDependencies:
-      vite: 7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3)
-
-  '@vitest/mocker@4.0.18(vite@7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))':
-    dependencies:
-      '@vitest/spy': 4.0.18
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
@@ -31624,6 +31620,8 @@ snapshots:
 
   undici@7.22.0: {}
 
+  undici@7.26.0: {}
+
   unenv@2.0.0-rc.24:
     dependencies:
       pathe: 2.0.3
@@ -32246,7 +32244,7 @@ snapshots:
   vitest@4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.19.0)(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3):
     dependencies:
       '@vitest/expect': 4.0.18
-      '@vitest/mocker': 4.0.18(vite@7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))
+      '@vitest/mocker': 4.0.18(vite@7.3.2(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))
       '@vitest/pretty-format': 4.0.18
       '@vitest/runner': 4.0.18
       '@vitest/snapshot': 4.0.18
@@ -32285,7 +32283,7 @@ snapshots:
   vitest@4.0.18(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3):
     dependencies:
       '@vitest/expect': 4.0.18
-      '@vitest/mocker': 4.0.18(vite@7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))
+      '@vitest/mocker': 4.0.18(vite@7.3.2(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))
       '@vitest/pretty-format': 4.0.18
       '@vitest/runner': 4.0.18
       '@vitest/snapshot': 4.0.18
