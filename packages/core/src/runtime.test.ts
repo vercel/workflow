@@ -5,7 +5,6 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import {
@@ -459,7 +458,11 @@ describe('workflowEntrypoint replay guards', () => {
     expect(queuedMessages).toEqual([]);
   });
 
-  it('redrives an initial replay divergence and fails after the recovery budget', async () => {
+  it('fails the run on the first replay divergence without redriving (diagnostic)', async () => {
+    // DIAGNOSTIC behavior: replay divergence no longer queues recovery replays.
+    // The first ReplayDivergenceError fails the run as a terminal
+    // CORRUPTED_EVENT_LOG so divergences are immediately visible rather than
+    // being masked by a redrive that happens to read a consistent snapshot.
     const ops: Promise<any>[] = [];
     const workflowRun: WorkflowRun = {
       runId: 'wrun_runtime_wait_guard',
@@ -516,35 +519,12 @@ describe('workflowEntrypoint replay guards', () => {
       }
     );
 
-    expect(initialAttemptEvents).not.toContainEqual(
-      expect.objectContaining({ eventType: 'run_failed' })
+    // No recovery replay is queued...
+    expect(queuedMessages).not.toContainEqual(
+      expect.objectContaining({ replayDivergence: expect.anything() })
     );
-    expect(queuedMessages).toContainEqual(
-      expect.objectContaining({
-        replayDivergence: {
-          eventId: 'event-0',
-          count: 1,
-        },
-      })
-    );
-
-    const terminalAttemptEvents = await runWorkflowHandlerWithEvents(
-      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-      async function workflow() {
-        await sleep('5s');
-        return 'done';
-      }${getWorkflowTransformCode('workflow')}`,
-      workflowRun,
-      events,
-      {
-        replayDivergence: {
-          eventId: 'different-event',
-          count: REPLAY_DIVERGENCE_MAX_RETRIES,
-        },
-      }
-    );
-
-    expect(terminalAttemptEvents).toContainEqual(
+    // ...the run fails immediately with CORRUPTED_EVENT_LOG.
+    expect(initialAttemptEvents).toContainEqual(
       expect.objectContaining({
         eventType: 'run_failed',
         eventData: expect.objectContaining({
@@ -554,7 +534,7 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
-  it('redrives an initial replay divergence for a mismatched recorded hook', async () => {
+  it('fails the run on a mismatched recorded hook without redriving (diagnostic)', async () => {
     const ops: Promise<any>[] = [];
     const workflowRun: WorkflowRun = {
       runId: 'wrun_runtime_hook_guard',
@@ -605,12 +585,17 @@ describe('workflowEntrypoint replay guards', () => {
       { createdEvents, queuedMessages }
     );
 
-    expect(createdEvents).not.toContainEqual(
-      expect.objectContaining({ eventType: 'run_failed' })
+    // DIAGNOSTIC: a mismatched recorded hook diverges and fails immediately
+    // instead of queueing a recovery replay.
+    expect(queuedMessages).not.toContainEqual(
+      expect.objectContaining({ replayDivergence: expect.anything() })
     );
-    expect(queuedMessages).toContainEqual(
+    expect(createdEvents).toContainEqual(
       expect.objectContaining({
-        replayDivergence: { eventId: 'event-0', count: 1 },
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.CORRUPTED_EVENT_LOG,
+        }),
       })
     );
   });

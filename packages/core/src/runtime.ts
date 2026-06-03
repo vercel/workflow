@@ -10,7 +10,6 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_LEGACY,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
@@ -20,17 +19,14 @@ import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
   MAX_QUEUE_DELIVERIES,
-  REPLAY_DIVERGENCE_MAX_RETRIES,
   REPLAY_TIMEOUT_MAX_RETRIES,
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
 import {
   getQueueOverhead,
-  getWorkflowQueueName,
   getWorkflowRunEvents,
   handleHealthCheckMessage,
   parseHealthCheckPayload,
-  queueMessage,
   withHealthCheck,
 } from './runtime/helpers.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
@@ -754,45 +750,38 @@ export function workflowEntrypoint(
 
                   let terminalError = err;
                   if (ReplayDivergenceError.is(err)) {
+                    // DIAGNOSTIC: fail the run immediately on the first replay
+                    // divergence instead of queueing recovery replays.
+                    //
+                    // The recovery-replay redrive (see #2208/#2212) masks
+                    // divergences: in CI we never observe a failed run because a
+                    // subsequent redrive happens to read a consistent snapshot
+                    // and succeed, so we lose the signal needed to understand
+                    // *why* the log diverged. Failing fast makes every
+                    // divergence visible as a terminal CORRUPTED_EVENT_LOG run,
+                    // which — together with the per-replay event-log logging —
+                    // lets us capture and inspect the exact diverging event log.
+                    //
+                    // This is intentionally aggressive for investigation; the
+                    // recovery budget can be reinstated once the root cause is
+                    // understood.
                     const divergenceCount = (replayDivergence?.count ?? 0) + 1;
 
-                    if (divergenceCount <= REPLAY_DIVERGENCE_MAX_RETRIES) {
-                      runtimeLogger.warn(
-                        'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
-                        {
-                          workflowRunId: runId,
-                          errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
-                          divergenceEventId: err.eventId,
-                          priorDivergenceEventId: replayDivergence?.eventId,
-                          divergenceCount,
-                          deliveryAttempt: metadata.attempt,
-                          maxRecoveryReplays: REPLAY_DIVERGENCE_MAX_RETRIES,
-                          errorMessage: err.message,
-                        }
-                      );
-                      await queueMessage(
-                        world,
-                        getWorkflowQueueName(workflowName),
-                        {
-                          runId,
-                          traceCarrier: traceContext,
-                          requestedAt: new Date(),
-                          replayDivergence: {
-                            eventId: err.eventId,
-                            count: divergenceCount,
-                          },
-                        },
-                        {
-                          deploymentId: workflowRun.deploymentId,
-                          specVersion:
-                            workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
-                        }
-                      );
-                      return;
-                    }
+                    runtimeLogger.error(
+                      'Workflow replay diverged; failing the run (recovery redrive disabled for diagnosis)',
+                      {
+                        workflowRunId: runId,
+                        errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
+                        divergenceEventId: err.eventId,
+                        priorDivergenceEventId: replayDivergence?.eventId,
+                        divergenceCount,
+                        deliveryAttempt: metadata.attempt,
+                        errorMessage: err.message,
+                      }
+                    );
 
                     terminalError = new CorruptedEventLogError(
-                      `Workflow replay diverged ${divergenceCount} times after ${REPLAY_DIVERGENCE_MAX_RETRIES} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
+                      `Workflow replay diverged on event ${err.eventId}: ${err.message}`,
                       { cause: err }
                     );
                   }
