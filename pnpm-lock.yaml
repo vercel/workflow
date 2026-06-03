@@ -46,8 +46,8 @@ catalogs:
       specifier: ~3.0.1
       version: 3.0.1
     undici:
-      specifier: 7.22.0
-      version: 7.22.0
+      specifier: 7.26.0
+      version: 7.26.0
     vitest:
       specifier: ^4.0.18
       version: 4.0.18
@@ -1121,7 +1121,7 @@ importers:
         version: 3.0.1
       undici:
         specifier: 'catalog:'
-        version: 7.22.0
+        version: 7.26.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -1268,7 +1268,7 @@ importers:
         version: 1.6.0
       undici:
         specifier: 'catalog:'
-        version: 7.22.0
+        version: 7.26.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -13748,6 +13748,10 @@ packages:
 
   undici@7.22.0:
     resolution: {integrity: sha512-RqslV2Us5BrllB+JeiZnK4peryVTndy9Dnqq62S3yYRRTj0tFQCwEniUy2167skdGOy3vqRzEvl1Dm4sV2ReDg==}
+    engines: {node: '>=20.18.1'}
+
+  undici@7.26.0:
+    resolution: {integrity: sha512-3O9Tf67pGhgOv9jM35AbhkXAKi13f3oy3aE4CSgr+TckGeY+/iu97ZXN+J7DpHPzLbVApFd1IFhcnBjREYXYcg==}
     engines: {node: '>=20.18.1'}
 
   unenv@2.0.0-rc.24:
@@ -28755,6 +28759,8 @@ snapshots:
       '@fastify/busboy': 2.1.1
 
   undici@7.22.0: {}
+
+  undici@7.26.0: {}
 
   unenv@2.0.0-rc.24:
     dependencies:
