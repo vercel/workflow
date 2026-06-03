@@ -65,7 +65,7 @@ function httpLog(
 // (OCC fence) so this validation build exercises the ported SDK fence + the
 // server fence end to end. Must be '' on any mergeable branch.
 const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-qccj339st.vercel.sh';
+  'https://workflow-server-git-peter-event-write-cas.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
