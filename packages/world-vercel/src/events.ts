@@ -286,13 +286,9 @@ export async function getWorkflowRunEvents(
   const searchParams = new URLSearchParams();
 
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
-  let runId: string | undefined;
-  let correlationId: string | undefined;
-  if ('runId' in params) {
-    runId = params.runId;
-  } else {
-    correlationId = params.correlationId;
-  }
+  const runId = params.runId;
+  const correlationId =
+    'correlationId' in params ? params.correlationId : undefined;
 
   if (!runId && !correlationId) {
     throw new Error('Either runId or correlationId must be provided');
@@ -311,9 +307,9 @@ export async function getWorkflowRunEvents(
 
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';
-  const endpoint = correlationId
-    ? `/v2/events${query}`
-    : `/v3/runs/${encodeURIComponent(runId!)}/events${query}`;
+  const endpoint = runId
+    ? `/v3/runs/${encodeURIComponent(runId)}/events${query}`
+    : `/v2/events${query}`;
 
   let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({

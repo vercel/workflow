@@ -2,6 +2,7 @@
  * Shared types that are used by both server and client code.
  * This file should NOT import any server-only modules.
  */
+import type { WorkflowBackendDeprecationNotice } from '@workflow/world-vercel';
 
 /**
  * Public configuration info that is safe to send to the client.
@@ -59,8 +60,16 @@ export interface ServerActionError {
  * Result wrapper for server actions that can return either data or error
  */
 export type ServerActionResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: ServerActionError };
+  | {
+      success: true;
+      data: T;
+      deprecations?: WorkflowBackendDeprecationNotice[];
+    }
+  | {
+      success: false;
+      error: ServerActionError;
+      deprecations?: WorkflowBackendDeprecationNotice[];
+    };
 
 export interface PaginatedResult<T> {
   data: T[];

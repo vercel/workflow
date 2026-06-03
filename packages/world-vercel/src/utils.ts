@@ -105,9 +105,24 @@ const BODY_PARSE_RETRY_BASE_MS = 100;
 const getWorkflowServerUrlOverride = (): string =>
   WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
 
+export interface WorkflowBackendDeprecationNotice {
+  endpoint: string;
+  state: 'scheduled' | 'deprecated' | 'removed';
+  deprecationDate?: string;
+  sunsetDate?: string;
+  preferredVersion?: string;
+  preferredEndpoint?: string;
+  documentationUrl?: string;
+}
+
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
+  /**
+   * Receive workflow-server endpoint lifecycle notices.
+   * When provided, this callback owns presentation and suppresses built-in warnings.
+   */
+  onDeprecation?: (notice: WorkflowBackendDeprecationNotice) => void;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;
@@ -116,6 +131,151 @@ export interface APIConfig {
     teamId?: string;
     environment?: string;
   };
+}
+
+const warnedDeprecations = new Set<string>();
+
+function dateOnly(value: string | null, isEpochSeconds = false) {
+  if (!value) return undefined;
+  const date = isEpochSeconds
+    ? new Date(Number(value) * 1000)
+    : new Date(value);
+  return Number.isNaN(date.getTime())
+    ? undefined
+    : date.toISOString().slice(0, 10);
+}
+
+function getDeprecationDate(headers: Headers) {
+  const standard = headers.get('Deprecation')?.match(/^@(-?\d+)$/)?.[1];
+  return standard
+    ? dateOnly(standard, true)
+    : dateOnly(headers.get('X-API-Deprecation-Date'));
+}
+
+function getDocumentationUrl(headers: Headers) {
+  const link = headers.get('Link');
+  if (!link) return undefined;
+  for (const item of link.split(',')) {
+    if (/rel="?deprecation"?/i.test(item)) {
+      return item.match(/<([^>]+)>/)?.[1];
+    }
+  }
+  return undefined;
+}
+
+function warningForNotice(notice: WorkflowBackendDeprecationNotice) {
+  const dates = [
+    notice.deprecationDate ? `deprecated on ${notice.deprecationDate}` : null,
+    notice.sunsetDate ? `sunsets on ${notice.sunsetDate}` : null,
+  ]
+    .filter(Boolean)
+    .join('; ');
+  const replacement = notice.preferredEndpoint
+    ? ` Use ${notice.preferredEndpoint} instead.`
+    : notice.preferredVersion
+      ? ` Use API version ${notice.preferredVersion} instead.`
+      : '';
+  const status =
+    notice.state === 'removed'
+      ? 'has been removed'
+      : notice.state === 'scheduled'
+        ? 'is scheduled for deprecation'
+        : 'is deprecated';
+  return `[workflow:world-vercel] Workflow backend endpoint ${notice.endpoint} ${status}${dates ? ` (${dates})` : ''}.${replacement} Update \`workflow\` and \`@workflow/world-vercel\` to use supported workflow-server endpoints.`;
+}
+
+/**
+ * Inspect workflow-server endpoint lifecycle metadata without consuming the body.
+ * Standard lifecycle headers are preferred, with X-API fields retained as fallback.
+ */
+export function inspectWorkflowBackendDeprecationResponse(
+  response: Response,
+  endpoint: string,
+  config?: APIConfig
+): WorkflowBackendDeprecationNotice | undefined {
+  const headers = response.headers;
+  const isDeprecated =
+    headers.get('Deprecation') !== null ||
+    headers.get('X-API-Deprecated') === 'true' ||
+    headers.get('X-API-Sunset') === 'true';
+  if (!isDeprecated) return undefined;
+
+  const deprecationDate = getDeprecationDate(headers);
+  const sunsetDate =
+    dateOnly(headers.get('Sunset')) ??
+    dateOnly(headers.get('X-API-Sunset-Date'));
+  const removed = headers.get('X-API-Sunset') === 'true';
+  const state: WorkflowBackendDeprecationNotice['state'] = removed
+    ? 'removed'
+    : deprecationDate &&
+        new Date(`${deprecationDate}T00:00:00.000Z`).getTime() > Date.now()
+      ? 'scheduled'
+      : 'deprecated';
+  const notice: WorkflowBackendDeprecationNotice = {
+    endpoint: endpoint.split('?')[0],
+    state,
+    deprecationDate,
+    sunsetDate,
+    preferredVersion:
+      headers.get('X-API-Version-Preferred') ??
+      headers.get('X-API-Version-Required') ??
+      undefined,
+    preferredEndpoint:
+      headers.get('X-API-Endpoint-Preferred') ??
+      headers.get('X-API-Endpoint-Required') ??
+      undefined,
+    documentationUrl: getDocumentationUrl(headers),
+  };
+
+  if (config?.onDeprecation) {
+    try {
+      config.onDeprecation(notice);
+    } catch {
+      // Presentation hooks must never affect transport operations.
+    }
+  } else {
+    const warningKey = [
+      notice.endpoint,
+      notice.preferredEndpoint,
+      notice.preferredVersion,
+      notice.deprecationDate,
+      notice.sunsetDate,
+      notice.state,
+    ].join('|');
+    if (!warnedDeprecations.has(warningKey)) {
+      warnedDeprecations.add(warningKey);
+      console.warn(warningForNotice(notice));
+    }
+  }
+
+  return notice;
+}
+
+/**
+ * Report lifecycle metadata for raw-body workflow-server requests and reject
+ * endpoints that have been explicitly removed.
+ */
+export function inspectRawWorkflowBackendResponse(
+  response: Response,
+  endpoint: string,
+  config: APIConfig | undefined,
+  url: string
+): void {
+  const notice = inspectWorkflowBackendDeprecationResponse(
+    response,
+    endpoint,
+    config
+  );
+  if (response.status === 410 && notice?.state === 'removed') {
+    throw new WorkflowWorldError(
+      `Workflow backend endpoint has been removed: ${notice.endpoint}`,
+      {
+        url,
+        status: 410,
+        code: 'WORKFLOW_SERVER_ENDPOINT_SUNSET',
+      }
+    );
+  }
 }
 
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
@@ -373,6 +533,12 @@ export async function makeRequest<T>({
           ...HttpResponseStatusCode(response.status),
         });
 
+        const deprecationNotice = inspectWorkflowBackendDeprecationResponse(
+          response,
+          endpoint,
+          config
+        );
+
         if (!response.ok) {
           const errorData: { message?: string; code?: string } =
             await parseResponseBody(response)
@@ -418,6 +584,15 @@ export async function makeRequest<T>({
             throwWithTrace(new EntityConflictError(defaultMessage));
           }
           if (response.status === 410) {
+            if (deprecationNotice?.state === 'removed') {
+              throwWithTrace(
+                new WorkflowWorldError(defaultMessage, {
+                  url,
+                  status: response.status,
+                  code: 'WORKFLOW_SERVER_ENDPOINT_SUNSET',
+                })
+              );
+            }
             throwWithTrace(new RunExpiredError(defaultMessage));
           }
           if (response.status === 425) {

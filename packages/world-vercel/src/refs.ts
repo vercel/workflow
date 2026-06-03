@@ -10,7 +10,11 @@ import {
   trace,
   UrlFull,
 } from './telemetry.js';
-import { type APIConfig, getHttpConfig } from './utils.js';
+import {
+  type APIConfig,
+  getHttpConfig,
+  inspectRawWorkflowBackendResponse,
+} from './utils.js';
 
 /**
  * A ref descriptor as returned by workflow-server when `remoteRefBehavior=lazy`.
@@ -116,6 +120,7 @@ export async function resolveRefDescriptor(
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
       });
+      inspectRawWorkflowBackendResponse(response, endpoint, config, url);
 
       if (!response.ok) {
         const error = new WorkflowWorldError(

@@ -1,7 +1,10 @@
 import { createWorld, setWorld } from '@workflow/core/runtime';
 import { isVercelWorldTarget } from '@workflow/utils';
 import type { World } from '@workflow/world';
-import { createVercelWorld } from '@workflow/world-vercel';
+import {
+  createVercelWorld,
+  type WorkflowBackendDeprecationNotice,
+} from '@workflow/world-vercel';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
@@ -12,6 +15,55 @@ import {
   type VercelEnvVars,
   writeEnvVars,
 } from './env.js';
+
+function replacementMessage(notice: WorkflowBackendDeprecationNotice) {
+  if (notice.preferredEndpoint) {
+    return ` Use ${notice.preferredEndpoint} instead.`;
+  }
+  if (notice.preferredVersion) {
+    return ` Use API version ${notice.preferredVersion} instead.`;
+  }
+  return '';
+}
+
+function optionalDetail(prefix: string, value: string | undefined) {
+  return value ? ` ${prefix}: ${value}.` : '';
+}
+
+/** @internal Exported for unit coverage of CLI warning presentation. */
+export function createDeprecationReporter() {
+  const reported = new Set<string>();
+  return (notice: WorkflowBackendDeprecationNotice) => {
+    const key = [
+      notice.endpoint,
+      notice.preferredEndpoint,
+      notice.deprecationDate,
+      notice.sunsetDate,
+      notice.state,
+    ].join('|');
+    if (reported.has(key)) return;
+    reported.add(key);
+
+    const replacement = replacementMessage(notice);
+    const deprecation = optionalDetail(
+      'Deprecation date',
+      notice.deprecationDate
+    );
+    const sunset = optionalDetail('Removal date', notice.sunsetDate);
+    const documentation = optionalDetail(
+      'Migration guide',
+      notice.documentationUrl
+    );
+    const lifecycle = {
+      removed: 'has been removed',
+      scheduled: 'is scheduled for deprecation',
+      deprecated: 'is deprecated',
+    }[notice.state];
+    logger.warn(
+      `Workflow backend endpoint ${notice.endpoint} ${lifecycle}.${replacement}${deprecation}${sunset}${documentation} Update workflow and @workflow/world-vercel.`
+    );
+  };
+}
 
 /**
  * Setup CLI world configuration.
@@ -37,7 +89,7 @@ export const setupCliWorld = async (
   // Check for updates
   const updateCheck = await checkForUpdateCached(version);
 
-  const withAnsiLinks = flags.json ? false : true;
+  const withAnsiLinks = !flags.json;
   const docsUrl = withAnsiLinks
     ? terminalLink('https://workflow-sdk.dev/', 'https://workflow-sdk.dev/')
     : 'https://workflow-sdk.dev/';
@@ -120,6 +172,7 @@ export const setupCliWorld = async (
     // relying on createWorld() reading process.env.
     world = createVercelWorld({
       token: vercelEnvVars.token,
+      onDeprecation: createDeprecationReporter(),
       projectConfig: {
         environment: vercelEnvVars.environment,
         projectId: vercelEnvVars.projectId,

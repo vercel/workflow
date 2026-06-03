@@ -12,7 +12,10 @@
  *   X-Stream-Done    – "true" when the stream is fully closed
  */
 
-import { readStreamChunksServerAction } from '~/server/workflow-server-actions.server';
+import {
+  collectWorkflowBackendDeprecations,
+  readStreamChunksServerAction,
+} from '~/server/workflow-server-actions.server';
 import type { Route } from './+types/api.stream.$streamId';
 
 export async function loader({ params, request }: Route.LoaderArgs) {
@@ -38,18 +41,27 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const cursor = url.searchParams.get('cursor') ?? undefined;
 
   try {
-    const result = await readStreamChunksServerAction(
-      {},
-      streamId,
-      runId,
-      cursor
+    const { result, deprecations } = await collectWorkflowBackendDeprecations(
+      () => readStreamChunksServerAction({}, streamId, runId, cursor)
     );
+    const deprecationHeaders: HeadersInit =
+      deprecations.length > 0
+        ? {
+            'X-Workflow-Backend-Deprecations': encodeURIComponent(
+              JSON.stringify(deprecations)
+            ),
+          }
+        : {};
 
     if (!('buffer' in result)) {
-      return Response.json(result, { status: 500 });
+      return Response.json(result, {
+        status: 500,
+        headers: deprecationHeaders,
+      });
     }
 
     const headers: HeadersInit = {
+      ...deprecationHeaders,
       'Content-Type': 'application/octet-stream',
       'X-Stream-Done': String(result.done),
     };

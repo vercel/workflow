@@ -2,13 +2,13 @@ import { TooltipProvider } from '@radix-ui/react-tooltip';
 import { ThemeProvider, useTheme } from 'next-themes';
 import { useEffect, useRef } from 'react';
 import {
+  isRouteErrorResponse,
   Link,
   Links,
   Meta,
   Outlet,
   Scripts,
   ScrollRestoration,
-  isRouteErrorResponse,
   useNavigate,
   useRouteError,
   useSearchParams,
@@ -19,6 +19,10 @@ import { ThemePicker } from '~/components/theme-dropdown';
 import { DocsLink } from '~/components/top-nav/docs-link';
 import { Toaster } from '~/components/ui/sonner';
 import { Logo } from '~/icons/logo';
+import {
+  DeprecationNoticeProvider,
+  WorkflowBackendDeprecationAlerts,
+} from '~/lib/deprecation-context';
 import { ServerConfigProvider } from '~/lib/world-config-context';
 import { getPublicServerConfig } from '~/server/workflow-server-actions.server';
 
@@ -196,6 +200,8 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
+        <WorkflowBackendDeprecationAlerts />
+
         {/* Scrollable Content */}
         <div className="flex-1 px-6 pt-6">{children}</div>
       </TooltipProvider>
@@ -214,9 +220,11 @@ export default function App({ loaderData }: Route.ComponentProps) {
       storageKey="workflow-theme"
     >
       <ServerConfigProvider serverConfig={loaderData.serverConfig}>
-        <LayoutContent>
-          <Outlet />
-        </LayoutContent>
+        <DeprecationNoticeProvider>
+          <LayoutContent>
+            <Outlet />
+          </LayoutContent>
+        </DeprecationNoticeProvider>
       </ServerConfigProvider>
     </ThemeProvider>
   );

@@ -5,7 +5,11 @@ import { listStreams, readStream } from './workflow-streams';
 vi.mock('~/lib/rpc-client', () => ({
   fetchStreams: vi.fn(),
 }));
+vi.mock('~/lib/deprecation-context', () => ({
+  publishWorkflowBackendDeprecations: vi.fn(),
+}));
 
+import { publishWorkflowBackendDeprecations } from '~/lib/deprecation-context';
 import { fetchStreams } from '~/lib/rpc-client';
 
 const env = { SOME_VAR: 'test' };
@@ -106,6 +110,29 @@ describe('readStream', () => {
       '/api/stream/stream-1?runId=run-1&cursor=cur_xyz',
       expect.any(Object)
     );
+  });
+
+  it('publishes deprecation notices from the binary stream response header', async () => {
+    const notices = [
+      {
+        endpoint: '/v2/stream/user',
+        state: 'deprecated',
+      },
+    ];
+    mockFetchResponse({
+      ok: true,
+      body: new ReadableStream(),
+      headers: {
+        'X-Stream-Done': 'true',
+        'X-Workflow-Backend-Deprecations': encodeURIComponent(
+          JSON.stringify(notices)
+        ),
+      },
+    });
+
+    await readStream(env, 'stream-1', 'run-1');
+
+    expect(publishWorkflowBackendDeprecations).toHaveBeenCalledWith(notices);
   });
 
   it('throws WorkflowWebAPIError when response is not ok', async () => {

@@ -1234,12 +1234,17 @@ export function createEventsStorage(
     async listByCorrelationId(params) {
       const correlationId = params.correlationId;
       assertSafeEntityId('correlationId', correlationId);
+      if (params.runId) {
+        assertSafeEntityId('runId', params.runId);
+      }
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
         // No filePrefix - search all events
-        filter: (event) => event.correlationId === correlationId,
+        filter: (event) =>
+          event.correlationId === correlationId &&
+          (!params.runId || event.runId === params.runId),
         // Events in chronological order (oldest first) by default,
         // different from the default for other list calls.
         sortOrder: params.pagination?.sortOrder ?? 'asc',

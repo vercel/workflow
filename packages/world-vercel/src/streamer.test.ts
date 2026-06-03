@@ -178,6 +178,7 @@ vi.mock('./utils.js', () => ({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
   }),
+  inspectRawWorkflowBackendResponse: vi.fn(),
 }));
 
 describe('streams.get', () => {
@@ -200,9 +201,16 @@ describe('streams.get', () => {
     const streamer = await getStreamer();
     await streamer.streams.get('run-123', 'my-stream');
 
+    const { inspectRawWorkflowBackendResponse } = await import('./utils.js');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
     expect(url.pathname).toBe('/v2/runs/run-123/stream/my-stream');
+    expect(inspectRawWorkflowBackendResponse).toHaveBeenCalledWith(
+      expect.any(Response),
+      '/v2/runs/run-123/stream/my-stream',
+      undefined,
+      'https://test.example.com/v2/runs/run-123/stream/my-stream'
+    );
   });
 
   it('passes startIndex as a query parameter', async () => {

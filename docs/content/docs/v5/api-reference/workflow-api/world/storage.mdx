@@ -96,10 +96,11 @@ const result = await world.events.list({ runId, pagination: { cursor } }); // [!
 
 ### events.listByCorrelationId()
 
-List events that share a correlation ID, useful for tracing related events across runs.
+List events that share a correlation ID. Supply `runId` when inspecting one run so backends can use the canonical run-scoped query.
 
 ```typescript lineNumbers
 const result = await world.events.listByCorrelationId({ // [!code highlight]
+  runId, // [!code highlight]
   correlationId: "order-123",
 }); // [!code highlight]
 ```
@@ -107,6 +108,7 @@ const result = await world.events.listByCorrelationId({ // [!code highlight]
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `params.correlationId` | `string` | The correlation ID to filter by |
+| `params.runId` | `string` | Optional workflow run ID to scope the query |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 
 **Returns:** `{ data: Event[], cursor?: string }`
