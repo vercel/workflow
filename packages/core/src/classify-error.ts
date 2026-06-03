@@ -1,10 +1,14 @@
 import {
   CorruptedEventLogError,
+  EntityConflictError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
+  RunExpiredError,
   RuntimeDecryptionError,
   StepNotRegisteredError,
+  ThrottleError,
+  TooEarlyError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -32,6 +36,18 @@ const RUNTIME_ERROR_CHECKS = [
   // `AESCipherJob.onDone`) are wrapped in `RuntimeDecryptionError` at
   // the encryption module boundary.
   RuntimeDecryptionError.is,
+  // The `WorkflowWorldError` subclasses below are infrastructure-level
+  // conditions surfaced by the runtime's own calls into the world (CAS/fence
+  // rejections, run cleanup, retry-after, rate limits). The runtime normally
+  // retries past them; if they reach `classifyRunError`, the retry budget
+  // exhausted — a transient infra failure, not user code, so `RUNTIME_ERROR`
+  // is the truthful classification. The bare `WorkflowWorldError` parent is
+  // deliberately NOT listed: it can also surface from user-code `fetch` calls
+  // into the workflow API, which should remain `USER_ERROR`.
+  EntityConflictError.is,
+  RunExpiredError.is,
+  TooEarlyError.is,
+  ThrottleError.is,
 ];
 
 /**

@@ -741,12 +741,23 @@ export function workflowEntrypoint(
                       runtimeLogger.debug(suspensionMessage);
                     }
 
+                    // Pass the load-time tail eventId so the handler can
+                    // fence its branch-decision writes (step_created,
+                    // hook_created, hook_disposed, wait_created) against this
+                    // snapshot of the log. Extends OCC fencing to the writes
+                    // whose outcome depends on a branch decision the workflow
+                    // VM made from the loaded log.
+                    const suspensionFenceEventId =
+                      events.length > 0
+                        ? events[events.length - 1].eventId
+                        : undefined;
                     const result = await handleSuspension({
                       suspension: err,
                       world,
                       run: workflowRun,
                       span,
                       requestId,
+                      fenceEventId: suspensionFenceEventId,
                     });
 
                     if (result.timeoutSeconds !== undefined) {
@@ -903,6 +914,13 @@ export function workflowEntrypoint(
                 // This is outside the user-code try/catch so that failures
                 // here (e.g., network errors) propagate to the queue handler.
                 try {
+                  // Fence run_completed against the load-time tail: a stale
+                  // snapshot that branched to "complete" must not overwrite a
+                  // log a concurrent canonical replay has already advanced.
+                  const completedFence =
+                    events.length > 0
+                      ? events[events.length - 1].eventId
+                      : undefined;
                   await world.events.create(
                     runId,
                     {
@@ -912,12 +930,17 @@ export function workflowEntrypoint(
                         output: workflowResult,
                       },
                     },
-                    { requestId }
+                    {
+                      requestId,
+                      ...(completedFence
+                        ? { lastKnownEventId: completedFence }
+                        : {}),
+                    }
                   );
                 } catch (err) {
                   if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
                     runtimeLogger.info(
-                      'Tried completing workflow run, but run has already finished.',
+                      'Tried completing workflow run, but run has already finished (or fence conflict).',
                       {
                         workflowRunId: runId,
                         message: err.message,
