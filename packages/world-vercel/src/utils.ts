@@ -65,7 +65,7 @@ function httpLog(
 // (OCC fence) so this validation build exercises the ported SDK fence + the
 // server fence end to end. Must be '' on any mergeable branch.
 const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-git-peter-event-write-cas.vercel.sh';
+  'https://workflow-server-qccj339st.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
@@ -238,12 +238,21 @@ export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
-  const defaultHost =
-    getWorkflowServerUrlOverride() || 'https://vercel-workflow.com';
+  const serverUrlOverride = getWorkflowServerUrlOverride();
+  const defaultHost = serverUrlOverride || 'https://vercel-workflow.com';
   const customProxyUrl = process.env.WORKFLOW_VERCEL_BACKEND_URL;
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
-  // Use proxy when we have project config (for authentication via Vercel API)
-  const usingProxy = Boolean(projectConfig?.projectId && projectConfig?.teamId);
+  // Use proxy when we have project config (for authentication via Vercel API).
+  //
+  // [debug branch] EXCEPT when a server URL override is set: in that case we
+  // want to hit the overridden workflow-server directly (e.g. a #447 preview),
+  // NOT route through the api.vercel.com proxy with an x-vercel-workflow-api-url
+  // header. Going through the proxy both ignores the preview we want and,
+  // empirically, breaks the request body (undici "expected non-null body
+  // source") on this path. Direct mode is what we want for validation.
+  const usingProxy =
+    !serverUrlOverride &&
+    Boolean(projectConfig?.projectId && projectConfig?.teamId);
   // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if override is set)
   // When not using proxy, use the default workflow-server URL (with /api path appended)
   const baseUrl = usingProxy
