@@ -111,6 +111,12 @@ export interface APIConfig {
   /**
    * Custom HTTP dispatcher passed to every `fetch()` call (e.g. an undici
    * `Agent`/`RetryAgent`). Defaults to a shared undici `RetryAgent`.
+   *
+   * Typed as `unknown` on purpose: undici's `Dispatcher` type is nominally
+   * version-specific (it differs across v6/v7/v8 and the `undici-types`
+   * bundled with each `@types/node` major), so a concrete type would reject a
+   * dispatcher from a different undici version. Callers may pass any undici
+   * version's dispatcher, or any object implementing the dispatcher contract.
    */
   dispatcher?: unknown;
   projectConfig?: {
