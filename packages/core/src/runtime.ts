@@ -682,21 +682,30 @@ export function workflowEntrypoint(
                 // intentionally omitted: they can be large, encrypted, or
                 // contain user data, and are not needed to diagnose a
                 // branching/ordering divergence.
-                runtimeLogger.info('Workflow replay event log', {
-                  workflowRunId: runId,
-                  eventCount: events.length,
-                  eventsCursor,
-                  eventLog: events.map((event, index) => ({
-                    index,
-                    eventId: event.eventId,
-                    eventType: event.eventType,
-                    correlationId: event.correlationId,
-                    createdAt:
-                      event.createdAt instanceof Date
-                        ? event.createdAt.toISOString()
-                        : event.createdAt,
-                  })),
-                });
+                //
+                // Emitted via console.log (not runtimeLogger.info) so it is
+                // ALWAYS captured: runtimeLogger.info only routes to the `debug`
+                // library and is dropped unless DEBUG=workflow:* is set, whereas
+                // console.log is always collected by the platform's runtime
+                // logs. Serialized as a single JSON string so the full array
+                // survives log rendering without being truncated/collapsed.
+                console.log(
+                  `[replay-event-log] ${JSON.stringify({
+                    workflowRunId: runId,
+                    eventCount: events.length,
+                    eventsCursor,
+                    eventLog: events.map((event, index) => ({
+                      index,
+                      eventId: event.eventId,
+                      eventType: event.eventType,
+                      correlationId: event.correlationId,
+                      createdAt:
+                        event.createdAt instanceof Date
+                          ? event.createdAt.toISOString()
+                          : event.createdAt,
+                    })),
+                  })}`
+                );
 
                 // --- User code execution ---
                 // Only errors from runWorkflow() (user workflow code) should
