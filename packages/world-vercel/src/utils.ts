@@ -61,7 +61,11 @@ function httpLog(
  *
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+// [debug branch — NOT FOR MERGE] Pinned to the workflow-server #447 preview
+// (OCC fence) so this validation build exercises the ported SDK fence + the
+// server fence end to end. Must be '' on any mergeable branch.
+const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-qccj339st.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
@@ -273,6 +277,13 @@ export const getHeaders = (
   const workflowServerUrlOverride = getWorkflowServerUrlOverride();
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
+  }
+  // [debug branch] Vercel Deployment Protection bypass for the pinned
+  // workflow-server #447 preview. Bare `x-vercel-protection-bypass` only —
+  // do NOT set `x-vercel-set-bypass-cookie` (307 redirect loop on undici).
+  const bypassToken = process.env.WORKFLOW_VERCEL_PROTECTION_BYPASS;
+  if (bypassToken) {
+    headers.set('x-vercel-protection-bypass', bypassToken);
   }
   return headers;
 };
