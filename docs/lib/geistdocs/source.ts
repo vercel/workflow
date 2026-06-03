@@ -8,21 +8,43 @@ import { config } from './config';
 type Source = GeistdocsSourceBundle['source'];
 type Page = NonNullable<ReturnType<Source['getPage']>>;
 
-const COOKBOOK_DOCS_PREFIX_RE = /\/docs\/cookbook(?=\/|$)/g;
-const DOCS_PREFIX_RE = /\/docs(?=\/|$)/g;
+const COOKBOOK_DOCS_PREFIX = '/docs/cookbook';
+const DOCS_PREFIX = '/docs';
+const LOCAL_DOCS_LINK_TARGET_RE =
+  /(\]\(|\[[^\]\n]+\]:\s*|(?:href|src)=["'])(\/docs(?:[^\s)"']*)?)/g;
 
-const rewriteCookbookUrlForVersion = (url: string, versionPrefix: string) =>
-  url.replace(COOKBOOK_DOCS_PREFIX_RE, `${versionPrefix}/cookbook`);
+const hasPathPrefix = (url: string, prefix: string) =>
+  url === prefix ||
+  url.startsWith(`${prefix}/`) ||
+  url.startsWith(`${prefix}#`) ||
+  url.startsWith(`${prefix}?`);
 
-const rewriteDocsUrlsForVersion = (text: string, versionPrefix: string) => {
-  if (!versionPrefix) {
-    return text.replace(COOKBOOK_DOCS_PREFIX_RE, '/cookbook');
+const replacePathPrefix = (url: string, prefix: string, replacement: string) =>
+  `${replacement}${url.slice(prefix.length)}`;
+
+const rewriteLocalDocsUrlForVersion = (url: string, versionPrefix: string) => {
+  if (hasPathPrefix(url, COOKBOOK_DOCS_PREFIX)) {
+    return replacePathPrefix(
+      url,
+      COOKBOOK_DOCS_PREFIX,
+      `${versionPrefix}/cookbook`
+    );
   }
 
-  return text
-    .replace(COOKBOOK_DOCS_PREFIX_RE, `${versionPrefix}/cookbook`)
-    .replace(DOCS_PREFIX_RE, `${versionPrefix}/docs`);
+  if (versionPrefix && hasPathPrefix(url, DOCS_PREFIX)) {
+    return replacePathPrefix(url, DOCS_PREFIX, `${versionPrefix}/docs`);
+  }
+
+  return url;
 };
+
+const rewriteCookbookUrlForVersion = (url: string, versionPrefix: string) =>
+  rewriteLocalDocsUrlForVersion(url, versionPrefix);
+
+const rewriteDocsUrlsForVersion = (text: string, versionPrefix: string) =>
+  text.replace(LOCAL_DOCS_LINK_TARGET_RE, (_match, prefix, url) => {
+    return `${prefix}${rewriteLocalDocsUrlForVersion(url, versionPrefix)}`;
+  });
 
 const isCookbookPage = (page: Pick<Page, 'url'>) =>
   page.url === '/docs/cookbook' || page.url.startsWith('/docs/cookbook/');
