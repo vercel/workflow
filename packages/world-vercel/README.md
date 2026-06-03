@@ -13,6 +13,8 @@ once by default. Tools embedding the adapter can provide `onDeprecation` to
 render structured notices themselves:
 
 ```ts
+import { createVercelWorld } from '@workflow/world-vercel';
+
 createVercelWorld({
   onDeprecation(notice) {
     console.warn(notice.endpoint, notice.preferredEndpoint);
