@@ -421,7 +421,7 @@ export function TimelineHeader({
       <div className="relative h-full flex-1">
         {markers.map((m) => (
           <span
-            key={`${m.position}-${m.label}`}
+            key={String(m.value)}
             className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
@@ -506,7 +506,7 @@ export function Timeline({
           // Skip the "0s" origin marker since the left edge already implies it.
           Math.abs(marker.value) > 0.000001 ? (
             <div
-              key={`${marker.position}-${marker.label}`}
+              key={String(marker.value)}
               className="absolute top-0 bottom-0 w-px bg-gray-alpha-300"
               style={{ left: `${marker.position * 100}%` }}
             />
