@@ -23,6 +23,11 @@ on:
         description: 'NPM package name for the world'
         required: true
         type: string
+      package-version:
+        description: 'Optional npm version/dist-tag to pin the world package to (empty = latest)'
+        required: false
+        type: string
+        default: ''
       app-name:
         description: 'App to test (default: nextjs-turbopack)'
         required: false
@@ -168,7 +173,10 @@ jobs:
         env:
           APP_NAME: ${{ inputs.app-name }}
           WORLD_PACKAGE: ${{ inputs.world-package }}
-        run: pnpm --filter "$APP_NAME" add "$WORLD_PACKAGE"
+          WORLD_PACKAGE_VERSION: ${{ inputs.package-version }}
+        run: |
+          SPEC="${WORLD_PACKAGE}${WORLD_PACKAGE_VERSION:+@$WORLD_PACKAGE_VERSION}"
+          pnpm --filter "$APP_NAME" add "$SPEC"
 
       # Per-world setup. Hardcoded (not taken from the matrix) so a malicious
       # fork PR cannot smuggle arbitrary shell through matrix.world.setup-command.

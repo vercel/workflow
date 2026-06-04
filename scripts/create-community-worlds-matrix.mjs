@@ -66,6 +66,7 @@ const matrix = {
       id: world.id,
       name: world.name,
       package: world.package,
+      version: world.version || '',
       'service-type': serviceType,
       'env-vars': JSON.stringify(world.env || {}),
       services: JSON.stringify(world.services || []),

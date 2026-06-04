@@ -286,6 +286,7 @@
       "id": "platformatic",
       "type": "community",
       "package": "@platformatic/world",
+      "version": "0.8.1",
       "name": "Platformatic",
       "description": "Platformatic World backed by a centralized workflow service with PostgreSQL for version-safe orchestration on Kubernetes",
       "repository": "https://github.com/platformatic/platformatic-world",
