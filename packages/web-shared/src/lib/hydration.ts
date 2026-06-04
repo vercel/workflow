@@ -135,7 +135,8 @@ export function getWebRevivers(): Revivers {
     // Error family. The reducer side (see
     // `packages/core/src/serialization/reducers/common.ts`) emits a tagged
     // entry for each built-in Error subclass plus the workflow-specific
-    // `FatalError` / `RetryableError` and `AggregateError`. Without
+    // `FatalError` / `RetryableError` / `HookConflictError` and
+    // `AggregateError`. Without
     // matching revivers here, `devalue.unflatten` throws "Unknown type X"
     // — which surfaces in the web o11y UI as "Failed to load resource
     // details: Unknown type FatalError".
@@ -180,6 +181,20 @@ export function getWebRevivers(): Revivers {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;
       const error = new Error(value.message, opts);
       error.name = 'FatalError';
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    HookConflictError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        token?: string;
+        conflictingRunId?: string;
+      };
+      error.name = 'HookConflictError';
+      error.token = value.token;
+      if (value.conflictingRunId !== undefined) {
+        error.conflictingRunId = value.conflictingRunId;
+      }
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
