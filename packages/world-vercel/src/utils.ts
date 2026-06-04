@@ -61,7 +61,11 @@ function httpLog(
  *
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+// [debug branch — NOT FOR MERGE] Pinned to the workflow-server #456 preview
+// ("Preserve monotonic event append order") to validate it against our repro.
+// Must be '' on any mergeable branch.
+const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-49s4glncv.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
