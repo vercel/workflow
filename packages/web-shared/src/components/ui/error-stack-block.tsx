@@ -57,7 +57,7 @@ function deriveTitle(message: string): string {
  * or full message below.
  */
 export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
-  const stack = value.stack;
+  const stack = typeof value.stack === 'string' ? value.stack : undefined;
   const message = typeof value.message === 'string' ? value.message : undefined;
   const body = stack ?? message ?? '';
   // V8's `Error.stack` already starts with `Name: message`; message-only

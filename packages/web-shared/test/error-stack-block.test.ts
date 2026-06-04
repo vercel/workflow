@@ -32,4 +32,20 @@ describe('ErrorStackBlock', () => {
     );
     expect(markup).toContain('var(--ds-red-100)');
   });
+
+  it('ignores non-string stack values on message-only errors', () => {
+    const markup = renderToStaticMarkup(
+      createElement(ErrorStackBlock, {
+        value: {
+          message: 'Workflow replay exceeded maximum duration after 4 attempts',
+          stack: 123,
+        },
+      })
+    );
+
+    expect(markup).toContain(
+      'Workflow replay exceeded maximum duration after 4 attempts'
+    );
+    expect(markup).not.toContain('123');
+  });
 });
