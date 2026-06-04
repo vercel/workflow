@@ -2,7 +2,7 @@
 
 import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
-import type { Span } from '../trace-viewer/types';
+import type { Span } from './types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
 import { getSpanDurationMs } from './utils';

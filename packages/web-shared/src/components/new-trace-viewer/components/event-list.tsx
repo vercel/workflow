@@ -1,7 +1,7 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/utils';
-import type { Span } from '../../trace-viewer/types';
+import type { Span } from '../types';
 import { formatDuration } from '../../trace-viewer/util/timing';
 import {
   SleepIcon,

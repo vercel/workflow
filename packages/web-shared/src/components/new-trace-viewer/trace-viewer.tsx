@@ -27,7 +27,7 @@ import {
   type SelectedSpanInfo,
 } from '../sidebar/entity-detail-panel';
 import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
-import type { Trace } from '../trace-viewer/types';
+import type { TraceWithMeta } from './types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
 import { Spinner } from '../ui/spinner';
@@ -51,7 +51,7 @@ import { searchSpans } from './search';
 import { computeRootBounds, computeTimeMarkers } from './utils';
 
 interface NewTraceViewerProps {
-  trace: Trace;
+  trace: TraceWithMeta;
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;

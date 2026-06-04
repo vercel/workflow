@@ -1,4 +1,4 @@
-import type { Span, SpanEvent } from '../trace-viewer/types';
+import type { Span, SpanEvent } from './types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 
 // ---------------------------------------------------------------------------
