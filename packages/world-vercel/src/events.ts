@@ -20,6 +20,7 @@ import {
 import z from 'zod';
 import {
   isRefDescriptor,
+  type RefCache,
   type RefDescriptor,
   type RefWithRunId,
   resolveRefDescriptors,
@@ -182,7 +183,8 @@ function collectPendingRefs(events: any[]): PendingRef[] {
 async function hydrateEventRefs(
   events: any[],
   config?: APIConfig,
-  refResolveConcurrency?: number
+  refResolveConcurrency?: number,
+  refCache?: RefCache
 ): Promise<any[]> {
   const pending = collectPendingRefs(events);
   if (pending.length === 0) return events;
@@ -208,7 +210,8 @@ async function hydrateEventRefs(
     const dedupedResults = await resolveRefDescriptors(
       deduped,
       config,
-      refResolveConcurrency
+      refResolveConcurrency,
+      refCache
     ).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -281,7 +284,8 @@ export async function getEvent(
 
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
-  config?: APIConfig
+  config?: APIConfig,
+  refCache?: RefCache
 ): Promise<PaginatedResponse<Event>> {
   const searchParams = new URLSearchParams();
 
@@ -337,7 +341,8 @@ export async function getWorkflowRunEvents(
     const hydratedEvents = await hydrateEventRefs(
       response.data,
       config,
-      refResolveConcurrency
+      refResolveConcurrency,
+      refCache
     );
 
     // Re-parse hydrated events through EventSchema to apply type coercions

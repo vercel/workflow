@@ -44,6 +44,85 @@ export function isRefDescriptor(value: unknown): value is RefDescriptor {
  * Limits peak concurrency to avoid overwhelming the server.
  */
 const REF_RESOLVE_CONCURRENCY = 10;
+const REF_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+const REF_CACHE_MAX_ENTRIES = 128;
+
+interface CachedRefPayload {
+  bytes: Uint8Array;
+  contentType: string;
+}
+
+interface CachedRefEntry extends CachedRefPayload {
+  size: number;
+}
+
+/**
+ * Bounded process-local storage for immutable remote ref payloads.
+ *
+ * Raw bytes are retained instead of decoded objects so the memory budget is
+ * exact and callers cannot mutate an object held in the cache.
+ */
+export class RefCache {
+  private readonly entries = new Map<string, CachedRefEntry>();
+  private readonly inFlight = new Map<string, Promise<CachedRefPayload>>();
+  private retainedBytes = 0;
+
+  constructor(
+    private readonly maxBytes = REF_CACHE_MAX_BYTES,
+    private readonly maxEntries = REF_CACHE_MAX_ENTRIES
+  ) {}
+
+  async getOrLoad(
+    key: string,
+    load: () => Promise<CachedRefPayload>
+  ): Promise<CachedRefPayload> {
+    const cached = this.entries.get(key);
+    if (cached) {
+      this.entries.delete(key);
+      this.entries.set(key, cached);
+      return cached;
+    }
+
+    const pending = this.inFlight.get(key);
+    if (pending) return pending;
+
+    const request = load()
+      .then((payload) => {
+        this.set(key, payload);
+        return payload;
+      })
+      .finally(() => {
+        this.inFlight.delete(key);
+      });
+    this.inFlight.set(key, request);
+    return request;
+  }
+
+  private set(key: string, payload: CachedRefPayload): void {
+    const size = payload.bytes.byteLength;
+    const existing = this.entries.get(key);
+    if (existing) {
+      this.entries.delete(key);
+      this.retainedBytes -= existing.size;
+    }
+    if (size > this.maxBytes) return;
+
+    while (
+      this.entries.size >= this.maxEntries ||
+      this.retainedBytes + size > this.maxBytes
+    ) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.entries.get(oldestKey);
+      if (!oldest) break;
+      this.entries.delete(oldestKey);
+      this.retainedBytes -= oldest.size;
+    }
+
+    this.entries.set(key, { ...payload, size });
+    this.retainedBytes += size;
+  }
+}
 
 /**
  * Resolve a single ref descriptor.
@@ -62,7 +141,8 @@ const REF_RESOLVE_CONCURRENCY = 10;
 export async function resolveRefDescriptor(
   descriptor: RefDescriptor,
   runId: string,
-  config?: APIConfig
+  config?: APIConfig,
+  cache?: RefCache
 ): Promise<unknown> {
   const ref = descriptor._ref;
 
@@ -80,6 +160,29 @@ export async function resolveRefDescriptor(
     // CBOR-encoded data — decode it. Buffer is accepted by cbor-x directly.
     return decode(binaryData);
   }
+
+  const cacheKey = `${runId}\0${ref}`;
+  const payload = cache
+    ? await cache.getOrLoad(cacheKey, () =>
+        fetchRemoteRefPayload(descriptor, runId, config)
+      )
+    : await fetchRemoteRefPayload(descriptor, runId, config);
+
+  if (payload.contentType.includes('application/octet-stream')) {
+    // Copy cached binary values so consumers cannot alter retained bytes.
+    return cache ? payload.bytes.slice() : payload.bytes;
+  }
+
+  // Decode afresh on a cache hit so decoded objects are never shared.
+  return decode(cache ? payload.bytes.slice() : payload.bytes);
+}
+
+async function fetchRemoteRefPayload(
+  descriptor: RefDescriptor,
+  runId: string,
+  config?: APIConfig
+): Promise<CachedRefPayload> {
+  const ref = descriptor._ref;
 
   // Remote refs (s3rf:, kvrf:) — fetch raw bytes from the server.
   // The server returns the raw stored bytes directly (not wrapped in a
@@ -131,14 +234,7 @@ export async function resolveRefDescriptor(
 
       const contentType = response.headers.get('content-type') || '';
       const buffer = await response.arrayBuffer();
-
-      if (contentType.includes('application/octet-stream')) {
-        // Raw binary data (e.g., Uint8Array stored by the workflow)
-        return new Uint8Array(buffer);
-      }
-
-      // CBOR-encoded data (the common case for structured values)
-      return decode(new Uint8Array(buffer));
+      return { contentType, bytes: new Uint8Array(buffer) };
     }
   );
 }
@@ -165,7 +261,8 @@ export interface RefWithRunId {
 export async function resolveRefDescriptors(
   refs: RefWithRunId[],
   config?: APIConfig,
-  concurrency?: number
+  concurrency?: number,
+  cache?: RefCache
 ): Promise<unknown[]> {
   if (refs.length === 0) return [];
 
@@ -187,7 +284,9 @@ export async function resolveRefDescriptors(
     // Simple case: if under concurrency limit, resolve all at once
     if (refs.length <= limit) {
       return Promise.all(
-        refs.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
+        refs.map((r) =>
+          resolveRefDescriptor(r.descriptor, r.runId, config, cache)
+        )
       );
     }
 
@@ -198,7 +297,9 @@ export async function resolveRefDescriptors(
     for (let i = 0; i < refs.length; i += limit) {
       const batch = refs.slice(i, i + limit);
       const batchResults = await Promise.all(
-        batch.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
+        batch.map((r) =>
+          resolveRefDescriptor(r.descriptor, r.runId, config, cache)
+        )
       );
       for (let j = 0; j < batchResults.length; j++) {
         results[i + j] = batchResults[j];

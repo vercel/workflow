@@ -14,13 +14,14 @@ vi.mock('../logger.js', () => ({
 }));
 
 const eventsListMock = vi.fn();
+let mockWorld = {
+  events: {
+    list: eventsListMock,
+  },
+};
 
 vi.mock('./get-world-lazy.js', () => ({
-  getWorldLazy: vi.fn(async () => ({
-    events: {
-      list: eventsListMock,
-    },
-  })),
+  getWorldLazy: vi.fn(async () => mockWorld),
 }));
 
 const makeEvent = (eventId: string): Event =>
@@ -105,6 +106,11 @@ describe('getWorkflowQueueName', () => {
 describe('loadWorkflowRunEvents', () => {
   beforeEach(() => {
     eventsListMock.mockReset();
+    mockWorld = {
+      events: {
+        list: eventsListMock,
+      },
+    };
   });
 
   it('returns the cursor from the last page when pagination terminates normally', async () => {
@@ -189,6 +195,88 @@ describe('loadWorkflowRunEvents', () => {
       'evnt_c',
     ]);
     expect(result.cursor).toBe('eid:evnt_c');
+  });
+
+  it('reuses a bounded cached prefix while checking for newly appended events', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: 'eid:evnt_a',
+      hasMore: false,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b',
+      hasMore: false,
+    });
+
+    await loadWorkflowRunEvents('wrun_cached');
+    const result = await loadWorkflowRunEvents('wrun_cached');
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+    ]);
+    expect(eventsListMock).toHaveBeenNthCalledWith(2, {
+      runId: 'wrun_cached',
+      pagination: { sortOrder: 'asc', cursor: 'eid:evnt_a' },
+    });
+  });
+
+  it('falls back to a full read when a retained cursor is rejected', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: 'opaque-cursor',
+      hasMore: false,
+    });
+    eventsListMock.mockRejectedValueOnce(
+      new WorkflowWorldError('invalid cursor', { status: 400 })
+    );
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a'), makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b',
+      hasMore: false,
+    });
+
+    await loadWorkflowRunEvents('wrun_cached');
+    const result = await loadWorkflowRunEvents('wrun_cached');
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+    ]);
+    expect(eventsListMock).toHaveBeenNthCalledWith(2, {
+      runId: 'wrun_cached',
+      pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
+    });
+    expect(eventsListMock).toHaveBeenNthCalledWith(3, {
+      runId: 'wrun_cached',
+      pagination: { sortOrder: 'asc', cursor: undefined },
+    });
+  });
+
+  it('does not retain event logs whose data exceeds the per-run budget', async () => {
+    const oversizedEvent = {
+      ...makeEvent('evnt_large'),
+      eventData: { input: new Uint8Array(1024 * 1024) },
+    } as Event;
+    eventsListMock.mockResolvedValueOnce({
+      data: [oversizedEvent],
+      cursor: 'eid:evnt_large',
+      hasMore: false,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_large')],
+      cursor: 'eid:evnt_large',
+      hasMore: false,
+    });
+
+    await loadWorkflowRunEvents('wrun_large');
+    await loadWorkflowRunEvents('wrun_large');
+
+    expect(eventsListMock).toHaveBeenNthCalledWith(2, {
+      runId: 'wrun_large',
+      pagination: { sortOrder: 'asc', cursor: undefined },
+    });
   });
 
   it('falls back to the afterCursor when an incremental load returns no events', async () => {

@@ -6,3 +6,6 @@ Integrates with Vercel's infrastructure for storage, queuing, and authentication
 
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
 
+Event replay reads resolve immutable remote refs through a bounded in-process
+byte cache, reducing repeated backend reads without allowing warm instances to
+retain unbounded workflow payload data.

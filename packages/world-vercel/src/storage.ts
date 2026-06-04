@@ -6,6 +6,7 @@ import {
 } from './events.js';
 import { getHook, getHookByToken, listHooks } from './hooks.js';
 import { instrumentObject } from './instrumentObject.js';
+import { RefCache } from './refs.js';
 import {
   experimentalSetAttributes,
   getWorkflowRun,
@@ -15,6 +16,7 @@ import { getStep, listWorkflowRunSteps } from './steps.js';
 import type { APIConfig } from './utils.js';
 
 export function createStorage(config?: APIConfig): Storage {
+  const refCache = new RefCache();
   const storage: Storage = {
     // Storage interface with namespaced methods
     runs: {
@@ -35,8 +37,9 @@ export function createStorage(config?: APIConfig): Storage {
       create: (runId, data, params) =>
         createWorkflowRunEvent(runId, data, params, config),
       get: (runId, eventId, params) => getEvent(runId, eventId, params, config),
-      list: (params) => getWorkflowRunEvents(params, config),
-      listByCorrelationId: (params) => getWorkflowRunEvents(params, config),
+      list: (params) => getWorkflowRunEvents(params, config, refCache),
+      listByCorrelationId: (params) =>
+        getWorkflowRunEvents(params, config, refCache),
     },
     hooks: {
       get: (hookId, params) => getHook(hookId, params, config),
