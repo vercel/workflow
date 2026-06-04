@@ -6,4 +6,4 @@
 '@workflow/world-postgres': minor
 ---
 
-Add native v4 attribute events and seed run attributes through `start()`.
+Add native event-based attribute setting and allow passing initial run attributes through `start()`.

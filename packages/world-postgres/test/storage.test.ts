@@ -217,6 +217,18 @@ describe('Storage (Postgres integration)', () => {
 
         expect(run.attributes).toEqual({ tenant: 't1', phase: 'created' });
       });
+
+      it('treats SQL-looking initial attribute keys as literal JSON keys', async () => {
+        const key = "tenant'); DROP TABLE workflow_runs; --";
+        const run = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'attributed-workflow',
+          input: new Uint8Array(),
+          attributes: { [key]: 'literal' },
+        });
+
+        expect(run.attributes).toEqual({ [key]: 'literal' });
+      });
     });
 
     describe('get', () => {
@@ -471,6 +483,35 @@ describe('Storage (Postgres integration)', () => {
           },
         });
         expect(result.run?.attributes).toEqual({ $system: 'ok' });
+      });
+
+      it('treats SQL-looking attribute keys as literal JSON keys', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+        });
+        const key = "phase'); DROP TABLE workflow_runs; --";
+
+        const written = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [{ key, value: 'literal' }],
+            writer: { type: 'workflow' },
+          },
+        });
+        expect(written.run?.attributes).toEqual({ [key]: 'literal' });
+
+        const removed = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [{ key, value: null }],
+            writer: { type: 'workflow' },
+          },
+        });
+        expect(removed.run?.attributes).toEqual({});
       });
     });
   });
