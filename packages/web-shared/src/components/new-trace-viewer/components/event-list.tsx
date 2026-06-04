@@ -53,8 +53,9 @@ const EventRow = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getSpanDurationMs(span);
-  const isErrored =
-    (span.attributes.data as Record<string, unknown>).status === 'failed';
+  const workflowStatus = (span.attributes.data as Record<string, unknown>)
+    ?.status as string | undefined;
+  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
   const { icon: Icon, className: tagClassName } = getEventStyle(
     span.resource,
     isErrored
