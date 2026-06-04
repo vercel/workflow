@@ -110,7 +110,7 @@ export async function resolveRefDescriptor(
       const response = await fetch(url, {
         method: 'GET',
         headers,
-        dispatcher: getDispatcher(),
+        dispatcher: getDispatcher(config),
       } as any);
 
       span?.setAttributes({
