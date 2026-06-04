@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- [#2246](https://github.com/vercel/workflow/pull/2246) [`ddc8a79`](https://github.com/vercel/workflow/commit/ddc8a79741e8d281717e9fb361cf0001af460e9b) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update `@vercel/queue` from 0.1.7 to 0.2.1
+
+- Updated dependencies [[`b8a337c`](https://github.com/vercel/workflow/commit/b8a337c945cc0566b5d87e4e40026f50aa8c60ff), [`ddc8a79`](https://github.com/vercel/workflow/commit/ddc8a79741e8d281717e9fb361cf0001af460e9b), [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1)]:
+  - @workflow/world-local@5.0.0-beta.13
+  - @workflow/errors@5.0.0-beta.7
+  - @workflow/world@5.0.0-beta.7
+
 ## 5.0.0-beta.10
 
 ### Patch Changes

@@ -1,5 +1,19 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- [#2249](https://github.com/vercel/workflow/pull/2249) [`24a96d8`](https://github.com/vercel/workflow/commit/24a96d8301115a22ce4cc7cc0e75995607e88bec) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Hydrate serialized HookConflictError values in the web trace viewer.
+
+- [#2209](https://github.com/vercel/workflow/pull/2209) [`fe41b3b`](https://github.com/vercel/workflow/commit/fe41b3be3c278a5a097702dd3cc3c882c6bed8f6) Thanks [@mitul-s](https://github.com/mitul-s)! - Reduce the new trace viewer detail pane width.
+
+- [#2250](https://github.com/vercel/workflow/pull/2250) [`5bf2c16`](https://github.com/vercel/workflow/commit/5bf2c167a56298a2480e451c9fba72282f93496a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add CI coverage for CLI and web trace-viewer revivers across all serializable types.
+
+- Updated dependencies [[`52d63d1`](https://github.com/vercel/workflow/commit/52d63d1b61303d9d58e2ad74a655dbe57e4f1b39), [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1), [`12c35b5`](https://github.com/vercel/workflow/commit/12c35b54ebf3d3c9fbc30462b42b05e5ce476a2b)]:
+  - @workflow/core@5.0.0-beta.12
+  - @workflow/world@5.0.0-beta.7
+
 ## 5.0.0-beta.11
 
 ### Patch Changes

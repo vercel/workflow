@@ -1,5 +1,20 @@
 # @workflow/cli
 
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- [#2250](https://github.com/vercel/workflow/pull/2250) [`5bf2c16`](https://github.com/vercel/workflow/commit/5bf2c167a56298a2480e451c9fba72282f93496a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add CI coverage for CLI and web trace-viewer revivers across all serializable types.
+
+- Updated dependencies [[`b8a337c`](https://github.com/vercel/workflow/commit/b8a337c945cc0566b5d87e4e40026f50aa8c60ff), [`ddc8a79`](https://github.com/vercel/workflow/commit/ddc8a79741e8d281717e9fb361cf0001af460e9b), [`52d63d1`](https://github.com/vercel/workflow/commit/52d63d1b61303d9d58e2ad74a655dbe57e4f1b39), [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1), [`12c35b5`](https://github.com/vercel/workflow/commit/12c35b54ebf3d3c9fbc30462b42b05e5ce476a2b), [`3a16272`](https://github.com/vercel/workflow/commit/3a16272bd363d56de58c81ef4dba75b89897a749)]:
+  - @workflow/world-local@5.0.0-beta.13
+  - @workflow/world-vercel@5.0.0-beta.11
+  - @workflow/core@5.0.0-beta.12
+  - @workflow/errors@5.0.0-beta.7
+  - @workflow/world@5.0.0-beta.7
+  - @workflow/web@5.0.0-beta.12
+  - @workflow/builders@5.0.0-beta.12
+
 ## 5.0.0-beta.11
 
 ### Patch Changes
