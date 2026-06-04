@@ -26,6 +26,11 @@ export function getDispatcher(): RetryAgent {
       {
         // Observe Retry-After header if received
         retryAfter: true,
+        // [debug branch] Disable automatic retries so the genuine
+        // first-attempt failure surfaces instead of being masked by undici's
+        // "expected non-null body source" when the RetryAgent re-dispatches a
+        // consumed request body. NOT FOR MERGE.
+        maxRetries: 0,
         // By default, we observe re-try headers, and also separately
         // re-try on these status codes: 429 / 500 / 502 / 503 / 504.
         // TODO: We might want to let 429s pass through, so that we can do
