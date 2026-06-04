@@ -405,6 +405,21 @@ export async function makeRequest<T>({
         const signal = options.signal
           ? AbortSignal.any([options.signal, timeoutSignal])
           : timeoutSignal;
+        // [debug branch] Dump exactly what we're about to send so we can stop
+        // guessing about "expected non-null body source". NOT FOR MERGE.
+        console.error(
+          'MAKEREQUEST_DEBUG ' +
+            JSON.stringify({
+              url,
+              method,
+              optionKeys: Object.keys(options || {}),
+              hasBody: body !== undefined,
+              bodyType:
+                body === undefined ? 'undefined' : body?.constructor?.name,
+              bodyLen: body ? (body as Buffer).length : 0,
+              attempt,
+            })
+        );
         const request = new Request(url, {
           ...options,
           body,
