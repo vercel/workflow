@@ -234,7 +234,7 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
 
         return (
           <div
-            key={`${seg.status}-${i}`}
+            key={i}
             className={cn(
               'absolute h-full rounded-[0.25rem]',
               SEGMENT_CLASSES[seg.status]
