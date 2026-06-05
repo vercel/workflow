@@ -2749,8 +2749,10 @@ describe('e2e', () => {
         const returnValue = await run.returnValue;
 
         // The workflow races 3 parallel long steps against a 3s sleep.
-        // The sleep wins, so the workflow returns timed out status.
+        // The sleep wins, so the workflow returns timed out status after all
+        // in-flight steps observe the abort and settle through the abort path.
         expect(returnValue.status).toBe('timed out');
+        expect(returnValue.results).toEqual(['aborted', 'aborted', 'aborted']);
       }
     );
 

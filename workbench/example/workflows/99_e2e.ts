@@ -1845,8 +1845,8 @@ export async function abortParallelWorkflow() {
     // Wait for the in-flight steps to observe the abort before completing the
     // workflow. Returning immediately leaves the parallel branch dangling and
     // can keep the run open until the steps hit their natural 30s completion.
-    await parallelSteps;
-    return { status: 'timed out' };
+    const results = await parallelSteps;
+    return { status: 'timed out', results };
   }
 
   return { status: 'completed', results: result };
