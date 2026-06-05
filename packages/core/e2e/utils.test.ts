@@ -43,14 +43,14 @@ describe('hasStepSourceMaps', () => {
     expect(hasStepSourceMaps()).toBe(true);
   });
 
-  test('expects source filenames for webpack local dev with lazy discovery disabled', () => {
+  test('does not expect source filenames for webpack local dev with lazy discovery disabled', () => {
     setStepSourceMapEnv({
       appName: 'nextjs-webpack',
       dev: true,
       lazyDiscovery: false,
     });
 
-    expect(hasStepSourceMaps()).toBe(true);
+    expect(hasStepSourceMaps()).toBe(false);
   });
 
   test('does not expect source filenames for turbopack local dev with lazy discovery disabled', () => {
