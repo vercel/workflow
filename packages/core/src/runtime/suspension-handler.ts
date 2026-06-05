@@ -6,7 +6,9 @@ import {
   RunExpiredError,
 } from '@workflow/errors';
 import {
+  type CreateEventParams,
   type CreateEventRequest,
+  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -23,6 +25,7 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
+import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -30,6 +33,14 @@ export interface SuspensionHandlerParams {
   run: WorkflowRun;
   span?: Span;
   requestId?: string;
+  /**
+   * The runtime's loaded event log. Each event creation is sent with this
+   * snapshot's `stateUpdatedAt` and, if the backend rejects it as stale (412),
+   * the log is reloaded in place and the create is retried — see
+   * `withPreconditionRetry`. Guarding per-create (rather than the whole
+   * suspension) ensures a retry never re-issues an already-created event.
+   */
+  eventLog?: MutableEventLog;
 }
 
 /**
@@ -69,8 +80,26 @@ export async function handleSuspension({
   run,
   span,
   requestId,
+  eventLog,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
+
+  // Create an event with the optimistic-concurrency guard when the caller
+  // supplied a loaded event log; otherwise create it directly (callers without
+  // a replay snapshot, e.g. tests). The guard reloads + retries on a stale
+  // (412) rejection, keeping `eventLog` current in place. All suspension events
+  // are non-run_created events on this run's `runId`.
+  const createGuarded = (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    if (!eventLog) {
+      return world.events.create(runId, data, params);
+    }
+    return withPreconditionRetry(runId, eventLog, (stateUpdatedAt) =>
+      world.events.create(runId, data, { ...params, stateUpdatedAt })
+    );
+  };
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -128,9 +157,7 @@ export async function handleSuspension({
     await Promise.all(
       hookEvents.map(async (hookEvent) => {
         try {
-          const result = await world.events.create(runId, hookEvent, {
-            requestId,
-          });
+          const result = await createGuarded(hookEvent, { requestId });
           // Check if the world returned a hook_conflict event instead of hook_created.
           // The hook_conflict event is stored in the event log and will be replayed
           // on the next workflow invocation, causing the hook's promise to reject.
@@ -168,7 +195,7 @@ export async function handleSuspension({
           },
         };
         try {
-          await world.events.create(runId, hookDisposedEvent, { requestId });
+          await createGuarded(hookDisposedEvent, { requestId });
         } catch (err) {
           if (EntityConflictError.is(err)) {
             // Hook was already disposed by a concurrent invocation — safe to skip
@@ -222,7 +249,7 @@ export async function handleSuspension({
           );
 
           // Create hook_received event with abort payload
-          await world.events.create(runId, {
+          await createGuarded({
             eventType: 'hook_received' as const,
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: queueItem.correlationId,
@@ -318,7 +345,7 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, stepEvent, { requestId });
+            await createGuarded(stepEvent, { requestId });
             createdStepCorrelationIds.add(queueItem.correlationId);
           } catch (err) {
             if (EntityConflictError.is(err)) {
@@ -350,7 +377,7 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, waitEvent, { requestId });
+            await createGuarded(waitEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
               runtimeLogger.info('Wait already exists, continuing', {

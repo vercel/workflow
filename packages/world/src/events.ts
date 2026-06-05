@@ -391,6 +391,14 @@ export interface CreateEventParams {
   resolveData?: ResolveData;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
+  /**
+   * Epoch ms (the ULID time of the latest event the runtime has loaded during
+   * replay). Sent by replay-context creates so the backend can reject the event
+   * when a newer out-of-band event was recorded after this snapshot, enabling
+   * an optimistic-concurrency guard. Omitted by callers without a loaded event
+   * log.
+   */
+  stateUpdatedAt?: number;
 }
 
 /**

@@ -761,6 +761,27 @@ export class ThrottleError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown when the backend rejects an event creation because the client's
+ * event-log snapshot is stale — a newer out-of-band event (e.g. a received
+ * hook or a completed step) was recorded after the snapshot the client
+ * replayed from (HTTP 412).
+ *
+ * The workflow runtime handles this automatically: it reloads the event log
+ * and retries, ultimately re-enqueueing the run if it cannot catch up. Users
+ * interacting with world storage backends directly may encounter it.
+ */
+export class PreconditionFailedError extends WorkflowWorldError {
+  constructor(message: string, options?: { retryAfter?: number }) {
+    super(message, { status: 412, retryAfter: options?.retryAfter });
+    this.name = 'PreconditionFailedError';
+  }
+
+  static is(value: unknown): value is PreconditionFailedError {
+    return isError(value) && value.name === 'PreconditionFailedError';
+  }
+}
+
+/**
  * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
  *
  * This error indicates that the workflow was explicitly cancelled (via

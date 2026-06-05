@@ -3,6 +3,7 @@ import {
   CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  PreconditionFailedError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -30,10 +31,12 @@ import {
   getWorkflowQueueName,
   handleHealthCheckMessage,
   loadWorkflowRunEvents,
+  type MutableEventLog,
   memoizeEncryptionKey,
   parseHealthCheckPayload,
   queueMessage,
   withHealthCheck,
+  withPreconditionRetry,
 } from './runtime/helpers.js';
 import {
   handleReplayBudgetExhausted,
@@ -812,10 +815,20 @@ export function workflowEntrypoint(
                         }));
 
                       for (const waitEvent of waitsToComplete) {
+                        const waitLog: MutableEventLog = {
+                          events,
+                          cursor: eventsCursor,
+                        };
                         try {
-                          await world.events.create(runId, waitEvent, {
-                            requestId,
-                          });
+                          await withPreconditionRetry(
+                            runId,
+                            waitLog,
+                            (stateUpdatedAt) =>
+                              world.events.create(runId, waitEvent, {
+                                requestId,
+                                stateUpdatedAt,
+                              })
+                          );
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -828,6 +841,9 @@ export function workflowEntrypoint(
                             continue;
                           }
                           throw err;
+                        } finally {
+                          // Reloads inside the guard may have advanced the cursor.
+                          eventsCursor = waitLog.cursor;
                         }
                       }
 
@@ -912,15 +928,24 @@ export function workflowEntrypoint(
                       });
 
                       // Workflow completed
+                      const completeLog: MutableEventLog = {
+                        events,
+                        cursor: eventsCursor,
+                      };
                       try {
-                        await world.events.create(
+                        await withPreconditionRetry(
                           runId,
-                          {
-                            eventType: 'run_completed',
-                            specVersion: SPEC_VERSION_CURRENT,
-                            eventData: { output: result },
-                          },
-                          { requestId }
+                          completeLog,
+                          (stateUpdatedAt) =>
+                            world.events.create(
+                              runId,
+                              {
+                                eventType: 'run_completed',
+                                specVersion: SPEC_VERSION_CURRENT,
+                                eventData: { output: result },
+                              },
+                              { requestId, stateUpdatedAt }
+                            )
                         );
                       } catch (err) {
                         if (
@@ -960,15 +985,26 @@ export function workflowEntrypoint(
                           runtimeLogger.debug(suspensionMessage);
                         }
 
-                        // V2: handle suspension without queuing steps
+                        // V2: handle suspension without queuing steps.
+                        // Each event creation inside handleSuspension carries the
+                        // loaded snapshot's stateUpdatedAt and self-reloads on a
+                        // stale (412) rejection via the shared event log. We
+                        // guard per-create (rather than wrapping the whole call)
+                        // so a retry never re-issues an already-created event.
                         const suspensionStart = Date.now();
+                        const suspensionLog: MutableEventLog = {
+                          events: cachedEvents ?? [],
+                          cursor: eventsCursor,
+                        };
                         const suspensionResult = await handleSuspension({
                           suspension: err,
                           world,
                           run: workflowRun,
                           span,
                           requestId,
+                          eventLog: suspensionLog,
                         });
+                        eventsCursor = suspensionLog.cursor;
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
@@ -1174,6 +1210,17 @@ export function workflowEntrypoint(
                           // Loop back to replay which will re-evaluate
                         }
                       } else {
+                        // A stale-snapshot rejection that survived the in-guard
+                        // reload retries. Don't fail the run — rethrow so the
+                        // queue re-invokes the flow route with a fresh replay.
+                        if (PreconditionFailedError.is(err)) {
+                          runtimeLogger.warn(
+                            'Event creation still stale after reload retries; re-invoking run via queue',
+                            { workflowRunId: runId, loopIteration }
+                          );
+                          throw err;
+                        }
+
                         let terminalError = err;
                         if (ReplayDivergenceError.is(err)) {
                           const divergenceCount =

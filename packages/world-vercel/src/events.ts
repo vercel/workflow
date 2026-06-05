@@ -457,6 +457,9 @@ async function createWorkflowRunEventInner(
         ...data,
         remoteRefBehavior,
         ...(params?.requestId ? { vercelId: params.requestId } : {}),
+        ...(params?.stateUpdatedAt !== undefined
+          ? { stateUpdatedAt: params.stateUpdatedAt }
+          : {}),
       },
       config,
       schema: EventResultResolveWireSchema,
@@ -482,6 +485,9 @@ async function createWorkflowRunEventInner(
       ...data,
       remoteRefBehavior,
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.stateUpdatedAt !== undefined
+        ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
     },
     config,
     schema: EventResultLazyWireSchema,
