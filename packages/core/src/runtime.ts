@@ -30,6 +30,7 @@ import {
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
+  latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   type MutableEventLog,
   memoizeEncryptionKey,
@@ -927,25 +928,25 @@ export function workflowEntrypoint(
                         replayMs: Date.now() - replayStart,
                       });
 
-                      // Workflow completed
-                      const completeLog: MutableEventLog = {
-                        events,
-                        cursor: eventsCursor,
-                      };
+                      // Workflow completed. Send the snapshot but do NOT
+                      // reload-and-retry the create in place: `result` was
+                      // computed by this replay, so a stale (412) rejection must
+                      // force a *fresh replay* (which may observe the new event
+                      // and produce a different result), not re-commit the stale
+                      // result. The catch below lets PreconditionFailedError
+                      // propagate to the queue for re-invocation.
                       try {
-                        await withPreconditionRetry(
+                        await world.events.create(
                           runId,
-                          completeLog,
-                          (stateUpdatedAt) =>
-                            world.events.create(
-                              runId,
-                              {
-                                eventType: 'run_completed',
-                                specVersion: SPEC_VERSION_CURRENT,
-                                eventData: { output: result },
-                              },
-                              { requestId, stateUpdatedAt }
-                            )
+                          {
+                            eventType: 'run_completed',
+                            specVersion: SPEC_VERSION_CURRENT,
+                            eventData: { output: result },
+                          },
+                          {
+                            requestId,
+                            stateUpdatedAt: latestEventStateUpdatedAt(events),
+                          }
                         );
                       } catch (err) {
                         if (
@@ -1210,12 +1211,15 @@ export function workflowEntrypoint(
                           // Loop back to replay which will re-evaluate
                         }
                       } else {
-                        // A stale-snapshot rejection that survived the in-guard
-                        // reload retries. Don't fail the run — rethrow so the
-                        // queue re-invokes the flow route with a fresh replay.
+                        // Stale-snapshot rejection of a result-bearing create
+                        // (run_completed sends the snapshot but is intentionally
+                        // NOT retried in place), or one that survived the
+                        // in-guard reload retries. Don't fail the run — rethrow
+                        // so the queue re-invokes the flow route with a fresh
+                        // replay that observes the new event.
                         if (PreconditionFailedError.is(err)) {
                           runtimeLogger.warn(
-                            'Event creation still stale after reload retries; re-invoking run via queue',
+                            'Event creation rejected as stale; re-invoking run via queue for a fresh replay',
                             { workflowRunId: runId, loopIteration }
                           );
                           throw err;
