@@ -3,35 +3,56 @@
 import { AlertCircle, Copy } from 'lucide-react';
 import { useToast } from '../../lib/toast';
 
+export type StructuredErrorRecord = Record<string, unknown> & {
+  message?: string;
+  stack?: string;
+};
+
 /**
- * Check whether `value` looks like a structured error object with a `stack`
- * field that we can render as pre-formatted text.
+ * Check whether `value` looks like a structured error object we can render
+ * with the error block. Some persisted workflow errors only include a
+ * `message`, while runtime errors usually also include `stack`.
  */
-export function isStructuredErrorWithStack(
+export function isStructuredError(
   value: unknown
-): value is Record<string, unknown> & { stack: string } {
+): value is StructuredErrorRecord {
   return (
     value != null &&
     typeof value === 'object' &&
-    'stack' in value &&
-    typeof (value as Record<string, unknown>).stack === 'string'
+    (typeof (value as Record<string, unknown>).message === 'string' ||
+      typeof (value as Record<string, unknown>).stack === 'string')
   );
 }
 
 /**
- * Renders an error with a `stack` field as a visually distinct error block.
- * Shows the error message with an alert icon at the top, separated from
- * the stack trace below.
+ * Narrower guard kept for callers that specifically need a stack trace.
  */
-export function ErrorStackBlock({
-  value,
-}: {
-  value: Record<string, unknown> & { stack: string };
-}) {
+export function isStructuredErrorWithStack(
+  value: unknown
+): value is StructuredErrorRecord & { stack: string } {
+  return (
+    isStructuredError(value) &&
+    typeof (value as StructuredErrorRecord).stack === 'string'
+  );
+}
+
+/**
+ * Renders a structured error as a visually distinct error block. Shows the
+ * error message with an alert icon at the top, separated from the stack trace
+ * or full message below.
+ */
+export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
   const toast = useToast();
-  const stack = value.stack;
+  const stack = typeof value.stack === 'string' ? value.stack : undefined;
   const message = typeof value.message === 'string' ? value.message : undefined;
-  const copyText = message ? `${message}\n\n${stack}` : stack;
+  const body = stack ?? message ?? '';
+  // V8's `Error.stack` already starts with `Name: message`; message-only
+  // errors use the message as the body so long single-line failures remain
+  // readable even when the header truncates.
+  const copyText =
+    message && stack && !stack.includes(message)
+      ? `${message}\n\n${stack}`
+      : body;
 
   return (
     <div
@@ -77,15 +98,17 @@ export function ErrorStackBlock({
           <p className="text-xs font-semibold m-0 break-words">{message}</p>
         </div>
       )}
-      <pre
-        className="px-3 py-2.5 text-xs font-mono whitespace-pre-wrap break-words overflow-auto m-0"
-        style={{
-          color: 'var(--ds-red-900)',
-          background: 'var(--ds-red-200)',
-        }}
-      >
-        {stack}
-      </pre>
+      {body && (
+        <pre
+          className="px-3 py-2.5 text-xs font-mono whitespace-pre-wrap break-words overflow-auto m-0"
+          style={{
+            color: 'var(--ds-red-900)',
+            background: 'var(--ds-red-200)',
+          }}
+        >
+          {body}
+        </pre>
+      )}
     </div>
   );
 }
