@@ -1,5 +1,21 @@
 # @workflow/core
 
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- [#2211](https://github.com/vercel/workflow/pull/2211) [`52d63d1`](https://github.com/vercel/workflow/commit/52d63d1b61303d9d58e2ad74a655dbe57e4f1b39) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent replayed workflows from advancing their deterministic clock when a future event is inspected before its matching operation is invoked.
+
+- [#2212](https://github.com/vercel/workflow/pull/2212) [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1) Thanks [@pranaygp](https://github.com/pranaygp)! - Retry transient workflow replay divergence before classifying repeated divergence as a corrupted event log.
+
+- [#2215](https://github.com/vercel/workflow/pull/2215) [`12c35b5`](https://github.com/vercel/workflow/commit/12c35b54ebf3d3c9fbc30462b42b05e5ce476a2b) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip workflow replay when a refreshed event log already contains a terminal run event.
+
+- Updated dependencies [[`b8a337c`](https://github.com/vercel/workflow/commit/b8a337c945cc0566b5d87e4e40026f50aa8c60ff), [`ddc8a79`](https://github.com/vercel/workflow/commit/ddc8a79741e8d281717e9fb361cf0001af460e9b), [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1), [`3a16272`](https://github.com/vercel/workflow/commit/3a16272bd363d56de58c81ef4dba75b89897a749)]:
+  - @workflow/world-local@5.0.0-beta.13
+  - @workflow/world-vercel@5.0.0-beta.11
+  - @workflow/errors@5.0.0-beta.7
+  - @workflow/world@5.0.0-beta.7
+
 ## 5.0.0-beta.11
 
 ### Patch Changes

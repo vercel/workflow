@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
-import type { Span } from '../../trace-viewer/types';
+import type { Span } from '../types';
 import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Segment, SegmentStatus, TimeMarker } from '../utils';
@@ -234,7 +234,7 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
 
         return (
           <div
-            key={`${seg.status}-${i}`}
+            key={i}
             className={cn(
               'absolute h-full rounded-[0.25rem]',
               SEGMENT_CLASSES[seg.status]
@@ -421,7 +421,7 @@ export function TimelineHeader({
       <div className="relative h-full flex-1">
         {markers.map((m) => (
           <span
-            key={`${m.position}-${m.label}`}
+            key={String(m.value)}
             className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
@@ -506,7 +506,7 @@ export function Timeline({
           // Skip the "0s" origin marker since the left edge already implies it.
           Math.abs(marker.value) > 0.000001 ? (
             <div
-              key={`${marker.position}-${marker.label}`}
+              key={String(marker.value)}
               className="absolute top-0 bottom-0 w-px bg-gray-alpha-300"
               style={{ left: `${marker.position * 100}%` }}
             />

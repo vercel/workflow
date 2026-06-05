@@ -22,8 +22,8 @@ catalogs:
       specifier: 3.2.0
       version: 3.2.0
     '@vercel/queue':
-      specifier: 0.1.7
-      version: 0.1.7
+      specifier: 0.2.1
+      version: 0.2.1
     '@vitest/coverage-v8':
       specifier: ^4.0.18
       version: 4.0.18
@@ -49,8 +49,8 @@ catalogs:
       specifier: ~3.0.1
       version: 3.0.1
     undici:
-      specifier: 7.22.0
-      version: 7.22.0
+      specifier: 7.26.0
+      version: 7.26.0
     vitest:
       specifier: ^4.0.18
       version: 4.0.18
@@ -797,6 +797,9 @@ importers:
       '@workflow/vite':
         specifier: workspace:*
         version: link:../vite
+      '@workflow/web':
+        specifier: workspace:*
+        version: link:../web
       exsolve:
         specifier: 1.0.8
         version: 1.0.8
@@ -1322,7 +1325,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.7
+        version: 0.2.1
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1340,7 +1343,7 @@ importers:
         version: 3.0.1
       undici:
         specifier: 'catalog:'
-        version: 7.22.0
+        version: 7.26.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -1368,7 +1371,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.7
+        version: 0.2.1
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1475,7 +1478,7 @@ importers:
         version: 3.2.0
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.7
+        version: 0.2.1
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1487,7 +1490,7 @@ importers:
         version: 1.6.0
       undici:
         specifier: 'catalog:'
-        version: 7.22.0
+        version: 7.26.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -8271,6 +8274,10 @@ packages:
     resolution: {integrity: sha512-4Uk9LOvDPVYqBJGrNDk4fdLte4CmFERXCUJI2y7SRYX1d//dI96Ww7sgKZF4+YDj/YaBXoCZ11AU0HYkVwW9Eg==}
     engines: {node: '>=20.0.0'}
 
+  '@vercel/queue@0.2.1':
+    resolution: {integrity: sha512-18jVWNj/jroyQ+/GM3XFyr1/deFkinosg7RKjovrJbgQRRjusq9Y+pSGOKfpzus6vVRun2mqDlNI82hm5Rwi5Q==}
+    engines: {node: '>=20.0.0'}
+
   '@vercel/react-router@1.2.6':
     resolution: {integrity: sha512-8+n/roFtLhpkq6dMAXXSWf4N5Uypckh2E8Uxduh+tdE+Z9AG4KXfFzGyHoyFYZqoUh6jgwsiFkDokSAymm4NHg==}
     peerDependencies:
@@ -14803,6 +14810,10 @@ packages:
 
   undici@7.22.0:
     resolution: {integrity: sha512-RqslV2Us5BrllB+JeiZnK4peryVTndy9Dnqq62S3yYRRTj0tFQCwEniUy2167skdGOy3vqRzEvl1Dm4sV2ReDg==}
+    engines: {node: '>=20.18.1'}
+
+  undici@7.26.0:
+    resolution: {integrity: sha512-3O9Tf67pGhgOv9jM35AbhkXAKi13f3oy3aE4CSgr+TckGeY+/iu97ZXN+J7DpHPzLbVApFd1IFhcnBjREYXYcg==}
     engines: {node: '>=20.18.1'}
 
   unenv@2.0.0-rc.24:
@@ -23082,6 +23093,14 @@ snapshots:
       minimatch: 10.2.4
       mixpart: 0.0.6
       picocolors: 1.1.1
+    optional: true
+
+  '@vercel/queue@0.2.1':
+    dependencies:
+      '@vercel/oidc': 3.2.0
+      minimatch: 10.2.4
+      mixpart: 0.0.6
+      picocolors: 1.1.1
 
   '@vercel/react-router@1.2.6(@react-router/dev@7.13.1(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(terser@5.44.0)(tsx@4.20.6)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))(yaml@2.8.3))(@react-router/node@7.13.1(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(typescript@5.9.3))(isbot@5.1.35)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)':
     dependencies:
@@ -23198,14 +23217,6 @@ snapshots:
   '@vitest/mocker@3.2.4(vite@7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))':
     dependencies:
       '@vitest/spy': 3.2.4
-      estree-walker: 3.0.3
-      magic-string: 0.30.21
-    optionalDependencies:
-      vite: 7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3)
-
-  '@vitest/mocker@4.0.18(vite@7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))':
-    dependencies:
-      '@vitest/spy': 4.0.18
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
@@ -31621,6 +31632,8 @@ snapshots:
 
   undici@7.22.0: {}
 
+  undici@7.26.0: {}
+
   unenv@2.0.0-rc.24:
     dependencies:
       pathe: 2.0.3
@@ -32243,7 +32256,7 @@ snapshots:
   vitest@4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.19.0)(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3):
     dependencies:
       '@vitest/expect': 4.0.18
-      '@vitest/mocker': 4.0.18(vite@7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))
+      '@vitest/mocker': 4.0.18(vite@7.3.2(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))
       '@vitest/pretty-format': 4.0.18
       '@vitest/runner': 4.0.18
       '@vitest/snapshot': 4.0.18
@@ -32282,7 +32295,7 @@ snapshots:
   vitest@4.0.18(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3):
     dependencies:
       '@vitest/expect': 4.0.18
-      '@vitest/mocker': 4.0.18(vite@7.3.2(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))
+      '@vitest/mocker': 4.0.18(vite@7.3.2(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))
       '@vitest/pretty-format': 4.0.18
       '@vitest/runner': 4.0.18
       '@vitest/snapshot': 4.0.18

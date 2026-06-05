@@ -98,6 +98,11 @@ const DEFERRED_BUILD_MODE_PROJECTS = new Set([
 ]);
 const DEFERRED_BUILD_UNSUPPORTED_WARNING = 'lazyDiscovery requires Next.js >=';
 const EAGER_DISCOVERY_LOG = 'Discovering workflow directives';
+const WORKFLOW_BUNDLE_LOGS = [
+  'Created intermediate workflow bundle',
+  'Created final workflow bundle',
+];
+const STEP_BUNDLE_LOG = 'Created steps bundle';
 
 describe.each([
   'example',
@@ -137,6 +142,10 @@ describe.each([
       );
       if (deferredBuildSupported) {
         expect(result.output).not.toContain(EAGER_DISCOVERY_LOG);
+        for (const workflowBundleLog of WORKFLOW_BUNDLE_LOGS) {
+          expect(result.output).not.toContain(workflowBundleLog);
+        }
+        expect(result.output).not.toContain(STEP_BUNDLE_LOG);
       }
     }
 

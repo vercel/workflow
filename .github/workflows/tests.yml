@@ -172,6 +172,33 @@ jobs:
       - name: Run Unit Tests
         run: pnpm test --filter='!./docs' --filter='!./workbench/vitest'
 
+  serializable-revivers:
+    name: Serializable Reviver Compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.validation-fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          install-args: '--ignore-scripts'
+          build-packages: 'false'
+
+      - name: Build reviver packages
+        run: pnpm turbo run build --filter='@workflow/cli' --filter='@workflow/web-shared'
+
+      - name: Check web-shared and CLI revivers
+        run: pnpm vitest run packages/web-shared/test/serializable-revivers.test.ts
+
   build-error-messages:
     name: Node.js Module Build Errors Test
     runs-on: ubuntu-latest
