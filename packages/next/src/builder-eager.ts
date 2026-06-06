@@ -67,7 +67,6 @@ export async function getNextBuilderEager() {
 
       // V2: Build combined route (replaces separate step + flow routes)
       const combinedResult = await this.buildCombinedFunction(options);
-      await this.buildWebhookRoute({ workflowGeneratedDir });
       await this.buildWebhookRoute({
         workflowGeneratedDir: manifestGeneratedDir,
       });

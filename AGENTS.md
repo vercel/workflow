@@ -166,7 +166,7 @@ cd workbench/nextjs-turbopack && pnpm start
 **These are only relevant when writing code using the Workflow SDK**
 
 - Workflow files go in `workflows/` directory (or `src/workflows/` if using src)
-- Generated execution API routes appear in `app/.well-known/workflow/v2/` (Next.js integration); the v1 directory retains manifest and webhook compatibility resources
+- Generated workflow execution routes appear in `app/.well-known/workflow/v2/`, while webhook and manifest routes remain in `app/.well-known/workflow/v1/` (Next.js integration)
 - Workflow files must contain `"use workflow"` or `"use step"` directives to be processed
 - Add `.swc` directory to `.gitignore` for SWC plugin cache artifacts
 

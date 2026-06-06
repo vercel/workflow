@@ -14,12 +14,8 @@ const WORKFLOW_ROUTES = [
     dest: '/.well-known/workflow/v2/flow',
   },
   {
-    src: '^/\\.well-known/workflow/v2/webhook/([^/]+?)/?$',
-    dest: '/.well-known/workflow/v2/webhook/[token]',
-  },
-  {
     src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
-    dest: '/.well-known/workflow/v2/webhook/[token]',
+    dest: '/.well-known/workflow/v1/webhook/[token]',
   },
 ];
 
@@ -92,7 +88,6 @@ export const prerender = false;`
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
-    await this.buildWebhookRoute({ workflowGeneratedDir });
     await this.buildWebhookRoute({
       workflowGeneratedDir: manifestGeneratedDir,
     });
@@ -126,7 +121,7 @@ export const prerender = false;\n`
   }: {
     workflowGeneratedDir: string;
   }) {
-    // Create webhook route: .well-known/workflow/v2/webhook/[token].js
+    // Create webhook route: .well-known/workflow/v1/webhook/[token].js
     const webhookRouteFile = join(workflowGeneratedDir, 'webhook/[token].js');
 
     await this.createWebhookBundle({

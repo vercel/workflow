@@ -1552,7 +1552,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
 async function handler(request) {
   const url = new URL(request.url);
-  // Extract token from pathname: /.well-known/workflow/v2/webhook/{token}
+  // Extract token from pathname: /.well-known/workflow/v1/webhook/{token}
   const pathParts = url.pathname.split('/');
   const token = decodeURIComponent(pathParts[pathParts.length - 1]);
 

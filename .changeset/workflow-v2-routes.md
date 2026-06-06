@@ -13,4 +13,4 @@
 "@workflow/world-testing": patch
 ---
 
-Move workflow execution and canonical webhook routes to `/v2`, while retaining the `/v1/webhook` compatibility endpoint and cleaning stale v1 execution artifacts.
+Move the combined workflow execution route to `/v2` while keeping webhooks and the manifest under `/v1`, and clean stale v1 execution artifacts.

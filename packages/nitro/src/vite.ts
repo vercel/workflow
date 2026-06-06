@@ -54,7 +54,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         return () => {
           server.middlewares.use((req, res, next) => {
             // Only handle workflow webhook routes
-            if (!req.url?.startsWith('/.well-known/workflow/')) {
+            if (!req.url?.startsWith('/.well-known/workflow/v1/')) {
               return next();
             }
 

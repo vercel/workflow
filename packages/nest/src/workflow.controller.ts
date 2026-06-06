@@ -99,7 +99,7 @@ export class WorkflowController {
     await sendWebResponse(res, webResponse);
   }
 
-  @All('v2/webhook/:token')
+  @All('v1/webhook/:token')
   async handleWebhook(@Req() req: any, @Res() res: any) {
     const outDir = getOutDir();
     const { POST } = await import(
@@ -108,11 +108,6 @@ export class WorkflowController {
     const webRequest = toWebRequest(req);
     const webResponse = await POST(webRequest);
     await sendWebResponse(res, webResponse);
-  }
-
-  @All('v1/webhook/:token')
-  async handleLegacyWebhook(@Req() req: any, @Res() res: any) {
-    return this.handleWebhook(req, res);
   }
 
   @Get('v1/manifest.json')

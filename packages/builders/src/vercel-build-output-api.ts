@@ -19,10 +19,6 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
         recursive: true,
         force: true,
       }),
-      rm(join(functionsDir, '.well-known/workflow/v1/webhook'), {
-        recursive: true,
-        force: true,
-      }),
       rm(join(workflowGeneratedDir, 'manifest.json'), {
         force: true,
       }),
@@ -62,7 +58,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       runtime: this.config.runtime,
     });
 
-    await this.buildWebhookFunction({ workflowGeneratedDir });
+    await this.buildWebhookFunction({
+      workflowGeneratedDir: manifestGeneratedDir,
+    });
     await this.createBuildOutputConfig(outputDir);
 
     // Generate unified manifest
@@ -127,12 +125,8 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       version: 3,
       routes: [
         {
-          src: '^\\/\\.well-known\\/workflow\\/v2\\/webhook\\/([^\\/]+)$',
-          dest: '/.well-known/workflow/v2/webhook/[token]',
-        },
-        {
           src: '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$',
-          dest: '/.well-known/workflow/v2/webhook/[token]',
+          dest: '/.well-known/workflow/v1/webhook/[token]',
         },
       ],
     };
@@ -145,7 +139,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     console.log(`Build Output API created at ${outputDir}`);
     console.log('Combined function available at /.well-known/workflow/v2/flow');
     console.log(
-      'Webhook function available at /.well-known/workflow/v2/webhook/[token] (also accepts v1 webhook URLs)'
+      'Webhook function available at /.well-known/workflow/v1/webhook/[token]'
     );
   }
 }

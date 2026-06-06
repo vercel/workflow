@@ -211,11 +211,6 @@ export default {
 
       addVirtualHandler(
         nitro,
-        '/.well-known/workflow/v2/webhook/:token',
-        'workflow/webhook.mjs'
-      );
-      addVirtualHandler(
-        nitro,
         '/.well-known/workflow/v1/webhook/:token',
         'workflow/webhook.mjs'
       );
@@ -260,12 +255,8 @@ export default {
         };
 
         if (runtime) {
-          for (const webhookPath of [
-            '/.well-known/workflow/v2/webhook/:token',
-            '/.well-known/workflow/v1/webhook/:token',
-          ]) {
-            rules[webhookPath] = { ...rules[webhookPath], runtime };
-          }
+          const webhookPath = '/.well-known/workflow/v1/webhook/:token';
+          rules[webhookPath] = { ...rules[webhookPath], runtime };
 
           if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
             const manifestPath = '/.well-known/workflow/v1/manifest.json';

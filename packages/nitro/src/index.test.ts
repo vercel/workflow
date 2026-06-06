@@ -71,7 +71,6 @@ describe('@workflow/nitro virtual handlers', () => {
     ).toEqual(
       expect.arrayContaining([
         '/.well-known/workflow/v2/flow',
-        '/.well-known/workflow/v2/webhook/:token',
         '/.well-known/workflow/v1/webhook/:token',
       ])
     );
@@ -103,7 +102,6 @@ describe('@workflow/nitro virtual handlers', () => {
     ).toEqual(
       expect.arrayContaining([
         '/.well-known/workflow/v2/flow',
-        '/.well-known/workflow/v2/webhook/:token',
         '/.well-known/workflow/v1/webhook/:token',
       ])
     );
@@ -177,9 +175,8 @@ describe('@workflow/nitro Vercel functionRules', () => {
     await nitroModule.setup(nitro);
 
     const rules = nitro.options.vercel.functionRules;
-    expect(rules).toHaveProperty('/.well-known/workflow/v2/webhook/:token');
     expect(rules).toHaveProperty('/.well-known/workflow/v1/webhook/:token');
-    expect(rules).not.toHaveProperty('/.well-known/workflow/v2/webhook/**');
+    expect(rules).not.toHaveProperty('/.well-known/workflow/v1/webhook/**');
 
     const handlerRoutes = nitro.options.handlers.map(
       (h: { route: string }) => h.route
@@ -206,9 +203,6 @@ describe('@workflow/nitro Vercel functionRules', () => {
 
       const rules = nitro.options.vercel.functionRules;
       expect(rules['/.well-known/workflow/v2/flow'].runtime).toBe('nodejs22.x');
-      expect(rules['/.well-known/workflow/v2/webhook/:token'].runtime).toBe(
-        'nodejs22.x'
-      );
       expect(rules['/.well-known/workflow/v1/webhook/:token'].runtime).toBe(
         'nodejs22.x'
       );
@@ -233,7 +227,6 @@ describe('@workflow/nitro Vercel functionRules', () => {
     await nitroModule.setup(nitro);
 
     const rules = nitro.options.vercel.functionRules;
-    expect(rules).not.toHaveProperty('/.well-known/workflow/v2/webhook/:token');
     expect(rules).not.toHaveProperty('/.well-known/workflow/v1/webhook/:token');
     expect(rules).not.toHaveProperty('/.well-known/workflow/v1/manifest.json');
   });

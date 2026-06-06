@@ -28,7 +28,7 @@ export const getWorkflowConfig = (
     buildTarget: buildTarget as BuildTarget,
     stepsBundlePath: './.well-known/workflow/v2/__step_registrations.mjs',
     workflowsBundlePath: './.well-known/workflow/v2/flow.mjs',
-    webhookBundlePath: './.well-known/workflow/v2/webhook.mjs',
+    webhookBundlePath: './.well-known/workflow/v1/webhook.mjs',
     workflowManifestPath: workflowManifest,
 
     // WIP: generate a client library to easily execute workflows/steps

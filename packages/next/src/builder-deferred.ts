@@ -190,7 +190,6 @@ export async function getNextBuilderDeferred() {
       const outputDir = await this.findAppDirectory();
       const generatedRouteFiles = [
         join(outputDir, '.well-known/workflow/v2/flow/route.js'),
-        join(outputDir, '.well-known/workflow/v2/webhook/[token]/route.js'),
         join(outputDir, '.well-known/workflow/v1/webhook/[token]/route.js'),
       ];
 
@@ -543,10 +542,6 @@ export async function getNextBuilderDeferred() {
         discoveredEntries,
       });
       await this.buildWebhookRoute({
-        workflowGeneratedDir,
-        routeFileName: tempRouteFileName,
-      });
-      await this.buildWebhookRoute({
         workflowGeneratedDir: manifestGeneratedDir,
         routeFileName: tempRouteFileName,
       });
@@ -588,10 +583,6 @@ export async function getNextBuilderDeferred() {
         join(workflowGeneratedDir, 'flow/route.js')
       );
       await this.copyFileIfChanged(
-        join(workflowGeneratedDir, `webhook/[token]/${tempRouteFileName}`),
-        join(workflowGeneratedDir, 'webhook/[token]/route.js')
-      );
-      await this.copyFileIfChanged(
         join(manifestGeneratedDir, `webhook/[token]/${tempRouteFileName}`),
         join(manifestGeneratedDir, 'webhook/[token]/route.js')
       );
@@ -626,11 +617,7 @@ export async function getNextBuilderDeferred() {
       const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v2');
       const manifestGeneratedDir = join(outputDir, '.well-known/workflow/v1');
       const flowRouteDir = join(workflowGeneratedDir, 'flow');
-      const webhookRouteDir = join(workflowGeneratedDir, 'webhook/[token]');
-      const legacyWebhookRouteDir = join(
-        manifestGeneratedDir,
-        'webhook/[token]'
-      );
+      const webhookRouteDir = join(manifestGeneratedDir, 'webhook/[token]');
 
       const staleArtifactPaths = [
         join(flowRouteDir, 'route.js.temp'),
@@ -643,7 +630,6 @@ export async function getNextBuilderDeferred() {
         join(manifestGeneratedDir, 'step'),
         join(manifestGeneratedDir, 'config.json'),
         join(webhookRouteDir, 'route.js.temp'),
-        join(legacyWebhookRouteDir, 'route.js.temp'),
         join(manifestGeneratedDir, 'manifest.json'),
       ];
 
@@ -656,7 +642,6 @@ export async function getNextBuilderDeferred() {
         ),
         this.removeStaleDeferredTempFiles(flowRouteDir),
         this.removeStaleDeferredTempFiles(webhookRouteDir),
-        this.removeStaleDeferredTempFiles(legacyWebhookRouteDir),
       ]);
     }
 
@@ -1174,9 +1159,6 @@ export async function getNextBuilderDeferred() {
       const manifestGeneratedDir = join(outputDir, '.well-known/workflow/v1');
 
       await mkdir(join(workflowGeneratedDir, 'flow'), { recursive: true });
-      await mkdir(join(workflowGeneratedDir, 'webhook/[token]'), {
-        recursive: true,
-      });
       await mkdir(join(manifestGeneratedDir, 'webhook/[token]'), {
         recursive: true,
       });
@@ -1190,14 +1172,10 @@ export async function getNextBuilderDeferred() {
         '*'
       );
 
-      // V2: Only flow + webhook stubs needed (no separate step route).
+      // V2: Only the combined flow stub is needed; webhook remains under v1.
       // Stubs are replaced by generated output once discovery finishes.
       await this.writeFileIfChanged(
         join(workflowGeneratedDir, 'flow/route.js'),
-        routeStubContent
-      );
-      await this.writeFileIfChanged(
-        join(workflowGeneratedDir, 'webhook/[token]/route.js'),
         routeStubContent
       );
       await this.writeFileIfChanged(

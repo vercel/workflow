@@ -417,7 +417,7 @@ describe('e2e', () => {
       // Attempt to resume via the public webhook endpoint — should get 404
       const res = await fetch(
         new URL(
-          `/.well-known/workflow/v2/webhook/${encodeURIComponent(token)}`,
+          `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
           deploymentUrl
         ),
         {
@@ -472,7 +472,7 @@ describe('e2e', () => {
     // Webhook with default response
     const res = await fetch(
       new URL(
-        `/.well-known/workflow/v2/webhook/${encodeURIComponent(token)}`,
+        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
         deploymentUrl
       ),
       {
@@ -485,7 +485,7 @@ describe('e2e', () => {
     const body = await res.text();
     expect(body).toBe('');
 
-    // The legacy v1 webhook path remains usable for existing external integrations.
+    // Webhook with static response
     const res2 = await fetch(
       new URL(
         `/.well-known/workflow/v1/webhook/${encodeURIComponent(token2)}`,
@@ -504,7 +504,7 @@ describe('e2e', () => {
     // Webhook with manual response
     const res3 = await fetch(
       new URL(
-        `/.well-known/workflow/v2/webhook/${encodeURIComponent(token3)}`,
+        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token3)}`,
         deploymentUrl
       ),
       {
@@ -521,7 +521,7 @@ describe('e2e', () => {
     expect(returnValue).toHaveLength(3);
     expect(returnValue[0].url).toBe(
       new URL(
-        `/.well-known/workflow/v2/webhook/${encodeURIComponent(token)}`,
+        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
         deploymentUrl
       ).href
     );
@@ -539,7 +539,7 @@ describe('e2e', () => {
 
     expect(returnValue[2].url).toBe(
       new URL(
-        `/.well-known/workflow/v2/webhook/${encodeURIComponent(token3)}`,
+        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token3)}`,
         deploymentUrl
       ).href
     );
@@ -549,7 +549,7 @@ describe('e2e', () => {
 
   test('webhook route with invalid token', { timeout: 60_000 }, async () => {
     const invalidWebhookUrl = new URL(
-      `/.well-known/workflow/v2/webhook/${encodeURIComponent('invalid')}`,
+      `/.well-known/workflow/v1/webhook/${encodeURIComponent('invalid')}`,
       deploymentUrl
     );
     const res = await fetch(invalidWebhookUrl, {

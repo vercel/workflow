@@ -40,8 +40,7 @@ export class StandaloneBuilder extends BaseBuilder {
       bundleFinalOutput: true,
     });
 
-    await this.buildWebhookFunction(this.config.webhookBundlePath);
-    await this.buildWebhookFunction('./.well-known/workflow/v1/webhook.mjs');
+    await this.buildWebhookFunction();
 
     const manifestDir = this.resolvePath('.well-known/workflow/v1');
     await this.createManifest({
@@ -53,10 +52,10 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.createClientLibrary();
   }
 
-  private async buildWebhookFunction(webhookPath: string): Promise<void> {
-    console.log('Creating webhook bundle at', webhookPath);
+  private async buildWebhookFunction(): Promise<void> {
+    console.log('Creating webhook bundle at', this.config.webhookBundlePath);
 
-    const webhookBundlePath = this.resolvePath(webhookPath);
+    const webhookBundlePath = this.resolvePath(this.config.webhookBundlePath);
     await this.ensureDirectory(webhookBundlePath);
 
     await this.createWebhookBundle({

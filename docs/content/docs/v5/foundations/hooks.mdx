@@ -219,10 +219,10 @@ While hooks are powerful, they require you to manually handle HTTP requests and 
 2. Provides an automatically addressable `url` property pointing to the generated webhook endpoint
 3. Handles sending HTTP [`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response) objects back to the caller
 
-When using Workflow SDK, webhooks are automatically wired up at `/.well-known/workflow/v2/webhook/:token` without any additional setup. Existing v1 webhook URLs continue to resolve for compatibility.
+When using Workflow SDK, webhooks are automatically wired up at `/.well-known/workflow/v1/webhook/:token` without any additional setup.
 
 <Callout type="warn">
-`createWebhook()` exposes a public route at `/.well-known/workflow/v2/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. This is convenient for prototypes and a simple developer experience because you can share the webhook URL (endpoint) without creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
+`createWebhook()` exposes a public route at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. This is convenient for prototypes and a simple developer experience because you can share the webhook URL (endpoint) without creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
 </Callout>
 
 <Callout type="info">
@@ -243,7 +243,7 @@ export async function webhookWorkflow() {
 
   // The webhook is automatically available at this URL
   console.log("Send HTTP requests to:", webhook.url);
-  // Example: https://your-app.com/.well-known/workflow/v2/webhook/lJHkuMdQ2FxSFTbUMU84k
+  // Example: https://your-app.com/.well-known/workflow/v1/webhook/lJHkuMdQ2FxSFTbUMU84k
 
   // Workflow pauses until an HTTP request is received
   const request = await webhook;

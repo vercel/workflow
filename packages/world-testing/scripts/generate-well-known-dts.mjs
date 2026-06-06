@@ -13,7 +13,6 @@ const stub =
 
 for (const [dir, name] of [
   ['.well-known/workflow/v2', 'flow'],
-  ['.well-known/workflow/v2', 'webhook'],
   ['.well-known/workflow/v1', 'webhook'],
 ]) {
   const dts = `${dir}/${name}.d.mts`;

@@ -211,7 +211,7 @@ The IDs are generated exactly like in workflow mode to ensure they can be direct
 
 ## Generated Files
 
-When you build your application, the Workflow SDK generates a combined flow handler and webhook handler in `.well-known/workflow/v2/`, plus a v1 webhook compatibility handler:
+When you build your application, the Workflow SDK generates a combined flow handler in `.well-known/workflow/v2/` and a webhook handler in `.well-known/workflow/v1/`:
 
 ### `flow.js`
 
@@ -334,7 +334,7 @@ These transformations are framework-agnostic—they output standard JavaScript t
 
 If you need to debug transformation issues, you can inspect the generated files:
 
-1. **Look in `.well-known/workflow/v2/`**: Check the generated `flow.js`, `__step_registrations.js`, `webhook.js`, and other emitted debug files.
+1. **Look in `.well-known/workflow/`**: Check the generated v2 `flow.js`, v2 `__step_registrations.js`, v1 `webhook.js`, and other emitted debug files.
 2. **Check build logs**: Most frameworks log transformation activity during builds
 3. **Verify directives**: Ensure `"use workflow"` and `"use step"` are the first statements in functions
 4. **Check file locations**: Transformations only apply to files in configured source directories

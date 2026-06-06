@@ -100,7 +100,6 @@ export const POST = async ({request}) => {
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
-    await this.buildWebhookRoute({ workflowGeneratedDir });
     await this.buildWebhookRoute({
       workflowGeneratedDir: manifestGeneratedDir,
     });
@@ -136,7 +135,7 @@ export const POST = async ({request}) => {
   }: {
     workflowGeneratedDir: string;
   }) {
-    // Create webhook route: .well-known/workflow/v2/webhook/[token]/+server.js
+    // Create webhook route: .well-known/workflow/v1/webhook/[token]/+server.js
     const webhookRouteFile = join(
       workflowGeneratedDir,
       'webhook/[token]/+server.js'
