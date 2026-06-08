@@ -549,88 +549,100 @@ describe('e2e', () => {
 
   test(
     'parallelStepsThenWebhookWorkflow - no hook_conflict from same-tick replay race',
-    { timeout: 180_000 },
+    { timeout: 120_000 },
     async () => {
       // Regression test for https://github.com/vercel/workflow/issues/1665
       // and https://github.com/vercel/workflow/issues/2283.
       //
-      // Multiple child workflows each create one webhook; awaited
-      // together with Promise.all, their hook creations race on the
-      // same parent workflow body. When the resolutions land in the
-      // same tick the workflow body is re-walked, and each walk
-      // produces the same deterministic correlationId/token for the
-      // `createWebhook()` call, submitting `hook_created` twice for
-      // the same `(runId, hookId, token)`.
+      // The workflow runs N sequential iterations of
+      //   await Promise.all([stepA, stepB]);
+      //   using webhook = createWebhook();
+      //   await webhook;
+      // (Paolo's minimal repro). Each iteration is an independent
+      // chance for the two `step_completed` events to land in the
+      // same suspension-flush tick, which would cause the workflow
+      // body to be re-walked twice and both walks to submit
+      // `hook_created` with the same deterministic
+      // `(correlationId, token)`.
       //
-      // Before the world-side idempotency fix, the world wrote a
-      // `hook_conflict` event for the second submission, which on
-      // replay made the hook reject with `HookConflictError`. With the
-      // fix, the duplicate is rejected with `EntityConflictError`
-      // (which the suspension handler swallows), no `hook_conflict`
-      // event is written, and the webhooks resolve normally.
-      const NUM_WEBHOOKS = 6;
-      const run = await start(
-        await e2e('parallelStepsThenWebhookWorkflow'),
-        []
-      );
+      // Before the world-side idempotency fix, the world accepted the
+      // first `hook_created` and wrote a `hook_conflict` event for
+      // the second — even though both events carried the same
+      // `(runId, hookId, token)`. On replay the hook's awaitable saw
+      // the `hook_conflict` and rejected with `HookConflictError`,
+      // failing the run.
+      //
+      // With the fix, the duplicate is rejected with
+      // `EntityConflictError` (which the suspension handler at
+      // suspension-handler.ts:142 swallows as a benign concurrent-
+      // replay outcome), no `hook_conflict` event is written, and
+      // the webhook resolves normally.
+      //
+      // Note: the race is timing-sensitive — a single workflow body
+      // does not reproduce it on every run, especially on fast local
+      // dev. The unit tests in `world-local` and `world-postgres`
+      // cover the same `(runId, hookId)` idempotency invariant
+      // deterministically. This test exists as a higher-level
+      // regression net: the assertions (no `hook_conflict` event in
+      // the log, no `HookConflictError`-failed run) are correct
+      // whether the race fires or not, and will catch any future
+      // regression that reintroduces the self-conflict on a run that
+      // does hit the race.
+      const ITERATIONS = 10;
+      const run = await start(await e2e('parallelStepsThenWebhookWorkflow'), [
+        ITERATIONS,
+      ]);
 
-      // Wait for all webhooks to register for this run.
       const world = await getWorld();
-      const hooks = await (async () => {
-        const deadline = Date.now() + 120_000;
-        while (Date.now() < deadline) {
-          const { data } = await world.hooks.list({ runId: run.runId });
-          if (data.length > NUM_WEBHOOKS) {
-            const tokens = data.map((h) => h.token).join(', ');
-            throw new Error(
-              `Expected ${NUM_WEBHOOKS} webhooks for run ${run.runId}, but found ${data.length}. Tokens: [${tokens}]`
-            );
-          }
-          if (data.length === NUM_WEBHOOKS) return data;
-          await sleep(500);
-        }
-        throw new Error(
-          `Timed out waiting for ${NUM_WEBHOOKS} webhooks to be registered for run ${run.runId}`
-        );
-      })();
 
-      // Fire each webhook to unblock the workflow.
-      await Promise.all(
-        hooks.map(async (hook) => {
-          const res = await fetch(
-            new URL(
-              `/.well-known/workflow/v1/webhook/${encodeURIComponent(hook.token)}`,
-              deploymentUrl
-            ),
-            {
-              method: 'POST',
-              headers: await getTrustedSourcesHeaders(),
-              body: `body-${hook.token}`,
-            }
-          );
-          expect(res.status).toBe(202);
-        })
-      );
+      // The workflow processes iterations sequentially, one webhook
+      // at a time. After each iteration's webhook is registered, fire
+      // it to unblock the next iteration. Track which tokens we've
+      // already served so we only POST once per webhook.
+      const servedTokens = new Set<string>();
+      const deadline = Date.now() + 150_000;
+      while (Date.now() < deadline) {
+        // Is the run done?
+        const runRow = await world.runs.get(run.runId);
+        if (runRow.status !== 'pending' && runRow.status !== 'running') break;
+
+        const { data: hooks } = await world.hooks.list({ runId: run.runId });
+        const unservedHook = hooks.find((h) => !servedTokens.has(h.token));
+        if (!unservedHook) {
+          await sleep(100);
+          continue;
+        }
+
+        const res = await fetch(
+          new URL(
+            `/.well-known/workflow/v1/webhook/${encodeURIComponent(unservedHook.token)}`,
+            deploymentUrl
+          ),
+          {
+            method: 'POST',
+            headers: await getTrustedSourcesHeaders(),
+            body: `body-${unservedHook.token}`,
+          }
+        );
+        expect(res.status).toBe(202);
+        servedTokens.add(unservedHook.token);
+      }
 
       // Workflow should complete cleanly with no HookConflictError.
-      const result = (await run.returnValue) as Array<{
-        label: string;
-        token: string;
-        body: string;
-      }>;
-      expect(result).toHaveLength(NUM_WEBHOOKS);
-      for (const child of result) {
-        expect(child.body).toBe(`body-${child.token}`);
+      const result = (await run.returnValue) as string[];
+      expect(result).toHaveLength(ITERATIONS);
+      // Every webhook the workflow created should have been served.
+      expect(servedTokens.size).toBe(ITERATIONS);
+      for (const token of result) {
+        expect(servedTokens.has(token)).toBe(true);
       }
 
       // Inspect the event log: there must be no hook_conflict event,
       // even if the replay race triggered duplicate `hook_created`
       // submissions to the world. Paginate to cover all events — the
-      // default page limit is 20 and a 6-child run produces ~60 events.
-      const allEvents: Array<{
-        eventType: string;
-        correlationId: string | undefined;
-      }> = [];
+      // default page limit is 20 and an N-iteration run can produce
+      // many hundreds of events.
+      const allEvents: Array<{ eventType: string }> = [];
       let cursor: string | undefined;
       while (true) {
         const page = await world.events.list({
@@ -648,8 +660,8 @@ describe('e2e', () => {
         (e) => e.eventType === 'hook_created'
       );
       expect(hookConflictEvents).toEqual([]);
-      // There should be exactly NUM_WEBHOOKS hook_created events in the log.
-      expect(hookCreatedEvents).toHaveLength(NUM_WEBHOOKS);
+      // There should be exactly ITERATIONS hook_created events in the log.
+      expect(hookCreatedEvents).toHaveLength(ITERATIONS);
 
       const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
       expect(runData.status).toBe('completed');
