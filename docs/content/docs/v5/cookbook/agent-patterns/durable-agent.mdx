@@ -1,11 +1,15 @@
 ---
 title: Durable Agent
-description: Replace a stateless AI agent with a durable one that survives crashes, retries tool calls, and streams output.
+description: Deprecated DurableAgent pattern; use WorkflowAgent for durable, resumable AI agents.
 type: guide
-summary: Convert an AI SDK Agent into a DurableAgent backed by a workflow, with tools as retryable steps.
+summary: Deprecated: DurableAgent has been replaced by AI SDK's WorkflowAgent.
 ---
 
 Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically.
+
+<Callout type="warn">
+`DurableAgent` is deprecated. For new durable agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent), which replaces `DurableAgent` with the maintained `@ai-sdk/workflow` API.
+</Callout>
 
 ## When to use this
 
