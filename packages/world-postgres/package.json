@@ -52,7 +52,7 @@
     "@workflow/world-local": "workspace:*",
     "cbor-x": "1.6.0",
     "dotenv": "17.3.1",
-    "drizzle-orm": "0.45.1",
+    "drizzle-orm": "0.45.2",
     "graphile-worker": "0.16.6",
     "pg": "8.20.0",
     "ulid": "catalog:",
