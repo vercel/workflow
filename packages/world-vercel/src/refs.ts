@@ -47,38 +47,49 @@ export function isRefDescriptor(value: unknown): value is RefDescriptor {
 const REF_RESOLVE_CONCURRENCY = 10;
 
 /**
- * Minimum number of bytes a stored ref payload can ever be.
+ * Minimum number of bytes a stored *binary* (octet-stream) ref payload can
+ * ever be.
  *
- * The SDK writes every ref payload with a 4-byte format prefix (see
+ * The SDK writes every binary ref payload with a 4-byte format prefix (see
  * `FORMAT_PREFIX_LENGTH` / `encodeWithFormatPrefix` in
- * `@workflow/core/src/serialization/format.ts`). A 0–3 byte response body
- * is therefore never a valid stored ref — it indicates either a
- * server-side corruption or a transport-layer truncation (proxy drop,
- * edge-cache miss returning a partial 200, abort during streaming, etc.).
+ * `@workflow/core/src/serialization/format.ts`). A 1–3 byte
+ * `application/octet-stream` body is therefore never a valid stored binary
+ * ref — it indicates a server-side corruption or a transport-layer
+ * truncation (proxy drop, edge-cache miss returning a partial 200, abort
+ * during streaming, etc.).
  *
  * Without a transport-layer guard, those bytes would flow into the
- * workflow's deterministic event-log replay and fail with
- * `Data too short to contain format prefix: expected at least 4 bytes, got N`
- * (or a confusing CBOR decode error). By that point the in-memory event
- * snapshot is already poisoned: the same failure replays deterministically
- * forever, downstream `resumeHook()` calls surface as `Hook not found`,
- * and the run only unsticks when stale-run cleanup terminates the sandbox.
+ * workflow's deterministic event-log replay and fail downstream with
+ * `Data too short to contain format prefix: expected at least 4 bytes, got N`.
+ * By that point the in-memory event snapshot is already poisoned: the same
+ * failure replays deterministically forever, downstream `resumeHook()`
+ * calls surface as `Hook not found`, and the run only unsticks when
+ * stale-run cleanup terminates the sandbox.
+ *
+ * This minimum does NOT apply to `application/cbor` refs: the server still
+ * stores non-binary values as raw CBOR (`S3RemoteRef`/Redis refs encode
+ * non-`Uint8Array` values and mark them `application/cbor`), and valid CBOR
+ * primitives like `true`, `0`, or `null` encode to a single byte.
  */
-const MIN_REF_PAYLOAD_BYTES = 4;
+const MIN_BINARY_REF_PAYLOAD_BYTES = 4;
 
 /**
  * Defense-in-depth validation for ref resolve response bodies.
  *
  * Rejects:
- *   1. Bodies shorter than {@link MIN_REF_PAYLOAD_BYTES}.
- *   2. Bodies whose actual length disagrees with a well-formed
+ *   1. Zero-byte bodies (never valid for any content type — an empty body
+ *      cannot CBOR-decode and is never a valid stored binary payload).
+ *   2. `application/octet-stream` bodies shorter than the 4-byte format
+ *      prefix the SDK always writes ({@link MIN_BINARY_REF_PAYLOAD_BYTES}).
+ *      CBOR bodies are exempt because valid CBOR primitives are 1 byte.
+ *   3. Bodies whose actual length disagrees with a well-formed
  *      `Content-Length` header (catches truncation when the server
  *      declared a length we can compare against).
  *
- * A non-numeric, negative, or otherwise malformed `Content-Length` is
- * treated as absent — `Number("abc")` is `NaN`, and silently surfacing
- * that as a "truncated" error would mask the actual cause. The
- * minimum-length check still defends against truncation in that case.
+ * A `Content-Length` that is not a plain run of digits (e.g. `"abc"`,
+ * `"12junk"`, `"12, 12"`, negative) is treated as absent — surfacing it as
+ * a "truncated" error would mask the actual cause. The checks above still
+ * defend against truncation in that case.
  *
  * Throws {@link WorkflowWorldError} so the runtime retry layer can treat
  * this as a transport-level error instead of poisoning replay.
@@ -96,35 +107,46 @@ function assertValidRefBody(
 ): void {
   const { ref, url, status, contentType, contentLengthHeader, span } = ctx;
   const actualLength = buffer.byteLength;
+  const isBinary = contentType.includes('application/octet-stream');
 
-  if (actualLength < MIN_REF_PAYLOAD_BYTES) {
-    const code = actualLength === 0 ? 'empty-ref-body' : 'truncated-ref-body';
-    const message =
-      actualLength === 0
-        ? `Ref resolve returned a zero-byte body for ${ref} (Content-Type=${contentType || '<none>'}). Refusing to corrupt the event log with an empty payload.`
-        : `Ref resolve returned a truncated ${actualLength}-byte body for ${ref} (Content-Type=${contentType || '<none>'}); minimum valid payload is ${MIN_REF_PAYLOAD_BYTES} bytes.`;
+  const throwInvalid = (code: string, message: string): never => {
     const error = new WorkflowWorldError(message, { url, status, code });
     span?.setAttributes({ ...ErrorType(code) });
     span?.recordException?.(error);
     throw error;
+  };
+
+  if (actualLength === 0) {
+    throwInvalid(
+      'empty-ref-body',
+      `Ref resolve returned a zero-byte body for ${ref} (Content-Type=${contentType || '<none>'}). Refusing to corrupt the event log with an empty payload.`
+    );
+  }
+
+  // The 4-byte format-prefix minimum only applies to raw binary payloads.
+  // CBOR refs can legitimately be 1–3 bytes (e.g. the primitives true/0/null).
+  if (isBinary && actualLength < MIN_BINARY_REF_PAYLOAD_BYTES) {
+    throwInvalid(
+      'truncated-ref-body',
+      `Ref resolve returned a truncated ${actualLength}-byte binary body for ${ref} (Content-Type=${contentType}); minimum valid payload is ${MIN_BINARY_REF_PAYLOAD_BYTES} bytes (4-byte format prefix).`
+    );
   }
 
   if (contentLengthHeader == null) return;
 
+  // Only a plain run of digits is a well-formed Content-Length. parseInt
+  // would happily accept numeric-prefixed garbage ("12junk" -> 12,
+  // "12, 12" -> 12), which could fabricate a phantom mismatch or silently
+  // accept an invalid header. Anything else is treated as absent.
+  if (!/^\d+$/.test(contentLengthHeader)) return;
+
   const declaredLength = Number.parseInt(contentLengthHeader, 10);
-  if (!Number.isFinite(declaredLength) || declaredLength < 0) {
-    // Malformed Content-Length — treat as absent.
-    return;
-  }
   if (declaredLength === actualLength) return;
 
-  const error = new WorkflowWorldError(
-    `Ref resolve body length mismatch for ${ref}: Content-Length=${contentLengthHeader}, actual=${actualLength} bytes. The response body was truncated in transit; refusing to use it.`,
-    { url, status, code: 'ref-body-length-mismatch' }
+  throwInvalid(
+    'ref-body-length-mismatch',
+    `Ref resolve body length mismatch for ${ref}: Content-Length=${contentLengthHeader}, actual=${actualLength} bytes. The response body was truncated in transit; refusing to use it.`
   );
-  span?.setAttributes({ ...ErrorType('ref-body-length-mismatch') });
-  span?.recordException?.(error);
-  throw error;
 }
 
 /**

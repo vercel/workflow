@@ -136,12 +136,12 @@ describe('resolveRefDescriptor', () => {
     ).rejects.toThrow(/length mismatch/);
   });
 
-  it('throws when the body is shorter than the minimum format-prefix length (with Content-Length)', async () => {
-    // The SDK guarantees a 4-byte format prefix on every stored ref
-    // payload. A 1-3 byte body — even one that "agrees" with the
-    // declared Content-Length — would still deterministically fail
-    // downstream replay with "Data too short to contain format prefix".
-    // We catch it at the transport boundary.
+  it('throws when a binary body is shorter than the format-prefix length (with Content-Length)', async () => {
+    // The SDK guarantees a 4-byte format prefix on every stored binary
+    // ref payload. A 1-3 byte octet-stream body — even one that "agrees"
+    // with the declared Content-Length — would still deterministically
+    // fail downstream replay with "Data too short to contain format
+    // prefix". We catch it at the transport boundary.
     const tooShort = new Uint8Array([0x01, 0x02, 0x03]);
     mockFetch.mockResolvedValueOnce(
       new Response(tooShort, {
@@ -155,36 +155,57 @@ describe('resolveRefDescriptor', () => {
 
     await expect(
       resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID)
-    ).rejects.toThrow(/truncated 3-byte body/);
+    ).rejects.toThrow(/truncated 3-byte binary body/);
   });
 
-  it('throws when the body is shorter than the minimum format-prefix length (no Content-Length)', async () => {
+  it('throws when a binary body is shorter than the format-prefix length (no Content-Length)', async () => {
     // Same as above but for chunked transfer where Content-Length is
     // absent. This is the case the Content-Length validator can't see,
     // so the minimum-length defense is what protects us. Without it,
-    // a 1–3 byte truncated response in chunked mode would still flow
-    // downstream and trigger the same "Data too short" failure that
+    // a 1–3 byte truncated binary response in chunked mode would still
+    // flow downstream and trigger the same "Data too short" failure that
     // poisons the in-memory event log.
     const tooShort = new Uint8Array([0xfa]);
     mockFetch.mockResolvedValueOnce(
       new Response(tooShort, {
         status: 200,
-        headers: new Headers({ 'Content-Type': 'application/cbor' }),
+        headers: new Headers({ 'Content-Type': 'application/octet-stream' }),
       })
     );
 
     await expect(
       resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID)
-    ).rejects.toThrow(/truncated 1-byte body/);
+    ).rejects.toThrow(/truncated 1-byte binary body/);
+  });
+
+  it('decodes a 1-byte CBOR primitive (the 4-byte minimum is binary-only)', async () => {
+    // The server stores non-binary values as raw CBOR and CBOR
+    // primitives (true/false/null/small ints) encode to a single byte.
+    // The 4-byte format-prefix minimum must NOT reject these — it only
+    // applies to application/octet-stream binary payloads.
+    const encoded = encode(true);
+    expect(encoded.byteLength).toBe(1);
+    mockFetch.mockResolvedValueOnce(
+      new Response(encoded, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/cbor',
+          'Content-Length': '1',
+        },
+      })
+    );
+
+    const result = await resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID);
+
+    expect(result).toBe(true);
   });
 
   it('ignores a malformed Content-Length header instead of misreporting truncation', async () => {
     // Some upstream paths could in theory emit a non-numeric or
-    // otherwise malformed Content-Length (e.g. proxy bugs). Without
-    // care, `Number("abc") === NaN` would surface as a "truncated"
-    // error even when the body itself is fine. We treat malformed
-    // declared lengths as absent and rely on the minimum-length check
-    // for safety.
+    // otherwise malformed Content-Length (e.g. proxy bugs). parseInt
+    // would happily turn "not-a-number" into NaN (surfacing a phantom
+    // "truncated" error) or "12junk" into 12 (a false mismatch). We only
+    // accept a plain run of digits and treat anything else as absent.
     const payload = { ok: true };
     const encoded = encode(payload);
     mockFetch.mockResolvedValueOnce(
@@ -193,6 +214,27 @@ describe('resolveRefDescriptor', () => {
         headers: {
           'Content-Type': 'application/cbor',
           'Content-Length': 'not-a-number',
+        },
+      })
+    );
+
+    const result = await resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID);
+
+    expect(result).toEqual(payload);
+  });
+
+  it('ignores a numeric-prefixed Content-Length instead of fabricating a mismatch', async () => {
+    // parseInt("12junk") === 12, which could fabricate a phantom
+    // length-mismatch error against a perfectly valid body. The strict
+    // all-digits check treats this as absent.
+    const payload = { ok: true };
+    const encoded = encode(payload);
+    mockFetch.mockResolvedValueOnce(
+      new Response(encoded, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/cbor',
+          'Content-Length': `${encoded.byteLength}junk`,
         },
       })
     );
