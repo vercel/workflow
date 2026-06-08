@@ -65,10 +65,29 @@ import { withRunFileLock } from './runs-storage.js';
  */
 const stepLocks = new Map<string, Promise<unknown>>();
 
+/**
+ * Per-hook in-process async mutex. Serializes concurrent
+ * `events.create({ eventType: 'hook_created', correlationId })` calls
+ * for the same (runId, correlationId) so the "claim token, then write
+ * hook entity + event" sequence runs to completion before another
+ * in-process invocation enters the dedup branch. Without this, two
+ * concurrent same-tick callers can race between the
+ * `writeExclusive(claim)` of one and the same-`(runId, hookId)`
+ * dedup check of the other and incorrectly observe an orphaned-
+ * looking claim during the small window before the entity write
+ * lands. This mutex does NOT replace the on-disk constraint file —
+ * that file remains the durable source of truth across processes /
+ * restarts.
+ */
+const hookLocks = new Map<string, Promise<unknown>>();
+
 const HookTokenClaimSchema = z.object({
-  // `hookId` is optional for backward compatibility with claim files
-  // written by older versions that did not persist the hook id. Newer
-  // writes (see the hook_created branch below) always include it.
+  // The token-claim writer below has always persisted `hookId`, but
+  // this read schema previously omitted it, which is the bug fixed
+  // by https://github.com/vercel/workflow/issues/2283. `optional()`
+  // is defensive: any claim file that somehow lacks the field still
+  // parses (yielding `undefined`) and falls through to the cross-
+  // hook conflict branch, matching pre-fix behavior.
   hookId: z.string().optional(),
   runId: z.string(),
 });
@@ -86,8 +105,12 @@ async function readHookTokenClaim(
   }
 }
 
-function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const prev = stepLocks.get(key);
+function withInProcessLock<T>(
+  locks: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prev = locks.get(key);
   const taskBox: { task?: Promise<T> } = {};
   const task = (async () => {
     if (prev) {
@@ -97,14 +120,22 @@ function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
     } finally {
-      if (stepLocks.get(key) === taskBox.task) {
-        stepLocks.delete(key);
+      if (locks.get(key) === taskBox.task) {
+        locks.delete(key);
       }
     }
   })();
   taskBox.task = task;
-  stepLocks.set(key, task);
+  locks.set(key, task);
   return task;
+}
+
+function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  return withInProcessLock(stepLocks, key, fn);
+}
+
+function withHookLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  return withInProcessLock(hookLocks, key, fn);
 }
 
 /**
@@ -208,6 +239,21 @@ export function createEventsStorage(
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
         return withStepLock(lockKey, () => createImpl());
+      }
+      // `hook_created` is serialized per-(runId, hookId) so the
+      // "claim token, write hook entity, write event" sequence runs to
+      // completion before another in-process invocation enters the
+      // same-hook dedup branch. Without this, two same-tick concurrent
+      // callers can race between the winner's `writeExclusive(claim)`
+      // and `writeJSON(hook)`, making the second caller momentarily
+      // observe a claim with no matching hook entity — which the
+      // crash-recovery path below would misinterpret as a prior crash
+      // and incorrectly fall through to a second hook entity write.
+      if (data.eventType === 'hook_created' && runId && data.correlationId) {
+        const lockKey = tag
+          ? `${runId}-${data.correlationId}.hook.${tag}`
+          : `${runId}-${data.correlationId}.hook`;
+        return withHookLock(lockKey, () => createImpl());
       }
       return createImpl();
 
@@ -944,65 +990,100 @@ export function createEventsStorage(
             })
           );
 
+          // Recovery shape: writing the hook entity proceeds when one of
+          //   (a) we just won `writeExclusive` for the token claim, or
+          //   (b) the claim was already ours from a prior in-flight
+          //       attempt that crashed before the hook entity landed
+          //       (orphaned-claim recovery — see below). In case (b) we
+          //       overwrite any stale partial hook entity so the run
+          //       can make forward progress.
+          let writeHookEntityWithOverwrite = false;
+
           if (!tokenClaimed) {
             const existingClaim = await readHookTokenClaim(constraintPath);
 
-            // Idempotency: if the existing claim is for the *same* (runId,
-            // hookId) we are trying to create, this is a duplicate /
-            // replayed processing of the same hook_created — not a real
-            // conflict with a different hook or run. Throw
-            // EntityConflictError so the runtime's existing concurrent-
-            // replay catch path (matching the step_created path above)
-            // swallows it, instead of producing a self-conflict in the
-            // event log that would later replay as HookConflictError.
-            // See: https://github.com/vercel/workflow/issues/2283
+            // Idempotency: if the existing claim is for the *same*
+            // (runId, hookId) we are trying to create, this is either
+            // a duplicate / replayed processing of the same
+            // `hook_created`, or an orphaned claim from a prior
+            // crashed attempt. Distinguish by checking whether the
+            // durable hook entity actually exists:
+            //   - exists → real duplicate: throw EntityConflictError
+            //     so the runtime's concurrent-replay catch path
+            //     (matching the step_created path above) swallows it,
+            //     instead of producing a self-conflict in the event
+            //     log that would later replay as HookConflictError.
+            //     See https://github.com/vercel/workflow/issues/2283.
+            //   - missing → orphaned claim (crash between
+            //     `writeExclusive` and the hook entity write): fall
+            //     through to (re-)write the hook entity and let the
+            //     outer code path emit the `hook_created` event,
+            //     completing the partial write.
+            //
+            // The `withHookLock` in-process mutex above keeps two
+            // same-tick callers from racing into this branch with the
+            // winner mid-write — only prior-attempt orphans land here
+            // with a missing hook entity.
             if (
               existingClaim?.runId === effectiveRunId &&
               existingClaim.hookId === data.correlationId
             ) {
-              throw new EntityConflictError(
-                `Hook "${data.correlationId}" already created`
+              const existingHook = await readJSONWithFallback(
+                basedir,
+                'hooks',
+                data.correlationId,
+                HookSchema,
+                tag
               );
+              if (existingHook) {
+                throw new EntityConflictError(
+                  `Hook "${data.correlationId}" already created`
+                );
+              }
+              // Orphaned claim: claim file exists but hook entity is
+              // missing. Treat as our claim and recover.
+              writeHookEntityWithOverwrite = true;
+            } else {
+              // Cross-hook / cross-run conflict: a different
+              // (runId, hookId) holds this token. Create a
+              // hook_conflict event so the workflow can fail
+              // gracefully when the hook is awaited.
+              const conflictEvent: Event = {
+                eventType: 'hook_conflict',
+                correlationId: data.correlationId,
+                eventData: {
+                  token: hookData.token,
+                  ...(existingClaim
+                    ? { conflictingRunId: existingClaim.runId }
+                    : {}),
+                },
+                runId: effectiveRunId,
+                eventId,
+                createdAt: now,
+                specVersion: effectiveSpecVersion,
+              };
+
+              const compositeKey = `${effectiveRunId}-${eventId}`;
+              await writeJSON(
+                taggedPath(basedir, 'events', compositeKey, tag),
+                conflictEvent
+              );
+
+              const resolveData =
+                params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+              const filteredEvent = stripEventDataRefs(
+                conflictEvent,
+                resolveData
+              );
+
+              // Return EventResult with conflict event (no hook entity created)
+              return {
+                event: filteredEvent,
+                run,
+                step,
+                hook: undefined,
+              };
             }
-
-            // Create hook_conflict event instead of hook_created
-            // This allows the workflow to continue and fail gracefully when the hook is awaited
-            const conflictEvent: Event = {
-              eventType: 'hook_conflict',
-              correlationId: data.correlationId,
-              eventData: {
-                token: hookData.token,
-                ...(existingClaim
-                  ? { conflictingRunId: existingClaim.runId }
-                  : {}),
-              },
-              runId: effectiveRunId,
-              eventId,
-              createdAt: now,
-              specVersion: effectiveSpecVersion,
-            };
-
-            // Store the conflict event
-            const compositeKey = `${effectiveRunId}-${eventId}`;
-            await writeJSON(
-              taggedPath(basedir, 'events', compositeKey, tag),
-              conflictEvent
-            );
-
-            const resolveData =
-              params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-            const filteredEvent = stripEventDataRefs(
-              conflictEvent,
-              resolveData
-            );
-
-            // Return EventResult with conflict event (no hook entity created)
-            return {
-              event: filteredEvent,
-              run,
-              step,
-              hook: undefined,
-            };
           }
 
           hook = {
@@ -1021,7 +1102,8 @@ export function createEventsStorage(
           };
           await writeJSON(
             taggedPath(basedir, 'hooks', data.correlationId, tag),
-            hook
+            hook,
+            writeHookEntityWithOverwrite ? { overwrite: true } : undefined
           );
         } else if (data.eventType === 'hook_disposed') {
           // hook_disposed: Deletes hook entity, rejects duplicates.

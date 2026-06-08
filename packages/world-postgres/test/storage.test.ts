@@ -14,6 +14,7 @@ import {
   test,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
+import * as DrizzleSchema from '../src/drizzle/schema.js';
 import {
   createEventsStorage,
   createRunsStorage,
@@ -1362,6 +1363,72 @@ describe('Storage (Postgres integration)', () => {
       expect(result.event.eventType).toBe('hook_conflict');
       expect((result.event as any).eventData.conflictingRunId).toBe(testRunId);
       expect(result.hook).toBeUndefined();
+    });
+
+    it('should recover an orphaned hook row that lacks a hook_created event', async () => {
+      // Crash-recovery regression: in `events.create`, the hook INSERT
+      // (line ~1185 of storage.ts) and the events INSERT (line ~1314)
+      // are not wrapped in a single transaction. If a process / DB
+      // interruption lands between them, the hook row exists but no
+      // `hook_created` event is in the log. The same-`(runId, hookId)`
+      // retry must not be treated as a "real duplicate" — that would
+      // throw EntityConflictError, which the runtime's concurrent-
+      // replay catch path would swallow, permanently leaving the run
+      // with a hook entity but no `hook_created` event in the log.
+      //
+      // The recovery path detects the missing event and completes the
+      // partial write: it skips re-inserting the hook row and lets the
+      // outer code path emit the `hook_created` event.
+      const token = 'orphaned-hook-row-token';
+      const hookId = 'hook_orphan_pg_1';
+
+      // Pre-seed an orphaned hook row that has no corresponding
+      // `hook_created` event in the events table.
+      await drizzle.insert(DrizzleSchema.hooks).values({
+        runId: testRunId,
+        hookId,
+        token,
+        ownerId: '',
+        projectId: '',
+        environment: '',
+        specVersion: SPEC_VERSION_CURRENT,
+        isWebhook: false,
+        isSystem: false,
+      });
+
+      // Sanity: the hook row exists but no hook_created event is in
+      // the log yet.
+      const preEvents = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        preEvents.data.filter((e) => e.eventType === 'hook_created').length
+      ).toBe(0);
+
+      // Retry: must succeed and emit a hook_created event, NOT a
+      // hook_conflict event, and NOT throw EntityConflictError.
+      const result = await events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+
+      expect(result.event.eventType).toBe('hook_created');
+      expect(result.hook?.hookId).toBe(hookId);
+
+      const postEvents = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const created = postEvents.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      const conflicts = postEvents.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(created).toHaveLength(1);
+      expect(conflicts).toHaveLength(0);
     });
   });
 

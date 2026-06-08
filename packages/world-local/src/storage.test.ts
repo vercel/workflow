@@ -2235,6 +2235,63 @@ describe('Storage', () => {
       expect((result.event as any).eventData.conflictingRunId).toBe(testRunId);
       expect(result.hook).toBeUndefined();
     });
+
+    it('should recover an orphaned hook token claim with no matching hook entity', async () => {
+      // Crash-recovery regression: if a prior in-flight `hook_created`
+      // wrote the token-claim file but exited before the hook entity
+      // was written, the same-`(runId, hookId)` retry must not be
+      // treated as a "real duplicate" — that would throw
+      // EntityConflictError, which the runtime's concurrent-replay
+      // catch path would swallow, permanently leaving the run with no
+      // hook and no `hook_created` event in the log.
+      //
+      // The recovery path detects the missing hook entity and
+      // completes the partial write: it (re-)writes the hook entity
+      // and the outer code path emits the `hook_created` event.
+      const token = 'orphaned-claim-token';
+      const hookId = 'hook_orphan_1';
+
+      // Pre-seed an orphaned token claim — same shape as one written
+      // by `events.create` but with no corresponding hook entity on
+      // disk. This simulates a crash between `writeExclusive(claim)`
+      // and the hook entity write.
+      const tokensDir = path.join(testDir, 'hooks', 'tokens');
+      await fs.mkdir(tokensDir, { recursive: true });
+      await fs.writeFile(
+        path.join(tokensDir, `${hashToken(token)}.json`),
+        JSON.stringify({ token, hookId, runId: testRunId, foo: 'bar' })
+      );
+
+      // Sanity: the hook entity is not on disk yet.
+      await expect(storage.hooks.get(hookId)).rejects.toThrow(
+        /not found|HookNotFoundError/i
+      );
+
+      // Retry: must succeed, write the hook entity, and emit a
+      // hook_created event.
+      const hook = await createHook(storage, testRunId, { hookId, token });
+      expect(hook.hookId).toBe(hookId);
+      expect(hook.token).toBe(token);
+
+      // The hook entity is now durable.
+      const retrieved = await storage.hooks.get(hookId);
+      expect(retrieved.hookId).toBe(hookId);
+
+      // The event log contains a hook_created event for this hookId
+      // (and no hook_conflict event).
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const created = events.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      const conflicts = events.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(created).toHaveLength(1);
+      expect(conflicts).toHaveLength(0);
+    });
   });
 
   describe('run terminal state validation', () => {
