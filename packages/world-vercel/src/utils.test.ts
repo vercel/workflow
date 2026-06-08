@@ -256,4 +256,28 @@ describe('makeRequest body-parse retry', () => {
     // A write must not be replayed — exactly one attempt.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('includes Vercel correlation headers in HTTP response errors', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'upstream timed out' }), {
+        status: 504,
+        headers: {
+          'content-type': 'application/json',
+          'x-vercel-id': 'iad1::req-abc',
+          'x-vercel-error': 'FUNCTION_INVOCATION_TIMEOUT',
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v2/runs/wrun_test?remoteRefBehavior=resolve',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toThrow(
+      'upstream timed out (x-vercel-id=iad1::req-abc; x-vercel-error=FUNCTION_INVOCATION_TIMEOUT)'
+    );
+  });
 });

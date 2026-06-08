@@ -13,14 +13,24 @@ import {
 
 /**
  * Encryption key parameter type. Accepts a resolved key, undefined (no encryption),
- * or a promise that resolves to either. This allows synchronous function signatures
- * (e.g., getReadable()) to thread the key through without awaiting it — the promise
- * is resolved lazily inside the first async transform() call.
+ * a promise, or a resolver that can defer fetching the key until data needs it.
+ * This allows synchronous function signatures (e.g., getReadable()) to thread the
+ * key through without awaiting it — the value is resolved lazily inside the first
+ * async transform() call. When a resolver function is passed, the underlying
+ * fetch isn't even initiated until the first chunk is processed, which avoids
+ * unobserved background lookups for empty or never-read streams.
  */
 export type EncryptionKeyParam =
   | CryptoKey
   | undefined
-  | Promise<CryptoKey | undefined>;
+  | Promise<CryptoKey | undefined>
+  | (() => Promise<CryptoKey | undefined>);
+
+export async function resolveEncryptionKey(
+  key: EncryptionKeyParam
+): Promise<CryptoKey | undefined> {
+  return typeof key === 'function' ? key() : key;
+}
 
 import {
   createFlushableState,
@@ -253,8 +263,8 @@ export function getSerializeStream(
   cryptoKey: EncryptionKeyParam
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
-  // Resolve the key promise once on first use and cache the result.
-  // Note: if the cryptoKey promise rejects (e.g., network error fetching
+  // Resolve the key input once on first use and cache the result.
+  // Note: if resolving cryptoKey rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
   // is processed — not at stream construction time.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
@@ -262,7 +272,7 @@ export function getSerializeStream(
     async transform(chunk, controller) {
       try {
         if (!keyState.resolved) {
-          keyState.key = await cryptoKey;
+          keyState.key = await resolveEncryptionKey(cryptoKey);
           keyState.resolved = true;
         }
         const serialized = stringify(chunk, reducers);
@@ -314,7 +324,7 @@ export function getDeserializeStream(
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
-  // Resolve the key promise once on first use and cache the result.
+  // Resolve the key input once on first use and cache the result.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
 
   function appendToBuffer(data: Uint8Array) {
@@ -327,9 +337,9 @@ export function getDeserializeStream(
   async function processFrames(
     controller: TransformStreamDefaultController<any>
   ) {
-    // Resolve the key promise once on first use and cache the result
+    // Resolve the key input once on first use and cache the result
     if (!keyState.resolved) {
-      keyState.key = await cryptoKey;
+      keyState.key = await resolveEncryptionKey(cryptoKey);
       keyState.resolved = true;
     }
 
