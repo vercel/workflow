@@ -411,9 +411,11 @@ export async function writeExclusive(
 ): Promise<boolean> {
   await ensureDir(path.dirname(filePath));
   const tempPath = `${filePath}.tmp.${ulid()}`;
+  let tempFileCreated = false;
 
   try {
     await fs.writeFile(tempPath, data, { flag: 'wx' });
+    tempFileCreated = true;
 
     try {
       await withWindowsRetry(() => fs.link(tempPath, filePath));
@@ -425,7 +427,9 @@ export async function writeExclusive(
       throw error;
     }
   } finally {
-    await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
+    if (tempFileCreated) {
+      await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
+    }
   }
 }
 

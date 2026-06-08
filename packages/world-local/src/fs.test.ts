@@ -926,6 +926,20 @@ describe('fs utilities', () => {
       expect(await fs.readFile(filePath, 'utf8')).toBe(values[winner]);
       expect(await fs.readdir(testDir)).toEqual(['exclusive.json']);
     });
+
+    it('does not clean up a temp file that it failed to create', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const unlink = vi.spyOn(fs, 'unlink');
+      vi.spyOn(fs, 'writeFile').mockRejectedValueOnce(
+        Object.assign(new Error('file already exists'), { code: 'EEXIST' })
+      );
+
+      await expect(writeExclusive(filePath, 'value')).rejects.toMatchObject({
+        code: 'EEXIST',
+      });
+
+      expect(unlink).not.toHaveBeenCalled();
+    });
   });
 
   describe('assertSafeEntityId (path traversal prevention)', () => {
