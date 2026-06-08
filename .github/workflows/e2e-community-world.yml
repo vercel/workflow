@@ -156,7 +156,7 @@ jobs:
           SERVICE_TYPE: ${{ inputs.service-type }}
           WORLD_ID: ${{ inputs.world-id }}
           DEPLOYMENT_URL: "http://localhost:3000"
-          DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
+          DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","supportsDeferredStepCopies":false}'
 
       - name: Generate E2E summary
         if: always()
