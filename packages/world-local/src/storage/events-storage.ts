@@ -66,6 +66,10 @@ import { withRunFileLock } from './runs-storage.js';
 const stepLocks = new Map<string, Promise<unknown>>();
 
 const HookTokenClaimSchema = z.object({
+  // `hookId` is optional for backward compatibility with claim files
+  // written by older versions that did not persist the hook id. Newer
+  // writes (see the hook_created branch below) always include it.
+  hookId: z.string().optional(),
   runId: z.string(),
 });
 
@@ -942,6 +946,24 @@ export function createEventsStorage(
 
           if (!tokenClaimed) {
             const existingClaim = await readHookTokenClaim(constraintPath);
+
+            // Idempotency: if the existing claim is for the *same* (runId,
+            // hookId) we are trying to create, this is a duplicate /
+            // replayed processing of the same hook_created — not a real
+            // conflict with a different hook or run. Throw
+            // EntityConflictError so the runtime's existing concurrent-
+            // replay catch path (matching the step_created path above)
+            // swallows it, instead of producing a self-conflict in the
+            // event log that would later replay as HookConflictError.
+            // See: https://github.com/vercel/workflow/issues/2283
+            if (
+              existingClaim?.runId === effectiveRunId &&
+              existingClaim.hookId === data.correlationId
+            ) {
+              throw new EntityConflictError(
+                `Hook "${data.correlationId}" already created`
+              );
+            }
 
             // Create hook_conflict event instead of hook_created
             // This allows the workflow to continue and fail gracefully when the hook is awaited
