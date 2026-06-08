@@ -2292,6 +2292,78 @@ describe('Storage', () => {
       expect(created).toHaveLength(1);
       expect(conflicts).toHaveLength(0);
     });
+
+    it('should recover an orphaned hook entity with no matching hook_created event', async () => {
+      // Crash-recovery regression for the second window pranaygp
+      // flagged on PR #2295: the claim file, the hook entity, and
+      // the `hook_created` event are written by three separate non-
+      // atomic operations. A crash after the entity write but before
+      // the event write leaves both the claim file and the hook
+      // entity on disk, but no `hook_created` event in the log. The
+      // retry must NOT treat that as a "real duplicate" — it must
+      // recover by emitting the missing event.
+      //
+      // This is exactly the scenario the dedup branch's event-log
+      // probe handles. Without the probe (e.g. checking only the
+      // hook entity), this test fails at the retry with
+      // `EntityConflictError: Hook "hook_orphan_entity_1" already
+      // created`.
+      const token = 'orphaned-hook-entity-token';
+      const hookId = 'hook_orphan_entity_1';
+
+      const first = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+      expect(first.hook?.hookId).toBe(hookId);
+
+      // Simulate a crash after the hook entity write but before the
+      // event write by deleting the just-written event from disk.
+      await fs.unlink(
+        path.join(testDir, 'events', `${testRunId}-${first.event.eventId}.json`)
+      );
+
+      // Sanity: the hook entity is still durable but the
+      // `hook_created` event is no longer in the log.
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        token,
+      });
+      const beforeRetry = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        beforeRetry.data.filter(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toHaveLength(0);
+
+      // Retry: must succeed and emit a `hook_created` event (no
+      // `hook_conflict`, no swallowed EntityConflictError).
+      const retry = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+      expect(retry.event.eventType).toBe('hook_created');
+
+      const afterRetry = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        afterRetry.data.filter(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toHaveLength(1);
+      expect(
+        afterRetry.data.filter((event) => event.eventType === 'hook_conflict')
+      ).toHaveLength(0);
+    });
   });
 
   describe('run terminal state validation', () => {

@@ -105,6 +105,33 @@ async function readHookTokenClaim(
   }
 }
 
+/**
+ * Look for a `hook_created` event in the run's event log for a given
+ * `(runId, correlationId)`. Used by the hook_created dedup branch to
+ * distinguish a real duplicate (the durable event exists) from an
+ * orphaned partial write left by a crash between the claim/hook entity
+ * writes and the event write (the event is missing). Returns `true`
+ * iff at least one matching event is present.
+ */
+async function findHookCreatedEvent(
+  basedir: string,
+  runId: string,
+  correlationId: string
+): Promise<boolean> {
+  const result = await paginatedFileSystemQuery({
+    directory: path.join(basedir, 'events'),
+    schema: EventSchema,
+    filePrefix: `${runId}-`,
+    filter: (event) =>
+      event.eventType === 'hook_created' &&
+      event.correlationId === correlationId,
+    limit: 1,
+    getCreatedAt: getObjectCreatedAt('evnt'),
+    getId: (event) => event.eventId,
+  });
+  return result.data.length > 0;
+}
+
 function withInProcessLock<T>(
   locks: Map<string, Promise<unknown>>,
   key: string,
@@ -990,58 +1017,57 @@ export function createEventsStorage(
             })
           );
 
-          // Recovery shape: writing the hook entity proceeds when one of
-          //   (a) we just won `writeExclusive` for the token claim, or
-          //   (b) the claim was already ours from a prior in-flight
-          //       attempt that crashed before the hook entity landed
-          //       (orphaned-claim recovery — see below). In case (b) we
-          //       overwrite any stale partial hook entity so the run
-          //       can make forward progress.
+          // Recovery shape: the durable record of a successful hook
+          // creation is the `hook_created` event in the event log. The
+          // claim file and hook entity are written before the event,
+          // and the three writes are NOT atomic, so a crash at any
+          // point can leave one or two of them on disk without the
+          // event. Treating those as "completed" would have the
+          // suspension handler swallow the retry and permanently lose
+          // the `hook_created` event from the log.
+          //
+          // When the dedup branch fires for the same `(runId, hookId)`,
+          // we therefore probe the event log for an existing
+          // `hook_created` event:
+          //   - exists  → real duplicate: throw EntityConflictError so
+          //     the runtime's concurrent-replay catch path (matching
+          //     the step_created path above) swallows it, instead of
+          //     producing a self-conflict in the log that would later
+          //     replay as HookConflictError. See
+          //     https://github.com/vercel/workflow/issues/2283.
+          //   - missing → orphaned partial write (crash at any point
+          //     before the event landed): re-write the hook entity
+          //     (with `overwrite: true` in case a stale partial copy
+          //     exists) and fall through to let the outer code path
+          //     emit the `hook_created` event, completing the partial
+          //     write.
+          //
+          // The `withHookLock` in-process mutex above keeps two same-
+          // tick callers from racing into this branch with the winner
+          // mid-write — only prior-attempt orphans land here with no
+          // event in the log.
           let writeHookEntityWithOverwrite = false;
 
           if (!tokenClaimed) {
             const existingClaim = await readHookTokenClaim(constraintPath);
 
-            // Idempotency: if the existing claim is for the *same*
-            // (runId, hookId) we are trying to create, this is either
-            // a duplicate / replayed processing of the same
-            // `hook_created`, or an orphaned claim from a prior
-            // crashed attempt. Distinguish by checking whether the
-            // durable hook entity actually exists:
-            //   - exists → real duplicate: throw EntityConflictError
-            //     so the runtime's concurrent-replay catch path
-            //     (matching the step_created path above) swallows it,
-            //     instead of producing a self-conflict in the event
-            //     log that would later replay as HookConflictError.
-            //     See https://github.com/vercel/workflow/issues/2283.
-            //   - missing → orphaned claim (crash between
-            //     `writeExclusive` and the hook entity write): fall
-            //     through to (re-)write the hook entity and let the
-            //     outer code path emit the `hook_created` event,
-            //     completing the partial write.
-            //
-            // The `withHookLock` in-process mutex above keeps two
-            // same-tick callers from racing into this branch with the
-            // winner mid-write — only prior-attempt orphans land here
-            // with a missing hook entity.
             if (
               existingClaim?.runId === effectiveRunId &&
               existingClaim.hookId === data.correlationId
             ) {
-              const existingHook = await readJSONWithFallback(
+              const existingHookCreated = await findHookCreatedEvent(
                 basedir,
-                'hooks',
-                data.correlationId,
-                HookSchema,
-                tag
+                effectiveRunId,
+                data.correlationId
               );
-              if (existingHook) {
+              if (existingHookCreated) {
                 throw new EntityConflictError(
                   `Hook "${data.correlationId}" already created`
                 );
               }
-              // Orphaned claim: claim file exists but hook entity is
-              // missing. Treat as our claim and recover.
+              // Orphaned partial write: claim (and possibly hook
+              // entity) exist but no `hook_created` event was ever
+              // written. Treat the claim as ours and recover.
               writeHookEntityWithOverwrite = true;
             } else {
               // Cross-hook / cross-run conflict: a different
