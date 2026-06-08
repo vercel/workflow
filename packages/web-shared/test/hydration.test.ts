@@ -91,6 +91,26 @@ describe('getWebRevivers — error family', () => {
     expect(revived.message).toBe('cannot retry');
   });
 
+  it('hydrates a HookConflictError with token details preserved', () => {
+    const revived = hydrateData(
+      [
+        ['HookConflictError', 1],
+        { message: 2, stack: 3, token: 4, conflictingRunId: 5 },
+        'Hook token "approval-token" is already in use by another workflow (run "wrun_conflicting")',
+        'HookConflictError: Hook token "approval-token" is already in use by another workflow',
+        'approval-token',
+        'wrun_conflicting',
+      ],
+      REVIVERS
+    ) as Error & { token?: string; conflictingRunId?: string };
+
+    expect(revived).toBeInstanceOf(Error);
+    expect(revived.name).toBe('HookConflictError');
+    expect(revived.message).toContain('already in use');
+    expect(revived.token).toBe('approval-token');
+    expect(revived.conflictingRunId).toBe('wrun_conflicting');
+  });
+
   it('hydrates a RetryableError with retryAfter as a Date', async () => {
     const retryAt = new Date('2025-01-01T00:00:00.000Z');
     const revived = await roundTrip<Error & { retryAfter: Date }>(

@@ -462,10 +462,6 @@ export function withWorkflow(
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
     const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
 
-    // Deferred builder discovers files via loader socket notifications, so
-    // turbopack content conditions are only needed with the eager builder.
-    const shouldApplyTurboCondition =
-      supportsTurboCondition && !useDeferredBuilder;
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;
     const distDir = nextConfig.distDir || '.next';
@@ -573,7 +569,7 @@ export function withWorkflow(
       '*.cts',
     ]) {
       nextConfig.turbopack.rules[key] = {
-        ...(shouldApplyTurboCondition
+        ...(supportsTurboCondition
           ? {
               condition: {
                 // Use 'all' to combine: must match content AND must NOT be in generated path

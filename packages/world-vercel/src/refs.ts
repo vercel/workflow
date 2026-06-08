@@ -1,3 +1,4 @@
+import type { Span } from '@opentelemetry/api';
 import { WorkflowWorldError } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { getDispatcher } from './http-client.js';
@@ -47,6 +48,22 @@ const REF_RESOLVE_CONCURRENCY = 10;
 const REF_CACHE_MAX_BYTES = 2 * 1024 * 1024;
 const REF_CACHE_MAX_ENTRIES = 128;
 
+/**
+ * Minimum number of bytes a stored *binary* (octet-stream) ref payload can
+ * ever be.
+ *
+ * The SDK writes every binary ref payload with a 4-byte format prefix (see
+ * `FORMAT_PREFIX_LENGTH` / `encodeWithFormatPrefix` in
+ * `@workflow/core/src/serialization/format.ts`). A 1-3 byte
+ * `application/octet-stream` body is therefore never a valid stored binary
+ * ref.
+ *
+ * This minimum does NOT apply to `application/cbor` refs: the server still
+ * stores non-binary values as raw CBOR, and valid CBOR primitives like `true`,
+ * `0`, or `null` encode to a single byte.
+ */
+const MIN_BINARY_REF_PAYLOAD_BYTES = 4;
+
 interface CachedRefPayload {
   bytes: Uint8Array;
   contentType: string;
@@ -56,11 +73,20 @@ interface CachedRefEntry extends CachedRefPayload {
   size: number;
 }
 
+function normalizeContentType(contentType: string): string {
+  return contentType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+}
+
+function isBinaryContentType(contentType: string): boolean {
+  return normalizeContentType(contentType) === 'application/octet-stream';
+}
+
 /**
  * Bounded process-local storage for immutable remote ref payloads.
  *
- * Raw bytes are retained instead of decoded objects so the memory budget is
- * exact and callers cannot mutate an object held in the cache.
+ * Raw bytes are retained instead of decoded objects so the cache stays bounded
+ * by retained payload bytes and callers cannot mutate an object held in the
+ * cache.
  */
 export class RefCache {
   private readonly entries = new Map<string, CachedRefEntry>();
@@ -125,13 +151,81 @@ export class RefCache {
 }
 
 /**
+ * Defense-in-depth validation for ref resolve response bodies.
+ *
+ * Rejects empty bodies, truncated binary payloads, and well-formed
+ * `Content-Length` mismatches before the bytes can poison replay.
+ */
+function assertValidRefBody(
+  buffer: ArrayBuffer,
+  ctx: {
+    ref: string;
+    url: string;
+    status: number;
+    contentType: string;
+    contentLengthHeader: string | null;
+    contentEncodingHeader: string | null;
+    span: Span | undefined;
+  }
+): void {
+  const {
+    ref,
+    url,
+    status,
+    contentType,
+    contentLengthHeader,
+    contentEncodingHeader,
+    span,
+  } = ctx;
+  const actualLength = buffer.byteLength;
+  const isBinary = isBinaryContentType(contentType);
+
+  const throwInvalid = (code: string, message: string): never => {
+    const error = new WorkflowWorldError(message, { url, status, code });
+    span?.setAttributes({ ...ErrorType(code) });
+    span?.recordException?.(error);
+    throw error;
+  };
+
+  if (actualLength === 0) {
+    throwInvalid(
+      'empty-ref-body',
+      `Ref resolve returned a zero-byte body for ${ref} (Content-Type=${contentType || '<none>'}). Refusing to corrupt the event log with an empty payload.`
+    );
+  }
+
+  if (isBinary && actualLength < MIN_BINARY_REF_PAYLOAD_BYTES) {
+    throwInvalid(
+      'truncated-ref-body',
+      `Ref resolve returned a truncated ${actualLength}-byte binary body for ${ref} (Content-Type=${contentType}); minimum valid payload is ${MIN_BINARY_REF_PAYLOAD_BYTES} bytes (4-byte format prefix).`
+    );
+  }
+
+  if (contentLengthHeader == null) return;
+
+  if (contentEncodingHeader != null) {
+    const encoding = contentEncodingHeader.trim().toLowerCase();
+    if (encoding !== '' && encoding !== 'identity') return;
+  }
+
+  if (!/^\d+$/.test(contentLengthHeader)) return;
+
+  const declaredLength = Number.parseInt(contentLengthHeader, 10);
+  if (declaredLength === actualLength) return;
+
+  throwInvalid(
+    'ref-body-length-mismatch',
+    `Ref resolve body length mismatch for ${ref}: Content-Length=${contentLengthHeader}, actual=${actualLength} bytes. The response body was truncated in transit; refusing to use it.`
+  );
+}
+
+/**
  * Resolve a single ref descriptor.
  *
  * For inline refs (dbrf: prefix), the data is decoded locally from the
  * descriptor's `_data` field — no network request is needed.
  *
  * For S3 refs (s3rf:) and Redis refs (kvrf:), a request is made to the
- * `GET /v2/runs/:runId/refs` endpoint on workflow-server which returns
  * raw CBOR or binary bytes.
  *
  * @param descriptor - The ref descriptor to resolve
@@ -151,9 +245,11 @@ export async function resolveRefDescriptor(
     if (!descriptor._data) {
       throw new Error(`Inline ref descriptor missing _data field: ${ref}`);
     }
-    const contentType = descriptor._ct ?? 'application/cbor';
+    const contentType = normalizeContentType(
+      descriptor._ct ?? 'application/cbor'
+    );
     const binaryData = Buffer.from(descriptor._data, 'base64');
-    if (contentType === 'application/octet-stream') {
+    if (isBinaryContentType(contentType)) {
       // Buffer is a Uint8Array subclass — return directly to avoid a copy.
       return binaryData;
     }
@@ -168,12 +264,13 @@ export async function resolveRefDescriptor(
       )
     : await fetchRemoteRefPayload(descriptor, runId, config);
 
-  if (payload.contentType.includes('application/octet-stream')) {
+  if (isBinaryContentType(payload.contentType)) {
     // Copy cached binary values so consumers cannot alter retained bytes.
     return cache ? payload.bytes.slice() : payload.bytes;
   }
 
-  // Decode afresh on a cache hit so decoded objects are never shared.
+  // cbor-x's decoded Uint8Array fields can alias the input bytes, so decode
+  // from a private copy whenever this payload is retained in the cache.
   return decode(cache ? payload.bytes.slice() : payload.bytes);
 }
 
@@ -213,7 +310,7 @@ async function fetchRemoteRefPayload(
       const response = await fetch(url, {
         method: 'GET',
         headers,
-        dispatcher: getDispatcher(),
+        dispatcher: getDispatcher(config),
       } as any);
 
       span?.setAttributes({
@@ -232,8 +329,21 @@ async function fetchRemoteRefPayload(
         throw error;
       }
 
-      const contentType = response.headers.get('content-type') || '';
+      const contentType = normalizeContentType(
+        response.headers.get('content-type') || ''
+      );
+      const contentLengthHeader = response.headers.get('content-length');
+      const contentEncodingHeader = response.headers.get('content-encoding');
       const buffer = await response.arrayBuffer();
+      assertValidRefBody(buffer, {
+        ref,
+        url,
+        status: response.status,
+        contentType,
+        contentLengthHeader,
+        contentEncodingHeader,
+        span,
+      });
       return { contentType, bytes: new Uint8Array(buffer) };
     }
   );

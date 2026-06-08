@@ -1,8 +1,9 @@
 import type { Event } from '@workflow/world';
-
-const MAX_CACHE_BYTES = 4 * 1024 * 1024;
-const MAX_CACHE_RUNS = 64;
-const MAX_RUN_BYTES = 512 * 1024;
+import {
+  getEventCacheMaxBytes,
+  getEventCacheMaxEntries,
+  isEventCacheEnabled,
+} from './constants.js';
 
 export interface CachedEventLog {
   cursor: string;
@@ -21,7 +22,16 @@ export class EventLogCache {
   private readonly entries = new Map<string, CacheEntry>();
   private retainedBytes = 0;
 
+  /**
+   * The returned event array is cache-owned and must not be mutated. Copy it
+   * before appending or otherwise changing the replay prefix.
+   */
   get(runId: string): CachedEventLog | undefined {
+    if (!isEventCacheEnabled()) {
+      this.clear();
+      return undefined;
+    }
+
     const entry = this.entries.get(runId);
     if (!entry) return undefined;
 
@@ -31,6 +41,13 @@ export class EventLogCache {
   }
 
   set(runId: string, events: readonly Event[], cursor: string | null): void {
+    if (!isEventCacheEnabled()) {
+      this.clear();
+      return;
+    }
+
+    const maxCacheBytes = getEventCacheMaxBytes();
+    const maxCacheEntries = getEventCacheMaxEntries();
     const existing = this.entries.get(runId);
     if (existing && existing.events.length > events.length) {
       this.entries.delete(runId);
@@ -41,12 +58,12 @@ export class EventLogCache {
     this.delete(runId);
     if (!cursor || events.length === 0) return;
 
-    const bytes = estimateSize(events, MAX_RUN_BYTES);
-    if (bytes > MAX_RUN_BYTES || bytes > MAX_CACHE_BYTES) return;
+    const bytes = estimateSizeUpTo(events, maxCacheBytes);
+    if (bytes > maxCacheBytes) return;
 
     while (
-      this.entries.size >= MAX_CACHE_RUNS ||
-      this.retainedBytes + bytes > MAX_CACHE_BYTES
+      this.entries.size >= maxCacheEntries ||
+      this.retainedBytes + bytes > maxCacheBytes
     ) {
       const oldestKey = this.entries.keys().next().value;
       if (oldestKey === undefined) break;
@@ -74,7 +91,7 @@ export class EventLogCache {
   }
 }
 
-function estimateSize(value: unknown, limit: number): number {
+function estimateSizeUpTo(value: unknown, limit: number): number {
   const seen = new WeakSet<object>();
   let total = 0;
 
@@ -121,11 +138,15 @@ function estimateSize(value: unknown, limit: number): number {
     if (!add(32)) return;
 
     if (Array.isArray(item)) {
-      for (const entry of item) visit(entry);
+      for (const entry of item) {
+        if (total > limit) return;
+        visit(entry);
+      }
       return;
     }
 
     for (const [key, entry] of Object.entries(item)) {
+      if (total > limit) return;
       if (!add(key.length * 2 + 8)) return;
       visit(entry);
     }

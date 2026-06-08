@@ -76,6 +76,14 @@ export interface HealthCheckResult {
   latencyMs?: number;
   /** Spec version of the responding deployment */
   specVersion?: number;
+  /**
+   * `@workflow/core` version of the responding deployment, used for
+   * capability detection (see `getRunCapabilities`). Omitted when the
+   * responding deployment did not provide the field as a string —
+   * for example, an older `@workflow/core` that predates this field,
+   * or a non-JSON plain-text health response.
+   */
+  workflowCoreVersion?: string;
 }
 
 /**
@@ -192,9 +200,11 @@ async function readStreamWithTimeout(
  * Parse and validate a health check response from stream chunks.
  * Returns the parsed response or null if invalid.
  */
-function parseHealthCheckResponse(
-  chunks: Uint8Array[]
-): { healthy: boolean } | null {
+function parseHealthCheckResponse(chunks: Uint8Array[]): {
+  healthy: boolean;
+  specVersion?: number;
+  workflowCoreVersion?: string;
+} | null {
   if (chunks.length === 0) return null;
 
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -229,11 +239,18 @@ function parseHealthCheckResponse(
   }
 
   const r = response as Record<string, unknown>;
-  const parsed: { healthy: boolean; specVersion?: number } = {
+  const parsed: {
+    healthy: boolean;
+    specVersion?: number;
+    workflowCoreVersion?: string;
+  } = {
     healthy: r.healthy as boolean,
   };
   if (typeof r.specVersion === 'number') {
     parsed.specVersion = r.specVersion;
+  }
+  if (typeof r.workflowCoreVersion === 'string') {
+    parsed.workflowCoreVersion = r.workflowCoreVersion;
   }
   return parsed;
 }
@@ -346,7 +363,7 @@ function recordRequestedEventCursor(
 function appendUniqueEvents(
   target: Event[],
   targetIds: Set<string>,
-  events: Event[]
+  events: readonly Event[]
 ): void {
   for (const event of events) {
     if (!targetIds.has(event.eventId)) {
@@ -407,16 +424,31 @@ function initializeEventLoadState(
   };
 }
 
-function retainInitialEventLoad(
+function retainEventLoad(
   cache: EventLogCache,
   runId: string,
   afterCursor: string | undefined,
   events: readonly Event[],
-  cursor: string | null
+  cursor: string | null,
+  retainedPrefix?: readonly Event[]
 ): void {
   if (afterCursor === undefined) {
     cache.set(runId, events, cursor);
+    return;
   }
+
+  if (retainedPrefix === undefined) {
+    return;
+  }
+
+  // Incremental callers already own the replay prefix. Merge the new delta
+  // into that prefix before replacing the warm-cache baseline.
+  const retainedEvents: Event[] = [...retainedPrefix];
+  const retainedEventIds = new Set(
+    retainedEvents.map((event) => event.eventId)
+  );
+  appendUniqueEvents(retainedEvents, retainedEventIds, events);
+  cache.set(runId, retainedEvents, cursor);
 }
 
 /**
@@ -432,7 +464,8 @@ function retainInitialEventLoad(
  */
 export async function loadWorkflowRunEvents(
   runId: string,
-  afterCursor?: string
+  afterCursor?: string,
+  retainedPrefix?: readonly Event[]
 ): Promise<{ events: Event[]; cursor: string | null }> {
   const incremental = afterCursor !== undefined;
   return trace(
@@ -538,7 +571,14 @@ export async function loadWorkflowRunEvents(
         ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
       });
 
-      retainInitialEventLoad(cache, runId, afterCursor, loadedEvents, cursor);
+      retainEventLoad(
+        cache,
+        runId,
+        afterCursor,
+        loadedEvents,
+        cursor,
+        retainedPrefix
+      );
 
       return { events: loadedEvents, cursor };
     }

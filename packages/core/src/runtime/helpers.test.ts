@@ -1,7 +1,11 @@
 import { WorkflowWorldError } from '@workflow/errors';
-import type { Event } from '@workflow/world';
+import type { Event, World } from '@workflow/world';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getWorkflowQueueName, loadWorkflowRunEvents } from './helpers.js';
+import {
+  getWorkflowQueueName,
+  healthCheck,
+  loadWorkflowRunEvents,
+} from './helpers.js';
 
 // Mock the logger to suppress output during tests
 vi.mock('../logger.js', () => ({
@@ -100,6 +104,108 @@ describe('getWorkflowQueueName', () => {
 
   it('should throw for empty string', () => {
     expect(() => getWorkflowQueueName('')).toThrow('Invalid workflow name');
+  });
+});
+
+describe('healthCheck response parsing', () => {
+  /**
+   * Builds a minimal `World` whose `streams.get(...)` returns a stream of
+   * the supplied response text, simulating what the responding deployment
+   * would write via `handleHealthCheckMessage`. Just enough surface for
+   * `healthCheck()` to exercise its parse path.
+   */
+  function makeWorldWithResponse(responseText: string): World {
+    return {
+      queue: vi.fn().mockResolvedValue(undefined),
+      streams: {
+        get: vi.fn(async () => {
+          let delivered = false;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!delivered) {
+                controller.enqueue(new TextEncoder().encode(responseText));
+                delivered = true;
+              } else {
+                controller.close();
+              }
+            },
+          });
+        }),
+      },
+    } as unknown as World;
+  }
+
+  it('surfaces workflowCoreVersion when present in the response', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        workflowCoreVersion: '5.0.0-beta.7',
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBe(3);
+    expect(result.workflowCoreVersion).toBe('5.0.0-beta.7');
+  });
+
+  it('omits workflowCoreVersion when the response does not include the field', async () => {
+    // Independent of specVersion — the field is omitted by any responder
+    // running an older `@workflow/core` that predates the addition of
+    // `workflowCoreVersion` to the health response payload.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        // No workflowCoreVersion field
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBe(3);
+    expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('omits workflowCoreVersion when the field is the wrong type', async () => {
+    // Defensive: the parser only accepts strings. Anything else is dropped
+    // rather than surfaced as garbage.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        workflowCoreVersion: 12345,
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('returns healthy with no fields for non-JSON plain-text responses', async () => {
+    // Some deployments respond with plain text like
+    // 'Workflow SDK "..." endpoint is healthy'. The parser treats any
+    // non-empty non-JSON text as healthy, with no version metadata.
+    const world = makeWorldWithResponse(
+      'Workflow SDK "workflow" endpoint is healthy'
+    );
+
+    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBeUndefined();
+    expect(result.workflowCoreVersion).toBeUndefined();
   });
 });
 
@@ -222,6 +328,42 @@ describe('loadWorkflowRunEvents', () => {
     });
   });
 
+  it('writes back incrementally loaded events for the next warm replay', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: 'eid:evnt_a',
+      hasMore: false,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b',
+      hasMore: false,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_c')],
+      cursor: 'eid:evnt_c',
+      hasMore: false,
+    });
+
+    const initial = await loadWorkflowRunEvents('wrun_cached');
+    await loadWorkflowRunEvents(
+      'wrun_cached',
+      initial.cursor ?? undefined,
+      initial.events
+    );
+    const result = await loadWorkflowRunEvents('wrun_cached');
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+    expect(eventsListMock).toHaveBeenNthCalledWith(3, {
+      runId: 'wrun_cached',
+      pagination: { sortOrder: 'asc', cursor: 'eid:evnt_b' },
+    });
+  });
+
   it('falls back to a full read when a retained cursor is rejected', async () => {
     eventsListMock.mockResolvedValueOnce({
       data: [makeEvent('evnt_a')],
@@ -254,7 +396,9 @@ describe('loadWorkflowRunEvents', () => {
     });
   });
 
-  it('does not retain event logs whose data exceeds the per-run budget', async () => {
+  it('does not retain event logs whose data exceeds the total budget', async () => {
+    const originalMaxBytes = process.env.WORKFLOW_EVENT_CACHE_MAX_BYTES;
+    process.env.WORKFLOW_EVENT_CACHE_MAX_BYTES = '512';
     const oversizedEvent = {
       ...makeEvent('evnt_large'),
       eventData: { input: new Uint8Array(1024 * 1024) },
@@ -270,13 +414,21 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: false,
     });
 
-    await loadWorkflowRunEvents('wrun_large');
-    await loadWorkflowRunEvents('wrun_large');
+    try {
+      await loadWorkflowRunEvents('wrun_large');
+      await loadWorkflowRunEvents('wrun_large');
 
-    expect(eventsListMock).toHaveBeenNthCalledWith(2, {
-      runId: 'wrun_large',
-      pagination: { sortOrder: 'asc', cursor: undefined },
-    });
+      expect(eventsListMock).toHaveBeenNthCalledWith(2, {
+        runId: 'wrun_large',
+        pagination: { sortOrder: 'asc', cursor: undefined },
+      });
+    } finally {
+      if (originalMaxBytes === undefined) {
+        delete process.env.WORKFLOW_EVENT_CACHE_MAX_BYTES;
+      } else {
+        process.env.WORKFLOW_EVENT_CACHE_MAX_BYTES = originalMaxBytes;
+      }
+    }
   });
 
   it('falls back to the afterCursor when an incremental load returns no events', async () => {

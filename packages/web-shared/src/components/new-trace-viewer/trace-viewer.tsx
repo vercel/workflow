@@ -26,8 +26,8 @@ import {
   EntityDetailPanel,
   type SelectedSpanInfo,
 } from '../sidebar/entity-detail-panel';
-import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
-import type { Trace } from '../trace-viewer/types';
+import { useSidebarData } from '../sidebar/sidebar-data-context';
+import type { TraceWithMeta } from './types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
 import { Spinner } from '../ui/spinner';
@@ -46,12 +46,11 @@ import {
   TooltipTrigger,
 } from '../ui/tooltip';
 import { ActiveSpanProvider, useActiveSpan } from './context';
-import { DetailPanel } from './detail-panel';
 import { searchSpans } from './search';
 import { computeRootBounds, computeTimeMarkers } from './utils';
 
 interface NewTraceViewerProps {
-  trace: Trace;
+  trace: TraceWithMeta;
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;
@@ -141,10 +140,10 @@ function useAnimatedViewport(initial: Viewport) {
 
 function useSelectedSpanInfo(): SelectedSpanInfo | null {
   const { activeSpan } = useActiveSpan();
-  const sidebar = useSidebarDataOptional();
+  const sidebar = useSidebarData();
 
   return useMemo(() => {
-    if (!activeSpan || !sidebar) return null;
+    if (!activeSpan) return null;
 
     const correlationId = activeSpan.spanId;
     const rawEvents = correlationId
@@ -193,7 +192,7 @@ function NewTraceViewerContent({
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
 
-  const sidebar = useSidebarDataOptional();
+  const sidebar = useSidebarData();
   const selectedSpan = useSelectedSpanInfo();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -674,7 +673,7 @@ function NewTraceViewerContent({
       </div>
 
       {/* Detail panel */}
-      {activeSpan && sidebar ? (
+      {activeSpan ? (
         <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
           {/* Panel header */}
           <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
@@ -750,12 +749,6 @@ function NewTraceViewerContent({
             </ErrorBoundary>
           </div>
         </aside>
-      ) : activeSpan ? (
-        <DetailPanel
-          span={activeSpan}
-          rootStart={root.startTime}
-          onClose={clearActiveSpan}
-        />
       ) : null}
     </div>
   );
