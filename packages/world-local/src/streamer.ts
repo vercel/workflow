@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
   GetChunksOptions,
@@ -10,8 +11,8 @@ import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
   assertSafeEntityId,
-  listFilesByExtension,
   readBuffer,
+  readFirstByte,
   readJSONWithFallback,
   taggedPath,
   write,
@@ -39,21 +40,50 @@ export interface Chunk {
   chunk: Buffer;
 }
 
+const EOF_MARKER = 1;
+
+function isEofByte(byte: number | undefined): boolean {
+  return byte === EOF_MARKER;
+}
+
 export function serializeChunk(chunk: Chunk) {
-  const eofByte = Buffer.from([chunk.eof ? 1 : 0]);
+  const eofByte = Buffer.from([chunk.eof ? EOF_MARKER : 0]);
   return Buffer.concat([eofByte, chunk.chunk]);
 }
 
 /** Check only the EOF flag byte without copying chunk payload. */
 export function isEofChunk(serialized: Buffer): boolean {
-  return serialized[0] === 1;
+  return isEofByte(serialized[0]);
 }
 
 export function deserializeChunk(serialized: Buffer) {
-  const eof = serialized[0] === 1;
+  const eof = isEofChunk(serialized);
   // Create a copy instead of a view to prevent ArrayBuffer detachment
   const chunk = Buffer.from(serialized.subarray(1));
   return { eof, chunk };
+}
+
+async function listChunkEntries(chunksDir: string): Promise<string[]> {
+  try {
+    return await fs.readdir(chunksDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function addChunkFilesByExtension(
+  extMap: Map<string, string>,
+  entries: string[],
+  sourceExtension: string,
+  fileExtension = sourceExtension,
+  include: (file: string) => boolean = () => true
+): void {
+  for (const entry of entries) {
+    if (!entry.endsWith(sourceExtension)) continue;
+    const file = entry.slice(0, -sourceExtension.length);
+    if (include(file)) extMap.set(file, fileExtension);
+  }
 }
 
 /**
@@ -68,25 +98,21 @@ async function listChunkFilesForStream(
 ): Promise<{ files: string[]; extMap: Map<string, string> }> {
   // Name is used as a filename prefix below; validate it can't escape chunksDir.
   assertSafeEntityId('streamName', name);
-  const listPromises: Promise<string[]>[] = [
-    listFilesByExtension(chunksDir, '.bin'),
-    listFilesByExtension(chunksDir, '.json'),
-  ];
-  if (tag) {
-    listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
-  }
-  const [binFiles, jsonFiles, ...taggedResults] =
-    await Promise.all(listPromises);
-  const taggedBinFiles = taggedResults[0] ?? [];
-
+  const entries = await listChunkEntries(chunksDir);
   const extMap = new Map<string, string>();
-  for (const f of jsonFiles) extMap.set(f, '.json');
-  const tagSfx = tag ? `.${tag}` : '';
-  for (const f of binFiles) {
-    if (tag && f.endsWith(tagSfx)) continue;
-    extMap.set(f, '.bin');
+  addChunkFilesByExtension(extMap, entries, '.json');
+  addChunkFilesByExtension(
+    extMap,
+    entries,
+    '.bin',
+    '.bin',
+    tag ? (file) => !file.endsWith(`.${tag}`) : undefined
+  );
+
+  if (tag) {
+    const taggedExtension = `.${tag}.bin`;
+    addChunkFilesByExtension(extMap, entries, taggedExtension);
   }
-  for (const f of taggedBinFiles) extMap.set(f, `.${tag}.bin`);
 
   const files = [...extMap.keys()]
     .filter((file) => file.startsWith(`${name}-`))
@@ -333,7 +359,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
           // Before the cursor: only need to check EOF (1 byte), skip content
           if (dataIndex < startIndex) {
-            if (isEofChunk(await readBuffer(filePath))) {
+            if (isEofByte(await readFirstByte(filePath))) {
               streamDone = true;
               break;
             }
@@ -343,7 +369,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
           // Collected enough data chunks — peek at the next file for EOF/hasMore
           if (resultChunks.length >= limit) {
-            if (isEofChunk(await readBuffer(filePath))) {
+            if (isEofByte(await readFirstByte(filePath))) {
               streamDone = true;
             } else {
               // More data files exist beyond this page
@@ -386,14 +412,15 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         const { files: chunkFiles, extMap: fileExtMap } =
           await listChunkFilesForStream(chunksDir, name, tag);
 
-        // Only read the first byte of each file to check EOF — no full
-        // deserialization needed since we just need a count.
+        // Read only the EOF marker byte because metadata never needs payloads.
         let streamDone = false;
         let dataCount = 0;
         for (const file of chunkFiles) {
           const ext = fileExtMap.get(file) ?? '.bin';
           if (
-            isEofChunk(await readBuffer(path.join(chunksDir, `${file}${ext}`)))
+            isEofByte(
+              await readFirstByte(path.join(chunksDir, `${file}${ext}`))
+            )
           ) {
             streamDone = true;
             break;
@@ -494,12 +521,13 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             ) {
               const lastFile = chunkFiles[chunkFiles.length - 1];
               const lastExt = fileExtMap.get(lastFile) ?? '.bin';
-              // Note: this incurs an extra disk read to check the EOF marker.
-              // Acceptable since negative startIndex is not a hot path.
-              const lastChunk = deserializeChunk(
-                await readBuffer(path.join(chunksDir, `${lastFile}${lastExt}`))
-              );
-              if (lastChunk?.eof === true) {
+              if (
+                isEofByte(
+                  await readFirstByte(
+                    path.join(chunksDir, `${lastFile}${lastExt}`)
+                  )
+                )
+              ) {
                 dataChunkCount--;
               }
             }

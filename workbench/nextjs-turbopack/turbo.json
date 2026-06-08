@@ -3,7 +3,14 @@
   "extends": ["//"],
   "tasks": {
     "build": {
-      "outputs": [".next/**", "!.next/cache/**"]
+      "outputs": [
+        ".next/**",
+        "!.next/cache/**",
+        "_workflows.ts",
+        "app/.well-known/workflow/**",
+        "public/.well-known/workflow/**",
+        ".vercel/output/**"
+      ]
     }
   }
 }

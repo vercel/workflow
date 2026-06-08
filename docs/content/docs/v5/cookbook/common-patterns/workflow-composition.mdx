@@ -9,7 +9,7 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
-Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or wants to fire the child off as an independent run (background spawn). For massive fan-out with polling and partial-failure handling, see [Child Workflows](/cookbook/advanced/child-workflows).
+Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or wants to fire the child off as an independent run (background spawn). For massive fan-out with hook-based waiting and partial-failure handling, see [Child Workflows](/cookbook/advanced/child-workflows).
 
 ## When to use this
 
@@ -99,9 +99,9 @@ If you want the child workflow to run on the latest deployment rather than the c
 
 ## Adapting to your use case
 
-- **Spawn many children at once** — call `start()` in a loop from the workflow. For more advanced fan-out (chunking, polling, partial-failure handling), graduate to the [Child Workflows](/cookbook/advanced/child-workflows) recipe.
-- **Wait for a background child to finish** — combine `start()` with `getRun()` polling. The [Child Workflows](/cookbook/advanced/child-workflows) page covers the full polling loop.
-- **Pass results back from background children** — `start()` returns the `runId`; later, a poll step uses `getRun(runId).returnValue` to fetch the final result.
+- **Spawn many children at once** — call `start()` in a loop from the workflow. For more advanced fan-out (chunking, hook-based waiting, partial-failure handling), graduate to the [Child Workflows](/cookbook/advanced/child-workflows) recipe.
+- **Wait for a background child to finish** — combine `start()` with a completion hook the child resumes when done. The [Child Workflows](/cookbook/advanced/child-workflows) page covers the recommended `startAndWait()` pattern.
+- **Pass results back from background children** — the wrapped child resumes the parent's hook in `finally` with `{ status, value | error }`; the parent awaits the hook instead of polling `getRun().status`.
 
 ## Key APIs
 

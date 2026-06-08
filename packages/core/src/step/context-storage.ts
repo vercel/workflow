@@ -1,14 +1,31 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CryptoKey } from '../encryption.js';
+import type { FlushableStreamState } from '../flushable-stream.js';
 import type { WorkflowMetadata } from '../workflow/get-workflow-metadata.js';
 import type { StepMetadata } from './get-step-metadata.js';
+
+/**
+ * Per-step cache entry for a `(runId, namespace)` writable stream.
+ *
+ * Holds the user-facing `WritableStream` and the shared `FlushableStreamState`
+ * driving the background pipe to the workflow server. Re-used so repeat calls
+ * to `getWritable()` within the same step return the same handle instead of
+ * spawning racing pipes — see https://github.com/vercel/workflow/issues/2058.
+ */
+export interface CachedWritable {
+  writable: WritableStream<any>;
+  state: FlushableStreamState;
+}
 
 export type StepContext = {
   stepMetadata: StepMetadata;
   workflowMetadata: WorkflowMetadata;
+  /** Deployment that owns the current workflow run, used for forwarded streams. */
+  workflowDeploymentId?: string;
   ops: Promise<void>[];
   closureVars?: Record<string, any>;
   encryptionKey?: CryptoKey;
+  writables?: Map<string, CachedWritable>;
 };
 
 /**

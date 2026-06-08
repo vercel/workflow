@@ -28,7 +28,7 @@ function truncateForError(value: unknown): string {
 export class UnsafeEntityIdError extends WorkflowWorldError {
   constructor(kind: string, value: string) {
     super(
-      `Unsafe ${kind} "${truncateForError(value)}": must not be empty, start with ".", or contain path separators or null bytes`
+      `Unsafe ${kind} "${truncateForError(value)}": must not be empty, contain ".", "/", "\\", or null bytes`
     );
     this.name = 'UnsafeEntityIdError';
   }
@@ -44,6 +44,9 @@ export class UnsafeEntityIdError extends WorkflowWorldError {
  *   - empty
  *   - starting with `.` (blocks `.`, `..`, `.locks`, `.tmp`, and other
  *     hidden or reserved filenames)
+ *   - containing `.` (would collide with the `.tag` / `.json` suffix the
+ *     tagging logic strips from filenames; see {@link stripTag} /
+ *     {@link getObjectCreatedAt})
  *   - containing `/`, `\`, or a NUL byte
  *
  * This is the primary defense against path-traversal attacks where a
@@ -62,7 +65,8 @@ export function assertSafeEntityId(kind: string, value: string): void {
     value.startsWith('.') ||
     value.includes('/') ||
     value.includes('\\') ||
-    value.includes('\0')
+    value.includes('\0') ||
+    value.includes('.')
   ) {
     throw new UnsafeEntityIdError(kind, value);
   }
@@ -369,6 +373,19 @@ export async function readJSON<T>(
 export async function readBuffer(filePath: string): Promise<Buffer> {
   const content = await fs.readFile(filePath);
   return content;
+}
+
+export async function readFirstByte(
+  filePath: string
+): Promise<number | undefined> {
+  const file = await fs.open(filePath, 'r');
+  try {
+    const byte = Buffer.allocUnsafe(1);
+    const { bytesRead } = await file.read(byte, 0, 1, 0);
+    return bytesRead === 0 ? undefined : byte[0];
+  } finally {
+    await file.close();
+  }
 }
 
 export async function deleteJSON(filePath: string): Promise<void> {

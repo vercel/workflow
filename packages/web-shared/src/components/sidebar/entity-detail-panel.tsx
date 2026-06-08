@@ -9,6 +9,7 @@ import { DecryptClickContext } from '../ui/data-inspector';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
+import { useSidebarDataOptional } from './sidebar-data-context';
 
 // Type guards for runtime validation of span attribute data
 function isStep(data: unknown): data is Step {
@@ -115,6 +116,9 @@ export function EntityDetailPanel({
   const [resolvedHookIds, setResolvedHookIds] = useState<Set<string>>(
     new Set()
   );
+
+  const sidebar = useSidebarDataOptional();
+  const hasEncryptedData = Boolean(sidebar?.hasEncryptedData && !encryptionKey);
 
   const data = selectedSpan?.data;
   const rawEvents = selectedSpan?.rawEvents;
@@ -345,9 +349,11 @@ export function EntityDetailPanel({
   return (
     <div className="flex h-full flex-col">
       <DecryptClickContext.Provider
-        value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
+        value={
+          onDecrypt ? { onDecrypt, isDecrypting, hasEncryptedData } : undefined
+        }
       >
-        <div className="flex-1 overflow-y-auto px-3 pt-3 pb-8">
+        <div className="flex-1 overflow-y-auto px-4 pb-8">
           {hasPendingActions && (
             <div
               className="mb-4 rounded-lg border p-2"
@@ -412,32 +418,26 @@ export function EntityDetailPanel({
             </div>
           )}
 
-          <div className="space-y-4">
-            <section>
-              <AttributePanel
-                data={displayData}
-                moduleSpecifier={moduleSpecifier}
-                expiredAt={run.expiredAt}
-                isLoading={loading}
-                error={error ?? undefined}
-                onStreamClick={onStreamClick}
-                onRunClick={onRunClick}
-                onDecrypt={onDecrypt}
-                isDecrypting={isDecrypting}
-                resource={resource}
-              />
-            </section>
+          <AttributePanel
+            data={displayData}
+            moduleSpecifier={moduleSpecifier}
+            expiredAt={run.expiredAt}
+            isLoading={loading}
+            error={error ?? undefined}
+            onStreamClick={onStreamClick}
+            onRunClick={onRunClick}
+            onDecrypt={onDecrypt}
+            isDecrypting={isDecrypting}
+            resource={resource}
+          />
 
-            {resource !== 'run' && rawEvents && (
-              <section>
-                <EventsList
-                  events={rawEvents}
-                  onLoadEventData={onLoadEventData}
-                  encryptionKey={encryptionKey}
-                />
-              </section>
-            )}
-          </div>
+          {resource !== 'run' && rawEvents && (
+            <EventsList
+              events={rawEvents}
+              onLoadEventData={onLoadEventData}
+              encryptionKey={encryptionKey}
+            />
+          )}
         </div>
       </DecryptClickContext.Provider>
 

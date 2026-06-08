@@ -2,6 +2,8 @@
  * Shared types for the serialization system.
  */
 
+import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+
 // ---- Format Prefix ----
 
 /**
@@ -86,6 +88,12 @@ export interface SerializableSpecial {
     cause?: unknown;
     retryAfter: number;
   };
+  RuntimeDecryptionError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    context?: RuntimeDecryptionErrorContext;
+  };
   Request: {
     method: string;
     url: string;
@@ -152,7 +160,22 @@ export interface SerializableSpecial {
     cause?: unknown;
     errors: unknown[];
   };
-  WritableStream: { name: string };
+  WritableStream: {
+    name: string;
+    /**
+     * The runId of the workflow run that owns the underlying server
+     * stream. Present only when the writable was forwarded across a
+     * `start()` boundary (parent → child). When omitted, the writable
+     * belongs to the receiving run (the normal in-run case).
+     */
+    runId?: string;
+    /**
+     * The deployment that owns the server stream. Carried with `runId`
+     * so a child running on a newer deployment can encrypt chunks with
+     * the parent's key without fetching the parent run first.
+     */
+    deploymentId?: string;
+  };
   AbortController: {
     streamName: string;
     hookToken: string;

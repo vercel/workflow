@@ -36,6 +36,7 @@ import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
+  promoteAbortErrorToFatal,
 } from '../types.js';
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
@@ -115,6 +116,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
               eventData: {
+                stepName: stepNameFromQueue,
                 error: await dehydrateStepError(
                   err,
                   workflowRunId,
@@ -216,6 +218,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   eventType: 'step_started',
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
+                  eventData: { stepName },
                 },
                 { requestId }
               );
@@ -336,6 +339,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         err,
                         workflowRunId,
@@ -431,6 +435,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         wrappedError,
                         workflowRunId,
@@ -493,6 +498,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         new FatalError(errorMessage),
                         workflowRunId,
@@ -540,7 +546,10 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   step.input,
                   workflowRunId,
                   encryptionKey,
-                  ops
+                  ops,
+                  globalThis,
+                  {},
+                  process.env.VERCEL_DEPLOYMENT_ID
                 );
                 const durationMs = Date.now() - startTime;
                 hydrateSpan?.setAttributes({
@@ -583,6 +592,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         : `http://localhost:${port ?? 3000}`,
                       features: { encryption: !!encryptionKey },
                     },
+                    workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                     ops,
                     closureVars: hydratedInput.closureVars,
                     encryptionKey,
@@ -661,17 +671,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 }
               }
 
-              // Wrap AbortError in FatalError — abort is intentional cancellation, not retryable
-              let effectiveErr: unknown = err;
-              if (
-                err instanceof Error &&
-                err.name === 'AbortError' &&
-                !FatalError.is(err)
-              ) {
-                const fatalErr = new FatalError(`Aborted: ${err.message}`);
-                fatalErr.stack = err.stack;
-                effectiveErr = fatalErr;
-              }
+              // Abort failures can cross VM/serialization realms, where
+              // `instanceof Error` is not reliable.
+              const effectiveErr = promoteAbortErrorToFatal(err);
               const normalizedError = await normalizeUnknownError(effectiveErr);
               const normalizedStack =
                 normalizedError.stack || getErrorStack(effectiveErr) || '';
@@ -691,9 +693,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   : 'transient';
 
               span?.setAttributes({
-                ...Attribute.StepErrorName(getErrorName(err)),
+                ...Attribute.StepErrorName(getErrorName(effectiveErr)),
                 ...Attribute.StepErrorMessage(normalizedError.message),
-                ...Attribute.ErrorType(getErrorName(err)),
+                ...Attribute.ErrorType(getErrorName(effectiveErr)),
                 ...Attribute.ErrorCategory(errorCategory),
                 ...Attribute.ErrorRetryable(!isFatal),
               });
@@ -725,8 +727,8 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   }
                 );
                 // Fail the step via event (event-sourced architecture).
-                // Serialize the original thrown value so its full type identity
-                // and custom properties round-trip through the event log.
+                // Persist the promoted FatalError for aborts so the parent
+                // workflow can distinguish cancellation from retry exhaustion.
                 try {
                   await world.events.create(
                     workflowRunId,
@@ -735,8 +737,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       specVersion: SPEC_VERSION_CURRENT,
                       correlationId: stepId,
                       eventData: {
+                        stepName,
                         error: await dehydrateStepError(
-                          err,
+                          effectiveErr,
                           workflowRunId,
                           encryptionKey
                         ),
@@ -819,6 +822,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         specVersion: SPEC_VERSION_CURRENT,
                         correlationId: stepId,
                         eventData: {
+                          stepName,
                           error: await dehydrateStepError(
                             wrappedError,
                             workflowRunId,
@@ -887,6 +891,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         specVersion: SPEC_VERSION_CURRENT,
                         correlationId: stepId,
                         eventData: {
+                          stepName,
                           error: await dehydrateStepError(
                             err,
                             workflowRunId,
@@ -981,6 +986,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       result: result as Uint8Array,
                     },
                   },

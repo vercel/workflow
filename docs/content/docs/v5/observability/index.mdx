@@ -1,7 +1,7 @@
 ---
 title: Observability
 description: Inspect, monitor, and debug workflows through the CLI and Web UI with powerful observability tools.
-type: guide
+type: overview
 summary: Inspect and debug workflow runs using the CLI and Web UI.
 prerequisites:
   - /docs/foundations
@@ -63,3 +63,11 @@ npx workflow inspect runs --backend vercel
 ```
 
 When deployed to Vercel, workflow data is [encrypted end-to-end](/docs/how-it-works/encryption). Encrypted fields display as locked placeholders until you choose to decrypt them using the **Decrypt** button in the web UI or the `--decrypt` flag in the CLI.
+
+## More Observability Features
+
+<Cards>
+    <Card href="/docs/observability/attributes" title="Attributes">
+        Attach experimental metadata to workflow runs for observability.
+    </Card>
+</Cards>
