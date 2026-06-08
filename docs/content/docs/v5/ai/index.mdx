@@ -262,9 +262,9 @@ import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow"; // [
 import { getWritable } from "workflow"; // [!code highlight]
 import { tools } from "@/ai/tools";
 import { openai } from "@ai-sdk/openai";
-import type { ModelMessage } from "ai";
+import { convertToModelMessages, type UIMessage } from "ai";
 
-export async function chatWorkflow(messages: ModelMessage[]) {
+export async function chatWorkflow(messages: UIMessage[]) {
   "use workflow"; // [!code highlight]
 
   const writable = getWritable<ModelCallStreamPart>(); // [!code highlight]
@@ -281,8 +281,10 @@ export async function chatWorkflow(messages: ModelMessage[]) {
     tools: flightBookingTools,
   });
 
+  const modelMessages = await convertToModelMessages(messages); // [!code highlight]
+
   await agent.stream({ // [!code highlight]
-    messages,
+    messages: modelMessages,
     writable,
   });
 }
@@ -292,6 +294,7 @@ Key changes:
 
 - Add the `"use workflow"` directive to mark our Agent as a workflow function
 - Replace the in-memory agent with [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) from `@ai-sdk/workflow`. This runs the agent loop inside a workflow, persists state across step boundaries, and lets tool executions marked with `"use step"` retry automatically.
+- Convert AI SDK `UIMessage` values to model messages inside the workflow before calling `agent.stream()`.
 - Use [`getWritable()`](/docs/api-reference/workflow/get-writable) to get a stream for agent output. `WorkflowAgent` writes `ModelCallStreamPart` chunks to this persistent stream, and API endpoints can read from a run's stream at any time.
 </Step>
 
@@ -302,16 +305,14 @@ Remove the agent call that we just extracted, and replace it with a call to `sta
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
 import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
-import type { UIMessage } from "ai";
-import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
+import { createUIMessageStreamResponse, type UIMessage } from "ai";
 import { start } from "workflow/api";
 import { chatWorkflow } from "@/workflows/chat/workflow";
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
-  const modelMessages = await convertToModelMessages(messages);
 
-  const run = await start(chatWorkflow, [modelMessages]); // [!code highlight]
+  const run = await start(chatWorkflow, [messages]); // [!code highlight]
 
   return createUIMessageStreamResponse({
     stream: run.readable.pipeThrough(createModelCallToUIChunkTransform()), // [!code highlight]

@@ -21,8 +21,6 @@ Workflow routes are now handled as Nitro v3 handlers and bundled by Nitro, rathe
 
 Because steps run inside your Nitro runtime, server-side utilities work directly inside a `"use step"` function:
 
-{/* @skip-typecheck: Nitro runtime auto-imports are not available to docs-typecheck */}
-
 ```typescript
 export async function cacheResult(key: string, value: string) {
   "use step";
