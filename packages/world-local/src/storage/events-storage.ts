@@ -95,10 +95,34 @@ const HookTokenClaimSchema = z.object({
   // worker committed to publishing. Persisting it here turns the
   // claim file into a durable convergence key for cross-worker /
   // cross-process retries (see comment on the hook_created branch).
-  // `optional()` is for backward compatibility with claim files
-  // written before this field existed — those fall back to the
-  // legacy event-log probe.
+  // `optional()` for backward compatibility: a legacy claim file
+  // written before this field existed falls through to the recovery-
+  // marker upgrade path, which atomically pins a canonical eventId
+  // via a sidecar marker (also a `writeExclusive`).
   eventId: z.string().optional(),
+});
+
+/**
+ * Sidecar recovery marker that pins a canonical `hook_created`
+ * eventId for a token whose original claim file predates the
+ * inline-`eventId` format. Without this marker, two cross-process
+ * retries reading a legacy claim each generate their own eventId,
+ * land their `writeExclusive(eventPath)` calls at different paths,
+ * and append two `hook_created` events for the same `(runId,
+ * hookId)`. The marker is written via `writeExclusive` — the first
+ * worker to land it pins its candidate eventId as canonical, and
+ * every subsequent retry reads and adopts that eventId before the
+ * common event publish.
+ *
+ * Stored at `hooks/tokens/<hash>.recovery.json` (sibling to the
+ * claim file). Includes `hookId` and `runId` so a mismatched marker
+ * is treated like a legacy claim and re-pinned, rather than
+ * silently corrupting a different hook'\''s recovery.
+ */
+const HookRecoveryMarkerSchema = z.object({
+  eventId: z.string(),
+  hookId: z.string(),
+  runId: z.string(),
 });
 
 async function readHookTokenClaim(
@@ -114,31 +138,75 @@ async function readHookTokenClaim(
   }
 }
 
+async function readHookRecoveryMarker(
+  markerPath: string
+): Promise<z.infer<typeof HookRecoveryMarkerSchema> | null> {
+  try {
+    return await readJSON(markerPath, HookRecoveryMarkerSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 /**
- * Look for a `hook_created` event in the run's event log for a given
- * `(runId, correlationId)`. Used by the hook_created dedup branch to
- * distinguish a real duplicate (the durable event exists) from an
- * orphaned partial write left by a crash between the claim/hook entity
- * writes and the event write (the event is missing). Returns `true`
- * iff at least one matching event is present.
+ * Compute the path of the recovery-marker sidecar for a hashed
+ * token. Used by both the legacy-claim recovery path (writes /
+ * reads the marker) and `hook_disposed` (deletes the marker when
+ * the token is released).
  */
-async function findHookCreatedEvent(
+function hookRecoveryMarkerPath(basedir: string, tokenHash: string): string {
+  return path.join(basedir, 'hooks', 'tokens', `${tokenHash}.recovery.json`);
+}
+
+/**
+ * Atomically pin a canonical `hook_created` eventId for a legacy
+ * claim (one without an inline `eventId`). The first worker to
+ * `writeExclusive` the recovery marker wins; its `candidateEventId`
+ * becomes canonical. Subsequent workers read the marker and adopt
+ * its `eventId`. Together with the `writeExclusive(eventPath)` in
+ * the outer event publish, this gives the legacy-fallback path the
+ * same single-event convergence guarantee as the inline-`eventId`
+ * fast path.
+ *
+ * Returns the canonical eventId for the caller to adopt.
+ *
+ * If a stale marker exists for a *different* `(runId, hookId)`
+ * (which would indicate a token-reuse race where the prior recovery
+ * was never cleaned up), the marker is overwritten with our own
+ * `(runId, hookId, eventId)` so the current creation can make
+ * forward progress. We accept the lost-convergence risk for that
+ * narrow case because it only triggers when the token was actually
+ * reused — the common cross-worker race for the same hook still
+ * converges.
+ */
+async function pinCanonicalEventIdForLegacyClaim(
   basedir: string,
+  tokenHash: string,
   runId: string,
-  correlationId: string
-): Promise<boolean> {
-  const result = await paginatedFileSystemQuery({
-    directory: path.join(basedir, 'events'),
-    schema: EventSchema,
-    filePrefix: `${runId}-`,
-    filter: (event) =>
-      event.eventType === 'hook_created' &&
-      event.correlationId === correlationId,
-    limit: 1,
-    getCreatedAt: getObjectCreatedAt('evnt'),
-    getId: (event) => event.eventId,
+  hookId: string,
+  candidateEventId: string
+): Promise<string> {
+  const markerPath = hookRecoveryMarkerPath(basedir, tokenHash);
+  const markerContent = JSON.stringify({
+    eventId: candidateEventId,
+    hookId,
+    runId,
   });
-  return result.data.length > 0;
+  const won = await writeExclusive(markerPath, markerContent);
+  if (won) {
+    return candidateEventId;
+  }
+  const existing = await readHookRecoveryMarker(markerPath);
+  if (existing && existing.runId === runId && existing.hookId === hookId) {
+    return existing.eventId;
+  }
+  // Stale or unparseable marker: overwrite with our own. This is
+  // best-effort — see the function comment for why.
+  await writeJSON(markerPath, JSON.parse(markerContent), { overwrite: true });
+  return candidateEventId;
 }
 
 function withInProcessLock<T>(
@@ -1085,50 +1153,54 @@ export function createEventsStorage(
               existingClaim?.runId === effectiveRunId &&
               existingClaim.hookId === data.correlationId
             ) {
-              if (existingClaim.eventId) {
-                // Adopt the canonical eventId from the claim. The
-                // outer event write (no-overwrite `writeJSON`) is the
-                // atomic publish: it either succeeds (we are the
-                // publisher of the canonical event, repairing a
-                // partial write left by the original claimant) or
-                // throws `EntityConflictError` (the event was already
-                // published — a real duplicate). Either way the log
-                // ends with exactly one `hook_created` event for this
-                // `(runId, hookId)`.
-                //
-                // Rebuild `event` with the canonical eventId and a
-                // deterministic `createdAt` derived from the eventId
-                // (a ULID) so two workers writing the same event
-                // produce byte-identical content.
-                eventId = existingClaim.eventId;
-                const canonicalCreatedAt =
-                  ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
-                event = {
-                  ...data,
-                  runId: effectiveRunId,
-                  eventId,
-                  createdAt: canonicalCreatedAt,
-                  specVersion: effectiveSpecVersion,
-                };
-                writeHookEntityWithOverwrite = true;
-              } else {
-                // Legacy claim file (no eventId persisted): fall back
-                // to probing the event log. If a `hook_created` event
-                // already exists for this `(runId, correlationId)`,
-                // treat as real duplicate; otherwise recover with our
-                // freshly-generated eventId.
-                const existingHookCreated = await findHookCreatedEvent(
+              // Adopt a canonical eventId for the recovery write. The
+              // outer event publish (`writeExclusive(eventPath)`)
+              // either succeeds (we publish the canonical event,
+              // repairing a partial write left by the original
+              // claimant) or returns `false` and we throw
+              // `EntityConflictError` (the event was already
+              // published — a real duplicate). Either way the log
+              // ends with exactly one `hook_created` event for this
+              // `(runId, hookId)`.
+              //
+              // The canonical eventId comes from one of two places:
+              //   - `existingClaim.eventId` for claims written by
+              //     this version (the writer above persists the
+              //     candidate eventId atomically with the claim).
+              //   - The recovery-marker sidecar for legacy claims
+              //     written before that field existed. The marker is
+              //     itself a `writeExclusive`, so the first retry
+              //     pins its candidate eventId as canonical and
+              //     subsequent retries adopt it. Without this, two
+              //     processes both reading the same legacy claim
+              //     would each generate their own eventId, land
+              //     their `writeExclusive(eventPath)` calls at
+              //     different paths, and append two events.
+              const canonicalEventId =
+                existingClaim.eventId ??
+                (await pinCanonicalEventIdForLegacyClaim(
                   basedir,
+                  hashToken(hookData.token),
                   effectiveRunId,
-                  data.correlationId
-                );
-                if (existingHookCreated) {
-                  throw new EntityConflictError(
-                    `Hook "${data.correlationId}" already created`
-                  );
-                }
-                writeHookEntityWithOverwrite = true;
-              }
+                  data.correlationId,
+                  eventId
+                ));
+
+              // Rebuild `event` with the canonical eventId and a
+              // deterministic `createdAt` derived from the eventId
+              // (a ULID) so two workers writing the same event
+              // produce byte-identical content.
+              eventId = canonicalEventId;
+              const canonicalCreatedAt =
+                ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
+              event = {
+                ...data,
+                runId: effectiveRunId,
+                eventId,
+                createdAt: canonicalCreatedAt,
+                specVersion: effectiveSpecVersion,
+              };
+              writeHookEntityWithOverwrite = true;
             } else {
               // Cross-hook / cross-run conflict: a different
               // (runId, hookId) holds this token. Create a
@@ -1228,14 +1300,20 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Delete the token constraint file to free up the token for reuse
+            // Delete the token constraint file (and its recovery
+            // marker, if any) to free up the token for reuse. If the
+            // marker is left behind after the token is recycled by a
+            // new creation, a future legacy-claim recovery for the
+            // recycled token could latch onto the stale eventId.
+            const tokenHash = hashToken(existingHook.token);
             const disposedConstraintPath = path.join(
               basedir,
               'hooks',
               'tokens',
-              `${hashToken(existingHook.token)}.json`
+              `${tokenHash}.json`
             );
             await deleteJSON(disposedConstraintPath);
+            await deleteJSON(hookRecoveryMarkerPath(basedir, tokenHash));
           }
           await deleteJSON(hookPath);
         } else if (data.eventType === 'wait_created' && 'eventData' in data) {

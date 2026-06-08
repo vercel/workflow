@@ -1,6 +1,8 @@
+import { fork } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import { stripEventDataRefs } from '@workflow/world';
@@ -19,6 +21,119 @@ import {
   updateRun,
   updateStep,
 } from './test-helpers.js';
+
+/** Path to the cross-process worker fixture used by the convergence tests. */
+const HOOK_RACE_WORKER = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'test-fixtures',
+  'hook-race-worker.ts'
+);
+
+/** Path to the `tsx` binary used to run the worker as TypeScript without a
+ *  pre-build step. tsx is a transitive devDependency via vitest. */
+const TSX_BIN = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'node_modules',
+  '.bin',
+  'tsx'
+);
+
+type WorkerResult =
+  | {
+      status: 'fulfilled';
+      eventId: string;
+      eventType: string;
+    }
+  | {
+      status: 'rejected';
+      errorName: string;
+      errorMessage: string;
+    };
+
+/**
+ * Spawn `workerCount` subprocesses that each call
+ * `events.create({ eventType: 'hook_created', ... })` against the
+ * same untagged storage directory, holding them at a barrier until
+ * all have reported `ready`. Each subprocess uses its own
+ * `createStorage(testDir)` instance — distinct from this process and
+ * from sibling workers — so the in-process `hookLocks` Map cannot
+ * serialize the call across workers. Returns each worker's outcome.
+ */
+async function raceHookCreatedAcrossProcesses(args: {
+  testDir: string;
+  runId: string;
+  hookId: string;
+  token: string;
+  workerCount: number;
+}): Promise<WorkerResult[]> {
+  const { testDir, runId, hookId, token, workerCount } = args;
+  const children = Array.from({ length: workerCount }, () =>
+    fork(HOOK_RACE_WORKER, [testDir, runId, hookId, token], {
+      execPath: TSX_BIN,
+      execArgv: [],
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    })
+  );
+
+  const results: WorkerResult[] = new Array(workerCount);
+  const readyResolvers: Array<() => void> = [];
+  const readyPromises = children.map(
+    (_, i) =>
+      new Promise<void>((resolve) => {
+        readyResolvers[i] = resolve;
+      })
+  );
+  const doneResolvers: Array<() => void> = [];
+  const donePromises = children.map(
+    (_, i) =>
+      new Promise<void>((resolve) => {
+        doneResolvers[i] = resolve;
+      })
+  );
+
+  for (const [i, child] of children.entries()) {
+    child.on('message', (msg: unknown) => {
+      const m = msg as { status: string } & Partial<WorkerResult>;
+      if (m.status === 'ready') {
+        readyResolvers[i]();
+      } else if (m.status === 'fulfilled' || m.status === 'rejected') {
+        results[i] = m as WorkerResult;
+        doneResolvers[i]();
+      }
+    });
+    child.on('error', (err) => {
+      results[i] = {
+        status: 'rejected',
+        errorName: 'ChildProcessError',
+        errorMessage: err.message,
+      };
+      doneResolvers[i]();
+    });
+    child.on('exit', (code, signal) => {
+      if (results[i] === undefined) {
+        results[i] = {
+          status: 'rejected',
+          errorName: 'ChildProcessExited',
+          errorMessage: `code=${code} signal=${signal}`,
+        };
+        doneResolvers[i]();
+      }
+    });
+  }
+
+  await Promise.all(readyPromises);
+  // Release the barrier — all workers race here.
+  for (const child of children) {
+    child.send('go');
+  }
+  await Promise.all(donePromises);
+
+  return results;
+}
 
 describe('stripEventDataRefs', () => {
   const baseEvent = {
@@ -2365,74 +2480,152 @@ describe('Storage', () => {
       ).toHaveLength(0);
     });
 
-    it('converges same-hook creation across workers to one event', async () => {
-      // Cross-worker convergence regression for the case pranaygp
-      // flagged on PR #2295: two workers sharing one data directory
-      // can both lose `writeExclusive(constraintPath)`, both observe
-      // no `hook_created` event in the log, both fall through to the
-      // recovery write, and both publish their own `hook_created`
-      // event with a different `eventId` — yielding two events in
-      // the log for the same `(runId, hookId)`.
+    it('converges same-hook creation across separate OS processes to one event', async () => {
+      // Cross-process convergence regression for the case pranaygp
+      // flagged on PR #2295: two processes sharing one untagged data
+      // directory each have their own `hookLocks` Map; the in-process
+      // mutex cannot serialize across them. Without a durable
+      // cross-process convergence key, both processes can lose
+      // `writeExclusive(constraintPath)`, both observe no
+      // `hook_created` event in the log, both fall through to the
+      // recovery write, generate different `eventId`s, and publish
+      // separate `hook_created` events.
       //
       // The fix persists `eventId` in the token claim so retries
       // adopt the canonical (winning) eventId and the outer event
       // write uses `writeExclusive` to atomically arbitrate
-      // publication. Either worker may win the publish; the other
-      // throws `EntityConflictError` (swallowed by the runtime's
+      // publication. Either process may win the publish; the other
+      // rejects with `EntityConflictError` (swallowed by the runtime's
       // existing concurrent-replay catch path). Net result: exactly
       // one `hook_created` event per logical creation.
       //
-      // Tags deliberately give the two storage instances independent
-      // in-process lock keys while retaining the shared on-disk
-      // token claim, matching the relevant multi-worker behavior.
-      const workerA = createStorage(testDir, 'worker-a');
-      const workerB = createStorage(testDir, 'worker-b');
-
-      const run = await createRun(workerA, {
+      // This test uses real `child_process.fork` subprocesses (not
+      // tag-isolated in-process storage instances, which share file
+      // paths only when untagged) so the assertions exercise the
+      // exact cross-process behavior the implementation is intended
+      // to protect. See `test-fixtures/hook-race-worker.ts`.
+      const run = await createRun(storage, {
         deploymentId: 'deployment-workers',
         workflowName: 'worker-race',
         input: new Uint8Array(),
       });
 
-      const attempts = 25;
+      const attempts = 10;
+      const workersPerAttempt = 2;
       for (let i = 0; i < attempts; i++) {
-        const correlationId = `hook_worker_${i}`;
-        const token = `token-worker-${i}`;
-        await Promise.allSettled([
-          workerA.events.create(run.runId, {
-            eventType: 'hook_created',
-            correlationId,
-            eventData: { token },
-          }),
-          workerB.events.create(run.runId, {
-            eventType: 'hook_created',
-            correlationId,
-            eventData: { token },
-          }),
-        ]);
+        const correlationId = `hook_proc_${i}`;
+        const token = `token-proc-${i}`;
+        const results = await raceHookCreatedAcrossProcesses({
+          testDir,
+          runId: run.runId,
+          hookId: correlationId,
+          token,
+          workerCount: workersPerAttempt,
+        });
+        const fulfilled = results.filter((r) => r.status === 'fulfilled');
+        const rejected = results.filter((r) => r.status === 'rejected');
+        // Exactly one worker fulfills (publishes the canonical event);
+        // the other(s) reject with EntityConflictError (swallowed by
+        // the runtime's concurrent-replay catch path in production).
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(workersPerAttempt - 1);
+        for (const r of rejected) {
+          expect(r.errorName).toBe('EntityConflictError');
+        }
       }
 
-      // Each tagged storage filters by tag on list; query both and
-      // unify by eventId so we count the total events on disk
-      // (deduped) for the run.
-      const [pageA, pageB] = await Promise.all([
-        workerA.events.list({
-          runId: run.runId,
-          pagination: { limit: 1000 },
-        }),
-        workerB.events.list({
-          runId: run.runId,
-          pagination: { limit: 1000 },
-        }),
-      ]);
-      const allEvents = new Map<string, (typeof pageA.data)[number]>();
-      for (const event of [...pageA.data, ...pageB.data]) {
-        allEvents.set(event.eventId, event);
-      }
-      const hookCreated = [...allEvents.values()].filter(
+      // Assert directly on a single raw `events.list()` result: there
+      // must be exactly `attempts` `hook_created` events for the run,
+      // one per logical creation. Do NOT deduplicate by eventId here
+      // — that would hide a duplicate-publication regression.
+      const allEvents = await storage.events.list({
+        runId: run.runId,
+        pagination: { limit: 1000 },
+      });
+      const hookCreated = allEvents.data.filter(
         (event) => event.eventType === 'hook_created'
       );
-      const hookConflict = [...allEvents.values()].filter(
+      const hookConflict = allEvents.data.filter(
+        (event) => event.eventType === 'hook_conflict'
+      );
+      expect(hookCreated).toHaveLength(attempts);
+      expect(hookConflict).toHaveLength(0);
+    });
+
+    it('converges same-hook creation across processes when only a legacy token claim exists', async () => {
+      // Crash / upgrade-recovery regression: a token claim written by
+      // a version of this storage that did not yet persist `eventId`
+      // in the claim file (i.e. the pre-2283 layout `{ token, hookId,
+      // runId }`) still exists on disk after upgrade. Two processes
+      // both lose `writeExclusive(constraintPath)`, both read the
+      // legacy claim, both see `existingClaim.eventId === undefined`,
+      // and both fall to the legacy fallback. Without an atomic
+      // cross-process convergence point, both generate fresh
+      // eventIds, both `writeExclusive(eventPath)` at different
+      // paths, and both publish — yielding two `hook_created` events
+      // for the same `(runId, hookId)`.
+      //
+      // The fix promotes the legacy claim to a canonical eventId via
+      // a sidecar recovery marker (`hooks/tokens/<hash>.recovery.json`,
+      // also a `writeExclusive`). The first process to land the
+      // marker pins its candidate eventId as canonical; all
+      // subsequent processes read the marker and adopt that
+      // eventId. Combined with the `writeExclusive(eventPath)` in
+      // the outer publish, this gives the legacy-fallback path the
+      // same single-event convergence guarantee as the inline-
+      // `eventId` fast path.
+      //
+      // Existing persisted claims after a real-world upgrade are
+      // exactly the state the crash-recovery branch needs to repair,
+      // so leaving the legacy path non-convergent across workers is
+      // not backward compatibility — it is silent corruption.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-legacy',
+        workflowName: 'legacy-race',
+        input: new Uint8Array(),
+      });
+
+      const attempts = 10;
+      const workersPerAttempt = 2;
+      for (let i = 0; i < attempts; i++) {
+        const correlationId = `hook_legacy_${i}`;
+        const token = `token-legacy-${i}`;
+
+        // Pre-seed the legacy-format claim: present on disk, but
+        // missing the `eventId` field this version adds.
+        const tokensDir = path.join(testDir, 'hooks', 'tokens');
+        await fs.mkdir(tokensDir, { recursive: true });
+        await fs.writeFile(
+          path.join(tokensDir, `${hashToken(token)}.json`),
+          JSON.stringify({ token, hookId: correlationId, runId: run.runId })
+        );
+
+        const results = await raceHookCreatedAcrossProcesses({
+          testDir,
+          runId: run.runId,
+          hookId: correlationId,
+          token,
+          workerCount: workersPerAttempt,
+        });
+        const fulfilled = results.filter((r) => r.status === 'fulfilled');
+        const rejected = results.filter((r) => r.status === 'rejected');
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(workersPerAttempt - 1);
+        for (const r of rejected) {
+          expect(r.errorName).toBe('EntityConflictError');
+        }
+      }
+
+      // Raw event log must contain exactly `attempts` `hook_created`
+      // events for the run.
+      const allEvents = await storage.events.list({
+        runId: run.runId,
+        pagination: { limit: 1000 },
+      });
+      const hookCreated = allEvents.data.filter(
+        (event) => event.eventType === 'hook_created'
+      );
+      const hookConflict = allEvents.data.filter(
         (event) => event.eventType === 'hook_conflict'
       );
       expect(hookCreated).toHaveLength(attempts);
