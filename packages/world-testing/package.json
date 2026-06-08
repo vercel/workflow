@@ -22,19 +22,19 @@
     "test": "vitest"
   },
   "dependencies": {
-    "@hono/node-server": "1.19.9",
+    "@hono/node-server": "1.19.13",
     "@workflow/cli": "workspace:*",
     "@workflow/core": "workspace:*",
-    "workflow": "workspace:*",
     "@workflow/world": "workspace:*",
     "chalk": "5.6.2",
-    "hono": "4.12.3",
+    "hono": "4.12.21",
     "jsonlines": "0.1.1",
+    "workflow": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "catalog:",
     "@types/jsonlines": "0.1.5",
+    "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "vitest": "catalog:"
   },

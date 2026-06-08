@@ -36,10 +36,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "express": "^4.21.0"
+    "express": "^5.2.1"
   },
   "devDependencies": {
-    "@testing-library/react": "^16.3.0",
     "@biomejs/biome": "catalog:",
     "@radix-ui/react-alert-dialog": "1.1.5",
     "@radix-ui/react-checkbox": "1.1.4",
@@ -54,12 +53,13 @@
     "@react-router/dev": "7.13.1",
     "@react-router/express": "7.13.1",
     "@react-router/node": "7.13.1",
-    "@vercel/react-router": "1.2.6",
     "@tailwindcss/vite": "4",
+    "@testing-library/react": "^16.3.0",
     "@types/express": "^5",
     "@types/node": "catalog:",
     "@types/react": "19",
     "@types/react-dom": "19",
+    "@vercel/react-router": "1.2.6",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
@@ -74,6 +74,7 @@
     "date-fns": "4.1.0",
     "geist": "^1.7.0",
     "isbot": "^5",
+    "jsdom": "^26",
     "lucide-react": "0.575.0",
     "next-themes": "0.4.6",
     "react": "19.1.0",
@@ -85,7 +86,6 @@
     "tailwindcss": "4",
     "typescript": "catalog:",
     "vite": "^6",
-    "vitest": "^3",
-    "jsdom": "^26"
+    "vitest": "^3"
   }
 }

@@ -86,7 +86,7 @@
     "postpack": "rm -rf docs"
   },
   "dependencies": {
-    "@aws-sdk/credential-provider-web-identity": "3.972.13",
+    "@aws-sdk/credential-provider-web-identity": "3.972.49",
     "@jridgewell/trace-mapping": "0.3.31",
     "@standard-schema/spec": "1.0.0",
     "@types/ms": "2.1.0",
@@ -109,9 +109,9 @@
   "devDependencies": {
     "@opentelemetry/api": "1.9.0",
     "@types/debug": "4.1.12",
-    "@types/semver": "7.7.1",
     "@types/node": "catalog:",
     "@types/seedrandom": "3.0.8",
+    "@types/semver": "7.7.1",
     "@workflow/tsconfig": "workspace:*",
     "cross-env": "10.1.0",
     "genversion": "3.2.0"
