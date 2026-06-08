@@ -24,6 +24,7 @@ import {
   taggedPath,
   UnsafeEntityIdError,
   ulidToDate,
+  writeExclusive,
   writeJSON,
 } from './fs.js';
 
@@ -66,6 +67,7 @@ describe('fs utilities', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
@@ -862,6 +864,67 @@ describe('fs utilities', () => {
           createdAt: testTime,
         }),
       ]);
+    });
+  });
+
+  describe('writeExclusive', () => {
+    it('does not expose the destination until the full contents are written', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const contents = JSON.stringify({ value: 'complete' });
+      const originalWriteFile = fs.writeFile.bind(fs);
+      let notifyWriteStarted: () => void = () => {};
+      let releaseWrite: () => void = () => {};
+      const writeStarted = new Promise<void>((resolve) => {
+        notifyWriteStarted = resolve;
+      });
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+
+      vi.spyOn(fs, 'writeFile').mockImplementation(
+        async (target, data, options) => {
+          const targetPath = target.toString();
+          if (
+            targetPath === filePath ||
+            targetPath.startsWith(`${filePath}.tmp.`)
+          ) {
+            await originalWriteFile(target, '{"value":', options);
+            notifyWriteStarted();
+            await writeReleased;
+            await originalWriteFile(target, data);
+            return;
+          }
+          await originalWriteFile(target, data, options);
+        }
+      );
+
+      const writePromise = writeExclusive(filePath, contents);
+      await writeStarted;
+
+      try {
+        await expect(fs.readFile(filePath, 'utf8')).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        releaseWrite();
+        await writePromise;
+      }
+
+      expect(await fs.readFile(filePath, 'utf8')).toBe(contents);
+    });
+
+    it('allows exactly one concurrent writer to publish the destination', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const values = Array.from({ length: 16 }, (_, index) => `value-${index}`);
+
+      const results = await Promise.all(
+        values.map((value) => writeExclusive(filePath, value))
+      );
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(await fs.readFile(filePath, 'utf8')).toBe(values[winner]);
+      expect(await fs.readdir(testDir)).toEqual(['exclusive.json']);
     });
   });
 
