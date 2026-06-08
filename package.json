@@ -21,16 +21,7 @@
   "pnpm": {
     "overrides": {
       "rfc6902": "5.1.2",
-      "devalue": "5.8.1",
-      "qs@6.15.1": "6.15.2",
-      "minimatch@3.1.2": "3.1.4",
-      "minimatch@5.1.6": "5.1.8",
-      "minimatch@9.0.5": "9.0.7",
-      "minimatch@9.0.6": "9.0.7",
-      "minimatch@10.2.4": "10.2.5",
-      "brace-expansion@1.1.12": "1.1.13",
-      "brace-expansion@2.0.2": "2.0.3",
-      "@swc/cli": "0.8.1"
+      "devalue": "5.8.1"
     },
     "onlyBuiltDependencies": [
       "bun"

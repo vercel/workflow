@@ -67,7 +67,7 @@
     "open": "10.2.0",
     "ora": "8.2.0",
     "terminal-link": "5.0.0",
-    "tinyglobby": "0.2.15",
+    "tinyglobby": "0.2.17",
     "xdg-app-paths": "5.1.0",
     "zod": "catalog:"
   }
