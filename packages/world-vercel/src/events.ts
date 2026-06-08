@@ -181,14 +181,27 @@ function collectPendingRefs(events: any[]): PendingRef[] {
  */
 async function hydrateEventRefs(
   events: any[],
-  config?: APIConfig,
-  refResolveConcurrency?: number
+  config?: APIConfig
 ): Promise<any[]> {
   const pending = collectPendingRefs(events);
   if (pending.length === 0) return events;
 
   return trace('world.refs.hydrate', async (span) => {
-    span?.setAttribute('workflow.refs.hydrated_count', pending.length);
+    // Split the page-level count by destination so the hydrate span tells
+    // the same story as the resolve span below — useful for triaging which
+    // bytes came from S3 vs which round-tripped through workflow-server.
+    let s3DirectCount = 0;
+    let serverFallbackCount = 0;
+    for (const p of pending) {
+      if (p.descriptor._ref.startsWith('dbrf:')) continue;
+      if (p.descriptor._url) s3DirectCount++;
+      else serverFallbackCount++;
+    }
+    span?.setAttributes({
+      'workflow.refs.hydrated_count': pending.length,
+      'workflow.refs.s3_direct_count': s3DirectCount,
+      'workflow.refs.server_fallback_count': serverFallbackCount,
+    });
 
     // Deduplicate descriptors by _ref key to avoid redundant resolutions.
     // Multiple events may reference the same ref (e.g., shared input).
@@ -204,17 +217,15 @@ async function hydrateEventRefs(
     }
     const deduped = Array.from(uniqueRefs.values());
 
-    // Resolve unique descriptors in parallel with bounded concurrency
-    const dedupedResults = await resolveRefDescriptors(
-      deduped,
-      config,
-      refResolveConcurrency
-    ).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
-      );
-    });
+    // Resolve unique descriptors in parallel.
+    const dedupedResults = await resolveRefDescriptors(deduped, config).catch(
+      (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
+        );
+      }
+    );
 
     // Build a map from ref key → resolved value for fast lookup
     const resolvedMap = new Map<string, unknown>();
@@ -309,36 +320,36 @@ export async function getWorkflowRunEvents(
   // via individual ref resolution requests.
   searchParams.set('remoteRefBehavior', 'lazy');
 
+  // Ask the server to embed pre-signed S3 URLs on each nested s3rf
+  // descriptor so client-side hydration can fetch the payload directly
+  // from S3 instead of round-tripping the /refs endpoint. The server
+  // resolves the outer eventDataRef wrapper itself when this flag is set.
+  //
+  // Only relevant when we're going to hydrate refs client-side. For
+  // resolveData='none' the descriptors are stripped before any URL is
+  // dereferenced, so skip the (small but non-zero) server-side signing work.
+  if (resolveData === 'all') {
+    searchParams.set('presignS3Refs', 'true');
+  }
+
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
     ? `/v2/events${query}`
     : `/v3/runs/${encodeURIComponent(runId!)}/events${query}`;
 
-  let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({
     endpoint,
     options: { method: 'GET' },
     config,
     schema: PaginatedResponseSchema(EventWithRefsSchema),
-    onResponse: (res) => {
-      const header = res.headers.get('x-ref-resolve-concurrency');
-      if (header) {
-        const parsed = parseInt(header, 10);
-        if (!Number.isNaN(parsed) && parsed > 0) {
-          refResolveConcurrency = parsed;
-        }
-      }
-    },
   })) as PaginatedResponse<Event>;
 
   if (resolveData === 'all') {
-    // Hydrate refs client-side: resolve all ref descriptors in parallel
-    const hydratedEvents = await hydrateEventRefs(
-      response.data,
-      config,
-      refResolveConcurrency
-    );
+    // Hydrate refs client-side: resolve all ref descriptors in parallel.
+    // When the descriptor carries a pre-signed `_url` (server opted-in via
+    // ?presignS3Refs=true), the GET goes directly to S3.
+    const hydratedEvents = await hydrateEventRefs(response.data, config);
 
     // Re-parse hydrated events through EventSchema to apply type coercions
     // (e.g., z.coerce.date() for resumeAt) that EventWithRefsSchema skips.
@@ -355,7 +366,6 @@ export async function getWorkflowRunEvents(
         `[world-vercel] EventSchema coercion failed for ${coercionFailures}/${hydratedEvents.length} events`
       );
     }
-
     return {
       ...response,
       data: validatedEvents,

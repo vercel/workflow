@@ -23,6 +23,13 @@ export interface RefDescriptor {
   _data?: string;
   /** Content type of the inline payload. Present only for dbrf: refs. */
   _ct?: string;
+  /**
+   * Pre-signed S3 GET URL. Present only when the client asked the server
+   * for the pre-signed format (?presignS3Refs=true) and the ref points to
+   * S3 storage. When set, the client fetches the payload directly from S3
+   * instead of round-tripping the /refs endpoint.
+   */
+  _url?: string;
 }
 
 /**
@@ -38,12 +45,6 @@ export function isRefDescriptor(value: unknown): value is RefDescriptor {
     (value as { _type: string })._type === 'RemoteRef'
   );
 }
-
-/**
- * Maximum number of concurrent ref resolution requests.
- * Limits peak concurrency to avoid overwhelming the server.
- */
-const REF_RESOLVE_CONCURRENCY = 10;
 
 /**
  * Resolve a single ref descriptor.
@@ -81,20 +82,31 @@ export async function resolveRefDescriptor(
     return decode(binaryData);
   }
 
-  // Remote refs (s3rf:, kvrf:) — fetch raw bytes from the server.
-  // The server returns the raw stored bytes directly (not wrapped in a
-  // JSON/CBOR envelope). The Content-Type may be 'application/cbor' (for
-  // CBOR-encoded data) or 'application/octet-stream' (for raw binary like
-  // Uint8Array). We handle both content types directly rather than going
-  // through makeRequest, which only handles JSON/CBOR API responses.
-  const { baseUrl, headers } = await getHttpConfig(config);
-  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
-  const url = `${baseUrl}${endpoint}`;
-
-  // Set headers that makeRequest normally adds: Accept for content
-  // negotiation and X-Request-Time to bypass RSC request memoization.
-  headers.set('Accept', 'application/cbor, application/octet-stream');
-  headers.set('X-Request-Time', Date.now().toString());
+  // Remote refs (s3rf:, kvrf:) — fetch raw bytes.
+  //
+  // When the descriptor carries a pre-signed S3 URL (`_url`), fetch the
+  // payload directly from S3 — no auth header, no workflow-server hop.
+  // Otherwise fall back to `GET /v2/runs/:runId/refs?ref=…` which streams
+  // the object back through the server (used for kvrf: and for s3rf: when
+  // the list-events response wasn't asked to pre-sign).
+  let url: string;
+  let headers: Headers;
+  if (descriptor._url) {
+    url = descriptor._url;
+    // Pre-signed URLs already carry auth in the query string; sending
+    // additional Authorization headers can confuse S3's signature check.
+    headers = new Headers();
+    headers.set('Accept', 'application/cbor, application/octet-stream');
+  } else {
+    const http = await getHttpConfig(config);
+    const endpoint = `/v2/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
+    url = `${http.baseUrl}${endpoint}`;
+    headers = http.headers;
+    // Set headers that makeRequest normally adds: Accept for content
+    // negotiation and X-Request-Time to bypass RSC request memoization.
+    headers.set('Accept', 'application/cbor, application/octet-stream');
+    headers.set('X-Request-Time', Date.now().toString());
+  }
 
   return trace(
     'http GET',
@@ -103,7 +115,7 @@ export async function resolveRefDescriptor(
       span?.setAttributes({
         ...HttpRequestMethod('GET'),
         ...UrlFull(url),
-        ...PeerService('workflow-server'),
+        ...PeerService(descriptor._url ? 's3' : 'workflow-server'),
       });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
@@ -152,59 +164,40 @@ export interface RefWithRunId {
 }
 
 /**
- * Resolve multiple ref descriptors in parallel with bounded concurrency.
- *
- * If any ref in a batch fails, the batch rejects and remaining batches
- * are aborted to avoid cascading failures.
+ * Resolve multiple ref descriptors in parallel.
  *
  * @param refs - Array of ref descriptors with their owning runIds
  * @param config - API configuration
- * @param concurrency - Max concurrent ref resolution requests. Falls back to REF_RESOLVE_CONCURRENCY.
  * @returns Array of resolved values in the same order as input
  */
 export async function resolveRefDescriptors(
   refs: RefWithRunId[],
-  config?: APIConfig,
-  concurrency?: number
+  config?: APIConfig
 ): Promise<unknown[]> {
   if (refs.length === 0) return [];
 
-  const limit = concurrency ?? REF_RESOLVE_CONCURRENCY;
-
   return trace('world.refs.resolve', async (span) => {
-    const inlineCount = refs.filter((r) =>
-      r.descriptor._ref.startsWith('dbrf:')
-    ).length;
-    const remoteCount = refs.length - inlineCount;
+    let inlineCount = 0;
+    let s3DirectCount = 0;
+    let serverFallbackCount = 0;
+    for (const r of refs) {
+      if (r.descriptor._ref.startsWith('dbrf:')) inlineCount++;
+      else if (r.descriptor._url) s3DirectCount++;
+      else serverFallbackCount++;
+    }
 
     span?.setAttributes({
       'workflow.refs.total_count': refs.length,
       'workflow.refs.inline_count': inlineCount,
-      'workflow.refs.remote_count': remoteCount,
-      'workflow.refs.concurrency_limit': limit,
+      'workflow.refs.remote_count': refs.length - inlineCount,
+      // Split remote-ref fetches by destination so replay-latency triage
+      // can attribute slowness without joining over child http GET spans.
+      'workflow.refs.s3_direct_count': s3DirectCount,
+      'workflow.refs.server_fallback_count': serverFallbackCount,
     });
 
-    // Simple case: if under concurrency limit, resolve all at once
-    if (refs.length <= limit) {
-      return Promise.all(
-        refs.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
-      );
-    }
-
-    // Batch with bounded concurrency. If any ref in a batch fails,
-    // the batch rejects and remaining batches are aborted to avoid
-    // cascading failures.
-    const results: unknown[] = new Array(refs.length);
-    for (let i = 0; i < refs.length; i += limit) {
-      const batch = refs.slice(i, i + limit);
-      const batchResults = await Promise.all(
-        batch.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
-      );
-      for (let j = 0; j < batchResults.length; j++) {
-        results[i + j] = batchResults[j];
-      }
-    }
-
-    return results;
+    return Promise.all(
+      refs.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
+    );
   });
 }
