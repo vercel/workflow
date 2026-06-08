@@ -547,6 +547,115 @@ describe('e2e', () => {
     expect(returnValue[2].body).toBe('{"message":"three"}');
   });
 
+  test(
+    'parallelStepsThenWebhookWorkflow - no hook_conflict from same-tick replay race',
+    { timeout: 180_000 },
+    async () => {
+      // Regression test for https://github.com/vercel/workflow/issues/1665
+      // and https://github.com/vercel/workflow/issues/2283.
+      //
+      // Multiple child workflows each create one webhook; awaited
+      // together with Promise.all, their hook creations race on the
+      // same parent workflow body. When the resolutions land in the
+      // same tick the workflow body is re-walked, and each walk
+      // produces the same deterministic correlationId/token for the
+      // `createWebhook()` call, submitting `hook_created` twice for
+      // the same `(runId, hookId, token)`.
+      //
+      // Before the world-side idempotency fix, the world wrote a
+      // `hook_conflict` event for the second submission, which on
+      // replay made the hook reject with `HookConflictError`. With the
+      // fix, the duplicate is rejected with `EntityConflictError`
+      // (which the suspension handler swallows), no `hook_conflict`
+      // event is written, and the webhooks resolve normally.
+      const NUM_WEBHOOKS = 6;
+      const run = await start(
+        await e2e('parallelStepsThenWebhookWorkflow'),
+        []
+      );
+
+      // Wait for all webhooks to register for this run.
+      const world = await getWorld();
+      const hooks = await (async () => {
+        const deadline = Date.now() + 120_000;
+        while (Date.now() < deadline) {
+          const { data } = await world.hooks.list({ runId: run.runId });
+          if (data.length > NUM_WEBHOOKS) {
+            const tokens = data.map((h) => h.token).join(', ');
+            throw new Error(
+              `Expected ${NUM_WEBHOOKS} webhooks for run ${run.runId}, but found ${data.length}. Tokens: [${tokens}]`
+            );
+          }
+          if (data.length === NUM_WEBHOOKS) return data;
+          await sleep(500);
+        }
+        throw new Error(
+          `Timed out waiting for ${NUM_WEBHOOKS} webhooks to be registered for run ${run.runId}`
+        );
+      })();
+
+      // Fire each webhook to unblock the workflow.
+      await Promise.all(
+        hooks.map(async (hook) => {
+          const res = await fetch(
+            new URL(
+              `/.well-known/workflow/v1/webhook/${encodeURIComponent(hook.token)}`,
+              deploymentUrl
+            ),
+            {
+              method: 'POST',
+              headers: await getTrustedSourcesHeaders(),
+              body: `body-${hook.token}`,
+            }
+          );
+          expect(res.status).toBe(202);
+        })
+      );
+
+      // Workflow should complete cleanly with no HookConflictError.
+      const result = (await run.returnValue) as Array<{
+        label: string;
+        token: string;
+        body: string;
+      }>;
+      expect(result).toHaveLength(NUM_WEBHOOKS);
+      for (const child of result) {
+        expect(child.body).toBe(`body-${child.token}`);
+      }
+
+      // Inspect the event log: there must be no hook_conflict event,
+      // even if the replay race triggered duplicate `hook_created`
+      // submissions to the world. Paginate to cover all events — the
+      // default page limit is 20 and a 6-child run produces ~60 events.
+      const allEvents: Array<{
+        eventType: string;
+        correlationId: string | undefined;
+      }> = [];
+      let cursor: string | undefined;
+      while (true) {
+        const page = await world.events.list({
+          runId: run.runId,
+          pagination: { limit: 100, cursor },
+        });
+        allEvents.push(...page.data);
+        if (!page.cursor) break;
+        cursor = page.cursor;
+      }
+      const hookConflictEvents = allEvents.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      const hookCreatedEvents = allEvents.filter(
+        (e) => e.eventType === 'hook_created'
+      );
+      expect(hookConflictEvents).toEqual([]);
+      // There should be exactly NUM_WEBHOOKS hook_created events in the log.
+      expect(hookCreatedEvents).toHaveLength(NUM_WEBHOOKS);
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
+
   test('webhook route with invalid token', { timeout: 60_000 }, async () => {
     const invalidWebhookUrl = new URL(
       `/.well-known/workflow/v1/webhook/${encodeURIComponent('invalid')}`,

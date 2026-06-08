@@ -3270,3 +3270,63 @@ export async function experimentalSetAttributesThrowsAfterWorkflow() {
   });
   throw new FatalError('intentional failure to test attribute persistence');
 }
+
+//////////////////////////////////////////////////////////
+
+async function parallelHookRaceQuickStep(label: string) {
+  'use step';
+  return label;
+}
+
+async function parallelHookRaceChildWorkflow(label: string) {
+  'use workflow';
+  // Each child does a tiny step and then creates one webhook, mirroring
+  // the SouthCentralCode production repro on issue #1665.
+  await parallelHookRaceQuickStep(label);
+  using webhook = createWebhook();
+  const req = await webhook;
+  const body = await req.text();
+  return { label, token: webhook.token, body };
+}
+
+/**
+ * Regression test for https://github.com/vercel/workflow/issues/1665 and
+ * https://github.com/vercel/workflow/issues/2283.
+ *
+ * Multiple child workflows each create one webhook, awaited together
+ * with `Promise.all`. Per the common-patterns docs, awaited child
+ * workflows flatten into the parent's run, so all webhook creations
+ * race on the same workflow body. When several parallel steps resolve
+ * in the same tick the workflow body is re-walked, and each walk
+ * produces the same deterministic `(correlationId, token)` for its
+ * `createWebhook()` call — both submit `hook_created` to the world.
+ *
+ * Before the world-side idempotency fix, the world would accept the
+ * first `hook_created` and write a `hook_conflict` event for the
+ * second — even though both events carry the same `(runId, hookId,
+ * token)`. On replay, the hook's awaitable would see the
+ * `hook_conflict` and reject with `HookConflictError`, even though no
+ * other run actually owned the token. SouthCentralCode observed a
+ * ~25-40% loss rate at 4-5-way parallelism.
+ *
+ * With the fix, the world rejects the duplicate with
+ * `EntityConflictError` (which the suspension handler already swallows
+ * as a benign concurrent-replay outcome), no `hook_conflict` event is
+ * written, and the hooks resolve normally when the webhooks are
+ * triggered. The test runs at 6-way parallelism to give the race
+ * plenty of opportunity to fire on the pre-fix code.
+ */
+export async function parallelStepsThenWebhookWorkflow() {
+  'use workflow';
+
+  const labels = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const children = await Promise.all(
+    labels.map((label) => parallelHookRaceChildWorkflow(label))
+  );
+
+  return children.map((c) => ({
+    label: c.label,
+    token: c.token,
+    body: c.body,
+  }));
+}
