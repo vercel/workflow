@@ -6,6 +6,7 @@ import {
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
+import { DEFERRED_STEP_COPY_DIR_NAME } from './step-copy-utils.js';
 
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
@@ -15,8 +16,9 @@ const workflowSerdeSymbolPattern =
 const workflowSerdeComputedPropertyPattern =
   /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
 const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
-const deferredStepCopyPathPattern =
-  /[/\\]\.well-known[/\\]workflow[/\\]v1[/\\]step[/\\]__workflow_step_files__[/\\]/;
+const deferredStepCopyPathPattern = new RegExp(
+  String.raw`[/\\]\.well-known[/\\]workflow[/\\]v1[/\\]step[/\\]${DEFERRED_STEP_COPY_DIR_NAME}[/\\]`
+);
 const turbopackWorkflowContentPattern =
   /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/;
 
