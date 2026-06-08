@@ -36,7 +36,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "express": "^4.21.0"
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.0",

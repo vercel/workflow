@@ -50,6 +50,6 @@
     "esbuild": "catalog:",
     "find-up": "7.0.0",
     "json5": "2.2.3",
-    "tinyglobby": "0.2.15"
+    "tinyglobby": "0.2.17"
   }
 }

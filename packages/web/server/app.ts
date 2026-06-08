@@ -9,7 +9,7 @@ export const app = express();
 // - Vite's dev server in development
 // - server.js in production (before mounting this app)
 app.all(
-  '*',
+  '/{*splat}',
   createRequestHandler({
     build: () => import('virtual:react-router/server-build'),
   })
