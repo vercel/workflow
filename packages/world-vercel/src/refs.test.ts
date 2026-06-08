@@ -136,6 +136,53 @@ describe('resolveRefDescriptor', () => {
     ).rejects.toThrow(/length mismatch/);
   });
 
+  it('skips the length check for compressed (Content-Encoding) responses', async () => {
+    // fetch/undici transparently decompresses gzip/br bodies but leaves
+    // Content-Length describing the *encoded* (compressed) size. The
+    // decompressed byteLength therefore legitimately differs from the
+    // header, and without skipping the check a valid compressed ref would
+    // be wrongly rejected as a phantom truncation.
+    const payload = { value: 'ok', padding: 'x'.repeat(100) };
+    const encoded = encode(payload);
+    mockFetch.mockResolvedValueOnce(
+      new Response(encoded, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/cbor',
+          // Declared (compressed) length is much smaller than the
+          // decompressed body we actually receive.
+          'Content-Length': '20',
+          'Content-Encoding': 'gzip',
+        },
+      })
+    );
+
+    const result = await resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID);
+
+    expect(result).toEqual(payload);
+  });
+
+  it('still enforces the length check for identity Content-Encoding', async () => {
+    // `Content-Encoding: identity` means no transform was applied, so the
+    // declared length is directly comparable and a mismatch is still a
+    // real truncation.
+    const truncated = new Uint8Array(16);
+    mockFetch.mockResolvedValueOnce(
+      new Response(truncated, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/cbor',
+          'Content-Length': '1024',
+          'Content-Encoding': 'identity',
+        },
+      })
+    );
+
+    await expect(
+      resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID)
+    ).rejects.toThrow(/length mismatch/);
+  });
+
   it('throws when a binary body is shorter than the format-prefix length (with Content-Length)', async () => {
     // The SDK guarantees a 4-byte format prefix on every stored binary
     // ref payload. A 1-3 byte octet-stream body — even one that "agrees"

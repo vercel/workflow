@@ -91,6 +91,13 @@ const MIN_BINARY_REF_PAYLOAD_BYTES = 4;
  * a "truncated" error would mask the actual cause. The checks above still
  * defend against truncation in that case.
  *
+ * The length comparison is also skipped when the response carries a
+ * non-`identity` `Content-Encoding` (e.g. `gzip`, `br`). `fetch`/`undici`
+ * transparently decompresses the body but leaves `Content-Length`
+ * describing the *encoded* size, so the decompressed `byteLength` would not
+ * match the header and a perfectly valid compressed ref would otherwise be
+ * rejected as a phantom truncation.
+ *
  * Throws {@link WorkflowWorldError} so the runtime retry layer can treat
  * this as a transport-level error instead of poisoning replay.
  */
@@ -102,10 +109,19 @@ function assertValidRefBody(
     status: number;
     contentType: string;
     contentLengthHeader: string | null;
+    contentEncodingHeader: string | null;
     span: Span | undefined;
   }
 ): void {
-  const { ref, url, status, contentType, contentLengthHeader, span } = ctx;
+  const {
+    ref,
+    url,
+    status,
+    contentType,
+    contentLengthHeader,
+    contentEncodingHeader,
+    span,
+  } = ctx;
   const actualLength = buffer.byteLength;
   const isBinary = contentType.includes('application/octet-stream');
 
@@ -133,6 +149,16 @@ function assertValidRefBody(
   }
 
   if (contentLengthHeader == null) return;
+
+  // Skip the comparison for compressed responses. fetch/undici transparently
+  // decompresses the body but leaves Content-Length describing the encoded
+  // (compressed) size, so the decompressed byteLength legitimately differs
+  // from the header. An absent or `identity` encoding means no transform was
+  // applied, so the lengths are directly comparable.
+  if (contentEncodingHeader != null) {
+    const encoding = contentEncodingHeader.trim().toLowerCase();
+    if (encoding !== '' && encoding !== 'identity') return;
+  }
 
   // Only a plain run of digits is a well-formed Content-Length. parseInt
   // would happily accept numeric-prefixed garbage ("12junk" -> 12,
@@ -235,6 +261,7 @@ export async function resolveRefDescriptor(
 
       const contentType = response.headers.get('content-type') || '';
       const contentLengthHeader = response.headers.get('content-length');
+      const contentEncodingHeader = response.headers.get('content-encoding');
       const buffer = await response.arrayBuffer();
 
       assertValidRefBody(buffer, {
@@ -243,6 +270,7 @@ export async function resolveRefDescriptor(
         status: response.status,
         contentType,
         contentLengthHeader,
+        contentEncodingHeader,
         span,
       });
 
