@@ -9,6 +9,8 @@ export interface DevTestConfig {
   apiFilePath: string;
   apiFileImportPath: string;
   canary?: boolean;
+  /** Whether the app emits deferred step copy files during dev. */
+  supportsDeferredStepCopies?: boolean;
   /** The workflow file to modify for testing HMR. Defaults to '3_streams.ts' */
   testWorkflowFile?: string;
   /** The workflows directory relative to appPath. Defaults to 'workflows' */
@@ -44,9 +46,11 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
-    const supportsDeferredStepCopies = generatedStep.includes(
-      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
-    );
+    const supportsDeferredStepCopies =
+      finalConfig.supportsDeferredStepCopies ??
+      generatedStep.includes(
+        path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+      );
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const fetchWithTimeout = (pathname: string) => {
@@ -215,6 +219,10 @@ export async function myNewStep() {
         check: async () => {
           const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
           if (stepRouteContent.includes('myNewStep')) {
+            return;
+          }
+          if (!supportsDeferredStepCopies) {
+            expect(stepRouteContent).toContain('myNewStep');
             return;
           }
 

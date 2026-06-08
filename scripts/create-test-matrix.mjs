@@ -5,12 +5,14 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
+    supportsDeferredStepCopies: false,
   },
   'nextjs-webpack': {
     generatedStepPath: 'app/.well-known/workflow/v1/step/route.js',
     generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
+    supportsDeferredStepCopies: false,
   },
   nitro: {
     generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',

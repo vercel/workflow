@@ -244,4 +244,46 @@ describe('withWorkflow builder config', () => {
       rmSync(projectDir, { recursive: true, force: true });
     }
   });
+
+  it('lets Turbopack transform deferred step copies but not generated routes', async () => {
+    shouldUseDeferredBuilderMock.mockReturnValue(true);
+    const config = withWorkflow(
+      {},
+      {
+        workflows: { lazyDiscovery: true },
+      }
+    );
+
+    const resolvedConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+    const condition = (resolvedConfig.turbopack?.rules as any)['*.ts']
+      .condition;
+    const generatedPathCondition = condition.all.find(
+      (entry: Record<string, unknown>) => 'any' in entry
+    );
+    const contentCondition = condition.all.find(
+      (entry: Record<string, unknown>) => 'content' in entry
+    );
+    const [nonGeneratedPath, deferredStepCopyPath] = generatedPathCondition.any;
+
+    const matchesPathCondition = (path: string) =>
+      !nonGeneratedPath.not.path.test(path) ||
+      deferredStepCopyPath.path.test(path);
+
+    expect(matchesPathCondition('/repo/workflows/example.ts')).toBe(true);
+    expect(
+      matchesPathCondition(
+        '/repo/app/.well-known/workflow/v1/step/__workflow_step_files__/example.ts'
+      )
+    ).toBe(true);
+    expect(
+      matchesPathCondition('/repo/app/.well-known/workflow/v1/step/route.js')
+    ).toBe(false);
+    expect(
+      contentCondition.content.test(
+        `export async function step() {\n  'use step';\n}`
+      )
+    ).toBe(true);
+  });
 });
