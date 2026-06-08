@@ -1121,6 +1121,24 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           token: eventData.token,
         });
         if (existingHook) {
+          // Idempotency: if the existing hook is the *same* (runId, hookId)
+          // we are trying to create, this is a duplicate / replayed
+          // processing of the same hook_created — not a real conflict
+          // with a different hook or run. Throw EntityConflictError so
+          // the runtime's existing concurrent-replay catch path (matching
+          // the step_created path) swallows it, instead of producing a
+          // self-conflict in the event log that would later replay as
+          // HookConflictError.
+          // See: https://github.com/vercel/workflow/issues/2283
+          if (
+            existingHook.runId === effectiveRunId &&
+            existingHook.hookId === data.correlationId
+          ) {
+            throw new EntityConflictError(
+              `Hook "${data.correlationId}" already created`
+            );
+          }
+
           // Create hook_conflict event instead of throwing 409
           // This allows the workflow to continue and fail gracefully when the hook is awaited
           const conflictEventData = {

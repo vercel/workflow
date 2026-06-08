@@ -1279,6 +1279,90 @@ describe('Storage (Postgres integration)', () => {
       );
       expect(waitCreated).toHaveLength(1);
     });
+
+    it('should reject duplicate same-hook hook_created with EntityConflictError, not hook_conflict', async () => {
+      // Regression test for https://github.com/vercel/workflow/issues/2283
+      //
+      // Duplicate processing of the *same* (runId, hookId, token) — e.g.
+      // queue redelivery or cross-process replay — must be idempotent.
+      // It must throw EntityConflictError (mirroring the step_created
+      // duplicate path) so the runtime's existing concurrent-replay catch
+      // path swallows it, and must NOT append a hook_conflict event that
+      // would later replay as a self-conflict HookConflictError.
+      const token = 'idempotent-token';
+      const hookId = 'hook_idem_1';
+
+      await createHook(events, testRunId, { hookId, token });
+
+      // Same runId, same hookId, same token — must be idempotent.
+      await expect(
+        events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: { token },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // No hook_conflict event should have been written to the log.
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const hookCreatedEvents = evts.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      const hookConflictEvents = evts.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(hookCreatedEvents).toHaveLength(1);
+      expect(hookConflictEvents).toHaveLength(0);
+    });
+
+    it('should still emit hook_conflict for a different hookId reusing the same token in the same run', async () => {
+      // The idempotency guard must NOT mask genuine token conflicts — a
+      // different hookId reusing the same token (even in the same run)
+      // is still a real conflict.
+      const token = 'same-run-different-hook-token';
+
+      await createHook(events, testRunId, { hookId: 'hook_a', token });
+
+      const result = await events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_b',
+        eventData: { token },
+      });
+
+      expect(result.event.eventType).toBe('hook_conflict');
+      expect((result.event as any).eventData.conflictingRunId).toBe(testRunId);
+      expect(result.hook).toBeUndefined();
+    });
+
+    it('should still emit hook_conflict for the same hookId in a different run reusing the same token', async () => {
+      // The idempotency guard checks (runId, hookId) together — a
+      // different run reusing the same hookId (highly unlikely in
+      // practice, but a worthwhile boundary) must still produce a real
+      // hook_conflict.
+      const token = 'cross-run-same-hookid-token';
+      const hookId = 'hook_shared_id';
+
+      await createHook(events, testRunId, { hookId, token });
+
+      const otherRun = await createRun(events, {
+        deploymentId: 'deployment-other',
+        workflowName: 'other-workflow',
+        input: new Uint8Array(),
+      });
+
+      const result = await events.create(otherRun.runId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+
+      expect(result.event.eventType).toBe('hook_conflict');
+      expect((result.event as any).eventData.conflictingRunId).toBe(testRunId);
+      expect(result.hook).toBeUndefined();
+    });
   });
 
   describe('step terminal state validation', () => {
