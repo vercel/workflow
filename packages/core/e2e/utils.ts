@@ -61,23 +61,17 @@ export function hasStepSourceMaps(): boolean {
   if (appName === 'nextjs-turbopack') {
     return false;
   }
-  // V2: webpack inlines the step bundle into the combined flow route, and the
-  // re-bundled output no longer surfaces original step filenames in error
-  // stacks (neither dev mode nor production builds). Pre-V2 dev mode imported
-  // step sources directly and preserved filenames, but the combined route
-  // pipeline collapses them. Treat both dev and prod as "no source maps".
-  // TODO: revisit once webpack's combined-bundle source maps surface step paths.
-  if (appName === 'nextjs-webpack') {
+  // Webpack's eager Next flow route executes steps from the generated
+  // __step_registrations.js bundle. Lazy discovery imports step sources through
+  // the flow route and preserves source filenames in local dev stacks.
+  if (appName === 'nextjs-webpack' && !isNextLazyDiscoveryEnabledForTest()) {
     return false;
   }
-
   // V2 carve-out: the V2 combined flow handler does not yet wire up inline
   // source maps for step bundles across the framework integrations on Vercel.
-  // Only nextjs-webpack and sveltekit are currently in a known-good state, and
-  // both happen to assert "no source maps" via the earlier branches above. To
-  // unblock CI while V2 source-map coverage catches up, treat every other
+  // To unblock CI while V2 source-map coverage catches up, treat every
   // framework on Vercel as not having step source maps. Re-evaluate once the
-  // V2 esbuild pipeline emits consumable source maps for all frameworks.
+  // V2 route pipeline emits consumable source maps for all frameworks.
   // TODO: restore the per-framework matrix once source maps are wired up.
   if (!isLocalDeployment()) {
     return false;

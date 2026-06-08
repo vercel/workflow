@@ -108,6 +108,17 @@ const getWorkflowServerUrlOverride = (): string =>
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
+  /**
+   * Custom HTTP dispatcher passed to every `fetch()` call (e.g. an undici
+   * `Agent`/`RetryAgent`). Defaults to a shared undici `RetryAgent`.
+   *
+   * Typed as `unknown` on purpose: undici's `Dispatcher` type is nominally
+   * version-specific (it differs across v6/v7/v8 and the `undici-types`
+   * bundled with each `@types/node` major), so a concrete type would reject a
+   * dispatcher from a different undici version. Callers may pass any undici
+   * version's dispatcher, or any object implementing the dispatcher contract.
+   */
+  dispatcher?: unknown;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;
@@ -344,7 +355,7 @@ export async function makeRequest<T>({
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
           response = await fetch(request, {
-            dispatcher: getDispatcher(),
+            dispatcher: getDispatcher(config),
           } as any);
         } catch (error) {
           const elapsed = Date.now() - fetchStart;

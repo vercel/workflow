@@ -8,20 +8,17 @@ import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import {
   DecryptClickContext,
   RunClickContext,
   StreamClickContext,
 } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
-import {
-  ErrorStackBlock,
-  isStructuredErrorWithStack,
-} from '../ui/error-stack-block';
+import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
-import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -548,9 +545,9 @@ const attributeToDisplayFn: Record<
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
 
-    // If the error object has a `stack` field, render it as readable
-    // pre-formatted text. Otherwise fall back to the raw JSON viewer.
-    if (isStructuredErrorWithStack(value)) {
+    // Structured workflow errors may be persisted as either `{ message }` or
+    // `{ message, stack }`. Render both with the dedicated error block.
+    if (isStructuredError(value)) {
       return (
         <DetailCard summary="Error" defaultOpen>
           <ErrorStackBlock value={value} />

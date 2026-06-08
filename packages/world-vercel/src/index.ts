@@ -38,7 +38,8 @@ export function createVercelWorld(config?: APIConfig): World {
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,
-      config?.token
+      config?.token,
+      config?.dispatcher
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
   };
