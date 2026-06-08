@@ -1,5 +1,14 @@
 # @workflow/nest
 
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2080](https://github.com/vercel/workflow/pull/2080) [`d674d6f`](https://github.com/vercel/workflow/commit/d674d6fccdaacfa0bfbce41ca1f17754de533c9c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use AST-based import rewriting for NestJS CommonJS workflow bundles.
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.13
+
 ## 5.0.0-beta.12
 
 ### Patch Changes
