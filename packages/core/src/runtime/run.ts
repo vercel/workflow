@@ -15,7 +15,6 @@ import {
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
-import { getWorldLazy } from './get-world-lazy.js';
 import {
   type StopSleepOptions,
   type StopSleepResult,
