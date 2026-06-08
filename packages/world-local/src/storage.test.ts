@@ -2364,6 +2364,80 @@ describe('Storage', () => {
         afterRetry.data.filter((event) => event.eventType === 'hook_conflict')
       ).toHaveLength(0);
     });
+
+    it('converges same-hook creation across workers to one event', async () => {
+      // Cross-worker convergence regression for the case pranaygp
+      // flagged on PR #2295: two workers sharing one data directory
+      // can both lose `writeExclusive(constraintPath)`, both observe
+      // no `hook_created` event in the log, both fall through to the
+      // recovery write, and both publish their own `hook_created`
+      // event with a different `eventId` — yielding two events in
+      // the log for the same `(runId, hookId)`.
+      //
+      // The fix persists `eventId` in the token claim so retries
+      // adopt the canonical (winning) eventId and the outer event
+      // write uses `writeExclusive` to atomically arbitrate
+      // publication. Either worker may win the publish; the other
+      // throws `EntityConflictError` (swallowed by the runtime's
+      // existing concurrent-replay catch path). Net result: exactly
+      // one `hook_created` event per logical creation.
+      //
+      // Tags deliberately give the two storage instances independent
+      // in-process lock keys while retaining the shared on-disk
+      // token claim, matching the relevant multi-worker behavior.
+      const workerA = createStorage(testDir, 'worker-a');
+      const workerB = createStorage(testDir, 'worker-b');
+
+      const run = await createRun(workerA, {
+        deploymentId: 'deployment-workers',
+        workflowName: 'worker-race',
+        input: new Uint8Array(),
+      });
+
+      const attempts = 25;
+      for (let i = 0; i < attempts; i++) {
+        const correlationId = `hook_worker_${i}`;
+        const token = `token-worker-${i}`;
+        await Promise.allSettled([
+          workerA.events.create(run.runId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+          workerB.events.create(run.runId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+        ]);
+      }
+
+      // Each tagged storage filters by tag on list; query both and
+      // unify by eventId so we count the total events on disk
+      // (deduped) for the run.
+      const [pageA, pageB] = await Promise.all([
+        workerA.events.list({
+          runId: run.runId,
+          pagination: { limit: 1000 },
+        }),
+        workerB.events.list({
+          runId: run.runId,
+          pagination: { limit: 1000 },
+        }),
+      ]);
+      const allEvents = new Map<string, (typeof pageA.data)[number]>();
+      for (const event of [...pageA.data, ...pageB.data]) {
+        allEvents.set(event.eventId, event);
+      }
+      const hookCreated = [...allEvents.values()].filter(
+        (event) => event.eventType === 'hook_created'
+      );
+      const hookConflict = [...allEvents.values()].filter(
+        (event) => event.eventType === 'hook_conflict'
+      );
+      expect(hookCreated).toHaveLength(attempts);
+      expect(hookConflict).toHaveLength(0);
+    });
   });
 
   describe('run terminal state validation', () => {

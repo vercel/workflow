@@ -1430,6 +1430,55 @@ describe('Storage (Postgres integration)', () => {
       expect(created).toHaveLength(1);
       expect(conflicts).toHaveLength(0);
     });
+
+    it('converges same-hook creation across concurrent calls to one event', async () => {
+      // Cross-worker convergence regression. The events table's
+      // partial unique index
+      // (workflow_events_entity_creation_unique on
+      // runId+correlationId+eventType for hook_created/step_created/
+      // wait_created) makes the events INSERT the durable
+      // convergence point — at most one `hook_created` event with
+      // the same `(runId, correlationId)` can land. The dedup branch
+      // can race with the original INSERT (both probe getHookByToken
+      // before the loser sees the event), but the outer events
+      // INSERT then raises 23505 (unique-violation) which is
+      // translated to EntityConflictError that the runtime's
+      // existing concurrent-replay catch path swallows. Net result:
+      // exactly one `hook_created` event per logical creation.
+      //
+      // This test is the world-postgres counterpart to the
+      // `converges same-hook creation across workers to one event`
+      // test in world-local, exercising true in-process concurrency
+      // since world-postgres has no per-process tag isolation.
+      const attempts = 25;
+      for (let i = 0; i < attempts; i++) {
+        const correlationId = `hook_pg_converge_${i}`;
+        const token = `token-pg-converge-${i}`;
+        await Promise.allSettled([
+          events.create(testRunId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+          events.create(testRunId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+        ]);
+      }
+
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: { limit: 1000 },
+      });
+      const created = evts.data.filter((e) => e.eventType === 'hook_created');
+      const conflicts = evts.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(created).toHaveLength(attempts);
+      expect(conflicts).toHaveLength(0);
+    });
   });
 
   describe('step terminal state validation', () => {
