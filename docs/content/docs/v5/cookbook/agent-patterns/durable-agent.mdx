@@ -1,31 +1,12 @@
 ---
-title: Durable Agent
-description: Deprecated DurableAgent pattern; use WorkflowAgent for durable, resumable AI agents.
+title: WorkflowAgent
+description: Use AI SDK's WorkflowAgent for durable, resumable AI agents.
 type: guide
-summary: "Deprecated: DurableAgent has been replaced by AI SDK's WorkflowAgent."
+summary: Build durable, resumable AI agents with AI SDK's WorkflowAgent.
 ---
 
+Use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for durable, resumable AI agents.
+
 <Callout type="warn">
-`DurableAgent` is deprecated. For new durable agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent), the maintained API in `@ai-sdk/workflow`.
+`DurableAgent` is deprecated in v5. Existing `DurableAgent` users can refer to the [`DurableAgent` API reference](/docs/api-reference/workflow-ai/durable-agent) while migrating.
 </Callout>
-
-This page is kept for existing applications that already use `DurableAgent`. Do not start new implementations with this pattern.
-
-## What to use instead
-
-Use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable, resumable AI agents. The AI SDK docs are the source of truth for the current agent API, examples, and migration guidance.
-
-## Existing DurableAgent users
-
-If you maintain existing `DurableAgent` code, keep using the legacy pattern until you migrate:
-
-- Keep the agent entry point in a `"use workflow"` function.
-- Keep side-effecting tool implementations in `"use step"` functions.
-- Stream through `getWritable()` only where legacy routes still need workflow output streaming.
-
-For the legacy API surface, see [`DurableAgent` API reference](/docs/api-reference/workflow-ai/durable-agent).
-
-## Related docs
-
-- [WorkflowAgent](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - Current durable agent API
-- [DurableAgent API reference](/docs/api-reference/workflow-ai/durable-agent) - Legacy reference for existing code
