@@ -60,7 +60,7 @@ catalogs:
 
 overrides:
   rfc6902: 5.1.2
-  devalue: 5.6.3
+  devalue: 5.8.1
 
 importers:
 
@@ -586,8 +586,8 @@ importers:
         specifier: 4.4.3
         version: 4.4.3(supports-color@8.1.1)
       devalue:
-        specifier: 5.6.3
-        version: 5.6.3
+        specifier: 5.8.1
+        version: 5.8.1
       ms:
         specifier: 2.1.3
         version: 2.1.3
@@ -9946,8 +9946,8 @@ packages:
     resolution: {integrity: sha512-KxektNH63SrbfUyDiwXqRb1rLwKt33AmMv+5Nhsw1kqZ13SJBRTgZHtGbE+hH3a1mVW1cz+4pqSWVPAtLVXTzQ==}
     engines: {node: '>=18'}
 
-  devalue@5.6.3:
-    resolution: {integrity: sha512-nc7XjUU/2Lb+SvEFVGcWLiKkzfw8+qHI7zn8WYXKkLMgfGSHbgCEaR6bJpev8Cm6Rmrb19Gfd/tZvGqx9is3wg==}
+  devalue@5.8.1:
+    resolution: {integrity: sha512-4CXDYRBGqN+57wVJkuXBYmpAVUSg3L6JAQa/DFqm238G73E1wuyc/JhGQJzN7vUf/CMphYau2zXbfWzDR5aTEw==}
 
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
@@ -18301,7 +18301,7 @@ snapshots:
       consola: 3.4.2
       defu: 6.1.4
       destr: 2.0.5
-      devalue: 5.6.3
+      devalue: 5.8.1
       errx: 0.1.0
       escape-string-regexp: 5.0.0
       exsolve: 1.0.8
@@ -21962,7 +21962,7 @@ snapshots:
       '@types/cookie': 0.6.0
       acorn: 8.15.0
       cookie: 0.6.0
-      devalue: 5.6.3
+      devalue: 5.8.1
       esm-env: 1.2.2
       kleur: 4.1.5
       magic-string: 0.30.21
@@ -21983,7 +21983,7 @@ snapshots:
       '@types/cookie': 0.6.0
       acorn: 8.15.0
       cookie: 0.6.0
-      devalue: 5.6.3
+      devalue: 5.8.1
       esm-env: 1.2.2
       kleur: 4.1.5
       magic-string: 0.30.21
@@ -22005,7 +22005,7 @@ snapshots:
       '@types/cookie': 0.6.0
       acorn: 8.15.0
       cookie: 0.6.0
-      devalue: 5.6.3
+      devalue: 5.8.1
       esm-env: 1.2.2
       kleur: 4.1.5
       magic-string: 0.30.21
@@ -23894,7 +23894,7 @@ snapshots:
       cssesc: 3.0.0
       debug: 4.4.3(supports-color@8.1.1)
       deterministic-object-hash: 2.0.2
-      devalue: 5.6.3
+      devalue: 5.8.1
       diff: 5.2.0
       dlv: 1.1.3
       dset: 3.1.4
@@ -23996,7 +23996,7 @@ snapshots:
       cssesc: 3.0.0
       debug: 4.4.3(supports-color@8.1.1)
       deterministic-object-hash: 2.0.2
-      devalue: 5.6.3
+      devalue: 5.8.1
       diff: 8.0.3
       dlv: 1.1.3
       dset: 3.1.4
@@ -25251,7 +25251,7 @@ snapshots:
     dependencies:
       base-64: 1.0.0
 
-  devalue@5.6.3: {}
+  devalue@5.8.1: {}
 
   devlop@1.1.0:
     dependencies:
@@ -28630,7 +28630,7 @@ snapshots:
       consola: 3.4.2
       cookie-es: 2.0.0
       defu: 6.1.4
-      devalue: 5.6.3
+      devalue: 5.8.1
       errx: 0.1.0
       escape-string-regexp: 5.0.0
       exsolve: 1.0.8
@@ -31196,7 +31196,7 @@ snapshots:
       aria-query: 5.3.1
       axobject-query: 4.1.0
       clsx: 2.1.1
-      devalue: 5.6.3
+      devalue: 5.8.1
       esm-env: 1.2.2
       esrap: 2.2.4
       is-reference: 3.0.3

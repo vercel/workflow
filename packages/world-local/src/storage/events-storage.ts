@@ -281,11 +281,10 @@ export function createEventsStorage(
               runInputData.workflowName &&
               runInputData.input !== undefined
             ) {
-              // Atomically try to create the run entity. writeExclusive
-              // uses O_CREAT|O_EXCL so only the first writer wins,
-              // preventing a TOCTOU race where a concurrent run_created
-              // from start() could overwrite a run that was already
-              // transitioned to 'running'.
+              // Atomically try to publish the run entity so only the first
+              // writer wins, preventing a TOCTOU race where a concurrent
+              // run_created from start() could overwrite a run that was
+              // already transitioned to 'running'.
               const createdRun: WorkflowRun = {
                 runId: effectiveRunId,
                 deploymentId: runInputData.deploymentId,
@@ -552,10 +551,10 @@ export function createEventsStorage(
             createdAt: now,
             updatedAt: now,
           };
-          // Use writeExclusive (O_CREAT|O_EXCL) to atomically create the
-          // run entity file. This prevents a TOCTOU race with the resilient
-          // start path (run_started on non-existent run) that could result
-          // in duplicate run_created events in the event log.
+          // Atomically publish the run entity file without overwriting an
+          // existing winner. This prevents a TOCTOU race with the resilient
+          // start path (run_started on non-existent run) that could result in
+          // duplicate run_created events in the event log.
           const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
           const created = await writeExclusive(
             runPath,
@@ -711,11 +710,11 @@ export function createEventsStorage(
           // must be deduped — otherwise both writes succeed and the event log
           // ends up with duplicate step_created entries. The outer
           // withStepLock mutex serializes within a single process; this
-          // O_CREAT|O_EXCL constraint file additionally protects against
-          // cross-process races (two pnpm workers, redelivered queue
-          // messages, etc.). The loser throws EntityConflictError so the
-          // runtime's existing catch path can swallow it and avoid
-          // double-queuing the step.
+          // The exclusive constraint file additionally protects against
+          // cross-process races (two pnpm workers, redelivered queue messages,
+          // etc.). The loser throws EntityConflictError so the runtime's
+          // existing catch path can swallow it and avoid double-queuing the
+          // step.
           const stepCreatedLockName = tag
             ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
             : `${effectiveRunId}-${data.correlationId}.created`;

@@ -1,3 +1,4 @@
+import type { Span } from '@opentelemetry/api';
 import { WorkflowWorldError } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { getDispatcher } from './http-client.js';
@@ -44,6 +45,135 @@ export function isRefDescriptor(value: unknown): value is RefDescriptor {
  * Limits peak concurrency to avoid overwhelming the server.
  */
 const REF_RESOLVE_CONCURRENCY = 10;
+
+/**
+ * Minimum number of bytes a stored *binary* (octet-stream) ref payload can
+ * ever be.
+ *
+ * The SDK writes every binary ref payload with a 4-byte format prefix (see
+ * `FORMAT_PREFIX_LENGTH` / `encodeWithFormatPrefix` in
+ * `@workflow/core/src/serialization/format.ts`). A 1–3 byte
+ * `application/octet-stream` body is therefore never a valid stored binary
+ * ref — it indicates a server-side corruption or a transport-layer
+ * truncation (proxy drop, edge-cache miss returning a partial 200, abort
+ * during streaming, etc.).
+ *
+ * Without a transport-layer guard, those bytes would flow into the
+ * workflow's deterministic event-log replay and fail downstream with
+ * `Data too short to contain format prefix: expected at least 4 bytes, got N`.
+ * By that point the in-memory event snapshot is already poisoned: the same
+ * failure replays deterministically forever, downstream `resumeHook()`
+ * calls surface as `Hook not found`, and the run only unsticks when
+ * stale-run cleanup terminates the sandbox.
+ *
+ * This minimum does NOT apply to `application/cbor` refs: the server still
+ * stores non-binary values as raw CBOR (`S3RemoteRef`/Redis refs encode
+ * non-`Uint8Array` values and mark them `application/cbor`), and valid CBOR
+ * primitives like `true`, `0`, or `null` encode to a single byte.
+ */
+const MIN_BINARY_REF_PAYLOAD_BYTES = 4;
+
+/**
+ * Defense-in-depth validation for ref resolve response bodies.
+ *
+ * Rejects:
+ *   1. Zero-byte bodies (never valid for any content type — an empty body
+ *      cannot CBOR-decode and is never a valid stored binary payload).
+ *   2. `application/octet-stream` bodies shorter than the 4-byte format
+ *      prefix the SDK always writes ({@link MIN_BINARY_REF_PAYLOAD_BYTES}).
+ *      CBOR bodies are exempt because valid CBOR primitives are 1 byte.
+ *   3. Bodies whose actual length disagrees with a well-formed
+ *      `Content-Length` header (catches truncation when the server
+ *      declared a length we can compare against).
+ *
+ * A `Content-Length` that is not a plain run of digits (e.g. `"abc"`,
+ * `"12junk"`, `"12, 12"`, negative) is treated as absent — surfacing it as
+ * a "truncated" error would mask the actual cause. The checks above still
+ * defend against truncation in that case.
+ *
+ * The length comparison is also skipped when the response carries a
+ * non-`identity` `Content-Encoding` (e.g. `gzip`, `br`). `fetch`/`undici`
+ * transparently decompresses the body but leaves `Content-Length`
+ * describing the *encoded* size, so the decompressed `byteLength` would not
+ * match the header and a perfectly valid compressed ref would otherwise be
+ * rejected as a phantom truncation.
+ *
+ * Throws {@link WorkflowWorldError} so the runtime retry layer can treat
+ * this as a transport-level error instead of poisoning replay.
+ */
+function assertValidRefBody(
+  buffer: ArrayBuffer,
+  ctx: {
+    ref: string;
+    url: string;
+    status: number;
+    contentType: string;
+    contentLengthHeader: string | null;
+    contentEncodingHeader: string | null;
+    span: Span | undefined;
+  }
+): void {
+  const {
+    ref,
+    url,
+    status,
+    contentType,
+    contentLengthHeader,
+    contentEncodingHeader,
+    span,
+  } = ctx;
+  const actualLength = buffer.byteLength;
+  const isBinary = contentType.includes('application/octet-stream');
+
+  const throwInvalid = (code: string, message: string): never => {
+    const error = new WorkflowWorldError(message, { url, status, code });
+    span?.setAttributes({ ...ErrorType(code) });
+    span?.recordException?.(error);
+    throw error;
+  };
+
+  if (actualLength === 0) {
+    throwInvalid(
+      'empty-ref-body',
+      `Ref resolve returned a zero-byte body for ${ref} (Content-Type=${contentType || '<none>'}). Refusing to corrupt the event log with an empty payload.`
+    );
+  }
+
+  // The 4-byte format-prefix minimum only applies to raw binary payloads.
+  // CBOR refs can legitimately be 1–3 bytes (e.g. the primitives true/0/null).
+  if (isBinary && actualLength < MIN_BINARY_REF_PAYLOAD_BYTES) {
+    throwInvalid(
+      'truncated-ref-body',
+      `Ref resolve returned a truncated ${actualLength}-byte binary body for ${ref} (Content-Type=${contentType}); minimum valid payload is ${MIN_BINARY_REF_PAYLOAD_BYTES} bytes (4-byte format prefix).`
+    );
+  }
+
+  if (contentLengthHeader == null) return;
+
+  // Skip the comparison for compressed responses. fetch/undici transparently
+  // decompresses the body but leaves Content-Length describing the encoded
+  // (compressed) size, so the decompressed byteLength legitimately differs
+  // from the header. An absent or `identity` encoding means no transform was
+  // applied, so the lengths are directly comparable.
+  if (contentEncodingHeader != null) {
+    const encoding = contentEncodingHeader.trim().toLowerCase();
+    if (encoding !== '' && encoding !== 'identity') return;
+  }
+
+  // Only a plain run of digits is a well-formed Content-Length. parseInt
+  // would happily accept numeric-prefixed garbage ("12junk" -> 12,
+  // "12, 12" -> 12), which could fabricate a phantom mismatch or silently
+  // accept an invalid header. Anything else is treated as absent.
+  if (!/^\d+$/.test(contentLengthHeader)) return;
+
+  const declaredLength = Number.parseInt(contentLengthHeader, 10);
+  if (declaredLength === actualLength) return;
+
+  throwInvalid(
+    'ref-body-length-mismatch',
+    `Ref resolve body length mismatch for ${ref}: Content-Length=${contentLengthHeader}, actual=${actualLength} bytes. The response body was truncated in transit; refusing to use it.`
+  );
+}
 
 /**
  * Resolve a single ref descriptor.
@@ -130,7 +260,19 @@ export async function resolveRefDescriptor(
       }
 
       const contentType = response.headers.get('content-type') || '';
+      const contentLengthHeader = response.headers.get('content-length');
+      const contentEncodingHeader = response.headers.get('content-encoding');
       const buffer = await response.arrayBuffer();
+
+      assertValidRefBody(buffer, {
+        ref,
+        url,
+        status: response.status,
+        contentType,
+        contentLengthHeader,
+        contentEncodingHeader,
+        span,
+      });
 
       if (contentType.includes('application/octet-stream')) {
         // Raw binary data (e.g., Uint8Array stored by the workflow)

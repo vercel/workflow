@@ -200,6 +200,7 @@ export async function runWorkflow(
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      pendingDeliveryBarriers: new Map(),
     };
 
     // Consume run lifecycle events - these are structural events that don't

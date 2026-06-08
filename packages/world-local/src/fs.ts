@@ -397,23 +397,39 @@ export async function deleteJSON(filePath: string): Promise<void> {
 }
 
 /**
- * Atomically create a file using O_CREAT | O_EXCL flags.
- * Returns true if the file was created, false if it already exists.
- * This is atomic at the OS level, safe for concurrent access.
+ * Atomically publish a fully-written file without overwriting an existing one.
+ *
+ * Writing directly with O_CREAT | O_EXCL makes the destination visible before
+ * its contents are complete, so concurrent readers can observe a partial file.
+ * Instead, write to a unique file in the same directory, then hard-link it into
+ * place. Creating the link is atomic and fails with EEXIST if another writer
+ * published the destination first.
  */
 export async function writeExclusive(
   filePath: string,
   data: string
 ): Promise<boolean> {
   await ensureDir(path.dirname(filePath));
+  const tempPath = `${filePath}.tmp.${ulid()}`;
+  let tempFileCreated = false;
+
   try {
-    await fs.writeFile(filePath, data, { flag: 'wx' });
-    return true;
-  } catch (error: any) {
-    if (error.code === 'EEXIST') {
-      return false;
+    await fs.writeFile(tempPath, data, { flag: 'wx' });
+    tempFileCreated = true;
+
+    try {
+      await withWindowsRetry(() => fs.link(tempPath, filePath));
+      return true;
+    } catch (error: any) {
+      if (error.code === 'EEXIST') {
+        return false;
+      }
+      throw error;
     }
-    throw error;
+  } finally {
+    if (tempFileCreated) {
+      await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
+    }
   }
 }
 

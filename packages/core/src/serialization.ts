@@ -30,6 +30,7 @@ import {
   decrypt,
   type EncryptionKeyParam,
   encrypt,
+  resolveEncryptionKey,
 } from './serialization/encryption.js';
 import {
   formatSerializationError,
@@ -162,8 +163,8 @@ export function getSerializeStream(
   cryptoKey: EncryptionKeyParam
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
-  // Resolve the key promise once on first use and cache the result.
-  // Note: if the cryptoKey promise rejects (e.g., network error fetching
+  // Resolve the key input once on first use and cache the result.
+  // Note: if resolving cryptoKey rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
   // is processed — not at stream construction time.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
@@ -171,7 +172,7 @@ export function getSerializeStream(
     async transform(chunk, controller) {
       try {
         if (!keyState.resolved) {
-          keyState.key = await cryptoKey;
+          keyState.key = await resolveEncryptionKey(cryptoKey);
           keyState.resolved = true;
         }
         const serialized = stringify(chunk, reducers);
@@ -224,7 +225,7 @@ export function getDeserializeStream(
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
-  // Resolve the key promise once on first use and cache the result.
+  // Resolve the key input once on first use and cache the result.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
 
   function appendToBuffer(data: Uint8Array) {
@@ -237,9 +238,9 @@ export function getDeserializeStream(
   async function processFrames(
     controller: TransformStreamDefaultController<any>
   ) {
-    // Resolve the key promise once on first use and cache the result
+    // Resolve the key input once on first use and cache the result
     if (!keyState.resolved) {
-      keyState.key = await cryptoKey;
+      keyState.key = await resolveEncryptionKey(cryptoKey);
       keyState.resolved = true;
     }
 
@@ -739,7 +740,7 @@ function attachAbortListenerOnce(
             // Errors, custom classes, etc.) and respects the run's encryption key.
             // A bare JSON.stringify here would write a packet the reader can't
             // decode and the listener-side abort would propagate with no reason.
-            const key = await cryptoKey;
+            const key = await resolveEncryptionKey(cryptoKey);
             const payload = await dehydrateStepArguments(
               { aborted: true, reason: signal.reason },
               runId,
