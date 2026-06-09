@@ -1363,9 +1363,6 @@ importers:
       ms:
         specifier: 2.1.3
         version: 2.1.3
-      tsx:
-        specifier: 4.20.6
-        version: 4.20.6
       vitest:
         specifier: 'catalog:'
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.19.0)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
@@ -20467,7 +20464,7 @@ snapshots:
       '@types/shimmer': 1.2.0
       import-in-the-middle: 1.15.0
       require-in-the-middle: 7.5.2
-      semver: 7.7.4
+      semver: 7.8.2
       shimmer: 1.2.1
     transitivePeerDependencies:
       - supports-color
@@ -20479,7 +20476,7 @@ snapshots:
       '@types/shimmer': 1.2.0
       import-in-the-middle: 1.15.0
       require-in-the-middle: 7.5.2
-      semver: 7.7.4
+      semver: 7.8.2
       shimmer: 1.2.1
     transitivePeerDependencies:
       - supports-color
@@ -25268,7 +25265,7 @@ snapshots:
   '@vercel/queue@0.1.7':
     dependencies:
       '@vercel/oidc': 3.2.0
-      minimatch: 10.2.4
+      minimatch: 10.2.5
       mixpart: 0.0.6
       picocolors: 1.1.1
     optional: true
@@ -31371,7 +31368,7 @@ snapshots:
 
   node-abi@3.89.0:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.2
     optional: true
 
   node-abort-controller@3.1.1: {}
@@ -34876,6 +34873,7 @@ snapshots:
       get-tsconfig: 4.14.0
     optionalDependencies:
       fsevents: 2.3.3
+    optional: true
 
   tunnel-agent@0.6.0:
     dependencies:

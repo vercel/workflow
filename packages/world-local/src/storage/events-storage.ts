@@ -69,23 +69,16 @@ import { withRunFileLock } from './runs-storage.js';
  * (retries legitimately re-start a step), only writes to an already-terminal
  * step are rejected.
  */
-const stepLocks = new Map<string, Promise<unknown>>();
-
-/**
- * Per-hook in-process async mutex. Serializes concurrent
- * `events.create({ eventType: 'hook_created', correlationId })` calls
- * for the same (runId, correlationId) so the "claim token, then write
- * hook entity + event" sequence runs to completion before another
- * in-process invocation enters the dedup branch. Without this, two
- * concurrent same-tick callers can race between the
- * `writeExclusive(claim)` of one and the same-`(runId, hookId)`
- * dedup check of the other and incorrectly observe an orphaned-
- * looking claim during the small window before the entity write
- * lands. This mutex does NOT replace the on-disk constraint file —
- * that file remains the durable source of truth across processes /
- * restarts.
- */
-const hookLocks = new Map<string, Promise<unknown>>();
+// `stepLocks` and `hookLocks` are now instantiated per
+// `createEventsStorage` call (see inside the function) rather than
+// being module-level. The on-disk constraint / claim files remain
+// the durable source of truth across processes; the in-process
+// mutex is a per-instance optimization that closes a short race
+// window in the dedup-recovery path. Per-instance scoping lets
+// tests simulate cross-process behavior with two storage instances
+// sharing one data directory (each instance has independent locks
+// but a shared filesystem), exactly matching the cross-process
+// semantics without spawning subprocesses.
 
 const HookTokenClaimSchema = z.object({
   // The token-claim writer below has always persisted `hookId`, but
@@ -223,6 +216,16 @@ async function pinCanonicalEventIdForLegacyClaim(
   return existing?.eventId ?? null;
 }
 
+/**
+ * In-process per-key async mutex backed by a caller-supplied `Map`.
+ * Used by `createEventsStorage` to serialize same-key event writes
+ * (`step_*` for the same step, `hook_created` for the same hook).
+ * The map is instantiated per-storage-instance — different
+ * instances do NOT share locks, so two instances sharing one data
+ * directory behave exactly like two separate OS processes from the
+ * locking standpoint. Cross-instance / cross-process arbitration
+ * relies on the on-disk constraint / claim files instead.
+ */
 function withInProcessLock<T>(
   locks: Map<string, Promise<unknown>>,
   key: string,
@@ -246,14 +249,6 @@ function withInProcessLock<T>(
   taskBox.task = task;
   locks.set(key, task);
   return task;
-}
-
-function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  return withInProcessLock(stepLocks, key, fn);
-}
-
-function withHookLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  return withInProcessLock(hookLocks, key, fn);
 }
 
 /**
@@ -321,6 +316,25 @@ export function createEventsStorage(
   basedir: string,
   tag?: string
 ): Storage['events'] {
+  // Per-instance in-process mutexes. Two storage instances sharing
+  // one data directory get independent lock maps, which makes them
+  // behave like two separate OS processes from the locking
+  // standpoint — cross-instance arbitration relies on the on-disk
+  // `writeExclusive` constraint / claim files instead. Tests use
+  // this to exercise cross-process convergence without spawning
+  // subprocesses.
+  //
+  // `stepLocks` serializes step lifecycle events for the same
+  // (runId, correlationId): see comment further down in the
+  // `isStepEvent` branch.
+  //
+  // `hookLocks` serializes `hook_created` calls for the same
+  // (runId, correlationId) so the "claim token, then write hook
+  // entity + event" sequence runs to completion before another
+  // in-process invocation enters the dedup branch.
+  const stepLocks = new Map<string, Promise<unknown>>();
+  const hookLocks = new Map<string, Promise<unknown>>();
+
   return {
     async create(runId, data, params): Promise<EventResult> {
       // Validate request-supplied IDs before they're concatenated into
@@ -356,7 +370,7 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return withStepLock(lockKey, () => createImpl());
+        return withInProcessLock(stepLocks, lockKey, () => createImpl());
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -371,7 +385,7 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return withHookLock(lockKey, () => createImpl());
+        return withInProcessLock(hookLocks, lockKey, () => createImpl());
       }
       return createImpl();
 
