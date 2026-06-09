@@ -17,6 +17,7 @@ import { createClient } from '../src/drizzle/index.js';
 import * as DrizzleSchema from '../src/drizzle/schema.js';
 import {
   createEventsStorage,
+  createHooksStorage,
   createRunsStorage,
   createStepsStorage,
 } from '../src/storage.js';
@@ -130,6 +131,7 @@ describe('Storage (Postgres integration)', () => {
   let runs: ReturnType<typeof createRunsStorage>;
   let steps: ReturnType<typeof createStepsStorage>;
   let events: ReturnType<typeof createEventsStorage>;
+  let hooks: ReturnType<typeof createHooksStorage>;
 
   async function truncateTables() {
     await pool.query(
@@ -157,6 +159,7 @@ describe('Storage (Postgres integration)', () => {
     runs = createRunsStorage(drizzle);
     steps = createStepsStorage(drizzle);
     events = createEventsStorage(drizzle);
+    hooks = createHooksStorage(drizzle);
   }, 120_000);
 
   beforeEach(async () => {
@@ -1429,6 +1432,67 @@ describe('Storage (Postgres integration)', () => {
       );
       expect(created).toHaveLength(1);
       expect(conflicts).toHaveLength(0);
+    });
+
+    it('does not mutate an already-committed hook entity when a duplicate hook_created retry collides', async () => {
+      // Parallel to the world-local regression for karthikscale3's
+      // review on PR #2295. world-postgres uses
+      // `.insert(Schema.hooks).onConflictDoNothing()` so a duplicate
+      // hook_created retry'\''s hook INSERT is a no-op against an
+      // already-committed row — but this test guards against a
+      // future regression that adds an UPDATE/UPSERT or otherwise
+      // mutates the existing entity in the dedup path.
+      const token = 'no-mutate-on-duplicate-token-pg';
+      const hookId = 'hook_no_mutate_on_duplicate_pg';
+      const originalMetadata = encode({ v: 'a' }) as Uint8Array;
+      const retryMetadata = encode({ v: 'b' }) as Uint8Array;
+
+      // First write: original metadata + isWebhook: true.
+      const first = await events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: {
+          token,
+          metadata: originalMetadata,
+          isWebhook: true,
+        },
+      });
+      expect(first.event.eventType).toBe('hook_created');
+      expect(first.hook?.isWebhook).toBe(true);
+
+      // Retry with DIFFERENT metadata and isWebhook.
+      await expect(
+        events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: {
+            token,
+            metadata: retryMetadata,
+            isWebhook: false,
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // The hook entity still has the ORIGINAL metadata and
+      // isWebhook — the retry'\''s payload did NOT overwrite the
+      // already-committed entity.
+      const persisted = await hooks.get(hookId);
+      expect(persisted.isWebhook).toBe(true);
+      // Compare metadata as bytes since cbor round-trips through
+      // Buffer / Uint8Array.
+      expect(Buffer.from(persisted.metadata as Uint8Array)).toEqual(
+        Buffer.from(originalMetadata)
+      );
+
+      // Exactly one hook_created event in the log.
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: { limit: 100 },
+      });
+      const hookCreated = evts.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      expect(hookCreated).toHaveLength(1);
     });
 
     it('converges same-hook creation across concurrent calls to one event', async () => {

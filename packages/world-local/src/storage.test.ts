@@ -2548,6 +2548,76 @@ describe('Storage', () => {
       ).toHaveLength(0);
     });
 
+    it('does not mutate an already-committed hook entity when a duplicate hook_created retry collides', async () => {
+      // Regression for karthikscale3's review on PR #2295. The
+      // dedup-recovery path used to write the hook entity BEFORE
+      // the outer event publish proved whether this attempt was
+      // repairing a missing event or just colliding with an
+      // already-published `hook_created`. For an already-committed
+      // duplicate, the event publish then throws
+      // `EntityConflictError`, but the hook entity had already been
+      // overwritten with the retry's payload — leaving the entity
+      // and event log inconsistent (e.g. the entity reflects the
+      // retry's metadata while the event still carries the
+      // original).
+      //
+      // The fix defers the entity write until AFTER the event
+      // publish succeeds, so a retry that ends in
+      // EntityConflictError leaves the entity untouched.
+      const token = 'no-mutate-on-duplicate-token';
+      const hookId = 'hook_no_mutate_on_duplicate';
+      const originalMetadata = new Uint8Array([0xaa]);
+      const retryMetadata = new Uint8Array([0xbb]);
+
+      // First write: original metadata + isWebhook: true.
+      const first = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: {
+          token,
+          metadata: originalMetadata,
+          isWebhook: true,
+        },
+      });
+      expect(first.event.eventType).toBe('hook_created');
+      expect(first.hook?.metadata).toEqual(originalMetadata);
+      expect(first.hook?.isWebhook).toBe(true);
+
+      // Retry with DIFFERENT metadata and isWebhook. This is the
+      // adversarial input shape; in practice it would only come
+      // from a caller bug, but the storage must not silently mutate
+      // already-committed state under it.
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: {
+            token,
+            metadata: retryMetadata,
+            isWebhook: false,
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // The hook entity still has the ORIGINAL metadata and
+      // isWebhook — the retry's payload did NOT overwrite the
+      // already-committed entity.
+      const persisted = await storage.hooks.get(hookId);
+      expect(persisted.metadata).toEqual(originalMetadata);
+      expect(persisted.isWebhook).toBe(true);
+
+      // And the event log still has exactly one hook_created event
+      // for this hookId, with the original metadata.
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: { limit: 100 },
+      });
+      const hookCreated = events.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      expect(hookCreated).toHaveLength(1);
+    });
+
     it('converges same-hook creation across separate OS processes to one event', async () => {
       // Cross-process convergence regression for the case pranaygp
       // flagged on PR #2295: two processes sharing one untagged data

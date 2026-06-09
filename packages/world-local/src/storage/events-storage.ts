@@ -702,6 +702,15 @@ export function createEventsStorage(
         let step: Step | undefined;
         let hook: Hook | undefined;
         let wait: Wait | undefined;
+        // For `hook_created`, the hook entity write is deferred until
+        // AFTER the outer event publish succeeds, so a retry that
+        // collides with an already-published `hook_created` does not
+        // mutate the durable hook entity with the retry's payload.
+        // `hookEntityWriteOptions` carries the `{ overwrite }` mode
+        // chosen by the dedup-recovery branch above (undefined for
+        // first writers, `{ overwrite: true }` for retries that may
+        // be repairing an orphaned partial write).
+        let hookEntityWriteOptions: { overwrite: boolean } | undefined;
 
         // Create/update entity based on event type (event-sourced architecture)
         // Run lifecycle events
@@ -1301,6 +1310,22 @@ export function createEventsStorage(
             }
           }
 
+          // Compute the hook entity now, but defer its write until
+          // AFTER the outer event publish at the bottom of this
+          // function commits. The retry path can reach this branch
+          // for a hook whose `hook_created` event was already
+          // published successfully (an "already-committed
+          // duplicate"); in that case the outer `writeExclusive`
+          // for the event will return false and we will throw
+          // `EntityConflictError`. Writing the hook entity here
+          // first would mutate already-committed durable state with
+          // the retry's payload (e.g. different `metadata` or
+          // `isWebhook`) before the event publish proved which
+          // outcome we are in — leaving the entity and event log
+          // inconsistent. By deferring, the entity is only written
+          // when the publish actually succeeds (first writer or
+          // orphan recovery). See pranaygp's review on PR #2295 for
+          // the karthikscale3 repro.
           hook = {
             runId: effectiveRunId,
             hookId: data.correlationId,
@@ -1318,11 +1343,9 @@ export function createEventsStorage(
             isWebhook: hookData.isWebhook ?? false,
             isSystem: hookData.isSystem ?? false,
           };
-          await writeJSON(
-            taggedPath(basedir, 'hooks', data.correlationId, tag),
-            hook,
-            writeHookEntityWithOverwrite ? { overwrite: true } : undefined
-          );
+          hookEntityWriteOptions = writeHookEntityWithOverwrite
+            ? { overwrite: true }
+            : undefined;
         } else if (data.eventType === 'hook_disposed') {
           // hook_disposed: Deletes hook entity, rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
@@ -1496,6 +1519,22 @@ export function createEventsStorage(
         if (!eventPublished) {
           throw new EntityConflictError(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`
+          );
+        }
+
+        // Write the hook entity ONLY now that the event publish has
+        // committed. Doing this earlier (in the `hook_created`
+        // branch above) would mutate an already-committed hook
+        // entity with the retry's payload before the event publish
+        // proved whether this attempt was repairing a missing event
+        // or just colliding with an already-published `hook_created`.
+        // The branch sets `hookEntityWriteOptions` iff this event
+        // type writes an entity.
+        if (hook && data.eventType === 'hook_created') {
+          await writeJSON(
+            taggedPath(basedir, 'hooks', hook.hookId, tag),
+            hook,
+            hookEntityWriteOptions
           );
         }
 
