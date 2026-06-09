@@ -1,5 +1,25 @@
 # @workflow/core
 
+## 5.0.0-beta.13
+
+### Minor Changes
+
+- [#1854](https://github.com/vercel/workflow/pull/1854) [`8d75491`](https://github.com/vercel/workflow/commit/8d75491a074991dac3c7cf56823feb15354ab0f1) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Surface `workflowCoreVersion` from the responding deployment in `healthCheck()` results.
+
+### Patch Changes
+
+- [#2185](https://github.com/vercel/workflow/pull/2185) [`0fd0891`](https://github.com/vercel/workflow/commit/0fd0891cc4acab6d84610d3603f3cb90a33f29b0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `CorruptedEventLogError` on replay when a workflow races a hook read against a `sleep()` (e.g. `Promise.race([hook, sleep])`). Branch-deciding deliveries (buffered hook payloads and wait completions) are now handed to the workflow in strict event-log order — anchored on event position rather than on microtask-resolution timing — so the committed branch wins the race deterministically, independent of decryption/hydration time or `Promise.race` argument order.
+
+- [#2257](https://github.com/vercel/workflow/pull/2257) [`ccd37e9`](https://github.com/vercel/workflow/commit/ccd37e9a59f1b3629815cdaf1c650610c709a580) Thanks [@pranaygp](https://github.com/pranaygp)! - Avoid unhandled run lookups for unused or empty readable streams and include Vercel request correlation headers in world transport errors.
+
+- [#2301](https://github.com/vercel/workflow/pull/2301) [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
+- [#2292](https://github.com/vercel/workflow/pull/2292) [`aa628b7`](https://github.com/vercel/workflow/commit/aa628b7a8fda1037100c1ac5515c6525f25decb8) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump `devalue` to 5.8.1 to address published security advisories.
+
+- Updated dependencies [[`867e339`](https://github.com/vercel/workflow/commit/867e33903da71528c857a2f9e9e8db4da200a553), [`ccd37e9`](https://github.com/vercel/workflow/commit/ccd37e9a59f1b3629815cdaf1c650610c709a580), [`81bda49`](https://github.com/vercel/workflow/commit/81bda490ef2726ef36ce457932ec94cc3abc6bc2), [`c19f38d`](https://github.com/vercel/workflow/commit/c19f38d9071f12de3a44e8f5b5442bf9dfbebd80)]:
+  - @workflow/world-local@5.0.0-beta.14
+  - @workflow/world-vercel@5.0.0-beta.12
+
 ## 5.0.0-beta.12
 
 ### Patch Changes

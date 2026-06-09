@@ -1,5 +1,13 @@
 # @workflow/world-local
 
+## 5.0.0-beta.14
+
+### Patch Changes
+
+- [#2296](https://github.com/vercel/workflow/pull/2296) [`867e339`](https://github.com/vercel/workflow/commit/867e33903da71528c857a2f9e9e8db4da200a553) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent concurrent readers from observing partially written local entity files.
+
+- [#2255](https://github.com/vercel/workflow/pull/2255) [`81bda49`](https://github.com/vercel/workflow/commit/81bda490ef2726ef36ce457932ec94cc3abc6bc2) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update @vercel/queue from 0.2.1 to 0.3.0
+
 ## 5.0.0-beta.13
 
 ### Patch Changes
