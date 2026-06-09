@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nitro",
-  "version": "5.0.0-beta.11",
+  "version": "5.0.0-beta.13",
   "description": "Nitro integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -32,6 +32,7 @@
     "@workflow/rollup": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
+    "@workflow/web": "workspace:*",
     "exsolve": "1.0.8",
     "pathe": "2.0.3"
   },

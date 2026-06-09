@@ -22,14 +22,14 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
   ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { getVercelOidcToken } from '@vercel/oidc';
 import { decode } from 'cbor-x';
-import { request } from 'undici';
+import { type Dispatcher, request } from 'undici';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
@@ -170,7 +170,10 @@ export async function createWorkflowRunEventV4(
     method: 'POST',
     headers: Object.fromEntries(headers.entries()),
     body: frame,
-    dispatcher: getDispatcher(),
+    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
+    // version-specific across @types/node majors); cast to the undici
+    // Dispatcher this module's own `request` expects.
+    dispatcher: getDispatcher() as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
@@ -275,7 +278,10 @@ export async function getEventV4(
   const response = await request(url, {
     method: 'GET',
     headers: Object.fromEntries(headers.entries()),
-    dispatcher: getDispatcher(),
+    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
+    // version-specific across @types/node majors); cast to the undici
+    // Dispatcher this module's own `request` expects.
+    dispatcher: getDispatcher() as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
@@ -341,7 +347,10 @@ async function consumeListFrameStream(
   const response = await request(url, {
     method: 'GET',
     headers: Object.fromEntries(headers.entries()),
-    dispatcher: getDispatcher(),
+    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
+    // version-specific across @types/node majors); cast to the undici
+    // Dispatcher this module's own `request` expects.
+    dispatcher: getDispatcher() as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();

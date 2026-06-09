@@ -3,7 +3,7 @@ const WorkflowIcon = () => {
     <svg
       data-testid="geist-icon"
       height="16"
-      stroke-linejoin="round"
+      strokeLinejoin="round"
       style={{ color: 'currentColor' }}
       viewBox="0 0 16 16"
       width="16"
@@ -21,7 +21,7 @@ const WebhookIcon = () => {
     <svg
       data-testid="geist-icon"
       height="16"
-      stroke-linejoin="round"
+      strokeLinejoin="round"
       viewBox="0 0 16 16"
       width="16"
       style={{ color: 'currentColor' }}

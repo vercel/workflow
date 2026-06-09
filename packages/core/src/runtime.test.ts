@@ -367,6 +367,47 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
+  it('does not treat a terminal event from another run as this run outcome', async () => {
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_foreign_failed_event',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_foreign_failed_event',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const events: Event[] = [
+      {
+        eventId: 'event-foreign-failed',
+        runId: 'wrun_other',
+        eventType: 'run_failed',
+        eventData: {
+          error: { message: 'another run failed' },
+        },
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+    ];
+
+    const createdEvents = await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events
+    );
+
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_completed' })
+    );
+  });
+
   it('redrives an initial replay divergence and fails after the recovery budget', async () => {
     const ops: Promise<any>[] = [];
     const workflowRun: WorkflowRun = {

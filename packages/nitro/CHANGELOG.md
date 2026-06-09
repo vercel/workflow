@@ -1,5 +1,31 @@
 # @workflow/nitro
 
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- Updated dependencies [[`8d75491`](https://github.com/vercel/workflow/commit/8d75491a074991dac3c7cf56823feb15354ab0f1), [`0fd0891`](https://github.com/vercel/workflow/commit/0fd0891cc4acab6d84610d3603f3cb90a33f29b0), [`ccd37e9`](https://github.com/vercel/workflow/commit/ccd37e9a59f1b3629815cdaf1c650610c709a580), [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7), [`aa628b7`](https://github.com/vercel/workflow/commit/aa628b7a8fda1037100c1ac5515c6525f25decb8)]:
+  - @workflow/core@5.0.0-beta.13
+  - @workflow/web@5.0.0-beta.13
+  - @workflow/builders@5.0.0-beta.13
+  - @workflow/rollup@5.0.0-beta.13
+  - @workflow/vite@5.0.0-beta.13
+
+## 5.0.0-beta.12
+
+### Minor Changes
+
+- [#2110](https://github.com/vercel/workflow/pull/2110) [`a651052`](https://github.com/vercel/workflow/commit/a65105235cb0987157357a1aa4949c43bc77ed73) Thanks [@RihanArfan](https://github.com/RihanArfan)! - Add `/_workflow` route in dev mode that opens the workflow observability dashboard.
+
+### Patch Changes
+
+- Updated dependencies [[`52d63d1`](https://github.com/vercel/workflow/commit/52d63d1b61303d9d58e2ad74a655dbe57e4f1b39), [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1), [`12c35b5`](https://github.com/vercel/workflow/commit/12c35b54ebf3d3c9fbc30462b42b05e5ce476a2b)]:
+  - @workflow/core@5.0.0-beta.12
+  - @workflow/web@5.0.0-beta.12
+  - @workflow/builders@5.0.0-beta.12
+  - @workflow/rollup@5.0.0-beta.12
+  - @workflow/vite@5.0.0-beta.12
+
 ## 5.0.0-beta.11
 
 ### Patch Changes

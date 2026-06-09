@@ -1,4 +1,4 @@
-import type { Span } from '../trace-viewer/types';
+import type { Span } from './types';
 
 const ATTR_FILTER_REGEX = /(?:^|\s)(?<pair>(?<key>[\w.]+):(?<value>\S*))/g;
 

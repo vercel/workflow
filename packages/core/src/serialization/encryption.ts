@@ -22,12 +22,19 @@ export type { CryptoKey };
 
 /**
  * Encryption key parameter type. Accepts a resolved key, undefined (no encryption),
- * or a promise that resolves to either.
+ * a promise, or a resolver that can defer fetching the key until data needs it.
  */
 export type EncryptionKeyParam =
   | CryptoKey
   | undefined
-  | Promise<CryptoKey | undefined>;
+  | Promise<CryptoKey | undefined>
+  | (() => Promise<CryptoKey | undefined>);
+
+export async function resolveEncryptionKey(
+  key: EncryptionKeyParam
+): Promise<CryptoKey | undefined> {
+  return typeof key === 'function' ? key() : key;
+}
 
 /**
  * Encrypt a format-prefixed payload if a key is provided.
