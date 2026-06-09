@@ -117,10 +117,10 @@ export function createQueue(
   const generateMessageId = monotonicFactory();
 
   const prefix = config.jobPrefix || 'workflow_';
-  const Queues = {
+  const Queues: Record<QueuePrefix, string> = {
     __wkf_workflow_: `${prefix}flows`,
     __wkf_step_: `${prefix}steps`,
-  } as const satisfies Record<QueuePrefix, string>;
+  };
 
   const createQueueHandler = localWorld.createQueueHandler;
 
@@ -180,8 +180,14 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
+    const jobQueue = Queues[queuePrefix];
+
+    if (!jobQueue) {
+      throw new Error(`Unknown queue prefix: ${queuePrefix}`);
+    }
+
     await utils.addJob(
-      Queues[queuePrefix],
+      jobQueue,
       MessageData.encode({
         id: queueId,
         data: Buffer.from(body),
