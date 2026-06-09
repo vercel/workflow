@@ -47,7 +47,12 @@ import {
   writeJSON,
 } from '../fs.js';
 import { stripEventDataRefs } from './filters.js';
-import { getObjectCreatedAt, hashToken, monotonicUlid } from './helpers.js';
+import {
+  getObjectCreatedAt,
+  hashToken,
+  hookRecoveryMarkerPath,
+  monotonicUlid,
+} from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
@@ -104,25 +109,23 @@ const HookTokenClaimSchema = z.object({
 
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
- * eventId for a token whose original claim file predates the
- * inline-`eventId` format. Without this marker, two cross-process
- * retries reading a legacy claim each generate their own eventId,
- * land their `writeExclusive(eventPath)` calls at different paths,
- * and append two `hook_created` events for the same `(runId,
- * hookId)`. The marker is written via `writeExclusive` — the first
- * worker to land it pins its candidate eventId as canonical, and
- * every subsequent retry reads and adopts that eventId before the
- * common event publish.
+ * eventId for a legacy token claim — one written by a version of
+ * this storage that did not yet persist `eventId` inline in the
+ * claim file. Without this marker, two cross-process retries
+ * reading a legacy claim each generate their own eventId, land
+ * their `writeExclusive(eventPath)` calls at different paths, and
+ * append two `hook_created` events for the same `(runId, hookId)`.
  *
- * Stored at `hooks/tokens/<hash>.recovery.json` (sibling to the
- * claim file). Includes `hookId` and `runId` so a mismatched marker
- * is treated like a legacy claim and re-pinned, rather than
- * silently corrupting a different hook'\''s recovery.
+ * The marker is written via `writeExclusive` — the first retry to
+ * land it pins its candidate eventId as canonical, and every
+ * subsequent retry reads and adopts that eventId before the common
+ * event publish. Schema is just `{ eventId }` because identity is
+ * already encoded in the marker's filename hash, so different token
+ * lifetimes can never share one marker (see
+ * `hookRecoveryMarkerPath`).
  */
 const HookRecoveryMarkerSchema = z.object({
   eventId: z.string(),
-  hookId: z.string(),
-  runId: z.string(),
 });
 
 async function readHookTokenClaim(
@@ -152,61 +155,72 @@ async function readHookRecoveryMarker(
 }
 
 /**
- * Compute the path of the recovery-marker sidecar for a hashed
- * token. Used by both the legacy-claim recovery path (writes /
- * reads the marker) and `hook_disposed` (deletes the marker when
- * the token is released).
+ * Probe the run's event log for an existing `hook_created` event
+ * with the given correlationId. Used by the legacy-claim recovery
+ * path to detect "already published by a pre-upgrade write" before
+ * pinning a canonical eventId — without this check, a post-upgrade
+ * retry encountering a legacy claim whose `hook_created` was
+ * already written (with the pre-upgrade writer's own eventId) would
+ * pin a *different* eventId via the marker and publish a duplicate
+ * event at the marker's path.
+ *
+ * The inline-`eventId` fast path does NOT need this probe: the
+ * canonical eventId is durable in the claim file, so the existing
+ * publish (`writeExclusive(eventPath)`) will fail iff the event
+ * already exists at that exact path — which is the correct
+ * "already-published" semantic.
  */
-function hookRecoveryMarkerPath(basedir: string, tokenHash: string): string {
-  return path.join(basedir, 'hooks', 'tokens', `${tokenHash}.recovery.json`);
+async function findExistingHookCreatedEventId(
+  basedir: string,
+  runId: string,
+  correlationId: string
+): Promise<string | null> {
+  const result = await paginatedFileSystemQuery({
+    directory: path.join(basedir, 'events'),
+    schema: EventSchema,
+    filePrefix: `${runId}-`,
+    filter: (event) =>
+      event.eventType === 'hook_created' &&
+      event.correlationId === correlationId,
+    limit: 1,
+    getCreatedAt: getObjectCreatedAt('evnt'),
+    getId: (event) => event.eventId,
+  });
+  return result.data[0]?.eventId ?? null;
 }
 
 /**
  * Atomically pin a canonical `hook_created` eventId for a legacy
- * claim (one without an inline `eventId`). The first worker to
+ * claim (one without an inline `eventId`). The first retry to
  * `writeExclusive` the recovery marker wins; its `candidateEventId`
- * becomes canonical. Subsequent workers read the marker and adopt
+ * becomes canonical. Subsequent retries read the marker and adopt
  * its `eventId`. Together with the `writeExclusive(eventPath)` in
  * the outer event publish, this gives the legacy-fallback path the
  * same single-event convergence guarantee as the inline-`eventId`
  * fast path.
  *
- * Returns the canonical eventId for the caller to adopt.
- *
- * If a stale marker exists for a *different* `(runId, hookId)`
- * (which would indicate a token-reuse race where the prior recovery
- * was never cleaned up), the marker is overwritten with our own
- * `(runId, hookId, eventId)` so the current creation can make
- * forward progress. We accept the lost-convergence risk for that
- * narrow case because it only triggers when the token was actually
- * reused — the common cross-worker race for the same hook still
- * converges.
+ * Returns the canonical eventId for the caller to adopt, or `null`
+ * if we lost the marker race AND the resulting marker file is
+ * unreadable (extremely rare; corrupted disk). Callers treat `null`
+ * as "give up, throw `EntityConflictError`" so the runtime's
+ * concurrent-replay catch path swallows this attempt and lets
+ * another one through.
  */
 async function pinCanonicalEventIdForLegacyClaim(
   basedir: string,
-  tokenHash: string,
+  token: string,
   runId: string,
   hookId: string,
   candidateEventId: string
-): Promise<string> {
-  const markerPath = hookRecoveryMarkerPath(basedir, tokenHash);
-  const markerContent = JSON.stringify({
-    eventId: candidateEventId,
-    hookId,
-    runId,
-  });
+): Promise<string | null> {
+  const markerPath = hookRecoveryMarkerPath(basedir, token, runId, hookId);
+  const markerContent = JSON.stringify({ eventId: candidateEventId });
   const won = await writeExclusive(markerPath, markerContent);
   if (won) {
     return candidateEventId;
   }
   const existing = await readHookRecoveryMarker(markerPath);
-  if (existing && existing.runId === runId && existing.hookId === hookId) {
-    return existing.eventId;
-  }
-  // Stale or unparseable marker: overwrite with our own. This is
-  // best-effort — see the function comment for why.
-  await writeJSON(markerPath, JSON.parse(markerContent), { overwrite: true });
-  return candidateEventId;
+  return existing?.eventId ?? null;
 }
 
 function withInProcessLock<T>(
@@ -1164,27 +1178,70 @@ export function createEventsStorage(
               // `(runId, hookId)`.
               //
               // The canonical eventId comes from one of two places:
+              //
               //   - `existingClaim.eventId` for claims written by
               //     this version (the writer above persists the
               //     candidate eventId atomically with the claim).
+              //     The eventId is durable, so the outer
+              //     `writeExclusive(eventPath)` alone is enough to
+              //     arbitrate publication: it fails iff the event
+              //     was already published at that exact path.
+              //
               //   - The recovery-marker sidecar for legacy claims
-              //     written before that field existed. The marker is
-              //     itself a `writeExclusive`, so the first retry
-              //     pins its candidate eventId as canonical and
-              //     subsequent retries adopt it. Without this, two
-              //     processes both reading the same legacy claim
-              //     would each generate their own eventId, land
-              //     their `writeExclusive(eventPath)` calls at
-              //     different paths, and append two events.
-              const canonicalEventId =
-                existingClaim.eventId ??
-                (await pinCanonicalEventIdForLegacyClaim(
+              //     written before `eventId` was persisted inline
+              //     in the claim. The marker is itself a
+              //     `writeExclusive`, so the first retry pins its
+              //     candidate eventId as canonical and subsequent
+              //     retries adopt it. Without this, two processes
+              //     both reading the same legacy claim would each
+              //     generate their own eventId, land their
+              //     `writeExclusive(eventPath)` calls at different
+              //     paths, and append two events.
+              //
+              //     For legacy claims we also must probe the event
+              //     log for an existing `hook_created` event BEFORE
+              //     pinning a canonical eventId: the pre-upgrade
+              //     writer may have already published the event
+              //     with its own eventId, and the marker has no way
+              //     of knowing that eventId after the fact. Without
+              //     this probe, a post-upgrade retry would pin a
+              //     different eventId, write a hook entity, and
+              //     publish a duplicate event at the marker's path.
+              let canonicalEventId: string;
+              if (existingClaim.eventId) {
+                canonicalEventId = existingClaim.eventId;
+              } else {
+                const alreadyPublishedEventId =
+                  await findExistingHookCreatedEventId(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId
+                  );
+                if (alreadyPublishedEventId !== null) {
+                  throw new EntityConflictError(
+                    `Hook "${data.correlationId}" already created`
+                  );
+                }
+                const pinned = await pinCanonicalEventIdForLegacyClaim(
                   basedir,
-                  hashToken(hookData.token),
+                  hookData.token,
                   effectiveRunId,
                   data.correlationId,
                   eventId
-                ));
+                );
+                if (pinned === null) {
+                  // Lost the marker race and the marker file is
+                  // unreadable (extremely rare; corrupted disk).
+                  // Treat as a real duplicate so the runtime's
+                  // concurrent-replay catch path swallows this
+                  // attempt instead of risking divergent
+                  // publication.
+                  throw new EntityConflictError(
+                    `Hook "${data.correlationId}" already created`
+                  );
+                }
+                canonicalEventId = pinned;
+              }
 
               // Rebuild `event` with the canonical eventId and a
               // deterministic `createdAt` derived from the eventId
@@ -1300,20 +1357,27 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Delete the token constraint file (and its recovery
-            // marker, if any) to free up the token for reuse. If the
-            // marker is left behind after the token is recycled by a
-            // new creation, a future legacy-claim recovery for the
-            // recycled token could latch onto the stale eventId.
-            const tokenHash = hashToken(existingHook.token);
+            // Delete the token constraint file to free up the token
+            // for reuse, and delete this hook's recovery marker (if
+            // any) for disk hygiene. The marker's filename hash
+            // includes `(token, runId, hookId)` so different
+            // lifetimes never collide, but cleaning up reduces disk
+            // leak for hooks that go through the recovery path.
             const disposedConstraintPath = path.join(
               basedir,
               'hooks',
               'tokens',
-              `${tokenHash}.json`
+              `${hashToken(existingHook.token)}.json`
             );
             await deleteJSON(disposedConstraintPath);
-            await deleteJSON(hookRecoveryMarkerPath(basedir, tokenHash));
+            await deleteJSON(
+              hookRecoveryMarkerPath(
+                basedir,
+                existingHook.token,
+                existingHook.runId,
+                existingHook.hookId
+              )
+            );
           }
           await deleteJSON(hookPath);
         } else if (data.eventType === 'wait_created' && 'eventData' in data) {
