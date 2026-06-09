@@ -1,7 +1,7 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type { Event, Hook, WorkflowRun } from '@workflow/world';
 import {
   ChevronDown,
   ChevronUp,
@@ -25,6 +25,7 @@ import {
   type SpanSelectionInfo,
 } from './sidebar/entity-detail-panel';
 import { ResolveHookModal } from './sidebar/resolve-hook-modal';
+import type { FetchSpanDetail } from './sidebar/use-span-detail';
 import {
   TraceViewerContextProvider,
   TraceViewerTimeline,
@@ -760,15 +761,12 @@ export const WorkflowTraceViewer = ({
   events,
   isLoading,
   error,
-  spanDetailData,
-  spanDetailLoading,
-  spanDetailError,
+  fetchSpanDetail,
   onWakeUpSleep,
   onResolveHook,
   onCancelRun,
   onStreamClick,
   onRunClick,
-  onSpanSelect,
   onLoadEventData,
   onLoadMoreSpans,
   hasMoreSpans = false,
@@ -781,9 +779,8 @@ export const WorkflowTraceViewer = ({
   events: Event[];
   isLoading?: boolean;
   error?: Error | null;
-  spanDetailData?: WorkflowRun | Step | Hook | Event | null;
-  spanDetailLoading?: boolean;
-  spanDetailError?: Error | null;
+  /** Fetches the detail for a selected span; the panel owns the lifecycle. */
+  fetchSpanDetail?: FetchSpanDetail;
   onWakeUpSleep?: (
     runId: string,
     correlationId: string
@@ -799,8 +796,6 @@ export const WorkflowTraceViewer = ({
   onStreamClick?: (streamId: string) => void;
   /** Callback when a run reference is clicked in the detail panel */
   onRunClick?: (runId: string) => void;
-  /** Callback when a span is selected. */
-  onSpanSelect?: (info: SpanSelectionInfo) => void;
   /** Callback to load event data for a specific event (lazy loading in sidebar) */
   onLoadEventData?: (
     correlationId: string,
@@ -851,13 +846,6 @@ export const WorkflowTraceViewer = ({
       });
     }
   }, [error, isLoading]);
-
-  const handleSpanSelect = useCallback(
-    (info: SpanSelectionInfo) => {
-      onSpanSelect?.(info);
-    },
-    [onSpanSelect]
-  );
 
   const handleSelectionChange = useCallback(
     (info: SelectedSpanInfo | null) => {
@@ -1150,10 +1138,7 @@ export const WorkflowTraceViewer = ({
                 run={run}
                 onStreamClick={onStreamClick}
                 onRunClick={onRunClick}
-                spanDetailData={spanDetailData ?? null}
-                spanDetailError={spanDetailError}
-                spanDetailLoading={spanDetailLoading}
-                onSpanSelect={handleSpanSelect}
+                fetchSpanDetail={fetchSpanDetail}
                 onWakeUpSleep={onWakeUpSleep}
                 onLoadEventData={onLoadEventData}
                 onResolveHook={onResolveHook}

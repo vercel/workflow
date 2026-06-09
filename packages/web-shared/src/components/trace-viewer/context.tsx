@@ -678,7 +678,7 @@ export const useTraceViewer = (): TraceViewerContextProps =>
 /**
  * Separate context for the custom panel component. This is intentionally
  * outside the useReducer state so that the panel re-renders reactively
- * when props like spanDetailData change.
+ * when the host re-renders it with new props.
  */
 const CustomPanelContext = createContext<ReactNode | null>(null);
 

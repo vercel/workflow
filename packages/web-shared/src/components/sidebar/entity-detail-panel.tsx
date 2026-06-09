@@ -3,13 +3,15 @@
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { DecryptClickContext } from '../ui/data-inspector';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
 import { useSidebarDataOptional } from './sidebar-data-context';
+import { mergeSpanDetail } from './span-detail-merge';
+import { type FetchSpanDetail, useSpanDetail } from './use-span-detail';
 
 // Type guards for runtime validation of span attribute data
 function isStep(data: unknown): data is Step {
@@ -57,10 +59,7 @@ export function EntityDetailPanel({
   run,
   onStreamClick,
   onRunClick,
-  spanDetailData,
-  spanDetailError,
-  spanDetailLoading,
-  onSpanSelect,
+  fetchSpanDetail,
   onWakeUpSleep,
   onLoadEventData,
   onResolveHook,
@@ -74,14 +73,12 @@ export function EntityDetailPanel({
   onStreamClick?: (streamId: string) => void;
   /** Callback when a run reference is clicked */
   onRunClick?: (runId: string) => void;
-  /** Pre-fetched span detail data for the selected span. */
-  spanDetailData: WorkflowRun | Step | Hook | Event | null;
-  /** Error from external span detail fetch. */
-  spanDetailError?: Error | null;
-  /** Loading state from external span detail fetch. */
-  spanDetailLoading?: boolean;
-  /** Callback when a span is selected. Use this to fetch data externally and pass via spanDetailData. */
-  onSpanSelect: (info: SpanSelectionInfo) => void;
+  /**
+   * Fetches the detail (input/output/etc.) for a selected span. The panel
+   * owns the fetch lifecycle and keys the result to the current selection, so
+   * the returned data always belongs to the span being rendered.
+   */
+  fetchSpanDetail?: FetchSpanDetail;
   /** Callback to wake up a pending sleep call. */
   onWakeUpSleep?: (
     runId: string,
@@ -124,10 +121,10 @@ export function EntityDetailPanel({
   const rawEvents = selectedSpan?.rawEvents;
   const rawEventsLength = rawEvents?.length ?? 0;
 
-  // Determine resource type, ID, and runId from the selected span
-  const { resource, resourceId, runId } = useMemo(() => {
+  // Determine the selection (resource type, ID, and runId) from the selected span
+  const selection = useMemo<SpanSelectionInfo | null>(() => {
     if (!selectedSpan) {
-      return { resource: undefined, resourceId: undefined, runId: undefined };
+      return null;
     }
 
     const res = selectedSpan.resource;
@@ -135,12 +132,12 @@ export function EntityDetailPanel({
       return { resource: 'step', resourceId: data.stepId, runId: data.runId };
     }
     if (res === 'run' && isWorkflowRun(data)) {
-      return { resource: 'run', resourceId: data.runId, runId: undefined };
+      return { resource: 'run', resourceId: data.runId };
     }
     if (res === 'hook' && isHook(data)) {
-      return { resource: 'hook', resourceId: data.hookId, runId: undefined };
+      return { resource: 'hook', resourceId: data.hookId };
     }
-    if (res === 'sleep') {
+    if (res === 'sleep' && selectedSpan.spanId) {
       const waitData = data as { runId?: string } | undefined;
       return {
         resource: 'sleep',
@@ -148,29 +145,16 @@ export function EntityDetailPanel({
         runId: waitData?.runId,
       };
     }
-    return { resource: undefined, resourceId: undefined, runId: undefined };
+    return null;
   }, [selectedSpan, data]);
+  const resource = selection?.resource;
+  const resourceId = selection?.resourceId;
 
-  // Notify parent when span selection changes.
-  // Use a ref for the callback so the effect only fires when the actual
-  // selection values change, not when the callback identity changes due to
-  // parent re-renders from polling.
-  const onSpanSelectRef = useRef(onSpanSelect);
-  onSpanSelectRef.current = onSpanSelect;
-
-  useEffect(() => {
-    if (
-      resource &&
-      resourceId &&
-      ['run', 'step', 'hook', 'sleep'].includes(resource)
-    ) {
-      onSpanSelectRef.current({
-        resource: resource as 'run' | 'step' | 'hook' | 'sleep',
-        resourceId,
-        runId,
-      });
-    }
-  }, [resource, resourceId, runId]);
+  const {
+    data: spanDetailData,
+    loading: spanDetailLoading,
+    error: spanDetailError,
+  } = useSpanDetail(selection, fetchSpanDetail, { encryptionKey });
 
   // Check if this sleep is still pending and can be woken up
   const canWakeUp = useMemo(() => {
@@ -213,7 +197,7 @@ export function EntityDetailPanel({
   ]);
 
   const error = spanDetailError ?? undefined;
-  const loading = spanDetailLoading ?? false;
+  const loading = spanDetailLoading;
 
   // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
@@ -313,14 +297,15 @@ export function EntityDetailPanel({
     [onResolveHook, hookToken, resolvingHook, spanDetailData, data]
   );
 
-  // Prefer externally-fetched details when available. For sleep spans, the
-  // host fetches full correlated events (withData=true) and materializes a wait
-  // entity, so this includes resumeAt/completedAt without bloating trace payloads.
-  const displayData = (spanDetailData ?? data) as
-    | WorkflowRun
-    | Step
-    | Hook
-    | Event;
+  const displayData = useMemo(
+    () =>
+      mergeSpanDetail(data, spanDetailData) as
+        | WorkflowRun
+        | Step
+        | Hook
+        | Event,
+    [data, spanDetailData]
+  );
 
   const moduleSpecifier = useMemo(() => {
     const displayRecord = displayData as Record<string, unknown>;
@@ -435,6 +420,8 @@ export function EntityDetailPanel({
             <EventsList
               events={rawEvents}
               onLoadEventData={onLoadEventData}
+              onStreamClick={onStreamClick}
+              onRunClick={onRunClick}
               encryptionKey={encryptionKey}
             />
           )}
