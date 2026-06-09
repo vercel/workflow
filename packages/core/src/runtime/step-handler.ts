@@ -12,7 +12,11 @@ import {
 } from '@workflow/errors';
 import { formatStepName, pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
-import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
+import {
+  getQueueTopicPrefix,
+  SPEC_VERSION_CURRENT,
+  StepInvokePayloadSchema,
+} from '@workflow/world';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -52,10 +56,11 @@ import { getWorld, getWorldHandlers, type WorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
-const stepHandler = (worldHandlers: WorldHandlers) =>
-  worldHandlers.createQueueHandler(
-    '__wkf_step_',
-    async (message_, metadata) => {
+function createStepHandler(namespace?: string) {
+  const stepPrefix = getQueueTopicPrefix('step', namespace);
+
+  return (worldHandlers: WorldHandlers) =>
+    worldHandlers.createQueueHandler(stepPrefix, async (message_, metadata) => {
       // Check if this is a health check message
       // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
       // They only write a simple status response to a stream and do not expose sensitive data.
@@ -89,7 +94,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
       // is still consumed but with adequate logging that an error occurred.
       // Scoped logger for this step invocation — attaches run/step context to
       // every log line below so callers don't repeat it.
-      const stepNameFromQueue = metadata.queueName.slice('__wkf_step_'.length);
+      const stepNameFromQueue = metadata.queueName.slice(stepPrefix.length);
       const stepRuntimeLogger = runtimeLogger.forRun(
         workflowRunId,
         workflowName,
@@ -159,7 +164,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
       // Execute step within the propagated trace context
       return await withTraceContext(traceContext, async () => {
         // Extract the step name from the topic name
-        const stepName = metadata.queueName.slice('__wkf_step_'.length);
+        const stepName = metadata.queueName.slice(stepPrefix.length);
         const world = await getWorld();
         const isVercel = process.env.VERCEL_URL !== undefined;
 
@@ -1028,8 +1033,10 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
           }
         );
       });
-    }
-  );
+    });
+}
+
+const stepHandler = createStepHandler();
 
 /**
  * A single route that handles any step execution request and routes to the
