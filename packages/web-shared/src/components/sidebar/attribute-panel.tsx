@@ -3,6 +3,7 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
+import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
@@ -338,16 +339,11 @@ const parseDateValue = (value: unknown): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+// Matches vercel/front's request/activity timestamp format, e.g.
+// "JUN 10 10:16:02.69 GMT-4": uppercase 3-letter month, day, 24h time with
+// hundredths-of-a-second, and the short localized GMT offset.
 const formatLocalMillisecondTime = (date: Date): string =>
-  date.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-    fractionalSecondDigits: 3,
-  });
+  format(date, 'MMM dd HH:mm:ss.SS OO').toUpperCase();
 
 export const localMillisecondTime = (value: unknown): string => {
   const date = parseDateValue(value);
@@ -355,7 +351,6 @@ export const localMillisecondTime = (value: unknown): string => {
     return '-';
   }
 
-  // e.g. 12/17/2025, 9:08:55.182 AM
   return formatLocalMillisecondTime(date);
 };
 
