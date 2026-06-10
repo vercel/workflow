@@ -64,6 +64,7 @@ Workflow bundles wrap imported modules during transformation. When a bundled
 module contains a top-level `"use server"` directive, Next.js can treat the
 generated wrapper as a Server Action module and fail validation with errors such
 as `Server Actions must be async functions`.
+
 ### Monorepos and Workspace Imports
 
 By default, Next.js detects the correct workspace root automatically. If your Next.js app lives in a subdirectory such as `apps/web` and workspace resolution is not working correctly, you can set `outputFileTracingRoot` as a workaround:
