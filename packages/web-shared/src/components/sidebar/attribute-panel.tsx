@@ -284,6 +284,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   runId: 'Run ID',
   token: 'Token',
   eventType: 'Event Type',
+  errorCode: 'Error Code',
   correlationId: 'Correlation ID',
   deploymentId: 'Deployment ID',
   specVersion: 'Spec Version',
