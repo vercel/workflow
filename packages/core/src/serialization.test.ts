@@ -1,10 +1,12 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
+import { RuntimeDecryptionError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
+import { setWorld } from './runtime/world.js';
 import {
   decodeFormatPrefix,
   dehydrateStepArguments,
@@ -25,7 +27,12 @@ import {
   maybeEncrypt,
   SerializationFormat,
 } from './serialization.js';
-import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
+import {
+  STABLE_ULID,
+  STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
+} from './symbols.js';
 import { createContext } from './vm/index.js';
 
 const mockRunId = 'wrun_mockidnumber0001';
@@ -452,6 +459,164 @@ describe('workflow arguments', () => {
     expect(hydrated).toBeInstanceOf(OurWritableStream);
     const streamName = hydrated[STREAM_NAME_SYMBOL];
     expect(streamName).toMatch(/^strm_[0-9A-Z]{26}$/);
+  });
+
+  // When a user writable is already backed by a workflow server
+  // stream (because it was hydrated by a step-side reviver or created
+  // via step-context `getWritable()`), forwarding it across a
+  // `start()` boundary must emit the original `(runId, name)` in the
+  // dehydrated descriptor and MUST NOT install any pipe through the
+  // user's writable. The child run's step-side reviver then opens a
+  // server writable against the original `(runId, name)` directly,
+  // so writes survive for the full lifetime of the child run — not
+  // just for the dehydrating step's process.
+  it('forwards original (runId, name) for a tagged WritableStream', async () => {
+    const userWritable = new WritableStream();
+    Object.defineProperty(userWritable, STREAM_NAME_SYMBOL, {
+      value: 'strm_parentstreamname',
+      writable: false,
+    });
+    Object.defineProperty(userWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      value: 'wrun_parent',
+      writable: false,
+    });
+    Object.defineProperty(userWritable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: 'dpl_parent',
+      writable: false,
+    });
+
+    expect(userWritable.locked).toBe(false);
+    const serialized = await dehydrateWorkflowArguments(
+      userWritable,
+      'wrun_child',
+      noEncryptionKey,
+      []
+    );
+    // If the reducer had piped through the user's writable, the lock
+    // would be acquired here.
+    expect(userWritable.locked).toBe(false);
+    // The dehydrated descriptor should carry both the original name
+    // and the original runId so the child's reviver can open the
+    // writable against the parent's server stream directly.
+    const text = new TextDecoder().decode(serialized as Uint8Array);
+    expect(text).toContain('strm_parentstreamname');
+    expect(text).toContain('wrun_parent');
+    expect(text).toContain('dpl_parent');
+  });
+
+  it('uses the forwarded stream deployment to resolve its encryption key', async () => {
+    const getEncryptionKeyForRun = vi
+      .fn()
+      .mockResolvedValue(new Uint8Array(32).fill(7));
+    const runsGet = vi.fn();
+    const world = {
+      writeToStream: vi.fn().mockResolvedValue(undefined),
+      closeStream: vi.fn().mockResolvedValue(undefined),
+      runs: { get: runsGet },
+      getEncryptionKeyForRun,
+    } as any;
+    setWorld(world);
+
+    try {
+      const parentWritable = new WritableStream();
+      Object.defineProperty(parentWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_parentstreamname',
+        writable: false,
+      });
+      Object.defineProperty(parentWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_parent',
+        writable: false,
+      });
+      Object.defineProperty(
+        parentWritable,
+        STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+        {
+          value: 'dpl_parent',
+          writable: false,
+        }
+      );
+
+      const serialized = await dehydrateStepArguments(
+        parentWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops,
+        globalThis,
+        {},
+        'dpl_child'
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('cross-deployment');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith('wrun_parent', {
+        deploymentId: 'dpl_parent',
+      });
+      expect(runsGet).not.toHaveBeenCalled();
+    } finally {
+      setWorld(undefined);
+    }
+  });
+
+  it('loads the owner run for forwarded descriptors from older deployments', async () => {
+    const parentRun = {
+      runId: 'wrun_parent',
+      deploymentId: 'dpl_parent',
+    };
+    const getEncryptionKeyForRun = vi
+      .fn()
+      .mockResolvedValue(new Uint8Array(32).fill(9));
+    const runsGet = vi.fn().mockResolvedValue(parentRun);
+    const world = {
+      writeToStream: vi.fn().mockResolvedValue(undefined),
+      closeStream: vi.fn().mockResolvedValue(undefined),
+      runs: { get: runsGet },
+      getEncryptionKeyForRun,
+    } as any;
+    setWorld(world);
+
+    try {
+      const legacyWritable = new WritableStream();
+      Object.defineProperty(legacyWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_legacyparent',
+        writable: false,
+      });
+      Object.defineProperty(legacyWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_parent',
+        writable: false,
+      });
+
+      const serialized = await dehydrateStepArguments(
+        legacyWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('legacy-descriptor');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(runsGet).toHaveBeenCalledWith('wrun_parent');
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith(parentRun);
+    } finally {
+      setWorld(undefined);
+    }
   });
 
   it('should work with ReadableStream', async () => {
@@ -3810,8 +3975,8 @@ describe('getDeserializeStream legacy fallback', () => {
     const { stringify } = await import('devalue');
     const encoder = new TextEncoder();
 
-    const line1 = stringify({ hello: 'world' }) + '\n';
-    const line2 = stringify(42) + '\n';
+    const line1 = `${stringify({ hello: 'world' })}\n`;
+    const line2 = `${stringify(42)}\n`;
     const legacyData = encoder.encode(line1 + line2);
 
     const results = await deserializeChunks([legacyData]);
@@ -3824,8 +3989,8 @@ describe('getDeserializeStream legacy fallback', () => {
     const { stringify } = await import('devalue');
     const encoder = new TextEncoder();
 
-    const chunk1 = encoder.encode(stringify('hello') + '\n');
-    const chunk2 = encoder.encode(stringify('world') + '\n');
+    const chunk1 = encoder.encode(`${stringify('hello')}\n`);
+    const chunk2 = encoder.encode(`${stringify('world')}\n`);
 
     const results = await deserializeChunks([chunk1, chunk2]);
     expect(results).toHaveLength(2);
@@ -3992,6 +4157,40 @@ describe('stream encryption round-trip', () => {
     await expect(readPromise).rejects.toThrow(
       'Encrypted stream data encountered but no encryption key is available'
     );
+  });
+
+  it('should error with a RuntimeDecryptionError carrying the encr prefix when a frame is tampered', async () => {
+    const encrypted = await encryptedSerialize([{ secret: true }]);
+    const frame = encrypted[0];
+
+    // Tamper with the last byte (inside the GCM auth tag) to force an
+    // auth-tag verification failure during stream decryption.
+    const tampered = new Uint8Array(frame);
+    tampered[tampered.length - 1] ^= 0xff;
+
+    const deserialize = getDeserializeStream(revivers, cryptoKey);
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    })();
+
+    const writer = deserialize.writable.getWriter();
+    // The write/close may reject because controller.error() aborts the stream.
+    await writer.write(tampered).catch(() => {});
+    await writer.close().catch(() => {});
+
+    const error = await readPromise.catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+    // The stream decrypt path must enrich the context with the real outer
+    // envelope prefix (`encr`), not the nonce bytes — mirroring the regular
+    // payload decryption path.
+    expect(error.context).toMatchObject({
+      operation: 'decrypt',
+      formatPrefix: 'encr',
+    });
   });
 
   it('should not encrypt when cryptoKey is undefined', async () => {

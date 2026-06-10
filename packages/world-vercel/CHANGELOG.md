@@ -1,5 +1,33 @@
 # @workflow/world-vercel
 
+## 4.3.2
+
+### Patch Changes
+
+- [#2204](https://github.com/vercel/workflow/pull/2204) [`5655fcb`](https://github.com/vercel/workflow/commit/5655fcbd4d5ed45c6669666fef8c817a286eec33) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry transient response-body read/decode failures (truncated or terminated streams, gateway non-CBOR bodies) on idempotent requests inside the HTTP client, so a sporadic `events.list` parse failure no longer surfaces as a fatal error.
+
+## 4.3.1
+
+### Patch Changes
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f)]:
+  - @workflow/world@4.1.4
+  - @workflow/errors@4.1.3
+
+## 4.3.0
+
+### Minor Changes
+
+- [#1978](https://github.com/vercel/workflow/pull/1978) [`17cf939`](https://github.com/vercel/workflow/commit/17cf939d48e163f1cc93942a9db1069793da1176) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `@workflow/world-vercel/run-id` sub-export with `encode`/`decode` helpers that produce ULID-shaped workflow run IDs carrying a tag bit, a 5-bit version, and a 6-bit Vercel region ID.
+
+### Patch Changes
+
+- [#2142](https://github.com/vercel/workflow/pull/2142) [`3113738`](https://github.com/vercel/workflow/commit/31137386eaed044aa6c75c04cd0bafc2e49edf1e) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent failed stream writes from surfacing as unhandled rejections and include request correlation details in stream errors.
+
+- Updated dependencies [[`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c)]:
+  - @workflow/world@4.1.3
+  - @workflow/errors@4.1.2
+
 ## 4.2.0
 
 ### Minor Changes

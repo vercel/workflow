@@ -4,10 +4,7 @@ import { EVENT_DATA_REF_FIELDS, type Event } from '@workflow/world';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isExpiredMarker } from '../../lib/hydration';
 import { ErrorCard } from '../ui/error-card';
-import {
-  ErrorStackBlock,
-  isStructuredErrorWithStack,
-} from '../ui/error-stack-block';
+import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { localMillisecondTime } from './attribute-panel';
 import { CopyableDataBlock } from './copyable-data-block';
@@ -227,8 +224,8 @@ function hasOnlyExpiredFields(data: unknown, eventType: string): boolean {
 }
 
 /**
- * Renders event data, using ErrorStackBlock for error events that contain
- * a structured error with a stack trace, and CopyableDataBlock otherwise.
+ * Renders event data, using ErrorStackBlock for error events that contain a
+ * structured error, and CopyableDataBlock otherwise.
  */
 function EventDataBlock({
   eventType,
@@ -266,12 +263,12 @@ function EventDataBlock({
     const record = data as Record<string, unknown>;
 
     // Check the nested `error` field first (the StructuredError)
-    if (isStructuredErrorWithStack(record.error)) {
+    if (isStructuredError(record.error)) {
       return <ErrorStackBlock value={record.error} />;
     }
 
-    // Some error formats put the stack at the top level of eventData
-    if (isStructuredErrorWithStack(record)) {
+    // Some error formats put the message/stack at the top level of eventData.
+    if (isStructuredError(record)) {
       return <ErrorStackBlock value={record} />;
     }
   }

@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web-shared",
   "description": "Shared components for Workflow Observability UI",
-  "version": "4.1.6",
+  "version": "4.1.9",
   "private": false,
   "files": [
     "dist",
@@ -47,7 +47,7 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "@tailwindcss/postcss": "4",
+    "@tailwindcss/postcss": "4.3.0",
     "@workflow/core": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
@@ -59,7 +59,7 @@
     "react-dom": "19.1.0",
     "react-inspector": "9.0.0",
     "react-virtuoso": "4.18.1",
-    "shiki": "4.0.0",
+    "shiki": "4.2.0",
     "sonner": "2.0.7",
     "streamdown": "2.3.0",
     "tailwind-merge": "3.5.0",

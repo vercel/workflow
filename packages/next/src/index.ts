@@ -6,6 +6,7 @@ import {
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
+import { DEFERRED_STEP_COPY_DIR_NAME } from './step-copy-utils.js';
 
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
@@ -14,6 +15,12 @@ const workflowSerdeSymbolPattern =
   /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
 const workflowSerdeComputedPropertyPattern =
   /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
+const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
+const deferredStepCopyPathPattern = new RegExp(
+  String.raw`[/\\]\.well-known[/\\]workflow[/\\]v1[/\\]step[/\\]${DEFERRED_STEP_COPY_DIR_NAME}[/\\]`
+);
+const turbopackWorkflowContentPattern =
+  /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/;
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
@@ -300,10 +307,6 @@ export function withWorkflow(
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
     const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
 
-    // Deferred builder discovers files via loader socket notifications, so
-    // turbopack content conditions are only needed with the eager builder.
-    const shouldApplyTurboCondition =
-      supportsTurboCondition && !useDeferredBuilder;
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;
 
@@ -397,21 +400,24 @@ export function withWorkflow(
       '*.cts',
     ]) {
       nextConfig.turbopack.rules[key] = {
-        ...(shouldApplyTurboCondition
+        ...(supportsTurboCondition
           ? {
               condition: {
-                // Use 'all' to combine: must match content AND must NOT be in generated path
-                // Merge with any existing 'all' conditions from user config
+                // Merge with any existing 'all' conditions from user config.
                 all: [
                   ...(existingRules[key]?.condition?.all || []),
-                  // Exclude generated workflow route files from transformation
-                  { not: { path: /[/\\]\.well-known[/\\]workflow[/\\]/ } },
+                  {
+                    // Deferred step copies are generated source files that must
+                    // still be transformed in step mode. Other generated route
+                    // files have already been transformed and remain excluded.
+                    any: [
+                      { not: { path: generatedWorkflowPathPattern } },
+                      { path: deferredStepCopyPathPattern },
+                    ],
+                  },
                   // Match files with workflow directives or custom serialization patterns
                   // Uses backreferences (\2, \3) to ensure matching quote types
-                  {
-                    content:
-                      /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
-                  },
+                  { content: turbopackWorkflowContentPattern },
                 ],
               },
             }

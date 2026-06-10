@@ -1,5 +1,30 @@
 # @workflow/web-shared
 
+## 4.1.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.3.1
+
+## 4.1.8
+
+### Patch Changes
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`1e32d05`](https://github.com/vercel/workflow/commit/1e32d05758d590134f04f82ea41ab9add96104d5), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f), [`9092640`](https://github.com/vercel/workflow/commit/90926400131be4003e65d970deb5d67ae29778a2)]:
+  - @workflow/core@4.3.0
+  - @workflow/world@4.1.4
+
+## 4.1.7
+
+### Patch Changes
+
+- [#2107](https://github.com/vercel/workflow/pull/2107) [`e313c66`](https://github.com/vercel/workflow/commit/e313c66d21ac56717aad4162bac8430c1f907ae1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow lookup of exact step ID (`step_`), wait ID (`wait_`), hook ID (`hook_`), or event ID (`evnt_`) in the event list UI.
+
+- Updated dependencies [[`e256858`](https://github.com/vercel/workflow/commit/e25685889de027b13ef23f83e38633e41acc5e7d), [`38c67a7`](https://github.com/vercel/workflow/commit/38c67a7f59d69a3743c981f29f31684a0e50f38d), [`ebfeede`](https://github.com/vercel/workflow/commit/ebfeede4bbf969c6fe6a27316d9ec60be9f726e5), [`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c), [`3113738`](https://github.com/vercel/workflow/commit/31137386eaed044aa6c75c04cd0bafc2e49edf1e)]:
+  - @workflow/core@4.2.6
+  - @workflow/world@4.1.3
+
 ## 4.1.6
 
 ### Patch Changes

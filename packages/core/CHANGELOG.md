@@ -1,5 +1,50 @@
 # @workflow/core
 
+## 4.3.1
+
+### Patch Changes
+
+- Updated dependencies [[`5655fcb`](https://github.com/vercel/workflow/commit/5655fcbd4d5ed45c6669666fef8c817a286eec33)]:
+  - @workflow/world-vercel@4.3.2
+
+## 4.3.0
+
+### Minor Changes
+
+- [#2059](https://github.com/vercel/workflow/pull/2059) [`9092640`](https://github.com/vercel/workflow/commit/90926400131be4003e65d970deb5d67ae29778a2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - A `WritableStream` from a workflow's `getWritable()` can now be passed as an argument to a child workflow via `start()`; the child's writes land on the parent run's stream directly for the full lifetime of the child run.
+
+### Patch Changes
+
+- [#2191](https://github.com/vercel/workflow/pull/2191) [`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix forwarded writable stream encryption when child workflows execute on a newer deployment than their parent.
+
+- [#2206](https://github.com/vercel/workflow/pull/2206) [`1e32d05`](https://github.com/vercel/workflow/commit/1e32d05758d590134f04f82ea41ab9add96104d5) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent replayed workflows from advancing their deterministic clock when a future event is inspected before its matching operation is invoked.
+
+- [#2208](https://github.com/vercel/workflow/pull/2208) [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f) Thanks [@pranaygp](https://github.com/pranaygp)! - Retry transient workflow replay divergence before classifying repeated divergence as a corrupted event log.
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f)]:
+  - @workflow/world@4.1.4
+  - @workflow/errors@4.1.3
+  - @workflow/world-local@4.1.4
+  - @workflow/world-vercel@4.3.1
+
+## 4.2.6
+
+### Patch Changes
+
+- [#2179](https://github.com/vercel/workflow/pull/2179) [`e256858`](https://github.com/vercel/workflow/commit/e25685889de027b13ef23f83e38633e41acc5e7d) Thanks [@pranaygp](https://github.com/pranaygp)! - Harden runtime event pagination against rejected, repeated, or overlapping cursor responses.
+
+- [#2171](https://github.com/vercel/workflow/pull/2171) [`38c67a7`](https://github.com/vercel/workflow/commit/38c67a7f59d69a3743c981f29f31684a0e50f38d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `CorruptedEventLogError` on replay when a workflow races a hook read against a `sleep()` (e.g. `Promise.race([hook, sleep])`). Branch-deciding deliveries (buffered hook payloads and wait completions) are now handed to the workflow in strict event-log order — anchored on event position rather than on microtask-resolution timing — so the committed branch wins the race deterministically, independent of decryption/hydration time or `Promise.race` argument order.
+
+- [#2156](https://github.com/vercel/workflow/pull/2156) [`ebfeede`](https://github.com/vercel/workflow/commit/ebfeede4bbf969c6fe6a27316d9ec60be9f726e5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Harden workflow error stack remapping for large inline sourcemaps.
+
+- [#2142](https://github.com/vercel/workflow/pull/2142) [`3113738`](https://github.com/vercel/workflow/commit/31137386eaed044aa6c75c04cd0bafc2e49edf1e) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent failed stream writes from surfacing as unhandled rejections and include request correlation details in stream errors.
+
+- Updated dependencies [[`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c), [`2aecfdb`](https://github.com/vercel/workflow/commit/2aecfdb7ff8f33cc8c630592a1f27d8d7630d5a8), [`3113738`](https://github.com/vercel/workflow/commit/31137386eaed044aa6c75c04cd0bafc2e49edf1e), [`17cf939`](https://github.com/vercel/workflow/commit/17cf939d48e163f1cc93942a9db1069793da1176)]:
+  - @workflow/world@4.1.3
+  - @workflow/world-local@4.1.3
+  - @workflow/world-vercel@4.3.0
+  - @workflow/errors@4.1.2
+
 ## 4.2.5
 
 ### Patch Changes

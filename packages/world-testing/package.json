@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-testing",
-  "version": "4.1.5",
+  "version": "4.1.8",
   "description": "Testing utilities and World implementation for Workflow SDK",
   "main": "dist/src/index.mjs",
   "files": [
@@ -22,13 +22,13 @@
     "test": "vitest"
   },
   "dependencies": {
-    "@hono/node-server": "1.19.9",
+    "@hono/node-server": "1.19.13",
     "@workflow/cli": "workspace:*",
     "@workflow/core": "workspace:*",
     "workflow": "workspace:*",
     "@workflow/world": "workspace:*",
     "chalk": "5.6.2",
-    "hono": "4.12.3",
+    "hono": "4.12.21",
     "jsonlines": "0.1.1",
     "zod": "catalog:"
   },

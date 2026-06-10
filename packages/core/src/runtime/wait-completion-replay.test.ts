@@ -40,6 +40,8 @@ async function runStaleWaitReplayScenario(options: {
   includePreloadedCursor: boolean;
   preloadedHasMore?: boolean;
   omitWaitCompletionFromDelta?: boolean;
+  restartDeltaAtBeginning?: boolean;
+  terminalFailureAfterWaitCompletion?: boolean;
 }) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
@@ -182,7 +184,8 @@ async function runStaleWaitReplayScenario(options: {
       // Cursor reads simulate the optimized delta fetch. Without a cursor, the
       // runtime has fallen back to a full reload from the beginning.
       let data =
-        params.pagination?.cursor === staleEventsCursor
+        params.pagination?.cursor === staleEventsCursor &&
+        !options.restartDeltaAtBeginning
           ? durableEvents.slice(staleEvents.length)
           : [...durableEvents];
       if (
@@ -229,6 +232,20 @@ async function runStaleWaitReplayScenario(options: {
       const created = event(request);
       durableEvents.push(created);
       createdEvents.push(created);
+      if (
+        request.eventType === 'wait_completed' &&
+        options.terminalFailureAfterWaitCompletion
+      ) {
+        durableEvents.push(
+          event({
+            eventType: 'run_failed',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              error: { message: 'failure recorded while completing wait' },
+            },
+          })
+        );
+      }
       return { event: created };
     }
   );
@@ -305,6 +322,7 @@ async function runStaleWaitReplayScenario(options: {
     createdEvents,
     listEvents,
     listedPages,
+    queue,
     staleEventsCursor,
     waitCorrelationId,
   };
@@ -361,6 +379,47 @@ describe('workflow handler wait completion replay', () => {
       })
     );
     expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
+      'hook_received',
+      'wait_completed',
+    ]);
+    expectHookBranchQueued(result);
+  });
+
+  it('skips replay when run_failed becomes durable during the post-wait refresh', async () => {
+    const result = await runStaleWaitReplayScenario({
+      includePreloadedCursor: true,
+      terminalFailureAfterWaitCompletion: true,
+    });
+
+    expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
+      'hook_received',
+      'wait_completed',
+      'run_failed',
+    ]);
+    expect(result.createdEvents).toEqual([
+      expect.objectContaining({
+        eventType: 'wait_completed',
+        correlationId: result.waitCorrelationId,
+      }),
+    ]);
+    expect(result.queue).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates a cursor delta that unexpectedly restarts at the beginning', async () => {
+    const result = await runStaleWaitReplayScenario({
+      includePreloadedCursor: true,
+      restartDeltaAtBeginning: true,
+    });
+
+    expect(result.listEvents).toHaveBeenCalledTimes(1);
+    expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'hook_created',
+      'step_created',
+      'step_started',
+      'step_completed',
+      'wait_created',
       'hook_received',
       'wait_completed',
     ]);

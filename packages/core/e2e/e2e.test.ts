@@ -405,7 +405,9 @@ describe('e2e', () => {
 
   test(
     'hookWorkflow is not resumable via public webhook endpoint',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -835,7 +837,9 @@ describe('e2e', () => {
 
   test(
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       const run = await start(await e2e('outputStreamInsideStepWorkflow'), []);
       const reader = run.getReadable().getReader();
@@ -877,6 +881,50 @@ describe('e2e', () => {
     }
   );
 
+  // A WritableStream passed as a workflow argument to start() should
+  // land raw bytes on the parent's output stream when the child step
+  // writes to it. Covered for both:
+  // - `writableForwardedFromWorkflowWorkflow`: parent calls
+  //   `getWritable()` in workflow context (fake handle revived in the
+  //   intermediary step).
+  // - `writableForwardedFromStepWorkflow`: parent calls `getWritable()`
+  //   in step context (real `serialize.writable` passed straight to
+  //   `start()`).
+  test.each([
+    'writableForwardedFromWorkflowWorkflow',
+    'writableForwardedFromStepWorkflow',
+  ] as const)('%s', { timeout: 120_000 }, async (workflowName) => {
+    const payload = `hello-from-child-${Date.now()}\n`;
+    const run = await start(await e2e(workflowName), [payload]);
+
+    const reader = run.getReadable().getReader();
+    // `fatal: true` makes the decoder throw on any invalid UTF-8
+    // sequence, so a successful decode is itself a round-trip
+    // assertion that the bytes survived intact.
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+
+    // The child step performs exactly one write of `payload` as
+    // UTF-8 bytes, so we should receive a single chunk containing
+    // exactly those bytes before the stream closes.
+    const { value, done } = await reader.read();
+    expect(done).toBeFalsy();
+    assert(value);
+    assert(value instanceof Uint8Array);
+
+    const expectedBytes = new TextEncoder().encode(payload);
+    expect(value.byteLength).toBe(expectedBytes.byteLength);
+    expect(decoder.decode(value)).toBe(payload);
+
+    // Default stream should close cleanly after the parent closes its
+    // writable.
+    expect((await reader.read()).done).toBe(true);
+
+    const returnValue = await run.returnValue;
+    expect(returnValue).toMatchObject({
+      childRunId: expect.stringMatching(/^wrun_/),
+    });
+  });
+
   test('fetchWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('fetchWorkflow'), []);
     const returnValue = await run.returnValue;
@@ -901,7 +949,9 @@ describe('e2e', () => {
       describe('workflow errors', () => {
         test(
           'nested function calls preserve message and stack trace',
-          { timeout: 60_000 },
+          {
+            timeout: 60_000,
+          },
           async () => {
             const run = await start(await e2e('errorWorkflowNested'), []);
             const error = await run.returnValue.catch((e: unknown) => e);
@@ -933,7 +983,9 @@ describe('e2e', () => {
 
         test(
           'cross-file imports preserve message and stack trace',
-          { timeout: 60_000 },
+          {
+            timeout: 60_000,
+          },
           async () => {
             const run = await start(await e2e('errorWorkflowCrossFile'), []);
             const error = await run.returnValue.catch((e: unknown) => e);
@@ -963,7 +1015,9 @@ describe('e2e', () => {
       describe('step errors', () => {
         test(
           'basic step error preserves message and stack trace',
-          { timeout: 60_000 },
+          {
+            timeout: 60_000,
+          },
           async () => {
             const run = await start(await e2e('errorStepBasic'), []);
             const result = await run.returnValue;
@@ -1015,7 +1069,9 @@ describe('e2e', () => {
 
         test(
           'cross-file step error preserves message and function names in stack',
-          { timeout: 60_000 },
+          {
+            timeout: 60_000,
+          },
           async () => {
             const run = await start(await e2e('errorStepCrossFile'), []);
             const result = await run.returnValue;
@@ -1072,7 +1128,9 @@ describe('e2e', () => {
     describe('retry behavior', () => {
       test(
         'regular Error retries until success',
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+        },
         async () => {
           const run = await start(await e2e('errorRetrySuccess'), []);
           const result = await run.returnValue;
@@ -1092,7 +1150,9 @@ describe('e2e', () => {
 
       test(
         'FatalError fails immediately without retries',
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+        },
         async () => {
           const run = await start(await e2e('errorRetryFatal'), []);
           const error = await run.returnValue.catch((e: unknown) => e);
@@ -1115,7 +1175,9 @@ describe('e2e', () => {
 
       test(
         'RetryableError respects custom retryAfter delay',
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+        },
         async () => {
           const run = await start(await e2e('errorRetryCustomDelay'), []);
           const result = await run.returnValue;
@@ -1137,7 +1199,9 @@ describe('e2e', () => {
     describe('catchability', () => {
       test(
         'FatalError can be caught and detected with FatalError.is()',
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+        },
         async () => {
           const run = await start(await e2e('errorFatalCatchable'), []);
           const result = await run.returnValue;
@@ -1155,7 +1219,9 @@ describe('e2e', () => {
     describe('not registered', () => {
       test(
         'WorkflowNotRegisteredError fails the run when workflow does not exist',
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+        },
         async () => {
           // Start a run with a workflowId that doesn't exist in the deployment bundle.
           // This simulates starting a run against a deployment that doesn't have the workflow.
@@ -1179,7 +1245,9 @@ describe('e2e', () => {
 
       test(
         'StepNotRegisteredError fails the step but workflow can catch it',
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+        },
         async () => {
           const run = await start(await e2e('stepNotRegisteredCatchable'), []);
           const result = await run.returnValue;
@@ -1205,7 +1273,9 @@ describe('e2e', () => {
 
       test(
         'StepNotRegisteredError fails the run when not caught in workflow',
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+        },
         async () => {
           const run = await start(await e2e('stepNotRegisteredUncaught'), []);
           const error = await run.returnValue.catch((e: unknown) => e);
@@ -1221,7 +1291,9 @@ describe('e2e', () => {
 
   test(
     'stepDirectCallWorkflow - calling step functions directly outside workflow context',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // Call the API route that directly calls a step function (no workflow context)
       const url = new URL('/api/test-direct-step-call', deploymentUrl);
@@ -1251,7 +1323,9 @@ describe('e2e', () => {
 
   test(
     'hookCleanupTestWorkflow - hook token reuse after workflow completion',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -1319,7 +1393,9 @@ describe('e2e', () => {
 
   test(
     'concurrent hook token conflict - two workflows cannot use the same hook token simultaneously',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -1349,6 +1425,14 @@ describe('e2e', () => {
       expect(run2Error.cause.message).toContain(
         'already in use by another workflow'
       );
+      // The conflicting run's id is surfaced through the error. On `stable`,
+      // failed runs flatten the thrown value to a plain Error across the
+      // `run.returnValue` boundary, so the typed `HookConflictError` identity
+      // (and its structured `conflictingRunId` field) is not reconstructed on
+      // the client — that hydration pipeline only exists on `main`. The
+      // conflicting run id still reaches the caller via the message, which is
+      // what we assert here.
+      expect(run2Error.cause.message).toContain(run1.runId);
 
       // Verify workflow 2 failed
       const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
@@ -1380,7 +1464,9 @@ describe('e2e', () => {
 
   test(
     'hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running',
-    { timeout: 90_000 },
+    {
+      timeout: 90_000,
+    },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -1461,7 +1547,9 @@ describe('e2e', () => {
 
   test(
     'stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // This workflow passes a step function reference to another step
       // The receiving step calls the passed function and returns the result
@@ -1493,7 +1581,9 @@ describe('e2e', () => {
 
   test(
     'stepFunctionWithClosureWorkflow - step function with closure variables passed as argument',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // This workflow creates a nested step function with closure variables,
       // then passes it to another step which invokes it.
@@ -1518,7 +1608,9 @@ describe('e2e', () => {
 
   test(
     'closureVariableWorkflow - nested step functions with closure variables',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // This workflow uses a nested step function that references closure variables
       // from the parent workflow scope (multiplier, prefix, baseValue)
@@ -1532,7 +1624,9 @@ describe('e2e', () => {
 
   test(
     'spawnWorkflowFromStepWorkflow - spawning a child workflow using start() inside a step',
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       // This workflow spawns another workflow using start() inside a step function
       // This is the recommended pattern for spawning workflows from within workflows
@@ -1645,7 +1739,9 @@ describe('e2e', () => {
 
   test(
     'health check (queue-based) - workflow and step endpoints respond to health check messages',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // Tests the queue-based health check using healthCheck() directly.
       // This bypasses Vercel Deployment Protection by sending messages
@@ -1657,6 +1753,10 @@ describe('e2e', () => {
         timeout: 30000,
       });
       expect(workflowResult.healthy).toBe(true);
+      // The deployed app advertises its `@workflow/core` version so
+      // callers can derive capability metadata (see `getRunCapabilities`
+      // in `capabilities.ts`).
+      expect(typeof workflowResult.workflowCoreVersion).toBe('string');
 
       // Test step endpoint health check
       const stepResult = await healthCheck(world, 'step', { timeout: 30000 });
@@ -1666,7 +1766,9 @@ describe('e2e', () => {
 
   test(
     'health check (CLI) - workflow health command reports healthy endpoints',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // NOTE: This tests the `workflow health` CLI command which uses the
       // queue-based health check under the hood. The CLI provides a convenient
@@ -1697,7 +1799,9 @@ describe('e2e', () => {
 
   test(
     'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // This workflow uses a step that calls a helper function imported via @repo/* path alias
       // which resolves to a file outside the workbench directory (../../lib/steps/paths-alias-test.ts)
@@ -1721,7 +1825,9 @@ describe('e2e', () => {
 
   test(
     'Calculator.calculate - static workflow method using static step methods from another class',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // Calculator.calculate(5, 3) should:
       // 1. MathService.add(5, 3) = 8
@@ -1743,7 +1849,9 @@ describe('e2e', () => {
 
   test(
     'AllInOneService.processNumber - static workflow method using sibling static step methods',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // AllInOneService.processNumber(10) should:
       // 1. AllInOneService.double(10) = 20
@@ -1766,7 +1874,9 @@ describe('e2e', () => {
 
   test(
     'ChainableService.processWithThis - static step methods using `this` to reference the class',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // ChainableService.processWithThis(5) should:
       // - ChainableService.multiplyByClassValue(5) uses `this.multiplier` (10) -> 5 * 10 = 50
@@ -1800,7 +1910,9 @@ describe('e2e', () => {
 
   test(
     'thisSerializationWorkflow - step function invoked with .call() and .apply()',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // thisSerializationWorkflow(10) should:
       // 1. multiplyByFactor.call({ factor: 2 }, 10) = 20
@@ -1823,7 +1935,9 @@ describe('e2e', () => {
 
   test(
     'customSerializationWorkflow - custom class serialization with WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // This workflow tests custom serialization of user-defined class instances.
       // The Point class uses WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE symbols
@@ -1860,7 +1974,9 @@ describe('e2e', () => {
 
   test(
     'instanceMethodStepWorkflow - instance methods with "use step" directive',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // This workflow tests instance methods marked with "use step".
       // The Counter class has custom serialization so the `this` context
@@ -1955,7 +2071,9 @@ describe('e2e', () => {
 
   test(
     'crossContextSerdeWorkflow - classes defined in step code are deserializable in workflow context',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // This is a critical test for the cross-context class registration feature.
       //
@@ -2008,7 +2126,9 @@ describe('e2e', () => {
 
   test(
     'stepFunctionAsStartArgWorkflow - step function reference passed as start() argument',
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       // This test verifies that step function references can be:
       // 1. Serialized in the client bundle (the SWC plugin sets stepId property on the function)
@@ -2073,7 +2193,9 @@ describe('e2e', () => {
   // ==================== CANCEL TESTS ====================
   test(
     'cancelRun - cancelling a running workflow',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // Start a long-running workflow with a 30s sleep to provide a wide
       // window for the cancel to arrive while the workflow is still running.
@@ -2100,7 +2222,9 @@ describe('e2e', () => {
 
   test(
     'cancelRun via CLI - cancelling a running workflow',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // Start a long-running workflow with a 30s sleep to provide a wide
       // window for the cancel to arrive while the workflow is still running.
@@ -2145,7 +2269,9 @@ describe('e2e', () => {
 
     test(
       'promiseAllWorkflow via pages router',
-      { timeout: 60_000 },
+      {
+        timeout: 60_000,
+      },
       async () => {
         const run = await startWorkflowViaHttp(
           'promiseAllWorkflow',
@@ -2177,7 +2303,9 @@ describe('e2e', () => {
 
   test(
     'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
-    { timeout: 90_000 },
+    {
+      timeout: 90_000,
+    },
     async () => {
       // Regression test: when a hook and sleep run concurrently, multiple
       // hook_received events should all be processed even though the sleep
@@ -2237,7 +2365,9 @@ describe('e2e', () => {
 
   test(
     'sleepInLoopWorkflow - sleep inside loop with steps actually delays each iteration',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       const run = await start(await e2e('sleepInLoopWorkflow'), []);
       const returnValue = await run.returnValue;
@@ -2255,7 +2385,9 @@ describe('e2e', () => {
 
   test(
     'sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // Control test: proves that void sleep('1d').then() does NOT break
       // sequential step execution. Steps have per-event consumption so the
@@ -2276,7 +2408,9 @@ describe('e2e', () => {
 
   test(
     'importMetaUrlWorkflow - import.meta.url is available in step bundles',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       const run = await start(await e2e('importMetaUrlWorkflow'), []);
       const returnValue = await run.returnValue;
@@ -2290,7 +2424,9 @@ describe('e2e', () => {
 
   test(
     'metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       const run = await start(await e2e('metadataFromHelperWorkflow'), [
         'smoke-test',
@@ -2309,7 +2445,9 @@ describe('e2e', () => {
   // ============================================================
   test(
     'resilient start: addTenWorkflow completes when run_created returns 500',
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+    },
     async () => {
       // Get the real world and wrap it so the first events.create call
       // (run_created) throws a 500 server error. The queue should still

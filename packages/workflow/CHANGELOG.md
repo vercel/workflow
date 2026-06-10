@@ -1,5 +1,61 @@
 # workflow
 
+## 4.3.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.2.8
+  - @workflow/core@4.3.1
+  - @workflow/next@4.0.9
+  - @workflow/nitro@4.0.9
+  - @workflow/typescript-plugin@4.0.2
+  - @workflow/astro@4.0.8
+  - @workflow/nest@0.0.8
+  - @workflow/rollup@4.0.8
+  - @workflow/sveltekit@4.0.8
+  - @workflow/nuxt@4.0.9
+
+## 4.3.0
+
+### Minor Changes
+
+- [#2059](https://github.com/vercel/workflow/pull/2059) [`9092640`](https://github.com/vercel/workflow/commit/90926400131be4003e65d970deb5d67ae29778a2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - A `WritableStream` from a workflow's `getWritable()` can now be passed as an argument to a child workflow via `start()`; the child's writes land on the parent run's stream directly for the full lifetime of the child run.
+
+### Patch Changes
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`1e32d05`](https://github.com/vercel/workflow/commit/1e32d05758d590134f04f82ea41ab9add96104d5), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f), [`9092640`](https://github.com/vercel/workflow/commit/90926400131be4003e65d970deb5d67ae29778a2)]:
+  - @workflow/core@4.3.0
+  - @workflow/errors@4.1.3
+  - @workflow/cli@4.2.7
+  - @workflow/next@4.0.8
+  - @workflow/nitro@4.0.8
+  - @workflow/typescript-plugin@4.0.2
+  - @workflow/astro@4.0.7
+  - @workflow/nest@0.0.7
+  - @workflow/rollup@4.0.7
+  - @workflow/sveltekit@4.0.7
+  - @workflow/nuxt@4.0.8
+
+## 4.2.6
+
+### Patch Changes
+
+- [#1979](https://github.com/vercel/workflow/pull/1979) [`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c) Thanks [@adamiBs](https://github.com/adamiBs)! - Make `run.input` and `step.input` `.optional()` on the World snapshot schemas so consumers no longer fail validation when the service externalizes payloads as `RemoteRef` blobs.
+
+- Updated dependencies [[`e256858`](https://github.com/vercel/workflow/commit/e25685889de027b13ef23f83e38633e41acc5e7d), [`38c67a7`](https://github.com/vercel/workflow/commit/38c67a7f59d69a3743c981f29f31684a0e50f38d), [`ebfeede`](https://github.com/vercel/workflow/commit/ebfeede4bbf969c6fe6a27316d9ec60be9f726e5), [`3113738`](https://github.com/vercel/workflow/commit/31137386eaed044aa6c75c04cd0bafc2e49edf1e)]:
+  - @workflow/core@4.2.6
+  - @workflow/cli@4.2.6
+  - @workflow/next@4.0.7
+  - @workflow/nitro@4.0.7
+  - @workflow/typescript-plugin@4.0.2
+  - @workflow/errors@4.1.2
+  - @workflow/astro@4.0.6
+  - @workflow/nest@0.0.6
+  - @workflow/rollup@4.0.6
+  - @workflow/sveltekit@4.0.6
+  - @workflow/nuxt@4.0.7
+
 ## 4.2.5
 
 ### Patch Changes

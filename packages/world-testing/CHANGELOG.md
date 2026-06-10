@@ -1,5 +1,34 @@
 # @workflow/world-testing
 
+## 4.1.8
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.2.8
+  - @workflow/core@4.3.1
+  - workflow@4.3.1
+
+## 4.1.7
+
+### Patch Changes
+
+- Updated dependencies [[`5a0ce9a`](https://github.com/vercel/workflow/commit/5a0ce9a700bb433ead4676d5d7f6bdb0bc6a6fdd), [`1e32d05`](https://github.com/vercel/workflow/commit/1e32d05758d590134f04f82ea41ab9add96104d5), [`5fd7d9c`](https://github.com/vercel/workflow/commit/5fd7d9c2a1bca6e6ecaac7c0577e1ac58960711f), [`9092640`](https://github.com/vercel/workflow/commit/90926400131be4003e65d970deb5d67ae29778a2)]:
+  - @workflow/core@4.3.0
+  - @workflow/world@4.1.4
+  - workflow@4.3.0
+  - @workflow/cli@4.2.7
+
+## 4.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`e256858`](https://github.com/vercel/workflow/commit/e25685889de027b13ef23f83e38633e41acc5e7d), [`38c67a7`](https://github.com/vercel/workflow/commit/38c67a7f59d69a3743c981f29f31684a0e50f38d), [`ebfeede`](https://github.com/vercel/workflow/commit/ebfeede4bbf969c6fe6a27316d9ec60be9f726e5), [`8ab6c4f`](https://github.com/vercel/workflow/commit/8ab6c4f0657a2aa26805a80b8db5798bdfe9847c), [`3113738`](https://github.com/vercel/workflow/commit/31137386eaed044aa6c75c04cd0bafc2e49edf1e)]:
+  - @workflow/core@4.2.6
+  - @workflow/world@4.1.3
+  - workflow@4.2.6
+  - @workflow/cli@4.2.6
+
 ## 4.1.5
 
 ### Patch Changes

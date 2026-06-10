@@ -481,7 +481,10 @@ const stepHandler = createQueueHandler(
                 step.input,
                 workflowRunId,
                 encryptionKey,
-                ops
+                ops,
+                globalThis,
+                {},
+                process.env.VERCEL_DEPLOYMENT_ID
               );
               const durationMs = Date.now() - startTime;
               hydrateSpan?.setAttributes({
@@ -523,6 +526,7 @@ const stepHandler = createQueueHandler(
                       ? `https://${process.env.VERCEL_URL}`
                       : `http://localhost:${port ?? 3000}`,
                   },
+                  workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                   ops,
                   closureVars: hydratedInput.closureVars,
                   encryptionKey,

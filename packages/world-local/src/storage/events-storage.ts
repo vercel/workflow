@@ -29,6 +29,7 @@ import {
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
+import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
@@ -36,6 +37,7 @@ import {
   jsonReplacer,
   listJSONFiles,
   paginatedFileSystemQuery,
+  readJSON,
   readJSONWithFallback,
   resolveWithinBase,
   taggedPath,
@@ -46,6 +48,23 @@ import { stripEventDataRefs } from './filters.js';
 import { getObjectCreatedAt, hashToken, monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+
+const HookTokenClaimSchema = z.object({
+  runId: z.string(),
+});
+
+async function readHookTokenClaim(
+  constraintPath: string
+): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
+  try {
+    return await readJSON(constraintPath, HookTokenClaimSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 /**
  * Helper function to delete all waits associated with a workflow run.
@@ -165,11 +184,10 @@ export function createEventsStorage(
             runInputData.workflowName &&
             runInputData.input !== undefined
           ) {
-            // Atomically try to create the run entity. writeExclusive
-            // uses O_CREAT|O_EXCL so only the first writer wins,
-            // preventing a TOCTOU race where a concurrent run_created
-            // from start() could overwrite a run that was already
-            // transitioned to 'running'.
+            // Atomically try to publish the run entity so only the first
+            // writer wins, preventing a TOCTOU race where a concurrent
+            // run_created from start() could overwrite a run that was
+            // already transitioned to 'running'.
             const createdRun: WorkflowRun = {
               runId: effectiveRunId,
               deploymentId: runInputData.deploymentId,
@@ -426,10 +444,10 @@ export function createEventsStorage(
           createdAt: now,
           updatedAt: now,
         };
-        // Use writeExclusive (O_CREAT|O_EXCL) to atomically create the
-        // run entity file. This prevents a TOCTOU race with the resilient
-        // start path (run_started on non-existent run) that could result
-        // in duplicate run_created events in the event log.
+        // Atomically publish the run entity file without overwriting an
+        // existing winner. This prevents a TOCTOU race with the resilient
+        // start path (run_started on non-existent run) that could result in
+        // duplicate run_created events in the event log.
         const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
         const created = await writeExclusive(
           runPath,
@@ -798,6 +816,8 @@ export function createEventsStorage(
         );
 
         if (!tokenClaimed) {
+          const existingClaim = await readHookTokenClaim(constraintPath);
+
           // Create hook_conflict event instead of hook_created
           // This allows the workflow to continue and fail gracefully when the hook is awaited
           const conflictEvent: Event = {
@@ -805,6 +825,9 @@ export function createEventsStorage(
             correlationId: data.correlationId,
             eventData: {
               token: hookData.token,
+              ...(existingClaim
+                ? { conflictingRunId: existingClaim.runId }
+                : {}),
             },
             runId: effectiveRunId,
             eventId,
