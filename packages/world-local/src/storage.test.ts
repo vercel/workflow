@@ -7,6 +7,7 @@ import { stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
+import { hashToken } from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -1340,6 +1341,36 @@ describe('Storage', () => {
         expect((result.event as any).eventData.token).toBe(
           'duplicate-test-token'
         );
+        expect((result.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
+        expect(result.hook).toBeUndefined();
+      });
+
+      it('should return hook_conflict event when the token claim cannot provide a run ID', async () => {
+        const token = 'legacy-duplicate-test-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        await fs.writeFile(
+          path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`),
+          '{'
+        );
+
+        const result = await storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_conflict');
+        expect((result.event as any).eventData.token).toBe(token);
+        expect(
+          (result.event as any).eventData.conflictingRunId
+        ).toBeUndefined();
         expect(result.hook).toBeUndefined();
       });
 
@@ -1377,6 +1408,9 @@ describe('Storage', () => {
         });
 
         expect(conflictResult.event.eventType).toBe('hook_conflict');
+        expect((conflictResult.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(conflictResult.hook).toBeUndefined();
 
         // Dispose the first hook via hook_disposed event
@@ -1419,6 +1453,9 @@ describe('Storage', () => {
 
         expect(result.event.eventType).toBe('hook_conflict');
         expect((result.event as any).eventData.token).toBe(token);
+        expect((result.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(result.hook).toBeUndefined();
       });
 
@@ -1448,6 +1485,11 @@ describe('Storage', () => {
 
         expect(created).toHaveLength(1);
         expect(conflicts).toHaveLength(4);
+        for (const conflict of conflicts) {
+          expect(conflict.value.event.eventData.conflictingRunId).toBe(
+            testRunId
+          );
+        }
       });
     });
 

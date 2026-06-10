@@ -29,6 +29,7 @@ import {
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
+import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
@@ -36,6 +37,7 @@ import {
   jsonReplacer,
   listJSONFiles,
   paginatedFileSystemQuery,
+  readJSON,
   readJSONWithFallback,
   resolveWithinBase,
   taggedPath,
@@ -46,6 +48,23 @@ import { stripEventDataRefs } from './filters.js';
 import { getObjectCreatedAt, hashToken, monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+
+const HookTokenClaimSchema = z.object({
+  runId: z.string(),
+});
+
+async function readHookTokenClaim(
+  constraintPath: string
+): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
+  try {
+    return await readJSON(constraintPath, HookTokenClaimSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 /**
  * Helper function to delete all waits associated with a workflow run.
@@ -797,6 +816,8 @@ export function createEventsStorage(
         );
 
         if (!tokenClaimed) {
+          const existingClaim = await readHookTokenClaim(constraintPath);
+
           // Create hook_conflict event instead of hook_created
           // This allows the workflow to continue and fail gracefully when the hook is awaited
           const conflictEvent: Event = {
@@ -804,6 +825,9 @@ export function createEventsStorage(
             correlationId: data.correlationId,
             eventData: {
               token: hookData.token,
+              ...(existingClaim
+                ? { conflictingRunId: existingClaim.runId }
+                : {}),
             },
             runId: effectiveRunId,
             eventId,

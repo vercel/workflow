@@ -93,7 +93,7 @@ interface Storage {
 
 **Run Creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
-**Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an existing token, return a `hook_conflict` event instead.
+**Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an existing token, return a `hook_conflict` event instead and include the active hook owner's run ID as `eventData.conflictingRunId`.
 
 **Automatic Hook Disposal:** When a workflow reaches a terminal state (`completed`, `failed`, or `cancelled`), automatically dispose of all associated hooks to release tokens for reuse.
 
