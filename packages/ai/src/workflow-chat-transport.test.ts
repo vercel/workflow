@@ -596,6 +596,77 @@ describe('WorkflowChatTransport', () => {
       warnSpy.mockRestore();
     });
 
+    it('passes through non-streamed tool calls (bare tool-input-available) and their outputs', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      // Non-streamed tool calls have no tool-input-start at all — the AI SDK
+      // emits a self-contained tool-input-available and creates the part from
+      // it. The filter must not treat these as orphans.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'x-workflow-stream-tail-index': '50' }),
+        body: makeSSEStream(
+          '{"type":"tool-input-available","toolCallId":"call_1","toolName":"grep","input":{}}',
+          '{"type":"tool-output-available","toolCallId":"call_1","output":{"ok":true}}',
+          '{"type":"tool-input-error","toolCallId":"call_2","toolName":"grep","input":{},"errorText":"bad input"}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      expect(chunks.map((c) => c.type)).toEqual([
+        'tool-input-available',
+        'tool-output-available',
+        'tool-input-error',
+        'finish',
+      ]);
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it('recovers a streamed tool call when the resume lands between start and input-available', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      // tool-input-start fell outside the resumed window, so the orphan
+      // deltas drop — but tool-input-available carries the full input and
+      // re-establishes the part, so it and the output pass through.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'x-workflow-stream-tail-index': '50' }),
+        body: makeSSEStream(
+          '{"type":"tool-input-delta","toolCallId":"call_1","inputTextDelta":"x"}',
+          '{"type":"tool-input-available","toolCallId":"call_1","toolName":"grep","input":{"q":"x"}}',
+          '{"type":"tool-output-available","toolCallId":"call_1","output":{"ok":true}}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      expect(chunks.map((c) => c.type)).toEqual([
+        'tool-input-available',
+        'tool-output-available',
+        'finish',
+      ]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      warnSpy.mockRestore();
+    });
+
     it('passes through chunks whose *-start was emitted in the resumed window', async () => {
       const transport = new WorkflowChatTransport({
         fetch: mockFetch,
