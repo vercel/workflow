@@ -423,7 +423,9 @@ export function ContextCardTrigger({
 
   useEffect(() => {
     return () => {
-      if (activeId.current !== id) {
+      // Only clear the shared active card if this trigger was the active one;
+      // otherwise an unmounting inactive trigger would hide another trigger's card.
+      if (activeId.current === id) {
         setActiveId(null);
       }
     };
