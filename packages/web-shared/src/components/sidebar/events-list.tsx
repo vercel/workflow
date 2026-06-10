@@ -268,9 +268,7 @@ export function EventsList({
     correlationId: string,
     eventId: string
   ) => Promise<unknown | null>;
-  /** Callback when a stream reference inside event data is clicked */
   onStreamClick?: (streamId: string) => void;
-  /** Callback when a run reference inside event data is clicked */
   onRunClick?: (runId: string) => void;
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */
   encryptionKey?: Uint8Array;
