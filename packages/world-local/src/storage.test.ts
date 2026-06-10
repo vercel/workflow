@@ -3165,6 +3165,54 @@ describe('Storage', () => {
       ).rejects.toThrow(/Unsafe correlationId/);
     });
 
+    // Empty correlationId would be accepted by the event schema (which only
+    // requires `z.string()`) and produce composite keys like `${runId}-`,
+    // leaving malformed entities/events in storage. Reject it up front.
+    it('rejects empty correlationId on step_created', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'step_created',
+          correlationId: '',
+          eventData: { stepName: 'step', input: new Uint8Array() },
+        })
+      ).rejects.toThrow(/Unsafe correlationId/);
+    });
+
+    it('rejects empty correlationId on hook_created', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_created',
+          correlationId: '',
+          eventData: { token: 'tok' },
+        })
+      ).rejects.toThrow(/Unsafe correlationId/);
+    });
+
+    it('rejects empty correlationId on wait_created', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'wait_created',
+          correlationId: '',
+          eventData: { resumeAt: new Date(Date.now() + 1000) },
+        })
+      ).rejects.toThrow(/Unsafe correlationId/);
+    });
+
     it('rejects traversal hookId on hooks.get', async () => {
       await expect(storage.hooks.get('../escape')).rejects.toThrow(
         /Unsafe hookId/

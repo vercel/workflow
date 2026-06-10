@@ -1,7 +1,9 @@
 import {
   CorruptedEventLogError,
+  ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
+  RuntimeDecryptionError,
   StepNotRegisteredError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
@@ -25,6 +27,11 @@ const RUNTIME_ERROR_CHECKS = [
   WorkflowRuntimeError.is,
   StepNotRegisteredError.is,
   WorkflowNotRegisteredError.is,
+  // SDK-level encryption failures (most notably AES-GCM auth-tag
+  // mismatches surfacing as a native `OperationError` from
+  // `AESCipherJob.onDone`) are wrapped in `RuntimeDecryptionError` at
+  // the encryption module boundary.
+  RuntimeDecryptionError.is,
 ];
 
 /**
@@ -61,6 +68,10 @@ export function isWorldContractError(err: unknown): err is WorkflowWorldError {
 }
 
 export function classifyRunError(err: unknown): RunErrorCode {
+  if (ReplayDivergenceError.is(err)) {
+    return RUN_ERROR_CODES.REPLAY_DIVERGENCE;
+  }
+
   if (CorruptedEventLogError.is(err)) {
     return RUN_ERROR_CODES.CORRUPTED_EVENT_LOG;
   }

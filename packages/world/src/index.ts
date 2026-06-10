@@ -1,3 +1,17 @@
+export type * from './attributes.js';
+export {
+  applyAttributeChanges,
+  ATTRIBUTE_KEY_MAX_LENGTH,
+  ATTRIBUTE_MAX_PER_RUN,
+  ATTRIBUTE_VALUE_MAX_BYTES,
+  AttributeChangeSchema,
+  AttributeChangesSchema,
+  AttributeValidationError,
+  RESERVED_ATTRIBUTE_KEY_PREFIX,
+  validateAttributeChanges,
+  validateAttributeKey,
+  validateAttributeValue,
+} from './attributes.js';
 export type * from './events.js';
 export {
   BaseEventSchema,

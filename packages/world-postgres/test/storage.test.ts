@@ -352,6 +352,57 @@ describe('Storage (Postgres integration)', () => {
         expect(page2.data[0].runId).not.toBe(page1.data[0].runId);
       });
     });
+
+    describe('experimentalSetAttributes', () => {
+      it('upserts new keys', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+        });
+
+        const result = await runs.experimentalSetAttributes!(run.runId, [
+          { key: 'phase', value: 'init' },
+          { key: 'tenant', value: 't1' },
+        ]);
+        expect(result.attributes).toEqual({ phase: 'init', tenant: 't1' });
+
+        const fresh = await runs.get(run.runId);
+        expect(fresh.attributes).toEqual({ phase: 'init', tenant: 't1' });
+      });
+
+      it('merges across calls without clobbering prior keys', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+        });
+
+        await runs.experimentalSetAttributes!(run.runId, [
+          { key: 'a', value: '1' },
+        ]);
+        const result = await runs.experimentalSetAttributes!(run.runId, [
+          { key: 'b', value: '2' },
+        ]);
+        expect(result.attributes).toEqual({ a: '1', b: '2' });
+      });
+
+      it('removes keys when value is null', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+        });
+        await runs.experimentalSetAttributes!(run.runId, [
+          { key: 'a', value: '1' },
+          { key: 'b', value: '2' },
+        ]);
+        const result = await runs.experimentalSetAttributes!(run.runId, [
+          { key: 'a', value: null },
+        ]);
+        expect(result.attributes).toEqual({ b: '2' });
+      });
+    });
   });
 
   describe('steps', () => {

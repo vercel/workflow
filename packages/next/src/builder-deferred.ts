@@ -21,6 +21,7 @@ import {
   relative,
   resolve,
 } from 'node:path';
+import type { WorkflowManifest } from '@workflow/builders';
 import {
   cleanupStaleSocketInfoFiles,
   createSocketServer,
@@ -42,7 +43,7 @@ export async function getNextBuilderDeferred() {
     return CachedNextBuilderDeferred;
   }
 
-  // V2: STEP_QUEUE_TRIGGER, getImportPath, and enhanced-resolve infrastructure
+  // V2: STEP_QUEUE_TRIGGER and enhanced-resolve infrastructure
   // were removed because the V2 combined handler eliminates the separate step
   // route/topic. The step copy import rewriting (getRelativeImportSpecifier,
   // getStepCopyFileName, rewriteRelativeImportsForCopiedStep) from main was also
@@ -53,6 +54,7 @@ export async function getNextBuilderDeferred() {
     WORKFLOW_QUEUE_TRIGGER,
     detectWorkflowPatterns,
     applySwcTransform,
+    getImportPath,
     resolveWorkflowAliasRelativePath,
     // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
   } = (await eval(
@@ -206,7 +208,7 @@ export async function getNextBuilderDeferred() {
     private async getGeneratedRouteState(
       routeFilePath: string
     ): Promise<'missing' | 'stub' | 'generated'> {
-      let routeStats;
+      let routeStats: Awaited<ReturnType<typeof stat>>;
       try {
         routeStats = await stat(routeFilePath);
       } catch {
@@ -517,21 +519,12 @@ export async function getNextBuilderDeferred() {
 
       const tsconfigPath = await this.findTsConfigPath();
 
-      // V2: Build combined route (replaces separate step + flow routes)
       const flowRouteDir = join(workflowGeneratedDir, 'flow');
       await mkdir(flowRouteDir, { recursive: true });
-      // Write step registrations to final name directly (not temp) so the
-      // import path in the flow route is correct. The flow route uses temp
-      // naming to avoid HMR churn via copyFileIfChanged, but the step
-      // registrations file is a side-effect import and doesn't need that.
-      const stepsOutfile = join(flowRouteDir, '__step_registrations.js');
-      const combinedResult = await this.createCombinedBundle({
-        format: 'esm',
+
+      const combinedResult = await this.createDeferredFlowRoute({
         inputFiles: buildInputFiles,
-        stepsOutfile,
         flowOutfile: join(flowRouteDir, tempRouteFileName),
-        bundleFinalOutput: false,
-        externalizeNonSteps: true,
         tsconfigPath,
         discoveredEntries,
       });
@@ -589,6 +582,12 @@ export async function getNextBuilderDeferred() {
           'public/.well-known/workflow/v1'
         );
         await mkdir(publicManifestDir, { recursive: true });
+        if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
+          await this.writeFileIfChanged(
+            join(publicManifestDir, '.gitignore'),
+            '*'
+          );
+        }
         await this.copyFileIfChanged(
           manifestFilePath,
           join(publicManifestDir, 'manifest.json')
@@ -597,6 +596,250 @@ export async function getNextBuilderDeferred() {
 
       // Notify deferred entry loaders waiting on route.js stubs.
       this.socketIO?.emit('build-complete');
+    }
+
+    private async createDeferredFlowRoute({
+      inputFiles,
+      flowOutfile,
+      tsconfigPath,
+      discoveredEntries,
+    }: {
+      inputFiles: string[];
+      flowOutfile: string;
+      tsconfigPath?: string;
+      discoveredEntries: {
+        discoveredSteps: Set<string>;
+        discoveredWorkflows: Set<string>;
+        discoveredSerdeFiles: Set<string>;
+      };
+    }): Promise<{ manifest: WorkflowManifest }> {
+      const workflowResult = await this.createWorkflowsBundle({
+        inputFiles,
+        outfile: `${flowOutfile}.__wf_tmp.js`,
+        format: 'esm',
+        bundleFinalOutput: false,
+        tsconfigPath,
+        discoveredEntries,
+      });
+
+      const workflowVMCode = workflowResult.interimBundleText;
+      if (!workflowVMCode) {
+        throw new Error(
+          'createWorkflowsBundle did not return interimBundleText'
+        );
+      }
+
+      try {
+        await rm(`${flowOutfile}.__wf_tmp.js`, { force: true });
+      } catch {
+        // Ignore cleanup errors.
+      }
+
+      const stepAndSerdeFiles = Array.from(
+        new Set([
+          ...discoveredEntries.discoveredSteps,
+          ...discoveredEntries.discoveredSerdeFiles,
+        ])
+      ).sort();
+      const stepImports = await this.createDeferredStepSideEffectImports(
+        stepAndSerdeFiles,
+        dirname(flowOutfile)
+      );
+      const stepManifest =
+        await this.createDeferredStepManifest(stepAndSerdeFiles);
+      const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
+      const routeCode = `// biome-ignore-all lint: generated file
+/* eslint-disable */
+import 'workflow/internal/builtins';
+${stepImports}
+import { workflowEntrypoint } from 'workflow/runtime';
+
+const workflowCode = \`${escapedVMCode}\`;
+
+export const POST = workflowEntrypoint(workflowCode);`;
+
+      await this.writeFileIfChanged(flowOutfile, routeCode);
+
+      return {
+        manifest: {
+          ...stepManifest,
+          workflows: {
+            ...stepManifest.workflows,
+            ...workflowResult.manifest.workflows,
+          },
+          classes: {
+            ...stepManifest.classes,
+            ...workflowResult.manifest.classes,
+          },
+        },
+      };
+    }
+
+    private async createDeferredStepSideEffectImports(
+      files: string[],
+      routeDir: string
+    ): Promise<string> {
+      const importSpecifiers = await Promise.all(
+        files.map((file) =>
+          this.getDeferredRouteImportSpecifier(file, routeDir)
+        )
+      );
+
+      return importSpecifiers
+        .map((specifier) => `import ${JSON.stringify(specifier)};`)
+        .join('\n');
+    }
+
+    private async getDeferredRouteImportSpecifier(
+      file: string,
+      routeDir: string
+    ): Promise<string> {
+      const { importPath, isPackage } = getImportPath(
+        file,
+        this.config.workingDir
+      );
+
+      if (isPackage) {
+        return importPath;
+      }
+
+      const absolutePath = await this.resolveDeferredRouteImportFilePath(
+        resolve(this.config.workingDir, importPath)
+      );
+      let relativePath = relative(routeDir, absolutePath).replace(/\\/g, '/');
+      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
+        relativePath = `./${relativePath}`;
+      }
+      return relativePath;
+    }
+
+    private async resolveDeferredRouteImportFilePath(
+      filePath: string
+    ): Promise<string> {
+      const packageDistPath =
+        this.resolvePackageSourceDistFilePathForRouteImport(filePath);
+      if (packageDistPath) {
+        return packageDistPath;
+      }
+
+      return filePath;
+    }
+
+    private resolvePackageSourceDistFilePathForRouteImport(
+      filePath: string
+    ): string | null {
+      const relativeToWorkingDir = relative(this.config.workingDir, filePath);
+      if (
+        !relativeToWorkingDir.startsWith('..') &&
+        !isAbsolute(relativeToWorkingDir)
+      ) {
+        return null;
+      }
+
+      const packageRoot = this.findPackageRootForRouteImportSource(filePath);
+      if (!packageRoot) {
+        return null;
+      }
+
+      const relativeToPackageRoot = relative(packageRoot, filePath).replace(
+        /\\/g,
+        '/'
+      );
+      const srcPrefix = 'src/';
+      if (!relativeToPackageRoot.startsWith(srcPrefix)) {
+        return null;
+      }
+
+      const extension = extname(relativeToPackageRoot);
+      const outputExtension =
+        extension === '.mts' ? '.mjs' : extension === '.cts' ? '.cjs' : '.js';
+      const withoutExtension = relativeToPackageRoot.slice(
+        srcPrefix.length,
+        relativeToPackageRoot.length - extension.length
+      );
+      const distPath = join(
+        packageRoot,
+        'dist',
+        `${withoutExtension}${outputExtension}`
+      );
+
+      return existsSync(distPath) ? distPath : null;
+    }
+
+    private findPackageRootForRouteImportSource(
+      filePath: string
+    ): string | null {
+      let currentDir = dirname(filePath);
+
+      while (true) {
+        if (existsSync(join(currentDir, 'package.json'))) {
+          return currentDir;
+        }
+
+        const parentDir = dirname(currentDir);
+        if (parentDir === currentDir) {
+          return null;
+        }
+        currentDir = parentDir;
+      }
+    }
+
+    private async createDeferredStepManifest(
+      files: string[]
+    ): Promise<WorkflowManifest> {
+      const manifest: WorkflowManifest = {};
+      const manifestFiles = Array.from(
+        new Set([
+          ...files,
+          ...(await this.resolveBuiltInStepFilesForManifest()),
+        ])
+      ).sort();
+
+      for (const file of manifestFiles) {
+        const source = await readFile(file, 'utf8').catch(() => undefined);
+        if (!source) {
+          continue;
+        }
+
+        const relativeFilepath = await this.getRelativeFilenameForSwc(file);
+        const { workflowManifest } = await applySwcTransform(
+          relativeFilepath,
+          source,
+          'step',
+          file,
+          this.transformProjectRoot
+        );
+        this.mergeWorkflowManifest(manifest, workflowManifest);
+      }
+
+      return manifest;
+    }
+
+    private async resolveBuiltInStepFilesForManifest(): Promise<string[]> {
+      try {
+        const workflowRequire = createRequire(
+          join(this.config.workingDir, 'package.json')
+        );
+        return [
+          this.normalizeDiscoveredFilePath(
+            workflowRequire.resolve('workflow/internal/builtins')
+          ),
+        ];
+      } catch {
+        return [];
+      }
+    }
+
+    private mergeWorkflowManifest(
+      target: WorkflowManifest,
+      source: WorkflowManifest
+    ): void {
+      target.workflows = Object.assign(
+        target.workflows || {},
+        source.workflows
+      );
+      target.steps = Object.assign(target.steps || {}, source.steps);
+      target.classes = Object.assign(target.classes || {}, source.classes);
     }
 
     private async cleanupGeneratedArtifactsOnBoot(
@@ -959,12 +1202,70 @@ export async function getNextBuilderDeferred() {
 
       const baseDirectory = dirname(bundleFilePath);
       const localSourceFiles = new Set<string>();
-      const sourceMapMatches = bundleContents.matchAll(
-        /\/\/# sourceMappingURL=data:application\/json[^,]*;base64,([A-Za-z0-9+/=]+)/g
-      );
+
+      // Extract inline base64 sourcemaps via string scanning. A previous
+      // implementation used `bundleContents.matchAll(/...[A-Za-z0-9+/=]+.../g)`
+      // which overflows V8's regex stack
+      // (`RangeError: Maximum call stack size exceeded at RegExpStringIterator.next`)
+      // on bundles with large inline sourcemaps — V8's irregexp uses
+      // recursion for greedy character-class quantifiers and certain long
+      // base64 inputs exhaust the call stack.
+      const sourceMapPrefix = '//# sourceMappingURL=data:application/json';
+      const base64Marker = ';base64,';
+      const sourceMapMatches: Array<{ base64Value: string }> = [];
+      let scanFrom = 0;
+      while (scanFrom < bundleContents.length) {
+        const prefixIdx = bundleContents.indexOf(sourceMapPrefix, scanFrom);
+        if (prefixIdx === -1) break;
+        const base64Start = bundleContents.indexOf(
+          base64Marker,
+          prefixIdx + sourceMapPrefix.length
+        );
+        if (base64Start === -1) {
+          scanFrom = prefixIdx + sourceMapPrefix.length;
+          continue;
+        }
+        // Bail if a comma appears before `;base64,` — that means this
+        // wasn't a `data:application/json[;params];base64,...` URL after
+        // all (the comma would terminate the data URL parameters).
+        const commaBefore = bundleContents.indexOf(',', prefixIdx);
+        if (commaBefore !== -1 && commaBefore < base64Start) {
+          scanFrom = base64Start;
+          continue;
+        }
+        const valueStart = base64Start + base64Marker.length;
+        // Base64 payload terminates at first non-base64 char (newline,
+        // closing `*/`, etc.). Scanning a small alphabet by char is far
+        // cheaper than backtracking a regex over a multi-MB capture.
+        let valueEnd = valueStart;
+        while (valueEnd < bundleContents.length) {
+          const code = bundleContents.charCodeAt(valueEnd);
+          // A-Z 0x41-0x5A, a-z 0x61-0x7A, 0-9 0x30-0x39, '+' 0x2B,
+          // '/' 0x2F, '=' 0x3D
+          if (
+            !(
+              (code >= 0x41 && code <= 0x5a) ||
+              (code >= 0x61 && code <= 0x7a) ||
+              (code >= 0x30 && code <= 0x39) ||
+              code === 0x2b ||
+              code === 0x2f ||
+              code === 0x3d
+            )
+          ) {
+            break;
+          }
+          valueEnd++;
+        }
+        if (valueEnd > valueStart) {
+          sourceMapMatches.push({
+            base64Value: bundleContents.slice(valueStart, valueEnd),
+          });
+        }
+        scanFrom = valueEnd;
+      }
 
       for (const match of sourceMapMatches) {
-        const base64Value = match[1];
+        const base64Value = match.base64Value;
         if (!base64Value) {
           continue;
         }

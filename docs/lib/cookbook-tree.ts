@@ -3,6 +3,9 @@ export type Recipe = {
   title: string;
   description: string;
   category: string;
+  versionOverrides?: Partial<
+    Record<string, { title?: string; description?: string }>
+  >;
   /**
    * Version IDs (e.g. 'v5', 'v6') where this recipe should not appear.
    * Omit to show in all versions.
@@ -56,6 +59,7 @@ export const slugToCategory: Record<string, string> = {
   // Advanced
   'child-workflows': 'advanced',
   'distributed-abort-controller': 'advanced',
+  'upgrading-workflows': 'advanced',
   'serializable-steps': 'advanced',
   'publishing-libraries': 'advanced',
 };
@@ -134,6 +138,13 @@ export const recipes: Record<string, Recipe> = {
     description:
       'Replace a stateless AI agent with a durable one that survives crashes, retries tool calls, and streams output.',
     category: 'agent-patterns',
+    versionOverrides: {
+      v5: {
+        title: 'WorkflowAgent',
+        description:
+          "Build durable, resumable AI agents with AI SDK's WorkflowAgent.",
+      },
+    },
   },
   'human-in-the-loop': {
     slug: 'human-in-the-loop',
@@ -178,7 +189,7 @@ export const recipes: Record<string, Recipe> = {
     slug: 'child-workflows',
     title: 'Child Workflows',
     description:
-      'Spawn and orchestrate child workflows from a parent, polling for completion and handling partial failures.',
+      'Spawn and orchestrate child workflows from a parent, waiting for completion via hook resume and handling partial failures.',
     category: 'advanced',
   },
   'distributed-abort-controller': {
@@ -188,6 +199,13 @@ export const recipes: Record<string, Recipe> = {
       'Build a cross-process abort controller using workflow streams and hooks to coordinate cancellation by semantic ID.',
     category: 'advanced',
     skipVersions: ['v5'],
+  },
+  'upgrading-workflows': {
+    slug: 'upgrading-workflows',
+    title: 'Upgrading Workflows',
+    description:
+      'Identify a clean upgrade point in a long-running workflow and spawn a fresh run on the latest deployment carrying state forward.',
+    category: 'advanced',
   },
   'serializable-steps': {
     slug: 'serializable-steps',

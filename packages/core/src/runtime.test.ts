@@ -5,6 +5,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import {
@@ -19,9 +20,15 @@ vi.mock('@vercel/functions', () => ({
 async function runWorkflowHandlerWithEvents(
   workflowCode: string,
   workflowRun: WorkflowRun,
-  events: Event[]
+  events: Event[],
+  options: {
+    attempt?: number;
+    createdEvents?: unknown[];
+    queuedMessages?: unknown[];
+    replayDivergence?: { eventId: string; count: number };
+  } = {}
 ) {
-  const createdEvents: unknown[] = [];
+  const createdEvents = options.createdEvents ?? [];
   const eventsCreate = vi.fn(async (_runId: string, data: any) => {
     createdEvents.push(data);
 
@@ -54,10 +61,11 @@ async function runWorkflowHandlerWithEvents(
             {
               runId: workflowRun.runId,
               requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              replayDivergence: options.replayDivergence,
             },
             {
               requestId: 'req_test',
-              attempt: 1,
+              attempt: options.attempt ?? 1,
               queueName: '__wkf_workflow_workflow',
               messageId: 'msg_test',
             }
@@ -77,7 +85,10 @@ async function runWorkflowHandlerWithEvents(
     runs: {
       get: vi.fn(async () => workflowRun),
     },
-    queue: vi.fn(),
+    queue: vi.fn(async (_queueName: string, message: unknown) => {
+      options.queuedMessages?.push(message);
+      return { messageId: null };
+    }),
     getEncryptionKeyForRun: vi.fn(async () => undefined),
   } as any);
 
@@ -356,7 +367,48 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
-  it('records run_failed when a committed wait_completed targets the wrong wait', async () => {
+  it('does not treat a terminal event from another run as this run outcome', async () => {
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_foreign_failed_event',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_foreign_failed_event',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const events: Event[] = [
+      {
+        eventId: 'event-foreign-failed',
+        runId: 'wrun_other',
+        eventType: 'run_failed',
+        eventData: {
+          error: { message: 'another run failed' },
+        },
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+    ];
+
+    const createdEvents = await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events
+    );
+
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_completed' })
+    );
+  });
+
+  it('redrives an initial replay divergence and fails after the recovery budget', async () => {
     const ops: Promise<any>[] = [];
     const workflowRun: WorkflowRun = {
       runId: 'wrun_runtime_wait_guard',
@@ -397,17 +449,51 @@ describe('workflowEntrypoint replay guards', () => {
       },
     ];
 
-    const createdEvents = await runWorkflowHandlerWithEvents(
+    const initialAttemptEvents: unknown[] = [];
+    const queuedMessages: unknown[] = [];
+    await runWorkflowHandlerWithEvents(
       `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
       async function workflow() {
         await sleep('5s');
         return 'done';
       }${getWorkflowTransformCode('workflow')}`,
       workflowRun,
-      events
+      events,
+      {
+        createdEvents: initialAttemptEvents,
+        queuedMessages,
+      }
     );
 
-    expect(createdEvents).toContainEqual(
+    expect(initialAttemptEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
+    );
+    expect(queuedMessages).toContainEqual(
+      expect.objectContaining({
+        replayDivergence: {
+          eventId: 'event-0',
+          count: 1,
+        },
+      })
+    );
+
+    const terminalAttemptEvents = await runWorkflowHandlerWithEvents(
+      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+      async function workflow() {
+        await sleep('5s');
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      {
+        replayDivergence: {
+          eventId: 'different-event',
+          count: REPLAY_DIVERGENCE_MAX_RETRIES,
+        },
+      }
+    );
+
+    expect(terminalAttemptEvents).toContainEqual(
       expect.objectContaining({
         eventType: 'run_failed',
         eventData: expect.objectContaining({
@@ -417,7 +503,7 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
-  it('records run_failed when a committed hook_received targets the wrong hook', async () => {
+  it('redrives an initial replay divergence for a mismatched recorded hook', async () => {
     const ops: Promise<any>[] = [];
     const workflowRun: WorkflowRun = {
       runId: 'wrun_runtime_hook_guard',
@@ -454,7 +540,9 @@ describe('workflowEntrypoint replay guards', () => {
       },
     ];
 
-    const createdEvents = await runWorkflowHandlerWithEvents(
+    const createdEvents: unknown[] = [];
+    const queuedMessages: unknown[] = [];
+    await runWorkflowHandlerWithEvents(
       `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
       async function workflow() {
         const hook = createHook({ token: 'expected-token' });
@@ -462,15 +550,16 @@ describe('workflowEntrypoint replay guards', () => {
         return payload.message;
       }${getWorkflowTransformCode('workflow')}`,
       workflowRun,
-      events
+      events,
+      { createdEvents, queuedMessages }
     );
 
-    expect(createdEvents).toContainEqual(
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
+    );
+    expect(queuedMessages).toContainEqual(
       expect.objectContaining({
-        eventType: 'run_failed',
-        eventData: expect.objectContaining({
-          errorCode: RUN_ERROR_CODES.CORRUPTED_EVENT_LOG,
-        }),
+        replayDivergence: { eventId: 'event-0', count: 1 },
       })
     );
   });

@@ -4,6 +4,7 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
+  experimental_setAttributes,
   FatalError,
   fetch,
   getStepMetadata,
@@ -2062,6 +2063,10 @@ export async function abortAnyInStepWorkflow() {
     abortFromStep(c2, 1000),
   ]);
 
+  // Step-initiated aborts update workflow-side signal state when replay
+  // processes hook_received at a suspension boundary.
+  await sleep('100ms');
+
   return {
     stepResult,
     c1Aborted: c1.signal.aborted,
@@ -2312,8 +2317,9 @@ export async function abortFetchUncaughtWorkflow() {
 
   const controller = new AbortController();
 
-  // Abort immediately so fetch will throw
-  controller.abort('fetch-abort-test');
+  // Abort without a custom reason so fetch rejects with AbortError. Supplying
+  // a reason makes fetch reject with that value directly, which is retryable.
+  controller.abort();
 
   try {
     await stepThatFetchesWithSignal(controller.signal);
@@ -3168,4 +3174,99 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
   'use workflow';
   const childRunId = await startChildWithStepWritable(payload);
   return { childRunId };
+}
+
+//////////////////////////////////////////////////////////
+// Workflow Attributes MVP — workflow and step API.
+
+/**
+ * Calls `experimental_setAttributes` directly from the workflow body.
+ * The call is dispatched through the `__builtin_set_attributes` step
+ * bridge, so the mutation gets a `step_created`/`step_completed` event
+ * pair. The third call sets a key to `undefined` and the test verifies
+ * the key is absent from the final attribute map.
+ */
+export async function experimentalSetAttributesWorkflow(input: number) {
+  'use workflow';
+  await experimental_setAttributes({ phase: 'init', source: 'workflow-body' });
+  const tripled = input * 3;
+  await experimental_setAttributes({ phase: 'done' });
+  await experimental_setAttributes({ source: undefined });
+  return tripled;
+}
+
+async function setAttributesFromStep(input: number) {
+  'use step';
+  await experimental_setAttributes({
+    phase: 'step-started',
+    source: 'step-body',
+    input: String(input),
+  });
+  await experimental_setAttributes({ phase: 'step-done' });
+  return input * 4;
+}
+
+/**
+ * Calls `experimental_setAttributes` from inside a normal user step. Step
+ * bodies already run in host context, so the helper posts directly to the
+ * world instead of creating a nested `__builtin_set_attributes` step.
+ */
+export async function experimentalSetAttributesInsideStepWorkflow(
+  input: number
+) {
+  'use workflow';
+  return setAttributesFromStep(input);
+}
+
+/**
+ * Fire-and-forget pattern: `void experimental_setAttributes(...)` lets
+ * the workflow body proceed without blocking on the attribute write.
+ * Each `void` call queues a step on the workflow's next suspension —
+ * any later `await` on a runtime primitive (a step, a sleep, a hook).
+ * This is the canonical pattern for observability / tracking metadata
+ * where the workflow doesn't depend on the write.
+ *
+ * Note: a `void` call placed *immediately before* `return` (with no
+ * later `await`) is currently unreliable — the step is committed but
+ * the queue worker skips it once `run_completed` lands. See the
+ * `test.todo(...)` for `fire-and-forget` in `packages/core/e2e/e2e.test.ts`.
+ */
+export async function experimentalSetAttributesFireAndForgetWorkflow() {
+  'use workflow';
+  void experimental_setAttributes({ phase: 'init', mode: 'fire-and-forget' });
+  await sleep('100ms');
+  void experimental_setAttributes({ phase: 'mid' });
+  await sleep('100ms');
+  void experimental_setAttributes({ phase: 'done' });
+  return 'completed';
+}
+
+/**
+ * `Promise.all` of multiple `experimental_setAttributes` calls writing
+ * disjoint keys: every key must land. The world-side per-run mutex (or
+ * per-row atomic SQL update) serializes the writes; LWW-by-arrival only
+ * matters when two calls touch the same key.
+ */
+export async function experimentalSetAttributesParallelWorkflow() {
+  'use workflow';
+  await Promise.all([
+    experimental_setAttributes({ a: '1' }),
+    experimental_setAttributes({ b: '2' }),
+    experimental_setAttributes({ c: '3' }),
+  ]);
+  return 'done';
+}
+
+/**
+ * Workflow throws after awaiting `experimental_setAttributes`. The
+ * attribute write completes before the throw, so the persisted run row
+ * should carry the attribute even though the run ends up `failed`.
+ */
+export async function experimentalSetAttributesThrowsAfterWorkflow() {
+  'use workflow';
+  await experimental_setAttributes({
+    phase: 'about-to-fail',
+    reason: 'intentional',
+  });
+  throw new FatalError('intentional failure to test attribute persistence');
 }
