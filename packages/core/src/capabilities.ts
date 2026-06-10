@@ -27,6 +27,7 @@ import {
   SerializationFormat,
   type SerializationFormatType,
 } from './serialization.js';
+import { version as ownWorkflowCoreVersion } from './version.js';
 
 /**
  * Capabilities of a workflow run based on its `@workflow/core` version.
@@ -38,6 +39,15 @@ export interface RunCapabilities {
    * if encryption is supported, etc.
    */
   supportedFormats: ReadonlySet<SerializationFormatType>;
+  /**
+   * Whether the target run's deployment understands `hookInput` on the
+   * workflow queue payload (resilient `resumeHook()`). Older runtimes parse
+   * the queue message with a schema that silently strips unknown fields, so
+   * sending `hookInput` to them would silently drop the resume payload —
+   * `resumeHook()` must fail fast (propagate the original event-write error)
+   * instead of taking the resilient path for such runs.
+   */
+  supportsQueueHookInput: boolean;
 }
 
 /**
@@ -65,6 +75,24 @@ const BASELINE_FORMATS: ReadonlySet<SerializationFormatType> = new Set([
 ]);
 
 /**
+ * Minimum `@workflow/core` version whose runtime materializes `hookInput`
+ * from the workflow queue payload (resilient `resumeHook()`).
+ *
+ * IMPORTANT: this must be the first *published* version that ships the
+ * feature. If the release that includes it ends up with a different version
+ * number, update this constant in the same release. Setting it too low
+ * silently loses resume payloads on older deployments (their queue-payload
+ * schema strips `hookInput`); setting it too high only disables the
+ * resilient path (fail-fast, today's behavior), which is the safe direction.
+ *
+ * An exact match with our own `@workflow/core` version is also accepted in
+ * `getRunCapabilities` — pre-release builds (CI tarballs, local dev) report
+ * the not-yet-bumped version, and a run whose recorded version equals ours
+ * was created by the same build line that is doing the resume.
+ */
+const QUEUE_HOOK_INPUT_MIN_VERSION = '5.0.0-beta.14';
+
+/**
  * Look up what serialization capabilities a workflow run supports based on
  * its `@workflow/core` version string (from `executionContext.workflowCoreVersion`).
  *
@@ -76,7 +104,10 @@ export function getRunCapabilities(
   workflowCoreVersion: string | undefined
 ): RunCapabilities {
   if (!workflowCoreVersion || !semver.valid(workflowCoreVersion)) {
-    return { supportedFormats: BASELINE_FORMATS };
+    return {
+      supportedFormats: BASELINE_FORMATS,
+      supportsQueueHookInput: false,
+    };
   }
 
   const formats = new Set<SerializationFormatType>(BASELINE_FORMATS);
@@ -87,5 +118,11 @@ export function getRunCapabilities(
     }
   }
 
-  return { supportedFormats: formats };
+  // See QUEUE_HOOK_INPUT_MIN_VERSION for why an exact own-version match
+  // counts as supported.
+  const supportsQueueHookInput =
+    semver.gte(workflowCoreVersion, QUEUE_HOOK_INPUT_MIN_VERSION) ||
+    workflowCoreVersion === ownWorkflowCoreVersion;
+
+  return { supportedFormats: formats, supportsQueueHookInput };
 }

@@ -71,6 +71,7 @@ export {
 } from './runtime/helpers.js';
 export {
   getHookByToken,
+  type ResumedHook,
   resumeHook,
   resumeWebhook,
 } from './runtime/resume-hook.js';
@@ -921,6 +922,9 @@ export function workflowEntrypoint(
                                   SPEC_VERSION_CURRENT,
                                 correlationId: hookInput.hookId,
                                 eventData: {
+                                  ...(hookInput.token
+                                    ? { token: hookInput.token }
+                                    : {}),
                                   payload: hookInput.payload as any,
                                   resumeId: hookInput.resumeId,
                                 },
@@ -942,6 +946,9 @@ export function workflowEntrypoint(
                               events.push({
                                 ...result.event,
                                 eventData: {
+                                  ...(hookInput.token
+                                    ? { token: hookInput.token }
+                                    : {}),
                                   payload: hookInput.payload as any,
                                   resumeId: hookInput.resumeId,
                                 },

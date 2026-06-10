@@ -47,7 +47,7 @@ showSections={["parameters"]}
 
 ### Returns
 
-Returns a `Promise<Hook>` that resolves to:
+Returns a `Promise<ResumedHook>`. `ResumedHook` extends `Hook` with an optional `resilientResume` flag, which is `true` when the `hook_received` event write failed with a transient error (429/5xx) and the payload will instead be delivered through the workflow queue (see the [resilient hook resume changelog](/docs/changelog/resilient-resume)). The `Hook` it extends resolves to:
 
 <TSDoc
 definition={`

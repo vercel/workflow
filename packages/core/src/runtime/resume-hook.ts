@@ -177,7 +177,7 @@ export async function resumeHook<T = any>(
         // runs created before encryption support was added cannot decode
         // the 'encr' serialization format.
         const rawVersion = workflowRun.executionContext?.workflowCoreVersion;
-        const { supportedFormats } = getRunCapabilities(
+        const { supportedFormats, supportsQueueHookInput } = getRunCapabilities(
           typeof rawVersion === 'string' ? rawVersion : undefined
         );
         if (!supportedFormats.has(SerializationFormat.ENCRYPTED)) {
@@ -221,14 +221,23 @@ export async function resumeHook<T = any>(
         // runtime can dedup any hook_received event that already carries it.
         const resumeId = ulid();
 
-        // Only carry `hookInput` on the queue payload for runs whose
-        // deployment supports the CBOR queue transport. Older deployments
-        // use JSON-only transport which cannot carry binary payloads
-        // (Uint8Array). For such deployments, fall back to today's behavior
-        // where the runtime cannot materialize hook_received from the queue.
+        // Only carry `hookInput` on the queue payload when the target run's
+        // deployment can actually use it:
+        // - The run must support the CBOR queue transport. Older deployments
+        //   use JSON-only transport which cannot carry binary payloads
+        //   (Uint8Array).
+        // - The run's recorded `@workflow/core` version must understand
+        //   `hookInput` (`supportsQueueHookInput`). Skew protection keeps
+        //   runs on the deployment they were created on, so the runtime
+        //   parsing this queue message may be older than this SDK — older
+        //   schemas silently strip unknown payload fields, which would lose
+        //   the resume payload while reporting success to the caller.
+        // For runs that fail either check, fall back to today's behavior:
+        // propagate the event-write error so the caller can retry.
         const runSpecVersion = workflowRun.specVersion ?? SPEC_VERSION_LEGACY;
         const canCarryHookInput =
-          runSpecVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
+          runSpecVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT &&
+          supportsQueueHookInput;
 
         // First, attempt the direct hook_received event write. This is
         // sequential (not parallel with queue dispatch) to avoid a race
@@ -285,6 +294,10 @@ export async function resumeHook<T = any>(
                   hookInput: {
                     hookId: hook.hookId,
                     resumeId,
+                    // Carried so the materialized hook_received event gets
+                    // the same replay-divergence token guard as a directly
+                    // written one.
+                    token: hook.token,
                     payload: dehydratedPayload,
                   },
                 }

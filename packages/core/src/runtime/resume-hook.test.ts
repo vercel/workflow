@@ -4,6 +4,7 @@ import {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { version as ownWorkflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { resumeHook } from './resume-hook.js';
 
@@ -44,15 +45,14 @@ vi.mock('../serialization.js', async () => {
   };
 });
 
-// Mock capabilities — always allow encryption format so we don't strip keys
-vi.mock('../capabilities.js', () => ({
-  getRunCapabilities: vi.fn(() => ({
-    supportedFormats: new Set(['encr', 'json', 'devj', 'devb', 'bin', 'utf8']),
-  })),
-}));
-
 interface MockWorldOptions {
   runSpecVersion?: number;
+  /**
+   * `@workflow/core` version recorded on the mock run's executionContext.
+   * Defaults to this build's own version, which the real getRunCapabilities
+   * treats as supporting queue hookInput (same-build-line rule).
+   */
+  workflowCoreVersion?: string;
   eventsCreate?: ReturnType<typeof vi.fn>;
   queue?: ReturnType<typeof vi.fn>;
 }
@@ -60,6 +60,7 @@ interface MockWorldOptions {
 function makeMockWorld(opts: MockWorldOptions = {}) {
   const {
     runSpecVersion = SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+    workflowCoreVersion = ownWorkflowCoreVersion,
     eventsCreate = vi.fn().mockResolvedValue({}),
     queue = vi.fn().mockResolvedValue({ messageId: null }),
   } = opts;
@@ -81,7 +82,7 @@ function makeMockWorld(opts: MockWorldOptions = {}) {
     deploymentId: 'deploy_123',
     status: 'running',
     specVersion: runSpecVersion,
-    executionContext: {},
+    executionContext: { workflowCoreVersion },
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -168,10 +169,37 @@ describe('resumeHook', () => {
 
       expect(result.resilientResume).toBe(true);
       // Queue must have been called with hookInput so the runtime can
-      // materialize hook_received on the other side.
+      // materialize hook_received on the other side. The hook token rides
+      // along so the materialized event gets the same replay-divergence
+      // guard as a directly written hook_received.
       const [, queuePayload] = queue.mock.calls[0];
       expect(queuePayload.hookInput).toBeDefined();
       expect(queuePayload.hookInput.hookId).toBe('hook_test');
+      expect(queuePayload.hookInput.token).toBe('tok_test');
+    });
+
+    it('fails fast (no resilient path) when the run was created by an SDK that predates queue hookInput', async () => {
+      // Skew protection keeps runs on the deployment they were created on.
+      // A run recorded by an older @workflow/core parses queue messages
+      // with a schema that silently strips `hookInput` — taking the
+      // resilient path would silently lose the payload while reporting
+      // success. The original event-write error must propagate instead so
+      // the caller can retry.
+      const eventsCreate = vi.fn().mockRejectedValue(
+        new WorkflowWorldError('Internal Server Error', {
+          status: 500,
+        })
+      );
+      const { world, queue } = makeMockWorld({
+        eventsCreate,
+        workflowCoreVersion: '5.0.0-beta.7',
+      });
+      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
+
+      await expect(resumeHook('tok_test', { data: 1 })).rejects.toThrow(
+        'Internal Server Error'
+      );
+      expect(queue).not.toHaveBeenCalled();
     });
 
     it('throws when events.create throws a non-retryable error (e.g. 400)', async () => {

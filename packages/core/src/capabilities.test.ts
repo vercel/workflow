@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getRunCapabilities } from './capabilities.js';
 import { SerializationFormat } from './serialization.js';
+import { version as ownVersion } from './version.js';
 
 describe('getRunCapabilities', () => {
   describe('undefined version (very old runs)', () => {
@@ -59,6 +60,38 @@ describe('getRunCapabilities', () => {
     ])('%s supports encryption', (version) => {
       const { supportedFormats } = getRunCapabilities(version);
       expect(supportedFormats.has(SerializationFormat.ENCRYPTED)).toBe(true);
+    });
+  });
+
+  describe('queue hookInput support (resilient resumeHook)', () => {
+    it.each([
+      undefined,
+      'dev',
+      '4.3.1',
+      '5.0.0-beta.7',
+      '5.0.0-beta.13',
+    ])('is not supported for runs recorded by older/unknown versions (%s)', (version) => {
+      // Published runtimes predating the feature parse the queue payload
+      // with a schema that strips `hookInput`; the resilient path must be
+      // disabled for runs they created. Note: the own-version exact match
+      // below makes the current dev version supported, so this case list
+      // must not contain `ownVersion` — guard against that.
+      if (version === ownVersion) return;
+      const { supportsQueueHookInput } = getRunCapabilities(version);
+      expect(supportsQueueHookInput).toBe(false);
+    });
+
+    it('is supported for runs created by the same build line (own version)', () => {
+      const { supportsQueueHookInput } = getRunCapabilities(ownVersion);
+      expect(supportsQueueHookInput).toBe(true);
+    });
+
+    it('is supported for versions at/above the release cutoff', () => {
+      expect(getRunCapabilities('5.0.0-beta.14').supportsQueueHookInput).toBe(
+        true
+      );
+      expect(getRunCapabilities('5.0.0').supportsQueueHookInput).toBe(true);
+      expect(getRunCapabilities('5.1.2').supportsQueueHookInput).toBe(true);
     });
   });
 });

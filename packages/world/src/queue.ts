@@ -54,6 +54,12 @@ export const HookInputSchema = z.object({
   hookId: z.string(),
   /** Client-minted ULID; idempotency key shared across both write paths */
   resumeId: z.string(),
+  /**
+   * The hook's token, written into the materialized event's
+   * `eventData.token` so it gets the same replay-divergence guard as a
+   * directly written hook_received event. Optional for wire compatibility.
+   */
+  token: z.string().optional(),
   /** Dehydrated payload to deliver to the hook */
   payload: z.unknown(),
 });
