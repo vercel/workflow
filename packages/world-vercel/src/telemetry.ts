@@ -21,7 +21,16 @@ let otelApiPromise: Promise<typeof api | null> | null = null;
 
 async function getOtelApi(): Promise<typeof api | null> {
   if (!otelApiPromise) {
-    otelApiPromise = import('@opentelemetry/api').catch(() => null);
+    // The specifier is built at runtime so Rollup/Vite/Turbopack can't
+    // statically resolve it: `@opentelemetry/api` is an optional peer
+    // dependency, and bundlers that statically follow `import('…')` strings
+    // fail the build (e.g. SvelteKit's Rollup pipeline) when the consumer
+    // hasn't installed it. The dynamic specifier preserves the optional
+    // semantics — present at runtime → loads, absent → caught and disabled.
+    const specifier = ['@opentelemetry', 'api'].join('/');
+    otelApiPromise = import(specifier)
+      .then((m) => m as typeof api)
+      .catch(() => null);
   }
   return otelApiPromise;
 }
