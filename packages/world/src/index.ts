@@ -31,6 +31,7 @@ export {
   MessageId,
   QueuePayloadSchema,
   QueuePrefix,
+  resolveQueueNamespace,
   RunInputSchema,
   StepInvokePayloadSchema,
   ValidQueueName,

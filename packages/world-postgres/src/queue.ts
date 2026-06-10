@@ -2,10 +2,12 @@ import * as Stream from 'node:stream';
 import type { Transport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
+  getQueueTopicPrefix,
   MessageId,
   type Queue,
   QueuePayloadSchema,
   type QueuePrefix,
+  resolveQueueNamespace,
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
@@ -488,10 +490,12 @@ export function createQueue(
       string,
       (payload: unknown, helpers: unknown) => Promise<void>
     > = {};
-    const prefixes: QueuePrefix[] = ['__wkf_step_', '__wkf_workflow_'];
-    for (const prefix of prefixes) {
-      taskList[getJobQueueName(prefix)] = createTaskHandler(prefix);
-    }
+    const namespace = resolveQueueNamespace(config.namespace);
+    const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+    const stepPrefix = getQueueTopicPrefix('step', namespace);
+    taskList[getJobQueueName(workflowPrefix)] =
+      createTaskHandler(workflowPrefix);
+    taskList[getJobQueueName(stepPrefix)] = createTaskHandler(stepPrefix);
 
     runner = await run({
       pgPool: pool,

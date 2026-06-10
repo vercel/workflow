@@ -31,6 +31,14 @@ const QueueNamespace = z
   );
 
 /**
+ * Resolves the active queue namespace from an explicit argument or the
+ * `WORKFLOW_QUEUE_NAMESPACE` env var.
+ */
+export function resolveQueueNamespace(namespace?: string): string | undefined {
+  return namespace ?? process.env.WORKFLOW_QUEUE_NAMESPACE ?? undefined;
+}
+
+/**
  * Builds a queue topic prefix for the given kind and optional namespace.
  *
  * - `getQueueTopicPrefix('workflow')` → `'__wkf_workflow_'`
