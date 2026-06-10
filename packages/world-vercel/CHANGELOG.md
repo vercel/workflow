@@ -1,5 +1,29 @@
 # @workflow/world-vercel
 
+## 4.4.0
+
+### Minor Changes
+
+- [#2235](https://github.com/vercel/workflow/pull/2235) [`ecea733`](https://github.com/vercel/workflow/commit/ecea7339996e3c13283bfd29b1ee6d66bc791434) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Add a `dispatcher` option to `createVercelWorld` for supplying a custom undici dispatcher, used for both HTTP and queue requests. Defaults to the shared undici `RetryAgent`.
+
+### Patch Changes
+
+- [#2231](https://github.com/vercel/workflow/pull/2231) [`95b3477`](https://github.com/vercel/workflow/commit/95b34775cd44e3de686e9a16a29618378cb0f32f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update `undici` to 7.26.0.
+
+- [#2246](https://github.com/vercel/workflow/pull/2246) [`c74e5a3`](https://github.com/vercel/workflow/commit/c74e5a35e480ef58d9b6da21e370b9b0cd723639) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update `@vercel/queue` from 0.1.7 to 0.2.1
+
+- [#2257](https://github.com/vercel/workflow/pull/2257) [`9acd46a`](https://github.com/vercel/workflow/commit/9acd46af13dd9aa55beb9ac6c4630fb7edce0c04) Thanks [@pranaygp](https://github.com/pranaygp)! - Avoid unhandled run lookups for unused or empty readable streams and include Vercel request correlation headers in world transport errors.
+
+- [#2255](https://github.com/vercel/workflow/pull/2255) [`c8c8ec1`](https://github.com/vercel/workflow/commit/c8c8ec1d55ac02284c0b1f3049d1c34b6190b11f) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update @vercel/queue from 0.2.1 to 0.3.0
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- [#2035](https://github.com/vercel/workflow/pull/2035) [`8fde11c`](https://github.com/vercel/workflow/commit/8fde11c051b6951c63623c5be492974553736ae7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Validate ref resolve responses (empty, truncated, or `Content-Length`-mismatched bodies) before use, throwing `WorkflowWorldError` instead of corrupting the event log.
+
+- Updated dependencies [[`326d93a`](https://github.com/vercel/workflow/commit/326d93a4aecb11a98a168e2409b5fae4d4c94167), [`b385a2d`](https://github.com/vercel/workflow/commit/b385a2d6ebf35d665d32029777d0cf4018bc82dd), [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb)]:
+  - @workflow/errors@4.1.4
+  - @workflow/world@4.1.5
+
 ## 4.3.2
 
 ### Patch Changes

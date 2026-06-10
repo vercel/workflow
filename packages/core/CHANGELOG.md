@@ -1,5 +1,35 @@
 # @workflow/core
 
+## 4.4.0
+
+### Minor Changes
+
+- [#1854](https://github.com/vercel/workflow/pull/1854) [`5077962`](https://github.com/vercel/workflow/commit/5077962d67c841fd7e81cf29ddedb017581dd501) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Surface `workflowCoreVersion` from the responding deployment in `healthCheck()` results.
+
+### Patch Changes
+
+- [#2012](https://github.com/vercel/workflow/pull/2012) [`326d93a`](https://github.com/vercel/workflow/commit/326d93a4aecb11a98a168e2409b5fae4d4c94167) Thanks [@pranaygp](https://github.com/pranaygp)! - Expose the active run ID on hook token conflict errors.
+
+- [#2257](https://github.com/vercel/workflow/pull/2257) [`9acd46a`](https://github.com/vercel/workflow/commit/9acd46af13dd9aa55beb9ac6c4630fb7edce0c04) Thanks [@pranaygp](https://github.com/pranaygp)! - Avoid unhandled run lookups for unused or empty readable streams and include Vercel request correlation headers in world transport errors.
+
+- [#2145](https://github.com/vercel/workflow/pull/2145) [`b385a2d`](https://github.com/vercel/workflow/commit/b385a2d6ebf35d665d32029777d0cf4018bc82dd) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Classify SDK-level AES-GCM encryption failures as `RUNTIME_ERROR` instead of `USER_ERROR` via a new `RuntimeDecryptionError`.
+
+- [#2302](https://github.com/vercel/workflow/pull/2302) [`b93a071`](https://github.com/vercel/workflow/commit/b93a0717960dcdc9b8dc37f83cbebad8ec38f3b9) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
+- [#2292](https://github.com/vercel/workflow/pull/2292) [`2ab46de`](https://github.com/vercel/workflow/commit/2ab46de461685e7b93555d911c4b397e29f2e9cf) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump `devalue` to 5.8.1 to address published security advisories.
+
+- [#2214](https://github.com/vercel/workflow/pull/2214) [`e959124`](https://github.com/vercel/workflow/commit/e9591245bd8befe1a3859690a0027fd76822930f) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip workflow replay when the event log already contains a terminal run event.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`a84a293`](https://github.com/vercel/workflow/commit/a84a293a229799c4b002fa769fa87b9b665ac9d9), [`326d93a`](https://github.com/vercel/workflow/commit/326d93a4aecb11a98a168e2409b5fae4d4c94167), [`95b3477`](https://github.com/vercel/workflow/commit/95b34775cd44e3de686e9a16a29618378cb0f32f), [`c74e5a3`](https://github.com/vercel/workflow/commit/c74e5a35e480ef58d9b6da21e370b9b0cd723639), [`9acd46a`](https://github.com/vercel/workflow/commit/9acd46af13dd9aa55beb9ac6c4630fb7edce0c04), [`b385a2d`](https://github.com/vercel/workflow/commit/b385a2d6ebf35d665d32029777d0cf4018bc82dd), [`c8c8ec1`](https://github.com/vercel/workflow/commit/c8c8ec1d55ac02284c0b1f3049d1c34b6190b11f), [`ecea733`](https://github.com/vercel/workflow/commit/ecea7339996e3c13283bfd29b1ee6d66bc791434), [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb), [`8fde11c`](https://github.com/vercel/workflow/commit/8fde11c051b6951c63623c5be492974553736ae7)]:
+  - @workflow/world-local@4.1.5
+  - @workflow/errors@4.1.4
+  - @workflow/world@4.1.5
+  - @workflow/world-vercel@4.4.0
+  - @workflow/serde@4.1.2
+  - @workflow/utils@4.1.3
+
 ## 4.3.1
 
 ### Patch Changes

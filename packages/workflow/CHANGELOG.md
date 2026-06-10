@@ -1,5 +1,31 @@
 # workflow
 
+## 4.4.0
+
+### Minor Changes
+
+- [#1854](https://github.com/vercel/workflow/pull/1854) [`5077962`](https://github.com/vercel/workflow/commit/5077962d67c841fd7e81cf29ddedb017581dd501) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Surface `workflowCoreVersion` from the responding deployment in `healthCheck()` results.
+
+### Patch Changes
+
+- [#2292](https://github.com/vercel/workflow/pull/2292) [`2ab46de`](https://github.com/vercel/workflow/commit/2ab46de461685e7b93555d911c4b397e29f2e9cf) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump `devalue` to 5.8.1 to address published security advisories.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`326d93a`](https://github.com/vercel/workflow/commit/326d93a4aecb11a98a168e2409b5fae4d4c94167), [`bc2cf32`](https://github.com/vercel/workflow/commit/bc2cf32eb2f973922a42515faa02ebc18c042a5a), [`a06206e`](https://github.com/vercel/workflow/commit/a06206ef418a9ced9fa08280e7c78d256fc7fabe), [`5077962`](https://github.com/vercel/workflow/commit/5077962d67c841fd7e81cf29ddedb017581dd501), [`9acd46a`](https://github.com/vercel/workflow/commit/9acd46af13dd9aa55beb9ac6c4630fb7edce0c04), [`4df5cff`](https://github.com/vercel/workflow/commit/4df5cff6014b06a951aa84bc8adc9beb1cb86f07), [`8bc2065`](https://github.com/vercel/workflow/commit/8bc206522e37c5b0f0dfb446a304155d68f1d317), [`b385a2d`](https://github.com/vercel/workflow/commit/b385a2d6ebf35d665d32029777d0cf4018bc82dd), [`b93a071`](https://github.com/vercel/workflow/commit/b93a0717960dcdc9b8dc37f83cbebad8ec38f3b9), [`2ab46de`](https://github.com/vercel/workflow/commit/2ab46de461685e7b93555d911c4b397e29f2e9cf), [`e959124`](https://github.com/vercel/workflow/commit/e9591245bd8befe1a3859690a0027fd76822930f), [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb)]:
+  - @workflow/core@4.4.0
+  - @workflow/errors@4.1.4
+  - @workflow/next@4.0.10
+  - @workflow/nest@0.0.9
+  - @workflow/nitro@4.1.0
+  - @workflow/cli@4.2.9
+  - @workflow/nuxt@4.0.10
+  - @workflow/astro@4.0.9
+  - @workflow/rollup@4.0.9
+  - @workflow/sveltekit@4.0.9
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/utils@4.1.3
+
 ## 4.3.1
 
 ### Patch Changes
