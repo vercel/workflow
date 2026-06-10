@@ -10,6 +10,10 @@ import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
 import { useSidebarDataOptional } from './sidebar-data-context';
+import {
+  mergeSpanDetail,
+  spanDetailMatchesSelection,
+} from './span-detail-merge';
 
 // Type guards for runtime validation of span attribute data
 function isStep(data: unknown): data is Step {
@@ -215,19 +219,27 @@ export function EntityDetailPanel({
   const error = spanDetailError ?? undefined;
   const loading = spanDetailLoading ?? false;
 
+  const matchedSpanDetailData = useMemo(
+    () =>
+      spanDetailMatchesSelection(spanDetailData, resource, resourceId)
+        ? spanDetailData
+        : null,
+    [spanDetailData, resource, resourceId]
+  );
+
   // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
     if (resource !== 'hook' || !resourceId) return undefined;
     // 1. Try the externally-fetched detail data first
-    if (isHook(spanDetailData) && spanDetailData.token) {
-      return spanDetailData.token;
+    if (isHook(matchedSpanDetailData) && matchedSpanDetailData.token) {
+      return matchedSpanDetailData.token;
     }
     // 2. Try the span's inline data (reconstructed from hook_created event)
     if (isHook(data) && (data as Hook).token) {
       return (data as Hook).token;
     }
     return undefined;
-  }, [resource, resourceId, spanDetailData, data]);
+  }, [resource, resourceId, matchedSpanDetailData, data]);
 
   useEffect(() => {
     if (error && selectedSpan && resource) {
@@ -289,7 +301,7 @@ export function EntityDetailPanel({
 
       try {
         setResolvingHook(true);
-        const candidate = spanDetailData ?? data;
+        const candidate = matchedSpanDetailData ?? data;
         const hook = isHook(candidate) ? candidate : undefined;
         await onResolveHook(hookToken, payload, hook);
         toast.success('Hook resolved', {
@@ -310,17 +322,18 @@ export function EntityDetailPanel({
         setResolvingHook(false);
       }
     },
-    [onResolveHook, hookToken, resolvingHook, spanDetailData, data]
+    [onResolveHook, hookToken, resolvingHook, matchedSpanDetailData, data]
   );
 
-  // Prefer externally-fetched details when available. For sleep spans, the
-  // host fetches full correlated events (withData=true) and materializes a wait
-  // entity, so this includes resumeAt/completedAt without bloating trace payloads.
-  const displayData = (spanDetailData ?? data) as
-    | WorkflowRun
-    | Step
-    | Hook
-    | Event;
+  const displayData = useMemo(
+    () =>
+      mergeSpanDetail(data, matchedSpanDetailData) as
+        | WorkflowRun
+        | Step
+        | Hook
+        | Event,
+    [data, matchedSpanDetailData]
+  );
 
   const moduleSpecifier = useMemo(() => {
     const displayRecord = displayData as Record<string, unknown>;
@@ -435,6 +448,8 @@ export function EntityDetailPanel({
             <EventsList
               events={rawEvents}
               onLoadEventData={onLoadEventData}
+              onStreamClick={onStreamClick}
+              onRunClick={onRunClick}
               encryptionKey={encryptionKey}
             />
           )}

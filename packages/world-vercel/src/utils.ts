@@ -45,15 +45,31 @@ const HTTP_DEBUG_ENABLED =
 function httpLog(
   method: string,
   endpoint: string,
-  status: number,
+  response: Response,
   ms: number
 ): void {
   if (HTTP_DEBUG_ENABLED) {
+    const responseContext = getResponseDiagnosticHeaders(response);
+    const diagnosticSuffix =
+      responseContext.length > 0 ? `; ${responseContext.join('; ')}` : '';
     console.debug(
-      `[workflow:world-vercel:http] ${method} ${endpoint} -> ${status} (${ms}ms)`
+      `[workflow:world-vercel:http] ${method} ${endpoint} -> ${response.status} (${ms}ms${diagnosticSuffix})`
     );
   }
 }
+
+function getResponseDiagnosticHeaders(response: Response): string[] {
+  return ['x-vercel-id', 'x-vercel-error'].flatMap((header) => {
+    const value = response.headers.get(header);
+    return value ? [`${header}=${value}`] : [];
+  });
+}
+
+function formatResponseDiagnostics(response: Response): string {
+  const headers = getResponseDiagnosticHeaders(response);
+  return headers.length > 0 ? ` (${headers.join('; ')})` : '';
+}
+
 /**
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
@@ -332,6 +348,7 @@ export async function makeRequest<T>({
       // write must not be replayed (it could be applied twice).
       const canRetryBody = IDEMPOTENT_METHODS.has(method.toUpperCase());
       let parseResult: ParseResult;
+      let responseDiagnostics = '';
       for (let attempt = 0; ; attempt++) {
         // NOTE: Set a unique header on every attempt to bypass RSC request
         // memoization (and to avoid replaying a memoized truncated body).
@@ -378,7 +395,8 @@ export async function makeRequest<T>({
         }
         const fetchMs = Date.now() - fetchStart;
 
-        httpLog(method, endpoint, response.status, fetchMs);
+        responseDiagnostics = formatResponseDiagnostics(response);
+        httpLog(method, endpoint, response, fetchMs);
 
         span?.setAttributes({
           ...HttpResponseStatusCode(response.status),
@@ -413,8 +431,9 @@ export async function makeRequest<T>({
           }
 
           const defaultMessage =
-            errorData.message ||
-            `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`;
+            (errorData.message ||
+              `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`) +
+            responseDiagnostics;
 
           // Map specific HTTP status codes to semantic error types
           const throwWithTrace = (error: Error): never => {
@@ -481,7 +500,7 @@ export async function makeRequest<T>({
           }
           const contentType = response.headers.get('Content-Type') || 'unknown';
           throw new WorkflowWorldError(
-            `Failed to parse response body for ${method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
+            `Failed to parse response body for ${method} ${endpoint}${responseDiagnostics} (Content-Type: ${contentType}):\n\n${error}`,
             { url, code: 'PARSE_ERROR', cause: error }
           );
         }
@@ -501,7 +520,7 @@ export async function makeRequest<T>({
             ? `\n\nResponse context: ${parseResult.getDebugContext()}`
             : '';
           throw new WorkflowWorldError(
-            `Schema validation failed for ${method} ${endpoint}:\n${issues}${debugContext}`,
+            `Schema validation failed for ${method} ${endpoint}${responseDiagnostics}:\n${issues}${debugContext}`,
             { url, code: 'SCHEMA_VALIDATION', cause: validationResult.error }
           );
         }
