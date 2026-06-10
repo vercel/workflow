@@ -47,18 +47,6 @@ scanned.
 The `start()` call must be statically reachable from one of those Next.js
 entries so the compiler can find the workflow function and transform any
 `"use workflow"` and `"use step"` directives it imports.
-
-```typescript title="app/api/signup/route.ts" lineNumbers
-import { start } from "workflow/api";
-import { handleUserSignup } from "@/workflows/user-signup";
-
-export async function POST(request: Request) {
-  const { email } = await request.json();
-
-  await start(handleUserSignup, [email]);
-
-  return Response.json({ ok: true });
-}
 ```
 
 <Callout type="info">
@@ -77,34 +65,6 @@ Workflow bundles wrap imported modules during transformation. When a bundled
 module contains a top-level `"use server"` directive, Next.js can treat the
 generated wrapper as a Server Action module and fail validation with errors such
 as `Server Actions must be async functions`.
-
-Split Server Action wrappers from reusable workflow logic:
-
-```typescript title="app/actions.ts" lineNumbers
-"use server";
-
-import { start } from "workflow/api";
-import { processSignup } from "@/workflows/signup";
-
-export async function signupAction(email: string) {
-  await start(processSignup, [email]);
-}
-```
-
-```typescript title="workflows/signup.ts" lineNumbers
-export async function processSignup(email: string) {
-  "use workflow";
-
-  await createUser(email);
-}
-
-async function createUser(email: string) {
-  "use step";
-
-  return { email };
-}
-```
-
 ### Monorepos and Workspace Imports
 
 By default, Next.js detects the correct workspace root automatically. If your Next.js app lives in a subdirectory such as `apps/web` and workspace resolution is not working correctly, you can set `outputFileTracingRoot` as a workaround:
