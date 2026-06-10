@@ -16,7 +16,11 @@ import {
 } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
-import { getImportPath } from './module-specifier.js';
+import {
+  getImportPath,
+  resolveModuleSpecifier,
+  stripPackageVersion,
+} from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
@@ -88,6 +92,31 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
       ).flat()
     )
   );
+}
+
+/**
+ * Canonical "what module does this file represent?" key used to dedupe
+ * virtual-entry imports.
+ *
+ * If the file resolves to a real package specifier (`workflow/internal/builtins`,
+ * `@internal/agent/server`, etc.), we return the bare specifier — version
+ * stripped — because esbuild's package resolution will collapse all
+ * importers of that specifier to the same physical module regardless of
+ * which on-disk copy (src vs dist) any one importer wrote.
+ *
+ * Otherwise we fall back to the absolute file path. Distinct local-app
+ * files have distinct paths, so this still dedupes a file against itself
+ * (e.g. if it shows up in both `stepFiles` and `serdeOnlyFiles`) without
+ * conflating unrelated files.
+ */
+function moduleIdentityKey(file: string, projectRoot: string): string {
+  const { moduleSpecifier } = resolveModuleSpecifier(file, projectRoot);
+  if (moduleSpecifier) {
+    // Strip the "@<version>" suffix so source and dist copies of the same
+    // export collapse to the same key.
+    return stripPackageVersion(moduleSpecifier);
+  }
+  return file.replace(/\\/g, '/');
 }
 
 export interface DiscoveredEntries {
@@ -696,10 +725,29 @@ export abstract class BaseBuilder {
 
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
-    const stepImports = stepFiles.map(createImport).join('\n');
+    //
+    // Dedupe imports by canonical module identity so we never emit two
+    // import lines that resolve to the same physical module. Pre-seed the
+    // set with the built-in steps import so a workspace step file at
+    // `packages/workflow/src/internal/builtins.ts` doesn't emit a second,
+    // relative-path competing import — esbuild would otherwise transform
+    // both copies and the swc plugin would generate duplicate step IDs.
+    const emittedImportIdentities = new Set<string>([builtInSteps]);
+    const buildImports = (files: string[]): string =>
+      files
+        .filter((file) => {
+          const identity = moduleIdentityKey(file, this.transformProjectRoot);
+          if (emittedImportIdentities.has(identity)) return false;
+          emittedImportIdentities.add(identity);
+          return true;
+        })
+        .map(createImport)
+        .join('\n');
+
+    const stepImports = buildImports(stepFiles);
 
     // Include serde-only files for class registration side effects
-    const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
+    const serdeImports = buildImports(serdeOnlyFiles);
 
     const entryContent = `
     // Built in steps
@@ -934,13 +982,28 @@ export abstract class BaseBuilder {
       return `import '${relativePath}';`;
     };
 
-    // Create a virtual entry that imports all workflow files
+    // Create a virtual entry that imports all workflow files. Dedupe by
+    // canonical module identity so source/dist copies of the same workspace
+    // package export don't both get imported (which would make the swc
+    // plugin generate duplicate workflow IDs).
+    const emittedImportIdentities = new Set<string>();
+    const buildImports = (files: string[]): string =>
+      files
+        .filter((file) => {
+          const identity = moduleIdentityKey(file, this.transformProjectRoot);
+          if (emittedImportIdentities.has(identity)) return false;
+          emittedImportIdentities.add(identity);
+          return true;
+        })
+        .map(createImport)
+        .join('\n');
+
     // The SWC plugin in workflow mode emits `globalThis.__private_workflows.set(workflowId, fn)`
     // calls directly, so we just need to import the files (Map is initialized via banner)
-    const workflowImports = workflowFiles.map(createImport).join('\n');
+    const workflowImports = buildImports(workflowFiles);
 
     // Include serde-only files for class registration side effects
-    const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
+    const serdeImports = buildImports(serdeOnlyFiles);
 
     const imports = serdeImports
       ? `${workflowImports}\n// Serde files for cross-context class registration\n${serdeImports}`

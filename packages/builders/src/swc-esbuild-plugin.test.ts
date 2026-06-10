@@ -51,6 +51,88 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
+  it('fails the build when two files emit the same step id', async () => {
+    const srcDir = join(testRoot, 'src');
+    const firstStepFile = join(srcDir, 'confirmation.ts');
+    const secondStepFile = join(srcDir, 'reschedule.ts');
+
+    writeFile(firstStepFile, `export const first = true;`);
+    writeFile(secondStepFile, `export const second = true;`);
+
+    applySwcTransformMock.mockImplementation(
+      async (filename: string, source: string) => ({
+        code: source,
+        workflowManifest: {
+          steps: {
+            [filename]: {
+              sendMessage: {
+                stepId: 'step//shared-package@1.0.0//sendMessage',
+              },
+            },
+          },
+        },
+      })
+    );
+
+    await expect(
+      esbuild.build({
+        entryPoints: [firstStepFile, secondStepFile],
+        absWorkingDir: testRoot,
+        outdir: join(testRoot, 'out'),
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        plugins: [
+          createSwcPlugin({
+            mode: 'step',
+          }),
+        ],
+      })
+    ).rejects.toThrow(/Duplicate workflow step ID/);
+  });
+
+  it('fails the build when two files emit the same workflow id', async () => {
+    const srcDir = join(testRoot, 'src');
+    const firstWorkflowFile = join(srcDir, 'confirmation.ts');
+    const secondWorkflowFile = join(srcDir, 'reschedule.ts');
+
+    writeFile(firstWorkflowFile, `export const first = true;`);
+    writeFile(secondWorkflowFile, `export const second = true;`);
+
+    applySwcTransformMock.mockImplementation(
+      async (filename: string, source: string) => ({
+        code: source,
+        workflowManifest: {
+          workflows: {
+            [filename]: {
+              sendMessage: {
+                workflowId: 'workflow//shared-package@1.0.0//sendMessage',
+              },
+            },
+          },
+        },
+      })
+    );
+
+    await expect(
+      esbuild.build({
+        entryPoints: [firstWorkflowFile, secondWorkflowFile],
+        absWorkingDir: testRoot,
+        outdir: join(testRoot, 'out'),
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        plugins: [
+          createSwcPlugin({
+            mode: 'workflow',
+          }),
+        ],
+      })
+    ).rejects.toThrow(/Duplicate workflow ID/);
+  });
+
   it.each([
     { inputExt: '.ts', outputExt: '.js' },
     { inputExt: '.tsx', outputExt: '.js' },
