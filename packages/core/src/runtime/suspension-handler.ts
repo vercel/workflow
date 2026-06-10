@@ -21,7 +21,7 @@ import type {
 import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { getAbortStreamIdFromToken, safeWaitUntil } from '../util.js';
+import { getAbortStreamIdFromToken } from '../util.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -366,18 +366,14 @@ export async function handleSuspension({
     }
   }
 
-  // The awaited promise below surfaces any event-create failure (e.g. a
-  // transient network error on POST /runs/{id}/events) to the queue
-  // handler, whose rejection lets the queue re-drive this message. The
-  // waitUntil registration only keeps the process alive if the invocation
-  // ends early — it must never receive a rejecting promise, since nothing
-  // consumes waitUntil rejections and they crash the process as
-  // unhandledRejection.
-  const createOps = Promise.all(ops);
-  safeWaitUntil(createOps, () => {
-    // Error is surfaced by the `await` below.
-  });
-  await createOps;
+  // Await the event-create ops directly: a failure (e.g. a transient
+  // network error on POST /runs/{id}/events) propagates to the queue
+  // handler, whose rejection lets the queue re-drive this message.
+  // Deliberately NOT registered with waitUntil — the await keeps the
+  // invocation alive until the ops settle, and an earlier version that
+  // also passed a rethrowing copy to waitUntil crashed the process via
+  // unhandledRejection (nothing consumes waitUntil rejections).
+  await Promise.all(ops);
 
   // Calculate minimum timeout from waits
   const now = Date.now();
