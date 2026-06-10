@@ -36,8 +36,9 @@ import {
   type AnyEventRequest,
   type CreateEventParams,
   type Event,
-  EventSchema,
   type EventResult,
+  EventSchema,
+  EventTypeSchema,
   type GetEventParams,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
@@ -59,16 +60,24 @@ import {
   type APIConfig,
   DEFAULT_RESOLVE_DATA_OPTION,
   deserializeError,
+  makeRequest,
 } from './utils.js';
 
 /**
  * Per-event-type map of the field within `eventData` that holds the user
- * payload. Same convention used on the server side
- * (workflow-server/lib/handlers/v4/events.ts PAYLOAD_FIELD_BY_EVENT_TYPE).
+ * payload. The backend uses the same convention on the v4 read side.
  *
  * The v4 wire encoding picks this field out of `eventData`, CBOR-encodes
  * its value, and ships it as the frame body. Everything else in
  * `eventData` rides in the frame's CBOR meta block.
+ *
+ * ⚠️ This map and `splitEventDataForV4`'s meta allowlist below ARE the
+ * wire contract for `eventData` on v4. Unlike v3 (which serialized the
+ * whole object), a new field added to an event schema in @workflow/world
+ * is silently dropped unless it is (a) split out here and (b) accepted by
+ * the backend's meta parser. There is no type error, test failure, or
+ * runtime warning when a field is missing — `step_retrying.retryAfter`
+ * hit exactly this. When adding an event field, update both sides.
  */
 const PAYLOAD_FIELD_BY_EVENT_TYPE: Record<string, string> = {
   run_created: 'input',
@@ -278,6 +287,18 @@ function buildEventFromV4(
   // these and would otherwise crash. safeParse: pass the event through
   // unchanged if it doesn't match a known shape (legacy / mid-rollout).
   const parsed = EventSchema.safeParse(raw);
+  if (!parsed.success && EventTypeSchema.safeParse(decoded.eventType).success) {
+    // The raw-event fallback is for unknown/future event types. A parse
+    // failure on a *known* type means a schema/coercion regression that
+    // would otherwise only surface later as a crash deep in the runtime
+    // (e.g. .getTime() on a resumeAt that stayed a string) — leave a
+    // breadcrumb at the actual failure point.
+    console.debug(
+      `[workflow:world-vercel] v4 event ${decoded.eventId} failed ` +
+        `EventSchema parse for known eventType '${decoded.eventType}'; ` +
+        `passing through unparsed: ${parsed.error.message}`
+    );
+  }
   const event = (parsed.success ? parsed.data : raw) as unknown as Event;
 
   // For resolveData='none', strip eventData entirely. Reuse the world-
@@ -357,8 +378,8 @@ async function createWorkflowRunEventInner(
   config?: APIConfig
 ): Promise<EventResult> {
   // v1Compat: caller wants the legacy entity-mutation endpoints (used
-  // for migrating SDKs that haven't switched to event sourcing yet).
-  // Keep this on v1 routes — the v4 protocol does not cover it.
+  // for legacy spec-version runs that predate event sourcing). Keep all
+  // of this on v1 routes — the v4 protocol does not cover legacy runs.
   if (params?.v1Compat) {
     if (data.eventType === 'run_cancelled' && id) {
       const run = await cancelWorkflowRunV1(id, params, config);
@@ -368,10 +389,24 @@ async function createWorkflowRunEventInner(
       const run = await createWorkflowRunV1(data.eventData, config);
       return { run };
     }
-    throw new Error(
-      `world-vercel: v1Compat=true is only supported for run_created ` +
-        `and run_cancelled, not ${data.eventType}`
-    );
+    if (id === null) {
+      throw new WorkflowWorldError(
+        `world-vercel: v1Compat=true requires a runId for ${data.eventType}`,
+        { status: 400 }
+      );
+    }
+    // Catch-all for the remaining event types the runtime still emits
+    // against legacy runs (hook_received via resumeHook, wait_completed
+    // via wakeUpRun): POST to the legacy v1 events endpoint, same as the
+    // pre-v4 client did.
+    const wireResult = await makeRequest({
+      endpoint: `/v1/runs/${encodeURIComponent(id)}/events`,
+      options: { method: 'POST' },
+      data,
+      config,
+      schema: EventSchema,
+    });
+    return { event: wireResult };
   }
 
   if (id === null) {
@@ -414,10 +449,15 @@ async function createWorkflowRunEventInner(
 
   // The server already CBOR-decoded into result.body — just thread the
   // fields through. Step has a wire-format adapter; runs use the
-  // pass-through deserializeError helper.
+  // pass-through deserializeError helper. The returned event honors the
+  // caller's resolveData: 'none' strips payload fields, matching the v3
+  // path's stripEventAndLegacyRefs behavior and the Storage contract.
+  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
   return {
-    event: body.event as Event | undefined,
+    event: body.event
+      ? stripEventDataRefs(body.event as Event, resolveData)
+      : undefined,
     run: body.run
       ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
       : undefined,
