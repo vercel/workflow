@@ -488,11 +488,9 @@ export function createQueue(
       string,
       (payload: unknown, helpers: unknown) => Promise<void>
     > = {};
-    for (const [prefix, jobName] of Object.entries(Queues) as [
-      QueuePrefix,
-      string,
-    ][]) {
-      taskList[jobName] = createTaskHandler(prefix);
+    const prefixes: QueuePrefix[] = ['__wkf_step_', '__wkf_workflow_'];
+    for (const prefix of prefixes) {
+      taskList[getJobQueueName(prefix)] = createTaskHandler(prefix);
     }
 
     runner = await run({
