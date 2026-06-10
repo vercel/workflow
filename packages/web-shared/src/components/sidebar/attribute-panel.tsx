@@ -256,12 +256,12 @@ const attributeOrder: AttributeKey[] = [
   'completedAt',
   'expiredAt',
   'retryAfter',
-  'error',
   'metadata',
   'eventData',
   'input',
   'output',
   'resumeAt',
+  'error',
 ];
 
 const sortByAttributeOrder = (a: string, b: string): number => {
@@ -377,6 +377,8 @@ const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
 
 interface DisplayContext {
   stepName?: string;
+  resource?: string;
+  status?: string;
 }
 
 const attributeToDisplayFn: Record<
@@ -534,10 +536,17 @@ const attributeToDisplayFn: Record<
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return <DetailCard summary="Output">{JsonBlock(value)}</DetailCard>;
   },
-  error: (value: unknown) => {
+  error: (value: unknown, context?: DisplayContext) => {
+    if (context?.resource === 'step' && context.status !== 'failed') {
+      return null;
+    }
+
+    const defaultOpen =
+      context?.resource === 'run' && context.status === 'failed';
+
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Error" defaultOpen>
+        <DetailCard summary="Error" defaultOpen={defaultOpen}>
           <EncryptedFieldBlock />
         </DetailCard>
       );
@@ -549,14 +558,14 @@ const attributeToDisplayFn: Record<
     // `{ message, stack }`. Render both with the dedicated error block.
     if (isStructuredError(value)) {
       return (
-        <DetailCard summary="Error" defaultOpen>
+        <DetailCard summary="Error" defaultOpen={defaultOpen}>
           <ErrorStackBlock value={value} />
         </DetailCard>
       );
     }
 
     return (
-      <DetailCard summary="Error" defaultOpen>
+      <DetailCard summary="Error" defaultOpen={defaultOpen}>
         {JsonBlock(value)}
       </DetailCard>
     );
@@ -818,8 +827,10 @@ export const AttributePanel = ({
   const displayContext = useMemo(
     () => ({
       stepName: displayData.stepName as string | undefined,
+      resource,
+      status: displayData.status as string | undefined,
     }),
-    [displayData.stepName]
+    [displayData.stepName, displayData.status, resource]
   );
   const handleCopyModuleSpecifier = useCallback((value: string) => {
     navigator.clipboard
