@@ -60,19 +60,8 @@ function httpLog(
  * Leave empty string for production (uses default vercel-workflow.com).
  *
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
- *
- * NOTE (temporary): this is intentionally pointed at the
- * `peter-stream-timeout-error` workflow-server preview so this branch's e2e
- * tests exercise the matching server-side stream-timeout behavior. It will be
- * cleared back to '' once those server-side changes merge — not a review
- * concern. While it is set, two CI signals are red by design and will go
- * green again on reset: the "WORKFLOW_SERVER_URL_OVERRIDE is empty" lint
- * guard, and the override-precedence cases in `utils.test.ts` (the hardcoded
- * value intentionally wins over the env var, which those cases assert is
- * absent).
  */
-const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-git-peter-stream-timeout-error.vercel.sh';
+const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
  * Resolves the effective workflow-server URL override at call time. The hard-coded
