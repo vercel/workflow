@@ -258,10 +258,10 @@ const attributeOrder: AttributeKey[] = [
   'retryAfter',
   'error',
   'metadata',
-  'attributes',
   'eventData',
   'input',
   'output',
+  'attributes',
   'resumeAt',
 ];
 
