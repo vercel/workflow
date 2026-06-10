@@ -30,6 +30,7 @@ import {
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
+import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
@@ -37,6 +38,7 @@ import {
   jsonReplacer,
   listJSONFiles,
   paginatedFileSystemQuery,
+  readJSON,
   readJSONWithFallback,
   resolveWithinBase,
   taggedPath,
@@ -47,6 +49,7 @@ import { stripEventDataRefs } from './filters.js';
 import { getObjectCreatedAt, hashToken, monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+import { withRunFileLock } from './runs-storage.js';
 
 /**
  * Per-step in-process async mutex. Serializes concurrent `events.create` calls
@@ -61,6 +64,23 @@ import { handleLegacyEvent } from './legacy.js';
  * step are rejected.
  */
 const stepLocks = new Map<string, Promise<unknown>>();
+
+const HookTokenClaimSchema = z.object({
+  runId: z.string(),
+});
+
+async function readHookTokenClaim(
+  constraintPath: string
+): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
+  try {
+    return await readJSON(constraintPath, HookTokenClaimSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const prev = stepLocks.get(key);
@@ -105,6 +125,42 @@ async function deleteAllWaitsForRun(
 }
 
 /**
+ * Persist a lifecycle-driven run update (run_started / run_completed /
+ * run_failed / run_cancelled) under the shared per-run file lock,
+ * re-reading the on-disk run inside the lock so any attribute writes
+ * that landed between the pre-validation `currentRun` read and this
+ * write are preserved. Without the re-read, an `experimentalSetAttributes`
+ * call sandwiched between the lifecycle read and write would be
+ * silently overwritten by the lifecycle write's stale attribute snapshot.
+ *
+ * `proposed` is the fully-constructed run row the caller wants to
+ * write (with the correct discriminated-union status branch). Only the
+ * `attributes` field is replaced with the freshest version inside the
+ * lock.
+ */
+async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
+  basedir: string,
+  runId: string,
+  tag: string | undefined,
+  proposed: T
+): Promise<T> {
+  return withRunFileLock(runId, async () => {
+    const fresh = await readJSON(
+      taggedPath(basedir, 'runs', runId, tag),
+      WorkflowRunSchema
+    );
+    const next: T = {
+      ...proposed,
+      attributes: fresh?.attributes ?? proposed.attributes,
+    };
+    await writeJSON(taggedPath(basedir, 'runs', runId, tag), next, {
+      overwrite: true,
+    });
+    return next;
+  });
+}
+
+/**
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
@@ -119,14 +175,16 @@ export function createEventsStorage(
       // attacks where a client supplies runId / correlationId values like
       // "../../../package" to read or write files outside the storage root.
       // Run before taking the per-step mutex so malformed inputs fail fast.
+      //
+      // Empty `correlationId` values are also rejected here: the event
+      // schemas only require `z.string()`, so without this check a
+      // step_created / hook_created / wait_created request with
+      // `correlationId: ''` would silently be written under a malformed
+      // composite key like `${runId}-`.
       if (runId != null && runId !== '') {
         assertSafeEntityId('runId', runId);
       }
-      if (
-        'correlationId' in data &&
-        typeof data.correlationId === 'string' &&
-        data.correlationId.length > 0
-      ) {
+      if ('correlationId' in data && typeof data.correlationId === 'string') {
         assertSafeEntityId('correlationId', data.correlationId);
       }
 
@@ -223,11 +281,10 @@ export function createEventsStorage(
               runInputData.workflowName &&
               runInputData.input !== undefined
             ) {
-              // Atomically try to create the run entity. writeExclusive
-              // uses O_CREAT|O_EXCL so only the first writer wins,
-              // preventing a TOCTOU race where a concurrent run_created
-              // from start() could overwrite a run that was already
-              // transitioned to 'running'.
+              // Atomically try to publish the run entity so only the first
+              // writer wins, preventing a TOCTOU race where a concurrent
+              // run_created from start() could overwrite a run that was
+              // already transitioned to 'running'.
               const createdRun: WorkflowRun = {
                 runId: effectiveRunId,
                 deploymentId: runInputData.deploymentId,
@@ -240,6 +297,7 @@ export function createEventsStorage(
                 error: undefined,
                 startedAt: undefined,
                 completedAt: undefined,
+                attributes: {},
                 createdAt: now,
                 updatedAt: now,
               };
@@ -489,13 +547,14 @@ export function createEventsStorage(
             error: undefined,
             startedAt: undefined,
             completedAt: undefined,
+            attributes: {},
             createdAt: now,
             updatedAt: now,
           };
-          // Use writeExclusive (O_CREAT|O_EXCL) to atomically create the
-          // run entity file. This prevents a TOCTOU race with the resilient
-          // start path (run_started on non-existent run) that could result
-          // in duplicate run_created events in the event log.
+          // Atomically publish the run entity file without overwriting an
+          // existing winner. This prevents a TOCTOU race with the resilient
+          // start path (run_started on non-existent run) that could result in
+          // duplicate run_created events in the event log.
           const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
           const created = await writeExclusive(
             runPath,
@@ -518,52 +577,54 @@ export function createEventsStorage(
               return { run: currentRun };
             }
 
-            run = {
-              runId: currentRun.runId,
-              deploymentId: currentRun.deploymentId,
-              workflowName: currentRun.workflowName,
-              specVersion: currentRun.specVersion,
-              executionContext: currentRun.executionContext,
-              input: currentRun.input,
-              createdAt: currentRun.createdAt,
-              expiredAt: currentRun.expiredAt,
-              status: 'running',
-              output: undefined,
-              error: undefined,
-              completedAt: undefined,
-              startedAt: currentRun.startedAt ?? now,
-              updatedAt: now,
-            };
-            await writeJSON(
-              taggedPath(basedir, 'runs', effectiveRunId, tag),
-              run,
-              { overwrite: true }
+            run = await writeRunUnderLifecycleLock(
+              basedir,
+              effectiveRunId,
+              tag,
+              {
+                runId: currentRun.runId,
+                deploymentId: currentRun.deploymentId,
+                workflowName: currentRun.workflowName,
+                specVersion: currentRun.specVersion,
+                executionContext: currentRun.executionContext,
+                input: currentRun.input,
+                createdAt: currentRun.createdAt,
+                expiredAt: currentRun.expiredAt,
+                status: 'running',
+                output: undefined,
+                error: undefined,
+                completedAt: undefined,
+                startedAt: currentRun.startedAt ?? now,
+                updatedAt: now,
+                attributes: currentRun.attributes,
+              }
             );
           }
         } else if (data.eventType === 'run_completed' && 'eventData' in data) {
           const completedData = data.eventData as { output?: any };
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
-            run = {
-              runId: currentRun.runId,
-              deploymentId: currentRun.deploymentId,
-              workflowName: currentRun.workflowName,
-              specVersion: currentRun.specVersion,
-              executionContext: currentRun.executionContext,
-              input: currentRun.input,
-              createdAt: currentRun.createdAt,
-              expiredAt: currentRun.expiredAt,
-              startedAt: currentRun.startedAt,
-              status: 'completed',
-              output: completedData.output,
-              error: undefined,
-              completedAt: now,
-              updatedAt: now,
-            };
-            await writeJSON(
-              taggedPath(basedir, 'runs', effectiveRunId, tag),
-              run,
-              { overwrite: true }
+            run = await writeRunUnderLifecycleLock(
+              basedir,
+              effectiveRunId,
+              tag,
+              {
+                runId: currentRun.runId,
+                deploymentId: currentRun.deploymentId,
+                workflowName: currentRun.workflowName,
+                specVersion: currentRun.specVersion,
+                executionContext: currentRun.executionContext,
+                input: currentRun.input,
+                createdAt: currentRun.createdAt,
+                expiredAt: currentRun.expiredAt,
+                startedAt: currentRun.startedAt,
+                status: 'completed',
+                output: completedData.output,
+                error: undefined,
+                completedAt: now,
+                updatedAt: now,
+                attributes: currentRun.attributes,
+              }
             );
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
@@ -580,27 +641,28 @@ export function createEventsStorage(
             // The error field is SerializedData (Uint8Array) produced by
             // dehydrateRunError. We store it verbatim — consumers hydrate it
             // via hydrateRunError to reconstruct the original thrown value.
-            run = {
-              runId: currentRun.runId,
-              deploymentId: currentRun.deploymentId,
-              workflowName: currentRun.workflowName,
-              specVersion: currentRun.specVersion,
-              executionContext: currentRun.executionContext,
-              input: currentRun.input,
-              createdAt: currentRun.createdAt,
-              expiredAt: currentRun.expiredAt,
-              startedAt: currentRun.startedAt,
-              status: 'failed',
-              output: undefined,
-              error: failedData.error as Uint8Array,
-              errorCode: failedData.errorCode,
-              completedAt: now,
-              updatedAt: now,
-            };
-            await writeJSON(
-              taggedPath(basedir, 'runs', effectiveRunId, tag),
-              run,
-              { overwrite: true }
+            run = await writeRunUnderLifecycleLock(
+              basedir,
+              effectiveRunId,
+              tag,
+              {
+                runId: currentRun.runId,
+                deploymentId: currentRun.deploymentId,
+                workflowName: currentRun.workflowName,
+                specVersion: currentRun.specVersion,
+                executionContext: currentRun.executionContext,
+                input: currentRun.input,
+                createdAt: currentRun.createdAt,
+                expiredAt: currentRun.expiredAt,
+                startedAt: currentRun.startedAt,
+                status: 'failed',
+                output: undefined,
+                error: failedData.error as Uint8Array,
+                errorCode: failedData.errorCode,
+                completedAt: now,
+                updatedAt: now,
+                attributes: currentRun.attributes,
+              }
             );
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
@@ -610,26 +672,27 @@ export function createEventsStorage(
         } else if (data.eventType === 'run_cancelled') {
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
-            run = {
-              runId: currentRun.runId,
-              deploymentId: currentRun.deploymentId,
-              workflowName: currentRun.workflowName,
-              specVersion: currentRun.specVersion,
-              executionContext: currentRun.executionContext,
-              input: currentRun.input,
-              createdAt: currentRun.createdAt,
-              expiredAt: currentRun.expiredAt,
-              startedAt: currentRun.startedAt,
-              status: 'cancelled',
-              output: undefined,
-              error: undefined,
-              completedAt: now,
-              updatedAt: now,
-            };
-            await writeJSON(
-              taggedPath(basedir, 'runs', effectiveRunId, tag),
-              run,
-              { overwrite: true }
+            run = await writeRunUnderLifecycleLock(
+              basedir,
+              effectiveRunId,
+              tag,
+              {
+                runId: currentRun.runId,
+                deploymentId: currentRun.deploymentId,
+                workflowName: currentRun.workflowName,
+                specVersion: currentRun.specVersion,
+                executionContext: currentRun.executionContext,
+                input: currentRun.input,
+                createdAt: currentRun.createdAt,
+                expiredAt: currentRun.expiredAt,
+                startedAt: currentRun.startedAt,
+                status: 'cancelled',
+                output: undefined,
+                error: undefined,
+                completedAt: now,
+                updatedAt: now,
+                attributes: currentRun.attributes,
+              }
             );
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
@@ -647,11 +710,11 @@ export function createEventsStorage(
           // must be deduped — otherwise both writes succeed and the event log
           // ends up with duplicate step_created entries. The outer
           // withStepLock mutex serializes within a single process; this
-          // O_CREAT|O_EXCL constraint file additionally protects against
-          // cross-process races (two pnpm workers, redelivered queue
-          // messages, etc.). The loser throws EntityConflictError so the
-          // runtime's existing catch path can swallow it and avoid
-          // double-queuing the step.
+          // The exclusive constraint file additionally protects against
+          // cross-process races (two pnpm workers, redelivered queue messages,
+          // etc.). The loser throws EntityConflictError so the runtime's
+          // existing catch path can swallow it and avoid double-queuing the
+          // step.
           const stepCreatedLockName = tag
             ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
             : `${effectiveRunId}-${data.correlationId}.created`;
@@ -878,6 +941,8 @@ export function createEventsStorage(
           );
 
           if (!tokenClaimed) {
+            const existingClaim = await readHookTokenClaim(constraintPath);
+
             // Create hook_conflict event instead of hook_created
             // This allows the workflow to continue and fail gracefully when the hook is awaited
             const conflictEvent: Event = {
@@ -885,6 +950,9 @@ export function createEventsStorage(
               correlationId: data.correlationId,
               eventData: {
                 token: hookData.token,
+                ...(existingClaim
+                  ? { conflictingRunId: existingClaim.runId }
+                  : {}),
               },
               runId: effectiveRunId,
               eventId,
@@ -1080,19 +1148,24 @@ export function createEventsStorage(
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);
 
-        // For run_started: include all events so the runtime can skip
-        // the initial events.list call and reduce TTFB.
+        // For run_started: preload one page of events so the runtime can skip
+        // the initial events.list call when hasMore is false.
         let events: Event[] | undefined;
+        let cursor: string | null | undefined;
+        let hasMore: boolean | undefined;
         if (data.eventType === 'run_started' && run) {
           const allEvents = await paginatedFileSystemQuery({
             directory: path.join(basedir, 'events'),
             schema: EventSchema,
             filePrefix: `${effectiveRunId}-`,
             sortOrder: 'asc',
+            limit: 1000,
             getCreatedAt: getObjectCreatedAt('evnt'),
             getId: (e) => e.eventId,
           });
           events = allEvents.data;
+          cursor = allEvents.cursor;
+          hasMore = allEvents.hasMore;
         }
 
         // Return EventResult with event and any created/updated entity
@@ -1103,6 +1176,8 @@ export function createEventsStorage(
           hook,
           wait,
           events,
+          cursor,
+          hasMore,
         };
       } // end createImpl
     },

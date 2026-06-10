@@ -1,3 +1,4 @@
+import { ReplayDivergenceError } from '@workflow/errors';
 import { EventConsumerResult } from '../events-consumer.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
@@ -135,6 +136,26 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
+        const eventToken =
+          'eventData' in event && event.eventData && 'token' in event.eventData
+            ? event.eventData.token
+            : undefined;
+
+        if (
+          typeof eventToken === 'string' &&
+          eventToken !== this[ABORT_HOOK_TOKEN]
+        ) {
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+            ctx.onWorkflowError(
+              new ReplayDivergenceError(
+                `Replay divergence: abort hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current abort hook expects "${this[ABORT_HOOK_TOKEN]}"`,
+                { eventId: event.eventId }
+              )
+            );
+          });
+          return EventConsumerResult.Finished;
+        }
+
         if (event.eventType === 'hook_created') {
           const queueItem = ctx.invocationsQueue.get(correlationId);
           if (queueItem && queueItem.type === 'hook') {
@@ -158,7 +179,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // ends up undefined on replay.
           const rawPayload = event.eventData?.payload;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
-            let reason: unknown = undefined;
+            let reason: unknown;
             if (rawPayload !== undefined) {
               try {
                 const hydrated = (await hydrateStepReturnValue(
@@ -185,7 +206,11 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           });
 
           ctx.invocationsQueue.delete(correlationId);
-          return EventConsumerResult.Finished;
+          // Multiple handlers can observe the same pending abort request and
+          // durably record it before replay removes the queue item. Abort is
+          // idempotent, so consume later matching receipts as no-ops instead
+          // of surfacing a corrupted event log after the first receipt.
+          return EventConsumerResult.Consumed;
         }
 
         if (event.eventType === 'hook_disposed') {

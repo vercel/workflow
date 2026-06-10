@@ -1,5 +1,18 @@
 # @workflow/swc-plugin
 
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- [#1944](https://github.com/vercel/workflow/pull/1944) [`1d4f83a`](https://github.com/vercel/workflow/commit/1d4f83a29acc974fd4bbafe7a6ff64f8936219de) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix three bugs affecting nested step functions that get hoisted out of an enclosing function (workflows in any declaration form, plus regular factory-style functions returning objects with step methods):
+  1. Module-level imports referenced only by hoisted step bodies were stripped by dead-code elimination, causing a `ReferenceError` at runtime.
+  2. The step ID generated for nested anonymous steps inside a non-exported workflow declared as `const foo = async () => {}` or `const foo = async function() {}` was not namespaced under the workflow name in step mode, so it did not match the ID looked up by the workflow-mode proxy and caused a runtime "step not found" failure. Steps inside `async function foo()` workflows were already namespaced correctly; this brings the const-arrow and const-fn-expression forms into agreement.
+  3. The `__internal_workflows` manifest comment reported nested anonymous step IDs without the workflow-name prefix even though the runtime registration and proxy lookup used the prefixed form, so downstream tooling (e.g. builders consuming the manifest) saw the wrong step ID.
+
+- [#1935](https://github.com/vercel/workflow/pull/1935) [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `arguments` being incorrectly captured as a closure variable in nested `function`-form step bodies, which previously produced invalid output.
+
+- [#1935](https://github.com/vercel/workflow/pull/1935) [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Support `this` references inside nested arrow `"use step"` functions. Requires the enclosing class to have custom serialization.
+
 ## 5.0.0-beta.3
 
 ### Major Changes

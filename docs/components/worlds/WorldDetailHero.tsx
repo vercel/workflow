@@ -1,12 +1,9 @@
 'use client';
 
 import {
-  AlertCircle,
   BadgeCheck,
-  CheckCircle2,
   CheckIcon,
   ChevronRight,
-  Clock,
   Code,
   CopyIcon,
   ExternalLink,
@@ -14,8 +11,6 @@ import {
   HeartHandshake,
   Package,
   ShieldCheck,
-  Timer,
-  XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
@@ -42,29 +37,6 @@ interface WorldDetailHeroProps {
   world: World;
 }
 
-const statusConfig = {
-  passing: {
-    label: 'Passing',
-    icon: CheckCircle2,
-    className: 'text-green-900',
-  },
-  partial: {
-    label: 'Partial',
-    icon: AlertCircle,
-    className: 'text-amber-900',
-  },
-  failing: {
-    label: 'Failing',
-    icon: XCircle,
-    className: 'text-red-900',
-  },
-  pending: {
-    label: 'Pending',
-    icon: Clock,
-    className: 'text-muted-foreground',
-  },
-};
-
 export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
   const [copied, setCopied] = useState(false);
 
@@ -87,25 +59,6 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
   };
 
   const CopyButtonIcon = copied ? CheckIcon : CopyIcon;
-
-  // E2E test calculations
-  const e2e = world.e2e;
-  const turbopackData = e2e?.nextjsTurbopack;
-  const scoringPassed = turbopackData
-    ? turbopackData.passed
-    : (e2e?.passed ?? 0);
-  const scoringFailed = turbopackData
-    ? turbopackData.failed
-    : (e2e?.failed ?? 0);
-  const testsRan = scoringPassed + scoringFailed;
-  const status = e2e?.status ?? 'pending';
-  const StatusIcon = statusConfig[status].icon;
-
-  // Benchmark calculations
-  const benchmark = world.benchmark;
-  const benchmarkCount = benchmark?.metrics
-    ? Object.keys(benchmark.metrics).length
-    : 0;
 
   // GitHub source URL for official worlds
   const githubUrl =
@@ -206,69 +159,6 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
 
         {/* Right side - Quick links */}
         <div className="space-y-2 text-sm">
-          {/* E2E Tests */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <a
-                href="#testing"
-                className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <StatusIcon
-                  className={`h-4 w-4 shrink-0 ${statusConfig[status].className}`}
-                />
-                <span>
-                  {e2e ? (
-                    <>
-                      <span className="text-foreground">
-                        {scoringPassed}/{testsRan}
-                      </span>{' '}
-                      tests passing
-                    </>
-                  ) : (
-                    'Tests pending'
-                  )}
-                </span>
-              </a>
-            </TooltipTrigger>
-            <TooltipContent side="top" align="start" className="max-w-[200px]">
-              <p className="text-xs">E2E Test Suite Coverage</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Benchmarks - show PERF time as summary */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <a
-                href="#testing"
-                className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Timer
-                  className={`h-4 w-4 shrink-0 ${world.benchmark10SeqMs !== null ? 'text-purple-900' : ''}`}
-                />
-                <span>
-                  {world.benchmark10SeqMs !== null ? (
-                    <>
-                      PERF:{' '}
-                      <span className="text-foreground">
-                        {(world.benchmark10SeqMs / 1000).toFixed(2)}s
-                      </span>
-                    </>
-                  ) : benchmarkCount > 0 ? (
-                    `${benchmarkCount} benchmarks`
-                  ) : (
-                    'Benchmarks pending'
-                  )}
-                </span>
-              </a>
-            </TooltipTrigger>
-            <TooltipContent side="top" align="start" className="max-w-[260px]">
-              <p className="text-xs">
-                Avg time to run a 10 step workflow where each step sleeps 1
-                second
-              </p>
-            </TooltipContent>
-          </Tooltip>
-
           {/* NPM Package */}
           <a
             href={`https://www.npmjs.com/package/${world.package}`}

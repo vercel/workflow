@@ -4,6 +4,7 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
+  experimental_setAttributes,
   FatalError,
   fetch,
   getStepMetadata,
@@ -1727,22 +1728,77 @@ async function abortFromStep(
 /**
  * Step that uses fetch with an AbortSignal.
  * Uses a URL that intentionally delays, so the abort cancels it.
+ *
+ * Accepts a list of URLs and tries them in order, falling back to the
+ * next on 5xx (or non-AbortError network failure) so a single bad upstream
+ * doesn't flake the abort-fetch tests. Empirically, httpbin.org returns
+ * 502 from GH Actions runners often enough to dominate CI flakiness;
+ * pairing it with a second slow endpoint gives both belt and suspenders.
+ *
+ * Reports `status`, `elapsedMs`, and the `url` that resolved so that when
+ * the abort-fetch tests do fail, the assertion message shows exactly what
+ * the upstream(s) returned instead of leaving us guessing why the race
+ * winner was `fetch` instead of `timeout`.
  */
 async function fetchWithSignal(
-  url: string,
+  urls: readonly string[],
   signal: AbortSignal
-): Promise<{ ok: boolean; aborted: boolean }> {
+): Promise<{
+  ok: boolean;
+  aborted: boolean;
+  status?: number;
+  url?: string;
+  elapsedMs: number;
+  attempts: { url: string; status?: number; error?: string }[];
+}> {
   'use step';
-  try {
-    const response = await globalThis.fetch(url, { signal });
-    return { ok: response.ok, aborted: false };
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      return { ok: false, aborted: true };
+  const startedAt = Date.now();
+  const attempts: { url: string; status?: number; error?: string }[] = [];
+  for (const url of urls) {
+    try {
+      const response = await globalThis.fetch(url, { signal });
+      attempts.push({ url, status: response.status });
+      if (response.ok) {
+        return {
+          ok: true,
+          aborted: false,
+          status: response.status,
+          url,
+          elapsedMs: Date.now() - startedAt,
+          attempts,
+        };
+      }
+      // Non-2xx — fall through and try the next URL.
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        attempts.push({ url, error: 'AbortError' });
+        return {
+          ok: false,
+          aborted: true,
+          elapsedMs: Date.now() - startedAt,
+          attempts,
+        };
+      }
+      attempts.push({ url, error: err?.message ?? String(err) });
+      // Network error — fall through and try the next URL.
     }
-    throw err;
   }
+  return {
+    ok: false,
+    aborted: false,
+    elapsedMs: Date.now() - startedAt,
+    attempts,
+  };
 }
+
+// Slow endpoints used by the abort-fetch e2e tests. Tried in order; postman-
+// echo first because httpbin.org has historically returned 502s from GH
+// Actions. Both cap at /delay/10 in practice, which is comfortably longer
+// than the 2s race threshold these tests use.
+const SLOW_FETCH_URLS = [
+  'https://postman-echo.com/delay/10',
+  'https://httpbin.org/delay/10',
+] as const;
 
 /**
  * E2E: Basic timeout cancellation.
@@ -2007,6 +2063,10 @@ export async function abortAnyInStepWorkflow() {
     abortFromStep(c2, 1000),
   ]);
 
+  // Step-initiated aborts update workflow-side signal state when replay
+  // processes hook_received at a suspension boundary.
+  await sleep('100ms');
+
   return {
     stepResult,
     c1Aborted: c1.signal.aborted,
@@ -2194,15 +2254,14 @@ export async function abortFetchInFlightWorkflow() {
   'use workflow';
 
   const controller = new AbortController();
-  // httpbin.org/delay/N holds the response open for N seconds — used here
-  // as a slow endpoint that the abort can cancel mid-flight. Same external-
-  // service pattern as other e2e workflows in this file (jsonplaceholder,
-  // example.com). Avoids needing a per-workbench /api/delay route, which
-  // would only exist on the one workbench it was added to.
-  const fetchPromise = fetchWithSignal(
-    'https://httpbin.org/delay/30',
-    controller.signal
-  );
+  // SLOW_FETCH_URLS holds the response open for ~10s — used here as a slow
+  // endpoint that the abort can cancel mid-flight. Same external-service
+  // pattern as other e2e workflows in this file (jsonplaceholder, example.com).
+  // Avoids needing a per-workbench /api/delay route, which would only exist
+  // on the one workbench it was added to. The step falls back to the second
+  // URL only if the first returns a 5xx or non-AbortError network failure,
+  // so a transient outage on one upstream doesn't flake the test.
+  const fetchPromise = fetchWithSignal(SLOW_FETCH_URLS, controller.signal);
 
   // Race the fetch against a 2s sleep. Sleep wins; abort fires.
   const winner = await Promise.race([
@@ -2245,10 +2304,7 @@ export async function abortVoidSleepTimeoutWorkflow() {
   const controller = new AbortController();
   void sleep('2s').then(() => controller.abort());
 
-  return await fetchWithSignal(
-    'https://httpbin.org/delay/30',
-    controller.signal
-  );
+  return await fetchWithSignal(SLOW_FETCH_URLS, controller.signal);
 }
 
 /**
@@ -2261,8 +2317,9 @@ export async function abortFetchUncaughtWorkflow() {
 
   const controller = new AbortController();
 
-  // Abort immediately so fetch will throw
-  controller.abort('fetch-abort-test');
+  // Abort without a custom reason so fetch rejects with AbortError. Supplying
+  // a reason makes fetch reject with that value directly, which is retryable.
+  controller.abort();
 
   try {
     await stepThatFetchesWithSignal(controller.signal);
@@ -3036,4 +3093,180 @@ export class DistributedAbortController {
       return controller.signal;
     })();
   }
+}
+
+//////////////////////////////////////////////////////////
+// WritableStream passed as argument to start()
+//
+// A parent workflow gets a WritableStream from getWritable() (its own
+// output stream), and passes it through `start()` to a child
+// workflow. The child workflow receives the WritableStream as a
+// workflow argument and forwards it into a step, which writes raw
+// Uint8Array bytes to it.
+//
+// The external reader on `parentRun.getReadable()` should observe the
+// exact bytes the child step wrote.
+
+async function writeBytesToWritable(
+  writable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use step';
+  const writer = writable.getWriter();
+  await writer.write(new TextEncoder().encode(payload));
+  writer.releaseLock();
+}
+
+export async function writableForwardedChildWorkflow(
+  parentWritable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use workflow';
+  await writeBytesToWritable(parentWritable, payload);
+  return 'child-done';
+}
+
+// Variant 1: the parent calls `getWritable()` in the workflow body
+// (workflow-context handle), passes the resulting fake handle through
+// `start()`. The intermediary step that calls `start()` only exists
+// because `start()` cannot be invoked from workflow code directly.
+async function startChildWithWorkflowWritable(
+  parentWritable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use step';
+  const childRun = await start(writableForwardedChildWorkflow, [
+    parentWritable,
+    payload,
+  ]);
+  // Wait for the child to finish writing before letting the parent
+  // close its own writable.
+  await childRun.returnValue;
+  return childRun.runId;
+}
+
+export async function writableForwardedFromWorkflowWorkflow(payload: string) {
+  'use workflow';
+  const writable = getWritable<Uint8Array>();
+  const childRunId = await startChildWithWorkflowWritable(writable, payload);
+  await stepCloseOutputStream(writable);
+  return { childRunId };
+}
+
+// Variant 2: the parent's `getWritable()` is called inside the step
+// that also calls `start()`, so the writable handed to the child is
+// the real step-context `serialize.writable` (not a workflow-context
+// fake handle that's later revived by a step). This exercises the
+// step-side `getWritable()` tagging path directly.
+async function startChildWithStepWritable(payload: string) {
+  'use step';
+  const writable = getWritable<Uint8Array>();
+  const childRun = await start(writableForwardedChildWorkflow, [
+    writable,
+    payload,
+  ]);
+  await childRun.returnValue;
+  await writable.close();
+  return childRun.runId;
+}
+
+export async function writableForwardedFromStepWorkflow(payload: string) {
+  'use workflow';
+  const childRunId = await startChildWithStepWritable(payload);
+  return { childRunId };
+}
+
+//////////////////////////////////////////////////////////
+// Workflow Attributes MVP — workflow and step API.
+
+/**
+ * Calls `experimental_setAttributes` directly from the workflow body.
+ * The call is dispatched through the `__builtin_set_attributes` step
+ * bridge, so the mutation gets a `step_created`/`step_completed` event
+ * pair. The third call sets a key to `undefined` and the test verifies
+ * the key is absent from the final attribute map.
+ */
+export async function experimentalSetAttributesWorkflow(input: number) {
+  'use workflow';
+  await experimental_setAttributes({ phase: 'init', source: 'workflow-body' });
+  const tripled = input * 3;
+  await experimental_setAttributes({ phase: 'done' });
+  await experimental_setAttributes({ source: undefined });
+  return tripled;
+}
+
+async function setAttributesFromStep(input: number) {
+  'use step';
+  await experimental_setAttributes({
+    phase: 'step-started',
+    source: 'step-body',
+    input: String(input),
+  });
+  await experimental_setAttributes({ phase: 'step-done' });
+  return input * 4;
+}
+
+/**
+ * Calls `experimental_setAttributes` from inside a normal user step. Step
+ * bodies already run in host context, so the helper posts directly to the
+ * world instead of creating a nested `__builtin_set_attributes` step.
+ */
+export async function experimentalSetAttributesInsideStepWorkflow(
+  input: number
+) {
+  'use workflow';
+  return setAttributesFromStep(input);
+}
+
+/**
+ * Fire-and-forget pattern: `void experimental_setAttributes(...)` lets
+ * the workflow body proceed without blocking on the attribute write.
+ * Each `void` call queues a step on the workflow's next suspension —
+ * any later `await` on a runtime primitive (a step, a sleep, a hook).
+ * This is the canonical pattern for observability / tracking metadata
+ * where the workflow doesn't depend on the write.
+ *
+ * Note: a `void` call placed *immediately before* `return` (with no
+ * later `await`) is currently unreliable — the step is committed but
+ * the queue worker skips it once `run_completed` lands. See the
+ * `test.todo(...)` for `fire-and-forget` in `packages/core/e2e/e2e.test.ts`.
+ */
+export async function experimentalSetAttributesFireAndForgetWorkflow() {
+  'use workflow';
+  void experimental_setAttributes({ phase: 'init', mode: 'fire-and-forget' });
+  await sleep('100ms');
+  void experimental_setAttributes({ phase: 'mid' });
+  await sleep('100ms');
+  void experimental_setAttributes({ phase: 'done' });
+  return 'completed';
+}
+
+/**
+ * `Promise.all` of multiple `experimental_setAttributes` calls writing
+ * disjoint keys: every key must land. The world-side per-run mutex (or
+ * per-row atomic SQL update) serializes the writes; LWW-by-arrival only
+ * matters when two calls touch the same key.
+ */
+export async function experimentalSetAttributesParallelWorkflow() {
+  'use workflow';
+  await Promise.all([
+    experimental_setAttributes({ a: '1' }),
+    experimental_setAttributes({ b: '2' }),
+    experimental_setAttributes({ c: '3' }),
+  ]);
+  return 'done';
+}
+
+/**
+ * Workflow throws after awaiting `experimental_setAttributes`. The
+ * attribute write completes before the throw, so the persisted run row
+ * should carry the attribute even though the run ends up `failed`.
+ */
+export async function experimentalSetAttributesThrowsAfterWorkflow() {
+  'use workflow';
+  await experimental_setAttributes({
+    phase: 'about-to-fail',
+    reason: 'intentional',
+  });
+  throw new FatalError('intentional failure to test attribute persistence');
 }

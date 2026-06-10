@@ -1,7 +1,9 @@
 import path from 'node:path';
+import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import fs from 'fs-extra';
 
 import { SvelteKitBuilder } from './builder.js';
+import { stripWorkflowQueueTriggers } from './vc-config.js';
 
 const builder = new SvelteKitBuilder();
 
@@ -22,15 +24,7 @@ process.on('beforeExit', () => {
       file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
       config: {
         maxDuration: 'max',
-        experimentalTriggers: [
-          {
-            type: 'queue/v2beta',
-            topic: '__wkf_workflow_*',
-            consumer: 'default',
-            retryAfterSeconds: 5,
-            initialDelaySeconds: 0,
-          },
-        ],
+        experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       },
     },
   ]) {
@@ -40,15 +34,16 @@ process.on('beforeExit', () => {
     }
     // Un-symlink these as they can't be shared due to different
     // experimental triggers config
+    const sourceFuncDir = path.join(
+      funcDir.replace(/\.func$/, ''),
+      '__data.json.func'
+    );
     const toCopy = fs.readdirSync(funcDir);
     fs.removeSync(funcDir);
     fs.mkdirSync(funcDir, { recursive: true });
 
     for (const item of toCopy) {
-      fs.copySync(
-        path.join(funcDir.replace(/\.func$/, ''), '__data.json.func', item),
-        path.join(funcDir, item)
-      );
+      fs.copySync(path.join(sourceFuncDir, item), path.join(funcDir, item));
     }
 
     // Update .vc-config.json with the new experimental triggers config
@@ -60,6 +55,10 @@ process.on('beforeExit', () => {
         ...config,
       })
     );
+
+    // The source function may be a shared catchall. It must not keep stale
+    // workflow queue triggers after the dedicated function is copied out.
+    stripWorkflowQueueTriggers(path.join(sourceFuncDir, '.vc-config.json'));
   }
 });
 

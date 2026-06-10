@@ -1,15 +1,27 @@
+'use client';
+
+import type { Event } from '@workflow/world';
+import type {
+  ExactIdSearchResult,
+  ExactWorkflowSearchIdKind,
+} from '@workflow/web-shared';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   hydrateResourceIO,
   hydrateResourceIOWithKey,
 } from '@workflow/web-shared';
-import type { Event } from '@workflow/world';
-import { useCallback, useEffect, useRef, useState } from 'react';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
-import { fetchEvents } from '~/lib/rpc-client';
+import {
+  fetchEvent,
+  fetchEvents,
+  fetchEventsByCorrelationId,
+} from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 
 const INITIAL_PAGE_SIZE = 100;
 const LOAD_MORE_PAGE_SIZE = 100;
+/** Max pages when fetching correlation ID search results (100 events/page). */
+const MAX_CORRELATION_SEARCH_PAGES = 30;
 
 /**
  * Independent event fetching for the Events tab.
@@ -39,6 +51,17 @@ export function useEventsListData(
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
 
+  const hydrateEvents = useCallback(async (rawEvents: Event[]) => {
+    const hydrated = rawEvents.map(hydrateResourceIO);
+    const key = encryptionKeyRef.current;
+    if (key) {
+      return Promise.all(
+        hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
+      );
+    }
+    return hydrated;
+  }, []);
+
   const fetchInitial = useCallback(async () => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -59,16 +82,7 @@ export function useEventsListData(
       if (fetchError) {
         setError(fetchError);
       } else {
-        const hydrated = result.data.map(hydrateResourceIO);
-        const key = encryptionKeyRef.current;
-        if (key) {
-          const decrypted = await Promise.all(
-            hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
-          );
-          setEvents(decrypted);
-        } else {
-          setEvents(hydrated);
-        }
+        setEvents(await hydrateEvents(result.data));
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
       }
@@ -78,7 +92,7 @@ export function useEventsListData(
       setLoading(false);
       isFetchingRef.current = false;
     }
-  }, [env, runId, sortOrder]);
+  }, [env, runId, sortOrder, hydrateEvents]);
 
   useEffect(() => {
     if (enabled) fetchInitial();
@@ -115,16 +129,8 @@ export function useEventsListData(
         setError(fetchError);
       } else {
         if (result.data.length > 0) {
-          const hydrated = result.data.map(hydrateResourceIO);
-          const key = encryptionKeyRef.current;
-          if (key) {
-            const decrypted = await Promise.all(
-              hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
-            );
-            setEvents((prev) => [...prev, ...decrypted]);
-          } else {
-            setEvents((prev) => [...prev, ...hydrated]);
-          }
+          const hydrated = await hydrateEvents(result.data);
+          setEvents((prev) => [...prev, ...hydrated]);
         }
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
@@ -134,7 +140,78 @@ export function useEventsListData(
     } finally {
       setLoadingMore(false);
     }
-  }, [env, runId, sortOrder, cursor, loadingMore]);
+  }, [env, runId, sortOrder, cursor, loadingMore, hydrateEvents]);
+
+  const searchByExactId = useCallback(
+    async (
+      id: string,
+      kind: ExactWorkflowSearchIdKind,
+      signal?: AbortSignal
+    ): Promise<ExactIdSearchResult> => {
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+
+      if (kind === 'event') {
+        const { error: fetchError, result } = await unwrapServerActionResult(
+          fetchEvent(env, runId, id, 'none')
+        );
+        if (fetchError || signal?.aborted) {
+          return fetchError
+            ? { status: 'error', message: fetchError.message }
+            : (() => {
+                throw new DOMException('Aborted', 'AbortError');
+              })();
+        }
+        const [event] = await hydrateEvents([result]);
+        return event?.runId === runId
+          ? { status: 'ok', events: [event] }
+          : { status: 'not_found' };
+      }
+
+      const matched: Event[] = [];
+      let nextCursor: string | undefined;
+      let pagesFetched = 0;
+      let truncated = false;
+      do {
+        if (signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+
+        const { error: fetchError, result } = await unwrapServerActionResult(
+          fetchEventsByCorrelationId(env, id, {
+            cursor: nextCursor,
+            sortOrder,
+            limit: 100,
+            withData: false,
+          })
+        );
+        if (fetchError) {
+          return { status: 'error', message: fetchError.message };
+        }
+        if (signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+
+        pagesFetched += 1;
+        const hydrated = await hydrateEvents(result.data);
+        matched.push(...hydrated.filter((event) => event.runId === runId));
+
+        const hitPageCap = pagesFetched >= MAX_CORRELATION_SEARCH_PAGES;
+        truncated =
+          truncated || (hitPageCap && Boolean(result.hasMore && result.cursor));
+        nextCursor =
+          !hitPageCap && result.hasMore && result.cursor
+            ? result.cursor
+            : undefined;
+      } while (nextCursor);
+
+      return matched.length > 0
+        ? { status: 'ok', events: matched, truncated: truncated || undefined }
+        : { status: 'not_found' };
+    },
+    [env, runId, sortOrder, hydrateEvents]
+  );
 
   return {
     events,
@@ -143,5 +220,6 @@ export function useEventsListData(
     hasMore,
     loadingMore,
     loadMore,
+    searchByExactId,
   };
 }

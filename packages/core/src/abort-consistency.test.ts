@@ -340,7 +340,9 @@ describe('AbortController consistency', () => {
               runId: 'wrun_test',
               eventType: 'hook_created',
               correlationId: hookItem.correlationId,
-              eventData: {},
+              eventData: {
+                token: 'test-token',
+              },
               createdAt: new Date(),
             },
             {
@@ -348,7 +350,10 @@ describe('AbortController consistency', () => {
               runId: 'wrun_test',
               eventType: 'hook_received',
               correlationId: hookItem.correlationId,
-              eventData: { payload: { reason: 'hook worked' } },
+              eventData: {
+                token: 'test-token',
+                payload: { reason: 'hook worked' },
+              },
               createdAt: new Date(),
             },
           ];

@@ -1,11 +1,13 @@
-import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
-import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
+import type { HookConflictEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import { webhookLogger } from '../logger.js';
 import {
+  awaitEarlierDeliveries,
+  registerDeliveryBarrier,
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
@@ -28,8 +30,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       isWebhook,
     });
 
-    // Queue of hook events that have been received but not yet processed
-    const payloadsQueue: HookReceivedEvent[] = [];
+    // Queue of buffered hook payloads (received before the workflow awaited
+    // the hook). Each entry's `claim()` builds the consumer-facing promise
+    // from the captured hydration outcome and orders it deterministically by
+    // event-log position against any concurrent branch-deciding resolution
+    // (see `ctx.pendingDeliveryBarriers`).
+    const payloadsQueue: { claim: () => Promise<T> }[] = [];
 
     // Queue of promises that resolve to the next hook payload
     const promises: PromiseWithResolvers<T>[] = [];
@@ -66,6 +72,23 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.NotConsumed;
       }
 
+      const eventToken =
+        'eventData' in event && event.eventData && 'token' in event.eventData
+          ? event.eventData.token
+          : undefined;
+
+      if (typeof eventToken === 'string' && eventToken !== token) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          ctx.onWorkflowError(
+            new ReplayDivergenceError(
+              `Replay divergence: hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current hook consumer expects "${token}"`,
+              { eventId: event.eventId }
+            )
+          );
+        });
+        return EventConsumerResult.Finished;
+      }
+
       // Check for hook_created event to mark this hook as already created
       if (event.eventType === 'hook_created') {
         const queueItem = ctx.invocationsQueue.get(correlationId);
@@ -84,7 +107,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Chain through promiseQueue to ensure deterministic ordering.
         const conflictEvent = event as HookConflictEvent;
         const conflictError = new HookConflictError(
-          conflictEvent.eventData.token
+          conflictEvent.eventData.token,
+          conflictEvent.eventData.conflictingRunId
         );
 
         // Mark that we have a conflict so future awaits also reject
@@ -107,13 +131,28 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_received') {
+        // Register a 'hook' delivery barrier at this event's log index so a
+        // later-in-log `wait_completed` is delivered only after this hook,
+        // and so this hook is delivered only after every earlier-in-log
+        // `wait_completed` — keeping any `Promise.race` against a wait
+        // deterministic and aligned with the committed event log, regardless
+        // of microtask-hop count, hydration time, or race-argument order.
+        // See `ctx.pendingDeliveryBarriers`.
+        const eventIndex = ctx.eventsConsumer.eventIndex;
+        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook');
+
         if (promises.length > 0) {
           const next = promises.shift();
           if (next) {
-            // Reconstruct the payload from the event data.
-            // Chain through ctx.promiseQueue to ensure that async
-            // deserialization (e.g., decryption) resolves in event log order.
+            // A consumer is already awaiting. Hydrate through a promiseQueue
+            // slot (so async deserialization stays in event-log order), then
+            // defer behind earlier waits before resolving. The deferral runs
+            // OFF the serial queue (it may wait on an earlier wait delivery
+            // and blocking a queue slot on that would deadlock the queue).
             ctx.pendingDeliveries++;
+            let hydrateOutcome:
+              | { ok: true; value: T }
+              | { ok: false; error: unknown };
             ctx.promiseQueue = ctx.promiseQueue.then(async () => {
               try {
                 const payload = await hydrateStepReturnValue(
@@ -122,16 +161,68 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                   ctx.encryptionKey,
                   ctx.globalThis
                 );
-                next.resolve(payload as T);
+                hydrateOutcome = { ok: true, value: payload as T };
               } catch (error) {
-                next.reject(error);
+                hydrateOutcome = { ok: false, error };
               } finally {
                 ctx.pendingDeliveries--;
               }
+              void awaitEarlierDeliveries(ctx, eventIndex, ['wait']).then(
+                () => {
+                  barrier.markDelivered();
+                  if (hydrateOutcome.ok) {
+                    next.resolve(hydrateOutcome.value);
+                  } else {
+                    next.reject(hydrateOutcome.error);
+                  }
+                }
+              );
             });
           }
         } else {
-          payloadsQueue.push(event);
+          // No consumer is awaiting yet. Hydrate through a promiseQueue slot
+          // at this log position and park the OUTCOME (value or error) for a
+          // later `iterator.next()` / `await hook` claim. We capture the
+          // outcome rather than eagerly resolving/rejecting a promise no
+          // consumer has attached to — a rejected unclaimed promise (e.g. a
+          // buffered encrypted payload with no key) would otherwise surface
+          // as an unhandled rejection and crash the process. `claim()` builds
+          // the consumer-facing promise on demand.
+          let outcome:
+            | { ok: true; value: T }
+            | { ok: false; error: unknown }
+            | undefined;
+          const hydrated = withResolvers<void>();
+
+          const claim = (): Promise<T> =>
+            hydrated.promise
+              .then(() => awaitEarlierDeliveries(ctx, eventIndex, ['wait']))
+              .then(() => {
+                barrier.markDelivered();
+                if (outcome && !outcome.ok) {
+                  throw outcome.error;
+                }
+                return (outcome as { ok: true; value: T }).value;
+              });
+
+          ctx.pendingDeliveries++;
+          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+            try {
+              const payload = await hydrateStepReturnValue(
+                event.eventData.payload,
+                ctx.runId,
+                ctx.encryptionKey,
+                ctx.globalThis
+              );
+              outcome = { ok: true, value: payload as T };
+            } catch (error) {
+              outcome = { ok: false, error };
+            } finally {
+              ctx.pendingDeliveries--;
+              hydrated.resolve();
+            }
+          });
+          payloadsQueue.push({ claim });
         }
 
         return EventConsumerResult.Consumed;
@@ -146,11 +237,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.Finished;
       }
 
-      // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      // This replay installed a different consumer than the stored event needs.
       ctx.promiseQueue = ctx.promiseQueue.then(() => {
         ctx.onWorkflowError(
-          new WorkflowRuntimeError(
-            `Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`
+          new ReplayDivergenceError(
+            `Replay divergence: Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`,
+            { eventId: event.eventId }
           )
         );
       });
@@ -174,27 +266,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (payloadsQueue.length > 0) {
-        const nextPayload = payloadsQueue.shift();
-        if (nextPayload) {
-          // Chain through ctx.promiseQueue to ensure that async
-          // deserialization (e.g., decryption) resolves in event log order.
-          ctx.pendingDeliveries++;
-          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
-            try {
-              const payload = await hydrateStepReturnValue(
-                nextPayload.eventData.payload,
-                ctx.runId,
-                ctx.encryptionKey,
-                ctx.globalThis
-              );
-              resolvers.resolve(payload as T);
-            } catch (error) {
-              resolvers.reject(error);
-            } finally {
-              ctx.pendingDeliveries--;
-            }
-          });
-          return resolvers.promise;
+        const nextDelivery = payloadsQueue.shift();
+        if (nextDelivery) {
+          // The payload was hydrated through a promiseQueue slot at its log
+          // position (buffering branch above). `claim()` builds the
+          // consumer-facing promise from that outcome, deferring behind any
+          // earlier-in-log wait and marking this hook delivered — so
+          // resolution order stays anchored to the event log, not this later
+          // claim site.
+          return nextDelivery.claim();
         }
       }
 
