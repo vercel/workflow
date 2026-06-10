@@ -41,20 +41,29 @@ export function encodeFrame(
  * caller inspects `meta._end` to detect end-of-stream and reads
  * `meta.next` for the pagination cursor.
  *
+ * Accepts any async iterable of byte chunks (undici response bodies,
+ * Node Readables) as well as a Web ReadableStream. Notably it must NOT
+ * require a `node:stream` conversion: `Readable.toWeb` via dynamic
+ * `import('node:stream')` resolves to an empty namespace in Next.js
+ * webpack server bundles and crashes at runtime.
+ *
  * Survives arbitrary chunk boundaries from the source stream, including
  * splits that fall in the middle of a u32 length prefix or in the
  * middle of the CBOR meta block.
  */
 export async function* decodeFrames(
-  source: ReadableStream<Uint8Array>
+  source: AsyncIterable<Uint8Array> | ReadableStream<Uint8Array>
 ): AsyncGenerator<DecodedFrame> {
-  const reader = source.getReader();
+  const chunks =
+    Symbol.asyncIterator in source
+      ? (source as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]()
+      : readerToIterator((source as ReadableStream<Uint8Array>).getReader());
   // Accumulating buffer of bytes we've read but not yet consumed.
   let buffer = new Uint8Array(0);
 
   const refill = async (needed: number): Promise<boolean> => {
     while (buffer.byteLength < needed) {
-      const { done, value } = await reader.read();
+      const { done, value } = await chunks.next();
       if (done) return false;
       if (!value || value.byteLength === 0) continue;
       const next = new Uint8Array(buffer.byteLength + value.byteLength);
@@ -106,5 +115,17 @@ export async function* decodeFrames(
     }
 
     if (meta._end === 1) return;
+  }
+}
+
+/** Adapt a Web ReadableStream reader to the async-iterator protocol for
+ *  runtimes where ReadableStream itself is not async-iterable. */
+async function* readerToIterator(
+  reader: ReadableStreamDefaultReader<Uint8Array>
+): AsyncGenerator<Uint8Array> {
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    if (value) yield value;
   }
 }

@@ -22,10 +22,11 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  RunExpiredError,
   ThrottleError,
+  TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { decode } from 'cbor-x';
@@ -131,17 +132,57 @@ function buildPostFrameMeta(
   return meta;
 }
 
-async function setAuthHeader(
-  headers: Headers,
-  config: APIConfig | undefined
-): Promise<void> {
-  if (config?.token) {
-    headers.set('Authorization', `Bearer ${config.token}`);
-  } else {
-    // Default: get an OIDC token via @vercel/oidc, same as the v3 client.
-    const token = await getVercelOidcToken();
-    headers.set('Authorization', `Bearer ${token}`);
+/**
+ * Map a non-2xx response to the same typed-error contract the v3 client's
+ * `makeRequest` used. The runtime branches on these types for core control
+ * flow, so v4 must preserve every mapping:
+ *
+ *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
+ *   - 410 → RunExpiredError (runtime exits without retrying)
+ *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for
+ *     what happens when a 425 degrades into an untyped error)
+ *   - 429 → ThrottleError + retryAfter
+ *   - anything else → WorkflowWorldError with `status` (the hook 404 →
+ *     HookNotFoundError translation in events.ts keys off status === 404)
+ *
+ * Exported for unit tests.
+ */
+export function throwForErrorResponse(
+  statusCode: number,
+  responseHeaders: Record<string, string | string[] | undefined>,
+  errorBody: string,
+  opName: string,
+  url: string
+): never {
+  let message = `v4 ${opName} failed: HTTP ${statusCode}`;
+  let code: string | undefined;
+  try {
+    const json = JSON.parse(errorBody) as { message?: string; code?: string };
+    if (typeof json.message === 'string') message = json.message;
+    if (typeof json.code === 'string') code = json.code;
+  } catch {
+    // body wasn't JSON — keep the default message, append raw text below
+    if (errorBody) message += ` ${errorBody}`;
   }
+
+  // Retry-After response header (seconds). Used by 425 and 429.
+  let retryAfter: number | undefined;
+  const retryAfterHeader = readHeader(responseHeaders, 'retry-after');
+  if (retryAfterHeader) {
+    const parsed = parseInt(retryAfterHeader, 10);
+    if (!Number.isNaN(parsed)) retryAfter = parsed;
+  }
+
+  if (statusCode === 409) throw new EntityConflictError(message);
+  if (statusCode === 410) throw new RunExpiredError(message);
+  if (statusCode === 425) throw new TooEarlyError(message, { retryAfter });
+  if (statusCode === 429) throw new ThrottleError(message, { retryAfter });
+  throw new WorkflowWorldError(message, {
+    status: statusCode,
+    code,
+    url,
+    retryAfter,
+  });
 }
 
 /**
@@ -155,10 +196,11 @@ export async function createWorkflowRunEventV4(
   input: CreateEventV4Input,
   config?: APIConfig
 ): Promise<CreateEventV4Result> {
+  // getHttpConfig sets the Authorization header (explicit config.token or
+  // per-request OIDC fallback) — same contract as the v3 makeRequest path.
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
-  await setAuthHeader(headers, config);
 
   const frame = encodeFrame(
     buildPostFrameMeta(input),
@@ -173,36 +215,16 @@ export async function createWorkflowRunEventV4(
     // getDispatcher() is typed `unknown` (undici's Dispatcher type is
     // version-specific across @types/node majors); cast to the undici
     // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher() as Dispatcher,
+    dispatcher: getDispatcher(config) as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
-    // Only typed errors that start.ts / runtime resilient-start paths
-    // actually branch on: 409 = "run already exists" (start() catches),
-    // 429 = ThrottleError, 5xx = retryable WorkflowWorldError. Other
-    // statuses keep the plain-Error form to avoid changing catch
-    // behavior at other call sites that didn't previously see typed v4
-    // errors.
-    let parsedMessage = errorBody;
-    try {
-      const json = JSON.parse(errorBody) as { message?: string };
-      if (typeof json.message === 'string') parsedMessage = json.message;
-    } catch {
-      // body wasn't JSON — keep raw text
-    }
-    if (response.statusCode === 409) {
-      throw new EntityConflictError(parsedMessage);
-    }
-    if (response.statusCode === 429) {
-      throw new ThrottleError(parsedMessage);
-    }
-    if (response.statusCode >= 500) {
-      throw new WorkflowWorldError(parsedMessage, {
-        status: response.statusCode,
-      });
-    }
-    throw new Error(
-      `v4 createEvent failed: ${response.statusCode} ${errorBody}`
+    throwForErrorResponse(
+      response.statusCode,
+      response.headers,
+      errorBody,
+      'createEvent',
+      url
     );
   }
 
@@ -270,9 +292,7 @@ export async function getEventV4(
   eventId: string,
   config?: APIConfig
 ): Promise<{ event: DecodedV4Event; body: Uint8Array }> {
-  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
-  const headers = new Headers(baseHeaders);
-  await setAuthHeader(headers, config);
+  const { baseUrl, headers } = await getHttpConfig(config);
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
   const response = await request(url, {
@@ -281,11 +301,17 @@ export async function getEventV4(
     // getDispatcher() is typed `unknown` (undici's Dispatcher type is
     // version-specific across @types/node majors); cast to the undici
     // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher() as Dispatcher,
+    dispatcher: getDispatcher(config) as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
-    throw new Error(`v4 getEvent failed: ${response.statusCode} ${errorBody}`);
+    throwForErrorResponse(
+      response.statusCode,
+      response.headers,
+      errorBody,
+      'getEvent',
+      url
+    );
   }
   const contentType = readHeader(response.headers, 'content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -293,13 +319,16 @@ export async function getEventV4(
       `v4 getEvent: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
-  const webBody = (await import('node:stream')).Readable.toWeb(
-    response.body as unknown as import('node:stream').Readable
-  ) as unknown as ReadableStream<Uint8Array>;
+
+  // undici's response body is an AsyncIterable of byte chunks — feed it
+  // to decodeFrames directly. Do NOT convert via node:stream
+  // Readable.toWeb: dynamic `import('node:stream')` resolves to an empty
+  // module namespace in Next.js webpack server bundles and crashes.
+  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
-  for await (const frame of decodeFrames(webBody)) {
+  for await (const frame of decodeFrames(chunks)) {
     return { event: frame.meta as unknown as DecodedV4Event, body: frame.body };
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
@@ -340,9 +369,7 @@ async function consumeListFrameStream(
   config: APIConfig | undefined,
   opName: string
 ): Promise<ListEventsV4Result> {
-  const { headers: baseHeaders } = await getHttpConfig(config);
-  const headers = new Headers(baseHeaders);
-  await setAuthHeader(headers, config);
+  const { headers } = await getHttpConfig(config);
 
   const response = await request(url, {
     method: 'GET',
@@ -350,11 +377,17 @@ async function consumeListFrameStream(
     // getDispatcher() is typed `unknown` (undici's Dispatcher type is
     // version-specific across @types/node majors); cast to the undici
     // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher() as Dispatcher,
+    dispatcher: getDispatcher(config) as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
-    throw new Error(`v4 ${opName} failed: ${response.statusCode} ${errorBody}`);
+    throwForErrorResponse(
+      response.statusCode,
+      response.headers,
+      errorBody,
+      opName,
+      url
+    );
   }
   const contentType = readHeader(response.headers, 'content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -363,16 +396,15 @@ async function consumeListFrameStream(
     );
   }
 
-  // undici's `request().body` is a Node Readable; convert to a Web
-  // ReadableStream so the same decodeFrames implementation works in
-  // both Node and edge runtimes.
-  const webBody = (await import('node:stream')).Readable.toWeb(
-    response.body as unknown as import('node:stream').Readable
-  ) as unknown as ReadableStream<Uint8Array>;
+  // undici's response body is an AsyncIterable of byte chunks — feed it
+  // to decodeFrames directly. Do NOT convert via node:stream
+  // Readable.toWeb: dynamic `import('node:stream')` resolves to an empty
+  // module namespace in Next.js webpack server bundles and crashes.
+  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
   const events: ListedEventV4[] = [];
   let next: string | undefined;
-  for await (const frame of decodeFrames(webBody)) {
+  for await (const frame of decodeFrames(chunks)) {
     if (frame.meta._end === 1) {
       if (typeof frame.meta.next === 'string') next = frame.meta.next;
       break;

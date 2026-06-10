@@ -174,6 +174,42 @@ describe('decodeFrames', () => {
   });
 });
 
+describe('decodeFrames from an AsyncIterable source', () => {
+  // Regression guard: production feeds undici's response body (an
+  // AsyncIterable of Buffer chunks) into decodeFrames directly. The
+  // previous node:stream Readable.toWeb conversion crashed in Next.js
+  // webpack server bundles (`(await import('node:stream')).Readable` is
+  // undefined there), so the decoder must not require a Web stream.
+  async function* chunked(payload: Uint8Array, chunkSize: number) {
+    for (let offset = 0; offset < payload.byteLength; offset += chunkSize) {
+      // Yield Buffer (not Uint8Array) chunks, like undici does.
+      yield Buffer.from(
+        payload.subarray(
+          offset,
+          Math.min(offset + chunkSize, payload.byteLength)
+        )
+      );
+    }
+  }
+
+  it('round-trips frames from an async generator of Buffer chunks', async () => {
+    const body = new Uint8Array([9, 8, 7]);
+    const flat = new Uint8Array([
+      ...encodeFrame({ eventId: 'evnt_1', eventType: 'run_created' }, body),
+      ...encodeEndFrame('cursor-1'),
+    ]);
+    const frames: DecodedFrame[] = [];
+    for await (const f of decodeFrames(chunked(flat, 3))) frames.push(f);
+    expect(frames).toHaveLength(2);
+    expect(frames[0].meta).toEqual({
+      eventId: 'evnt_1',
+      eventType: 'run_created',
+    });
+    expect(frames[0].body).toEqual(body);
+    expect(frames[1].meta).toEqual({ _end: 1, next: 'cursor-1' });
+  });
+});
+
 describe('V4_FRAME_CONTENT_TYPE', () => {
   it('matches the server-side content type', () => {
     expect(V4_FRAME_CONTENT_TYPE).toBe('application/vnd.workflow.v4-frames');
