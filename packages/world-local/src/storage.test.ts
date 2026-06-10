@@ -2435,6 +2435,123 @@ describe('Storage', () => {
       expect(hookCreated).toHaveLength(1);
     });
 
+    it('repairs an event-first orphan from the persisted event payload', async () => {
+      // Regression for pranaygp's review on PR #2295 (the vercel-bot
+      // edge-cases thread). Deferring the hook entity write until
+      // after the event publish (the fix for the mutation bug above)
+      // opens the inverse crash window: a crash AFTER the
+      // `hook_created` event publish but BEFORE the deferred entity
+      // write leaves the event in the log with no hook entity. A
+      // retry then collides at the event publish and throws
+      // `EntityConflictError` — correct, the event IS committed —
+      // but the entity must be repaired from the PERSISTED event's
+      // payload, not the retry's `eventData`. The retry here carries
+      // deliberately different metadata so this test also prevents
+      // reintroducing the prior mutation bug.
+      const originalMetadata = new Uint8Array([0xaa]);
+      const retryMetadata = new Uint8Array([0xbb]);
+      const hookId = 'hook_event_first_orphan';
+      const token = 'event-first-orphan-token';
+
+      const first = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata: originalMetadata, isWebhook: true },
+      });
+      expect(first.event.eventType).toBe('hook_created');
+
+      // Simulate a crash after the event publish but before the
+      // deferred hook entity write.
+      await fs.unlink(path.join(testDir, 'hooks', `${hookId}.json`));
+
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: { token, metadata: retryMetadata, isWebhook: false },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // The hook entity was repaired from the persisted event's
+      // payload — the ORIGINAL metadata and isWebhook, not the
+      // retry's.
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        metadata: originalMetadata,
+        isWebhook: true,
+      });
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: { limit: 100 },
+      });
+      expect(
+        events.data.filter(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toHaveLength(1);
+    });
+
+    it('repairs an event-first orphan via the legacy-claim probe path', async () => {
+      // Same crash window as the test above, but exercised through
+      // the legacy-claim branch: the claim file lacks `eventId` (as
+      // written by a pre-upgrade version), so the retry takes the
+      // event-log probe path. When the probe finds the committed
+      // `hook_created` event, it must repair the missing entity from
+      // the persisted event payload before throwing the benign
+      // `EntityConflictError`.
+      const originalMetadata = new Uint8Array([0xcc]);
+      const retryMetadata = new Uint8Array([0xdd]);
+      const hookId = 'hook_event_first_orphan_legacy';
+      const token = 'event-first-orphan-legacy-token';
+
+      const first = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata: originalMetadata, isWebhook: true },
+      });
+      expect(first.event.eventType).toBe('hook_created');
+
+      // Simulate the pre-upgrade crash state: the event is
+      // committed, the hook entity is missing, and the claim file is
+      // in the legacy format (no `eventId`).
+      await fs.unlink(path.join(testDir, 'hooks', `${hookId}.json`));
+      const constraintPath = path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken(token)}.json`
+      );
+      await fs.writeFile(
+        constraintPath,
+        JSON.stringify({ token, hookId, runId: testRunId })
+      );
+
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: { token, metadata: retryMetadata, isWebhook: false },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        metadata: originalMetadata,
+        isWebhook: true,
+      });
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: { limit: 100 },
+      });
+      expect(
+        events.data.filter(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toHaveLength(1);
+    });
+
     it('converges same-hook creation across separate storage instances to one event', async () => {
       // Cross-instance convergence regression for the case pranaygp
       // flagged on PR #2295: separate workers (in production, separate

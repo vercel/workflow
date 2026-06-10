@@ -183,6 +183,88 @@ async function findExistingHookCreatedEventId(
 }
 
 /**
+ * Repair an "event-first orphan": the hook entity write is deferred
+ * until after the `hook_created` event publish commits (so a failed
+ * publish cannot mutate already-committed state — see the comment on
+ * the deferred write), which opens the inverse crash window — a
+ * crash AFTER the event publish but BEFORE the deferred entity write
+ * leaves the event in the log with the hook entity missing. A retry
+ * then collides at the event publish and throws
+ * `EntityConflictError` (correct — the event IS committed), but
+ * without this repair the entity would stay missing forever and the
+ * hook would be unresolvable.
+ *
+ * The entity MUST be reconstructed from the persisted canonical
+ * event's payload — NOT the retry's `eventData` — otherwise a retry
+ * carrying different `metadata` / `isWebhook` would silently change
+ * committed state. The write uses `writeExclusive` (create-if-absent)
+ * so a concurrent writer racing this repair cannot be overwritten;
+ * whichever write lands first, the content is identical because both
+ * derive from the same persisted event.
+ */
+async function repairHookEntityFromPersistedEvent(
+  basedir: string,
+  runId: string,
+  hookId: string,
+  persistedEventId: string,
+  tag: string | undefined
+): Promise<void> {
+  const compositeKey = `${runId}-${persistedEventId}`;
+  const persistedEvent = await readJSONWithFallback(
+    basedir,
+    'events',
+    compositeKey,
+    EventSchema,
+    tag
+  );
+  if (
+    !persistedEvent ||
+    persistedEvent.eventType !== 'hook_created' ||
+    persistedEvent.correlationId !== hookId
+  ) {
+    // Nothing trustworthy to repair from.
+    return;
+  }
+  const existingHook = await readJSONWithFallback(
+    basedir,
+    'hooks',
+    hookId,
+    HookSchema,
+    tag
+  );
+  if (existingHook) {
+    // Entity already present — not an orphan, leave it untouched.
+    return;
+  }
+  const eventData = (persistedEvent.eventData ?? {}) as {
+    token?: string;
+    metadata?: SerializedData;
+    isWebhook?: boolean;
+    isSystem?: boolean;
+  };
+  if (typeof eventData.token !== 'string') {
+    return;
+  }
+  const hook: Hook = {
+    runId,
+    hookId,
+    token: eventData.token,
+    metadata: eventData.metadata,
+    ownerId: 'local-owner',
+    projectId: 'local-project',
+    environment: 'local',
+    createdAt: persistedEvent.createdAt,
+    specVersion: persistedEvent.specVersion,
+    isWebhook: eventData.isWebhook ?? false,
+    isSystem: eventData.isSystem ?? false,
+  };
+  await writeExclusive(
+    taggedPath(basedir, 'hooks', hookId, tag),
+    JSON.stringify(hook, jsonReplacer, 2)
+  );
+}
+
+/**
  * Atomically pin a canonical `hook_created` eventId for a legacy
  * claim (one without an inline `eventId`). The first retry to
  * `writeExclusive` the recovery marker wins; its `candidateEventId`
@@ -1241,6 +1323,17 @@ export function createEventsStorage(
                     data.correlationId
                   );
                 if (alreadyPublishedEventId !== null) {
+                  // The pre-upgrade writer may have crashed between
+                  // its event publish and its hook entity write —
+                  // repair the entity from the persisted event's
+                  // payload before surfacing the benign duplicate.
+                  await repairHookEntityFromPersistedEvent(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId,
+                    alreadyPublishedEventId,
+                    tag
+                  );
                   throw new EntityConflictError(
                     `Hook "${data.correlationId}" already created`
                   );
@@ -1531,6 +1624,26 @@ export function createEventsStorage(
           JSON.stringify(event, jsonReplacer, 2)
         );
         if (!eventPublished) {
+          // For `hook_created`, losing the event publish means the
+          // event was already committed at this exact (canonical)
+          // path. The original publisher may have crashed between
+          // its event publish and its deferred hook-entity write
+          // (the inverse of the crash window the deferral closes),
+          // leaving an event-first orphan: the event is in the log
+          // but the entity is missing and the hook is unresolvable.
+          // Repair the entity from the PERSISTED event's payload
+          // (never the retry's — different retry metadata must not
+          // change committed state) before surfacing the benign
+          // duplicate to the runtime's concurrent-replay catch path.
+          if (data.eventType === 'hook_created' && data.correlationId) {
+            await repairHookEntityFromPersistedEvent(
+              basedir,
+              effectiveRunId,
+              data.correlationId,
+              eventId,
+              tag
+            );
+          }
           throw new EntityConflictError(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`
           );
