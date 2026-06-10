@@ -5,7 +5,11 @@ import type { CSSProperties, ReactNode } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../types';
-import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
+import {
+  formatDuration,
+  formatDurationPrecise,
+  getHighResInMs,
+} from '../../trace-viewer/util/timing';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Segment, SegmentStatus, TimeMarker } from '../utils';
 import {
@@ -222,7 +226,7 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
   return (
     <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
-        const label = formatDuration(seg.fullDurationMs);
+        const label = formatDurationPrecise(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
         const showLabel = seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
         // Beef up the queued segment when it's too narrow to read.
@@ -313,7 +317,7 @@ const TimelineBar = memo(function TimelineBar({
     ? (colors.errorBorder ?? 'var(--ds-red-500)')
     : colors.border;
 
-  const totalLabel = formatDuration(totalDurationMs);
+  const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =
     geometry.visiblePixelWidth >= Math.max(40, totalLabel.length * 6 + 12);
 

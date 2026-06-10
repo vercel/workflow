@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { relative } from 'node:path';
 import { promisify } from 'node:util';
+import { WorkflowBuildError } from '@workflow/errors';
 import enhancedResolveOrig from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
 import {
@@ -93,10 +94,90 @@ function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
+type IdLocation = {
+  filePath: string;
+  name: string;
+};
+
+function formatIdLocation(location: IdLocation): string {
+  return `${location.filePath}#${location.name}`;
+}
+
+function assertUniqueManifestIds(
+  entriesByFile: WorkflowManifest['steps'] | WorkflowManifest['workflows'],
+  ids: Map<string, IdLocation>,
+  getId: (data: { stepId: string } | { workflowId: string }) => string,
+  label: 'step' | 'workflow'
+): void {
+  const entriesByFileList = Object.entries(entriesByFile || {}) as Array<
+    [string, Record<string, { stepId: string } | { workflowId: string }>]
+  >;
+  for (const [filePath, entries] of entriesByFileList) {
+    for (const [name, data] of Object.entries(entries)) {
+      const id = getId(data);
+      const existing = ids.get(id);
+      const current = { filePath, name };
+      if (
+        existing &&
+        (existing.filePath !== current.filePath ||
+          existing.name !== current.name)
+      ) {
+        const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
+        const functionName = `${label} function`;
+        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
+        throw new WorkflowBuildError(
+          `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
+          {
+            hint:
+              `${capitalizedLabel} IDs must be unique across a build. ` +
+              `If you own one of the colliding files, rename the ${functionName} or export ` +
+              `the package file through a unique package subpath. If the collision is in a ` +
+              `transitive dependency you don't control, file an issue with the upstream ` +
+              `package or pin to a non-colliding version.`,
+          }
+        );
+      }
+      ids.set(id, current);
+    }
+  }
+}
+
+function mergeWorkflowManifest(
+  target: WorkflowManifest,
+  incoming: WorkflowManifest,
+  stepIds: Map<string, IdLocation>,
+  workflowIds: Map<string, IdLocation>
+): void {
+  assertUniqueManifestIds(
+    incoming.steps,
+    stepIds,
+    (data) => (data as { stepId: string }).stepId,
+    'step'
+  );
+  assertUniqueManifestIds(
+    incoming.workflows,
+    workflowIds,
+    (data) => (data as { workflowId: string }).workflowId,
+    'workflow'
+  );
+
+  target.workflows = Object.assign(target.workflows || {}, incoming.workflows);
+  target.steps = Object.assign(target.steps || {}, incoming.steps);
+  target.classes = Object.assign(target.classes || {}, incoming.classes);
+}
+
 export function createSwcPlugin(options: SwcPluginOptions): Plugin {
   return {
     name: 'swc-workflow-plugin',
     setup(build) {
+      let stepIdsForCurrentBuild = new Map<string, IdLocation>();
+      let workflowIdsForCurrentBuild = new Map<string, IdLocation>();
+
+      build.onStart(() => {
+        stepIdsForCurrentBuild = new Map();
+        workflowIdsForCurrentBuild = new Map();
+      });
+
       // everything is external unless explicitly configured
       // to be bundled
       const cjsResolver = promisify(
@@ -414,17 +495,11 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             options.workflowManifest = {};
           }
 
-          options.workflowManifest.workflows = Object.assign(
-            options.workflowManifest.workflows || {},
-            workflowManifest.workflows
-          );
-          options.workflowManifest.steps = Object.assign(
-            options.workflowManifest.steps || {},
-            workflowManifest.steps
-          );
-          options.workflowManifest.classes = Object.assign(
-            options.workflowManifest.classes || {},
-            workflowManifest.classes
+          mergeWorkflowManifest(
+            options.workflowManifest,
+            workflowManifest,
+            stepIdsForCurrentBuild,
+            workflowIdsForCurrentBuild
           );
 
           return {
