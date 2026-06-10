@@ -5,9 +5,14 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
-import { getWorkflowRunEventsV4, throwForErrorResponse } from './events-v4.js';
+import {
+  createWorkflowRunEventV4,
+  getWorkflowRunEventsV4,
+  throwForErrorResponse,
+} from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 
 /**
@@ -124,6 +129,82 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     expect(result.events[0].event.eventId).toBe('evnt_1');
     expect(new Uint8Array(result.events[0].body)).toEqual(body);
     expect(result.next).toBe('cursor-2');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('throws when the stream ends without the end sentinel (truncated response)', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    // A complete event frame but NO `{_end: 1}` sentinel — what a response
+    // truncated on a frame boundary looks like. Returning this as a
+    // successful page would silently drop events with hasMore=false.
+    const frames = encodeFrame(
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_1',
+        eventType: 'run_created',
+        createdAt: '2026-06-10T00:00:00.000Z',
+        eventData: {},
+      },
+      new Uint8Array(0)
+    );
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow(/end-of-stream sentinel/);
+  });
+});
+
+describe('createWorkflowRunEventV4 over HTTP', () => {
+  it('POSTs to the /events/:eventType alias and decodes the response', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        // The event type rides in the URL purely as an observability hint
+        // (access logs / traces); the frame meta stays authoritative.
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, encode({ step: { stepId: 'step_1', status: 'completed' } }), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+        },
+      });
+
+    const result = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'step_completed',
+        specVersion: 2,
+        correlationId: 'step_1',
+        payload: new TextEncoder().encode('"result"'),
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.eventId).toBe('evnt_1');
+    expect(result.runId).toBe('wrun_1');
+    expect(result.createdAt).toBe('2026-06-10T00:00:00.000Z');
+    expect(result.body.step).toMatchObject({ stepId: 'step_1' });
     agent.assertNoPendingInterceptors();
   });
 });

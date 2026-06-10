@@ -191,11 +191,17 @@ export function throwForErrorResponse(
 }
 
 /**
- * POST /api/v4/runs/:runId/events
+ * POST /api/v4/runs/:runId/events/:eventType
  *
  * Sends the full request as a single v4 frame and returns the event ids
  * + materialized-entity bag from the CBOR response body. Throws on
  * non-2xx.
+ *
+ * The trailing `:eventType` path segment is an alias of the canonical
+ * `/events` route: it exists purely so the event type is visible in
+ * access logs / traces / route metrics without decoding the frame body.
+ * The frame meta's `eventType` remains authoritative — the backend
+ * cross-checks the two and logs (but does not reject) a mismatch.
  */
 export async function createWorkflowRunEventV4(
   input: CreateEventV4Input,
@@ -212,7 +218,7 @@ export async function createWorkflowRunEventV4(
     input.payload ?? new Uint8Array(0)
   );
 
-  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events`;
+  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
   const response = await request(url, {
     method: 'POST',
     headers: Object.fromEntries(headers.entries()),
@@ -409,15 +415,30 @@ async function consumeListFrameStream(
 
   const events: ListedEventV4[] = [];
   let next: string | undefined;
+  let sawEndSentinel = false;
   for await (const frame of decodeFrames(chunks)) {
     if (frame.meta._end === 1) {
       if (typeof frame.meta.next === 'string') next = frame.meta.next;
+      sawEndSentinel = true;
       break;
     }
     events.push({
       event: frame.meta as unknown as DecodedV4Event,
       body: frame.body,
     });
+  }
+
+  // A LIST response always ends with the `{_end: 1}` sentinel frame. EOF
+  // without it means the response was truncated — and if the cut landed
+  // between two complete frames, decodeFrames alone can't tell. Returning
+  // the partial page here would surface as `hasMore: false` and silently
+  // drop events (replay correctness!), so fail loudly instead; the read
+  // is idempotent and safe for the caller to retry.
+  if (!sawEndSentinel) {
+    throw new Error(
+      `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
+        `(${events.length} events read) — truncated response?`
+    );
   }
 
   return { events, ...(next ? { next } : {}) };
