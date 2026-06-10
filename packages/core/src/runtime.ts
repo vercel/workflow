@@ -1,7 +1,9 @@
 import { types } from 'node:util';
 import {
+  CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
   RunExpiredError,
@@ -19,7 +21,10 @@ import { classifyRunError, isWorldContractError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
-import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
+import {
+  MAX_QUEUE_DELIVERIES,
+  REPLAY_DIVERGENCE_MAX_RETRIES,
+} from './runtime/constants.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -172,6 +177,31 @@ async function recordFatalRunError({
   }
 }
 
+function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+  // Terminal run events are always last by construction (no event creation
+  // succeeds against a terminal run), but scan the full array for
+  // defense-in-depth: a World/backend ordering bug shouldn't make us miss an
+  // actual termination signal.
+  const terminalRunEvent = events.find(
+    (e) =>
+      e.runId === runId &&
+      (e.eventType === 'run_completed' ||
+        e.eventType === 'run_failed' ||
+        e.eventType === 'run_cancelled')
+  );
+
+  if (!terminalRunEvent) {
+    return false;
+  }
+
+  runtimeLogger.debug('Run reached terminal event, exiting', {
+    workflowRunId: runId,
+    eventType: terminalRunEvent.eventType,
+    eventId: terminalRunEvent.eventId,
+  });
+  return true;
+}
+
 /**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
@@ -213,6 +243,7 @@ export function workflowEntrypoint(
           requestedAt,
           stepId: incomingStepId,
           stepName: incomingStepName,
+          replayDivergence,
           runInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
         const { requestId } = metadata;
@@ -375,6 +406,7 @@ export function workflowEntrypoint(
                         stepResult = await executeStep({
                           world,
                           workflowRunId: runId,
+                          workflowDeploymentId: bgRun.deploymentId,
                           workflowName,
                           workflowStartedAt: bgStartedAt,
                           stepId: incomingStepId,
@@ -701,6 +733,7 @@ export function workflowEntrypoint(
                           );
                           for (const e of loaded.events) {
                             if (!existingIds.has(e.eventId)) {
+                              existingIds.add(e.eventId);
                               cachedEvents.push(e);
                             }
                           }
@@ -745,25 +778,7 @@ export function workflowEntrypoint(
                       // derived from these events, so checking the log here
                       // gives us the same signal as a runs.get() round-trip
                       // without the extra request per loop iteration.
-                      // Terminal run events are always last by construction
-                      // (no event creation succeeds against a terminal run),
-                      // but scan the full array for defense-in-depth: a
-                      // World/backend ordering bug shouldn't make us miss
-                      // an actual termination signal.
-                      const terminalRunEvent = events.find(
-                        (e) =>
-                          e.eventType === 'run_completed' ||
-                          e.eventType === 'run_failed' ||
-                          e.eventType === 'run_cancelled'
-                      );
-                      if (terminalRunEvent) {
-                        runtimeLogger.debug(
-                          'Run completed by concurrent handler, exiting',
-                          {
-                            workflowRunId: runId,
-                            eventType: terminalRunEvent.eventType,
-                          }
-                        );
+                      if (hasRecordedTerminalRunEvent(events, runId)) {
                         return;
                       }
 
@@ -848,6 +863,7 @@ export function workflowEntrypoint(
                             );
                             for (const event of loaded.events) {
                               if (!existingIds.has(event.eventId)) {
+                                existingIds.add(event.eventId);
                                 events.push(event);
                               }
                             }
@@ -862,6 +878,15 @@ export function workflowEntrypoint(
                           events = loaded.events;
                           eventsCursor = loaded.cursor;
                         }
+                      }
+
+                      // Completing elapsed waits refreshes the event snapshot.
+                      // A concurrent handler may have written the terminal run
+                      // event after the initial snapshot but before this
+                      // replay. Once the event log records that outcome, this
+                      // delivery is done.
+                      if (hasRecordedTerminalRunEvent(events, runId)) {
+                        return;
                       }
 
                       // Update cache reference (may have been set for first time)
@@ -1064,6 +1089,7 @@ export function workflowEntrypoint(
                           stepResult = await executeStep({
                             world,
                             workflowRunId: runId,
+                            workflowDeploymentId: workflowRun.deploymentId,
                             workflowName,
                             workflowStartedAt,
                             stepId: inlineStep.correlationId,
@@ -1148,18 +1174,62 @@ export function workflowEntrypoint(
                           // Loop back to replay which will re-evaluate
                         }
                       } else {
-                        // User code error from runWorkflow — create run_failed.
-                        if (err instanceof Error) {
-                          span?.recordException?.(err);
+                        let terminalError = err;
+                        if (ReplayDivergenceError.is(err)) {
+                          const divergenceCount =
+                            (replayDivergence?.count ?? 0) + 1;
+
+                          if (
+                            divergenceCount <= REPLAY_DIVERGENCE_MAX_RETRIES
+                          ) {
+                            runLogger.warn(
+                              'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
+                              {
+                                errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
+                                divergenceEventId: err.eventId,
+                                priorDivergenceEventId:
+                                  replayDivergence?.eventId,
+                                divergenceCount,
+                                deliveryAttempt: metadata.attempt,
+                                maxRecoveryReplays:
+                                  REPLAY_DIVERGENCE_MAX_RETRIES,
+                                errorMessage: err.message,
+                              }
+                            );
+                            await queueMessage(
+                              world,
+                              getWorkflowQueueName(workflowName),
+                              {
+                                runId,
+                                traceCarrier: await serializeTraceCarrier(),
+                                requestedAt: new Date(),
+                                replayDivergence: {
+                                  eventId: err.eventId,
+                                  count: divergenceCount,
+                                },
+                              }
+                            );
+                            return;
+                          }
+
+                          terminalError = new CorruptedEventLogError(
+                            `Workflow replay diverged ${divergenceCount} times after ${REPLAY_DIVERGENCE_MAX_RETRIES} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
+                            { cause: err }
+                          );
+                        }
+
+                        // User code errors and terminal runtime errors fail the run.
+                        if (terminalError instanceof Error) {
+                          span?.recordException?.(terminalError);
                         }
 
                         const normalizedError =
-                          await normalizeUnknownError(err);
+                          await normalizeUnknownError(terminalError);
                         const errorName =
-                          normalizedError.name || getErrorName(err);
+                          normalizedError.name || getErrorName(terminalError);
                         const errorMessage = normalizedError.message;
                         let errorStack =
-                          normalizedError.stack || getErrorStack(err);
+                          normalizedError.stack || getErrorStack(terminalError);
 
                         if (errorStack) {
                           const parsedName = parseWorkflowName(workflowName);
@@ -1175,7 +1245,7 @@ export function workflowEntrypoint(
                         // Classify the error: WorkflowRuntimeError indicates
                         // an SDK/runtime issue, and selected subclasses use
                         // more specific codes for backend tracking.
-                        const errorCode = classifyRunError(err);
+                        const errorCode = classifyRunError(terminalError);
 
                         runtimeLogger.error('Error while running workflow', {
                           workflowRunId: runId,
@@ -1192,8 +1262,8 @@ export function workflowEntrypoint(
                         // class is distinct from the host's, so `instanceof
                         // Error` is `false` for VM-thrown errors. The V8
                         // type tag works across realms.
-                        if (types.isNativeError(err) && errorStack) {
-                          (err as Error).stack = errorStack;
+                        if (types.isNativeError(terminalError) && errorStack) {
+                          (terminalError as Error).stack = errorStack;
                         }
 
                         // Fail the workflow run via event (event-sourced).
@@ -1208,7 +1278,7 @@ export function workflowEntrypoint(
                               specVersion: SPEC_VERSION_CURRENT,
                               eventData: {
                                 error: await dehydrateRunError(
-                                  err,
+                                  terminalError,
                                   runId,
                                   encryptionKey
                                 ),

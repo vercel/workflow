@@ -36,6 +36,9 @@
   --ds-gray-alpha-700: hsla(0, 0%, 0%, 0.44);
   --ds-gray-alpha-1000: hsla(0, 0%, 0%, 0.91);
 
+  /* Focus */
+  --ds-focus-color: var(--ds-blue-700);
+
   /* Blue */
   --ds-blue-100: hsl(212, 100%, 97%);
   --ds-blue-200: hsl(210, 100%, 96%);
@@ -125,6 +128,8 @@
   --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
   --ds-gray-alpha-700: rgba(255, 255, 255, 0.45);
   --ds-gray-alpha-1000: rgba(255, 255, 255, 0.92);
+
+  --ds-focus-color: var(--ds-blue-900);
 
   --ds-blue-100: hsl(216, 50%, 12%);
   --ds-blue-200: hsl(214, 59%, 15%);

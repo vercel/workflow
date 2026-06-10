@@ -40,6 +40,13 @@ export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
   requestedAt: z.coerce.date().optional(),
+  /** Consecutive replay divergences in this recovery chain and latest position. */
+  replayDivergence: z
+    .object({
+      eventId: z.string(),
+      count: z.number().int().positive(),
+    })
+    .optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution

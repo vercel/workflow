@@ -92,7 +92,7 @@ Then modify your API endpoint to use the OpenAI provider:
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript title="app/api/chat/route.ts" lineNumbers
 // ...
-import { openai } from "@workflow/ai/openai"; // [!code highlight]
+import { openai } from "@ai-sdk/openai"; // [!code highlight]
 
 export async function POST(req: Request) {
   // ...
@@ -232,7 +232,7 @@ Now that we have a basic agent using AI SDK, we can modify it to make it durable
 Add the Workflow SDK packages to your project:
 
 ```package-install
-npm i workflow @workflow/ai
+npm i workflow @ai-sdk/workflow
 ```
 
 and extend the Next.js config to transform your workflow code (see [Getting Started](/docs/getting-started/next) for more details).
@@ -258,18 +258,18 @@ Move the agent logic into a separate function, which will serve as our workflow 
 
 {/* @skip-typecheck: Shows two mutually exclusive model options */}
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
-import { DurableAgent } from "@workflow/ai/agent"; // [!code highlight]
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow"; // [!code highlight]
 import { getWritable } from "workflow"; // [!code highlight]
 import { tools } from "@/ai/tools";
-import { openai } from "@workflow/ai/openai";
-import type { ModelMessage, UIMessageChunk } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { convertToModelMessages, type UIMessage } from "ai";
 
-export async function chatWorkflow(messages: ModelMessage[]) {
+export async function chatWorkflow(messages: UIMessage[]) {
   "use workflow"; // [!code highlight]
 
-  const writable = getWritable<UIMessageChunk>(); // [!code highlight]
+  const writable = getWritable<ModelCallStreamPart>(); // [!code highlight]
 
-  const agent = new DurableAgent({ // [!code highlight]
+  const agent = new WorkflowAgent({ // [!code highlight]
 
     // If using AI Gateway, just specify the model name as a string:
     model: "bedrock/claude-4-5-haiku-20251001-v1", // [!code highlight]
@@ -281,8 +281,10 @@ export async function chatWorkflow(messages: ModelMessage[]) {
     tools: flightBookingTools,
   });
 
+  const modelMessages = await convertToModelMessages(messages); // [!code highlight]
+
   await agent.stream({ // [!code highlight]
-    messages,
+    messages: modelMessages,
     writable,
   });
 }
@@ -291,8 +293,9 @@ export async function chatWorkflow(messages: ModelMessage[]) {
 Key changes:
 
 - Add the `"use workflow"` directive to mark our Agent as a workflow function
-- Replaced `Agent` with [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) from `@workflow/ai/agent`. This ensures that all calls to the LLM are executed as "steps", and results are aggregated within the workflow context (see [Workflows and Steps](/docs/foundations/workflows-and-steps) for more details on how workflows/steps are defined).
-- Use [`getWritable()`](/docs/api-reference/workflow/get-writable) to get a stream for agent output. This stream is persistent, and API endpoints can read from a run's stream at any time.
+- Replace the in-memory agent with [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) from `@ai-sdk/workflow`. This runs the agent loop inside a workflow, persists state across step boundaries, and lets tool executions marked with `"use step"` retry automatically.
+- Convert AI SDK `UIMessage` values to model messages inside the workflow before calling `agent.stream()`.
+- Use [`getWritable()`](/docs/api-reference/workflow/get-writable) to get a stream for agent output. `WorkflowAgent` writes `ModelCallStreamPart` chunks to this persistent stream, and API endpoints can read from a run's stream at any time.
 </Step>
 
 <Step>
@@ -301,19 +304,18 @@ Key changes:
 Remove the agent call that we just extracted, and replace it with a call to `start()` to run the workflow:
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
-import type { UIMessage } from "ai";
-import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
+import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
+import { createUIMessageStreamResponse, type UIMessage } from "ai";
 import { start } from "workflow/api";
 import { chatWorkflow } from "@/workflows/chat/workflow";
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
-  const modelMessages = await convertToModelMessages(messages);
 
-  const run = await start(chatWorkflow, [modelMessages]); // [!code highlight]
+  const run = await start(chatWorkflow, [messages]); // [!code highlight]
 
   return createUIMessageStreamResponse({
-    stream: run.readable, // [!code highlight]
+    stream: run.readable.pipeThrough(createModelCallToUIChunkTransform()), // [!code highlight]
   });
 }
 ```
@@ -321,7 +323,8 @@ export async function POST(req: Request) {
 Key changes:
 
 - Call `start()` to run the workflow function. This returns a `Run` object, which contains the run ID and the readable stream (see [Starting Workflows](/docs/foundations/starting-workflows) for more details on the `Run` object).
-- Pass the `writable` to `agent.stream()` instead of returning a stream directly, ensuring all the Agent output is written to to the run's stream.
+- Pass the `writable` to `agent.stream()` instead of returning a stream directly, ensuring all the Agent output is written to the run's stream.
+- Pipe the readable stream through `createModelCallToUIChunkTransform()` so the raw model-call chunks become AI SDK UI message chunks before they are returned to the client.
 
 </Step>
 
@@ -423,7 +426,7 @@ A complete example that includes all of the above, plus all of the "next steps" 
 ## Related Documentation
 
 - [Tools](/docs/ai/defining-tools) - Patterns for defining tools for your agent
-- [`DurableAgent` API Reference](/docs/api-reference/workflow-ai/durable-agent) - Full API documentation
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - AI SDK API for durable, resumable agents
 - [Workflows and Steps](/docs/foundations/workflows-and-steps) - Core concepts
 - [Streaming](/docs/foundations/streaming) - In-depth streaming guide
 - [Errors and Retries](/docs/foundations/errors-and-retries) - Error handling patterns

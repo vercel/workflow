@@ -70,11 +70,17 @@ function createRecipePage(
   slug: string,
   versionPrefix: string
 ): PageNode {
+  const versionId = versionPrefix ? versionPrefix.replace(/^\//, '') : 'v4';
   const recipe = recipes[slug];
+  const versionedRecipe = {
+    ...recipe,
+    ...recipe.versionOverrides?.[versionId],
+  };
   return {
     type: 'page',
     $id: `cookbook__${slug}`,
-    name: recipe.title,
+    name: versionedRecipe.title,
+    description: versionedRecipe.description,
     url: `${versionPrefix}/cookbook/${category}/${slug}`,
   } as PageNode;
 }
@@ -109,6 +115,7 @@ export function getCookbookTree(lang: string, versionPrefix = ''): Root {
 
   return {
     ...fullTree,
+    $id: `cookbook__root__${versionPrefix ? versionPrefix.replace(/^\//, '') : 'v4'}`,
     name: 'Cookbook',
     children: [
       createOverviewPage(versionPrefix),

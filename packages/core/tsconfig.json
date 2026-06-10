@@ -1,9 +1,7 @@
 {
   "extends": "@workflow/tsconfig/base.json",
   "compilerOptions": {
-    "outDir": "dist",
-    "sourceMap": false,
-    "inlineSourceMap": true
+    "outDir": "dist"
   },
   "include": ["src"],
   "exclude": ["node_modules", "**/*.test.ts"]

@@ -38,6 +38,7 @@ import {
   inspectorThemeExtendedLight,
   inspectorThemeLight,
 } from './inspector-theme';
+import { Button } from './button';
 import { Spinner } from './spinner';
 
 // ---------------------------------------------------------------------------
@@ -138,6 +139,7 @@ export const StreamClickContext = createContext<
 export type DecryptClickContextValue = {
   onDecrypt: () => void;
   isDecrypting: boolean;
+  hasEncryptedData?: boolean;
 };
 
 export const DecryptClickContext = createContext<
@@ -152,33 +154,22 @@ function EncryptedInlineLabel() {
   const ctx = useContext(DecryptClickContext);
   if (ctx) {
     return (
-      <button
-        type="button"
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] cursor-pointer"
-        style={{
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-700)',
-          border: '1px solid var(--ds-gray-400)',
-          fontStyle: 'italic',
-          opacity: ctx.isDecrypting ? 0.6 : 1,
-        }}
+      <Button
+        size="xs"
+        className="align-baseline gap-x-1"
         disabled={ctx.isDecrypting}
         onClick={(e) => {
           e.stopPropagation();
           ctx.onDecrypt();
         }}
-        title="Click to decrypt"
       >
         {ctx.isDecrypting ? (
-          <Spinner size={12} />
+          <Spinner size={10} />
         ) : (
-          <Lock
-            className="h-3 w-3"
-            style={{ display: 'inline', flexShrink: 0 }}
-          />
+          <Lock className="h-3 w-3" />
         )}
-        <span>{ctx.isDecrypting ? 'Decrypting…' : 'Decrypt'}</span>
-      </button>
+        <span>Decrypt</span>
+      </Button>
     );
   }
   return (

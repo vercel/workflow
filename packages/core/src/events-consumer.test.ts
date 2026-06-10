@@ -285,6 +285,32 @@ describe('EventsConsumer', () => {
       expect(normalCallback).toHaveBeenCalledWith(event);
     });
 
+    it('should continue processing when onConsumedEvent throws', async () => {
+      const event1 = createMockEvent({ id: 'event-1' });
+      const event2 = createMockEvent({ id: 'event-2' });
+      const onConsumedEvent = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error('Observer error');
+        })
+        .mockImplementation(() => undefined);
+      const consumer = new EventsConsumer([event1, event2], {
+        ...defaultOptions,
+        onConsumedEvent,
+      });
+      const callback1 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
+      const callback2 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
+
+      consumer.subscribe(callback1);
+      consumer.subscribe(callback2);
+      await waitForNextTick();
+      await waitForNextTick();
+
+      expect(onConsumedEvent).toHaveBeenNthCalledWith(1, event1);
+      expect(onConsumedEvent).toHaveBeenNthCalledWith(2, event2);
+      expect(consumer.eventIndex).toBe(2);
+    });
+
     it('should handle callback removal during iteration', async () => {
       const event = createMockEvent();
       const consumer = new EventsConsumer([event], defaultOptions);

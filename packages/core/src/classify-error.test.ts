@@ -1,7 +1,9 @@
 import {
   CorruptedEventLogError,
   HookConflictError,
+  ReplayDivergenceError,
   RUN_ERROR_CODES,
+  RuntimeDecryptionError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -14,6 +16,16 @@ describe('classifyRunError', () => {
     expect(
       classifyRunError(new CorruptedEventLogError('corrupted event log'))
     ).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+  });
+
+  it('classifies ReplayDivergenceError as REPLAY_DIVERGENCE', () => {
+    expect(
+      classifyRunError(
+        new ReplayDivergenceError('replay took another path', {
+          eventId: 'event-1',
+        })
+      )
+    ).toBe(RUN_ERROR_CODES.REPLAY_DIVERGENCE);
   });
 
   it('classifies WorkflowRuntimeError as RUNTIME_ERROR', () => {
@@ -86,5 +98,22 @@ describe('classifyRunError', () => {
     expect(classifyRunError(new HookConflictError('my-token'))).toBe(
       RUN_ERROR_CODES.USER_ERROR
     );
+  });
+
+  it('classifies RuntimeDecryptionError as RUNTIME_ERROR', () => {
+    expect(classifyRunError(new RuntimeDecryptionError('decrypt failed'))).toBe(
+      RUN_ERROR_CODES.RUNTIME_ERROR
+    );
+  });
+
+  it('classifies a raw native OperationError as USER_ERROR', () => {
+    // A bare DOMException-shaped OperationError does not match any
+    // RUNTIME_ERROR_CHECKS entry — the encryption module is expected to
+    // wrap these in RuntimeDecryptionError before they bubble up here.
+    const native = new Error(
+      'The operation failed for an operation-specific reason'
+    );
+    native.name = 'OperationError';
+    expect(classifyRunError(native)).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 });

@@ -36,6 +36,21 @@ jobs:
             exit 1
           fi
 
+  scripts-tests:
+    name: CI Scripts Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Run .github/scripts unit tests
+        run: node --test ".github/scripts/**/*.test.js"
+
   docs-links:
     name: Docs Links
     runs-on: ubuntu-latest
