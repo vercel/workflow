@@ -116,7 +116,7 @@
   --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.04);
   --ds-shadow-tooltip:
     0 0 0 1px rgba(0, 0, 0, 0.08), 0px 1px 1px rgba(0, 0, 0, 0.02),
-    0px 4px 8px rgba(0, 0, 0, 0.04);
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
 }
 
 /* Dark theme defaults */
@@ -202,8 +202,8 @@
 
   --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.3);
   --ds-shadow-tooltip:
-    0 0 0 1px rgba(255, 255, 255, 0.1), 0px 1px 2px rgba(0, 0, 0, 0.4),
-    0px 4px 8px rgba(0, 0, 0, 0.3);
+    0 0 0 1px rgba(255, 255, 255, 0.145), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
 }
 
 @theme inline {
