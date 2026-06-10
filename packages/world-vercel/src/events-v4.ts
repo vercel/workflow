@@ -69,6 +69,10 @@ export interface CreateEventV4Input {
    *  step_retrying / etc. see a Date in eventData.resumeAt on the read
    *  side. */
   resumeAt?: Date;
+  /** step_retrying's custom backoff timestamp (RetryableError.retryAfter).
+   *  The queue enforces the actual delay, but the backend persists this on
+   *  the step entity for premature-delivery pacing and observability. */
+  retryAfter?: Date;
   hookToken?: string;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
@@ -121,6 +125,7 @@ function buildPostFrameMeta(
   if (input.stepName !== undefined) meta.stepName = input.stepName;
   if (input.attempt !== undefined) meta.attempt = input.attempt;
   if (input.resumeAt !== undefined) meta.resumeAt = input.resumeAt;
+  if (input.retryAfter !== undefined) meta.retryAfter = input.retryAfter;
   if (input.hookToken !== undefined) meta.hookToken = input.hookToken;
   if (input.hookIsWebhook !== undefined)
     meta.hookIsWebhook = input.hookIsWebhook;

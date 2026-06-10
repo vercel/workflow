@@ -118,6 +118,7 @@ interface SplitEventData {
     stepName?: string;
     attempt?: number;
     resumeAt?: Date;
+    retryAfter?: Date;
     hookToken?: string;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
@@ -163,6 +164,16 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   } else if (typeof eventData.resumeAt === 'string') {
     const parsed = new Date(eventData.resumeAt);
     if (!Number.isNaN(parsed.getTime())) meta.resumeAt = parsed;
+  }
+  // step_retrying carries the RetryableError backoff timestamp. The queue
+  // enforces the actual retry delay, but the server persists this on the
+  // step entity (premature-delivery pacing + observability) — dropping it
+  // here would silently disable both.
+  if (eventData.retryAfter instanceof Date) {
+    meta.retryAfter = eventData.retryAfter;
+  } else if (typeof eventData.retryAfter === 'string') {
+    const parsed = new Date(eventData.retryAfter);
+    if (!Number.isNaN(parsed.getTime())) meta.retryAfter = parsed;
   }
   // Runtime emits hook_created / hook_received / hook_disposed with the
   // hook token in `eventData.token` (matches the world contract in
