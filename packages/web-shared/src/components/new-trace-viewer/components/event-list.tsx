@@ -2,7 +2,7 @@ import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../types';
-import { formatDuration } from '../../trace-viewer/util/timing';
+import { formatDurationPrecise } from '../../trace-viewer/util/timing';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -86,7 +86,7 @@ const EventRow = ({
           </div>
           <div className="ml-2 shrink-0">
             <span className="text-label-14 text-gray-900 tabular-nums">
-              {formatDuration(durationMs)}
+              {formatDurationPrecise(durationMs)}
             </span>
           </div>
         </div>
