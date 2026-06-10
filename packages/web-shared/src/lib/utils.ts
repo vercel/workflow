@@ -12,6 +12,11 @@ const MS_IN_MINUTE = 60 * MS_IN_SECOND;
 const MS_IN_HOUR = 60 * MS_IN_MINUTE;
 const MS_IN_DAY = 24 * MS_IN_HOUR;
 
+const CS_IN_SECOND = 100;
+const CS_IN_MINUTE = 60 * CS_IN_SECOND;
+const CS_IN_HOUR = 60 * CS_IN_MINUTE;
+const CS_IN_DAY = 24 * CS_IN_HOUR;
+
 /**
  * Formats a duration in milliseconds to a human-readable string.
  *
@@ -103,18 +108,28 @@ export function formatDurationPrecise(ms: number): string {
     return '0s';
   }
 
+  // Sub-second: whole-millisecond precision. If rounding carries to a full
+  // second, fall through to the second/decompose handling below.
   if (ms < MS_IN_SECOND) {
-    return `${Math.round(ms)}ms`;
+    const roundedMs = Math.round(ms);
+    if (roundedMs < MS_IN_SECOND) {
+      return `${roundedMs}ms`;
+    }
+    ms = roundedMs;
   }
 
-  if (ms < MS_IN_MINUTE) {
-    return `${preciseSecondsFormatter.format(ms / MS_IN_SECOND)}s`;
-  }
+  // Round to centisecond (two-decimal second) precision FIRST, then decompose
+  // in integer space so values like 59.999s never render as "60.00s".
+  const centiseconds = Math.round(ms / 10);
 
-  const days = Math.floor(ms / MS_IN_DAY);
-  const hours = Math.floor((ms % MS_IN_DAY) / MS_IN_HOUR);
-  const minutes = Math.floor((ms % MS_IN_HOUR) / MS_IN_MINUTE);
-  const seconds = (ms % MS_IN_MINUTE) / MS_IN_SECOND;
+  const days = Math.floor(centiseconds / CS_IN_DAY);
+  const hours = Math.floor((centiseconds % CS_IN_DAY) / CS_IN_HOUR);
+  const minutes = Math.floor((centiseconds % CS_IN_HOUR) / CS_IN_MINUTE);
+  const seconds = (centiseconds % CS_IN_MINUTE) / CS_IN_SECOND;
+
+  if (centiseconds < CS_IN_MINUTE) {
+    return `${preciseSecondsFormatter.format(seconds)}s`;
+  }
 
   const parts: string[] = [];
 
