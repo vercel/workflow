@@ -759,21 +759,6 @@ export function ContextCardTrigger({
                     : 'none',
               }}
             >
-              {/*
-                Transparent hover bridge. The card is positioned `sideOffset`
-                away from the trigger, leaving an un-hoverable gap that makes
-                the card flicker (open → close → open) as the pointer crosses
-                it. This element extends the hover surface by `sideOffset` on
-                every side so it meets the trigger edge — keeping the visual
-                spacing while making the surface continuous. It inherits the
-                wrapper's `pointer-events` so it is only active while the card
-                is interactive.
-              */}
-              <div
-                aria-hidden="true"
-                className="absolute"
-                style={{ inset: -sideOffset, pointerEvents: 'inherit' }}
-              />
               <div
                 className={cn(
                   'min-w-max transition-all duration-150 ease-[easing-function:cubic-bezier(0.3,_0.57,_0.07,_0.95)] will-change-[transform,width,height] motion-reduce:!transition-none',
