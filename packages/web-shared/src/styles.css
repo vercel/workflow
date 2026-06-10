@@ -13,11 +13,10 @@
  */
 
 /*
- * Register the Geist theme variants so `dark-theme:`/`light-theme:` utilities
+ * Register the theme variants so `dark-theme:`/`light-theme:` utilities
  * (e.g. the context-card arrow tip stroke) compile. Tailwind v4 has no built-in
  * `dark-theme` variant, so without this the class is silently dropped and the
- * value falls back to its light default. Mirrors vercel/front's geistcn
- * `tailwind.css`, extended to also match the `.dark`/`[data-theme="dark"]`
+ * value falls back to its light default. Also matches the `.dark`/`[data-theme="dark"]`
  * selectors used by this package's dark theme block (and by `next-themes`).
  */
 @custom-variant dark-theme (&:where(.dark-theme, .dark-theme *, .dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));

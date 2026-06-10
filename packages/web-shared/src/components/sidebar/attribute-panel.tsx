@@ -339,9 +339,6 @@ const parseDateValue = (value: unknown): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-// Matches vercel/front's request/activity timestamp format, e.g.
-// "JUN 10 10:16:02.69 GMT-4": uppercase 3-letter month, day, 24h time with
-// hundredths-of-a-second, and the short localized GMT offset.
 const formatLocalMillisecondTime = (date: Date): string =>
   format(date, 'MMM dd HH:mm:ss.SS OO').toUpperCase();
 
