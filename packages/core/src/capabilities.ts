@@ -27,7 +27,7 @@
  * - `encr` (AES-256-GCM encryption): added in `4.2.0-beta.64`
  *   Commit: 7618ac36 "Wire AES-GCM encryption into serialization layer (#1251)"
  *   https://github.com/vercel/workflow/commit/7618ac36
- * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.3`
+ * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.14`
  */
 
 import semver from 'semver';
@@ -80,7 +80,12 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
 const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   capability: keyof Omit<RunCapabilities, 'supportedFormats'>;
   minVersion: string;
-}> = [{ capability: 'framedByteStreams', minVersion: '5.0.0-beta.3' }];
+  // TODO(release): verify this matches the actual version that ships byte-stream
+  // framing. If a "Version Packages (beta)" PR merges before this change, bump
+  // to the next beta. A too-low cutoff makes new producers write framed bytes to
+  // consumers that cannot unframe them (silent corruption); too-high merely
+  // delays the optimization (safe).
+}> = [{ capability: 'framedByteStreams', minVersion: '5.0.0-beta.14' }];
 
 /**
  * The set of formats supported by all specVersion 2 runs, regardless of
