@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -38,6 +37,7 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../types.js';
+import { safeWaitUntil } from '../util.js';
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
   getQueueOverhead,
@@ -965,14 +965,16 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             // resilient to the below code not executing on a failed step.
             // (Dehydration already happened above and is accounted for in the
             // userCodeFailed path.)
-            waitUntil(
-              Promise.all(ops).catch((err) => {
-                // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-                const isAbortError =
-                  err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-                if (!isAbortError) throw err;
-              })
-            );
+            // These stream ops are flushed in the background; the promise
+            // handed to waitUntil must never reject (an unconsumed waitUntil
+            // rejection crashes the process as unhandledRejection), so
+            // unexpected failures are logged instead.
+            safeWaitUntil(Promise.all(ops), (err) => {
+              stepRuntimeLogger.warn(
+                'Background flush of step stream ops failed',
+                { error: err instanceof Error ? err.message : String(err) }
+              );
+            });
 
             // Run step_completed and trace serialization concurrently;
             // the trace carrier is used in the final queueMessage call below

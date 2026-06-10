@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 import {
   ERROR_SLUGS,
   HookNotFoundError,
@@ -14,6 +13,7 @@ import {
 } from '@workflow/world';
 import { getRunCapabilities } from '../capabilities.js';
 import { type CryptoKey, importKey } from '../encryption.js';
+import { runtimeLogger } from '../logger.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -22,7 +22,7 @@ import {
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
-import { waitedUntil } from '../util.js';
+import { safeWaitUntil, waitedUntil } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 
@@ -149,12 +149,20 @@ export async function resumeHook<T = any>(
           globalThis,
           v1Compat
         );
-        // NOTE: Workaround instead of injecting catching undefined unhandled rejections in webhook bundle
-        waitUntil(
-          Promise.all(ops).catch((err) => {
-            if (err !== undefined) throw err;
-          })
-        );
+        // These payload-stream ops are flushed in the background; the
+        // promise handed to waitUntil must never reject (an unconsumed
+        // waitUntil rejection crashes the process as unhandledRejection),
+        // so unexpected failures are logged instead.
+        // NOTE: rejections with `undefined` are an expected artifact of the
+        // webhook bundle and are ignored entirely.
+        safeWaitUntil(Promise.all(ops), (err) => {
+          if (err === undefined) return;
+          runtimeLogger.warn('Background flush of hook payload ops failed', {
+            workflowRunId: hook.runId,
+            hookId: hook.hookId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
 
         // Create a hook_received event with the payload
         await world.events.create(

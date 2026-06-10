@@ -1,5 +1,4 @@
 import type { Span } from '@opentelemetry/api';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   HookNotFoundError,
@@ -22,7 +21,7 @@ import type {
 import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { getAbortStreamIdFromToken } from '../util.js';
+import { getAbortStreamIdFromToken, safeWaitUntil } from '../util.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -367,14 +366,18 @@ export async function handleSuspension({
     }
   }
 
-  waitUntil(
-    Promise.all(ops).catch((opErr) => {
-      const isAbortError =
-        opErr?.name === 'AbortError' || opErr?.name === 'ResponseAborted';
-      if (!isAbortError) throw opErr;
-    })
-  );
-  await Promise.all(ops);
+  // The awaited promise below surfaces any event-create failure (e.g. a
+  // transient network error on POST /runs/{id}/events) to the queue
+  // handler, whose rejection lets the queue re-drive this message. The
+  // waitUntil registration only keeps the process alive if the invocation
+  // ends early — it must never receive a rejecting promise, since nothing
+  // consumes waitUntil rejections and they crash the process as
+  // unhandledRejection.
+  const createOps = Promise.all(ops);
+  safeWaitUntil(createOps, () => {
+    // Error is surfaced by the `await` below.
+  });
+  await createOps;
 
   // Calculate minimum timeout from waits
   const now = Date.now();

@@ -94,6 +94,31 @@ export function getAbortStreamIdFromToken(hookToken: string): string {
 }
 
 /**
+ * Schedule a background promise via `waitUntil`, guaranteeing that the
+ * promise handed to `waitUntil` can never reject. Nothing consumes a
+ * `waitUntil` promise, so a rejection surfaces as an `unhandledRejection`
+ * and can crash the process — even when the same underlying error is
+ * correctly handled by an awaited copy elsewhere.
+ *
+ * Expected client-disconnect errors (`AbortError` / `ResponseAborted`)
+ * are ignored. Any other error is passed to `onError` and swallowed.
+ */
+export function safeWaitUntil(
+  promise: Promise<unknown>,
+  onError: (err: unknown) => void
+): void {
+  waitUntil(
+    promise.catch((err) => {
+      const isAbortError =
+        err?.name === 'AbortError' || err?.name === 'ResponseAborted';
+      if (!isAbortError) {
+        onError(err);
+      }
+    })
+  );
+}
+
+/**
  * A small wrapper around `waitUntil` that also returns
  * the result of the awaited promise.
  */
