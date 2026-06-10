@@ -32,6 +32,14 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
 
 /**
+ * Resolves the active queue namespace from an explicit argument or the
+ * `WORKFLOW_QUEUE_NAMESPACE` env var.
+ */
+function resolveNamespace(namespace?: string): string | undefined {
+  return namespace ?? process.env.WORKFLOW_QUEUE_NAMESPACE ?? undefined;
+}
+
+/**
  * Validates a workflow name and returns the corresponding queue name.
  * Ensures the workflow name only contains safe characters before
  * interpolating it into the queue name string.
@@ -45,7 +53,7 @@ export function getWorkflowQueueName(
       `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
     );
   }
-  const prefix = getQueueTopicPrefix('workflow', namespace);
+  const prefix = getQueueTopicPrefix('workflow', resolveNamespace(namespace));
   return `${prefix}${workflowName}` as ValidQueueName;
 }
 
@@ -258,7 +266,7 @@ export async function healthCheck(
   const streamName = getHealthCheckStreamName(correlationId);
 
   const queueName =
-    `${getQueueTopicPrefix(endpoint, options?.namespace)}health_check` as ValidQueueName;
+    `${getQueueTopicPrefix(endpoint, resolveNamespace(options?.namespace))}health_check` as ValidQueueName;
 
   const startTime = Date.now();
 
