@@ -1,0 +1,89 @@
+---
+title: Resume or start by hook token
+description: Look up an existing workflow run by a deterministic hook token before calling start(), and why this pattern is not fully atomic under concurrency.
+type: guide
+summary: Use getHookByToken (or world.hooks.getByToken) to attach to an in-flight run keyed by a stable app ID encoded into the hook token; otherwise start a new run. Pair with stronger idempotency when duplicate starts must be impossible.
+---
+
+Some HTTP or RPC handlers need **one durable session per stable application identifier**—an ID your app already uses for something in the product domain, such as a **chat thread ID**, **order ID**, **invoice ID**, or **tenant-scoped resource key** (often a primary key, slug, or composite you store or pass in URLs). That value is **not** the Workflow **`runId`**, which the runtime assigns when you call **`start()`**. Instead you **derive a hook token** from the stable ID (for example `` `session:${chatThreadId}` `` for a chat) so every request about the same real-world entity computes the **same** token.
+
+If a run is already active and has registered a hook with that token, you can **look up the hook**, reuse `hook.runId`, and avoid starting a second workflow. If nothing is registered yet, you **`start()`** a new run.
+
+## When to use this
+
+- **Session handoff** — A client or edge handler hits your API without a `runId`, but you already know a **stable application ID** (path param, session subject, database row key, etc.) and can derive the hook token from it.
+- **Reconnect before resume** — You want `getRun(runId)` (streams, `returnValue`, status) without persisting `runId` in your own store, as long as the workflow registers a hook with that token early in the run.
+- **Custom worlds / admin tools** — You already use [`world.hooks.getByToken()`](/docs/api-reference/workflow-api/world/storage#look-up-hook-by-token) against storage; the app-level pattern is the same.
+
+## Pattern
+
+1. Build a **deterministic hook token** from your **stable application ID** plus a fixed prefix or namespace so different features do not collide (for example `` `session:${chatThreadId}` ``).
+2. Call **`getHookByToken(token)`** from `workflow/api` (or `world.hooks.getByToken(token)` if you hold a `World` instance).
+3. If a hook exists, use **`hook.runId`** with [`getRun()`](/docs/api-reference/workflow-api/get-run) — for example await **`run.returnValue`** when you need the workflow outcome.
+4. If no hook is found (typically `404` / not found), call **[`start()`](/docs/api-reference/workflow-api/start)** with the same arguments your workflow would use to create that hook on first execution.
+
+```typescript lineNumbers
+import { start, getRun, getHookByToken } from "workflow/api";
+import { sessionWorkflow } from "./workflows/session";
+
+function sessionToken(chatThreadId: string) {
+  return `session:${chatThreadId}`;
+}
+
+/** `chatThreadId` = your app's stable ID for the conversation (not the Workflow runId). */
+export async function getOrStartSession(chatThreadId: string) {
+  const token = sessionToken(chatThreadId);
+
+  const existing = await getHookByToken(token).catch(() => null); // [!code highlight]
+
+  if (existing) {
+    const run = getRun(existing.runId); // [!code highlight]
+    return run.returnValue;
+  }
+
+  const run = await start(sessionWorkflow, [chatThreadId]); // [!code highlight]
+  return run.returnValue;
+}
+```
+
+Your workflow should create the hook with the **same token shape** early (before long-running work), so the lookup succeeds once the run is registered:
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+
+export const sessionHook = defineHook<void>();
+
+export async function sessionWorkflow(chatThreadId: string) {
+  "use workflow";
+
+  const token = `session:${chatThreadId}`;
+  const hook = sessionHook.create({ token }); // [!code highlight]
+
+  // ... durable session logic, await hook, etc.
+}
+```
+
+## Concurrency and atomicity
+
+<Callout type="warn">
+This pattern is **not atomic**. Two concurrent requests can both observe “no hook” **before** the first run has written its `hook_created` event, so both can call **`start()`** and you can get **two runs** for the same stable application ID (the same derived hook token).
+</Callout>
+
+Mitigations:
+
+- **Accept rare duplicates** and detect them downstream (second run fails on `HookConflictError`, or you branch on run state).
+- **Add an outside-workflow coordination layer** — for example a **row keyed by your stable application ID** (the same value you embed in the hook token) with a **unique constraint** that stores the authoritative **`runId`**, using **insert-if-absent**, **`INSERT … ON CONFLICT`**, or a **transaction with row-level locking** so only one concurrent handler reaches **`start()`** for that ID. A bare unique constraint on your domain table primary key does not by itself dedupe workflow runs; you need a **dedicated mapping or lease** tied to that ID. **`start()`** does not expose an idempotency-key option today (only `world`, `specVersion`, and `deploymentId` in [`StartOptions`](/docs/api-reference/workflow-api/start)).
+- **Serialize creates** for the same stable ID (queue, advisory lock, or other mutual exclusion) if you must not spin up a second run even briefly.
+
+For replay-safe **step** side effects inside a workflow, still follow [Idempotency](/cookbook/common-patterns/idempotency) (`getStepMetadata().stepId`, external idempotency keys).
+
+## Key APIs
+
+- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) — resolve `runId` (and metadata) from a hook token in app code.
+- [`world.hooks.getByToken()`](/docs/api-reference/workflow-api/world/storage#look-up-hook-by-token) — same lookup against a `World` storage interface.
+- [`start()`](/docs/api-reference/workflow-api/start) — enqueue a new run when no hook exists yet.
+- [`getRun()`](/docs/api-reference/workflow-api/get-run) — attach to an existing run by `runId` (`returnValue`, streams, status).
+
+## Related
+
+- [Idempotency](/cookbook/common-patterns/idempotency) — keys for external APIs and duplicate-safe side effects inside steps.

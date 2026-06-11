@@ -44,6 +44,7 @@ export const slugToCategory: Record<string, string> = {
   scheduling: 'common-patterns',
   timeouts: 'common-patterns',
   idempotency: 'common-patterns',
+  'resume-or-start': 'common-patterns',
   webhooks: 'common-patterns',
 
   // Agent Patterns
@@ -121,6 +122,13 @@ export const recipes: Record<string, Recipe> = {
     title: 'Idempotency',
     description:
       'Ensure external side effects happen exactly once, even when steps are retried or workflows are replayed.',
+    category: 'common-patterns',
+  },
+  'resume-or-start': {
+    slug: 'resume-or-start',
+    title: 'Resume or start by hook token',
+    description:
+      'Look up an existing run with getHookByToken (or world.hooks.getByToken) before start(); encode a stable application ID (not runId) in the hook token. Pair with stronger idempotency when duplicate starts must be impossible.',
     category: 'common-patterns',
   },
   webhooks: {
