@@ -382,12 +382,31 @@ export function getDeserializeStream(
 // the reader treats as legacy raw bytes for backwards compatibility.
 
 /**
+ * Maximum allowed byte-stream frame payload size (100MB). Shared by the
+ * framer (rejects oversized user chunks at write time, where the error is
+ * actionable) and the unframer (rejects oversized length headers at read
+ * time, which usually indicate a non-framed wire being read as framed).
+ * Keeping both sides on one constant guarantees any chunk the framer
+ * accepts can always be decoded by the unframer.
+ */
+const MAX_FRAME_SIZE = 100_000_000;
+
+/**
  * Wraps each chunk of a byte stream in a 4-byte big-endian length
  * prefix. Used by the producer side of a framed byte-stream pipe.
  *
  * Empty chunks (length 0) are dropped — the resulting `[0x00 0x00 0x00 0x00]`
  * frame would be ambiguous with the legacy "looks framed" detection in
  * `getDeserializeStream`, and it carries no information.
+ *
+ * Load-bearing invariant: each user chunk becomes exactly one frame, and
+ * each frame is enqueued as exactly one transport chunk (the downstream
+ * writable performs one wire write per chunk, preserving boundaries). The
+ * server therefore stores one frame per chunk index, which is what allows
+ * a future reconnecting reader to resume a framed byte stream at
+ * `startIndex + consumedFrames` — the same arithmetic
+ * `createReconnectingFramedStream` relies on for object streams. Do not
+ * coalesce or split frames here without revisiting that resume logic.
  */
 export function getByteFramingStream(): TransformStream<
   Uint8Array,
@@ -396,6 +415,17 @@ export function getByteFramingStream(): TransformStream<
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       if (chunk.length === 0) return;
+      if (chunk.length > MAX_FRAME_SIZE) {
+        controller.error(
+          new WorkflowRuntimeError(
+            `Byte-stream chunk of ${chunk.length} bytes exceeds the maximum ` +
+              `framed chunk size (${MAX_FRAME_SIZE}). Split the data into ` +
+              `smaller chunks before writing.`,
+            { slug: 'serialization-failed' }
+          )
+        );
+        return;
+      }
       const frame = new Uint8Array(FRAME_HEADER_SIZE + chunk.length);
       new DataView(frame.buffer).setUint32(0, chunk.length, false);
       frame.set(chunk, FRAME_HEADER_SIZE);
@@ -422,11 +452,6 @@ export function getByteUnframingStream(): TransformStream<
   Uint8Array,
   Uint8Array
 > {
-  // Sanity cap: 100MB per chunk. Workflow byte chunks are typically far
-  // smaller; anything bigger almost certainly means we got a non-framed
-  // wire fed through this transform by mistake (e.g. legacy raw bytes
-  // routed to a framed reader).
-  const MAX_FRAME_SIZE = 100_000_000;
   let buffer = new Uint8Array(0);
 
   function appendToBuffer(data: Uint8Array) {

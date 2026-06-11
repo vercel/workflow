@@ -116,6 +116,19 @@ describe('getByteFramingStream', () => {
     );
     expect(framed).toHaveLength(0);
   });
+
+  it('errors at write time on a chunk larger than the frame size cap', async () => {
+    // The framer enforces the same MAX_FRAME_SIZE the unframer checks, so
+    // an oversized chunk fails loudly at the producer (where the error is
+    // actionable) instead of encoding a frame the consumer can never
+    // decode. One byte past the 100MB cap; zero-filled allocation is cheap.
+    const oversized = new Uint8Array(100_000_001);
+    await expect(
+      readAll(
+        readableFromChunks([oversized]).pipeThrough(getByteFramingStream())
+      )
+    ).rejects.toThrow(/exceeds the maximum framed chunk size/);
+  });
 });
 
 describe('getByteUnframingStream', () => {
@@ -480,11 +493,14 @@ describe('byte-stream framing end-to-end through dehydrate/hydrate', () => {
     expect(wireBytes).toEqual(expected);
   });
 
-  it('hydrate of a framed-v1 ref unframes; absent ref reads raw', async () => {
-    // Direct exercise of the reviver dispatch: write framed bytes to a
-    // mock world under a known name, then construct the stream ref two
-    // different ways (with framing and without) to verify the consumer
-    // dispatches correctly.
+  it('framer output written chunk-by-chunk to a world stream unframes back to the original chunks', async () => {
+    // Wire-level round-trip through a world stream: frame user chunks,
+    // persist each frame as its own stored chunk (the one-frame-per-chunk
+    // invariant documented on getByteFramingStream), then read back and
+    // unframe. The reviver's ref-based dispatch (framed-v1 → unframe,
+    // absent → raw) is covered end-to-end by the two round-trip tests
+    // above, which go through dehydrateStepReturnValue and assert the
+    // serialized ref contents.
     setWorld(makeMockWorld());
     const world = await (await import('./runtime/world.js')).getWorld();
 
