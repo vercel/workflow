@@ -21,7 +21,8 @@ function matchesQuery(item: RegistryItem, query: string): boolean {
     item.description.toLowerCase().includes(q) ||
     (item.longDescription?.toLowerCase().includes(q) ?? false) ||
     item.tags.some((t) => t.toLowerCase().includes(q)) ||
-    item.categories.some((c) => categoryLabels[c].toLowerCase().includes(q))
+    item.categories.some((c) => categoryLabels[c].toLowerCase().includes(q)) ||
+    item.versions.some((v) => v.toLowerCase() === q)
   );
 }
 

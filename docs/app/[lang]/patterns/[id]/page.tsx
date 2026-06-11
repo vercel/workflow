@@ -160,6 +160,7 @@ export default async function RegistryDetailPage({ params }: PageProps) {
   const pageTextSections: string[] = [
     `# ${item.name}`,
     item.description,
+    `Works with Workflow SDK: ${item.versions.join(', ')}`,
     item.longDescription ?? '',
     ...(guide?.introBullets ?? []).map((b) => `- ${b}`),
   ];

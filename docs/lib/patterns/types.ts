@@ -13,6 +13,12 @@
  *      `installCommand` actually resolves.
  */
 
+/**
+ * Workflow SDK major versions a pattern can declare compatibility with.
+ * Extend this union when a new major ships (e.g. `| 'v6'`).
+ */
+export type WorkflowVersion = 'v4' | 'v5';
+
 export type RegistryCategory =
   | 'provider'
   | 'agent'
@@ -273,6 +279,13 @@ export interface RegistryItem {
    * filter on the listing page.
    */
   categories: RegistryCategory[];
+  /**
+   * Workflow SDK major versions this pattern works with, rendered as badges
+   * on the listing card and detail hero. A pattern that relies on
+   * version-specific APIs lists only the versions it supports (e.g. `['v5']`
+   * for one built on v5-only features).
+   */
+  versions: WorkflowVersion[];
   /** Provider homepage / product page. */
   homepage: string;
   /** Provider docs entry-point linked from the detail hero. */

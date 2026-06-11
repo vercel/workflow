@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/breadcrumb';
 import type { RegistryItem } from '@/lib/patterns/types';
 import { getProviderLogo } from './logos';
+import { VersionBadges } from './VersionBadges';
 
 interface RegistryDetailHeroProps {
   item: RegistryItem;
@@ -51,9 +52,12 @@ export function RegistryDetailHero({ item }: RegistryDetailHeroProps) {
               {item.name}
             </h1>
           </div>
-          <p className="font-mono text-sm text-muted-foreground">
-            {item.shadcnSlug}
-          </p>
+          <div className="flex items-center flex-wrap gap-2">
+            <p className="font-mono text-sm text-muted-foreground">
+              {item.shadcnSlug}
+            </p>
+            <VersionBadges versions={item.versions} />
+          </div>
           <p className="text-lg text-muted-foreground max-w-2xl">
             {item.description}
           </p>

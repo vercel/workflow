@@ -143,6 +143,7 @@ export const registryItems: RegistryItem[] = [
       'Cancel a running AI agent from the outside — for example, a Stop button in a chat UI, an admin cancellation endpoint, or a timeout fallback. Two patterns are available depending on whether you need the agent to exit cleanly or just need the run to stop: Hard Cancellation via `getRun(runId).cancel()` for immediate forced termination, or Stop Signal via a `stopHook` + `Promise.race` for a graceful exit that runs cleanup and streams a `data-stopped` part to the client so it renders a clean ending instead of an abrupt connection close. The stop route falls back to hard cancel automatically if the hook is already gone — so the Stop button always succeeds regardless of timing.',
     tags: ['agent', 'cancellation', 'stop-button', 'durable'],
     categories: ['agent'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/agent-patterns/agent-cancellation',
@@ -352,6 +353,7 @@ export const registryItems: RegistryItem[] = [
       "[AI SDK](https://ai-sdk.dev/) is Vercel's framework-agnostic TypeScript toolkit for building AI-powered apps and agents — unified provider access, streaming, tool calling, structured output, and UI hooks. Workflow SDK complements it by making those calls durable: the model request, the tool loop, and the multi-turn conversation all survive restarts and timeouts. For most agent use cases, prefer `DurableAgent` which wraps `streamText` and manages the tool loop automatically. This pattern covers using `streamText()` directly when you need lower-level control.",
     tags: ['ai', 'chat', 'streaming', 'agents', 'durable'],
     categories: ['agent', 'vercel'],
+    versions: ['v4', 'v5'],
     homepage: 'https://ai-sdk.dev',
     docsUrl: 'https://ai-sdk.dev/docs',
     sourceUrl:
@@ -516,6 +518,7 @@ export const registryItems: RegistryItem[] = [
       'Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically.',
     tags: ['agents', 'ai', 'durable', 'tools', 'streaming'],
     categories: ['agent'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/durable-agent',
     sourceUrl:
@@ -616,6 +619,7 @@ export const registryItems: RegistryItem[] = [
       'Use this pattern when an AI agent needs human confirmation before performing a consequential action like booking, purchasing, or publishing. The workflow suspends without consuming resources until the human responds.',
     tags: ['agent', 'approval', 'human-in-the-loop', 'durable'],
     categories: ['agent'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/agent-patterns/human-in-the-loop',
@@ -738,6 +742,7 @@ export const registryItems: RegistryItem[] = [
       '[Chat SDK](https://chat-sdk.dev/) normalizes Slack, Microsoft Teams, Discord, Telegram, GitHub, Linear, and WhatsApp into one thread/message model. Workflow SDK complements it by making bot sessions durable — each conversation thread maps to one long-running workflow run that owns multi-turn state, can sleep for hours, and survives deploys and cold starts.',
     tags: ['chat', 'bots', 'slack', 'teams', 'discord', 'durable'],
     categories: ['vercel', 'agent'],
+    versions: ['v4', 'v5'],
     homepage: 'https://chat-sdk.dev',
     docsUrl: 'https://chat-sdk.dev/docs/guides/durable-chat-sessions-nextjs',
     sourceUrl:
@@ -890,6 +895,7 @@ export const registryItems: RegistryItem[] = [
       'The [`@vercel/sandbox`](https://vercel.com/docs/vercel-sandbox) package has first-class support for the Workflow SDK — the `Sandbox` class is serializable, and its methods (`create`, `runCommand`, `stop`, `snapshot`) implicitly run as steps, so you can use `Sandbox` directly inside a workflow function without wrapping each call in `"use step"`. Wrapping the sandbox in a workflow run gives you a durable controller for its entire lifetime: auto-hibernation on idle, proactive rollover before the 5-hour sandbox hard cap, and reconnection by a single `runId` — so one logical session can run effectively forever on top of time-bounded infrastructure.',
     tags: ['sandbox', 'agents', 'sessions', 'durable', 'snapshots'],
     categories: ['vercel', 'agent'],
+    versions: ['v4', 'v5'],
     homepage: 'https://vercel.com/docs/vercel-sandbox',
     docsUrl: 'https://vercel.com/docs/vercel-sandbox',
     sourceUrl:
@@ -1036,6 +1042,7 @@ export const registryItems: RegistryItem[] = [
       "Use batching when you need to process a large list of items in parallel while controlling concurrency. Items are split into fixed-size batches, each batch runs concurrently, and failures in one batch don't affect others.",
     tags: ['batching', 'fan-out', 'parallel', 'bulk-import'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/batching',
     sourceUrl:
@@ -1118,6 +1125,7 @@ export const registryItems: RegistryItem[] = [
       "Workflow steps can be retried (on failure) and replayed (on cold start). If a step calls an external API that isn't idempotent, retries could create duplicate charges, send duplicate emails, or double-process records. Use idempotency keys to make these operations safe.",
     tags: ['idempotency', 'stripe', 'retries', 'exactly-once'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/idempotency',
     sourceUrl:
@@ -1192,6 +1200,7 @@ export const registryItems: RegistryItem[] = [
       'Use this pattern when calling external APIs that enforce rate limits. Instead of writing manual retry loops, throw `RetryableError` with a `retryAfter` value and let the workflow runtime handle rescheduling — more efficient than wall-clock sleeps and survives cold starts.',
     tags: ['rate-limit', 'retry', 'backoff', '429'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/rate-limiting',
     sourceUrl:
@@ -1274,6 +1283,7 @@ export const registryItems: RegistryItem[] = [
       'Use the saga pattern when a business transaction spans multiple services and you need automatic rollback if any step fails. Each forward step registers a compensation, and on failure the workflow unwinds them in reverse order.',
     tags: ['saga', 'transactions', 'rollback', 'compensation'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/saga',
     sourceUrl:
@@ -1357,6 +1367,7 @@ export const registryItems: RegistryItem[] = [
       "Workflow's `sleep()` is durable — it survives cold starts, restarts, and deployments. Combined with `defineHook()` and `Promise.race()`, it becomes the foundation for interruptible scheduled workflows like drip campaigns, reminders, and timed sequences.",
     tags: ['scheduling', 'reminders', 'cancellable', 'sleep'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/scheduling',
     sourceUrl:
@@ -1455,6 +1466,7 @@ export const registryItems: RegistryItem[] = [
       "Workflows are written in plain async/await — there's no new control-flow API to learn. Sequential awaits chain steps that depend on each other, `Promise.all` runs independent steps in parallel, and `Promise.race` returns whichever finishes first. These compose with workflow primitives like `sleep()` and `createWebhook()` since those are also just promises.",
     tags: ['composition', 'parallel', 'race', 'pipeline'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/common-patterns/sequential-and-parallel',
@@ -1546,6 +1558,7 @@ export const registryItems: RegistryItem[] = [
       'A common requirement is bounding how long a workflow waits for something to finish — a slow step, an external webhook, a human approval. Race the operation against a durable `sleep()` with `Promise.race()` — whichever finishes first wins, and the loser keeps running but its result is ignored.',
     tags: ['timeout', 'deadline', 'race', 'sleep'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/timeouts',
     sourceUrl:
@@ -1633,6 +1646,7 @@ export const registryItems: RegistryItem[] = [
       'Use webhooks when external services push events to your application via HTTP callbacks. The workflow creates a webhook URL, suspends with zero compute cost, and resumes when a request arrives.',
     tags: ['webhook', 'callback', 'integration', 'external-api'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/webhooks',
     sourceUrl:
@@ -1730,6 +1744,7 @@ export const registryItems: RegistryItem[] = [
       "Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or wants to fire the child off as an independent run (background spawn). For massive fan-out with polling and partial-failure handling, see the Child Workflows pattern.",
     tags: ['composition', 'child-workflow', 'spawn', 'start'],
     categories: ['common'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/common-patterns/workflow-composition',
@@ -1827,6 +1842,7 @@ export const registryItems: RegistryItem[] = [
       "Use child workflows when a single workflow needs to orchestrate many independent units of work. Each child runs as its own workflow with a separate event log, retry boundary, and failure scope — if one child fails, it doesn't take down the parent or siblings.",
     tags: ['fan-out', 'spawn', 'poll', 'orchestration'],
     categories: ['advanced'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/child-workflows',
     sourceUrl:
@@ -1907,6 +1923,7 @@ export const registryItems: RegistryItem[] = [
       'Use this pattern when you need an `AbortController`-like interface that works across distributed systems. The controller uses a durable workflow to coordinate cancellation — calling `.abort()` on one machine triggers the `.signal` on any other machine.',
     tags: ['abort', 'cancellation', 'distributed', 'cross-process'],
     categories: ['advanced'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/advanced/distributed-abort-controller',
@@ -2010,6 +2027,7 @@ export const registryItems: RegistryItem[] = [
       'Ship fixes to in-flight runs without migrating state. Each iteration handles one event, then calls `start(self, [newState], { deploymentId: "latest" })` from inside a step to spawn its successor on whichever deployment is currently live. Because state travels as a plain function argument, the logical "session" survives indefinite redeploys — the next run starts fresh on new code and picks up exactly where the last one left off. Useful for workflows that wait on a long timescale (days/weeks) and need shipped fixes to apply immediately, or for any pattern where you want to iterate freely without versioning workflow logic. Ships Method 1 (spawn on every iteration) out of the box; the same start and resume routes also support Method 2 (dedicated upgrade hook racing the main work hook) described in the docs.',
     tags: ['upgrade', 'respawn', 'deployment', 'long-running', 'versioning'],
     categories: ['common', 'advanced'],
+    versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/upgrading-workflows',
     sourceUrl:
@@ -2074,6 +2092,7 @@ export const registryItems: RegistryItem[] = [
       'A production-ready email drip campaign powered by Resend. New users get a welcome email immediately, then follow-ups spaced hours, days, or weeks apart — whatever you configure. Each send is a workflow step that gets persisted once it succeeds, so if your server restarts or crashes mid-campaign, no one ever gets a duplicate. The waits between emails cost nothing (the campaign is fully paused, not idling), so it can span days or weeks without keeping anything running. And the moment a user converts, calling a single function from your app stops the whole thing instantly — no leftover emails, no extra database tables, no flag-checking on every send.',
     tags: ['email', 'drip', 'cancellable', 'durable'],
     categories: ['provider'],
+    versions: ['v4', 'v5'],
     homepage: 'https://resend.com',
     docsUrl: 'https://resend.com/docs/send-with-nodejs',
     sourceUrl:
