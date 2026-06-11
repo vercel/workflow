@@ -12,11 +12,15 @@ export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
 export type * from './queue.js';
 export {
+  getQueuePrefixKind,
+  getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   MessageId,
+  parseQueueName,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
+  resolveQueueNamespace,
   StepInvokePayloadSchema,
   ValidQueueName,
   WorkflowInvokePayloadSchema,

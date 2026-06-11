@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 import {
   ERROR_SLUGS,
   HookNotFoundError,

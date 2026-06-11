@@ -164,11 +164,11 @@ export const prerender = false;`,
     // Normalize request, needed for preserving request through astro
     workflowsRouteContent = replaceGeneratedRouteExport(
       workflowsRouteContent,
-      /const handler = workflowEntrypoint\(workflowCode\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
-      `${NORMALIZE_REQUEST_CODE}
+      /const handler = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
+      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
 const handleWorkflowRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode)(normalRequest);
+  return workflowEntrypoint(workflowCode${options})(normalRequest);
 };
 
 export const HEAD = handleWorkflowRequest;
