@@ -2891,8 +2891,10 @@ describe('e2e', () => {
         const returnValue = await run.returnValue;
 
         // The workflow races 3 parallel long steps against a 3s sleep.
-        // The sleep wins, so the workflow returns timed out status.
+        // The sleep wins, so the workflow returns timed out status after all
+        // in-flight steps observe the abort and settle through the abort path.
         expect(returnValue.status).toBe('timed out');
+        expect(returnValue.results).toEqual(['aborted', 'aborted', 'aborted']);
       }
     );
 
@@ -3580,7 +3582,27 @@ describe('e2e', () => {
 
   describe('experimental_setAttributes', () => {
     test(
-      'experimentalSetAttributesWorkflow: workflow-body calls dispatch through the step bridge and merge correctly',
+      'start: initial attributes are seeded on run creation',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesWorkflow'),
+          [2],
+          { attributes: { sourceAtStart: 'api' } }
+        );
+        await run.returnValue;
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted.attributes).toEqual({
+          sourceAtStart: 'api',
+          phase: 'done',
+        });
+      }
+    );
+
+    test(
+      'experimentalSetAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly',
       { timeout: 30_000 },
       async () => {
         const run = await start(
@@ -3598,26 +3620,17 @@ describe('e2e', () => {
         expect(persisted?.attributes).toEqual({ phase: 'done' });
         expect(persisted?.attributes ?? {}).not.toHaveProperty('source');
 
-        // Dispatch is via a real step — verify at least one
-        // `step_created`/`step_completed` pair for the `__builtin_set_attributes`
-        // step exists on the run's event log.
         const { data: events } = await world.events.list({ runId: run.runId });
-        const attrStepEvents = events.filter(
+        const attributeEvents = events.filter(
           (e) =>
-            (e.eventType === 'step_created' ||
-              e.eventType === 'step_completed') &&
-            typeof (e.eventData as { stepName?: string } | undefined)
-              ?.stepName === 'string' &&
-            (e.eventData as { stepName: string }).stepName.includes(
-              '__builtin_set_attributes'
-            )
+            e.eventType === 'attr_set' && e.eventData.writer.type === 'workflow'
         );
-        expect(attrStepEvents.length).toBeGreaterThanOrEqual(2);
+        expect(attributeEvents).toHaveLength(3);
       }
     );
 
     test(
-      'experimentalSetAttributesInsideStepWorkflow: step-body calls post directly to the world',
+      'experimentalSetAttributesInsideStepWorkflow: step-body calls append attributed native events',
       { timeout: 30_000 },
       async () => {
         const run = await start(
@@ -3640,39 +3653,28 @@ describe('e2e', () => {
         expect(
           events.some(
             (e) =>
-              (e.eventType === 'step_created' ||
-                e.eventType === 'step_completed') &&
-              typeof (e.eventData as { stepName?: string } | undefined)
-                ?.stepName === 'string' &&
-              (e.eventData as { stepName: string }).stepName.includes(
-                '__builtin_set_attributes'
-              )
+              e.eventType === 'attr_set' && e.eventData.writer.type === 'step'
           )
-        ).toBe(false);
+        ).toBe(true);
       }
     );
 
-    // TODO(attributes): un-skip once the platform supports executing
-    // step bodies queued by `drainPendingQueueItems`. Today the step
-    // worker calls `executeStep` → `world.events.create('step_started')`,
-    // which the server rejects with `RunExpiredError` (HTTP 410) once
-    // the run has transitioned to a terminal state. Drain commits the
-    // `step_created` event and enqueues the message, but by the time
-    // the queue worker picks it up `run_completed` has landed and the
-    // worker skips the step ("Workflow run X has already completed,
-    // skipping step Y" in step-executor.ts).
-    //
-    // The fire-and-forget pattern itself works for `void` calls placed
-    // before any later `await` on a runtime primitive (the suspension
-    // queues the step before the run terminates) — see the awaited
-    // workflow-body test above for that coverage. What's broken is
-    // specifically "last void immediately before return". Either the
-    // platform needs to keep accepting `step_started` for steps the
-    // workflow itself queued at drain time, or attribute writes need
-    // a non-step dispatch path (planned for the full V1 attributes
-    // feature where attr_set is a first-class event type).
-    test.todo(
-      'fire-and-forget: void experimental_setAttributes lands without awaiting'
+    test(
+      'fire-and-forget: void experimental_setAttributes lands without awaiting',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesFireAndForgetWorkflow'),
+          []
+        );
+        await run.returnValue;
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted.attributes).toEqual({
+          phase: 'done',
+          mode: 'fire-and-forget',
+        });
+      }
     );
 
     test(
@@ -3719,6 +3721,58 @@ describe('e2e', () => {
           phase: 'about-to-fail',
           reason: 'intentional',
         });
+      }
+    );
+
+    test(
+      'validation DX: invalid writes throw catchable FatalErrors naming rule and limit',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesValidationWorkflow'),
+          []
+        );
+        const outcomes = (await run.returnValue) as Record<string, string>;
+
+        // Every invalid call is rejected as a FatalError the workflow can
+        // catch, with a message naming the violated rule and its limit.
+        expect(outcomes.reserved).toMatch(/^FatalError: /);
+        expect(outcomes.reserved).toContain('reserved prefix');
+        expect(outcomes.reserved).toContain('allowReservedAttributes');
+        expect(outcomes.emptyKey).toContain('must not be empty');
+        expect(outcomes.keyTooLong).toContain(
+          'key length 257 exceeds limit 256'
+        );
+        expect(outcomes.valueTooLong).toContain(
+          'byte length 257 exceeds limit 256'
+        );
+        // The value cap is bytes, not characters: 200 two-byte chars.
+        expect(outcomes.valueTooManyBytes).toContain(
+          'byte length 400 exceeds limit 256'
+        );
+        expect(outcomes.overCap).toContain('exceed limit 64');
+        expect(outcomes.nonObject).toContain('requires a plain object');
+
+        // No invalid write reached the run, and the run stayed healthy
+        // enough to complete a valid write afterwards.
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted?.status).toBe('completed');
+        expect(persisted?.attributes).toEqual({ phase: 'validated' });
+      }
+    );
+
+    test(
+      'start: invalid initial attributes are rejected before a run is created',
+      { timeout: 30_000 },
+      async () => {
+        const workflow = await e2e('experimentalSetAttributesWorkflow');
+        await expect(
+          start(workflow, [1], { attributes: { $reserved: 'x' } })
+        ).rejects.toThrow(/reserved prefix/);
+        await expect(
+          start(workflow, [1], { attributes: { note: 'v'.repeat(257) } })
+        ).rejects.toThrow(/exceeds limit 256/);
       }
     );
   });
