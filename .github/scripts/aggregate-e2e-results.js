@@ -146,6 +146,32 @@ function loadFailures(dir) {
   return failures;
 }
 
+// vitest's JSON reporter serializes only error stacks. For test timeouts the
+// stack is the task-collection stack ("Error: STACK_TRACE_ERROR ..."), which
+// carries no information about the failure. The github-reporter failures
+// sidecar carries the real error message (e.g. "Test timed out in 60000ms"),
+// so prefer it whenever the vitest message is useless.
+function enrichFailedTestMessages(failedTests, failures) {
+  for (const test of failedTests) {
+    const useless =
+      !test.message || test.message.startsWith('Error: STACK_TRACE_ERROR');
+    if (!useless) continue;
+
+    const sidecar =
+      failures.get(test.title) ||
+      failures.get(test.name) ||
+      failures.get((test.name || '').replace(/^e2e\s+/, ''));
+    if (sidecar?.errorMessage) {
+      test.message = sidecar.errorMessage.slice(0, 200);
+    } else if (!test.message) {
+      test.message = '(no error message serialized)';
+    } else {
+      test.message =
+        '(no error message serialized — likely a test timeout; see job log annotations)';
+    }
+  }
+}
+
 // Generate observability URL for a test
 function getObservabilityUrl(metadata, appName, testName) {
   const appMetadata = metadata.get(appName);
@@ -186,6 +212,7 @@ function parseVitestResults(file) {
             results.failed++;
             results.failedTests.push({
               name: assertionResult.fullName || assertionResult.title,
+              title: assertionResult.title,
               file: testFile.name,
               message:
                 assertionResult.failureMessages?.join('\n').slice(0, 200) || '',
@@ -578,6 +605,7 @@ if (mode === 'aggregate') {
   const metadata = loadMetadata(resultsDir);
   const diagnostics = loadDiagnostics(resultsDir);
   const failures = loadFailures(resultsDir);
+  enrichFailedTestMessages(overallSummary.allFailedTests, failures);
   renderAggregatedSummary(
     categories,
     overallSummary,
@@ -592,6 +620,7 @@ if (mode === 'aggregate') {
   }
 } else {
   const summary = aggregateResults(resultFiles);
+  enrichFailedTestMessages(summary.allFailedTests, loadFailures(resultsDir));
   renderSingleJobSummary(summary);
 
   // Exit with non-zero if any tests failed
