@@ -1,5 +1,4 @@
 import { types } from 'node:util';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -28,15 +27,19 @@ import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
+  promoteAbortErrorToFatal,
 } from '../types.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
+import { waitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
 export interface StepExecutorParams {
   world: World;
   workflowRunId: string;
+  /** Deployment that owns the workflow run, for forwarded writable streams. */
+  workflowDeploymentId?: string;
   workflowName: string;
   workflowStartedAt: number;
   stepId: string;
@@ -107,6 +110,7 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
+            stepName,
             error: await dehydrateStepError(
               new FatalError(errorMessage),
               workflowRunId,
@@ -140,6 +144,7 @@ export async function executeStep(
         eventType: 'step_started',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: stepId,
+        eventData: { stepName },
       });
 
       if (!startResult.step) {
@@ -239,6 +244,7 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
+            stepName,
             error: await dehydrateStepError(
               wrappedError,
               workflowRunId,
@@ -290,7 +296,10 @@ export async function executeStep(
             step.input,
             workflowRunId,
             encryptionKey,
-            ops
+            ops,
+            globalThis,
+            {},
+            params.workflowDeploymentId
           );
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
@@ -324,6 +333,7 @@ export async function executeStep(
                 : `http://localhost:${port ?? 3000}`,
               features: { encryption: !!encryptionKey },
             },
+            workflowDeploymentId: params.workflowDeploymentId,
             ops,
             closureVars: hydratedInput.closureVars,
             encryptionKey,
@@ -382,6 +392,7 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
+            stepName,
             result: result as Uint8Array,
           },
         })
@@ -422,21 +433,28 @@ export async function executeStep(
       // and queue a continuation so waitUntil can flush them.
       return { type: 'completed', hasPendingOps: !opsSettled };
     } catch (err: unknown) {
-      const normalizedError = await normalizeUnknownError(err);
-      const normalizedStack = normalizedError.stack || getErrorStack(err) || '';
+      const effectiveErr = promoteAbortErrorToFatal(err);
 
-      if (err instanceof Error) {
-        span?.recordException?.(err);
+      const normalizedError = await normalizeUnknownError(effectiveErr);
+      const normalizedStack =
+        normalizedError.stack || getErrorStack(effectiveErr) || '';
+
+      if (effectiveErr instanceof Error) {
+        span?.recordException?.(effectiveErr);
       }
 
-      const isFatal = FatalError.is(err);
+      const isFatal = FatalError.is(effectiveErr);
 
       span?.setAttributes({
-        ...Attribute.StepErrorName(getErrorName(err)),
+        ...Attribute.StepErrorName(getErrorName(effectiveErr)),
         ...Attribute.StepErrorMessage(normalizedError.message),
-        ...Attribute.ErrorType(getErrorName(err)),
+        ...Attribute.ErrorType(getErrorName(effectiveErr)),
         ...Attribute.ErrorCategory(
-          isFatal ? 'fatal' : RetryableError.is(err) ? 'retryable' : 'transient'
+          isFatal
+            ? 'fatal'
+            : RetryableError.is(effectiveErr)
+              ? 'retryable'
+              : 'transient'
         ),
         ...Attribute.ErrorRetryable(!isFatal),
       });
@@ -459,8 +477,8 @@ export async function executeStep(
         // error preserves it for consumers. `types.isNativeError()` works
         // across VM realms (a workflow-thrown error is an instance of the
         // VM's Error class, not the host's).
-        if (types.isNativeError(err) && normalizedStack) {
-          (err as Error).stack = normalizedStack;
+        if (types.isNativeError(effectiveErr) && normalizedStack) {
+          (effectiveErr as Error).stack = normalizedStack;
         }
         try {
           await world.events.create(workflowRunId, {
@@ -468,8 +486,9 @@ export async function executeStep(
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {
+              stepName,
               error: await dehydrateStepError(
-                err,
+                effectiveErr,
                 workflowRunId,
                 await getEncryptionKey()
               ),
@@ -532,6 +551,7 @@ export async function executeStep(
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {
+              stepName,
               error: await dehydrateStepError(
                 wrappedError,
                 workflowRunId,
@@ -590,6 +610,7 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
+            stepName,
             error: await dehydrateStepError(
               err,
               workflowRunId,

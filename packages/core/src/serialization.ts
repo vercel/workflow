@@ -1,10 +1,15 @@
-import { SerializationError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  RuntimeDecryptionError,
+  SerializationError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
   decrypt as aesGcmDecrypt,
   encrypt as aesGcmEncrypt,
   type CryptoKey,
+  importKey,
 } from './encryption.js';
 import {
   createFlushableState,
@@ -25,8 +30,12 @@ import {
   decrypt,
   type EncryptionKeyParam,
   encrypt,
+  resolveEncryptionKey,
 } from './serialization/encryption.js';
-import { formatSerializationError } from './serialization/errors.js';
+import {
+  formatSerializationError,
+  rethrowIfRuntimeError,
+} from './serialization/errors.js';
 import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -55,12 +64,20 @@ import {
 import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
 import {
+  ABORT_HOOK_TOKEN,
+  ABORT_LISTENER_ATTACHED,
+  ABORT_READER_CANCEL,
+  ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
+import { getAbortStreamId } from './util.js';
+import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 
 // Re-export types and utilities from the modular serialization modules
 // so existing consumers of `@workflow/core/serialization` keep working.
@@ -121,8 +138,17 @@ const FRAME_HEADER_SIZE = 4;
  * arguments" instead of generic "workflow value"), so they unwrap the
  * inner SerializationError and reformat with the original cause. Errors
  * that aren't already SerializationError flow through unchanged.
+ *
+ * `RuntimeDecryptionError` is an exception: it must keep its identity (and
+ * `context`) so the run-failure classifier routes it to `RUNTIME_ERROR`,
+ * so this rethrows it unchanged before any unwrapping. Note this guard
+ * must run before the generic `WorkflowRuntimeError` unwrap below, since
+ * `RuntimeDecryptionError` extends `WorkflowRuntimeError` and carries a
+ * `cause` (the underlying DOMException) that would otherwise be unwrapped
+ * and reframed as a `SerializationError`.
  */
 function unwrapSerializationCause(error: unknown): unknown {
+  rethrowIfRuntimeError(error);
   if (error instanceof SerializationError && error.cause !== undefined) {
     return error.cause;
   }
@@ -137,8 +163,8 @@ export function getSerializeStream(
   cryptoKey: EncryptionKeyParam
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
-  // Resolve the key promise once on first use and cache the result.
-  // Note: if the cryptoKey promise rejects (e.g., network error fetching
+  // Resolve the key input once on first use and cache the result.
+  // Note: if resolving cryptoKey rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
   // is processed — not at stream construction time.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
@@ -146,7 +172,7 @@ export function getSerializeStream(
     async transform(chunk, controller) {
       try {
         if (!keyState.resolved) {
-          keyState.key = await cryptoKey;
+          keyState.key = await resolveEncryptionKey(cryptoKey);
           keyState.resolved = true;
         }
         const serialized = stringify(chunk, reducers);
@@ -173,6 +199,13 @@ export function getSerializeStream(
         frame.set(prefixed, FRAME_HEADER_SIZE);
         controller.enqueue(frame);
       } catch (error) {
+        // Encryption failures must keep their RuntimeDecryptionError
+        // identity (RUNTIME_ERROR) rather than be reframed as a
+        // SerializationError (USER_ERROR).
+        if (RuntimeDecryptionError.is(error)) {
+          controller.error(error);
+          return;
+        }
         const { message, hint } = formatSerializationError(
           'stream chunk',
           error
@@ -192,7 +225,7 @@ export function getDeserializeStream(
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
-  // Resolve the key promise once on first use and cache the result.
+  // Resolve the key input once on first use and cache the result.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
 
   function appendToBuffer(data: Uint8Array) {
@@ -205,9 +238,9 @@ export function getDeserializeStream(
   async function processFrames(
     controller: TransformStreamDefaultController<any>
   ) {
-    // Resolve the key promise once on first use and cache the result
+    // Resolve the key input once on first use and cache the result
     if (!keyState.resolved) {
-      keyState.key = await cryptoKey;
+      keyState.key = await resolveEncryptionKey(cryptoKey);
       keyState.resolved = true;
     }
 
@@ -237,14 +270,33 @@ export function getDeserializeStream(
       if (format === SerializationFormat.ENCRYPTED) {
         if (!keyState.key) {
           controller.error(
-            new WorkflowRuntimeError(
+            new RuntimeDecryptionError(
               'Encrypted stream data encountered but no encryption key is available. ' +
-                'Encryption is not configured or no key was provided for this run.'
+                'Encryption is not configured or no key was provided for this run.',
+              {
+                context: {
+                  operation: 'decrypt',
+                  byteLength: payload.byteLength,
+                  formatPrefix: 'encr',
+                },
+              }
             )
           );
           return;
         }
-        const decrypted = await aesGcmDecrypt(keyState.key, payload);
+        let decrypted: Uint8Array;
+        try {
+          decrypted = await aesGcmDecrypt(keyState.key, payload);
+        } catch (error) {
+          // The low-level AES layer only sees the stripped payload, so it
+          // cannot record the outer envelope prefix. We peeked it here
+          // (`encr`), so enrich the diagnostic context with the real format
+          // prefix before propagating — mirroring serialization/encryption.ts.
+          if (RuntimeDecryptionError.is(error) && error.context) {
+            error.context.formatPrefix = format;
+          }
+          throw error;
+        }
         ({ format, payload } = decodeFormatPrefix(decrypted));
       }
 
@@ -341,6 +393,182 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       },
     });
   }
+}
+
+/**
+ * Maximum consecutive reconnect attempts for a single framed stream session.
+ * The counter resets to zero whenever a reconnect makes forward progress (a
+ * frame is delivered), so this bounds *consecutive* failures, not the lifetime
+ * total — a long-lived serverless stream may legitimately reconnect far more
+ * than this many times as long as each reconnect keeps delivering data. We only
+ * give up after this many reconnects in a row produce nothing.
+ */
+export const FRAMED_STREAM_MAX_RECONNECTS = 50;
+
+/**
+ * Absolute backstop on total reconnects for a single session, independent of
+ * progress. The consecutive cap above resets on forward progress, which is
+ * correct for a well-behaved backend that honors `startIndex`. But if a World's
+ * `streams.get` ever ignored `startIndex` and re-delivered earlier chunks,
+ * "progress" would be reported every reconnect and the consecutive cap would
+ * never trip — turning a bounded failure into an unbounded reconnect loop. This
+ * hard ceiling guarantees the loop always terminates. It is set high enough
+ * (hours of streaming at realistic per-session timeouts) to never interfere
+ * with legitimate long-lived streams.
+ */
+export const FRAMED_STREAM_MAX_TOTAL_RECONNECTS = 1000;
+
+/**
+ * Wraps the length-prefix-framed byte stream from `world.streams.get` with
+ * transparent auto-reconnect.
+ *
+ * Every fully-decoded outer frame corresponds to exactly one server-side
+ * chunk (the serialize transform enqueues one frame per workflow write, and
+ * the writable buffers one frame per chunk when multi-writing). The wrapper
+ * counts completed frames and, on upstream error, reopens the connection
+ * with `startIndex = resolvedStartIndex + consumedFrames`. Partial-frame
+ * bytes buffered before the cut are discarded — the server will resend the
+ * in-flight chunk in full from the new startIndex.
+ *
+ * A clean upstream close (EOF with no error) signals the stream is truly
+ * done; we close the wrapper and do not reconnect.
+ *
+ * Negative `startIndex` values (last-N semantics) skip the reconnect
+ * machinery because we cannot compute an absolute resume position without
+ * a tail-index lookup — the returned stream behaves as a single-shot read.
+ */
+export function createReconnectingFramedStream(
+  runId: string,
+  name: string,
+  startIndex?: number
+): ReadableStream<Uint8Array> {
+  const reconnectSupported = startIndex === undefined || startIndex >= 0;
+  let currentStartIndex = startIndex ?? 0;
+  let consumedFrames = 0;
+  let reconnectCount = 0;
+  let totalReconnectCount = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let buffer = new Uint8Array(0);
+
+  async function connect(): Promise<void> {
+    const world = await getWorldLazy();
+    const effectiveStartIndex = reconnectSupported
+      ? currentStartIndex + consumedFrames
+      : startIndex;
+    const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    reader = stream.getReader();
+  }
+
+  async function reconnect(): Promise<void> {
+    reconnectCount++;
+    totalReconnectCount++;
+    if (reconnectCount > FRAMED_STREAM_MAX_RECONNECTS) {
+      throw new Error(
+        `Stream "${name}" exceeded maximum reconnection attempts (${FRAMED_STREAM_MAX_RECONNECTS})`
+      );
+    }
+    if (totalReconnectCount > FRAMED_STREAM_MAX_TOTAL_RECONNECTS) {
+      throw new Error(
+        `Stream "${name}" exceeded maximum total reconnection attempts (${FRAMED_STREAM_MAX_TOTAL_RECONNECTS})`
+      );
+    }
+    if (reader) {
+      await reader.cancel().catch(() => {});
+      reader = undefined;
+    }
+    currentStartIndex += consumedFrames;
+    consumedFrames = 0;
+    buffer = new Uint8Array(0);
+    await connect();
+  }
+
+  return new ReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      // Loop until we emit something, hit EOF, or fatally error. Reads that
+      // only extend the in-flight-frame buffer don't enqueue anything — we
+      // keep reading rather than returning empty-handed.
+      for (;;) {
+        if (!reader) {
+          try {
+            await connect();
+          } catch (err) {
+            controller.error(err);
+            return;
+          }
+        }
+
+        let result: { done: boolean; value?: Uint8Array };
+        try {
+          // biome-ignore lint/style/noNonNullAssertion: connect() guarantees reader
+          result = await reader!.read();
+        } catch (err) {
+          if (!reconnectSupported) {
+            controller.error(err);
+            return;
+          }
+          try {
+            await reconnect();
+          } catch (reconnectErr) {
+            controller.error(reconnectErr);
+            return;
+          }
+          continue;
+        }
+
+        if (result.done || !result.value) {
+          // Clean EOF — stream is truly complete. Drop any partial-frame
+          // bytes (there shouldn't be any; a well-formed stream ends on a
+          // frame boundary).
+          reader = undefined;
+          controller.close();
+          return;
+        }
+
+        // Append to buffer and emit all complete frames.
+        const incoming = result.value;
+        if (incoming.length > 0) {
+          const combined = new Uint8Array(buffer.length + incoming.length);
+          combined.set(buffer, 0);
+          combined.set(incoming, buffer.length);
+          buffer = combined;
+        }
+
+        let emitted = false;
+        while (buffer.length >= FRAME_HEADER_SIZE) {
+          const frameLength = new DataView(
+            buffer.buffer,
+            buffer.byteOffset,
+            buffer.byteLength
+          ).getUint32(0, false);
+          const total = FRAME_HEADER_SIZE + frameLength;
+          if (buffer.length < total) break;
+          // Forward the entire framed chunk (header + payload) to the
+          // downstream deserializer, which already expects this layout.
+          controller.enqueue(buffer.slice(0, total));
+          buffer = buffer.slice(total);
+          consumedFrames++;
+          emitted = true;
+        }
+
+        if (emitted) {
+          // Forward progress on the current connection — clear the
+          // consecutive-failure budget so a long stream that reconnects
+          // many times (but keeps delivering) is never falsely capped.
+          reconnectCount = 0;
+          return;
+        }
+        // Only partial bytes — read more.
+      }
+    },
+    cancel: async () => {
+      if (reader) {
+        await reader.cancel().catch((err) => {
+          console.warn('Error closing ReadableStream reader:', err);
+        });
+        reader = undefined;
+      }
+    },
+  });
 }
 
 /**
@@ -527,6 +755,22 @@ function getAllBaseReducers(
       if (responseWritable) {
         data.responseWritable = responseWritable;
       }
+      // Forward the signal in two cases:
+      //   1. Already aborted — preserve aborted=true/reason so the hydrated
+      //      step sees the cancellation that happened before serialize.
+      //   2. Already tagged with workflow infrastructure — i.e. a signal
+      //      from a workflow-managed AbortController, which has stream/hook
+      //      backing for cross-boundary propagation.
+      // Plain non-aborted native signals are intentionally dropped (would
+      // mint stream infra for every Request, including the auto-generated
+      // signal on `new Request(url)`).
+      if (
+        value.signal &&
+        (value.signal.aborted ||
+          (value.signal as AbortInternals)[ABORT_STREAM_NAME])
+      ) {
+        data.signal = value.signal;
+      }
       return data;
     },
     Response: (value) => {
@@ -542,6 +786,157 @@ function getAllBaseReducers(
       };
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared abort reducer helpers
+// ---------------------------------------------------------------------------
+
+type AbortSerializedData = {
+  streamName: string;
+  hookToken: string;
+  aborted: boolean;
+  reason: unknown;
+};
+
+/**
+ * Symbol-keyed internal fields tagged onto AbortController/AbortSignal
+ * instances (and `holder`s in reducer helpers). All optional — a plain
+ * native instance has none of them set.
+ */
+type AbortInternals = {
+  [ABORT_STREAM_NAME]?: string;
+  [ABORT_HOOK_TOKEN]?: string;
+  [ABORT_READER_CANCEL]?: AbortController;
+};
+
+type AbortSignalLike = AbortInternals & {
+  aborted: boolean;
+  reason?: unknown;
+  addEventListener?: Function;
+};
+
+type AbortHolder = AbortInternals & { signal?: AbortInternals };
+
+/**
+ * Shared logic for AbortController/AbortSignal reducers in external and step
+ * contexts. Assigns stream/hook names if not already present, optionally
+ * attaches an abort listener for real-time propagation, and returns the
+ * serialized representation.
+ */
+function reduceAbortWithListener(
+  signal: AbortSignalLike,
+  holder: AbortHolder,
+  global: Record<string, any>,
+  ops: Promise<void>[],
+  runId: string,
+  cryptoKey: EncryptionKeyParam
+): AbortSerializedData {
+  let streamName = holder[ABORT_STREAM_NAME];
+  let hookToken = holder[ABORT_HOOK_TOKEN];
+  if (!streamName) {
+    const id = ((global as any)[STABLE_ULID] || defaultUlid)();
+    streamName = getAbortStreamId(id);
+    hookToken = `abrt_${id}`;
+    holder[ABORT_STREAM_NAME] = streamName;
+    holder[ABORT_HOOK_TOKEN] = hookToken;
+    if (holder.signal) {
+      holder.signal[ABORT_STREAM_NAME] = streamName;
+      holder.signal[ABORT_HOOK_TOKEN] = hookToken;
+    }
+  }
+
+  // Deduped via ABORT_LISTENER_ATTACHED marker — see attachAbortListenerOnce.
+  attachAbortListenerOnce(
+    signal as AbortSignal,
+    streamName,
+    runId,
+    cryptoKey,
+    ops
+  );
+
+  return {
+    streamName,
+    hookToken: hookToken!,
+    aborted: signal.aborted,
+    reason: signal.aborted ? signal.reason : undefined,
+  };
+}
+
+/**
+ * Shared logic for AbortController/AbortSignal reducers in workflow context.
+ * Reads existing stream/hook names from symbols (must already be set).
+ */
+function reduceAbortBySymbol(
+  signal: { aborted: boolean; reason?: unknown },
+  holder: AbortHolder
+): AbortSerializedData | false {
+  const streamName =
+    holder[ABORT_STREAM_NAME] ?? holder.signal?.[ABORT_STREAM_NAME];
+  const hookToken =
+    holder[ABORT_HOOK_TOKEN] ?? holder.signal?.[ABORT_HOOK_TOKEN];
+  if (!streamName) {
+    throw new Error('AbortController/AbortSignal stream name is not set');
+  }
+  return {
+    streamName,
+    hookToken: hookToken!,
+    aborted: signal.aborted,
+    reason: signal.aborted ? signal.reason : undefined,
+  };
+}
+
+/**
+ * Attach a single abort listener to a signal, deduped across calls.
+ *
+ * Each serialization pass goes through the reducer, but a controller passed
+ * to N steps would otherwise accumulate N listeners — each writing the same
+ * stream packet and double-closing the stream on abort. The marker symbol
+ * ensures the stream-write side-effect runs at most once per (signal, runId).
+ */
+function attachAbortListenerOnce(
+  signal: AbortSignal,
+  streamName: string,
+  runId: string,
+  cryptoKey: EncryptionKeyParam,
+  ops: Promise<void>[]
+): void {
+  if (signal.aborted) return;
+  if ((signal as any)[ABORT_LISTENER_ATTACHED]) return;
+  (signal as any)[ABORT_LISTENER_ATTACHED] = true;
+
+  signal.addEventListener(
+    'abort',
+    () => {
+      ops.push(
+        (async () => {
+          try {
+            // Dehydrate via the same machinery the reader uses (hydrateStepArguments)
+            // so the reason round-trips with full type fidelity (DOMException,
+            // Errors, custom classes, etc.) and respects the run's encryption key.
+            // A bare JSON.stringify here would write a packet the reader can't
+            // decode and the listener-side abort would propagate with no reason.
+            const key = await resolveEncryptionKey(cryptoKey);
+            const payload = await dehydrateStepArguments(
+              { aborted: true, reason: signal.reason },
+              runId,
+              key
+            );
+            const writable = new WorkflowServerWritableStream(
+              runId,
+              streamName
+            );
+            const writer = writable.getWriter();
+            await writer.write(payload as Uint8Array);
+            await writer.close();
+          } catch {
+            // Best-effort stream write
+          }
+        })()
+      );
+    },
+    { once: true }
+  );
 }
 
 /**
@@ -602,13 +997,74 @@ export function getExternalReducers(
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
+      // Fast path: when the writable is already backed by a workflow
+      // server stream (e.g. it came from a step-context `getWritable()`
+      // or was hydrated from a workflow input by `getStepRevivers`),
+      // forward its underlying `(runId, name)` to the receiving run.
+      // The receiving run's step-side reviver opens a server writable
+      // against the original `(runId, name)` and resolves that run's
+      // encryption key directly, so writes land on the original stream
+      // for the full lifetime of the receiving run — no in-process
+      // bridge tied to the dehydrating step's lifetime.
+      const existingName = (value as any)[STREAM_NAME_SYMBOL];
+      const existingRunId = (value as any)[STREAM_SERVER_RUN_ID_SYMBOL];
+      if (
+        typeof existingName === 'string' &&
+        typeof existingRunId === 'string'
+      ) {
+        const descriptor: SerializableSpecial['WritableStream'] = {
+          name: existingName,
+          runId: existingRunId,
+        };
+        const existingDeploymentId = (value as any)[
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
+        ];
+        if (typeof existingDeploymentId === 'string') {
+          descriptor.deploymentId = existingDeploymentId;
+        }
+        return descriptor;
+      }
+
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
-
       const readable = new WorkflowServerReadableStream(runId, name);
       ops.push(readable.pipeTo(value));
 
       return { name };
+    },
+
+    AbortController: (value) => {
+      if (
+        !global.AbortController ||
+        typeof global.AbortController !== 'function' ||
+        !(value instanceof global.AbortController)
+      )
+        return false;
+      return reduceAbortWithListener(
+        value.signal,
+        value,
+        global,
+        ops,
+        runId,
+        cryptoKey
+      );
+    },
+
+    AbortSignal: (value) => {
+      if (
+        !global.AbortSignal ||
+        typeof global.AbortSignal !== 'function' ||
+        !(value instanceof global.AbortSignal)
+      )
+        return false;
+      return reduceAbortWithListener(
+        value,
+        value,
+        global,
+        ops,
+        runId,
+        cryptoKey
+      );
     },
   };
 }
@@ -654,7 +1110,44 @@ export function getWorkflowReducers(
       if (!name) {
         throw new WorkflowRuntimeError('WritableStream `name` is not set');
       }
-      return { name };
+      const s: SerializableSpecial['WritableStream'] = { name };
+      // When the handle was forwarded from another run (parent → child
+      // via `start()`), preserve the foreign runId so the step-side
+      // reviver opens the writable against the original stream.
+      const foreignRunId = value[STREAM_SERVER_RUN_ID_SYMBOL];
+      if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
+      if (typeof foreignDeploymentId === 'string') {
+        s.deploymentId = foreignDeploymentId;
+      }
+      return s;
+    },
+
+    // AbortController/AbortSignal in workflow context — just read symbols (handles).
+    // In the workflow VM, global.AbortController is a class but global.AbortSignal
+    // is a plain object (not a class), so instanceof checks won't work for signals.
+    // Detect instances by the presence of the ABORT_STREAM_NAME symbol instead.
+    AbortController: (value) => {
+      if (!value || !value.signal) return false;
+      const holder = value as AbortController & AbortHolder;
+      const hasAbortSymbol =
+        holder[ABORT_STREAM_NAME] ?? holder.signal?.[ABORT_STREAM_NAME];
+      const isNativeAbortController =
+        global.AbortController &&
+        typeof global.AbortController === 'function' &&
+        value instanceof global.AbortController;
+      if (!hasAbortSymbol && !isNativeAbortController) return false;
+      return reduceAbortBySymbol(value.signal, holder);
+    },
+    AbortSignal: (value) => {
+      const signal = value as (AbortSignal & AbortInternals) | undefined;
+      const hasAbortSymbol = signal?.[ABORT_STREAM_NAME];
+      const isNativeAbortSignal =
+        global.AbortSignal &&
+        typeof global.AbortSignal === 'function' &&
+        value instanceof global.AbortSignal;
+      if (!hasAbortSymbol && !isNativeAbortSignal) return false;
+      return reduceAbortBySymbol(value, value as AbortHolder);
     },
   };
 }
@@ -727,6 +1220,7 @@ function getStepReducers(
       if (!(value instanceof global.WritableStream)) return false;
 
       let name = value[STREAM_NAME_SYMBOL];
+      const foreignRunId = (value as any)[STREAM_SERVER_RUN_ID_SYMBOL];
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
@@ -742,9 +1236,320 @@ function getStepReducers(
         );
       }
 
-      return { name };
+      const s: SerializableSpecial['WritableStream'] = { name };
+      if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignDeploymentId = (value as any)[
+        STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
+      ];
+      if (typeof foreignDeploymentId === 'string') {
+        s.deploymentId = foreignDeploymentId;
+      }
+      return s;
+    },
+
+    AbortController: (value) => {
+      if (
+        !global.AbortController ||
+        typeof global.AbortController !== 'function' ||
+        !(value instanceof global.AbortController)
+      )
+        return false;
+      return reduceAbortWithListener(
+        value.signal,
+        value,
+        global,
+        ops,
+        runId,
+        cryptoKey
+      );
+    },
+
+    AbortSignal: (value) => {
+      if (
+        !global.AbortSignal ||
+        typeof global.AbortSignal !== 'function' ||
+        !(value instanceof global.AbortSignal)
+      )
+        return false;
+      return reduceAbortWithListener(
+        value,
+        value,
+        global,
+        ops,
+        runId,
+        cryptoKey
+      );
     },
   };
+}
+
+/**
+ * Cancel dangling abort-stream readers on any AbortController instances found
+ * in the hydrated step arguments. Called after the step function returns
+ * (success or failure) to prevent reader promises from keeping the serverless
+ * function alive indefinitely.
+ */
+export function cancelAbortReaders(...values: unknown[]): void {
+  const visited = new WeakSet();
+  function cancelIfPresent(val: AbortInternals): void {
+    const cancel = val[ABORT_READER_CANCEL];
+    if (cancel && !cancel.signal.aborted) {
+      cancel.abort();
+    }
+  }
+  function walk(val: unknown): void {
+    if (val == null || typeof val !== 'object') return;
+    if (visited.has(val as object)) return;
+    visited.add(val as object);
+    if (val instanceof AbortController) {
+      cancelIfPresent(val as AbortController & AbortInternals);
+      cancelIfPresent(val.signal as AbortSignal & AbortInternals);
+      return;
+    }
+    if (val instanceof AbortSignal) {
+      cancelIfPresent(val as AbortSignal & AbortInternals);
+      return;
+    }
+    if (Array.isArray(val)) {
+      for (const item of val) walk(item);
+      return;
+    }
+    if (val instanceof Map) {
+      for (const v of val.values()) walk(v);
+      return;
+    }
+    if (val instanceof Set) {
+      for (const v of val) walk(v);
+      return;
+    }
+    // Request/Response expose `signal`/`body` as prototype getters, so
+    // Object.values() won't find them. Descend explicitly.
+    if (typeof Request !== 'undefined' && val instanceof Request) {
+      walk(val.signal);
+      return;
+    }
+    for (const v of Object.values(val as Record<string, unknown>)) walk(v);
+  }
+  for (const v of values) walk(v);
+}
+
+/**
+ * Sets up a stream reader on the controller that listens for an abort packet.
+ * Returns the readerCancel controller so it can be stored on both the
+ * controller and signal for cleanup by cancelAbortReaders.
+ */
+function setupAbortStreamReader(
+  controller: AbortController,
+  runId: string,
+  streamName: string,
+  ops: Promise<void>[]
+): AbortController {
+  const readerCancel = new AbortController();
+
+  ops.push(
+    (async () => {
+      try {
+        const readable = new WorkflowServerReadableStream(runId, streamName);
+        const reader = readable.getReader();
+        const result = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>((resolve) => {
+            if (readerCancel.signal.aborted) {
+              resolve({ value: undefined, done: true });
+              return;
+            }
+            readerCancel.signal.addEventListener(
+              'abort',
+              () => resolve({ value: undefined, done: true }),
+              { once: true }
+            );
+          }),
+        ]);
+        reader.releaseLock();
+        if (result.value && !result.done) {
+          try {
+            // Hydrate via the same machinery the writer used so the reason
+            // round-trips with full type fidelity. Encryption key (if any)
+            // comes from the step context — set up by the step handler before
+            // this reader runs. Fallback to undefined for external-context
+            // revives (the hydrate path is encryption-key-tolerant).
+            const ctxForKey = contextStorage.getStore();
+            const data = (await hydrateStepArguments(
+              result.value,
+              runId,
+              ctxForKey?.encryptionKey
+            )) as { reason?: unknown } | undefined;
+            controller.abort(data?.reason);
+          } catch {
+            controller.abort();
+          }
+        }
+      } catch {
+        // Stream read failed — signal won't propagate in real-time,
+        // but hook-based propagation on next replay provides fallback
+      }
+    })()
+  );
+
+  return readerCancel;
+}
+
+/**
+ * Stores abort serialization symbols and the readerCancel controller
+ * on both the controller and its signal.
+ */
+function tagAbortPair(
+  controller: AbortController,
+  value: { streamName: string; hookToken: string },
+  readerCancel?: AbortController
+): void {
+  const taggedController = controller as AbortController & AbortInternals;
+  const taggedSignal = controller.signal as AbortSignal & AbortInternals;
+  taggedController[ABORT_STREAM_NAME] = value.streamName;
+  taggedController[ABORT_HOOK_TOKEN] = value.hookToken;
+  taggedSignal[ABORT_STREAM_NAME] = value.streamName;
+  taggedSignal[ABORT_HOOK_TOKEN] = value.hookToken;
+  if (readerCancel) {
+    taggedController[ABORT_READER_CANCEL] = readerCancel;
+    taggedSignal[ABORT_READER_CANCEL] = readerCancel;
+  }
+}
+
+/**
+ * Propagate abort-internal symbols from one signal to another. Used by the
+ * Request reviver because `new Request(url, { signal })` copies the signal
+ * internally — the constructed `request.signal` is a fresh AbortSignal that
+ * doesn't carry symbols from the source.
+ */
+function copyAbortInternals(src: AbortSignal, dest: AbortSignal): void {
+  const s = src as AbortSignal & AbortInternals;
+  const d = dest as AbortSignal & AbortInternals;
+  if (s[ABORT_STREAM_NAME] !== undefined) {
+    d[ABORT_STREAM_NAME] = s[ABORT_STREAM_NAME];
+  }
+  if (s[ABORT_HOOK_TOKEN] !== undefined) {
+    d[ABORT_HOOK_TOKEN] = s[ABORT_HOOK_TOKEN];
+  }
+  if (s[ABORT_READER_CANCEL] !== undefined) {
+    d[ABORT_READER_CANCEL] = s[ABORT_READER_CANCEL];
+  }
+}
+
+/**
+ * Creates an AbortController with stream-backed abort propagation.
+ * Used by step and external revivers where real abort signal behavior is needed.
+ *
+ * @param value - The serialized abort controller/signal data
+ * @param ops - The ops array for tracking async work
+ * @param runId - The workflow run ID (for stream reads)
+ * @returns A real AbortController with patched abort() method
+ */
+function reviveAbortController(
+  value: SerializableSpecial['AbortController'],
+  ops: Promise<void>[],
+  runId: string
+): AbortController {
+  const controller = new AbortController();
+
+  if (value.aborted) {
+    tagAbortPair(controller, value);
+    controller.abort(value.reason);
+  } else if (value.streamName) {
+    const readerCancel = setupAbortStreamReader(
+      controller,
+      runId,
+      value.streamName,
+      ops
+    );
+    tagAbortPair(controller, value, readerCancel);
+  } else {
+    tagAbortPair(controller, value);
+  }
+
+  // Override abort() to also write stream + resume hook (for step-initiated abort)
+  const originalAbort = controller.abort.bind(controller);
+  controller.abort = (reason?: unknown) => {
+    if (controller.signal.aborted) return;
+    originalAbort(reason);
+
+    const ctx = contextStorage.getStore();
+    if (ctx) {
+      ctx.ops.push(
+        (async () => {
+          try {
+            // Dehydrate the abort payload through the same machinery the hook
+            // event uses so the `reason` round-trips with full type fidelity
+            // (DOMException, custom errors, etc.) and respects the run's
+            // encryption key — symmetric with what the suspension handler
+            // writes for workflow-initiated aborts.
+            const payload = await dehydrateStepArguments(
+              { aborted: true, reason },
+              ctx.workflowMetadata.workflowRunId,
+              ctx.encryptionKey
+            );
+            const writable = new WorkflowServerWritableStream(
+              ctx.workflowMetadata.workflowRunId,
+              value.streamName
+            );
+            const writer = writable.getWriter();
+            await writer.write(payload as Uint8Array);
+            await writer.close();
+          } catch {
+            // Best-effort stream write
+          }
+        })()
+      );
+
+      if (value.hookToken) {
+        ctx.ops.push(
+          (async () => {
+            try {
+              const { resumeHook: resumeHookFn } = await import(
+                './runtime/resume-hook.js'
+              );
+              await resumeHookFn(value.hookToken, {
+                aborted: true,
+                reason,
+              });
+            } catch {
+              // Best-effort hook resume — retry on next replay
+            }
+          })()
+        );
+      }
+    }
+  };
+
+  return controller;
+}
+
+/**
+ * Revives just an AbortSignal without the patched abort() overhead.
+ * Used when only a signal (not a controller) was serialized.
+ */
+function reviveAbortSignal(
+  value: SerializableSpecial['AbortSignal'],
+  ops: Promise<void>[],
+  runId: string
+): AbortSignal {
+  const controller = new AbortController();
+
+  if (value.aborted) {
+    tagAbortPair(controller, value);
+    controller.abort(value.reason);
+  } else if (value.streamName) {
+    const readerCancel = setupAbortStreamReader(
+      controller,
+      runId,
+      value.streamName,
+      ops
+    );
+    tagAbortPair(controller, value, readerCancel);
+  } else {
+    tagAbortPair(controller, value);
+  }
+
+  return controller.signal;
 }
 
 /**
@@ -758,6 +1563,24 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     ...getClassRevivers(global),
     ...getCommonReviversFromModule(global),
   } as const satisfies Partial<Revivers>;
+}
+
+/**
+ * Resolve the encrypt-only key needed when a child writes into another run's
+ * stream. New descriptors include the owner's deployment ID; descriptors
+ * created by older SDK versions fall back to loading the owning run.
+ */
+async function getForwardedWritableEncryptionKey(
+  runId: string,
+  deploymentId: string | undefined
+): Promise<CryptoKey | undefined> {
+  const world = await getWorldLazy();
+  if (!world.getEncryptionKeyForRun) return undefined;
+
+  const rawKey = deploymentId
+    ? await world.getEncryptionKeyForRun(runId, { deploymentId })
+    : await world.getEncryptionKeyForRun(await world.runs.get(runId));
+  return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
 }
 
 /**
@@ -801,12 +1624,19 @@ export function getExternalRevivers(
       ),
 
     Request: (value) => {
-      return new global.Request(value.url, {
+      const init: RequestInit & { duplex?: string } = {
         method: value.method,
         headers: new global.Headers(value.headers),
         body: value.body,
         duplex: value.duplex,
-      });
+      };
+      if (value.signal) init.signal = value.signal;
+      const request = new global.Request(value.url, init);
+      // The Request constructor creates an internal signal copy, so the
+      // abort-internal symbols set by reviveAbortSignal don't propagate.
+      // Re-tag the request's own signal so cancelAbortReaders can find it.
+      if (value.signal) copyAbortInternals(value.signal, request.signal);
+      return request;
     },
     Response: (value) => {
       // Note: Response constructor only accepts status, statusText, and headers
@@ -827,13 +1657,16 @@ export function getExternalRevivers(
         return response.body;
       }
 
-      const readable = new WorkflowServerReadableStream(
-        runId,
-        value.name,
-        value.startIndex
-      );
       if (value.type === 'bytes') {
-        // For byte streams, use flushable pipe with lock polling
+        // For byte streams, use flushable pipe with lock polling. No
+        // auto-reconnect here: raw byte streams have no wire framing, so
+        // we cannot count consumed chunks to compute a resume index.
+        // Byte-stream reconnect is a separate follow-up.
+        const readable = new WorkflowServerReadableStream(
+          runId,
+          value.name,
+          value.startIndex
+        );
         const state = createFlushableState();
         ops.push(state.promise);
 
@@ -851,6 +1684,14 @@ export function getExternalRevivers(
 
         return userReadable;
       } else {
+        // Non-byte streams carry length-prefixed frames, so we can count
+        // completed frames and transparently reconnect when the server
+        // stream connection times out mid-run.
+        const readable = createReconnectingFramedStream(
+          runId,
+          value.name,
+          value.startIndex
+        );
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId, cryptoKey),
           cryptoKey
@@ -870,12 +1711,21 @@ export function getExternalRevivers(
       }
     },
     WritableStream: (value) => {
+      // Same handling as `getStepRevivers.WritableStream` — see comments
+      // there for the cross-run case (writable carries `runId` from
+      // parent → child forwarding via `start()`).
+      const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
+      const targetKey: EncryptionKeyParam =
+        targetRunId === runId
+          ? cryptoKey
+          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
+
       const serialize = getSerializeStream(
-        getExternalReducers(global, ops, runId, cryptoKey),
-        cryptoKey
+        getExternalReducers(global, ops, targetRunId, targetKey),
+        targetKey
       );
       const serverWritable = new WorkflowServerWritableStream(
-        runId,
+        targetRunId,
         value.name
       );
 
@@ -891,8 +1741,30 @@ export function getExternalRevivers(
       // Start polling to detect when user releases lock
       pollWritableLock(serialize.writable, state);
 
+      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+        value: value.name,
+        writable: false,
+      });
+      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: targetRunId,
+        writable: false,
+      });
+      if (typeof value.deploymentId === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+          {
+            value: value.deploymentId,
+            writable: false,
+          }
+        );
+      }
+
       return serialize.writable;
     },
+
+    AbortController: (value) => reviveAbortController(value, ops, runId),
+    AbortSignal: (value) => reviveAbortSignal(value, ops, runId),
   };
 }
 
@@ -972,12 +1844,51 @@ export function getWorkflowRevivers(
       });
     },
     WritableStream: (value) => {
-      return Object.create(global.WritableStream.prototype, {
+      const descriptor: PropertyDescriptorMap = {
         [STREAM_NAME_SYMBOL]: {
           value: value.name,
           writable: false,
         },
-      });
+      };
+      // Preserve the foreign runId, if present, so that when the
+      // handle is later passed to a step the workflow reducer can
+      // forward it through to the step reviver.
+      if (typeof value.runId === 'string') {
+        descriptor[STREAM_SERVER_RUN_ID_SYMBOL] = {
+          value: value.runId,
+          writable: false,
+        };
+      }
+      if (typeof value.deploymentId === 'string') {
+        descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
+          value: value.deploymentId,
+          writable: false,
+        };
+      }
+      return Object.create(global.WritableStream.prototype, descriptor);
+    },
+
+    // AbortController/AbortSignal revived inside the workflow VM. Use the
+    // real WorkflowAbortSignal class so addEventListener('abort', fn) actually
+    // fires when the signal aborts (the previous no-op stub silently dropped
+    // listener registrations — silent correctness bug for natural patterns
+    // like `signal.addEventListener('abort', fn)` after receiving a deserialized
+    // signal). The signal does not own a hook subscription here — abort state
+    // is delivered via the existing replay machinery on the source side.
+    AbortController: (value) => {
+      const signal = new WorkflowAbortSignal(value.streamName, value.hookToken);
+      if (value.aborted) signal._setAborted(value.reason);
+      return {
+        [ABORT_STREAM_NAME]: value.streamName,
+        [ABORT_HOOK_TOKEN]: value.hookToken,
+        signal,
+        abort: () => {},
+      };
+    },
+    AbortSignal: (value) => {
+      const signal = new WorkflowAbortSignal(value.streamName, value.hookToken);
+      if (value.aborted) signal._setAborted(value.reason);
+      return signal;
     },
   };
 }
@@ -995,16 +1906,36 @@ function getStepRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  deploymentId?: string
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
 
     // StepFunction reviver for step context - returns raw step function
-    // with closure variable support via AsyncLocalStorage
+    // with closure variable support via AsyncLocalStorage.
+    //
+    // Handles four independent flags from the serialized payload:
+    //   - `closureVars`: invoke the body inside an AsyncLocalStorage frame
+    //     so the SWC-emitted `WORKFLOW_STEP_CONTEXT_STORAGE` IIFE in the
+    //     hoisted body can pull the closure variables back out.
+    //   - `boundThis`:   a `this` value captured by
+    //     `useStep(...).bind(this)` in the workflow bundle (lexical-`this`
+    //     arrow steps). The wrapper invokes the body via
+    //     `stepFn.apply(boundThis, args)` so the body sees the same
+    //     `this` it would have had in the workflow bundle. Property
+    //     presence — not truthiness — is significant because
+    //     `bind(null)` and `bind(undefined)` are both legal and should
+    //     round-trip faithfully.
+    //   - `boundArgs`:   prefilled args from
+    //     `useStep(...).bind(thisArg, x, y)`. Prepended to the call args
+    //     so partial application survives serialization.
     StepFunction: (value) => {
       const stepId = value.stepId;
       const closureVars = value.closureVars;
+      const hasBoundThis = 'boundThis' in value;
+      const boundThis = hasBoundThis ? value.boundThis : undefined;
+      const boundArgs = Array.isArray(value.boundArgs) ? value.boundArgs : [];
 
       const stepFn = getStepFunction(stepId);
       if (!stepFn) {
@@ -1016,47 +1947,47 @@ function getStepRevivers(
         );
       }
 
-      // If closure variables were serialized, return a wrapper function
-      // that sets up AsyncLocalStorage context when invoked
-      if (closureVars) {
-        const wrappedStepFn = ((...args: any[]) => {
-          // Get the current context from AsyncLocalStorage
-          const currentContext = contextStorage.getStore();
+      // Fast path: nothing to wrap.
+      if (!closureVars && !hasBoundThis && boundArgs.length === 0) {
+        return stepFn;
+      }
 
+      const wrappedStepFn = function (this: unknown, ...args: any[]) {
+        const callThis = hasBoundThis ? boundThis : this;
+        const callArgs = boundArgs.length > 0 ? [...boundArgs, ...args] : args;
+        if (closureVars) {
+          const currentContext = contextStorage.getStore();
           if (!currentContext) {
             throw new WorkflowRuntimeError(
               'Cannot call step function with closure variables outside step context'
             );
           }
-
-          // Create a new context with the closure variables merged in
           const newContext = {
             ...currentContext,
             closureVars,
           };
-
-          // Run the step function with the new context that includes closure vars
-          return contextStorage.run(newContext, () => stepFn(...args));
-        }) as any;
-
-        // Copy properties from original step function
-        Object.defineProperty(wrappedStepFn, 'name', {
-          value: stepFn.name,
-        });
-        Object.defineProperty(wrappedStepFn, 'stepId', {
-          value: stepId,
-          writable: false,
-          enumerable: false,
-          configurable: false,
-        });
-        if (stepFn.maxRetries !== undefined) {
-          wrappedStepFn.maxRetries = stepFn.maxRetries;
+          return contextStorage.run(newContext, () =>
+            stepFn.apply(callThis, callArgs)
+          );
         }
+        return stepFn.apply(callThis, callArgs);
+      } as any;
 
-        return wrappedStepFn;
+      // Copy properties from original step function
+      Object.defineProperty(wrappedStepFn, 'name', {
+        value: stepFn.name,
+      });
+      Object.defineProperty(wrappedStepFn, 'stepId', {
+        value: stepId,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      });
+      if (stepFn.maxRetries !== undefined) {
+        wrappedStepFn.maxRetries = stepFn.maxRetries;
       }
 
-      return stepFn;
+      return wrappedStepFn;
     },
 
     WorkflowFunction: (value) =>
@@ -1074,12 +2005,18 @@ function getStepRevivers(
 
     Request: (value) => {
       const responseWritable = value.responseWritable;
-      const request = new global.Request(value.url, {
+      const init: RequestInit & { duplex?: string } = {
         method: value.method,
         headers: new global.Headers(value.headers),
         body: value.body,
         duplex: value.duplex,
-      });
+      };
+      if (value.signal) init.signal = value.signal;
+      const request = new global.Request(value.url, init);
+      // The Request constructor creates an internal signal copy, so the
+      // abort-internal symbols set by reviveAbortSignal don't propagate.
+      // Re-tag the request's own signal so cancelAbortReaders can find it.
+      if (value.signal) copyAbortInternals(value.signal, request.signal);
       if (responseWritable) {
         request.respondWith = async (response: Response) => {
           const writer = responseWritable.getWriter();
@@ -1129,7 +2066,7 @@ function getStepRevivers(
         return userReadable;
       } else {
         const transform = getDeserializeStream(
-          getStepRevivers(global, ops, runId, cryptoKey),
+          getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
           cryptoKey
         );
         const state = createFlushableState();
@@ -1147,12 +2084,36 @@ function getStepRevivers(
       }
     },
     WritableStream: (value) => {
+      // Same-run case: the writable belongs to the current run. Use the
+      // local cryptoKey and write to the local runId's server stream.
+      //
+      // Cross-run case (parent → child via `start()`): the descriptor
+      // carries the original `runId` and `name`. Open a server writable
+      // against the original `(runId, name)` and resolve THAT run's key
+      // for encryption. The resolution is async but doesn't need to
+      // block reviver return — `getSerializeStream` accepts the
+      // `Promise<CryptoKey | undefined>` directly and awaits it lazily
+      // on the first chunk written. The key is imported encrypt-only
+      // so the receiving run can never decrypt anything else on the
+      // owning run's stream — it can only contribute new writes.
+      const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
+      const targetDeploymentId =
+        typeof value.deploymentId === 'string'
+          ? value.deploymentId
+          : targetRunId === runId
+            ? deploymentId
+            : undefined;
+      const targetKey: EncryptionKeyParam =
+        targetRunId === runId
+          ? cryptoKey
+          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
+
       const serialize = getSerializeStream(
-        getStepReducers(global, ops, runId, cryptoKey),
-        cryptoKey
+        getStepReducers(global, ops, targetRunId, targetKey),
+        targetKey
       );
       const serverWritable = new WorkflowServerWritableStream(
-        runId,
+        targetRunId,
         value.name
       );
 
@@ -1168,8 +2129,36 @@ function getStepRevivers(
       // Start polling to detect when user releases lock
       pollWritableLock(serialize.writable, state);
 
+      // Record the underlying `(runId, name)` so downstream reducers can
+      // recognize that this writable is already backed by a workflow
+      // server stream. When forwarded across `start()` again — e.g.
+      // the child passes this writable on to a grandchild — the
+      // external reducer needs both to emit the original `runId` in
+      // the descriptor.
+      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+        value: value.name,
+        writable: false,
+      });
+      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: targetRunId,
+        writable: false,
+      });
+      if (targetDeploymentId) {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+          {
+            value: targetDeploymentId,
+            writable: false,
+          }
+        );
+      }
+
       return serialize.writable;
     },
+
+    AbortController: (value) => reviveAbortController(value, ops, runId),
+    AbortSignal: (value) => reviveAbortSignal(value, ops, runId),
   };
 }
 
@@ -1354,12 +2343,15 @@ export async function hydrateStepArguments(
   key: CryptoKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  deploymentId?: string
 ): Promise<any> {
   return stepModule.deserialize(value, key, {
     global,
     extraRevivers: {
-      ...getStreamAndRequestRevivers(getStepRevivers(global, ops, runId, key)),
+      ...getStreamAndRequestRevivers(
+        getStepRevivers(global, ops, runId, key, deploymentId)
+      ),
       ...extraRevivers,
     },
   });
@@ -1606,6 +2598,12 @@ const STREAM_AND_REQUEST_KEYS = [
   'Request',
   'Response',
   'StepFunction',
+  // Wire AbortController/AbortSignal through the client serialization path so
+  // signals reachable via Request.signal (or as direct arguments) get their
+  // dedicated reducer. Without this, devalue falls back to its arbitrary-POJO
+  // path and fails for any signal the Request reducer forwards.
+  'AbortController',
+  'AbortSignal',
 ] as const;
 
 function getStreamAndRequestReducers(

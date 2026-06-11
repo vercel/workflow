@@ -191,10 +191,20 @@ export const setWorld = (world: World | undefined): void => {
 
 // Register getWorld on globalThis so getWorldLazy can call it directly when
 // world.ts is statically present in the bundle. This avoids the relative
-// dynamic import('./world.js') fallback, which fails after Next.js inlines
-// get-world-lazy.js into a route bundle (no sibling world.js exists at the
-// bundled location). Step bundles never reach this branch because they
-// don't statically import world.ts.
+// dynamic import('./world.js') fallback in get-world-lazy.ts, which fails
+// after Next.js inlines get-world-lazy.js into a route bundle (no sibling
+// world.js exists at the bundled location).
+//
+// For server routes that only consume `start` (or another helper that goes
+// through getWorldLazy without statically using getWorld), webpack/turbopack
+// would otherwise tree-shake world.ts out of the bundle entirely. The
+// host-only `./world-init.ts` module imports world.ts for its side effect
+// and is itself imported by `packages/workflow/src/api.ts` so this
+// registration runs in every server bundle that touches `workflow/api`.
+//
+// Step/VM bundles never reach this branch: they don't statically import
+// world.ts, and `world-init` resolves to an empty stub via the `workflow`
+// export condition.
 const GetWorldFnKey = Symbol.for('@workflow/world//getWorldFn');
 (globalThis as { [GetWorldFnKey]?: () => Promise<World> })[GetWorldFnKey] ??=
   getWorld;

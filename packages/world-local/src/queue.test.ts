@@ -48,6 +48,8 @@ describe('queue timeout re-enqueue', () => {
 
   afterEach(async () => {
     await localQueue.close();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('createQueueHandler returns 200 with timeoutSeconds in the body', async () => {
@@ -142,6 +144,27 @@ describe('queue timeout re-enqueue', () => {
     });
   });
 
+  it('routes namespaced queues to namespaced direct handlers', async () => {
+    const handlerImpl = vi.fn(
+      async (_message: unknown, metadata: { queueName: string }) => {
+        expect(metadata.queueName).toBe('__custom_wkf_step_test');
+        return undefined;
+      }
+    );
+    const handler = localQueue.createQueueHandler(
+      '__custom_wkf_step_',
+      handlerImpl
+    );
+
+    localQueue.registerHandler('__custom_wkf_step_', handler);
+
+    await localQueue.queue('__custom_wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(handlerImpl).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('queue retries immediately when handler returns timeoutSeconds: 0', async () => {
     const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
     vi.mocked(mockSetTimeout).mockClear();
@@ -165,6 +188,33 @@ describe('queue timeout re-enqueue', () => {
 
     // setTimeout should NOT have been called for timeoutSeconds: 0
     expect(mockSetTimeout).not.toHaveBeenCalled();
+  });
+
+  it('logs actionable guidance for detached ArrayBuffer proxy failures', async () => {
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const fetchError = new TypeError('fetch failed');
+    (fetchError as TypeError & { cause?: unknown }).cause = new TypeError(
+      'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer'
+    );
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchError));
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining(
+          '[local world] Queue operation failed: detected "Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer"'
+        ),
+        expect.objectContaining({
+          queueName: '__wkf_step_test',
+          runId: 'run_01ABC',
+          stepId: 'step_01ABC',
+          originalError: fetchError,
+        })
+      );
+    });
   });
 });
 

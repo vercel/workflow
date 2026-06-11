@@ -1,4 +1,8 @@
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  FatalError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   afterEach,
   beforeAll,
@@ -124,6 +128,7 @@ vi.mock('../serialization.js', () => ({
   dehydrateStepReturnValue: vi
     .fn()
     .mockResolvedValue(new Uint8Array([1, 2, 3])),
+  cancelAbortReaders: vi.fn(),
   dehydrateStepError: vi.fn().mockResolvedValue(new Uint8Array([4, 5, 6])),
 }));
 
@@ -136,6 +141,18 @@ vi.mock('../step/context-storage.js', () => ({
 
 // Mock types
 vi.mock('../types.js', () => ({
+  promoteAbortErrorToFatal: vi
+    .fn()
+    .mockImplementation((err: unknown) =>
+      typeof err === 'object' &&
+      err !== null &&
+      'name' in err &&
+      err.name === 'AbortError' &&
+      'message' in err &&
+      typeof err.message === 'string'
+        ? new FatalError(`Aborted: ${err.message}`)
+        : err
+    ),
   normalizeUnknownError: vi.fn().mockImplementation(async (err: unknown) => ({
     message: err instanceof Error ? err.message : String(err),
     name: err instanceof Error ? err.name : 'Error',
@@ -156,6 +173,7 @@ vi.mock('@workflow/utils/get-port', () => ({
 }));
 
 import { getStepFunction } from '../private.js';
+import { dehydrateStepError } from '../serialization.js';
 import {
   getErrorName,
   getErrorStack,
@@ -584,6 +602,10 @@ describe('step-handler max deliveries', () => {
       expect.objectContaining({
         eventType: 'step_failed',
         correlationId: 'step_abc',
+        eventData: expect.objectContaining({
+          stepName: 'myStep',
+          error: expect.any(Uint8Array),
+        }),
       }),
       expect.anything()
     );
@@ -668,6 +690,9 @@ describe('step-handler step not found', () => {
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_started',
+        eventData: expect.objectContaining({
+          stepName: 'missingStep',
+        }),
       }),
       expect.anything()
     );
@@ -679,6 +704,7 @@ describe('step-handler step not found', () => {
         eventType: 'step_failed',
         correlationId: 'step_abc',
         eventData: expect.objectContaining({
+          stepName: 'missingStep',
           error: expect.any(Uint8Array),
         }),
       }),
@@ -711,6 +737,7 @@ describe('step-handler step not found', () => {
       expect.objectContaining({
         eventType: 'step_failed',
         eventData: expect.objectContaining({
+          stepName: 'badStep',
           error: expect.any(Uint8Array),
         }),
       }),
@@ -841,6 +868,26 @@ describe('step-handler fatal vs retryable behavior', () => {
       ([, event]) => event.eventType === 'step_retrying'
     );
     expect(stepRetryingCalls).toHaveLength(0);
+  });
+
+  it('promotes an AbortError-shaped rejection to FatalError without retrying', async () => {
+    mockStepFn.mockReset().mockRejectedValue({
+      name: 'AbortError',
+      message: 'This operation was aborted',
+    });
+    mockStepFn.maxRetries = 3;
+
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    const stepRetryingCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_retrying'
+    );
+    expect(stepRetryingCalls).toHaveLength(0);
+    expect(dehydrateStepError).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'FatalError', fatal: true }),
+      'wrun_test123',
+      undefined
+    );
   });
 
   it('schedules a retry (and does not fail the step) on the first attempt of a non-fatal Error', async () => {

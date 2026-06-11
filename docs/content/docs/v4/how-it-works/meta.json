@@ -1,0 +1,12 @@
+{
+  "title": "How it works",
+  "pages": [
+    "understanding-directives",
+    "code-transform",
+    "framework-integrations",
+    "event-sourcing",
+    "encryption",
+    "cancellation"
+  ],
+  "defaultOpen": false
+}

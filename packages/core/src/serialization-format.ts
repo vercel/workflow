@@ -405,6 +405,36 @@ export const observabilityRevivers: Revivers = {
   ReadableStream: streamToStreamRef,
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
+  AbortController: (value: any) =>
+    `<AbortController(aborted: ${value.aborted})>`,
+  AbortSignal: (value: any) => `<AbortSignal(aborted: ${value.aborted})>`,
+  // DOMException needs an explicit reviver: without one, devalue.parse
+  // throws on the `["DOMException", ...]` tag and `hydrateStepIO`'s
+  // try/catch leaves the raw flat-encoded string in the UI. AbortController
+  // synthesizes a DOMException as the default `signal.reason` when abort()
+  // is called with no arg — so any abort that round-trips through a step
+  // boundary surfaces here. Reconstruct as a real DOMException when the
+  // global is available (modern browsers + Node 18+), else fall back to
+  // an Error preserving name/message/stack/cause for display.
+  DOMException: (value: {
+    message: string;
+    name: string;
+    stack?: string;
+    cause?: unknown;
+  }) => {
+    const G = globalThis as { DOMException?: typeof DOMException };
+    if (typeof G.DOMException === 'function') {
+      const e = new G.DOMException(value.message, value.name);
+      if (value.stack !== undefined) e.stack = value.stack;
+      if ('cause' in value) (e as { cause?: unknown }).cause = value.cause;
+      return e;
+    }
+    const e: Error & { cause?: unknown } = new Error(value.message);
+    e.name = value.name;
+    if (value.stack !== undefined) e.stack = value.stack;
+    if ('cause' in value) e.cause = value.cause;
+    return e;
+  },
   StepFunction: serializedStepFunctionToString,
   WorkflowFunction: (value: { workflowId: string }) =>
     `<workflow:${value.workflowId}>`,

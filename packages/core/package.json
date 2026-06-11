@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "5.0.0-beta.4",
+  "version": "5.0.0-beta.13",
   "description": "Core runtime and engine for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -48,6 +48,11 @@
       "types": "./dist/runtime/resume-hook.d.ts",
       "default": "./dist/runtime/resume-hook.js"
     },
+    "./runtime/world-init": {
+      "types": "./dist/runtime/world-init.d.ts",
+      "workflow": "./dist/workflow/world-init-stub.js",
+      "default": "./dist/runtime/world-init.js"
+    },
     "./class-serialization": {
       "types": "./dist/class-serialization.d.ts",
       "default": "./dist/class-serialization.js"
@@ -77,11 +82,11 @@
     "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run src",
     "test:e2e": "vitest run e2e",
     "typecheck": "genversion --es6 src/version.ts && tsc --noEmit",
-    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/foundations ./docs/ && cp -r ../../docs/content/docs/how-it-works ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow ./docs/api-reference",
+    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/v5/foundations ./docs/ && cp -r ../../docs/content/docs/v5/how-it-works ./docs/ && cp -r ../../docs/content/docs/v5/api-reference/workflow ./docs/api-reference",
     "postpack": "rm -rf docs"
   },
   "dependencies": {
-    "@aws-sdk/credential-provider-web-identity": "3.972.13",
+    "@aws-sdk/credential-provider-web-identity": "3.972.49",
     "@jridgewell/trace-mapping": "0.3.31",
     "@standard-schema/spec": "1.0.0",
     "@types/ms": "2.1.0",
@@ -93,7 +98,7 @@
     "@workflow/world-local": "workspace:*",
     "@workflow/world-vercel": "workspace:*",
     "debug": "4.4.3",
-    "devalue": "5.6.3",
+    "devalue": "5.8.1",
     "ms": "2.1.3",
     "nanoid": "5.1.6",
     "seedrandom": "3.0.5",
@@ -104,9 +109,9 @@
   "devDependencies": {
     "@opentelemetry/api": "1.9.0",
     "@types/debug": "4.1.12",
-    "@types/semver": "7.7.1",
     "@types/node": "catalog:",
     "@types/seedrandom": "3.0.8",
+    "@types/semver": "7.7.1",
     "@workflow/tsconfig": "workspace:*",
     "cross-env": "10.1.0",
     "genversion": "3.2.0"

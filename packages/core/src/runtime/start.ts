@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   ThrottleError,
@@ -18,11 +17,11 @@ import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
-import { waitedUntil } from '../util.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { Run } from './run.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { waitedUntil, waitUntil } from './wait-until.js';
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();

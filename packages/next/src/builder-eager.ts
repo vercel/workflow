@@ -3,6 +3,7 @@ import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import type { WorkflowManifest } from '@workflow/builders';
 import Watchpack from 'watchpack';
+import { cleanupStaleSocketInfoFiles } from './socket-server.js';
 
 let CachedNextBuilderEager: any;
 
@@ -24,6 +25,16 @@ export async function getNextBuilderEager() {
 
   class NextBuilder extends BaseBuilderClass {
     async build() {
+      // Eager mode never starts a discovery socket server, so any leftover
+      // workflow-socket.json is from a previous deferred-mode build and
+      // would make the webpack loader connect to a dead port.
+      await cleanupStaleSocketInfoFiles(
+        join(
+          this.config.workingDir,
+          (this.config as { distDir?: string }).distDir || '.next'
+        )
+      );
+
       const outputDir = await this.findAppDirectory();
       const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');
 
@@ -68,6 +79,9 @@ export async function getNextBuilderEager() {
             'public/.well-known/workflow/v1'
           );
           await mkdir(publicManifestDir, { recursive: true });
+          if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
+            await writeFile(join(publicManifestDir, '.gitignore'), '*');
+          }
           await copyFile(
             join(workflowGeneratedDir, 'manifest.json'),
             join(publicManifestDir, 'manifest.json')

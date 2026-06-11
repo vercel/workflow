@@ -3,6 +3,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   FatalError,
+  HookConflictError,
   HookNotFoundError,
   RetryableError,
   WorkflowRunCancelledError,
@@ -926,6 +927,50 @@ describe('e2e', () => {
     expect(await run.returnValue).toEqual('done');
   });
 
+  // A WritableStream passed as a workflow argument to start() should
+  // land raw bytes on the parent's output stream when the child step
+  // writes to it. Covered for both:
+  // - `writableForwardedFromWorkflowWorkflow`: parent calls
+  //   `getWritable()` in workflow context (fake handle revived in the
+  //   intermediary step).
+  // - `writableForwardedFromStepWorkflow`: parent calls `getWritable()`
+  //   in step context (real `serialize.writable` passed straight to
+  //   `start()`).
+  test.each([
+    'writableForwardedFromWorkflowWorkflow',
+    'writableForwardedFromStepWorkflow',
+  ] as const)('%s', { timeout: 120_000 }, async (workflowName) => {
+    const payload = `hello-from-child-${Date.now()}\n`;
+    const run = await start(await e2e(workflowName), [payload]);
+
+    const reader = run.getReadable().getReader();
+    // `fatal: true` makes the decoder throw on any invalid UTF-8
+    // sequence, so a successful decode is itself a round-trip
+    // assertion that the bytes survived intact.
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+
+    // The child step performs exactly one write of `payload` as
+    // UTF-8 bytes, so we should receive a single chunk containing
+    // exactly those bytes before the stream closes.
+    const { value, done } = await reader.read();
+    expect(done).toBeFalsy();
+    assert(value);
+    assert(value instanceof Uint8Array);
+
+    const expectedBytes = new TextEncoder().encode(payload);
+    expect(value.byteLength).toBe(expectedBytes.byteLength);
+    expect(decoder.decode(value)).toBe(payload);
+
+    // Default stream should close cleanly after the parent closes its
+    // writable.
+    expect((await reader.read()).done).toBe(true);
+
+    const returnValue = await run.returnValue;
+    expect(returnValue).toMatchObject({
+      childRunId: expect.stringMatching(/^wrun_/),
+    });
+  });
+
   test('fetchWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('fetchWorkflow'), []);
     const returnValue = await run.returnValue;
@@ -1550,6 +1595,9 @@ describe('e2e', () => {
       expect(run2Error.cause.message).toContain(
         'already in use by another workflow'
       );
+      expect(HookConflictError.is(run2Error.cause)).toBe(true);
+      assert(HookConflictError.is(run2Error.cause));
+      expect(run2Error.cause.conflictingRunId).toBe(run1.runId);
 
       // Verify workflow 2 failed
       const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
@@ -1909,6 +1957,10 @@ describe('e2e', () => {
         timeout: 30000,
       });
       expect(workflowResult.healthy).toBe(true);
+      // The deployed app advertises its `@workflow/core` version so
+      // callers can derive capability metadata (see `getRunCapabilities`
+      // in `capabilities.ts`).
+      expect(typeof workflowResult.workflowCoreVersion).toBe('string');
     }
   );
 
@@ -2112,6 +2164,11 @@ describe('e2e', () => {
       // 3. counter.multiply(3) -> 5 * 3 = 15
       // 4. counter.describe('test counter') -> { label: 'test counter', value: 5 }
       // 5. Create Counter(100), call counter2.add(50) -> 100 + 50 = 150
+      // 6. counter.makeAdder(7).add(2) -> 5 + 2 + 7 = 14   (lexical `this`,
+      //    direct invocation — `bind(this)` carries `thisVal` to the queue)
+      // 7. invokeAdderFromStep(counter.makeAdder(7).add, 3) -> 5 + 3 + 7 = 15
+      //    (lexical `this` round-tripped through step-arg serialization —
+      //     the reducer captures `__boundThis`, the reviver re-binds)
       const run = await start(await e2e('instanceMethodStepWorkflow'), [5]);
       const returnValue = await run.returnValue;
 
@@ -2121,6 +2178,8 @@ describe('e2e', () => {
         multiplied: 15, // 5 * 3
         description: { label: 'test counter', value: 5 },
         added2: 150, // 100 + 50
+        adderResult: 14, // 5 + 2 + 7 (lexical `this` capture)
+        adderViaStep: 15, // 5 + 3 + 7 (lexical `this` survives serialization)
       });
 
       // Verify the run completed successfully
@@ -2134,9 +2193,15 @@ describe('e2e', () => {
         multiplied: 15,
         description: { label: 'test counter', value: 5 },
         added2: 150,
+        adderResult: 14,
+        adderViaStep: 15,
       });
 
-      // Verify the steps were executed (should have 4 steps: add, multiply, describe, add)
+      // Verify the steps were executed:
+      // - 4 Counter instance method steps (add, multiply, describe, add)
+      // - 2 lexical-`this` arrow steps from `makeAdder` (direct + via-step)
+      // - 1 invokeAdderFromStep wrapper (which itself triggers another
+      //   makeAdder arrow step inside it)
       const { json: steps } = await cliInspectJson(
         `steps --runId ${run.runId}`
       );
@@ -2151,6 +2216,32 @@ describe('e2e', () => {
       expect(counterSteps.every((s: any) => s.status === 'completed')).toBe(
         true
       );
+
+      // The lexical-`this` arrow step inside `Counter#makeAdder` is
+      // hoisted by the SWC plugin under an `_anonymousStep` name. It
+      // ran once as its own step (`adder.add(2)` invoked directly from
+      // the workflow). The second call (inside `invokeAdderFromStep`)
+      // executes inline because steps invoked from another step body
+      // run inline rather than queueing a new step — so we only see one
+      // `_anonymousStep` event in the log, even though the body executed
+      // twice. Asserting `=== 1` here pins down both:
+      //   1. the direct invocation actually creates a step (i.e. the
+      //      `bind(this)` proxy still goes through `useStep`), and
+      //   2. the round-tripped proxy correctly runs inline rather than
+      //      somehow re-queuing a duplicate step.
+      const adderArrowSteps = steps.filter((s: any) =>
+        s.stepName.includes('_anonymousStep')
+      );
+      expect(adderArrowSteps.length).toBe(1);
+      expect(adderArrowSteps[0].status).toBe('completed');
+
+      // The `invokeAdderFromStep` wrapper itself runs as its own step;
+      // its body invokes the round-tripped `add` proxy inline.
+      const invokeAdderSteps = steps.filter((s: any) =>
+        s.stepName.includes('invokeAdderFromStep')
+      );
+      expect(invokeAdderSteps.length).toBe(1);
+      expect(invokeAdderSteps[0].status).toBe('completed');
     }
   );
 
@@ -2614,6 +2705,520 @@ describe('e2e', () => {
     }
   );
 
+  // ==========================================================================
+  // AbortController / AbortSignal
+  // ==========================================================================
+
+  describe('AbortController', () => {
+    test(
+      'abortTimeoutWorkflow: timeout cancels long-running step',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortTimeoutWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The workflow races a long step against a 3s sleep timeout.
+        // The sleep wins, so the workflow aborts and returns timed out status.
+        expect(returnValue.status).toBe('timed out');
+        expect(returnValue.aborted).toBe(true);
+
+        // The synchronous `controller.signal.aborted` check above only proves
+        // the WORKFLOW VM saw the abort — it doesn't prove the abort committed
+        // to the event log or propagated to the in-flight step. Inspect the
+        // event log directly to verify the abort hook was both created AND
+        // resumed (the resumption is what writes the cancel packet to the
+        // backing stream and lets the running step see signal.aborted=true).
+        const world = await getWorld();
+        const { data: events } = await world.events.list({ runId: run.runId });
+        const hookCreated = events.find((e) => e.eventType === 'hook_created');
+        const hookReceived = events.find(
+          (e) => e.eventType === 'hook_received'
+        );
+        expect(
+          hookCreated,
+          'abort hook was never created in the event log'
+        ).toBeDefined();
+        expect(
+          hookReceived,
+          'abort hook was created but never resumed — the abort did not propagate to the in-flight step'
+        ).toBeDefined();
+      }
+    );
+
+    test(
+      'abortParallelWorkflow: abort cancels all parallel steps',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortParallelWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The workflow races 3 parallel long steps against a 3s sleep.
+        // The sleep wins, so the workflow returns timed out status.
+        expect(returnValue.status).toBe('timed out');
+      }
+    );
+
+    test(
+      'abortFromStepWorkflow: step abort cancels an in-flight sibling step',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortFromStepWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The workflow VM's signal eventually reflects the abort (round-trip
+        // via the hook event resumed by the aborting step).
+        expect(returnValue.workflowAborted).toBe(true);
+        expect(returnValue.stepSawAborted).toBe(true);
+
+        // The crucial assertion: the in-flight sibling step (longStep) must
+        // see the cancellation through the backing stream and exit via the
+        // abort branch within the 1s+poll-interval window — NOT run to its
+        // 30s natural completion. If this is 'completed' instead of 'aborted',
+        // realtime cross-step cancellation is broken.
+        expect(returnValue.longStepResult).toBe('aborted');
+      }
+    );
+
+    test(
+      'abortAlreadyAbortedWorkflow: pre-aborted signal seen by step',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortAlreadyAbortedWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The controller is aborted before passing to the step.
+        // The step should see aborted=true and the reason.
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.reason).toBe('pre-aborted');
+      }
+    );
+
+    test(
+      'abortReasonWorkflow: abort reason preserved across boundaries',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortReasonWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The workflow aborts with a custom reason after timeout.
+        // The reason should be preserved when checked in a subsequent step.
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.reason).toBe('custom timeout reason');
+      }
+    );
+
+    test(
+      'abortAfterCompletionWorkflow: abort after step completes is a no-op',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortAfterCompletionWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step runs before abort is called, so it sees aborted=false.
+        // The workflow then aborts — should not cause errors.
+        expect(returnValue.stepSawAborted).toBe(false);
+        expect(returnValue.workflowAborted).toBe(true);
+      }
+    );
+
+    test(
+      'abortViaHookWorkflow: external hook triggers abort on in-flight step',
+      { timeout: 60_000 },
+      async () => {
+        const token = Math.random().toString(36).slice(2);
+        const run = await start(await e2e('abortViaHookWorkflow'), [token]);
+
+        // Resume once the hook is observable; fixed delays race slow starts.
+        const hook = await waitForHook(token, { runId: run.runId });
+        expect(hook.runId).toBe(run.runId);
+        await resumeHook(hook, { reason: 'user cancelled' });
+
+        const returnValue = await run.returnValue;
+
+        // The hook fires before the long step completes, triggering abort.
+        expect(returnValue.status).toBe('cancelled');
+        expect(returnValue.reason).toBe('user cancelled');
+      }
+    );
+
+    test(
+      'abortExternalSignalWorkflow: signal passed as workflow input',
+      { timeout: 60_000 },
+      async () => {
+        // Pass a pre-aborted AbortController to the workflow.
+        // The workflow receives the signal and passes it to a step.
+        const controller = new AbortController();
+        controller.abort('external abort');
+
+        const run = await start(await e2e('abortExternalSignalWorkflow'), [
+          controller.signal,
+        ]);
+        const returnValue = await run.returnValue;
+
+        // The step should see the signal as aborted with the reason.
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.reason).toBe('external abort');
+      }
+    );
+
+    test(
+      'abortExternalSignalInFlightWorkflow: external abort fires mid-flight, propagates to nested steps',
+      { timeout: 60_000 },
+      async () => {
+        // Source controller starts NOT aborted. The serialization-time
+        // listener attached during start() must write the cancellation packet
+        // to the backing stream when the controller fires later — and the
+        // in-flight steps' deserialized signals must see the abort propagate.
+        const controller = new AbortController();
+        // Sanity: signal is not aborted at workflow-start time.
+        expect(controller.signal.aborted).toBe(false);
+
+        const run = await start(
+          await e2e('abortExternalSignalInFlightWorkflow'),
+          [controller.signal]
+        );
+
+        // Abort 1.5s after start() so both parallel steps are mid-flight on
+        // their compute instances. The listener attached at serialization time
+        // is what bridges the abort into the workflow's backing stream.
+        const abortTimer = setTimeout(() => {
+          controller.abort('external in-flight abort');
+        }, 1500);
+
+        try {
+          const returnValue = await run.returnValue;
+
+          // Polling step must have seen signal.aborted flip and exited via
+          // its abort branch (NOT its 30s natural-completion path).
+          expect(returnValue.pollResult).toBe('aborted');
+
+          // Listener step must have resolved via its addEventListener callback
+          // (NOT its 30s safety timeout).
+          expect(returnValue.listenerResult.saw).toBe(true);
+          expect(returnValue.listenerResult.via).toBe('listener');
+        } finally {
+          clearTimeout(abortTimer);
+        }
+      }
+    );
+
+    test(
+      'abortAnyInWorkflowWorkflow: AbortSignal.any composes signals inside the workflow VM',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortAnyInWorkflowWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // Composite must reflect the source signal's state synchronously
+        // through the WorkflowAbortSignal listener path inside the VM —
+        // no stream packet, no replay round-trip.
+        expect(returnValue.beforeCombinedAborted).toBe(false);
+        expect(returnValue.afterCombinedAborted).toBe(true);
+        expect(returnValue.afterCombinedReason).toBe('via c2');
+        // c1 was never aborted; the composite firing must not have flipped it.
+        expect(returnValue.c1Aborted).toBe(false);
+      }
+    );
+
+    test(
+      'abortAnyInStepWorkflow: AbortSignal.any inside a step composes deserialized signals',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortAnyInStepWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step uses native AbortSignal.any over two deserialized signals;
+        // its listener on the composite must fire when ANY source signal's
+        // abort arrives via the backing stream.
+        expect(returnValue.stepResult.saw).toBe(true);
+        expect(returnValue.stepResult.via).toBe('listener');
+        // Only c2 was aborted; c1 stays clean to confirm we didn't mass-abort.
+        expect(returnValue.c2Aborted).toBe(true);
+        expect(returnValue.c1Aborted).toBe(false);
+      }
+    );
+
+    test(
+      'abortSurvivesReplayWorkflow: controller state consistent across replay',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortSurvivesReplayWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // Before sleep (and abort), signal should not be aborted.
+        expect(returnValue.beforeAborted).toBe(false);
+        // After sleep + abort, signal should be aborted.
+        expect(returnValue.afterAborted).toBe(true);
+        expect(returnValue.afterReason).toBe('after-replay');
+      }
+    );
+
+    test(
+      'abortThrowIfAbortedWorkflow: throwIfAborted causes FatalError, no retries',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortThrowIfAbortedWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step calls throwIfAborted() on an already-aborted signal.
+        // The DOMException is wrapped in FatalError by the step handler.
+        expect(returnValue.threw).toBe(true);
+        expect(returnValue.isFatal).toBe(true);
+      }
+    );
+
+    test(
+      'abortReasonTypesWorkflow: various abort reason types propagate correctly',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortReasonTypesWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // String reason
+        expect(returnValue.stringReason.aborted).toBe(true);
+        expect(returnValue.stringReason.reason).toBe('string-reason');
+
+        // Object reason
+        expect(returnValue.objectReason.aborted).toBe(true);
+        expect(returnValue.objectReason.reason).toMatchObject({
+          code: 'CANCELLED',
+          detail: 'by user',
+        });
+
+        // Undefined reason (default abort)
+        expect(returnValue.undefinedReason.aborted).toBe(true);
+      }
+    );
+
+    test(
+      'abortFetchUncaughtWorkflow: uncaught fetch AbortError is FatalError, no retries',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortFetchUncaughtWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step does fetch() with an already-aborted signal.
+        // The AbortError is NOT caught in the step — it propagates as FatalError.
+        expect(returnValue.threw).toBe(true);
+        expect(returnValue.isFatal).toBe(true);
+
+        const world = await getWorld();
+        const { data: events } = await world.events.list({ runId: run.runId });
+        expect(
+          events.some((event) => event.eventType === 'step_retrying')
+        ).toBe(false);
+      }
+    );
+
+    test(
+      'abortFetchInFlightWorkflow: aborting cancels an in-flight fetch',
+      { timeout: 60_000 },
+      async () => {
+        // The workflow kicks off a fetch against a slow endpoint, races it
+        // against a 2s sleep, and aborts when the sleep wins. The fetch must
+        // actually cancel mid-flight (not run to its 30s natural completion)
+        // — that requires the deserialized signal's `addEventListener` path
+        // to fire when the cancellation stream packet arrives. No other abort
+        // test exercises this path.
+        const run = await start(await e2e('abortFetchInFlightWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // Include the full returnValue (status + elapsedMs from the step) in
+        // the assertion message so a flaky failure surfaces *why* fetch won
+        // the race — e.g. httpbin returning a 5xx in <1s — instead of just
+        // "expected 'fetch' to be 'timeout'".
+        const summary = JSON.stringify(returnValue);
+        expect(returnValue.winner, summary).toBe('timeout');
+        // The step's catch path returned aborted=true (fetch threw AbortError),
+        // not the natural-completion path (which would set ok=true,aborted=false).
+        expect(returnValue.fetchResult.aborted, summary).toBe(true);
+        expect(returnValue.fetchResult.ok, summary).toBe(false);
+      }
+    );
+
+    test(
+      'abortVoidSleepTimeoutWorkflow: documented `void sleep().then(abort)` pattern works',
+      { timeout: 60_000 },
+      async () => {
+        // Validates the simplified timeout pattern documented on the
+        // abort-signal-timeout-in-workflow error page:
+        //   const controller = new AbortController();
+        //   void sleep('Ns').then(() => controller.abort());
+        //   return await fetchWithSignal(url, controller.signal);
+        //
+        // If the doc's recommended replacement for AbortSignal.timeout()
+        // ever stops working (e.g. fire-and-forget sleep regresses, or the
+        // .then chain doesn't reach controller.abort), the assertion below
+        // flips to ok=true,aborted=false.
+        const run = await start(await e2e('abortVoidSleepTimeoutWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // Same diagnostic treatment as abortFetchInFlightWorkflow: when the
+        // slow upstream returns early the step result includes status and
+        // elapsedMs, which are what we'll need to triage the next flake.
+        const summary = JSON.stringify(returnValue);
+        expect(returnValue.aborted, summary).toBe(true);
+        expect(returnValue.ok, summary).toBe(false);
+      }
+    );
+
+    test(
+      'abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(
+          await e2e('abortDeterministicBranchWorkflow'),
+          []
+        );
+        const returnValue = await run.returnValue;
+
+        // The workflow checks signal.aborted BEFORE calling abort().
+        // On both first-run and replay, signal.aborted must be false
+        // at that point, so the else branch is taken.
+        expect(returnValue.result).toBe('just aborted');
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.reason).toBe('test');
+      }
+    );
+
+    test(
+      'abortListenerWorkflow: signal.addEventListener fires on the deserialized step signal',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortListenerWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step resolves via its own abort listener (not via the safety
+        // timeout). If `via` is 'timeout', the listener never fired even
+        // though signal.aborted may have flipped — i.e. the addEventListener
+        // path on the deserialized signal is broken.
+        expect(returnValue.stepResult.saw).toBe(true);
+        expect(returnValue.stepResult.via).toBe('listener');
+      }
+    );
+
+    test(
+      'abortThrowIfAbortedMidFlightWorkflow: throwIfAborted in a polling loop bails when abort fires',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(
+          await e2e('abortThrowIfAbortedMidFlightWorkflow'),
+          []
+        );
+        const returnValue = await run.returnValue;
+
+        // The polling step's throwIfAborted() throws a DOMException once the
+        // abort fires mid-flight. The step handler wraps that as FatalError
+        // (no retries). A `result: 'completed'` would mean the abort never
+        // reached the polling step.
+        expect(returnValue.threw).toBe(true);
+        expect(returnValue.isFatal).toBe(true);
+      }
+    );
+
+    test(
+      'abortDeterministicBranchFromStepWorkflow: branches stay consistent when abort comes from a step',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(
+          await e2e('abortDeterministicBranchFromStepWorkflow'),
+          []
+        );
+        const returnValue = await run.returnValue;
+
+        // The pre-abort read MUST be false. If it ever becomes true on
+        // replay (e.g., the events consumer sets signal.aborted before the
+        // workflow code reads it), this branch would flip and break replay
+        // determinism.
+        expect(returnValue.beforeAborted).toBe(false);
+        expect(returnValue.beforeBranch).toBe('pre-abort');
+
+        // After a suspension boundary that drains the promise queue, the
+        // events consumer's pending `_setAborted` chained on hook_received
+        // has run. Post-abort read MUST be true on first-run AND replay.
+        expect(returnValue.afterAborted).toBe(true);
+        expect(returnValue.afterBranch).toBe('post-abort');
+      }
+    );
+
+    // Matrix of abort + hook ordering: 4 combinations
+    // Tests that the log order is deterministic across first-run and replay
+    // TODO: These tests require the abort controller's internal system hook
+    // to be fully wired through the suspension handler. The hook creation
+    // timing interacts with the user hook lookup in the test. Skip until
+    // the full integration is complete.
+    const orderingVariants = [
+      {
+        variant: 'listener-first-abort-first',
+        description: 'addEventListener → hook.then → abort() → resumeHook',
+        resumeBeforeAbort: false,
+      },
+      {
+        variant: 'listener-first-hook-first',
+        description: 'addEventListener → hook.then → resumeHook → abort()',
+        resumeBeforeAbort: true,
+      },
+      {
+        variant: 'hook-first-abort-first',
+        description: 'hook.then → addEventListener → abort() → resumeHook',
+        resumeBeforeAbort: false,
+      },
+      {
+        variant: 'hook-first-hook-first',
+        description: 'hook.then → addEventListener → resumeHook → abort()',
+        resumeBeforeAbort: true,
+      },
+    ] as const;
+
+    for (const {
+      variant,
+      description,
+      resumeBeforeAbort,
+    } of orderingVariants) {
+      test(
+        `abortHookOrderingWorkflow [${variant}]: ${description}`,
+        { timeout: 90_000 },
+        async () => {
+          const token = `ordering-${variant}-${Math.random().toString(36).slice(2)}`;
+          const run = await start(await e2e('abortHookOrderingWorkflow'), [
+            token,
+            variant,
+          ]);
+
+          if (resumeBeforeAbort) {
+            // For "hook-first" variants, the workflow awaits a step before
+            // calling abort(). We resume the hook during that window.
+            const hook = await waitForHook(token, { runId: run.runId });
+            expect(hook.runId).toBe(run.runId);
+            await resumeHook(hook, { value: 'hello' });
+          } else {
+            // For "abort-first" variants, abort happens before the hook
+            // is resumed. Resume once registration is visible.
+            const hook = await waitForHook(token, { runId: run.runId });
+            expect(hook.runId).toBe(run.runId);
+            await resumeHook(hook, { value: 'hello' });
+          }
+
+          const returnValue = await run.returnValue;
+
+          // The log must be an array (workflow returned it)
+          expect(returnValue).toBeInstanceOf(Array);
+
+          // The abort listener must appear in the log (it was called)
+          expect(returnValue).toContain('abort-listener');
+          expect(returnValue).toContain('after-abort');
+
+          // The log order must be deterministic:
+          // abort-listener always appears right before after-abort
+          // (because abort() fires the listener synchronously)
+          const abortIdx = returnValue.indexOf('abort-listener');
+          const afterIdx = returnValue.indexOf('after-abort');
+          expect(afterIdx).toBe(abortIdx + 1);
+        }
+      );
+    }
+  });
+
   test(
     'importMetaUrlWorkflow - import.meta.url is available in step bundles',
     { timeout: 60_000 },
@@ -2823,11 +3428,160 @@ describe('e2e', () => {
 
       // Workflow should still be running (grace period), so hook should still be findable
       await sleep(1_000);
-      const hookAfterAbort = await getHookByToken(token).catch(() => null);
+      const _hookAfterAbort = await getHookByToken(token).catch(() => null);
       // Hook may or may not be disposed depending on timing, but run should complete
       const returnValue = await run1.returnValue;
       expect(returnValue.aborted).toBe(true);
       expect(returnValue.reason).toBe('Test complete');
     }
   );
+
+  // ==========================================================================
+  // experimental_setAttributes (experimental MVP)
+  // ==========================================================================
+
+  describe('experimental_setAttributes', () => {
+    test(
+      'experimentalSetAttributesWorkflow: workflow-body calls dispatch through the step bridge and merge correctly',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesWorkflow'),
+          [7]
+        );
+        const output = await run.returnValue;
+        expect(output).toBe(21);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        // First call sets {phase: 'init', source: 'workflow-body'}; second
+        // overwrites phase; third unsets source via undefined → null.
+        expect(persisted?.attributes).toEqual({ phase: 'done' });
+        expect(persisted?.attributes ?? {}).not.toHaveProperty('source');
+
+        // Dispatch is via a real step — verify at least one
+        // `step_created`/`step_completed` pair for the `__builtin_set_attributes`
+        // step exists on the run's event log.
+        const { data: events } = await world.events.list({ runId: run.runId });
+        const attrStepEvents = events.filter(
+          (e) =>
+            (e.eventType === 'step_created' ||
+              e.eventType === 'step_completed') &&
+            typeof (e.eventData as { stepName?: string } | undefined)
+              ?.stepName === 'string' &&
+            (e.eventData as { stepName: string }).stepName.includes(
+              '__builtin_set_attributes'
+            )
+        );
+        expect(attrStepEvents.length).toBeGreaterThanOrEqual(2);
+      }
+    );
+
+    test(
+      'experimentalSetAttributesInsideStepWorkflow: step-body calls post directly to the world',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesInsideStepWorkflow'),
+          [9]
+        );
+        const output = await run.returnValue;
+        expect(output).toBe(36);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        expect(persisted?.attributes).toEqual({
+          phase: 'step-done',
+          source: 'step-body',
+          input: '9',
+        });
+
+        const { data: events } = await world.events.list({ runId: run.runId });
+        expect(
+          events.some(
+            (e) =>
+              (e.eventType === 'step_created' ||
+                e.eventType === 'step_completed') &&
+              typeof (e.eventData as { stepName?: string } | undefined)
+                ?.stepName === 'string' &&
+              (e.eventData as { stepName: string }).stepName.includes(
+                '__builtin_set_attributes'
+              )
+          )
+        ).toBe(false);
+      }
+    );
+
+    // TODO(attributes): un-skip once the platform supports executing
+    // step bodies queued by `drainPendingQueueItems`. Today the step
+    // worker calls `executeStep` → `world.events.create('step_started')`,
+    // which the server rejects with `RunExpiredError` (HTTP 410) once
+    // the run has transitioned to a terminal state. Drain commits the
+    // `step_created` event and enqueues the message, but by the time
+    // the queue worker picks it up `run_completed` has landed and the
+    // worker skips the step ("Workflow run X has already completed,
+    // skipping step Y" in step-executor.ts).
+    //
+    // The fire-and-forget pattern itself works for `void` calls placed
+    // before any later `await` on a runtime primitive (the suspension
+    // queues the step before the run terminates) — see the awaited
+    // workflow-body test above for that coverage. What's broken is
+    // specifically "last void immediately before return". Either the
+    // platform needs to keep accepting `step_started` for steps the
+    // workflow itself queued at drain time, or attribute writes need
+    // a non-step dispatch path (planned for the full V1 attributes
+    // feature where attr_set is a first-class event type).
+    test.todo(
+      'fire-and-forget: void experimental_setAttributes lands without awaiting'
+    );
+
+    test(
+      'Promise.all of disjoint-key writes: every key lands',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesParallelWorkflow'),
+          []
+        );
+        const output = await run.returnValue;
+        expect(output).toBe('done');
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        // Disjoint-key writes never collide, so all three keys must
+        // land regardless of dispatch ordering at the world.
+        expect(persisted?.attributes).toEqual({ a: '1', b: '2', c: '3' });
+      }
+    );
+
+    test(
+      'workflow throws after awaited setAttributes: attribute still persists on the failed run',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesThrowsAfterWorkflow'),
+          []
+        );
+        // The workflow throws — `returnValue` rejects.
+        await expect(run.returnValue).rejects.toThrow(/intentional failure/);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        expect(persisted?.status).toBe('failed');
+        // The attribute was awaited and therefore landed before the
+        // throw. The `run_failed` lifecycle write must preserve the
+        // attribute snapshot — the per-run file lock guarantees the
+        // lifecycle handler reads the fresh value off disk inside its
+        // critical section before writing the failed state back.
+        expect(persisted?.attributes).toEqual({
+          phase: 'about-to-fail',
+          reason: 'intentional',
+        });
+      }
+    );
+  });
 });

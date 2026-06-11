@@ -15,6 +15,13 @@ export {
 } from './components/workflow-traces/trace-span-construction';
 export type { EventAnalysis } from './lib/event-analysis';
 export {
+  parseExactWorkflowSearchId,
+  looksLikeWorkflowIdSearchInput,
+  type ExactWorkflowSearchId,
+  type ExactWorkflowSearchIdKind,
+  type ExactIdSearchResult,
+} from './lib/exact-event-search-id';
+export {
   analyzeEvents,
   hasPendingHooksFromEvents,
   hasPendingStepsFromEvents,
@@ -57,6 +64,7 @@ export type { StreamStep } from './lib/utils';
 export {
   extractConversation,
   formatDuration,
+  formatDurationPrecise,
   identifyStreamSteps,
   isDoStreamStep,
 } from './lib/utils';

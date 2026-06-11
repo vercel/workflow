@@ -16,6 +16,9 @@ export async function GET(
     const indent = '  '.repeat(depth);
 
     if ('type' in node) {
+      // Exclude internal/preview-only pages from sitemap
+      if (node.type === 'page' && node.url.includes('/internal')) return;
+      if (node.type === 'folder' && node.name === 'Internal') return;
       if (node.type === 'page') {
         mdText += `${indent}- [${node.name}](${rewriteCookbookUrl(node.url)})\n`;
       } else if (node.type === 'folder') {

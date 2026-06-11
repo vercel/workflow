@@ -144,6 +144,143 @@
       "services": [],
       "requiresCredentials": true,
       "credentialsNote": "Requires JAZZ_API_KEY, JAZZ_WORKER_ACCOUNT, and JAZZ_WORKER_SECRET from Jazz Cloud"
+    },
+    {
+      "id": "fantasticfour-redis",
+      "type": "community",
+      "package": "@fantasticfour/world-redis",
+      "name": "Redis",
+      "description": "Pure Redis-based world using Redis Lists for lightweight and simple workflow execution. Minimal dependencies, fast setup, ideal for development and small-scale production.",
+      "repository": "https://github.com/vinnymac/worlds",
+      "docs": "https://github.com/vinnymac/worlds/tree/main/packages/world-redis",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@fantasticfour/world-redis",
+        "WORKFLOW_REDIS_URI": "redis://localhost:6379"
+      },
+      "services": [
+        {
+          "name": "redis",
+          "image": "redis:7-alpine",
+          "ports": ["6379:6379"],
+          "healthCheck": {
+            "cmd": "redis-cli ping",
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 5
+          }
+        }
+      ],
+      "setup": "pnpm exec fantasticfour-redis-setup"
+    },
+    {
+      "id": "fantasticfour-redis-bullmq",
+      "type": "community",
+      "package": "@fantasticfour/world-redis-bullmq",
+      "name": "Redis + BullMQ",
+      "description": "Production-grade Redis world using BullMQ for robust job queue management. Advanced features like rate limiting, priority queues, and delayed jobs.",
+      "repository": "https://github.com/vinnymac/worlds",
+      "docs": "https://github.com/vinnymac/worlds/tree/main/packages/world-redis-bullmq",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@fantasticfour/world-redis-bullmq",
+        "WORKFLOW_REDIS_URI": "redis://localhost:6379"
+      },
+      "services": [
+        {
+          "name": "redis",
+          "image": "redis:7-alpine",
+          "ports": ["6379:6379"],
+          "healthCheck": {
+            "cmd": "redis-cli ping",
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 5
+          }
+        }
+      ],
+      "setup": "pnpm exec fantasticfour-redis-bullmq-setup"
+    },
+    {
+      "id": "fantasticfour-cloudflare",
+      "type": "community",
+      "package": "@fantasticfour/world-cloudflare",
+      "name": "Cloudflare",
+      "description": "Cloudflare Durable Objects world with edge-native SQLite storage and global <10ms latency. Deploy workflows to 300+ cities worldwide with automatic state replication.",
+      "repository": "https://github.com/vinnymac/worlds",
+      "docs": "https://github.com/vinnymac/worlds/tree/main/packages/world-cloudflare",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@fantasticfour/world-cloudflare"
+      },
+      "services": [],
+      "requiresDeployment": true
+    },
+    {
+      "id": "fantasticfour-mysql",
+      "type": "community",
+      "package": "@fantasticfour/world-mysql",
+      "name": "MySQL",
+      "description": "Pure MySQL world for durable storage, queueing, and streaming. No external dependencies — works with PlanetScale, RDS, Aiven, or any MySQL provider.",
+      "repository": "https://github.com/vinnymac/worlds",
+      "docs": "https://github.com/vinnymac/worlds/tree/main/packages/world-mysql",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@fantasticfour/world-mysql",
+        "DATABASE_URL": "mysql://root:root@localhost:3306/mysql_test"
+      },
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Requires MySQL server (CI does not yet support mysql service containers)",
+      "setup": "pnpm exec world-mysql-setup"
+    },
+    {
+      "id": "fantasticfour-azure",
+      "type": "community",
+      "package": "@fantasticfour/world-azure",
+      "name": "Azure",
+      "description": "Azure Cosmos DB + Service Bus world with Change Feed streaming. Native Azure integration for enterprise deployments.",
+      "repository": "https://github.com/vinnymac/worlds",
+      "docs": "https://github.com/vinnymac/worlds/tree/main/packages/world-azure",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@fantasticfour/world-azure",
+        "COSMOS_ENDPOINT": "",
+        "COSMOS_KEY": "",
+        "SERVICE_BUS_CONNECTION_STRING": ""
+      },
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Requires Azure Cosmos DB endpoint/key and Service Bus connection string"
+    },
+    {
+      "id": "fantasticfour-nats-jetstream",
+      "type": "community",
+      "package": "@fantasticfour/world-nats-jetstream",
+      "name": "NATS JetStream",
+      "description": "NATS JetStream world with built-in clustering support. Self-hosted, high-performance messaging for workflow execution.",
+      "repository": "https://github.com/vinnymac/worlds",
+      "docs": "https://github.com/vinnymac/worlds/tree/main/packages/world-nats-jetstream",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@fantasticfour/world-nats-jetstream",
+        "WORKFLOW_NATS_URL": "nats://localhost:4222"
+      },
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Requires NATS server with JetStream enabled (CI does not yet support nats service containers)"
+    },
+    {
+      "id": "fantasticfour-upstash",
+      "type": "community",
+      "package": "@fantasticfour/world-upstash",
+      "name": "Upstash",
+      "description": "Serverless-native world using Upstash Redis for storage and QStash for HTTP-based queue management. Edge-ready with zero infrastructure to manage.",
+      "repository": "https://github.com/vinnymac/worlds",
+      "docs": "https://github.com/vinnymac/worlds/tree/main/packages/world-upstash",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@fantasticfour/world-upstash",
+        "UPSTASH_REDIS_REST_URL": "",
+        "UPSTASH_REDIS_REST_TOKEN": "",
+        "UPSTASH_QSTASH_TOKEN": ""
+      },
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Requires Upstash Redis and QStash credentials from Upstash console (https://console.upstash.com)"
     }
   ]
 }

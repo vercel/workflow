@@ -1,11 +1,11 @@
 import { runInContext } from 'node:vm';
 import {
   ERROR_SLUGS,
+  ReplayDivergenceError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPortLazy } from './runtime/get-port-lazy.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -16,6 +16,9 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { getPortLazy } from './runtime/get-port-lazy.js';
+import { handleSuspension } from './runtime/suspension-handler.js';
+import { getWorld } from './runtime/world.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -33,47 +36,84 @@ import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
+import {
+  createAbortSignalStatics,
+  createCreateAbortController,
+} from './workflow/abort-controller.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
- * Logs a warning when a workflow run completes or fails with uncommitted
- * operations still in the invocations queue. This typically indicates the
- * user forgot to `await` a step, hook, or sleep call.
+ * Drain pending queue items at workflow completion (success or failure).
+ *
+ * Treats end-of-run like a final suspension: any operation the workflow code
+ * spawned but didn't `await` — abort hook resumes, hook creations/disposals,
+ * sleep waits, step queueings — gets committed to the event log via the
+ * suspension handler before the run is marked terminal.
+ *
+ * This matches normal JS semantics where `setTimeout(fn, ...)` etc. continue
+ * running after the surrounding function returns. Most importantly, it ensures
+ * `controller.abort()` called as the last statement of a workflow actually
+ * propagates to in-flight steps on other compute instances — without this,
+ * the abort hook is created but never resumed and the cancellation never
+ * reaches the running step.
+ *
+ * NOTE: drain only commits the `*_created` events; it does NOT enqueue step
+ * bodies for execution. The platform's step worker rejects `step_started`
+ * for runs that have already transitioned to terminal (`RunExpiredError`),
+ * so a step queued here would be skipped anyway. Fire-and-forget step calls
+ * with side effects therefore work only when followed by some later `await`
+ * on a runtime primitive that triggers a real suspension (the normal
+ * runtime loop in `runtime.ts` queues the step there). A `void` placed
+ * immediately before `return` is not reliably executed.
+ *
+ * Drain failures are swallowed: the workflow's own outcome (the user's return
+ * value or thrown error) is the source of truth; secondary cleanup that fails
+ * shouldn't change the run's terminal state.
  */
-function warnPendingQueueItems(
+async function drainPendingQueueItems(
   runId: string,
   pendingQueue: Map<string, QueueItem>,
+  vmGlobalThis: typeof globalThis,
+  workflowRun: WorkflowRun,
   outcome: 'completed' | 'failed'
-): void {
-  // Filter out hooks that are either already created (alive, waiting for payloads)
-  // or explicitly disposed — both are benign since the backend auto-disposes
-  // all hooks when a run reaches a terminal state
-  const items = [...pendingQueue.values()].filter(
-    (item) => !(item.type === 'hook' && (item.hasCreatedEvent || item.disposed))
-  );
-  if (items.length === 0) return;
-
-  const details = items.map((item) => {
-    switch (item.type) {
-      case 'step':
-        return `step "${item.stepName}"`;
-      case 'hook':
-        return `hook "${item.token}"`;
-      case 'wait':
-        return 'sleep';
-      default:
-        return `unknown (${(item as { type: string }).type})`;
+): Promise<void> {
+  if (pendingQueue.size === 0) return;
+  // Implicitly dispose any abort hooks (system hooks) that are still alive at
+  // workflow completion so they don't leak rows in the hooks table for the
+  // run's lifetime. Skip hooks that already have an abort in flight — those
+  // will emit hook_received via the abort processing path. User hooks
+  // (isSystem !== true) are intentionally left alone: their lifetime is
+  // managed by the user's code, not the runtime.
+  for (const item of pendingQueue.values()) {
+    if (
+      item.type === 'hook' &&
+      item.isSystem &&
+      !item.disposed &&
+      !item.abortRequested
+    ) {
+      item.disposed = true;
     }
-  });
-
-  runtimeLogger.warn(
-    `Workflow run ${outcome} with ${items.length} uncommitted operation(s): ${details.join(', ')}. ` +
-      'Did you forget to `await` a step, hook, or sleep call?',
-    { workflowRunId: runId }
-  );
+  }
+  try {
+    const world = await getWorld();
+    const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
+    await handleSuspension({
+      suspension: synthesized,
+      world,
+      run: workflowRun,
+    });
+  } catch (err) {
+    runtimeLogger.warn(
+      `Failed to drain pending queue items for ${outcome} workflow run`,
+      {
+        workflowRunId: runId,
+        message: err instanceof Error ? err.message : String(err),
+      }
+    );
+  }
 }
 
 export async function runWorkflow(
@@ -128,11 +168,14 @@ export async function runWorkflow(
     const promiseQueueHolder = { current: Promise.resolve() };
 
     const eventsConsumer = new EventsConsumer(events, {
+      onConsumedEvent: (event) => {
+        updateTimestamp(+event.createdAt);
+      },
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
-          new WorkflowRuntimeError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`,
-            { slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG }
+          new ReplayDivergenceError(
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            { eventId: event.eventId }
           )
         );
       },
@@ -157,17 +200,8 @@ export async function runWorkflow(
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      pendingDeliveryBarriers: new Map(),
     };
-
-    // Subscribe to the events log to update the timestamp in the vm context
-    workflowContext.eventsConsumer.subscribe((event) => {
-      const createdAt = event?.createdAt;
-      if (createdAt) {
-        updateTimestamp(+createdAt);
-      }
-      // Never consume events - this is only a passive subscriber
-      return EventConsumerResult.NotConsumed;
-    });
 
     // Consume run lifecycle events - these are structural events that don't
     // need special handling in the workflow, but must be consumed to advance
@@ -267,6 +301,18 @@ export async function runWorkflow(
       throw new WorkflowRuntimeError(timeoutErrorMessage, {
         slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
       });
+    };
+
+    // `AbortController` and `AbortSignal` in the workflow VM are hook-backed
+    // for deterministic replay. The controller's abort() queues a hook resumption,
+    // and signal.aborted is updated when the hook event is processed during replay.
+    (vmGlobalThis as any).AbortController =
+      createCreateAbortController(workflowContext);
+    const abortSignalStatics = createAbortSignalStatics();
+    (vmGlobalThis as any).AbortSignal = {
+      abort: abortSignalStatics.abort,
+      any: abortSignalStatics.any,
+      timeout: abortSignalStatics.timeout,
     };
 
     // `Request` and `Response` are special built-in classes that invoke steps
@@ -755,22 +801,27 @@ export async function runWorkflow(
         ...Attribute.WorkflowResultType(typeof result),
       });
 
-      warnPendingQueueItems(
+      await drainPendingQueueItems(
         workflowRun.runId,
         workflowContext.invocationsQueue,
+        vmGlobalThis,
+        workflowRun,
         'completed'
       );
 
       return dehydrated;
     } catch (err) {
-      // Let WorkflowSuspension propagate — handled separately by the runtime
-      if (WorkflowSuspension.is(err)) {
+      // Control-flow signals are handled by the runtime and do not mean the
+      // workflow has terminally failed.
+      if (WorkflowSuspension.is(err) || ReplayDivergenceError.is(err)) {
         throw err;
       }
 
-      warnPendingQueueItems(
+      await drainPendingQueueItems(
         workflowRun.runId,
         workflowContext.invocationsQueue,
+        vmGlobalThis,
+        workflowRun,
         'failed'
       );
 
