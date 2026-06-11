@@ -926,6 +926,34 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       if (data.eventType === 'attr_set') {
         const { changes, allowReservedAttributes } = data.eventData;
+        // Dedup pre-check for correlated workflow writes: if the event is
+        // already in the log (a redelivered/replayed duplicate), reject
+        // BEFORE materializing onto the run. Without this, a duplicate —
+        // including a pathological one carrying different changes for the
+        // same correlationId — would mutate `run.attributes` and then fail
+        // the event insert, leaving the snapshot out of sync with the
+        // event log. The unique index on the insert below still guards the
+        // truly-concurrent race; both writers of that race carry identical
+        // changes (deterministic replay), so the double-applied update is
+        // idempotent there.
+        if (data.correlationId && data.eventData.writer.type === 'workflow') {
+          const [duplicate] = await drizzle
+            .select({ eventId: events.eventId })
+            .from(events)
+            .where(
+              and(
+                eq(events.runId, effectiveRunId),
+                eq(events.correlationId, data.correlationId),
+                eq(events.eventType, 'attr_set')
+              )
+            )
+            .limit(1);
+          if (duplicate) {
+            throw new EntityConflictError(
+              `attr_set for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+            );
+          }
+        }
         const [existing] = await drizzle
           .select({ attributes: Schema.runs.attributes })
           .from(Schema.runs)

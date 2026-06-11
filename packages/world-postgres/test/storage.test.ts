@@ -1476,6 +1476,21 @@ describe('Storage (Postgres integration)', () => {
         })
       ).rejects.toMatchObject({ name: 'EntityConflictError' });
 
+      // A duplicate carrying *different* changes for the same correlationId
+      // must be rejected before touching the run snapshot — otherwise the
+      // materialized attributes would diverge from the event log.
+      await expect(
+        events.create(testRunId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_dup_1',
+          eventData: {
+            changes: [{ key: 'phase', value: 'DIVERGED' }],
+            writer: { type: 'workflow' },
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      expect((await runs.get(testRunId)).attributes?.phase).toBe('running');
+
       const evts = await events.list({
         runId: testRunId,
         pagination: {},
