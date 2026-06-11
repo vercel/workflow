@@ -400,107 +400,113 @@ describe('runWorkflow', () => {
     ]);
   });
 
-  it('should repeatedly replay a recorded step branch without looking ahead through Date', async () => {
-    const ops: Promise<any>[] = [];
-    const workflowRunId = 'wrun_123';
-    const workflowRun: WorkflowRun = {
-      runId: workflowRunId,
-      workflowName: 'workflow',
-      status: 'running',
-      input: await dehydrateWorkflowArguments(
-        [],
-        workflowRunId,
-        noEncryptionKey,
-        ops
-      ),
-      createdAt: new Date('2024-01-01T00:00:00.000Z'),
-      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
-      startedAt: new Date('2024-01-01T00:00:00.000Z'),
-      deploymentId: 'test-deployment',
-    };
-
-    const startStepId = 'step_01HK153X00SP082GGA0AAJC6PJ';
-    const branchStepId = 'step_01HK153X00SP082GGA0AAJC6PK';
-    const events: Event[] = [
-      {
-        eventId: 'event-run-created',
+  // 200 batched VM replays consume several CPU-seconds even on fast hardware;
+  // on 2-vCPU CI runners (notably Windows) competing with parallel test
+  // workers, the default 60s timeout is regularly exceeded.
+  it(
+    'should repeatedly replay a recorded step branch without looking ahead through Date',
+    { timeout: 180_000 },
+    async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'wrun_123';
+      const workflowRun: WorkflowRun = {
         runId: workflowRunId,
-        eventType: 'run_created',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          workflowRunId,
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
-      },
-      {
-        eventId: 'event-run-started',
-        runId: workflowRunId,
-        eventType: 'run_started',
-        createdAt: new Date('2024-01-01T00:00:00.500Z'),
-      },
-      {
-        eventId: 'event-start-created',
-        runId: workflowRunId,
-        eventType: 'step_created',
-        correlationId: startStepId,
-        eventData: { stepName: 'startQueuedLogicalRunStep' },
-        createdAt: new Date('2024-01-01T00:00:01.000Z'),
-      },
-      {
-        eventId: 'event-start-started',
-        runId: workflowRunId,
-        eventType: 'step_started',
-        correlationId: startStepId,
-        eventData: { stepName: 'startQueuedLogicalRunStep' },
-        createdAt: new Date('2024-01-01T00:00:01.500Z'),
-      },
-      {
-        eventId: 'event-start-completed',
-        runId: workflowRunId,
-        eventType: 'step_completed',
-        correlationId: startStepId,
-        eventData: {
-          stepName: 'startQueuedLogicalRunStep',
-          result: await dehydrateStepReturnValue(
-            'started',
-            workflowRunId,
-            noEncryptionKey,
-            ops
-          ),
-        },
-        createdAt: new Date('2024-01-01T00:00:02.000Z'),
-      },
-      {
-        eventId: 'event-drain-created',
-        runId: workflowRunId,
-        eventType: 'step_created',
-        correlationId: branchStepId,
-        eventData: { stepName: 'drainLogicalRunRuntimeStep' },
-        createdAt: new Date('2024-01-01T00:00:02.500Z'),
-      },
-      {
-        eventId: 'event-drain-started',
-        runId: workflowRunId,
-        eventType: 'step_started',
-        correlationId: branchStepId,
-        eventData: { stepName: 'drainLogicalRunRuntimeStep' },
-        createdAt: new Date('2024-01-01T00:00:03.000Z'),
-      },
-      {
-        eventId: 'event-drain-completed',
-        runId: workflowRunId,
-        eventType: 'step_completed',
-        correlationId: branchStepId,
-        eventData: {
-          stepName: 'drainLogicalRunRuntimeStep',
-          result: await dehydrateStepReturnValue(
-            'drained',
-            workflowRunId,
-            noEncryptionKey,
-            ops
-          ),
-        },
-        createdAt: new Date('2024-01-01T00:00:03.500Z'),
-      },
-    ];
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
 
-    const workflowCode = `const start = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("startQueuedLogicalRunStep");
+      const startStepId = 'step_01HK153X00SP082GGA0AAJC6PJ';
+      const branchStepId = 'step_01HK153X00SP082GGA0AAJC6PK';
+      const events: Event[] = [
+        {
+          eventId: 'event-run-created',
+          runId: workflowRunId,
+          eventType: 'run_created',
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-run-started',
+          runId: workflowRunId,
+          eventType: 'run_started',
+          createdAt: new Date('2024-01-01T00:00:00.500Z'),
+        },
+        {
+          eventId: 'event-start-created',
+          runId: workflowRunId,
+          eventType: 'step_created',
+          correlationId: startStepId,
+          eventData: { stepName: 'startQueuedLogicalRunStep' },
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        {
+          eventId: 'event-start-started',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: startStepId,
+          eventData: { stepName: 'startQueuedLogicalRunStep' },
+          createdAt: new Date('2024-01-01T00:00:01.500Z'),
+        },
+        {
+          eventId: 'event-start-completed',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: startStepId,
+          eventData: {
+            stepName: 'startQueuedLogicalRunStep',
+            result: await dehydrateStepReturnValue(
+              'started',
+              workflowRunId,
+              noEncryptionKey,
+              ops
+            ),
+          },
+          createdAt: new Date('2024-01-01T00:00:02.000Z'),
+        },
+        {
+          eventId: 'event-drain-created',
+          runId: workflowRunId,
+          eventType: 'step_created',
+          correlationId: branchStepId,
+          eventData: { stepName: 'drainLogicalRunRuntimeStep' },
+          createdAt: new Date('2024-01-01T00:00:02.500Z'),
+        },
+        {
+          eventId: 'event-drain-started',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: branchStepId,
+          eventData: { stepName: 'drainLogicalRunRuntimeStep' },
+          createdAt: new Date('2024-01-01T00:00:03.000Z'),
+        },
+        {
+          eventId: 'event-drain-completed',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: branchStepId,
+          eventData: {
+            stepName: 'drainLogicalRunRuntimeStep',
+            result: await dehydrateStepReturnValue(
+              'drained',
+              workflowRunId,
+              noEncryptionKey,
+              ops
+            ),
+          },
+          createdAt: new Date('2024-01-01T00:00:03.500Z'),
+        },
+      ];
+
+      const workflowCode = `const start = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("startQueuedLogicalRunStep");
        const drain = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("drainLogicalRunRuntimeStep");
        const settle = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("settleQueueActionStep");
        async function workflow() {
@@ -511,57 +517,58 @@ describe('runWorkflow', () => {
          return await settle();
        }${getWorkflowTransformCode('workflow')}`;
 
-    const replayCount = 200;
-    const maxConcurrentReplays = 8;
-    const replay = async () => {
-      try {
-        const result = await runWorkflow(
-          workflowCode,
-          workflowRun,
-          events,
-          noEncryptionKey
+      const replayCount = 200;
+      const maxConcurrentReplays = 8;
+      const replay = async () => {
+        try {
+          const result = await runWorkflow(
+            workflowCode,
+            workflowRun,
+            events,
+            noEncryptionKey
+          );
+          const value = await hydrateWorkflowReturnValue(
+            result as any,
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          );
+          return value === 'drained'
+            ? 'drained'
+            : `unexpected replay result: ${String(value)}`;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      };
+      const outcomes: string[] = [];
+      for (
+        let replayIndex = 0;
+        replayIndex < replayCount;
+        replayIndex += maxConcurrentReplays
+      ) {
+        const batchSize = Math.min(
+          maxConcurrentReplays,
+          replayCount - replayIndex
         );
-        const value = await hydrateWorkflowReturnValue(
-          result as any,
-          workflowRunId,
-          noEncryptionKey,
-          ops
+        outcomes.push(
+          ...(await Promise.all(Array.from({ length: batchSize }, replay)))
         );
-        return value === 'drained'
-          ? 'drained'
-          : `unexpected replay result: ${String(value)}`;
-      } catch (error) {
-        return error instanceof Error ? error.message : String(error);
       }
-    };
-    const outcomes: string[] = [];
-    for (
-      let replayIndex = 0;
-      replayIndex < replayCount;
-      replayIndex += maxConcurrentReplays
-    ) {
-      const batchSize = Math.min(
-        maxConcurrentReplays,
-        replayCount - replayIndex
-      );
-      outcomes.push(
-        ...(await Promise.all(Array.from({ length: batchSize }, replay)))
-      );
-    }
-    const failures = outcomes.filter((outcome) => outcome !== 'drained');
+      const failures = outcomes.filter((outcome) => outcome !== 'drained');
 
-    expect({
-      replayCount,
-      drainedCount: outcomes.length - failures.length,
-      failureCount: failures.length,
-      firstFailure: failures[0],
-    }).toEqual({
-      replayCount,
-      drainedCount: replayCount,
-      failureCount: 0,
-      firstFailure: undefined,
-    });
-  });
+      expect({
+        replayCount,
+        drainedCount: outcomes.length - failures.length,
+        failureCount: failures.length,
+        firstFailure: failures[0],
+      }).toEqual({
+        replayCount,
+        drainedCount: replayCount,
+        failureCount: 0,
+        firstFailure: undefined,
+      });
+    }
+  );
 
   // TODO: Date.now determinism is currently broken in the workflow!!
   it.fails('should maintain determinism of `Date` across executions', async () => {

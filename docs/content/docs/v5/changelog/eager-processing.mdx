@@ -157,15 +157,35 @@ To prevent deadlock when polling is executed inline by the step executor, `Run#p
 
 ### Mixed Suspensions
 
-A suspension may contain steps, hooks, and waits simultaneously. The handler creates events for all, then chooses between inline execution and queue dispatch:
+A suspension may contain steps, hooks, and waits simultaneously. The handler creates events for all, then dispatches everything we are not running inline as a single parallel batch of queue messages:
 
-- **Steps only** (no waits): one owned step is executed inline; the rest are queued. The loop continues after the inline step completes.
-- **Steps + at least one wait**: every step is queued (no inline execution). The handler returns with the wait timeout. Whichever lands first — a step's continuation or the wait timer — drives the next replay.
-- **Hooks / waits only**: handler returns with the wait timeout (or no timeout, for hook-only suspensions). The next continuation is driven by external resume or the wait timer.
+```
+ownedPendingSteps = pendingSteps.filter(owned by this handler)
+inlineStep        = ownedPendingSteps[0]   // optional
 
-The "no inline when there's a wait" carve-out is necessary to preserve `Promise.race(step, sleep)` semantics. Inline `await executeStep(...)` blocks the handler for the full step duration, and `wait_completed` events are only created on the *next* loop iteration's "complete elapsed waits" pass — so a longer-running step would always swallow the shorter sleep and `Promise.race` would resolve incorrectly. Queueing the step in this case lets the wait timer drive a continuation in parallel.
+dispatches = [
+  ...for each non-inline pendingStep: queue stepId message (idempotency=correlationId),
+  ...if soonest pending wait:          queue delayed continuation
+                                       (delaySeconds=min(remaining, maxDelay),
+                                        idempotency=waitCorrelationId[:hop|:secondBucket]),
+]
+await Promise.all(dispatches)
 
-Pure step suspensions (without waits) still benefit from inline execution; the carve-out only costs an extra queue roundtrip when a step and a sleep coexist.
+if (!inlineStep) return
+await executeStep(inlineStep)
+```
+
+The wait timer is queued as its own continuation rather than encoded in the handler's return value (`{ timeoutSeconds }`). This is what makes `Promise.race(step, sleep)` behave correctly: even when the inline step blocks the handler for the full step duration, the wait continuation fires in a separate function invocation. If the sleep wins, that parallel invocation observes `wait_completed` via the "complete elapsed waits" pass and finishes the run; if the step wins, the wait continuation fires later and no-ops on the terminal run via the existing terminal-event check.
+
+Step queueing remains unconditional (covers crash recovery: if a prior handler wrote `step_created` but crashed before queueing, a later handler will queue it; idempotency keys dedupe redundant queues across concurrent handlers).
+
+Wait continuations are likewise deduplicated, keyed on the wait's correlation ID: while a wait is pending, every replay pass over the run re-observes it and would otherwise enqueue another delayed continuation. A key is attached in all cases, since some worlds serialize key-less workflow messages per run, which would park the continuation behind the handler's own inline step execution.
+
+Two situations deliver a continuation while its wait is still pending, and each varies the key so the re-enqueue isn't dropped by a world's dedupe window (which outlives the first delivery): waits longer than the maximum queue delay (23h, bounded by VQS's 24h message retention) are clamped and chained across hops, with the hop index suffixed to the key so each hop dedupes within its window but the chain always advances; and near-elapsed waits (≤2s remaining) use a second-bucketed key suffix so a continuation delivered marginally early (clock skew) can enqueue a fresh short-delay retry. See `runtime/wait-continuation.ts` for the full selection logic.
+
+The retry/throttle and hook-conflict paths still return `{ timeoutSeconds }` since their semantics are "redeliver THIS message after a delay" rather than "schedule a fresh wait timer." Those can be unified in a follow-up.
+
+The unified dispatch requires `world-local` to honor `delaySeconds` on the queue (added in the same PR series). Without it, the wait continuation would fire instantly in dev and trigger a spurious replay before the wait elapsed (recoverable via redelivery, but inefficient and observable as duplicate `step_started` events under contention).
 
 ### VM Sandboxing
 

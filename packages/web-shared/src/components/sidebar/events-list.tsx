@@ -3,6 +3,7 @@
 import { EVENT_DATA_REF_FIELDS, type Event } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
+import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
@@ -256,6 +257,8 @@ export function EventsList({
   isLoading = false,
   error,
   onLoadEventData,
+  onStreamClick,
+  onRunClick,
   encryptionKey,
 }: {
   events: Event[];
@@ -265,6 +268,8 @@ export function EventsList({
     correlationId: string,
     eventId: string
   ) => Promise<unknown | null>;
+  onStreamClick?: (streamId: string) => void;
+  onRunClick?: (runId: string) => void;
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */
   encryptionKey?: Uint8Array;
 }) {
@@ -285,31 +290,35 @@ export function EventsList({
   }
 
   return (
-    <DetailCard summary="Events" contentClassName="mb-0" defaultOpen>
-      {isLoading ? (
-        <div className="flex flex-col -mx-4">
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between gap-3 bg-background-200 px-4 py-2"
-            >
-              <Skeleton className="h-4 w-32 rounded" />
-              <Skeleton className="h-3 w-16 rounded" />
+    <RunClickContext.Provider value={onRunClick}>
+      <StreamClickContext.Provider value={onStreamClick}>
+        <DetailCard summary="Events" contentClassName="mb-0" defaultOpen>
+          {isLoading ? (
+            <div className="flex flex-col -mx-4">
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between gap-3 bg-background-200 px-4 py-2"
+                >
+                  <Skeleton className="h-4 w-32 rounded" />
+                  <Skeleton className="h-3 w-16 rounded" />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      ) : (
-        <div className="flex flex-col -mx-4">
-          {sortedEvents.map((event) => (
-            <EventItem
-              key={event.eventId}
-              event={event}
-              onLoadEventData={onLoadEventData}
-              encryptionKey={encryptionKey}
-            />
-          ))}
-        </div>
-      )}
-    </DetailCard>
+          ) : (
+            <div className="flex flex-col -mx-4">
+              {sortedEvents.map((event) => (
+                <EventItem
+                  key={event.eventId}
+                  event={event}
+                  onLoadEventData={onLoadEventData}
+                  encryptionKey={encryptionKey}
+                />
+              ))}
+            </div>
+          )}
+        </DetailCard>
+      </StreamClickContext.Provider>
+    </RunClickContext.Provider>
   );
 }

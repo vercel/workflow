@@ -80,6 +80,63 @@ export function formatDuration(ms: number, compact = false): string {
   return parts.join(' ');
 }
 
+// Locale-aware formatter that always renders exactly two fraction digits.
+// Used for the seconds component of precise durations so values are never
+// snapped to a whole second (and thousands separators stay correct).
+const preciseSecondsFormatter = new Intl.NumberFormat(undefined, {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+/**
+ * Formats a duration in milliseconds without snapping to whole seconds.
+ *
+ * Unlike {@link formatDuration}, this never rounds a sub-minute value up to
+ * the next whole second (e.g. 1626ms renders as "1.63s", not "2s").
+ *
+ * - < 1s: shows whole milliseconds (e.g. "626ms")
+ * - 1s – 1m: shows seconds with two decimals (e.g. "1.63s", "45.20s")
+ * - >= 1m: decomposes into d/h/m with two-decimal seconds (e.g. "1m 13.45s")
+ */
+export function formatDurationPrecise(ms: number): string {
+  if (ms === 0) {
+    return '0s';
+  }
+
+  if (ms < MS_IN_SECOND) {
+    const roundedMs = Math.round(ms);
+    if (roundedMs < MS_IN_SECOND) {
+      return `${roundedMs}ms`;
+    }
+  }
+
+  const normalizedMs = Math.round(ms / 10) * 10;
+
+  if (normalizedMs < MS_IN_MINUTE) {
+    return `${preciseSecondsFormatter.format(normalizedMs / MS_IN_SECOND)}s`;
+  }
+
+  const days = Math.floor(normalizedMs / MS_IN_DAY);
+  const hours = Math.floor((normalizedMs % MS_IN_DAY) / MS_IN_HOUR);
+  const minutes = Math.floor((normalizedMs % MS_IN_HOUR) / MS_IN_MINUTE);
+  const seconds = (normalizedMs % MS_IN_MINUTE) / MS_IN_SECOND;
+
+  const parts: string[] = [];
+
+  if (days > 0) {
+    parts.push(`${days}d`);
+  }
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes}m`);
+  }
+  parts.push(`${preciseSecondsFormatter.format(seconds)}s`);
+
+  return parts.join(' ');
+}
+
 /**
  * Returns a formatted pagination display string
  * @param currentPage - The current page number

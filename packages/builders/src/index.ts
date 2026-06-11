@@ -9,7 +9,11 @@ export {
   getDecoratorOptionsForDirectory,
   getDecoratorOptionsForDirectoryWithConfigPath,
 } from './config-helpers.js';
-export { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+export {
+  createWorkflowEntrypointOptionsCode,
+  createWorkflowQueueTrigger,
+  WORKFLOW_QUEUE_TRIGGER,
+} from './constants.js';
 export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 export {
   clearModuleSpecifierCache,

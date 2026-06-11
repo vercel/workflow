@@ -12,6 +12,8 @@ import {
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
@@ -41,6 +43,7 @@ import {
 } from './runtime/replay-budget.js';
 import { executeStep } from './runtime/step-executor.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
+import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
   getWorld,
   getWorldHandlers,
@@ -214,14 +217,18 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
  * @returns A function that can be used as a Vercel API route
  */
 export function workflowEntrypoint(
-  workflowCode: string
+  workflowCode: string,
+  options?: { namespace?: string }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
+  const namespace = resolveQueueNamespace(options?.namespace);
+  const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+
   const handler = (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(
-      '__wkf_workflow_',
+      workflowPrefix,
       async (message_, metadata) => {
         // Check if this is a health check message
         // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
@@ -247,7 +254,7 @@ export function workflowEntrypoint(
           runInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
         const { requestId } = metadata;
-        const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
+        const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
         // --- Max delivery check ---
         // Enforce max delivery limit before any infrastructure calls.
@@ -430,7 +437,7 @@ export function workflowEntrypoint(
                       ) {
                         await queueMessage(
                           world,
-                          getWorkflowQueueName(workflowName),
+                          getWorkflowQueueName(workflowName, namespace),
                           {
                             runId,
                             traceCarrier: await serializeTraceCarrier(),
@@ -547,6 +554,7 @@ export function workflowEntrypoint(
                                   deploymentId: runInput.deploymentId,
                                   workflowName: runInput.workflowName,
                                   executionContext: runInput.executionContext,
+                                  attributes: runInput.attributes,
                                 },
                               }
                             : {}),
@@ -689,7 +697,7 @@ export function workflowEntrypoint(
                       );
                       await queueMessage(
                         world,
-                        getWorkflowQueueName(workflowName),
+                        getWorkflowQueueName(workflowName, namespace),
                         {
                           runId,
                           traceCarrier: await serializeTraceCarrier(),
@@ -962,19 +970,95 @@ export function workflowEntrypoint(
 
                         // V2: handle suspension without queuing steps
                         const suspensionStart = Date.now();
-                        const suspensionResult = await handleSuspension({
-                          suspension: err,
-                          world,
-                          run: workflowRun,
-                          span,
-                          requestId,
-                        });
+                        let suspensionResult: Awaited<
+                          ReturnType<typeof handleSuspension>
+                        >;
+                        try {
+                          suspensionResult = await handleSuspension({
+                            suspension: err,
+                            world,
+                            run: workflowRun,
+                            span,
+                            requestId,
+                          });
+                        } catch (suspensionError) {
+                          if (!FatalError.is(suspensionError)) {
+                            // Transient failures propagate to the queue
+                            // handler so the message is redelivered.
+                            throw suspensionError;
+                          }
+                          // Non-retryable failure while committing the
+                          // suspension's events — e.g. an attribute write
+                          // the World rejected as invalid (the cumulative
+                          // per-run cap can only be checked World-side).
+                          // Redelivery would replay the workflow into the
+                          // same write and the same rejection, so fail the
+                          // run with the error instead of wedging the
+                          // message in redelivery.
+                          const errorCode = classifyRunError(suspensionError);
+                          runtimeLogger.error(
+                            'Non-retryable error while committing workflow suspension; failing run',
+                            {
+                              workflowRunId: runId,
+                              errorCode,
+                              errorName: suspensionError.name,
+                              errorMessage: suspensionError.message,
+                            }
+                          );
+                          try {
+                            await world.events.create(
+                              runId,
+                              {
+                                eventType: 'run_failed',
+                                specVersion: SPEC_VERSION_CURRENT,
+                                eventData: {
+                                  error: await dehydrateRunError(
+                                    suspensionError,
+                                    runId,
+                                    encryptionKey
+                                  ),
+                                  errorCode,
+                                },
+                              },
+                              { requestId }
+                            );
+                          } catch (failErr) {
+                            if (
+                              EntityConflictError.is(failErr) ||
+                              RunExpiredError.is(failErr)
+                            ) {
+                              runtimeLogger.info(
+                                'Tried failing workflow run, but run has already finished.',
+                                {
+                                  workflowRunId: runId,
+                                  message: failErr.message,
+                                }
+                              );
+                              return;
+                            }
+                            throw failErr;
+                          }
+                          span?.setAttributes({
+                            ...Attribute.WorkflowRunStatus('failed'),
+                            ...Attribute.WorkflowErrorCode(errorCode),
+                            ...Attribute.WorkflowErrorName(
+                              suspensionError.name
+                            ),
+                            ...Attribute.WorkflowErrorMessage(
+                              suspensionError.message
+                            ),
+                            ...Attribute.ErrorType(suspensionError.name),
+                          });
+                          return;
+                        }
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
                           pendingSteps: suspensionResult.pendingSteps.length,
-                          timeoutSeconds: suspensionResult.timeoutSeconds,
+                          timeoutSeconds: suspensionResult.waitTimeout?.seconds,
                           hasHookConflict: suspensionResult.hasHookConflict,
+                          hasAttributeEvents:
+                            suspensionResult.hasAttributeEvents,
                         });
 
                         // Hook conflict: break loop, re-invoke via queue
@@ -982,17 +1066,16 @@ export function workflowEntrypoint(
                           return { timeoutSeconds: 0 };
                         }
 
-                        const pendingSteps = suspensionResult.pendingSteps;
-
-                        if (pendingSteps.length === 0) {
-                          // No steps — only waits/hooks
-                          if (suspensionResult.timeoutSeconds !== undefined) {
-                            return {
-                              timeoutSeconds: suspensionResult.timeoutSeconds,
-                            };
-                          }
-                          return;
+                        // Native workflow attribute events are resolved through
+                        // replay. Re-invoke before processing pending steps:
+                        // in Promise.race([setAttributes(), step()]), the
+                        // durable attribute event can win without executing
+                        // the losing step.
+                        if (suspensionResult.hasAttributeEvents) {
+                          return { timeoutSeconds: 0 };
                         }
+
+                        const pendingSteps = suspensionResult.pendingSteps;
 
                         // Inline execution is gated on ownership: only the
                         // handler that actually wrote the step_created event
@@ -1007,40 +1090,47 @@ export function workflowEntrypoint(
                         );
 
                         // Pick one owned step to execute inline (if any).
-                        // The rest of the pending steps are queued below.
-                        //
-                        // Skip inline execution entirely when the suspension
-                        // also has a pending wait (sleep): an inline `await
-                        // executeStep(...)` blocks the handler for the full
-                        // step duration, so the wait timer never has a chance
-                        // to fire on time. That defeats `Promise.race(step,
-                        // sleep)` semantics — if the sleep is shorter than
-                        // the step, replay still picks the step because
-                        // wait_completed is only created on the *next* loop
-                        // iteration, which doesn't run until the step
-                        // finishes. Queueing every step in this case lets
-                        // the wait timeout drive a continuation in parallel,
-                        // matching V1's behavior where each step ran in a
-                        // separate function invocation.
+                        // The rest of the pending steps, plus any wait
+                        // timer, are queued below in a single parallel
+                        // batch.
                         const inlineStep:
                           | (typeof pendingSteps)[number]
-                          | undefined =
-                          suspensionResult.timeoutSeconds === undefined
-                            ? ownedPendingSteps[0]
-                            : undefined;
+                          | undefined = ownedPendingSteps[0];
 
-                        // Queue every pending step except the one we're
-                        // executing inline. This mirrors V1's unconditional
-                        // enqueue-with-idempotency pattern and is what makes
-                        // crash recovery work: if a prior handler wrote
-                        // step_created events but crashed before enqueuing,
-                        // a later handler (e.g., from flow-message
-                        // redelivery or reenqueueActiveRuns) will enqueue
-                        // the orphaned steps. In the happy path with a
-                        // single owner, concurrent handlers' queue attempts
-                        // dedupe on correlationId. Skipping the inline step
-                        // avoids a queue handler racing against our own
-                        // inline executor.
+                        // Unified queue dispatch for everything we are NOT
+                        // inline-executing. Steps are queued with stepId so
+                        // the receiver runs them; the wait timer is queued
+                        // as a generic continuation that fires after the
+                        // wait elapses and lets the next replay observe the
+                        // elapsed wait via the "complete elapsed waits"
+                        // pass.
+                        //
+                        // Step queueing is unconditional (covers crash
+                        // recovery: if a prior handler wrote step_created
+                        // but crashed before queueing, a later handler will
+                        // queue them; idempotencyKey on correlationId
+                        // dedupes redundant queues across concurrent
+                        // handlers).
+                        //
+                        // The wait continuation is what makes
+                        // `Promise.race(step, sleep)` behave correctly with
+                        // inline step execution: even if the inline step
+                        // blocks this handler for the full step duration,
+                        // the wait timer fires in a separate function
+                        // invocation. If the sleep wins, that parallel
+                        // invocation completes the run; if the step wins,
+                        // the wait continuation fires later and no-ops on
+                        // the terminal run.
+                        //
+                        // The continuation's delay is clamped to the
+                        // maximum queue delay (long waits chain across
+                        // multiple hops) and its idempotency key dedupes
+                        // re-observations of the same pending wait across
+                        // suspension passes — see
+                        // runtime/wait-continuation.ts for the full
+                        // delay/key selection rationale.
+                        const traceCarrier = await serializeTraceCarrier();
+                        const dispatches: Promise<unknown>[] = [];
                         for (const step of pendingSteps) {
                           if (
                             inlineStep &&
@@ -1048,31 +1138,46 @@ export function workflowEntrypoint(
                           ) {
                             continue;
                           }
-                          const traceCarrier = await serializeTraceCarrier();
-                          await queueMessage(
-                            world,
-                            getWorkflowQueueName(workflowName),
-                            {
-                              runId,
-                              stepId: step.correlationId,
-                              stepName: step.stepName,
-                              traceCarrier,
-                              requestedAt: new Date(),
-                            },
-                            {
-                              idempotencyKey: step.correlationId,
-                            }
+                          dispatches.push(
+                            queueMessage(
+                              world,
+                              getWorkflowQueueName(workflowName, namespace),
+                              {
+                                runId,
+                                stepId: step.correlationId,
+                                stepName: step.stepName,
+                                traceCarrier,
+                                requestedAt: new Date(),
+                              },
+                              {
+                                idempotencyKey: step.correlationId,
+                              }
+                            )
                           );
                         }
+                        if (suspensionResult.waitTimeout) {
+                          dispatches.push(
+                            queueMessage(
+                              world,
+                              getWorkflowQueueName(workflowName, namespace),
+                              {
+                                runId,
+                                traceCarrier,
+                                requestedAt: new Date(),
+                              },
+                              getWaitContinuationDispatch(
+                                suspensionResult.waitTimeout.seconds,
+                                suspensionResult.waitTimeout.correlationId
+                              )
+                            )
+                          );
+                        }
+                        await Promise.all(dispatches);
 
-                        // Nothing to execute inline — we already queued all
-                        // pending steps above, exit and let the queue drive.
+                        // Nothing to execute inline — everything has been
+                        // queued (or no work needs scheduling). Exit and let
+                        // the queue drive subsequent replays.
                         if (!inlineStep) {
-                          if (suspensionResult.timeoutSeconds !== undefined) {
-                            return {
-                              timeoutSeconds: suspensionResult.timeoutSeconds,
-                            };
-                          }
                           return;
                         }
 
@@ -1100,28 +1205,26 @@ export function workflowEntrypoint(
                         }
 
                         if (stepResult.type === 'retry') {
-                          // Step needs retry — queue self with stepId for retry
-                          const traceCarrier = await serializeTraceCarrier();
+                          // Step needs retry — queue self with stepId for retry.
+                          // Any pending wait timer was already enqueued as part
+                          // of the unified dispatch above, so we can return
+                          // unconditionally here.
+                          const retryTraceCarrier =
+                            await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: inlineStep.correlationId,
                               stepName: inlineStep.stepName,
-                              traceCarrier,
+                              traceCarrier: retryTraceCarrier,
                               requestedAt: new Date(),
                             },
                             {
                               delaySeconds: stepResult.timeoutSeconds,
                             }
                           );
-                          // If there are also waits, return their timeout
-                          if (suspensionResult.timeoutSeconds !== undefined) {
-                            return {
-                              timeoutSeconds: suspensionResult.timeoutSeconds,
-                            };
-                          }
                           return;
                         }
 
@@ -1155,7 +1258,7 @@ export function workflowEntrypoint(
                           );
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               traceCarrier: await serializeTraceCarrier(),
@@ -1163,15 +1266,6 @@ export function workflowEntrypoint(
                             }
                           );
                           return;
-                        }
-
-                        if (
-                          suspensionResult.timeoutSeconds !== undefined &&
-                          pendingSteps.length === 1
-                        ) {
-                          // Only 1 step and there's also waits/hooks,
-                          // step is done, but we need the wait timeout
-                          // Loop back to replay which will re-evaluate
                         }
                       } else {
                         let terminalError = err;
@@ -1198,7 +1292,7 @@ export function workflowEntrypoint(
                             );
                             await queueMessage(
                               world,
-                              getWorkflowQueueName(workflowName),
+                              getWorkflowQueueName(workflowName, namespace),
                               {
                                 runId,
                                 traceCarrier: await serializeTraceCarrier(),

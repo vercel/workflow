@@ -396,6 +396,182 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 }
 
 /**
+ * Maximum consecutive reconnect attempts for a single framed stream session.
+ * The counter resets to zero whenever a reconnect makes forward progress (a
+ * frame is delivered), so this bounds *consecutive* failures, not the lifetime
+ * total — a long-lived serverless stream may legitimately reconnect far more
+ * than this many times as long as each reconnect keeps delivering data. We only
+ * give up after this many reconnects in a row produce nothing.
+ */
+export const FRAMED_STREAM_MAX_RECONNECTS = 50;
+
+/**
+ * Absolute backstop on total reconnects for a single session, independent of
+ * progress. The consecutive cap above resets on forward progress, which is
+ * correct for a well-behaved backend that honors `startIndex`. But if a World's
+ * `streams.get` ever ignored `startIndex` and re-delivered earlier chunks,
+ * "progress" would be reported every reconnect and the consecutive cap would
+ * never trip — turning a bounded failure into an unbounded reconnect loop. This
+ * hard ceiling guarantees the loop always terminates. It is set high enough
+ * (hours of streaming at realistic per-session timeouts) to never interfere
+ * with legitimate long-lived streams.
+ */
+export const FRAMED_STREAM_MAX_TOTAL_RECONNECTS = 1000;
+
+/**
+ * Wraps the length-prefix-framed byte stream from `world.streams.get` with
+ * transparent auto-reconnect.
+ *
+ * Every fully-decoded outer frame corresponds to exactly one server-side
+ * chunk (the serialize transform enqueues one frame per workflow write, and
+ * the writable buffers one frame per chunk when multi-writing). The wrapper
+ * counts completed frames and, on upstream error, reopens the connection
+ * with `startIndex = resolvedStartIndex + consumedFrames`. Partial-frame
+ * bytes buffered before the cut are discarded — the server will resend the
+ * in-flight chunk in full from the new startIndex.
+ *
+ * A clean upstream close (EOF with no error) signals the stream is truly
+ * done; we close the wrapper and do not reconnect.
+ *
+ * Negative `startIndex` values (last-N semantics) skip the reconnect
+ * machinery because we cannot compute an absolute resume position without
+ * a tail-index lookup — the returned stream behaves as a single-shot read.
+ */
+export function createReconnectingFramedStream(
+  runId: string,
+  name: string,
+  startIndex?: number
+): ReadableStream<Uint8Array> {
+  const reconnectSupported = startIndex === undefined || startIndex >= 0;
+  let currentStartIndex = startIndex ?? 0;
+  let consumedFrames = 0;
+  let reconnectCount = 0;
+  let totalReconnectCount = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let buffer = new Uint8Array(0);
+
+  async function connect(): Promise<void> {
+    const world = await getWorldLazy();
+    const effectiveStartIndex = reconnectSupported
+      ? currentStartIndex + consumedFrames
+      : startIndex;
+    const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    reader = stream.getReader();
+  }
+
+  async function reconnect(): Promise<void> {
+    reconnectCount++;
+    totalReconnectCount++;
+    if (reconnectCount > FRAMED_STREAM_MAX_RECONNECTS) {
+      throw new Error(
+        `Stream "${name}" exceeded maximum reconnection attempts (${FRAMED_STREAM_MAX_RECONNECTS})`
+      );
+    }
+    if (totalReconnectCount > FRAMED_STREAM_MAX_TOTAL_RECONNECTS) {
+      throw new Error(
+        `Stream "${name}" exceeded maximum total reconnection attempts (${FRAMED_STREAM_MAX_TOTAL_RECONNECTS})`
+      );
+    }
+    if (reader) {
+      await reader.cancel().catch(() => {});
+      reader = undefined;
+    }
+    currentStartIndex += consumedFrames;
+    consumedFrames = 0;
+    buffer = new Uint8Array(0);
+    await connect();
+  }
+
+  return new ReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      // Loop until we emit something, hit EOF, or fatally error. Reads that
+      // only extend the in-flight-frame buffer don't enqueue anything — we
+      // keep reading rather than returning empty-handed.
+      for (;;) {
+        if (!reader) {
+          try {
+            await connect();
+          } catch (err) {
+            controller.error(err);
+            return;
+          }
+        }
+
+        let result: { done: boolean; value?: Uint8Array };
+        try {
+          // biome-ignore lint/style/noNonNullAssertion: connect() guarantees reader
+          result = await reader!.read();
+        } catch (err) {
+          if (!reconnectSupported) {
+            controller.error(err);
+            return;
+          }
+          try {
+            await reconnect();
+          } catch (reconnectErr) {
+            controller.error(reconnectErr);
+            return;
+          }
+          continue;
+        }
+
+        if (result.done || !result.value) {
+          // Clean EOF — stream is truly complete. Drop any partial-frame
+          // bytes (there shouldn't be any; a well-formed stream ends on a
+          // frame boundary).
+          reader = undefined;
+          controller.close();
+          return;
+        }
+
+        // Append to buffer and emit all complete frames.
+        const incoming = result.value;
+        if (incoming.length > 0) {
+          const combined = new Uint8Array(buffer.length + incoming.length);
+          combined.set(buffer, 0);
+          combined.set(incoming, buffer.length);
+          buffer = combined;
+        }
+
+        let emitted = false;
+        while (buffer.length >= FRAME_HEADER_SIZE) {
+          const frameLength = new DataView(
+            buffer.buffer,
+            buffer.byteOffset,
+            buffer.byteLength
+          ).getUint32(0, false);
+          const total = FRAME_HEADER_SIZE + frameLength;
+          if (buffer.length < total) break;
+          // Forward the entire framed chunk (header + payload) to the
+          // downstream deserializer, which already expects this layout.
+          controller.enqueue(buffer.slice(0, total));
+          buffer = buffer.slice(total);
+          consumedFrames++;
+          emitted = true;
+        }
+
+        if (emitted) {
+          // Forward progress on the current connection — clear the
+          // consecutive-failure budget so a long stream that reconnects
+          // many times (but keeps delivering) is never falsely capped.
+          reconnectCount = 0;
+          return;
+        }
+        // Only partial bytes — read more.
+      }
+    },
+    cancel: async () => {
+      if (reader) {
+        await reader.cancel().catch((err) => {
+          console.warn('Error closing ReadableStream reader:', err);
+        });
+        reader = undefined;
+      }
+    },
+  });
+}
+
+/**
  * Default flush interval in milliseconds for buffered stream writes.
  * Chunks are accumulated and flushed together to reduce network overhead.
  */
@@ -1481,13 +1657,16 @@ export function getExternalRevivers(
         return response.body;
       }
 
-      const readable = new WorkflowServerReadableStream(
-        runId,
-        value.name,
-        value.startIndex
-      );
       if (value.type === 'bytes') {
-        // For byte streams, use flushable pipe with lock polling
+        // For byte streams, use flushable pipe with lock polling. No
+        // auto-reconnect here: raw byte streams have no wire framing, so
+        // we cannot count consumed chunks to compute a resume index.
+        // Byte-stream reconnect is a separate follow-up.
+        const readable = new WorkflowServerReadableStream(
+          runId,
+          value.name,
+          value.startIndex
+        );
         const state = createFlushableState();
         ops.push(state.promise);
 
@@ -1505,6 +1684,14 @@ export function getExternalRevivers(
 
         return userReadable;
       } else {
+        // Non-byte streams carry length-prefixed frames, so we can count
+        // completed frames and transparently reconnect when the server
+        // stream connection times out mid-run.
+        const readable = createReconnectingFramedStream(
+          runId,
+          value.name,
+          value.startIndex
+        );
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId, cryptoKey),
           cryptoKey
