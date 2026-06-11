@@ -1034,6 +1034,27 @@ export function workflowEntrypoint(
                         // invocation completes the run; if the step wins,
                         // the wait continuation fires later and no-ops on
                         // the terminal run.
+                        //
+                        // The wait continuation is keyed on the wait's
+                        // correlationId: while a wait is pending, every
+                        // replay pass over the run re-observes it (e.g.,
+                        // once per step completion in
+                        // `Promise.all([steps..., sleep()])`), and without
+                        // dedupe each pass would enqueue another delayed
+                        // continuation — each one a spurious full replay
+                        // when the wait elapses, and each a fresh message
+                        // that resets the delivery-attempt runaway guard.
+                        //
+                        // Exception: near-elapsed waits are enqueued
+                        // WITHOUT the key. A continuation delivered
+                        // marginally early (clock skew between the
+                        // enqueuing and handling hosts; the ceil() on the
+                        // delay can leave a ~0 margin) re-observes the
+                        // wait as pending with ~1s remaining and must be
+                        // able to enqueue a fresh short-delay retry — the
+                        // world's dedupe window outlives the first
+                        // delivery, so reusing the key would drop that
+                        // retry and stall the run permanently.
                         const traceCarrier = await serializeTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
                         for (const step of pendingSteps) {
@@ -1072,6 +1093,10 @@ export function workflowEntrypoint(
                               },
                               {
                                 delaySeconds: suspensionResult.timeoutSeconds,
+                                idempotencyKey:
+                                  suspensionResult.timeoutSeconds > 2
+                                    ? suspensionResult.timeoutWaitCorrelationId
+                                    : undefined,
                               }
                             )
                           );

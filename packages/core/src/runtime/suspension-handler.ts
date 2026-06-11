@@ -50,6 +50,13 @@ export interface SuspensionHandlerResult {
   createdStepCorrelationIds: Set<string>;
   /** Timeout from waits, if any */
   timeoutSeconds?: number;
+  /**
+   * Correlation ID of the wait that produced `timeoutSeconds` (the soonest
+   * pending wait). Used as the idempotency key for the wait-continuation
+   * queue message so that repeated suspension passes over the same pending
+   * wait collapse into a single delayed continuation.
+   */
+  timeoutWaitCorrelationId?: string;
   /** Whether a hook conflict was detected (should re-invoke immediately) */
   hasHookConflict: boolean;
 }
@@ -376,18 +383,19 @@ export async function handleSuspension({
   );
   await Promise.all(ops);
 
-  // Calculate minimum timeout from waits
+  // Calculate minimum timeout from waits, tracking which wait produced it
   const now = Date.now();
-  const minTimeoutSeconds = waitItems.reduce<number | null>(
-    (min, queueItem) => {
-      const resumeAtMs = queueItem.resumeAt.getTime();
-      const delayMs = Math.max(1000, resumeAtMs - now);
-      const timeoutSeconds = Math.ceil(delayMs / 1000);
-      if (min === null) return timeoutSeconds;
-      return Math.min(min, timeoutSeconds);
-    },
-    null
-  );
+  let minTimeoutSeconds: number | null = null;
+  let minTimeoutWaitCorrelationId: string | undefined;
+  for (const queueItem of waitItems) {
+    const resumeAtMs = queueItem.resumeAt.getTime();
+    const delayMs = Math.max(1000, resumeAtMs - now);
+    const timeoutSeconds = Math.ceil(delayMs / 1000);
+    if (minTimeoutSeconds === null || timeoutSeconds < minTimeoutSeconds) {
+      minTimeoutSeconds = timeoutSeconds;
+      minTimeoutWaitCorrelationId = queueItem.correlationId;
+    }
+  }
 
   span?.setAttributes({
     ...Attribute.WorkflowRunStatus('workflow_suspended'),
@@ -400,6 +408,9 @@ export async function handleSuspension({
     pendingSteps: stepItems,
     createdStepCorrelationIds,
     timeoutSeconds: hasHookConflict ? 0 : (minTimeoutSeconds ?? undefined),
+    timeoutWaitCorrelationId: hasHookConflict
+      ? undefined
+      : minTimeoutWaitCorrelationId,
     hasHookConflict,
   };
 }
