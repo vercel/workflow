@@ -1812,3 +1812,78 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
   const childRunId = await startChildWithStepWritable(payload);
   return { childRunId };
 }
+
+//////////////////////////////////////////////////////////
+
+async function parallelHookRaceStep(label: string) {
+  'use step';
+  // A small matching delay makes both step_completed events more likely
+  // to land within the same suspension-flush tick, which is what
+  // triggers the same-body re-walk race.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return label;
+}
+
+/**
+ * Regression test for https://github.com/vercel/workflow/issues/1665
+ * and https://github.com/vercel/workflow/issues/2283. This matches
+ * Paolo's exact minimal repro on #1665:
+ *
+ * ```ts
+ * await Promise.all([get_data(), get_settings()]);
+ * using webhook = createWebhook();
+ * await webhook;
+ * ```
+ *
+ * Two parallel steps complete close enough in time that both
+ * `step_completed` events trigger replay-and-suspend before either
+ * pass's `hook_created` has been observed by the events consumer
+ * (`hasCreatedEvent: false`). Both passes then call
+ * `world.events.create(runId, hook_created)` with the same
+ * deterministic `(correlationId, token)`.
+ *
+ * Before the world-side idempotency fix, the world accepted the first
+ * `hook_created` and wrote a `hook_conflict` event for the second —
+ * even though both events carried the same `(runId, hookId, token)`.
+ * On replay, the hook's awaitable saw the `hook_conflict` and
+ * rejected with `HookConflictError`, even though no other run
+ * actually owned the token.
+ *
+ * With the fix, the world rejects the duplicate with
+ * `EntityConflictError` (which the suspension handler already
+ * swallows at `suspension-handler.ts:142`), no `hook_conflict` event
+ * is written, and the webhook resolves normally.
+ *
+ * The race is timing-sensitive — a single
+ * "parallel-steps-then-webhook" sequence may not always reproduce it
+ * on faster runtimes. The workflow runs the sequence in a loop
+ * (`iterations` independent attempts in series, each with its own
+ * webhook). On the pre-fix code any single iteration that hits the
+ * race surfaces a `hook_conflict` event in the log (and on subsequent
+ * replay throws `HookConflictError`), so a large enough iteration
+ * count gives the race many independent opportunities to fire.
+ */
+export async function parallelStepsThenWebhookWorkflow(iterations: number) {
+  'use workflow';
+
+  const tokens: string[] = [];
+  for (let i = 0; i < iterations; i++) {
+    await Promise.all([
+      parallelHookRaceStep(`${i}-a`),
+      parallelHookRaceStep(`${i}-b`),
+    ]);
+
+    using webhook = createWebhook();
+    const token = webhook.token;
+    tokens.push(token);
+
+    const req = await webhook;
+    const body = await req.text();
+    if (body !== `body-${token}`) {
+      throw new FatalError(
+        `iteration ${i}: expected body-${token}, got ${body}`
+      );
+    }
+  }
+  return tokens;
+}
