@@ -14,8 +14,10 @@ import {
   test,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
+import * as DrizzleSchema from '../src/drizzle/schema.js';
 import {
   createEventsStorage,
+  createHooksStorage,
   createRunsStorage,
   createStepsStorage,
 } from '../src/storage.js';
@@ -130,6 +132,7 @@ describe('Storage (Postgres integration)', () => {
   let runs: ReturnType<typeof createRunsStorage>;
   let steps: ReturnType<typeof createStepsStorage>;
   let events: ReturnType<typeof createEventsStorage>;
+  let hooks: ReturnType<typeof createHooksStorage>;
 
   async function truncateTables() {
     await pool.query(
@@ -157,6 +160,7 @@ describe('Storage (Postgres integration)', () => {
     runs = createRunsStorage(drizzle);
     steps = createStepsStorage(drizzle);
     events = createEventsStorage(drizzle);
+    hooks = createHooksStorage(drizzle);
   }, 120_000);
 
   beforeEach(async () => {
@@ -1538,6 +1542,266 @@ describe('Storage (Postgres integration)', () => {
           e.eventType === 'wait_created' && e.correlationId === 'wait_seq_dup'
       );
       expect(waitCreated).toHaveLength(1);
+    });
+
+    it('should reject duplicate same-hook hook_created with EntityConflictError, not hook_conflict', async () => {
+      // Regression test for https://github.com/vercel/workflow/issues/2283
+      //
+      // Duplicate processing of the *same* (runId, hookId, token) — e.g.
+      // queue redelivery or cross-process replay — must be idempotent.
+      // It must throw EntityConflictError (mirroring the step_created
+      // duplicate path) so the runtime's existing concurrent-replay catch
+      // path swallows it, and must NOT append a hook_conflict event that
+      // would later replay as a self-conflict HookConflictError.
+      const token = 'idempotent-token';
+      const hookId = 'hook_idem_1';
+
+      await createHook(events, testRunId, { hookId, token });
+
+      // Same runId, same hookId, same token — must be idempotent.
+      await expect(
+        events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: { token },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // No hook_conflict event should have been written to the log.
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const hookCreatedEvents = evts.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      const hookConflictEvents = evts.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(hookCreatedEvents).toHaveLength(1);
+      expect(hookConflictEvents).toHaveLength(0);
+    });
+
+    it('should still emit hook_conflict for a different hookId reusing the same token in the same run', async () => {
+      // The idempotency guard must NOT mask genuine token conflicts — a
+      // different hookId reusing the same token (even in the same run)
+      // is still a real conflict.
+      const token = 'same-run-different-hook-token';
+
+      await createHook(events, testRunId, { hookId: 'hook_a', token });
+
+      const result = await events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_b',
+        eventData: { token },
+      });
+
+      expect(result.event.eventType).toBe('hook_conflict');
+      expect((result.event as any).eventData.conflictingRunId).toBe(testRunId);
+      expect(result.hook).toBeUndefined();
+    });
+
+    it('should still emit hook_conflict for the same hookId in a different run reusing the same token', async () => {
+      // The idempotency guard checks (runId, hookId) together — a
+      // different run reusing the same hookId (highly unlikely in
+      // practice, but a worthwhile boundary) must still produce a real
+      // hook_conflict.
+      const token = 'cross-run-same-hookid-token';
+      const hookId = 'hook_shared_id';
+
+      await createHook(events, testRunId, { hookId, token });
+
+      const otherRun = await createRun(events, {
+        deploymentId: 'deployment-other',
+        workflowName: 'other-workflow',
+        input: new Uint8Array(),
+      });
+
+      const result = await events.create(otherRun.runId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+
+      expect(result.event.eventType).toBe('hook_conflict');
+      expect((result.event as any).eventData.conflictingRunId).toBe(testRunId);
+      expect(result.hook).toBeUndefined();
+    });
+
+    it('should recover an orphaned hook row that lacks a hook_created event', async () => {
+      // Crash-recovery regression: in `events.create`, the hook INSERT
+      // (line ~1185 of storage.ts) and the events INSERT (line ~1314)
+      // are not wrapped in a single transaction. If a process / DB
+      // interruption lands between them, the hook row exists but no
+      // `hook_created` event is in the log. The same-`(runId, hookId)`
+      // retry must not be treated as a "real duplicate" — that would
+      // throw EntityConflictError, which the runtime's concurrent-
+      // replay catch path would swallow, permanently leaving the run
+      // with a hook entity but no `hook_created` event in the log.
+      //
+      // The recovery path detects the missing event and completes the
+      // partial write: it skips re-inserting the hook row and lets the
+      // outer code path emit the `hook_created` event.
+      const token = 'orphaned-hook-row-token';
+      const hookId = 'hook_orphan_pg_1';
+
+      // Pre-seed an orphaned hook row that has no corresponding
+      // `hook_created` event in the events table.
+      await drizzle.insert(DrizzleSchema.hooks).values({
+        runId: testRunId,
+        hookId,
+        token,
+        ownerId: '',
+        projectId: '',
+        environment: '',
+        specVersion: SPEC_VERSION_CURRENT,
+        isWebhook: false,
+        isSystem: false,
+      });
+
+      // Sanity: the hook row exists but no hook_created event is in
+      // the log yet.
+      const preEvents = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        preEvents.data.filter((e) => e.eventType === 'hook_created').length
+      ).toBe(0);
+
+      // Retry: must succeed and emit a hook_created event, NOT a
+      // hook_conflict event, and NOT throw EntityConflictError.
+      const result = await events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+
+      expect(result.event.eventType).toBe('hook_created');
+      expect(result.hook?.hookId).toBe(hookId);
+
+      const postEvents = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const created = postEvents.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      const conflicts = postEvents.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(created).toHaveLength(1);
+      expect(conflicts).toHaveLength(0);
+    });
+
+    it('does not mutate an already-committed hook entity when a duplicate hook_created retry collides', async () => {
+      // Parallel to the world-local regression for karthikscale3's
+      // review on PR #2295. world-postgres uses
+      // `.insert(Schema.hooks).onConflictDoNothing()` so a duplicate
+      // hook_created retry'\''s hook INSERT is a no-op against an
+      // already-committed row — but this test guards against a
+      // future regression that adds an UPDATE/UPSERT or otherwise
+      // mutates the existing entity in the dedup path.
+      const token = 'no-mutate-on-duplicate-token-pg';
+      const hookId = 'hook_no_mutate_on_duplicate_pg';
+      const originalMetadata = encode({ v: 'a' }) as Uint8Array;
+      const retryMetadata = encode({ v: 'b' }) as Uint8Array;
+
+      // First write: original metadata + isWebhook: true.
+      const first = await events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: {
+          token,
+          metadata: originalMetadata,
+          isWebhook: true,
+        },
+      });
+      expect(first.event.eventType).toBe('hook_created');
+      expect(first.hook?.isWebhook).toBe(true);
+
+      // Retry with DIFFERENT metadata and isWebhook.
+      await expect(
+        events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: {
+            token,
+            metadata: retryMetadata,
+            isWebhook: false,
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // The hook entity still has the ORIGINAL metadata and
+      // isWebhook — the retry'\''s payload did NOT overwrite the
+      // already-committed entity.
+      const persisted = await hooks.get(hookId);
+      expect(persisted.isWebhook).toBe(true);
+      // Compare metadata as bytes since cbor round-trips through
+      // Buffer / Uint8Array.
+      expect(Buffer.from(persisted.metadata as Uint8Array)).toEqual(
+        Buffer.from(originalMetadata)
+      );
+
+      // Exactly one hook_created event in the log.
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: { limit: 100 },
+      });
+      const hookCreated = evts.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      expect(hookCreated).toHaveLength(1);
+    });
+
+    it('converges same-hook creation across concurrent calls to one event', async () => {
+      // Cross-worker convergence regression. The events table's
+      // partial unique index
+      // (workflow_events_entity_creation_unique on
+      // runId+correlationId+eventType for hook_created/step_created/
+      // wait_created) makes the events INSERT the durable
+      // convergence point — at most one `hook_created` event with
+      // the same `(runId, correlationId)` can land. The dedup branch
+      // can race with the original INSERT (both probe getHookByToken
+      // before the loser sees the event), but the outer events
+      // INSERT then raises 23505 (unique-violation) which is
+      // translated to EntityConflictError that the runtime's
+      // existing concurrent-replay catch path swallows. Net result:
+      // exactly one `hook_created` event per logical creation.
+      //
+      // This test is the world-postgres counterpart to the
+      // `converges same-hook creation across workers to one event`
+      // test in world-local, exercising true in-process concurrency
+      // since world-postgres has no per-process tag isolation.
+      const attempts = 25;
+      for (let i = 0; i < attempts; i++) {
+        const correlationId = `hook_pg_converge_${i}`;
+        const token = `token-pg-converge-${i}`;
+        await Promise.allSettled([
+          events.create(testRunId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+          events.create(testRunId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+        ]);
+      }
+
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: { limit: 1000 },
+      });
+      const created = evts.data.filter((e) => e.eventType === 'hook_created');
+      const conflicts = evts.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(created).toHaveLength(attempts);
+      expect(conflicts).toHaveLength(0);
     });
   });
 

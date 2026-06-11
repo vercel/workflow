@@ -2401,6 +2401,768 @@ describe('Storage', () => {
         })
       ).rejects.toMatchObject({ name: 'EntityConflictError' });
     });
+
+    it('should reject duplicate same-hook hook_created with EntityConflictError, not hook_conflict', async () => {
+      // Regression test for https://github.com/vercel/workflow/issues/2283
+      //
+      // Duplicate processing of the *same* (runId, hookId, token) — e.g.
+      // queue redelivery or cross-process replay — must be idempotent.
+      // It must throw EntityConflictError (mirroring the step_created
+      // duplicate path) so the runtime's existing concurrent-replay catch
+      // path swallows it, and must NOT append a hook_conflict event that
+      // would later replay as a self-conflict HookConflictError.
+      const token = 'idempotent-token';
+      const hookId = 'hook_idem_1';
+
+      await createHook(storage, testRunId, { hookId, token });
+
+      // Same runId, same hookId, same token — must be idempotent.
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: { token },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // No hook_conflict event should have been written to the log.
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const hookCreatedEvents = events.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      const hookConflictEvents = events.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(hookCreatedEvents).toHaveLength(1);
+      expect(hookConflictEvents).toHaveLength(0);
+    });
+
+    it('should still emit hook_conflict for a different hookId reusing the same token in the same run', async () => {
+      // The idempotency guard must NOT mask genuine token conflicts — a
+      // different hookId reusing the same token (even in the same run)
+      // is still a real conflict.
+      const token = 'same-run-different-hook-token';
+
+      await createHook(storage, testRunId, { hookId: 'hook_a', token });
+
+      const result = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_b',
+        eventData: { token },
+      });
+
+      expect(result.event.eventType).toBe('hook_conflict');
+      expect((result.event as any).eventData.conflictingRunId).toBe(testRunId);
+      expect(result.hook).toBeUndefined();
+    });
+
+    it('should still emit hook_conflict for the same hookId in a different run reusing the same token', async () => {
+      // The idempotency guard checks (runId, hookId) together — a
+      // different run reusing the same hookId (highly unlikely in
+      // practice, but a worthwhile boundary) must still produce a real
+      // hook_conflict.
+      const token = 'cross-run-same-hookid-token';
+      const hookId = 'hook_shared_id';
+
+      await createHook(storage, testRunId, { hookId, token });
+
+      const otherRun = await createRun(storage, {
+        deploymentId: 'deployment-other',
+        workflowName: 'other-workflow',
+        input: new Uint8Array(),
+      });
+
+      const result = await storage.events.create(otherRun.runId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+
+      expect(result.event.eventType).toBe('hook_conflict');
+      expect((result.event as any).eventData.conflictingRunId).toBe(testRunId);
+      expect(result.hook).toBeUndefined();
+    });
+
+    it('should recover an orphaned hook token claim with no matching hook entity', async () => {
+      // Crash-recovery regression: if a prior in-flight `hook_created`
+      // wrote the token-claim file but exited before the hook entity
+      // was written, the same-`(runId, hookId)` retry must not be
+      // treated as a "real duplicate" — that would throw
+      // EntityConflictError, which the runtime's concurrent-replay
+      // catch path would swallow, permanently leaving the run with no
+      // hook and no `hook_created` event in the log.
+      //
+      // The recovery path detects the missing hook entity and
+      // completes the partial write: it (re-)writes the hook entity
+      // and the outer code path emits the `hook_created` event.
+      const token = 'orphaned-claim-token';
+      const hookId = 'hook_orphan_1';
+
+      // Pre-seed an orphaned token claim — same shape as one written
+      // by `events.create` but with no corresponding hook entity on
+      // disk. This simulates a crash between `writeExclusive(claim)`
+      // and the hook entity write.
+      const tokensDir = path.join(testDir, 'hooks', 'tokens');
+      await fs.mkdir(tokensDir, { recursive: true });
+      await fs.writeFile(
+        path.join(tokensDir, `${hashToken(token)}.json`),
+        JSON.stringify({ token, hookId, runId: testRunId, foo: 'bar' })
+      );
+
+      // Sanity: the hook entity is not on disk yet.
+      await expect(storage.hooks.get(hookId)).rejects.toThrow(
+        /not found|HookNotFoundError/i
+      );
+
+      // Retry: must succeed, write the hook entity, and emit a
+      // hook_created event.
+      const hook = await createHook(storage, testRunId, { hookId, token });
+      expect(hook.hookId).toBe(hookId);
+      expect(hook.token).toBe(token);
+
+      // The hook entity is now durable.
+      const retrieved = await storage.hooks.get(hookId);
+      expect(retrieved.hookId).toBe(hookId);
+
+      // The event log contains a hook_created event for this hookId
+      // (and no hook_conflict event).
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const created = events.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      const conflicts = events.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(created).toHaveLength(1);
+      expect(conflicts).toHaveLength(0);
+    });
+
+    it('should recover an orphaned hook entity with no matching hook_created event', async () => {
+      // Crash-recovery regression for the second window pranaygp
+      // flagged on PR #2295: the claim file, the hook entity, and
+      // the `hook_created` event are written by three separate non-
+      // atomic operations. A crash after the entity write but before
+      // the event write leaves both the claim file and the hook
+      // entity on disk, but no `hook_created` event in the log. The
+      // retry must NOT treat that as a "real duplicate" — it must
+      // recover by emitting the missing event.
+      //
+      // This is exactly the scenario the dedup branch's event-log
+      // probe handles. Without the probe (e.g. checking only the
+      // hook entity), this test fails at the retry with
+      // `EntityConflictError: Hook "hook_orphan_entity_1" already
+      // created`.
+      const token = 'orphaned-hook-entity-token';
+      const hookId = 'hook_orphan_entity_1';
+
+      const first = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+      expect(first.hook?.hookId).toBe(hookId);
+
+      // Simulate a crash after the hook entity write but before the
+      // event write by deleting the just-written event from disk.
+      await fs.unlink(
+        path.join(testDir, 'events', `${testRunId}-${first.event.eventId}.json`)
+      );
+
+      // Sanity: the hook entity is still durable but the
+      // `hook_created` event is no longer in the log.
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        token,
+      });
+      const beforeRetry = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        beforeRetry.data.filter(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toHaveLength(0);
+
+      // Retry: must succeed and emit a `hook_created` event (no
+      // `hook_conflict`, no swallowed EntityConflictError).
+      const retry = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+      expect(retry.event.eventType).toBe('hook_created');
+
+      const afterRetry = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        afterRetry.data.filter(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toHaveLength(1);
+      expect(
+        afterRetry.data.filter((event) => event.eventType === 'hook_conflict')
+      ).toHaveLength(0);
+    });
+
+    it('does not mutate an already-committed hook entity when a duplicate hook_created retry collides', async () => {
+      // Regression for karthikscale3's review on PR #2295. The
+      // dedup-recovery path used to write the hook entity BEFORE
+      // the outer event publish proved whether this attempt was
+      // repairing a missing event or just colliding with an
+      // already-published `hook_created`. For an already-committed
+      // duplicate, the event publish then throws
+      // `EntityConflictError`, but the hook entity had already been
+      // overwritten with the retry's payload — leaving the entity
+      // and event log inconsistent (e.g. the entity reflects the
+      // retry's metadata while the event still carries the
+      // original).
+      //
+      // The fix defers the entity write until AFTER the event
+      // publish succeeds, so a retry that ends in
+      // EntityConflictError leaves the entity untouched.
+      const token = 'no-mutate-on-duplicate-token';
+      const hookId = 'hook_no_mutate_on_duplicate';
+      const originalMetadata = new Uint8Array([0xaa]);
+      const retryMetadata = new Uint8Array([0xbb]);
+
+      // First write: original metadata + isWebhook: true.
+      const first = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: {
+          token,
+          metadata: originalMetadata,
+          isWebhook: true,
+        },
+      });
+      expect(first.event.eventType).toBe('hook_created');
+      expect(first.hook?.metadata).toEqual(originalMetadata);
+      expect(first.hook?.isWebhook).toBe(true);
+
+      // Retry with DIFFERENT metadata and isWebhook. This is the
+      // adversarial input shape; in practice it would only come
+      // from a caller bug, but the storage must not silently mutate
+      // already-committed state under it.
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: {
+            token,
+            metadata: retryMetadata,
+            isWebhook: false,
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // The hook entity still has the ORIGINAL metadata and
+      // isWebhook — the retry's payload did NOT overwrite the
+      // already-committed entity.
+      const persisted = await storage.hooks.get(hookId);
+      expect(persisted.metadata).toEqual(originalMetadata);
+      expect(persisted.isWebhook).toBe(true);
+
+      // And the event log still has exactly one hook_created event
+      // for this hookId, with the original metadata.
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: { limit: 100 },
+      });
+      const hookCreated = events.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      expect(hookCreated).toHaveLength(1);
+    });
+
+    it('repairs an event-first orphan from the persisted event payload', async () => {
+      // Regression for pranaygp's review on PR #2295 (the vercel-bot
+      // edge-cases thread). Deferring the hook entity write until
+      // after the event publish (the fix for the mutation bug above)
+      // opens the inverse crash window: a crash AFTER the
+      // `hook_created` event publish but BEFORE the deferred entity
+      // write leaves the event in the log with no hook entity. A
+      // retry then collides at the event publish and throws
+      // `EntityConflictError` — correct, the event IS committed —
+      // but the entity must be repaired from the PERSISTED event's
+      // payload, not the retry's `eventData`. The retry here carries
+      // deliberately different metadata so this test also prevents
+      // reintroducing the prior mutation bug.
+      const originalMetadata = new Uint8Array([0xaa]);
+      const retryMetadata = new Uint8Array([0xbb]);
+      const hookId = 'hook_event_first_orphan';
+      const token = 'event-first-orphan-token';
+
+      const first = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata: originalMetadata, isWebhook: true },
+      });
+      expect(first.event.eventType).toBe('hook_created');
+
+      // Simulate a crash after the event publish but before the
+      // deferred hook entity write.
+      await fs.unlink(path.join(testDir, 'hooks', `${hookId}.json`));
+
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: { token, metadata: retryMetadata, isWebhook: false },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // The hook entity was repaired from the persisted event's
+      // payload — the ORIGINAL metadata and isWebhook, not the
+      // retry's.
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        metadata: originalMetadata,
+        isWebhook: true,
+      });
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: { limit: 100 },
+      });
+      expect(
+        events.data.filter(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toHaveLength(1);
+    });
+
+    it('repairs an event-first orphan via the legacy-claim probe path', async () => {
+      // Same crash window as the test above, but exercised through
+      // the legacy-claim branch: the claim file lacks `eventId` (as
+      // written by a pre-upgrade version), so the retry takes the
+      // event-log probe path. When the probe finds the committed
+      // `hook_created` event, it must repair the missing entity from
+      // the persisted event payload before throwing the benign
+      // `EntityConflictError`.
+      const originalMetadata = new Uint8Array([0xcc]);
+      const retryMetadata = new Uint8Array([0xdd]);
+      const hookId = 'hook_event_first_orphan_legacy';
+      const token = 'event-first-orphan-legacy-token';
+
+      const first = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata: originalMetadata, isWebhook: true },
+      });
+      expect(first.event.eventType).toBe('hook_created');
+
+      // Simulate the pre-upgrade crash state: the event is
+      // committed, the hook entity is missing, and the claim file is
+      // in the legacy format (no `eventId`).
+      await fs.unlink(path.join(testDir, 'hooks', `${hookId}.json`));
+      const constraintPath = path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken(token)}.json`
+      );
+      await fs.writeFile(
+        constraintPath,
+        JSON.stringify({ token, hookId, runId: testRunId })
+      );
+
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: { token, metadata: retryMetadata, isWebhook: false },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        metadata: originalMetadata,
+        isWebhook: true,
+      });
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: { limit: 100 },
+      });
+      expect(
+        events.data.filter(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toHaveLength(1);
+    });
+
+    it('converges same-hook creation across separate storage instances to one event', async () => {
+      // Cross-instance convergence regression for the case pranaygp
+      // flagged on PR #2295: separate workers (in production, separate
+      // OS processes) sharing one data directory each have their own
+      // in-process `hookLocks` Map; the mutex cannot serialize across
+      // them. Without a durable cross-instance convergence key, both
+      // workers can lose `writeExclusive(constraintPath)`, both
+      // observe no `hook_created` event in the log, both fall through
+      // to the recovery write, generate different `eventId`s, and
+      // publish separate `hook_created` events.
+      //
+      // The fix persists `eventId` in the token claim so retries
+      // adopt the canonical (winning) eventId and the outer event
+      // write uses `writeExclusive` to atomically arbitrate
+      // publication. Either worker may win the publish; the other
+      // rejects with `EntityConflictError` (swallowed by the
+      // runtime's existing concurrent-replay catch path). Net
+      // result: exactly one `hook_created` event per logical
+      // creation.
+      //
+      // Two `createStorage(testDir)` instances are equivalent to two
+      // OS processes for this test — both have independent
+      // `hookLocks` Maps but share the on-disk constraint / claim /
+      // marker / event files. That is the substrate the
+      // implementation is intended to protect, without the overhead
+      // of `child_process.fork`.
+      const workerA = createStorage(testDir);
+      const workerB = createStorage(testDir);
+
+      const run = await createRun(workerA, {
+        deploymentId: 'deployment-workers',
+        workflowName: 'worker-race',
+        input: new Uint8Array(),
+      });
+
+      const attempts = 25;
+      for (let i = 0; i < attempts; i++) {
+        const correlationId = `hook_worker_${i}`;
+        const token = `token-worker-${i}`;
+        const results = await Promise.allSettled([
+          workerA.events.create(run.runId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+          workerB.events.create(run.runId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+        ]);
+        const fulfilled = results.filter((r) => r.status === 'fulfilled');
+        const rejected = results.filter(
+          (r): r is PromiseRejectedResult => r.status === 'rejected'
+        );
+        // Exactly one worker fulfills (publishes the canonical event);
+        // the other rejects with EntityConflictError (swallowed by
+        // the runtime's concurrent-replay catch path in production).
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        for (const r of rejected) {
+          expect((r.reason as { name?: string })?.name).toBe(
+            'EntityConflictError'
+          );
+        }
+      }
+
+      // Assert directly on a single raw `events.list()` result: there
+      // must be exactly `attempts` `hook_created` events for the run,
+      // one per logical creation. Do NOT deduplicate by eventId here
+      // — that would hide a duplicate-publication regression.
+      const allEvents = await storage.events.list({
+        runId: run.runId,
+        pagination: { limit: 1000 },
+      });
+      const hookCreated = allEvents.data.filter(
+        (event) => event.eventType === 'hook_created'
+      );
+      const hookConflict = allEvents.data.filter(
+        (event) => event.eventType === 'hook_conflict'
+      );
+      expect(hookCreated).toHaveLength(attempts);
+      expect(hookConflict).toHaveLength(0);
+    });
+
+    it('converges same-hook creation across storage instances when only a legacy token claim exists', async () => {
+      // Crash / upgrade-recovery regression: a token claim written by
+      // a version of this storage that did not yet persist `eventId`
+      // in the claim file (i.e. the pre-2283 layout `{ token, hookId,
+      // runId }`) still exists on disk after upgrade. Two workers
+      // both lose `writeExclusive(constraintPath)`, both read the
+      // legacy claim, both see `existingClaim.eventId === undefined`,
+      // and both fall to the legacy fallback. Without an atomic
+      // cross-worker convergence point, both generate fresh
+      // eventIds, both `writeExclusive(eventPath)` at different
+      // paths, and both publish — yielding two `hook_created` events
+      // for the same `(runId, hookId)`.
+      //
+      // The fix promotes the legacy claim to a canonical eventId via
+      // a sidecar recovery marker (`hooks/tokens/<hash>.recovery.json`,
+      // also a `writeExclusive`). The first worker to land the
+      // marker pins its candidate eventId as canonical; all
+      // subsequent workers read the marker and adopt that eventId.
+      // Combined with the `writeExclusive(eventPath)` in the outer
+      // publish, this gives the legacy-fallback path the same
+      // single-event convergence guarantee as the inline-`eventId`
+      // fast path.
+      //
+      // Existing persisted claims after a real-world upgrade are
+      // exactly the state the crash-recovery branch needs to repair,
+      // so leaving the legacy path non-convergent across workers is
+      // not backward compatibility — it is silent corruption.
+      const workerA = createStorage(testDir);
+      const workerB = createStorage(testDir);
+
+      const run = await createRun(workerA, {
+        deploymentId: 'deployment-legacy',
+        workflowName: 'legacy-race',
+        input: new Uint8Array(),
+      });
+
+      const attempts = 25;
+      for (let i = 0; i < attempts; i++) {
+        const correlationId = `hook_legacy_${i}`;
+        const token = `token-legacy-${i}`;
+
+        // Pre-seed the legacy-format claim: present on disk, but
+        // missing the `eventId` field this version adds.
+        const tokensDir = path.join(testDir, 'hooks', 'tokens');
+        await fs.mkdir(tokensDir, { recursive: true });
+        await fs.writeFile(
+          path.join(tokensDir, `${hashToken(token)}.json`),
+          JSON.stringify({ token, hookId: correlationId, runId: run.runId })
+        );
+
+        const results = await Promise.allSettled([
+          workerA.events.create(run.runId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+          workerB.events.create(run.runId, {
+            eventType: 'hook_created',
+            correlationId,
+            eventData: { token },
+          }),
+        ]);
+        const fulfilled = results.filter((r) => r.status === 'fulfilled');
+        const rejected = results.filter(
+          (r): r is PromiseRejectedResult => r.status === 'rejected'
+        );
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        for (const r of rejected) {
+          expect((r.reason as { name?: string })?.name).toBe(
+            'EntityConflictError'
+          );
+        }
+      }
+
+      // Raw event log must contain exactly `attempts` `hook_created`
+      // events for the run.
+      const allEvents = await storage.events.list({
+        runId: run.runId,
+        pagination: { limit: 1000 },
+      });
+      const hookCreated = allEvents.data.filter(
+        (event) => event.eventType === 'hook_created'
+      );
+      const hookConflict = allEvents.data.filter(
+        (event) => event.eventType === 'hook_conflict'
+      );
+      expect(hookCreated).toHaveLength(attempts);
+      expect(hookConflict).toHaveLength(0);
+    });
+
+    it('legacy claim whose hook_created event was already published does not append a duplicate event', async () => {
+      // Crash / upgrade-recovery regression for the VADE bot's
+      // concern on PR #2295: a legacy token claim (no inline
+      // `eventId`) for which the pre-upgrade writer already
+      // successfully published the `hook_created` event. A post-
+      // upgrade retry must dedup against the existing event, NOT
+      // pin a new canonical eventId and publish a duplicate event
+      // at the marker's path.
+      //
+      // The recovery-marker sidecar arbitrates concurrent retries
+      // but has no way of knowing the pre-upgrade writer's eventId
+      // after the fact. The fix probes the event log for an
+      // existing `hook_created` event for `(runId, correlationId)`
+      // before pinning the marker; if found, throws
+      // EntityConflictError so the runtime's existing concurrent-
+      // replay catch path swallows the retry.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-already-published',
+        workflowName: 'already-published',
+        input: new Uint8Array(),
+      });
+
+      const token = 'already-published-token';
+      const hookId = 'hook_already_published';
+
+      // Pre-seed the legacy claim format (`{ token, hookId, runId }`,
+      // no `eventId`) AND an existing `hook_created` event written
+      // by a (simulated) pre-upgrade writer with its own eventId.
+      const tokensDir = path.join(testDir, 'hooks', 'tokens');
+      await fs.mkdir(tokensDir, { recursive: true });
+      await fs.writeFile(
+        path.join(tokensDir, `${hashToken(token)}.json`),
+        JSON.stringify({ token, hookId, runId: run.runId })
+      );
+      const preExistingEventId = 'evnt_pre_upgrade_existing';
+      const eventsDir = path.join(testDir, 'events');
+      await fs.mkdir(eventsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(eventsDir, `${run.runId}-${preExistingEventId}.json`),
+        JSON.stringify({
+          eventType: 'hook_created',
+          eventId: preExistingEventId,
+          runId: run.runId,
+          correlationId: hookId,
+          createdAt: new Date().toISOString(),
+          specVersion: 3,
+          eventData: { token },
+        })
+      );
+
+      // Retry must NOT publish a duplicate event.
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_created',
+          correlationId: hookId,
+          eventData: { token },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // The raw event log still contains exactly one `hook_created`
+      // event for this hookId (the pre-existing one, with its
+      // original eventId).
+      const allEvents = await storage.events.list({
+        runId: run.runId,
+        pagination: { limit: 1000 },
+      });
+      const hookCreated = allEvents.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+      );
+      expect(hookCreated).toHaveLength(1);
+      expect(hookCreated[0].eventId).toBe(preExistingEventId);
+    });
+
+    it('converges legacy claim recovery across run lifetimes after token reuse', async () => {
+      // Stale-marker regression for the case pranaygp flagged on
+      // PR #2295: a legacy claim is recovered for run A (creating a
+      // marker), run A terminates through normal lifecycle
+      // (`run_completed` triggers `deleteAllHooksForRun`), then the
+      // same token is reused by a legacy claim for run B. Two
+      // workers race to recover run B's claim.
+      //
+      // The previous, single-marker-per-token design left the run-A
+      // marker on disk and let both run-B workers overwrite it
+      // non-atomically, yielding multiple `hook_created` events for
+      // run B's `(runId, hookId)`. The fix moves the marker key to
+      // a hash of `(token, runId, hookId)` so run B's workers
+      // contend on a distinct marker that no other lifetime can
+      // touch.
+      const workerA = createStorage(testDir);
+      const workerB = createStorage(testDir);
+
+      const runA = await createRun(workerA, {
+        deploymentId: 'deployment-token-reuse-a',
+        workflowName: 'token-reuse-a',
+        input: new Uint8Array(),
+      });
+
+      const token = 'reused-across-lifetimes-token';
+      const hookIdA = 'hook_reuse_run_a';
+      const hookIdB = 'hook_reuse_run_b';
+
+      // Run A: seed legacy claim, race recovery.
+      const tokensDir = path.join(testDir, 'hooks', 'tokens');
+      await fs.mkdir(tokensDir, { recursive: true });
+      await fs.writeFile(
+        path.join(tokensDir, `${hashToken(token)}.json`),
+        JSON.stringify({ token, hookId: hookIdA, runId: runA.runId })
+      );
+      const runAResults = await Promise.allSettled([
+        workerA.events.create(runA.runId, {
+          eventType: 'hook_created',
+          correlationId: hookIdA,
+          eventData: { token },
+        }),
+        workerB.events.create(runA.runId, {
+          eventType: 'hook_created',
+          correlationId: hookIdA,
+          eventData: { token },
+        }),
+      ]);
+      expect(runAResults.filter((r) => r.status === 'fulfilled')).toHaveLength(
+        1
+      );
+
+      // Terminate run A through normal lifecycle. This is the path
+      // pranaygp called out: `deleteAllHooksForRun` deletes the
+      // claim and hook entity but historically left the marker
+      // behind for token reuse to trip on.
+      await updateRun(storage, runA.runId, 'run_completed', {
+        output: new Uint8Array(),
+      });
+
+      // Run B: same token, different (runId, hookId). Seed legacy
+      // claim again — i.e. the token was reused by a workflow whose
+      // claim was written by a still-running pre-upgrade producer.
+      const runB = await createRun(workerA, {
+        deploymentId: 'deployment-token-reuse-b',
+        workflowName: 'token-reuse-b',
+        input: new Uint8Array(),
+      });
+      await fs.writeFile(
+        path.join(tokensDir, `${hashToken(token)}.json`),
+        JSON.stringify({ token, hookId: hookIdB, runId: runB.runId })
+      );
+
+      const runBResults = await Promise.allSettled([
+        workerA.events.create(runB.runId, {
+          eventType: 'hook_created',
+          correlationId: hookIdB,
+          eventData: { token },
+        }),
+        workerB.events.create(runB.runId, {
+          eventType: 'hook_created',
+          correlationId: hookIdB,
+          eventData: { token },
+        }),
+      ]);
+      const runBFulfilled = runBResults.filter((r) => r.status === 'fulfilled');
+      const runBRejected = runBResults.filter(
+        (r): r is PromiseRejectedResult => r.status === 'rejected'
+      );
+      expect(runBFulfilled).toHaveLength(1);
+      expect(runBRejected).toHaveLength(1);
+      for (const r of runBRejected) {
+        expect((r.reason as { name?: string })?.name).toBe(
+          'EntityConflictError'
+        );
+      }
+
+      // Run B's event log has exactly one `hook_created` event for
+      // hookIdB — not the divergent multi-event result a leaked
+      // run-A marker would have produced.
+      const runBEvents = await storage.events.list({
+        runId: runB.runId,
+        pagination: { limit: 1000 },
+      });
+      const hookCreated = runBEvents.data.filter(
+        (e) => e.eventType === 'hook_created' && e.correlationId === hookIdB
+      );
+      const hookConflict = runBEvents.data.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      expect(hookCreated).toHaveLength(1);
+      expect(hookConflict).toHaveLength(0);
+    });
   });
 
   describe('run terminal state validation', () => {
