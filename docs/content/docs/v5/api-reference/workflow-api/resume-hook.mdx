@@ -204,7 +204,7 @@ export async function POST(request: Request) {
 }
 ```
 
-See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how the workflow claims the token with `hook.hasConflict` and how concurrent starts converge on one active owner.
+See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how the workflow claims the token with `hook.getConflict` and how concurrent starts converge on one active owner.
 
 ## Related Functions
 

@@ -16,7 +16,7 @@ Retrieves a hook by its unique token, returning the associated workflow run info
 </Callout>
 
 <Callout type="info">
-Looking up a deterministic hook token is useful in hook-based idempotency flows, but it is only an advisory check. If no hook exists yet, another request can still start the same workflow before your `start()` call registers its hook. Use the lookup to avoid obvious duplicate starts, and handle the race inside the workflow by checking `await hook.hasConflict` before duplicate-sensitive work. When the duplicate run needs the active owner, awaiting the hook payload rejects with `HookConflictError`, and `conflictingRunId` on that error routes the caller to the active owner. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+Looking up a deterministic hook token is useful in hook-based idempotency flows, but it is only an advisory check. If no hook exists yet, another request can still start the same workflow before your `start()` call registers its hook. Use the lookup to avoid obvious duplicate starts, and handle the race inside the workflow by checking `await hook.getConflict` before duplicate-sensitive work — on a conflict it resolves with the run that owns the token, so the duplicate can route the caller to the active owner. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
 </Callout>
 
 ```typescript lineNumbers
