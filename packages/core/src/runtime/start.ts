@@ -20,7 +20,7 @@ import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { Run } from './run.js';
-import { waitedUntil, waitUntil } from './wait-until.js';
+import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import { getWorld } from './world.js';
 
 /** ULID generator for client-side runId generation */
@@ -297,14 +297,19 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       }
 
-      waitUntil(
-        Promise.all(ops).catch((err) => {
-          // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-          const isAbortError =
-            err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-          if (!isAbortError) throw err;
-        })
-      );
+      // These argument-stream ops are flushed in the background; the promise
+      // handed to waitUntil must never reject (an unconsumed waitUntil
+      // rejection crashes the process as unhandledRejection), so unexpected
+      // failures are logged instead.
+      safeWaitUntil(Promise.all(ops), (err) => {
+        runtimeLogger.warn(
+          'Background flush of workflow argument streams failed',
+          {
+            workflowRunId: runId,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
+      });
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),

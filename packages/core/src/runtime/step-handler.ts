@@ -39,6 +39,7 @@ import {
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
+
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
   getQueueOverhead,
@@ -48,7 +49,7 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
-import { waitUntil } from './wait-until.js';
+import { safeWaitUntil } from './wait-until.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -842,14 +843,17 @@ const stepHandler = createQueueHandler(
             return dehydrated;
           });
 
-          waitUntil(
-            Promise.all(ops).catch((err) => {
-              // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-              const isAbortError =
-                err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-              if (!isAbortError) throw err;
-            })
-          );
+          // These stream ops are flushed in the background; the promise
+          // handed to waitUntil must never reject (an unconsumed waitUntil
+          // rejection crashes the process as unhandledRejection), so
+          // unexpected failures are logged instead.
+          safeWaitUntil(Promise.all(ops), (err) => {
+            runtimeLogger.warn('Background flush of step stream ops failed', {
+              workflowRunId,
+              stepId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
 
           // Run step_completed and trace serialization concurrently;
           // the trace carrier is used in the final queueMessage call below
