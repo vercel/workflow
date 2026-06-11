@@ -48,6 +48,10 @@ export function getVersionFromPathname(pathname: string): DocsVersion {
  * Build a URL for the same page under a different version. Preserves the
  * trailing path after `/docs/` and any locale prefix.
  *
+ * Only `/docs/...` paths are version-specific. All other routes (e.g.
+ * `/cookbook`, `/worlds`) are shared across versions and are returned
+ * unchanged — there is no `/v5/cookbook` to navigate to.
+ *
  * `usePathname()` can return either `/docs/...` (default locale hidden by
  * the i18n middleware) or `/<locale>/docs/...` (non-default locale shown).
  * We detect the locale segment by checking whether segment 0 is a
@@ -57,8 +61,15 @@ export function buildVersionUrl(
   pathname: string,
   targetVersion: DocsVersion
 ): string {
+  // Worlds and other shared routes have no versioned equivalent — unchanged.
+  if (!pathname.includes('/docs') && !pathname.includes('/cookbook')) {
+    return pathname;
+  }
+
   const segments = pathname.split('/').filter(Boolean);
-  const isStructural = (s: string | undefined) => s === 'docs' || s === 'v5';
+  // Structural segments are path tokens that are never locale prefixes.
+  const isStructural = (s: string | undefined) =>
+    s === 'docs' || s === 'v5' || s === 'cookbook';
   const localeSegments =
     segments[0] && !isStructural(segments[0]) ? segments.slice(0, 1) : [];
   let rest = segments.slice(localeSegments.length);

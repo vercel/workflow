@@ -5,6 +5,7 @@ import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
 import {
   parseMessage,
+  SOCKET_INFO_FILENAME,
   type SocketMessage,
   serializeMessage,
 } from './socket-server.js';
@@ -45,6 +46,39 @@ type SocketCredentials = {
   port: number;
   authToken: string;
 };
+
+/**
+ * Wrap a TCP connect failure with context about where the connection was
+ * attempted, where the credentials came from, and which source file was
+ * being processed when it failed. ECONNREFUSED is the common case here, and
+ * the message points the user at the most likely root cause (stale
+ * socket-info file).
+ */
+function annotateConnectionError(
+  originalError: unknown,
+  credentials: SocketCredentials
+): Error {
+  const errorCode =
+    originalError instanceof Error &&
+    'code' in originalError &&
+    typeof (originalError as { code?: unknown }).code === 'string'
+      ? ((originalError as { code: string }).code as string)
+      : undefined;
+  const errorMessage =
+    originalError instanceof Error
+      ? originalError.message
+      : String(originalError);
+
+  const lines = [
+    `Workflow discovery socket connect failed: ${errorCode ?? errorMessage} (127.0.0.1:${credentials.port})`,
+  ];
+
+  const annotated = new Error(lines.join('\n'));
+  if (originalError instanceof Error) {
+    (annotated as { cause?: unknown }).cause = originalError;
+  }
+  return annotated;
+}
 
 const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
 const ROUTE_STUB_BUILD_WAIT_TIMEOUT_MS = 120_000;
@@ -174,19 +208,13 @@ function getSocketInfoFilePath(): string | null {
   // Fallback for worker processes that don't inherit dynamic env updates
   // from the process that created the socket server.
   const distDir = process.env.WORKFLOW_NEXT_DIST_DIR || '.next';
-  const cwdFallbackPath = join(
-    process.cwd(),
-    distDir,
-    'cache',
-    'workflow-socket.json'
-  );
+  const cwdFallbackPath = join(process.cwd(), distDir, SOCKET_INFO_FILENAME);
   const projectRoot = process.env.WORKFLOW_PROJECT_ROOT;
   if (projectRoot) {
     const projectRootFallbackPath = join(
       projectRoot,
       distDir,
-      'cache',
-      'workflow-socket.json'
+      SOCKET_INFO_FILENAME
     );
     if (existsSync(projectRootFallbackPath)) {
       return projectRootFallbackPath;
@@ -287,12 +315,17 @@ async function getSocketClient(): Promise<Socket | null> {
           };
           const onError = (error: Error) => {
             cleanup();
-            reject(error);
+            reject(annotateConnectionError(error, socketCredentials));
           };
           const timeout = setTimeout(() => {
             cleanup();
             socket.destroy();
-            reject(new Error('Socket connection timeout'));
+            reject(
+              annotateConnectionError(
+                new Error('Socket connection timeout'),
+                socketCredentials
+              )
+            );
           }, 1000);
           const cleanup = () => {
             clearTimeout(timeout);
@@ -379,7 +412,12 @@ async function createSocketConnection(
     const timeout = setTimeout(() => {
       cleanup();
       socket.destroy();
-      reject(new Error('Socket connection timeout'));
+      reject(
+        annotateConnectionError(
+          new Error('Socket connection timeout'),
+          socketCredentials
+        )
+      );
     }, timeoutMs);
     const cleanup = () => {
       clearTimeout(timeout);
@@ -394,7 +432,7 @@ async function createSocketConnection(
     const onError = (error: Error) => {
       cleanup();
       socket.destroy();
-      reject(error);
+      reject(annotateConnectionError(error, socketCredentials));
     };
 
     socket.on('connect', onConnect);

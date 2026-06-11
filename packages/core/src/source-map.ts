@@ -1,5 +1,56 @@
 import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping';
 
+function isBase64Char(code: number): boolean {
+  return (
+    (code >= 0x41 && code <= 0x5a) ||
+    (code >= 0x61 && code <= 0x7a) ||
+    (code >= 0x30 && code <= 0x39) ||
+    code === 0x2b ||
+    code === 0x2f ||
+    code === 0x3d
+  );
+}
+
+function extractInlineSourceMapBase64(source: string): string | undefined {
+  const sourceMapPrefix = '//# sourceMappingURL=data:application/json';
+  const base64Marker = ';base64,';
+  let scanFrom = 0;
+
+  while (scanFrom < source.length) {
+    const prefixIdx = source.indexOf(sourceMapPrefix, scanFrom);
+    if (prefixIdx === -1) return undefined;
+
+    const base64Start = source.indexOf(
+      base64Marker,
+      prefixIdx + sourceMapPrefix.length
+    );
+    if (base64Start === -1) {
+      scanFrom = prefixIdx + sourceMapPrefix.length;
+      continue;
+    }
+
+    const commaBefore = source.indexOf(',', prefixIdx);
+    if (commaBefore !== -1 && commaBefore < base64Start) {
+      scanFrom = base64Start + base64Marker.length;
+      continue;
+    }
+
+    const valueStart = base64Start + base64Marker.length;
+    let valueEnd = valueStart;
+    while (valueEnd < source.length) {
+      if (!isBase64Char(source.charCodeAt(valueEnd))) {
+        break;
+      }
+      valueEnd++;
+    }
+
+    if (valueEnd > valueStart) {
+      return source.slice(valueStart, valueEnd);
+    }
+    scanFrom = valueEnd;
+  }
+}
+
 /**
  * Remaps an error stack trace using inline source maps to show original source locations.
  *
@@ -13,16 +64,12 @@ export function remapErrorStack(
   filename: string,
   workflowCode: string
 ): string {
-  // Extract inline source map from workflow code
-  const sourceMapMatch = workflowCode.match(
-    /\/\/# sourceMappingURL=data:application\/json;base64,(.+)/
-  );
-  if (!sourceMapMatch) {
+  const base64 = extractInlineSourceMapBase64(workflowCode);
+  if (!base64) {
     return stack; // No source map found
   }
 
   try {
-    const base64 = sourceMapMatch[1];
     const sourceMapJson = Buffer.from(base64, 'base64').toString('utf-8');
     const sourceMapData = JSON.parse(sourceMapJson);
 
@@ -66,7 +113,7 @@ export function remapErrorStack(
     });
 
     return remappedLines.join('\n');
-  } catch (e) {
+  } catch {
     // If source map processing fails, return original stack
     return stack;
   }

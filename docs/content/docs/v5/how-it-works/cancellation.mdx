@@ -1,0 +1,287 @@
+---
+title: How Cancellation Works
+description: Learn how AbortController is made durable using hooks and streams under the hood.
+type: conceptual
+summary: Understand the hook and stream backing that makes AbortSignal work across workflow boundaries.
+prerequisites:
+  - /docs/foundations/cancellation
+  - /docs/how-it-works/event-sourcing
+related:
+  - /docs/foundations/hooks
+  - /docs/foundations/streaming
+  - /docs/foundations/serialization
+---
+
+<Callout>
+This guide explains how cancellation works internally. Understanding these details is helpful for debugging and advanced use cases, but is not required to use `AbortController` in workflows. For usage patterns, see the [Cancellation](/docs/foundations/cancellation) guide.
+</Callout>
+
+When you write `new AbortController()` in a workflow function, Workflow DevKit creates a durable controller backed by two existing primitives: a [hook](/docs/foundations/hooks) and a [stream](/docs/foundations/streaming). This page explains why both are needed and how they work together.
+
+## The Problem
+
+`AbortController` and `AbortSignal` are inherently stateful — an abort happens once and is permanent. In a durable workflow, this state must:
+
+1. **Survive replay** — If `abort()` was called, `signal.aborted` must return `true` on every subsequent replay of the workflow.
+2. **Propagate in real-time** — A running step on a different compute instance must receive the abort immediately, not on the next replay.
+
+No single primitive solves both. Hooks provide durable event log state but can't reach into a running step. Streams provide real-time cross-process communication but aren't part of the event log. The solution is to use both.
+
+## Dual Backing: Hook + Stream
+
+Every `AbortController` in the workflow context is backed by:
+
+### Hook (Durable State)
+
+When `new AbortController()` is called in a workflow, an internal hook is created — similar to calling `createHook()`. This hook is registered in the workflow's invocations queue and produces events in the [event log](/docs/how-it-works/event-sourcing):
+
+- **On creation**: A `hook_created` event records that the controller exists
+- **On abort**: The hook is resumed (producing a `hook_received` event), recording the abort permanently
+- **On replay**: The event consumer processes the `hook_received` event and updates `signal.aborted` to `true` at the same point in the replay as the original abort
+
+This gives the workflow deterministic access to the abort state — `controller.signal.aborted` always returns the correct value, even after cold starts.
+
+### Stream (Real-Time Propagation)
+
+When `controller.signal` is serialized as a step argument, a stream name is included in the serialized form. Inside the step, the deserialized `AbortSignal` listens on this stream:
+
+- **On abort**: A cancellation packet is written to the stream
+- **In the step**: A background reader receives the packet and calls `abort()` on the local `AbortController`, firing the signal immediately
+
+This gives steps real-time cancellation without waiting for the workflow to replay.
+
+### Why Both?
+
+| Mechanism | Solves | Doesn't Solve |
+|---|---|---|
+| Hook only | Deterministic replay, event log consistency | Can't reach into a running step on another instance |
+| Stream only | Real-time propagation to running steps | Not part of the event log, lost on replay |
+| Hook + Stream | Both | — |
+
+## Lifecycle
+
+### 1. Controller Created in Workflow
+
+```
+new AbortController()
+        │
+        ├─→ Internal hook created (registered in invocations queue)
+        └─→ Stream name generated (deterministic ULID)
+```
+
+### 2. Signal Passed to Step
+
+```
+stepFunction(controller.signal)
+        │
+        ├─→ Signal serialized as { streamName, hookToken, aborted }
+        └─→ In the step: deserialized as real AbortSignal
+                │
+                └─→ Background reader listens on stream for abort packet
+```
+
+### 3. abort() Called in Workflow
+
+```
+controller.abort()
+        │
+        ├─→ signal.aborted set to true (synchronous, local state)
+        ├─→ Hook marked for resumption in invocations queue
+        └─→ Workflow suspends (reaches next step/sleep/hook await)
+                │
+                ├─→ Suspension handler creates hook_received event
+                ├─→ Suspension handler writes cancellation packet to stream
+                │       │
+                │       └─→ Step receives packet → local signal fires → fetch cancelled
+                └─→ Workflow re-enqueued for replay
+```
+
+### 4. Workflow Replays After Abort
+
+```
+Replay starts → events loaded
+        │
+        ├─→ new AbortController() → hook created → event consumer subscribes
+        ├─→ hook_created event consumed
+        ├─→ hook_received event consumed → signal.aborted re-asserted as true
+        └─→ Workflow code sees signal.aborted === true at the correct point in replay
+```
+
+On replay, the events consumer re-applies the abort by calling `_setAborted` when it encounters the `hook_received` event in the log — at the same point in execution where the original `abort()` happened. This is what makes the abort deterministic across replays.
+
+## Where the Hook Is Created
+
+The backing hook is set up whenever an `AbortController` or `AbortSignal` enters the workflow context:
+
+**`new AbortController()` in a workflow function** — The workflow VM provides a durable `AbortController` implementation (similar to how it provides deterministic `Date` and serializable `Request`/`Response`). The hook is created in the constructor using the orchestrator context injected via VM globals.
+
+**Returned from a step** — A step can create a plain `new AbortController()` and return it. The step-side serializer generates a stream name and hook token (using a random ULID) and includes them in the serialized payload. When the return value is deserialized into the workflow via `hydrateStepReturnValue`, the workflow reviver reads the token from the payload and sets up the hook with that token. Since the serialized payload is stored in the event log (as part of the `step_completed` event), the same token is used on every replay — no deterministic generation needed in the workflow.
+
+**Passed as workflow input** — Conceptually the same as "returned from a step". The **external reducer** handles it at serialization time:
+
+1. Generates a stream name and hook token (random ULID)
+2. Attaches an `abort` event listener on the source signal: when the external code calls `controller.abort()`, the listener writes the cancellation packet to the stream
+3. Pushes the listener's async work into `ops` (awaited via `waitUntil`)
+4. Serializes the reference as `{ streamName, hookToken, aborted }`
+
+The serialized payload (including the generated token) is stored in the event log as part of the workflow's input. When the workflow deserializes the input, the reviver reads the token from the payload and creates the hook — identical to the "returned from a step" case. On replay, the same token is read from the event log, so the hook matches the same events.
+
+If the external code calls `abort()` while the process is still alive (within the `waitUntil` window), the stream packet arrives in the workflow, and the workflow can resume the hook to record it in the event log.
+
+<Callout type="info">
+Since the external `AbortController` is a plain JavaScript object (not the workflow VM's durable version), the stream write depends on the originating process still being alive. This is the same constraint that applies to passing a `ReadableStream` as a workflow argument — the stream pipe runs via `waitUntil` and requires the process to remain active until the data is written.
+</Callout>
+
+## Serialization & Deserialization
+
+### Serialized Form
+
+An `AbortController` or `AbortSignal` is serialized as:
+
+{/* @skip-typecheck: type definition, not runnable code */}
+```typescript
+{
+  streamName: string;    // e.g., "abrt_01HWKZ..."
+  hookToken: string;     // Generated at serialization time, used by workflow reviver to create the hook
+  aborted: boolean;      // Current state at serialization time
+  reason?: unknown;      // The abort reason, if any
+}
+```
+
+The `streamName` and `hookToken` are generated once at serialization time (in the step or external context) and stored in the event log as part of the serialized payload. On replay, the workflow reviver reads them from the payload — it never generates them itself. This is the same pattern used by `ReadableStream` and `WritableStream` serialization.
+
+### Reducers (Serialization)
+
+**In step context** (`getStepReducers`): When a step returns an `AbortController`, the reducer captures the stream name. If `abort()` was called in the step, `aborted: true` is recorded.
+
+**In workflow context** (`getWorkflowReducers`): The reducer captures the stream name and hook token. These are handles — no I/O happens during serialization in the workflow.
+
+**In external context** (`getExternalReducers`): When an `AbortController` is passed as a workflow argument from outside, the reducer creates the backing stream and serializes the reference.
+
+### Revivers (Deserialization)
+
+**Into step context** (`getStepRevivers`): Creates a real `AbortController`. If `aborted: true`, calls `abort()` immediately. Otherwise, pushes a stream reader into the step's `ops` array that listens for the cancellation packet and calls `abort()` when received.
+
+**Into workflow context** (`getWorkflowRevivers`): Creates the durable AbortController with hook backing. Subscribes to the events consumer for the hook's correlation ID. If the event log contains a `hook_received` event, `signal.aborted` is `true`.
+
+### abort() in a Step
+
+When `abort()` is called on a deserialized `AbortController` inside a step:
+
+1. The local signal is aborted synchronously (standard behavior)
+2. The stream write (cancellation packet) is pushed into `ctx.ops`
+3. The hook resume (`resumeHook`) is pushed into `ctx.ops`
+
+The step's `ops` array is awaited via `waitUntil(Promise.all(ops))` after the step function returns — the same mechanism used by [`getWritable()`](/docs/api-reference/workflow/get-writable). This keeps `abort()` synchronous from the caller's perspective while ensuring the async work completes.
+
+### Abort Errors Are Wrapped in FatalError
+
+When a step throws due to an abort — whether from `fetch` throwing `AbortError`, `signal.throwIfAborted()`, or any other abort-induced error — the step handler wraps the error in `FatalError` before recording it in the event log. This ensures:
+
+- **No retries**: An abort is intentional cancellation, not a transient failure. Retrying would just abort again.
+- **Immediate propagation**: The error bubbles up to the workflow as a `FatalError`, which the workflow can catch with `FatalError.is(err)`.
+
+The wrapping happens at the step handler level (`runtime/step-handler.ts`), during error hydration. When the step's thrown error is an `AbortError` (checked via `err.name === 'AbortError'`), it is treated as fatal regardless of the step's `maxRetries` configuration.
+
+### abort() in the Workflow
+
+When `abort()` is called in the workflow context:
+
+1. `signal.aborted` is updated to `true` immediately (so subsequent reads and serialization capture the correct state)
+2. The internal hook is marked for resumption in the invocations queue (same pattern as `hook.dispose()`)
+3. The workflow continues until it reaches the next suspension point (step call, hook await, or sleep) or completes
+4. The pending queue items are processed:
+   - Creates a `hook_received` event in the event log
+   - Writes the cancellation packet to the stream (for real-time step propagation)
+   - Re-enqueues the workflow for replay
+4. On replay, the event consumer processes the `hook_received` event, updating `signal.aborted` to `true` at the deterministically correct point
+
+`signal.aborted` is updated synchronously so that the workflow can immediately check the state and serialization captures `aborted: true` when passing the signal to steps. On replay, the event consumer also processes the `hook_received` event, ensuring the state is consistent.
+
+For abort specifically, this ensures that:
+
+- The abort's `hook_received` event is created in the event log
+- The cancellation stream packet is written to propagate to running steps
+
+## Race Conditions
+
+### Abort Before Hook Exists
+
+When an `AbortSignal` is passed as a workflow argument via `start()`, the external reducer attaches a listener at serialization time. If the external code calls `abort()` before the workflow has started and created the internal hook, the stream packet is written but the hook doesn't exist yet.
+
+This is resolved through eventual consistency:
+
+1. The stream packet is durable — it persists in storage
+2. When the workflow runs and passes the signal to a step, the step's reviver reads from the stream starting at index 0
+3. The step sees the existing packet, aborts locally, and resumes the hook (via `ops`)
+4. On the next workflow replay, the hook event is in the log and `signal.aborted` is `true`
+
+**Important:** There is a window where the workflow's `signal.aborted` returns `false` even though the external code has already called `abort()`. This lasts until a step processes the stream packet and resumes the hook. This is analogous to hooks — `resumeHook()` doesn't take effect until the workflow replays.
+
+### Abort at Serialization Time
+
+To prevent a micro-window where `abort()` is called between checking `signal.aborted` and attaching the listener, the external reducer uses this order:
+
+1. Attach the `abort` event listener first
+2. Then check `signal.aborted` — if already `true`, the listener won't fire, so handle immediately
+
+This ensures no abort events are missed regardless of timing.
+
+## Stream/Hook Consistency
+
+Since abort involves two operations (stream write + hook resume), partial failure is possible:
+
+### Stream Succeeds, Hook Fails
+
+- Steps see the abort and throw `AbortError` (stream worked)
+- Workflow doesn't see `signal.aborted === true` on the next replay (hook not resumed)
+- The workflow sees the step failure as an error, which it can handle with try/catch
+- **Recovery:** The step-side `resumeHook` call is best-effort — if it throws, the failure is swallowed. Convergence comes from the next replay: when the step's reviver re-reads the stream, it sees the abort packet and calls `resumeHook` again. There's no in-process retry loop; the dual-mechanism design relies on either the stream or the hook eventually landing.
+
+### Hook Succeeds, Stream Fails
+
+- Workflow sees `signal.aborted === true` on replay (hook worked)
+- Steps don't receive real-time cancellation (stream failed) — they run to completion
+- On the next suspension, the workflow knows the abort happened and can stop calling more steps
+- **Recovery:** Natural convergence — no active harm, just missed real-time cancellation for in-flight steps.
+
+### Both Fail
+
+- Abort is lost — no propagation
+- No crash or corruption — the system continues as if abort was never called
+- **Recovery:** The caller can retry the abort. If using a hook for external cancellation, the hook's retry semantics apply.
+
+The dual mechanism provides natural resilience — if either one succeeds, the system converges on the correct state.
+
+## `AbortSignal.timeout()` in Workflow VM
+
+`AbortSignal.timeout()` is blocked in the workflow VM because it depends on real-time timers, which break deterministic replay. Calling it throws an error with a suggestion to use `sleep()` + `AbortController` instead. See [AbortSignal.timeout() in Workflow](/docs/errors/abort-signal-timeout-in-workflow) for details.
+
+`AbortSignal.timeout()` works normally in step functions, which have full Node.js runtime access.
+
+## Request.signal
+
+A `Request`'s `.signal` is forwarded by the `Request` reducer in two cases:
+
+1. **The signal is already aborted.** The serialized payload preserves `aborted: true` and the abort `reason`, so the deserialized step sees the cancellation that happened before the boundary.
+2. **The signal is workflow-managed** (i.e., it has the `ABORT_STREAM_NAME` symbol — produced by a workflow-context `AbortController`). Its hook + stream backing carries through, and the deserialized step listens on the stream as usual.
+
+Plain non-aborted native signals are intentionally dropped, including the auto-generated signal that `new Request(url)` synthesizes when no `signal` is passed. Forwarding every Request signal would mint stream infrastructure for the throwaway auto-signals on every Request, even ones the caller never intended to use for cancellation.
+
+If you want cross-boundary cancellation through a `Request`, build it with a signal from a workflow-context `AbortController`:
+
+{/* @skip-typecheck: conceptual snippet */}
+```typescript
+const controller = new AbortController(); // in workflow function
+const req = new Request(url, { signal: controller.signal });
+await fetchStep(req); // signal carries through
+controller.abort();   // step-side fetch sees the abort
+```
+
+## Related Documentation
+
+- [Cancellation](/docs/foundations/cancellation) — Usage patterns and API
+- [Event Sourcing](/docs/how-it-works/event-sourcing) — How the event log works
+- [Hooks](/docs/foundations/hooks) — The hook primitive
+- [Streaming](/docs/foundations/streaming) — The stream primitive
+- [Serialization](/docs/foundations/serialization) — Serializable types

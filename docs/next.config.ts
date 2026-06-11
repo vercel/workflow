@@ -243,6 +243,11 @@ const config: NextConfig = {
         destination: '/patterns/distributed-abort-controller',
         permanent: true,
       },
+      {
+        source: '/python',
+        destination: '/docs/getting-started/python',
+        permanent: true,
+      },
     ];
   },
 };

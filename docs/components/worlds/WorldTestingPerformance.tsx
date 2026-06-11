@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   Clock,
   Info,
-  Timer,
   TrendingUp,
   XCircle,
 } from 'lucide-react';
@@ -24,7 +23,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { cn } from '@/lib/utils';
 import { BenchmarkHistoryChart } from './BenchmarkHistoryChart';
 import { formatTime, type World } from './types';
 
@@ -69,9 +67,6 @@ const SlurpColumnHeader = () => (
     </Tooltip>
   </div>
 );
-
-// The main benchmark used for the PERF metric
-const PERF_BENCHMARK_NAME = 'workflow with 10 sequential steps';
 
 export interface WorldTestingPerformanceProps {
   worldId: string;
@@ -314,65 +309,40 @@ export function WorldTestingPerformance({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {standardMetrics.map(([name, metric]) => {
-                        const isPerfBenchmark = name === PERF_BENCHMARK_NAME;
-                        return (
-                          <TableRow
-                            key={name}
-                            className={cn(
-                              'cursor-pointer hover:bg-muted/50 transition-colors',
-                              isPerfBenchmark && 'bg-muted/30'
-                            )}
-                            onClick={() => setSelectedMetric(name)}
-                          >
-                            <TableCell className="font-medium">
-                              <div className="flex items-center gap-2">
-                                {isPerfBenchmark && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Timer className="h-4 w-4 text-purple-900 shrink-0" />
-                                    </TooltipTrigger>
-                                    <TooltipContent
-                                      side="top"
-                                      className="max-w-[200px]"
-                                    >
-                                      <p className="text-xs">
-                                        Primary performance benchmark (PERF)
-                                      </p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                )}
-                                {name}
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {metric.workflowTime !== undefined
-                                ? formatTime(metric.workflowTime)
-                                : '—'}
-                            </TableCell>
-                            {hasWorkflowRange && (
-                              <>
-                                <TableCell className="text-right font-mono text-muted-foreground">
-                                  {metric.workflowMin !== undefined
-                                    ? formatTime(metric.workflowMin)
-                                    : '—'}
-                                </TableCell>
-                                <TableCell className="text-right font-mono text-muted-foreground">
-                                  {metric.workflowMax !== undefined
-                                    ? formatTime(metric.workflowMax)
-                                    : '—'}
-                                </TableCell>
-                              </>
-                            )}
-                            <TableCell className="text-right text-muted-foreground">
-                              {metric.samples || '—'}
-                            </TableCell>
-                            <TableCell>
-                              <TrendingUp className="h-4 w-4 text-muted-foreground" />
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
+                      {standardMetrics.map(([name, metric]) => (
+                        <TableRow
+                          key={name}
+                          className="cursor-pointer hover:bg-muted/50 transition-colors"
+                          onClick={() => setSelectedMetric(name)}
+                        >
+                          <TableCell className="font-medium">{name}</TableCell>
+                          <TableCell className="text-right font-mono">
+                            {metric.workflowTime !== undefined
+                              ? formatTime(metric.workflowTime)
+                              : '—'}
+                          </TableCell>
+                          {hasWorkflowRange && (
+                            <>
+                              <TableCell className="text-right font-mono text-muted-foreground">
+                                {metric.workflowMin !== undefined
+                                  ? formatTime(metric.workflowMin)
+                                  : '—'}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-muted-foreground">
+                                {metric.workflowMax !== undefined
+                                  ? formatTime(metric.workflowMax)
+                                  : '—'}
+                              </TableCell>
+                            </>
+                          )}
+                          <TableCell className="text-right text-muted-foreground">
+                            {metric.samples || '—'}
+                          </TableCell>
+                          <TableCell>
+                            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                          </TableCell>
+                        </TableRow>
+                      ))}
                     </TableBody>
                   </Table>
                 )}

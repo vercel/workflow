@@ -1,5 +1,78 @@
 # @workflow/rollup
 
+## 5.0.0-beta.14
+
+### Patch Changes
+
+- Updated dependencies [[`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`f5f6d0e`](https://github.com/vercel/workflow/commit/f5f6d0ede6c44ec7cc6a861a78f5ec4ff26910ee)]:
+  - @workflow/builders@5.0.0-beta.14
+
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.13
+
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.12
+
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.11
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.10
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.9
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`0d0bb01`](https://github.com/vercel/workflow/commit/0d0bb013d7073f964bb3aea7869e84ed762bf7a9), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/builders@5.0.0-beta.8
+
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.7
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.6
+
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- Updated dependencies [[`e0ec429`](https://github.com/vercel/workflow/commit/e0ec429bb3baa4b3cb96373149a78dd514ebfe18), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`00a011d`](https://github.com/vercel/workflow/commit/00a011dee43b3ba7c399a97b9ed072cf4ce66816), [`96e92c6`](https://github.com/vercel/workflow/commit/96e92c63702718c2beee0d42a0ed94534b48b2a1), [`7830169`](https://github.com/vercel/workflow/commit/78301695eae3641ec4235d2066eba48f7448c5be), [`1d4f83a`](https://github.com/vercel/workflow/commit/1d4f83a29acc974fd4bbafe7a6ff64f8936219de), [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61), [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82), [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`0c997ce`](https://github.com/vercel/workflow/commit/0c997ce571c9fb5d728d460d773040c1354d401e)]:
+  - @workflow/builders@5.0.0-beta.5
+  - @workflow/swc-plugin@5.0.0-beta.4
+
 ## 5.0.0-beta.4
 
 ### Patch Changes

@@ -124,6 +124,23 @@ export async function fetchEvent(
   return rpc('fetchEvent', { worldEnv, runId, eventId, resolveData });
 }
 
+export async function fetchEventsByCorrelationId(
+  worldEnv: EnvMap,
+  correlationId: string,
+  params: {
+    cursor?: string;
+    sortOrder?: 'asc' | 'desc';
+    limit?: number;
+    withData?: boolean;
+  }
+): Promise<ServerActionResult<PaginatedResult<Event>>> {
+  return rpc('fetchEventsByCorrelationId', {
+    worldEnv,
+    correlationId,
+    params,
+  });
+}
+
 export async function fetchHooks(
   worldEnv: EnvMap,
   params: {

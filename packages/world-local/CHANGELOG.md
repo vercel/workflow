@@ -1,5 +1,116 @@
 # @workflow/world-local
 
+## 5.0.0-beta.15
+
+### Minor Changes
+
+- [#2305](https://github.com/vercel/workflow/pull/2305) [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af) Thanks [@willsather](https://github.com/willsather)! - Add an optional `namespace` parameter that scopes queue topic prefixes to `__{namespace}_wkf_workflow_*`. This allows configuring multiple frameworks in the same deployment without queue topic collision.
+
+### Patch Changes
+
+- Updated dependencies [[`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af)]:
+  - @workflow/world@5.0.0-beta.8
+  - @workflow/errors@5.0.0-beta.7
+
+## 5.0.0-beta.14
+
+### Patch Changes
+
+- [#2296](https://github.com/vercel/workflow/pull/2296) [`867e339`](https://github.com/vercel/workflow/commit/867e33903da71528c857a2f9e9e8db4da200a553) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent concurrent readers from observing partially written local entity files.
+
+- [#2255](https://github.com/vercel/workflow/pull/2255) [`81bda49`](https://github.com/vercel/workflow/commit/81bda490ef2726ef36ce457932ec94cc3abc6bc2) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update @vercel/queue from 0.2.1 to 0.3.0
+
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2231](https://github.com/vercel/workflow/pull/2231) [`b8a337c`](https://github.com/vercel/workflow/commit/b8a337c945cc0566b5d87e4e40026f50aa8c60ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update `undici` to 7.26.0.
+
+- [#2246](https://github.com/vercel/workflow/pull/2246) [`ddc8a79`](https://github.com/vercel/workflow/commit/ddc8a79741e8d281717e9fb361cf0001af460e9b) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update `@vercel/queue` from 0.1.7 to 0.2.1
+
+- Updated dependencies [[`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1)]:
+  - @workflow/errors@5.0.0-beta.7
+  - @workflow/world@5.0.0-beta.7
+
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- Updated dependencies [[`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd)]:
+  - @workflow/world@5.0.0-beta.6
+  - @workflow/errors@5.0.0-beta.6
+
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- [#2168](https://github.com/vercel/workflow/pull/2168) [`3128dfc`](https://github.com/vercel/workflow/commit/3128dfce809839a53c7cb6cc2337a9c31e0bf8a5) Thanks [@allenzhou101](https://github.com/allenzhou101)! - Skip past abandoned `5.0.0-beta.8/9/10` npm slots from the November 2025 5.x attempt so the next Changesets publish lands on a fresh `5.0.0-beta.11`.
+
+- Updated dependencies [[`8d0928b`](https://github.com/vercel/workflow/commit/8d0928b2a2ce61b6c05cb8930d29f176b3a83970)]:
+  - @workflow/errors@5.0.0-beta.6
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#2139](https://github.com/vercel/workflow/pull/2139) [`65336df`](https://github.com/vercel/workflow/commit/65336df9f80f228903216c3e82ea7d499d924734) Thanks [@pranaygp](https://github.com/pranaygp)! - Reduce local stream metadata and pagination I/O by reading only EOF marker bytes and scanning chunk files once.
+
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- [#2134](https://github.com/vercel/workflow/pull/2134) [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `experimental_setAttributes()` workflow-level helper for attaching string key/value metadata to a workflow run, surfaced as `run.attributes`
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- [#2097](https://github.com/vercel/workflow/pull/2097) [`657e8bb`](https://github.com/vercel/workflow/commit/657e8bb9629e7002c7658b98c32761e01e714474) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Reject dots and empty correlationId values in entity ID validation.
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/world@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.5
+  - @workflow/utils@5.0.0-beta.3
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#2038](https://github.com/vercel/workflow/pull/2038) [`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Refresh workflow events after completing elapsed waits so concurrent hook events preserve deterministic replay order.
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b)]:
+  - @workflow/world@5.0.0-beta.4
+  - @workflow/errors@5.0.0-beta.4
+
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#2012](https://github.com/vercel/workflow/pull/2012) [`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837) Thanks [@pranaygp](https://github.com/pranaygp)! - Expose the active run ID on hook token conflict errors.
+
+- [#1985](https://github.com/vercel/workflow/pull/1985) [`c145bf5`](https://github.com/vercel/workflow/commit/c145bf56d98faa7b27fa1d9d4a5ead57dda6b058) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve the local queue error message when a Next.js proxy intercepts workflow routes.
+
+- Updated dependencies [[`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837)]:
+  - @workflow/errors@5.0.0-beta.3
+  - @workflow/world@5.0.0-beta.3
+
+## 5.0.0-beta.4
+
+### Major Changes
+
+- [#1851](https://github.com/vercel/workflow/pull/1851) [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Run and step errors are now serialized through the workflow serialization pipeline, preserving original class identity and cause chains on `WorkflowRunFailedError.cause`. Pre-upgrade failed runs in the `world-postgres` legacy `error` text column surface as `error: undefined` on read; the original payload is still readable directly from the `errorJson` column for manual inspection.
+
+### Patch Changes
+
+- [#1877](https://github.com/vercel/workflow/pull/1877) [`92dc826`](https://github.com/vercel/workflow/commit/92dc82608ab7526e930eeedd4752c68872bae639) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix race in `events.create()` where concurrent `step_created` / `wait_created` writes with the same `correlationId` would both succeed instead of one losing with `EntityConflictError`.
+
+- [#1895](https://github.com/vercel/workflow/pull/1895) [`2f52d14`](https://github.com/vercel/workflow/commit/2f52d14f3844c999f6b89baeb8e04289d6dd34a9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix local-world recovery isolation in Vitest and support custom test directories
+
+- [#1894](https://github.com/vercel/workflow/pull/1894) [`c1163eb`](https://github.com/vercel/workflow/commit/c1163eb146991a4924d80bcc9cfcc8bb89e05067) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Throw `WorkflowRunNotFoundError` when `run_failed` is recorded against a run that doesn't exist, matching the behaviour of `world-postgres` and `world-vercel`.
+
+- Updated dependencies [[`540a2ef`](https://github.com/vercel/workflow/commit/540a2efb99c137b0d60c7368376e9533ea662a4c), [`5374148`](https://github.com/vercel/workflow/commit/537414849b0f7022640879786ff85c918672e7d0), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a)]:
+  - @workflow/errors@5.0.0-beta.2
+  - @workflow/world@5.0.0-beta.2
+  - @workflow/utils@5.0.0-beta.2
+
 ## 5.0.0-beta.3
 
 ### Patch Changes

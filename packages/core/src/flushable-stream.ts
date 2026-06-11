@@ -49,12 +49,18 @@ export interface FlushableStreamState extends PromiseWithResolvers<void> {
 }
 
 export function createFlushableState(): FlushableStreamState {
-  return {
+  const state: FlushableStreamState = {
     ...withResolvers<void>(),
     pendingOps: 0,
     doneResolved: false,
     streamEnded: false,
   };
+
+  // The runtime awaits this promise after user code returns. Observe early
+  // stream failures now so they do not become unhandled rejections first.
+  state.promise.catch(() => {});
+
+  return state;
 }
 
 /**

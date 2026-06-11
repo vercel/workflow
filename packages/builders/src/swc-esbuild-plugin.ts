@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { relative } from 'node:path';
 import { promisify } from 'node:util';
+import { WorkflowBuildError } from '@workflow/errors';
 import enhancedResolveOrig from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
 import {
@@ -11,6 +12,7 @@ import {
   jsTsRegex,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+import { resolveModuleSpecifier } from './module-specifier.js';
 import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
 export interface SwcPluginOptions {
@@ -31,6 +33,15 @@ export interface SwcPluginOptions {
    * breaks them because the .js file doesn't exist on disk.
    */
   rewriteTsExtensions?: boolean;
+  /**
+   * Bundle project-local files that are transitively imported by step entries.
+   *
+   * Keep this disabled when a downstream bundler consumes the generated step
+   * bundle because that bundler can resolve the externalized local imports.
+   * Enable it for direct runtime loading, where Node imports the generated step
+   * bundle from disk without a later bundling pass.
+   */
+  bundleTransitiveLocalStepDependencies?: boolean;
   /**
    * Absolute file paths of discovered workflow/step/serde entries whose
    * imports must be treated as side-effectful.
@@ -79,10 +90,94 @@ const NODE_ESM_RESOLVE_OPTIONS = {
   conditionNames: ['node', 'import'],
 };
 
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
+type IdLocation = {
+  filePath: string;
+  name: string;
+};
+
+function formatIdLocation(location: IdLocation): string {
+  return `${location.filePath}#${location.name}`;
+}
+
+function assertUniqueManifestIds(
+  entriesByFile: WorkflowManifest['steps'] | WorkflowManifest['workflows'],
+  ids: Map<string, IdLocation>,
+  getId: (data: { stepId: string } | { workflowId: string }) => string,
+  label: 'step' | 'workflow'
+): void {
+  const entriesByFileList = Object.entries(entriesByFile || {}) as Array<
+    [string, Record<string, { stepId: string } | { workflowId: string }>]
+  >;
+  for (const [filePath, entries] of entriesByFileList) {
+    for (const [name, data] of Object.entries(entries)) {
+      const id = getId(data);
+      const existing = ids.get(id);
+      const current = { filePath, name };
+      if (
+        existing &&
+        (existing.filePath !== current.filePath ||
+          existing.name !== current.name)
+      ) {
+        const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
+        const functionName = `${label} function`;
+        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
+        throw new WorkflowBuildError(
+          `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
+          {
+            hint:
+              `${capitalizedLabel} IDs must be unique across a build. ` +
+              `If you own one of the colliding files, rename the ${functionName} or export ` +
+              `the package file through a unique package subpath. If the collision is in a ` +
+              `transitive dependency you don't control, file an issue with the upstream ` +
+              `package or pin to a non-colliding version.`,
+          }
+        );
+      }
+      ids.set(id, current);
+    }
+  }
+}
+
+function mergeWorkflowManifest(
+  target: WorkflowManifest,
+  incoming: WorkflowManifest,
+  stepIds: Map<string, IdLocation>,
+  workflowIds: Map<string, IdLocation>
+): void {
+  assertUniqueManifestIds(
+    incoming.steps,
+    stepIds,
+    (data) => (data as { stepId: string }).stepId,
+    'step'
+  );
+  assertUniqueManifestIds(
+    incoming.workflows,
+    workflowIds,
+    (data) => (data as { workflowId: string }).workflowId,
+    'workflow'
+  );
+
+  target.workflows = Object.assign(target.workflows || {}, incoming.workflows);
+  target.steps = Object.assign(target.steps || {}, incoming.steps);
+  target.classes = Object.assign(target.classes || {}, incoming.classes);
+}
+
 export function createSwcPlugin(options: SwcPluginOptions): Plugin {
   return {
     name: 'swc-workflow-plugin',
     setup(build) {
+      let stepIdsForCurrentBuild = new Map<string, IdLocation>();
+      let workflowIdsForCurrentBuild = new Map<string, IdLocation>();
+
+      build.onStart(() => {
+        stepIdsForCurrentBuild = new Map();
+        workflowIdsForCurrentBuild = new Map();
+      });
+
       // everything is external unless explicitly configured
       // to be bundled
       const cjsResolver = promisify(
@@ -194,7 +289,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           if (!resolvedPath) return null;
 
           // Normalize to forward slashes for cross-platform comparison
-          const normalizedResolvedPath = resolvedPath.replace(/\\/g, '/');
+          const normalizedResolvedPath = normalizePath(resolvedPath);
+          const workingDir =
+            build.initialOptions.absWorkingDir || process.cwd();
+          const projectRoot = options.projectRoot || workingDir;
 
           if (
             options.entriesToBundle &&
@@ -228,6 +326,20 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               // to be bundled then it needs to also be bundled so
               // that the child can have our transform applied
               if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
+                shouldBundle = true;
+                break;
+              }
+
+              // Bundle project-local source files that are imported by a
+              // step/serde entry so direct runtime loaders do not see raw TS
+              // extensionless imports. Keep package dependencies external
+              // unless they are themselves in entriesToBundle or are parents
+              // of a discovered workflow/step/serde file via the check above.
+              if (
+                options.bundleTransitiveLocalStepDependencies &&
+                isProjectLocalFile(normalizedResolvedPath, projectRoot) &&
+                parentHasChild(normalizedEntry, normalizedResolvedPath)
+              ) {
                 shouldBundle = true;
                 break;
               }
@@ -383,17 +495,11 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             options.workflowManifest = {};
           }
 
-          options.workflowManifest.workflows = Object.assign(
-            options.workflowManifest.workflows || {},
-            workflowManifest.workflows
-          );
-          options.workflowManifest.steps = Object.assign(
-            options.workflowManifest.steps || {},
-            workflowManifest.steps
-          );
-          options.workflowManifest.classes = Object.assign(
-            options.workflowManifest.classes || {},
-            workflowManifest.classes
+          mergeWorkflowManifest(
+            options.workflowManifest,
+            workflowManifest,
+            stepIdsForCurrentBuild,
+            workflowIdsForCurrentBuild
           );
 
           return {
@@ -419,4 +525,14 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
       });
     },
   };
+}
+
+function isProjectLocalFile(filePath: string, projectRoot: string): boolean {
+  if (normalizePath(filePath).includes('/node_modules/')) {
+    return false;
+  }
+
+  return (
+    resolveModuleSpecifier(filePath, projectRoot).moduleSpecifier === undefined
+  );
 }

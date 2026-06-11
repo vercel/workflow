@@ -1,26 +1,31 @@
 import { types } from 'node:util';
 import {
+  CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  ReplayDivergenceError,
   RUN_ERROR_CODES,
+  type RunErrorCode,
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
+  type World,
 } from '@workflow/world';
-import { classifyRunError } from './classify-error.js';
+import { classifyRunError, isWorldContractError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
   MAX_QUEUE_DELIVERIES,
-  REPLAY_TIMEOUT_MAX_RETRIES,
-  REPLAY_TIMEOUT_MS,
+  REPLAY_DIVERGENCE_MAX_RETRIES,
 } from './runtime/constants.js';
 import {
   getQueueOverhead,
@@ -32,6 +37,10 @@ import {
   queueMessage,
   withHealthCheck,
 } from './runtime/helpers.js';
+import {
+  handleReplayBudgetExhausted,
+  ReplayBudget,
+} from './runtime/replay-budget.js';
 import { executeStep } from './runtime/step-executor.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import {
@@ -102,6 +111,99 @@ export {
   setWorld,
 } from './runtime/world.js';
 
+function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
+  if (WorkflowRuntimeError.is(err)) {
+    return RUN_ERROR_CODES.RUNTIME_ERROR;
+  }
+
+  if (isWorldContractError(err)) {
+    return RUN_ERROR_CODES.WORLD_CONTRACT_ERROR;
+  }
+
+  return null;
+}
+
+async function recordFatalRunError({
+  world,
+  workflowRun,
+  runId,
+  requestId,
+  err,
+  errorCode,
+  logMessage,
+}: {
+  world: World;
+  workflowRun: WorkflowRun | undefined;
+  runId: string;
+  requestId: string | undefined;
+  err: unknown;
+  errorCode: RunErrorCode;
+  logMessage: string;
+}) {
+  runtimeLogger.error(logMessage, {
+    workflowRunId: runId,
+    errorCode,
+    error: err instanceof Error ? err.message : String(err),
+  });
+
+  try {
+    const getEncryptionKey = memoizeEncryptionKey(world, workflowRun ?? runId);
+    await world.events.create(
+      runId,
+      {
+        eventType: 'run_failed',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          error: await dehydrateRunError(err, runId, await getEncryptionKey()),
+          errorCode,
+        },
+      },
+      { requestId }
+    );
+  } catch (failErr) {
+    if (EntityConflictError.is(failErr) || RunExpiredError.is(failErr)) {
+      return;
+    }
+    if (isWorldContractError(failErr)) {
+      runtimeLogger.error(
+        'Fatal world contract error while recording workflow failure',
+        {
+          workflowRunId: runId,
+          errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+          error: failErr instanceof Error ? failErr.message : String(failErr),
+        }
+      );
+      return;
+    }
+    throw failErr;
+  }
+}
+
+function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+  // Terminal run events are always last by construction (no event creation
+  // succeeds against a terminal run), but scan the full array for
+  // defense-in-depth: a World/backend ordering bug shouldn't make us miss an
+  // actual termination signal.
+  const terminalRunEvent = events.find(
+    (e) =>
+      e.runId === runId &&
+      (e.eventType === 'run_completed' ||
+        e.eventType === 'run_failed' ||
+        e.eventType === 'run_cancelled')
+  );
+
+  if (!terminalRunEvent) {
+    return false;
+  }
+
+  runtimeLogger.debug('Run reached terminal event, exiting', {
+    workflowRunId: runId,
+    eventType: terminalRunEvent.eventType,
+    eventId: terminalRunEvent.eventId,
+  });
+  return true;
+}
+
 /**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
@@ -114,14 +216,18 @@ export {
  * @returns A function that can be used as a Vercel API route
  */
 export function workflowEntrypoint(
-  workflowCode: string
+  workflowCode: string,
+  options?: { namespace?: string }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
+  const namespace = resolveQueueNamespace(options?.namespace);
+  const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+
   const handler = (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(
-      '__wkf_workflow_',
+      workflowPrefix,
       async (message_, metadata) => {
         // Check if this is a health check message
         // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
@@ -143,10 +249,11 @@ export function workflowEntrypoint(
           requestedAt,
           stepId: incomingStepId,
           stepName: incomingStepName,
+          replayDivergence,
           runInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
         const { requestId } = metadata;
-        const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
+        const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
         // --- Max delivery check ---
         // Enforce max delivery limit before any infrastructure calls.
@@ -214,84 +321,31 @@ export function workflowEntrypoint(
 
         const spanLinks = await linkToCurrentContext();
 
-        // --- Replay timeout guard ---
-        // If the replay takes longer than the timeout, fail the run and exit.
-        // This must be lower than the function's maxDuration to ensure
-        // the failure is recorded before the platform kills the function.
-        let replayTimeout: NodeJS.Timeout | undefined;
-        if (process.env.VERCEL_URL !== undefined) {
-          replayTimeout = setTimeout(async () => {
-            // Allow a few retries before permanently failing the run.
-            // On early attempts, just exit so the queue retries the message.
-            if (metadata.attempt <= REPLAY_TIMEOUT_MAX_RETRIES) {
-              runLogger.warn(
-                'Workflow replay exceeded timeout but will be re-attempted (attempt < maxRetries)',
-                {
-                  timeoutMs: REPLAY_TIMEOUT_MS,
-                  attempt: metadata.attempt,
-                  maxRetries: REPLAY_TIMEOUT_MAX_RETRIES,
-                }
-              );
-              process.exit(1);
-            }
-
-            const replayTimeoutDescription = describeError(
-              undefined,
-              RUN_ERROR_CODES.REPLAY_TIMEOUT
-            );
-            runLogger.error(
-              'Workflow replay exceeded timeout and max retries exceeded. Failing the run',
-              {
-                timeoutMs: REPLAY_TIMEOUT_MS,
-                attempt: metadata.attempt,
-                maxRetries: REPLAY_TIMEOUT_MAX_RETRIES,
-                errorCode: replayTimeoutDescription.errorCode,
-                errorAttribution: replayTimeoutDescription.attribution,
-              }
-            );
-
-            try {
-              const world = await getWorld();
-              const getEncryptionKey = memoizeEncryptionKey(world, runId);
-              const timeoutErr = new FatalError(
-                `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s) after ${metadata.attempt} attempts`
-              );
-              await world.events.create(
-                runId,
-                {
-                  eventType: 'run_failed',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  eventData: {
-                    error: await dehydrateRunError(
-                      timeoutErr,
-                      runId,
-                      await getEncryptionKey()
-                    ),
-                    errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
-                  },
-                },
-                { requestId }
-              );
-            } catch (err) {
-              // Best effort — process exits regardless. Surface why so
-              // operators can diagnose repeat timeouts against the backend.
-              runLogger.warn(
-                'Unable to mark run as failed. The queue will continue to retry',
-                {
-                  attempt: metadata.attempt,
-                  errorName: err instanceof Error ? err.name : 'UnknownError',
-                  errorMessage:
-                    err instanceof Error ? err.message : String(err),
-                  errorStack: err instanceof Error ? err.stack : undefined,
-                }
-              );
-            }
-            // Note that this also prevents the runtime from acking the queue message,
-            // so the queue will call back once, after which a 410 will get it to exit early.
-            process.exit(1);
-          }, REPLAY_TIMEOUT_MS);
-          replayTimeout.unref();
-        }
+        // --- Replay budget bookkeeping ---
+        // The replay budget bounds the *non-step* portion of a single
+        // handler invocation: deterministic event-log replay, workflow-VM
+        // execution between step boundaries, suspension handling, queue
+        // round-trips, etc. Inline step bodies (`"use step"` functions
+        // invoked via `executeStep`) are intentionally excluded — they are
+        // bounded by the platform's function `maxDuration` and the
+        // `NO_INLINE_REPLAY_AFTER_MS` early-return guard below.
+        //
+        // The budget is checked at loop boundaries (top of each `while`
+        // iteration). Note this is *less responsive* than the old
+        // `setTimeout`-based approach: a single pathological `runWorkflow`
+        // call processing a huge event log can overshoot the budget by up
+        // to one iteration before bailing. In practice the headroom built
+        // into `MAX_REPLAY_TIMEOUT_MS` (and the platform `maxDuration`
+        // SIGTERM as ultimate backstop) gives us slack — the previous
+        // `setTimeout` approach also relied on the platform kill as the
+        // hard backstop. Do *not* "fix" this by adding a `setInterval`;
+        // it would risk the same bug we just removed (bounding step
+        // bodies).
+        //
+        // Earlier versions (pre-#2009 fix) used a single `setTimeout`
+        // that also bounded step bodies, which broke any workflow with a
+        // single step longer than the budget.
+        const replayBudget = new ReplayBudget();
 
         return await withTraceContext(traceContext, async () => {
           return await withWorkflowBaggage(
@@ -328,6 +382,7 @@ export function workflowEntrypoint(
                   let workflowRun: WorkflowRun | undefined;
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
+                  let preloadedEventsCursor: string | null | undefined;
 
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
@@ -335,105 +390,134 @@ export function workflowEntrypoint(
                   // roundtrip). If not, return — the last handler to complete
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
-                    const bgRun = await world.runs.get(runId);
-                    if (bgRun.status !== 'running') {
-                      runtimeLogger.debug(
-                        'Run already finished, skipping background step',
-                        { workflowRunId: runId, status: bgRun.status }
-                      );
-                      return;
-                    }
-                    const bgStartedAt = bgRun.startedAt
-                      ? +bgRun.startedAt
-                      : Date.now();
-                    const stepResult = await executeStep({
-                      world,
-                      workflowRunId: runId,
-                      workflowName,
-                      workflowStartedAt: bgStartedAt,
-                      stepId: incomingStepId,
-                      stepName: incomingStepName,
-                    });
-                    if (stepResult.type === 'retry') {
-                      return { timeoutSeconds: stepResult.timeoutSeconds };
-                    }
-                    if (stepResult.type === 'throttled') {
-                      return { timeoutSeconds: stepResult.timeoutSeconds };
-                    }
-
-                    // If step had pending ops (stream writes), break and let
-                    // waitUntil flush them — can't continue inline.
-                    if (
-                      stepResult.type === 'completed' &&
-                      stepResult.hasPendingOps
-                    ) {
-                      await queueMessage(
-                        world,
-                        getWorkflowQueueName(workflowName),
-                        {
-                          runId,
-                          traceCarrier: await serializeTraceCarrier(),
-                          requestedAt: new Date(),
-                        }
-                      );
-                      return;
-                    }
-
-                    if (
-                      stepResult.type === 'completed' ||
-                      stepResult.type === 'failed' ||
-                      stepResult.type === 'skipped'
-                    ) {
-                      // Load events to check if all parallel steps are done.
-                      // Use cursor-based loading so the main loop can continue
-                      // incrementally from here.
-                      const loaded = await loadWorkflowRunEvents(runId);
-                      cachedEvents = loaded.events;
-                      eventsCursor = loaded.cursor;
-
-                      // Check for pending steps: any step_created without
-                      // a matching step_completed or step_failed.
-                      const stepCreatedIds = new Set<string | undefined>();
-                      const stepTerminalIds = new Set<string | undefined>();
-                      for (const e of cachedEvents) {
-                        if (e.eventType === 'step_created') {
-                          stepCreatedIds.add(e.correlationId);
-                        } else if (
-                          e.eventType === 'step_completed' ||
-                          e.eventType === 'step_failed'
-                        ) {
-                          stepTerminalIds.add(e.correlationId);
-                        }
-                      }
-                      let hasPendingSteps = false;
-                      for (const id of stepCreatedIds) {
-                        if (!stepTerminalIds.has(id)) {
-                          hasPendingSteps = true;
-                          break;
-                        }
-                      }
-
-                      if (hasPendingSteps) {
-                        // Other steps still in progress. Return without
-                        // queuing — the last handler to complete will see
-                        // all steps done and replay inline.
+                    try {
+                      const bgRun = await world.runs.get(runId);
+                      if (bgRun.status !== 'running') {
                         runtimeLogger.debug(
-                          'Background step done but other steps pending, returning',
-                          { workflowRunId: runId }
+                          'Run already finished, skipping background step',
+                          { workflowRunId: runId, status: bgRun.status }
+                        );
+                        return;
+                      }
+                      const bgStartedAt = bgRun.startedAt
+                        ? +bgRun.startedAt
+                        : Date.now();
+                      // Pause the replay budget while the step body runs —
+                      // step duration is bounded by the platform's function
+                      // maxDuration, not by the replay timeout. See the
+                      // ReplayBudget docs for the contract.
+                      replayBudget.pause();
+                      let stepResult: Awaited<ReturnType<typeof executeStep>>;
+                      try {
+                        stepResult = await executeStep({
+                          world,
+                          workflowRunId: runId,
+                          workflowDeploymentId: bgRun.deploymentId,
+                          workflowName,
+                          workflowStartedAt: bgStartedAt,
+                          stepId: incomingStepId,
+                          stepName: incomingStepName,
+                        });
+                      } finally {
+                        replayBudget.resume();
+                      }
+                      if (stepResult.type === 'retry') {
+                        return { timeoutSeconds: stepResult.timeoutSeconds };
+                      }
+                      if (stepResult.type === 'throttled') {
+                        return { timeoutSeconds: stepResult.timeoutSeconds };
+                      }
+
+                      // If step had pending ops (stream writes), break and let
+                      // waitUntil flush them — can't continue inline.
+                      if (
+                        stepResult.type === 'completed' &&
+                        stepResult.hasPendingOps
+                      ) {
+                        await queueMessage(
+                          world,
+                          getWorkflowQueueName(workflowName, namespace),
+                          {
+                            runId,
+                            traceCarrier: await serializeTraceCarrier(),
+                            requestedAt: new Date(),
+                          }
                         );
                         return;
                       }
 
-                      // All steps done — fall through to the main replay loop.
-                      // Set up shared state so the loop can continue.
-                      runtimeLogger.debug(
-                        'All parallel steps done, replaying inline after background step',
-                        { workflowRunId: runId }
-                      );
-                      workflowRun = bgRun;
-                      workflowStartedAt = bgStartedAt;
-                      // cachedEvents and eventsCursor already set from load above
-                    } else {
+                      if (
+                        stepResult.type === 'completed' ||
+                        stepResult.type === 'failed' ||
+                        stepResult.type === 'skipped'
+                      ) {
+                        // Load events to check if all parallel steps are done.
+                        // Use cursor-based loading so the main loop can continue
+                        // incrementally from here.
+                        const loaded = await loadWorkflowRunEvents(runId);
+                        cachedEvents = loaded.events;
+                        eventsCursor = loaded.cursor;
+
+                        // Check for pending steps: any step_created without
+                        // a matching step_completed or step_failed.
+                        const stepCreatedIds = new Set<string | undefined>();
+                        const stepTerminalIds = new Set<string | undefined>();
+                        for (const e of cachedEvents) {
+                          if (e.eventType === 'step_created') {
+                            stepCreatedIds.add(e.correlationId);
+                          } else if (
+                            e.eventType === 'step_completed' ||
+                            e.eventType === 'step_failed'
+                          ) {
+                            stepTerminalIds.add(e.correlationId);
+                          }
+                        }
+                        let hasPendingSteps = false;
+                        for (const id of stepCreatedIds) {
+                          if (!stepTerminalIds.has(id)) {
+                            hasPendingSteps = true;
+                            break;
+                          }
+                        }
+
+                        if (hasPendingSteps) {
+                          // Other steps still in progress. Return without
+                          // queuing — the last handler to complete will see
+                          // all steps done and replay inline.
+                          runtimeLogger.debug(
+                            'Background step done but other steps pending, returning',
+                            { workflowRunId: runId }
+                          );
+                          return;
+                        }
+
+                        // All steps done — fall through to the main replay loop.
+                        // Set up shared state so the loop can continue.
+                        runtimeLogger.debug(
+                          'All parallel steps done, replaying inline after background step',
+                          { workflowRunId: runId }
+                        );
+                        workflowRun = bgRun;
+                        workflowStartedAt = bgStartedAt;
+                        // cachedEvents and eventsCursor already set from load above
+                      } else {
+                        return;
+                      }
+                    } catch (err) {
+                      const errorCode = getWorkflowSetupErrorCode(err);
+                      if (!errorCode) {
+                        throw err;
+                      }
+                      await recordFatalRunError({
+                        world,
+                        workflowRun,
+                        runId,
+                        requestId,
+                        err,
+                        errorCode,
+                        logMessage:
+                          'Fatal error while preparing background workflow step',
+                      });
                       return;
                     }
                   }
@@ -469,6 +553,7 @@ export function workflowEntrypoint(
                                   deploymentId: runInput.deploymentId,
                                   workflowName: runInput.workflowName,
                                   executionContext: runInput.executionContext,
+                                  attributes: runInput.attributes,
                                 },
                               }
                             : {}),
@@ -484,8 +569,13 @@ export function workflowEntrypoint(
 
                       // If the response includes events, use them to skip
                       // the initial events.list call and reduce TTFB.
-                      if (result.events && result.events.length > 0) {
+                      if (
+                        result.events &&
+                        result.events.length > 0 &&
+                        result.hasMore !== true
+                      ) {
                         preloadedEvents = result.events;
+                        preloadedEventsCursor = result.cursor;
                       }
 
                       if (!workflowRun.startedAt) {
@@ -508,44 +598,22 @@ export function workflowEntrypoint(
                           { workflowRunId: runId, message: err.message }
                         );
                         return;
-                      } else if (err instanceof WorkflowRuntimeError) {
-                        runtimeLogger.error(
-                          'Fatal runtime error during workflow setup',
-                          { workflowRunId: runId, error: err.message }
-                        );
-                        try {
-                          const getEncryptionKey = memoizeEncryptionKey(
-                            world,
-                            runId
-                          );
-                          await world.events.create(
-                            runId,
-                            {
-                              eventType: 'run_failed',
-                              specVersion: SPEC_VERSION_CURRENT,
-                              eventData: {
-                                error: await dehydrateRunError(
-                                  err,
-                                  runId,
-                                  await getEncryptionKey()
-                                ),
-                                errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
-                              },
-                            },
-                            { requestId }
-                          );
-                        } catch (failErr) {
-                          if (
-                            EntityConflictError.is(failErr) ||
-                            RunExpiredError.is(failErr)
-                          ) {
-                            return;
-                          }
-                          throw failErr;
-                        }
-                        return;
                       } else {
-                        throw err;
+                        const errorCode = getWorkflowSetupErrorCode(err);
+                        if (!errorCode) {
+                          throw err;
+                        }
+                        await recordFatalRunError({
+                          world,
+                          workflowRun,
+                          runId,
+                          requestId,
+                          err,
+                          errorCode,
+                          logMessage:
+                            'Fatal runtime error during workflow setup',
+                        });
+                        return;
                       }
                     }
 
@@ -593,6 +661,26 @@ export function workflowEntrypoint(
                   while (true) {
                     loopIteration++;
 
+                    // Replay-budget check: bail out (retry or fail) if
+                    // non-step time within this invocation has exceeded
+                    // the configured budget. Step bodies are excluded
+                    // because replayBudget.pause()/resume() bracket every
+                    // `executeStep` call.
+                    if (replayBudget.isExhausted()) {
+                      await handleReplayBudgetExhausted({
+                        runId,
+                        workflowName,
+                        requestId,
+                        attempt: metadata.attempt,
+                        limitMs: replayBudget.configuredLimitMs,
+                      });
+                      // On Vercel, handleReplayBudgetExhausted always
+                      // exits the process. On local dev it returns; we
+                      // fall through and the request ends normally
+                      // (run_failed has been written best-effort).
+                      return;
+                    }
+
                     // Check timeout before replay
                     if (
                       Date.now() - invocationStartTime >=
@@ -608,7 +696,7 @@ export function workflowEntrypoint(
                       );
                       await queueMessage(
                         world,
-                        getWorkflowQueueName(workflowName),
+                        getWorkflowQueueName(workflowName, namespace),
                         {
                           runId,
                           traceCarrier: await serializeTraceCarrier(),
@@ -629,8 +717,7 @@ export function workflowEntrypoint(
                         // otherwise do a full load with cursor.
                         if (preloadedEvents) {
                           events = preloadedEvents;
-                          // No cursor from preloaded events — next iteration
-                          // will fall through to the full reload path below.
+                          eventsCursor = preloadedEventsCursor ?? null;
                         } else {
                           const loaded = await loadWorkflowRunEvents(runId);
                           events = loaded.events;
@@ -643,16 +730,17 @@ export function workflowEntrypoint(
                           eventsCursor
                         );
                         // Dedupe by eventId: a previous iteration may have
-                        // pushed events manually (see the wait_completed
-                        // write loop below) without advancing the cursor,
-                        // so an incremental fetch can return events we
-                        // already have locally.
+                        // appended a refreshed wait-completion delta before
+                        // the next loop observes the advanced cursor, so an
+                        // incremental fetch can return events we already have
+                        // locally.
                         if (loaded.events.length > 0) {
                           const existingIds = new Set(
                             cachedEvents.map((e) => e.eventId)
                           );
                           for (const e of loaded.events) {
                             if (!existingIds.has(e.eventId)) {
+                              existingIds.add(e.eventId);
                               cachedEvents.push(e);
                             }
                           }
@@ -680,7 +768,7 @@ export function workflowEntrypoint(
                         // when there are events, so this signals a bug in
                         // the World. Fall back to a full reload to avoid
                         // stale data.
-                        runtimeLogger.error(
+                        runtimeLogger.warn(
                           'Event cursor missing after initial load — falling back to full reload. ' +
                             'This indicates a bug in the World implementation.',
                           { workflowRunId: runId }
@@ -697,25 +785,7 @@ export function workflowEntrypoint(
                       // derived from these events, so checking the log here
                       // gives us the same signal as a runs.get() round-trip
                       // without the extra request per loop iteration.
-                      // Terminal run events are always last by construction
-                      // (no event creation succeeds against a terminal run),
-                      // but scan the full array for defense-in-depth: a
-                      // World/backend ordering bug shouldn't make us miss
-                      // an actual termination signal.
-                      const terminalRunEvent = events.find(
-                        (e) =>
-                          e.eventType === 'run_completed' ||
-                          e.eventType === 'run_failed' ||
-                          e.eventType === 'run_cancelled'
-                      );
-                      if (terminalRunEvent) {
-                        runtimeLogger.debug(
-                          'Run completed by concurrent handler, exiting',
-                          {
-                            workflowRunId: runId,
-                            eventType: terminalRunEvent.eventType,
-                          }
-                        );
+                      if (hasRecordedTerminalRunEvent(events, runId)) {
                         return;
                       }
 
@@ -728,7 +798,12 @@ export function workflowEntrypoint(
                       );
                       const waitsToComplete = events
                         .filter(
-                          (e): e is typeof e & { correlationId: string } =>
+                          (
+                            e
+                          ): e is Extract<
+                            Event,
+                            { eventType: 'wait_created' }
+                          > & { correlationId: string } =>
                             e.eventType === 'wait_created' &&
                             e.correlationId !== undefined &&
                             !completedWaitIds.has(e.correlationId) &&
@@ -738,16 +813,16 @@ export function workflowEntrypoint(
                           eventType: 'wait_completed' as const,
                           specVersion: SPEC_VERSION_CURRENT,
                           correlationId: e.correlationId,
+                          eventData: {
+                            resumeAt: e.eventData.resumeAt,
+                          },
                         }));
 
                       for (const waitEvent of waitsToComplete) {
                         try {
-                          const result = await world.events.create(
-                            runId,
-                            waitEvent,
-                            { requestId }
-                          );
-                          events.push(result.event!);
+                          await world.events.create(runId, waitEvent, {
+                            requestId,
+                          });
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -761,6 +836,64 @@ export function workflowEntrypoint(
                           }
                           throw err;
                         }
+                      }
+
+                      if (waitsToComplete.length > 0) {
+                        // The event list above may be stale by the time an
+                        // elapsed wait is committed. Load only events after
+                        // the original snapshot cursor so concurrent durable
+                        // events, such as hook_received, keep their ordering
+                        // relative to wait_completed. Fall back to a full
+                        // reload for older worlds that cannot give us a stable
+                        // cursor, or if the cursor delta does not include the
+                        // wait completion this handler just attempted.
+                        if (eventsCursor) {
+                          const loaded = await loadWorkflowRunEvents(
+                            runId,
+                            eventsCursor
+                          );
+                          const completedWaitIdsAfterCursor = new Set(
+                            loaded.events
+                              .filter((e) => e.eventType === 'wait_completed')
+                              .map((e) => e.correlationId)
+                          );
+                          const sawAllWaitCompletions = waitsToComplete.every(
+                            (waitEvent) =>
+                              completedWaitIdsAfterCursor.has(
+                                waitEvent.correlationId
+                              )
+                          );
+
+                          if (sawAllWaitCompletions) {
+                            const existingIds = new Set(
+                              events.map((e) => e.eventId)
+                            );
+                            for (const event of loaded.events) {
+                              if (!existingIds.has(event.eventId)) {
+                                existingIds.add(event.eventId);
+                                events.push(event);
+                              }
+                            }
+                            eventsCursor = loaded.cursor ?? eventsCursor;
+                          } else {
+                            const loaded = await loadWorkflowRunEvents(runId);
+                            events = loaded.events;
+                            eventsCursor = loaded.cursor;
+                          }
+                        } else {
+                          const loaded = await loadWorkflowRunEvents(runId);
+                          events = loaded.events;
+                          eventsCursor = loaded.cursor;
+                        }
+                      }
+
+                      // Completing elapsed waits refreshes the event snapshot.
+                      // A concurrent handler may have written the terminal run
+                      // event after the initial snapshot but before this
+                      // replay. Once the event log records that outcome, this
+                      // delivery is done.
+                      if (hasRecordedTerminalRunEvent(events, runId)) {
+                        return;
                       }
 
                       // Update cache reference (may have been set for first time)
@@ -836,23 +969,108 @@ export function workflowEntrypoint(
 
                         // V2: handle suspension without queuing steps
                         const suspensionStart = Date.now();
-                        const suspensionResult = await handleSuspension({
-                          suspension: err,
-                          world,
-                          run: workflowRun,
-                          span,
-                          requestId,
-                        });
+                        let suspensionResult: Awaited<
+                          ReturnType<typeof handleSuspension>
+                        >;
+                        try {
+                          suspensionResult = await handleSuspension({
+                            suspension: err,
+                            world,
+                            run: workflowRun,
+                            span,
+                            requestId,
+                          });
+                        } catch (suspensionError) {
+                          if (!FatalError.is(suspensionError)) {
+                            // Transient failures propagate to the queue
+                            // handler so the message is redelivered.
+                            throw suspensionError;
+                          }
+                          // Non-retryable failure while committing the
+                          // suspension's events — e.g. an attribute write
+                          // the World rejected as invalid (the cumulative
+                          // per-run cap can only be checked World-side).
+                          // Redelivery would replay the workflow into the
+                          // same write and the same rejection, so fail the
+                          // run with the error instead of wedging the
+                          // message in redelivery.
+                          const errorCode = classifyRunError(suspensionError);
+                          runtimeLogger.error(
+                            'Non-retryable error while committing workflow suspension; failing run',
+                            {
+                              workflowRunId: runId,
+                              errorCode,
+                              errorName: suspensionError.name,
+                              errorMessage: suspensionError.message,
+                            }
+                          );
+                          try {
+                            await world.events.create(
+                              runId,
+                              {
+                                eventType: 'run_failed',
+                                specVersion: SPEC_VERSION_CURRENT,
+                                eventData: {
+                                  error: await dehydrateRunError(
+                                    suspensionError,
+                                    runId,
+                                    encryptionKey
+                                  ),
+                                  errorCode,
+                                },
+                              },
+                              { requestId }
+                            );
+                          } catch (failErr) {
+                            if (
+                              EntityConflictError.is(failErr) ||
+                              RunExpiredError.is(failErr)
+                            ) {
+                              runtimeLogger.info(
+                                'Tried failing workflow run, but run has already finished.',
+                                {
+                                  workflowRunId: runId,
+                                  message: failErr.message,
+                                }
+                              );
+                              return;
+                            }
+                            throw failErr;
+                          }
+                          span?.setAttributes({
+                            ...Attribute.WorkflowRunStatus('failed'),
+                            ...Attribute.WorkflowErrorCode(errorCode),
+                            ...Attribute.WorkflowErrorName(
+                              suspensionError.name
+                            ),
+                            ...Attribute.WorkflowErrorMessage(
+                              suspensionError.message
+                            ),
+                            ...Attribute.ErrorType(suspensionError.name),
+                          });
+                          return;
+                        }
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
                           pendingSteps: suspensionResult.pendingSteps.length,
                           timeoutSeconds: suspensionResult.timeoutSeconds,
                           hasHookConflict: suspensionResult.hasHookConflict,
+                          hasAttributeEvents:
+                            suspensionResult.hasAttributeEvents,
                         });
 
                         // Hook conflict: break loop, re-invoke via queue
                         if (suspensionResult.hasHookConflict) {
+                          return { timeoutSeconds: 0 };
+                        }
+
+                        // Native workflow attribute events are resolved through
+                        // replay. Re-invoke before processing pending steps:
+                        // in Promise.race([setAttributes(), step()]), the
+                        // durable attribute event can win without executing
+                        // the losing step.
+                        if (suspensionResult.hasAttributeEvents) {
                           return { timeoutSeconds: 0 };
                         }
 
@@ -925,7 +1143,7 @@ export function workflowEntrypoint(
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: step.correlationId,
@@ -950,22 +1168,35 @@ export function workflowEntrypoint(
                           return;
                         }
 
-                        // Execute inline step
-                        const stepResult = await executeStep({
-                          world,
-                          workflowRunId: runId,
-                          workflowName,
-                          workflowStartedAt,
-                          stepId: inlineStep.correlationId,
-                          stepName: inlineStep.stepName,
-                        });
+                        // Execute inline step. Pause the replay budget
+                        // for the duration of the step body — step
+                        // duration is bounded by the platform's function
+                        // maxDuration, not by the replay timeout. Without
+                        // this the replay-budget check at the top of the
+                        // next loop iteration would (incorrectly) charge
+                        // the step body against the budget.
+                        replayBudget.pause();
+                        let stepResult: Awaited<ReturnType<typeof executeStep>>;
+                        try {
+                          stepResult = await executeStep({
+                            world,
+                            workflowRunId: runId,
+                            workflowDeploymentId: workflowRun.deploymentId,
+                            workflowName,
+                            workflowStartedAt,
+                            stepId: inlineStep.correlationId,
+                            stepName: inlineStep.stepName,
+                          });
+                        } finally {
+                          replayBudget.resume();
+                        }
 
                         if (stepResult.type === 'retry') {
                           // Step needs retry — queue self with stepId for retry
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: inlineStep.correlationId,
@@ -1016,7 +1247,7 @@ export function workflowEntrypoint(
                           );
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               traceCarrier: await serializeTraceCarrier(),
@@ -1035,18 +1266,62 @@ export function workflowEntrypoint(
                           // Loop back to replay which will re-evaluate
                         }
                       } else {
-                        // User code error from runWorkflow — create run_failed.
-                        if (err instanceof Error) {
-                          span?.recordException?.(err);
+                        let terminalError = err;
+                        if (ReplayDivergenceError.is(err)) {
+                          const divergenceCount =
+                            (replayDivergence?.count ?? 0) + 1;
+
+                          if (
+                            divergenceCount <= REPLAY_DIVERGENCE_MAX_RETRIES
+                          ) {
+                            runLogger.warn(
+                              'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
+                              {
+                                errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
+                                divergenceEventId: err.eventId,
+                                priorDivergenceEventId:
+                                  replayDivergence?.eventId,
+                                divergenceCount,
+                                deliveryAttempt: metadata.attempt,
+                                maxRecoveryReplays:
+                                  REPLAY_DIVERGENCE_MAX_RETRIES,
+                                errorMessage: err.message,
+                              }
+                            );
+                            await queueMessage(
+                              world,
+                              getWorkflowQueueName(workflowName, namespace),
+                              {
+                                runId,
+                                traceCarrier: await serializeTraceCarrier(),
+                                requestedAt: new Date(),
+                                replayDivergence: {
+                                  eventId: err.eventId,
+                                  count: divergenceCount,
+                                },
+                              }
+                            );
+                            return;
+                          }
+
+                          terminalError = new CorruptedEventLogError(
+                            `Workflow replay diverged ${divergenceCount} times after ${REPLAY_DIVERGENCE_MAX_RETRIES} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
+                            { cause: err }
+                          );
+                        }
+
+                        // User code errors and terminal runtime errors fail the run.
+                        if (terminalError instanceof Error) {
+                          span?.recordException?.(terminalError);
                         }
 
                         const normalizedError =
-                          await normalizeUnknownError(err);
+                          await normalizeUnknownError(terminalError);
                         const errorName =
-                          normalizedError.name || getErrorName(err);
+                          normalizedError.name || getErrorName(terminalError);
                         const errorMessage = normalizedError.message;
                         let errorStack =
-                          normalizedError.stack || getErrorStack(err);
+                          normalizedError.stack || getErrorStack(terminalError);
 
                         if (errorStack) {
                           const parsedName = parseWorkflowName(workflowName);
@@ -1059,10 +1334,10 @@ export function workflowEntrypoint(
                           );
                         }
 
-                        // Classify the error: WorkflowRuntimeError indicates an
-                        // internal issue (corrupted event log, missing data);
-                        // everything else is a user code error.
-                        const errorCode = classifyRunError(err);
+                        // Classify the error: WorkflowRuntimeError indicates
+                        // an SDK/runtime issue, and selected subclasses use
+                        // more specific codes for backend tracking.
+                        const errorCode = classifyRunError(terminalError);
 
                         runtimeLogger.error('Error while running workflow', {
                           workflowRunId: runId,
@@ -1079,8 +1354,8 @@ export function workflowEntrypoint(
                         // class is distinct from the host's, so `instanceof
                         // Error` is `false` for VM-thrown errors. The V8
                         // type tag works across realms.
-                        if (types.isNativeError(err) && errorStack) {
-                          (err as Error).stack = errorStack;
+                        if (types.isNativeError(terminalError) && errorStack) {
+                          (terminalError as Error).stack = errorStack;
                         }
 
                         // Fail the workflow run via event (event-sourced).
@@ -1095,7 +1370,7 @@ export function workflowEntrypoint(
                               specVersion: SPEC_VERSION_CURRENT,
                               eventData: {
                                 error: await dehydrateRunError(
-                                  err,
+                                  terminalError,
                                   runId,
                                   encryptionKey
                                 ),
@@ -1118,6 +1393,20 @@ export function workflowEntrypoint(
                             );
                             return;
                           }
+                          if (isWorldContractError(failErr)) {
+                            runtimeLogger.error(
+                              'Fatal world contract error while recording workflow failure',
+                              {
+                                workflowRunId: runId,
+                                errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                                error:
+                                  failErr instanceof Error
+                                    ? failErr.message
+                                    : String(failErr),
+                              }
+                            );
+                            return;
+                          }
                           throw failErr;
                         }
 
@@ -1136,10 +1425,6 @@ export function workflowEntrypoint(
               ); // End trace
             }
           ); // End withWorkflowBaggage
-        }).finally(() => {
-          if (replayTimeout) {
-            clearTimeout(replayTimeout);
-          }
         }); // End withTraceContext
       }
     );

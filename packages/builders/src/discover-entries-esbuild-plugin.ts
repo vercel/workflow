@@ -9,7 +9,24 @@ import {
   isGeneratedWorkflowFile,
 } from './transform-utils.js';
 
-const enhancedResolve = promisify(enhancedResolveOriginal);
+const enhancedResolve = promisify(
+  enhancedResolveOriginal.create({
+    extensions: [
+      '.ts',
+      '.tsx',
+      '.mts',
+      '.cts',
+      '.js',
+      '.jsx',
+      '.mjs',
+      '.cjs',
+      '.json',
+      '.node',
+    ],
+    fullySpecified: false,
+    conditionNames: ['node', 'import', 'require'],
+  })
+);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
@@ -26,6 +43,7 @@ function hasManifestEntries(
 function isGeneratedBuildArtifactPath(filePath: string): boolean {
   const normalizedPath = filePath.replace(/\\/g, '/');
   return (
+    normalizedPath.includes('/.nitro/') ||
     normalizedPath.includes('/.output/') ||
     normalizedPath.includes('/.next/') ||
     normalizedPath.includes('/.nuxt/') ||

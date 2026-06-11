@@ -7,6 +7,9 @@ export const github = {
   repo: 'workflow',
 };
 
+export const examplesRepositoryUrl =
+  'https://github.com/vercel/workflow-examples';
+
 export const nav: { label: string; href: string; preview?: boolean }[] = [
   {
     label: 'Docs',
@@ -22,7 +25,7 @@ export const nav: { label: string; href: string; preview?: boolean }[] = [
   },
   {
     label: 'Examples',
-    href: 'https://github.com/vercel/workflow-examples',
+    href: examplesRepositoryUrl,
   },
   {
     label: 'Internal',
