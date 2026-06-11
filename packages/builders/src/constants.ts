@@ -1,4 +1,22 @@
-import { getQueueTopicPrefix, resolveQueueNamespace } from '@workflow/world';
+const QUEUE_NAMESPACE_PATTERN = /^[a-z][a-z0-9]*$/;
+
+function resolveQueueNamespace(namespace?: string): string | undefined {
+  return namespace ?? process.env.WORKFLOW_QUEUE_NAMESPACE ?? undefined;
+}
+
+function getQueueTopicPrefix(kind: 'workflow' | 'step', namespace?: string) {
+  if (namespace !== undefined) {
+    if (!QUEUE_NAMESPACE_PATTERN.test(namespace)) {
+      throw new Error(
+        `Invalid queue namespace "${namespace}": must be lowercase alphanumeric, starting with a letter`
+      );
+    }
+
+    return `__${namespace}_wkf_${kind}_`;
+  }
+
+  return `__wkf_${kind}_`;
+}
 
 /**
  * Creates a queue trigger configuration for the workflow handler.

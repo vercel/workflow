@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -54,6 +53,7 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
+import { waitUntil } from './wait-until.js';
 import { getWorld, getWorldHandlers, type WorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
