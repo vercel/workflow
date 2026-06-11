@@ -82,11 +82,11 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
-      `${NORMALIZE_REQUEST_CODE}
+      /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
+      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
 export const POST = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode)(normalRequest);
+  return workflowEntrypoint(workflowCode${options})(normalRequest);
 }`
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
@@ -109,6 +109,9 @@ export const POST = async ({request}) => {
         'static/.well-known/workflow/v1'
       );
       await mkdir(staticManifestDir, { recursive: true });
+      if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
+        await writeFile(join(staticManifestDir, '.gitignore'), '*');
+      }
       await copyFile(
         join(workflowGeneratedDir, 'manifest.json'),
         join(staticManifestDir, 'manifest.json')

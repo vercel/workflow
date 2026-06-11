@@ -1,16 +1,13 @@
 'use client';
 
 import { EVENT_DATA_REF_FIELDS, type Event } from '@workflow/world';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { isExpiredMarker } from '../../lib/hydration';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
+import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
-import {
-  ErrorStackBlock,
-  isStructuredErrorWithStack,
-} from '../ui/error-stack-block';
+import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
-import { localMillisecondTime } from './attribute-panel';
-import { CopyableDataBlock } from './copyable-data-block';
+import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
 /**
@@ -94,7 +91,7 @@ function EventItem({
 
   // When the encryption key changes and this event was previously expanded,
   // re-load the data so it gets decrypted
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!encryptionKey || !wasExpandedRef.current) return;
     loadedDataRef.current = null;
     setLoadedData(null);
@@ -102,25 +99,27 @@ function EventItem({
   }, [encryptionKey, loadEventData]);
 
   const createdAt = new Date(event.createdAt);
+  const createdAtTime = createdAt.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+  });
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
   return (
     <DetailCard
-      summaryClassName="text-base py-2"
+      variant="card"
+      summaryClassName="px-3 py-2"
       summary={
-        <>
-          <span
-            className="font-medium"
-            style={{ color: 'var(--ds-gray-1000)' }}
-          >
+        <div className="flex w-full items-center justify-between gap-3">
+          <span className="text-gray-1000 text-label-12 font-mono">
             {event.eventType}
-          </span>{' '}
-          -{' '}
-          <span style={{ color: 'var(--ds-gray-700)' }}>
-            {localMillisecondTime(createdAt.getTime())}
           </span>
-        </>
+          <span className="shrink-0 text-label-13 text-gray-900">
+            {createdAtTime}
+          </span>
+        </div>
       }
       onToggle={
         canHaveData
@@ -131,47 +130,17 @@ function EventItem({
       }
     >
       {/* Event attributes */}
-      <div
-        className="flex flex-col divide-y rounded-md border overflow-hidden"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'var(--ds-gray-100)',
-        }}
-      >
-        <div
-          className="flex min-h-[32px] items-center justify-between gap-4 px-2.5 py-1.5"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
-        >
-          <span
-            className="text-[13px] font-medium"
-            style={{ color: 'var(--ds-gray-700)' }}
-          >
-            Event ID
-          </span>
-          <span
-            className="max-w-[70%] truncate text-right text-[13px] font-mono"
-            style={{ color: 'var(--ds-gray-1000)' }}
-            title={event.eventId}
-          >
+      <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
+        <div className="flex items-center justify-between gap-2 py-2 px-3">
+          <span className="text-label-12 text-gray-900">Event ID</span>
+          <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
             {event.eventId}
           </span>
         </div>
         {event.correlationId && (
-          <div
-            className="flex min-h-[32px] items-center justify-between gap-4 px-2.5 py-1.5"
-            style={{ borderColor: 'var(--ds-gray-300)' }}
-          >
-            <span
-              className="text-[13px] font-medium"
-              style={{ color: 'var(--ds-gray-700)' }}
-            >
-              Correlation ID
-            </span>
-            <span
-              className="max-w-[70%] truncate text-right text-[13px] font-mono"
-              style={{ color: 'var(--ds-gray-1000)' }}
-              title={event.correlationId}
-            >
+          <div className="flex items-center justify-between gap-2 py-2 px-3">
+            <span className="text-label-12 text-gray-900">Correlation ID</span>
+            <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
               {event.correlationId}
             </span>
           </div>
@@ -180,12 +149,7 @@ function EventItem({
 
       {/* Loading state */}
       {isLoading && (
-        <div
-          className="mt-2 rounded-md border p-3"
-          style={{
-            borderColor: 'var(--ds-gray-300)',
-          }}
-        >
+        <div className="p-3">
           <Skeleton className="h-4 w-[35%]" />
           <Skeleton className="mt-2 h-4 w-[90%]" />
           <Skeleton className="mt-2 h-4 w-[75%]" />
@@ -203,7 +167,7 @@ function EventItem({
 
       {/* Event data */}
       {displayPayload != null && (
-        <div className="mt-2">
+        <div className="[&>div]:border-none [&>div]:rounded-none">
           <EventDataBlock eventType={event.eventType} data={displayPayload} />
         </div>
       )}
@@ -230,8 +194,8 @@ function hasOnlyExpiredFields(data: unknown, eventType: string): boolean {
 }
 
 /**
- * Renders event data, using ErrorStackBlock for error events that contain
- * a structured error with a stack trace, and CopyableDataBlock otherwise.
+ * Renders event data, using ErrorStackBlock for error events that contain a
+ * structured error, and CopyableDataBlock otherwise.
  */
 function EventDataBlock({
   eventType,
@@ -258,6 +222,10 @@ function EventDataBlock({
     );
   }
 
+  if (hasEncryptedFields({ eventType, eventData: data })) {
+    return <EncryptedDataBlock />;
+  }
+
   // For error events (step_failed, step_retrying), the eventData has the shape
   // { error: StructuredError, stack?: string, ... }. Check both the top-level
   // value and the nested `error` field for a stack trace.
@@ -269,12 +237,12 @@ function EventDataBlock({
     const record = data as Record<string, unknown>;
 
     // Check the nested `error` field first (the StructuredError)
-    if (isStructuredErrorWithStack(record.error)) {
+    if (isStructuredError(record.error)) {
       return <ErrorStackBlock value={record.error} />;
     }
 
-    // Some error formats put the stack at the top level of eventData
-    if (isStructuredErrorWithStack(record)) {
+    // Some error formats put the message/stack at the top level of eventData.
+    if (isStructuredError(record)) {
       return <ErrorStackBlock value={record} />;
     }
   }
@@ -289,6 +257,8 @@ export function EventsList({
   isLoading = false,
   error,
   onLoadEventData,
+  onStreamClick,
+  onRunClick,
   encryptionKey,
 }: {
   events: Event[];
@@ -298,6 +268,8 @@ export function EventsList({
     correlationId: string,
     eventId: string
   ) => Promise<unknown | null>;
+  onStreamClick?: (streamId: string) => void;
+  onRunClick?: (runId: string) => void;
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */
   encryptionKey?: Uint8Array;
 }) {
@@ -311,36 +283,42 @@ export function EventsList({
     [events]
   );
 
+  const hasEvents = sortedEvents.length > 0 && !error;
+
+  if (!hasEvents && !isLoading) {
+    return <DetailCard summary="Events" disabled />;
+  }
+
   return (
-    <div className="mt-2" style={{ color: 'var(--ds-gray-1000)' }}>
-      <h3
-        className="text-label-14 font-medium mt-4 mb-2"
-        style={{ color: 'var(--ds-gray-1000)' }}
-      >
-        Events
-      </h3>
-      {isLoading ? (
-        <div className="flex flex-col gap-4">
-          <Skeleton className="h-9 w-full rounded-md" />
-          <Skeleton className="h-9 w-full rounded-md" />
-          <Skeleton className="h-9 w-full rounded-md" />
-        </div>
-      ) : null}
-      {!isLoading && !error && sortedEvents.length === 0 && (
-        <div className="text-sm">No events found</div>
-      )}
-      {sortedEvents.length > 0 && !error ? (
-        <div className="flex flex-col gap-4">
-          {sortedEvents.map((event) => (
-            <EventItem
-              key={event.eventId}
-              event={event}
-              onLoadEventData={onLoadEventData}
-              encryptionKey={encryptionKey}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <RunClickContext.Provider value={onRunClick}>
+      <StreamClickContext.Provider value={onStreamClick}>
+        <DetailCard summary="Events" contentClassName="mb-0" defaultOpen>
+          {isLoading ? (
+            <div className="flex flex-col -mx-4">
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between gap-3 bg-background-200 px-4 py-2"
+                >
+                  <Skeleton className="h-4 w-32 rounded" />
+                  <Skeleton className="h-3 w-16 rounded" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col -mx-4">
+              {sortedEvents.map((event) => (
+                <EventItem
+                  key={event.eventId}
+                  event={event}
+                  onLoadEventData={onLoadEventData}
+                  encryptionKey={encryptionKey}
+                />
+              ))}
+            </div>
+          )}
+        </DetailCard>
+      </StreamClickContext.Provider>
+    </RunClickContext.Provider>
   );
 }

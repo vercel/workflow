@@ -6,21 +6,32 @@
  *   - **Tag bit**: the MSB of byte 0 (the most-significant bit of the 48-bit
  *     timestamp) is set to 1, distinguishing this scheme from a plain ULID.
  *     This shifts the first character into the range `4`..`7`.
- *   - **Version** (5 bits, 0–31): encoded into the bottom 11 bits of the
- *     80-bit randomness section (specifically: high 3 bits of `version` go
- *     into the low 3 bits of byte 14, low 2 bits of `version` go into the
- *     high 2 bits of byte 15).
- *   - **Region ID** (6 bits, 0–63): encoded into the bottom 6 bits of byte 15.
- *     Region IDs are assigned in {@link REGION_IDS}.
+ *   - **Region ID** (6 bits, 0–63): encoded at the **top** of the 80-bit
+ *     randomness section, in the high 6 bits of byte 6. Region IDs are
+ *     assigned in {@link REGION_IDS}.
+ *   - **Version** (5 bits, 0–31): encoded immediately below the region ID
+ *     (high 2 bits in the bottom of byte 6, low 3 bits in the top of byte 7).
  *
  * Net effect: 80 bits of ULID randomness become 69 bits (still ~5.9 × 10²⁰
  * distinct values per millisecond), and the maximum representable timestamp
  * drops from year ~10895 down to year ~5429 — neither limit is practically
  * relevant.
  *
- * Tagged ULIDs remain valid ULIDs (lexicographically sortable, monotonic when
- * generated with a monotonic factory), so they can flow through any system
- * that accepts ULIDs.
+ * Tagged ULIDs remain valid ULIDs. Because the metadata sits at the **top**
+ * of the randomness section, the bottom 69 bits are untouched by `encode`,
+ * which means a `monotonicFactory()`-style ULID generator's same-millisecond
+ * bottom-bit increments survive encoding intact. As a result:
+ *
+ *   - Lexicographic order is preserved across millisecond boundaries.
+ *   - Intra-millisecond order is preserved when the metadata is held
+ *     constant (i.e. consecutive `encode(ulid(), region, { version })` calls
+ *     with the same `(region, version)` produce strictly increasing strings
+ *     for as long as the underlying monotonic factory does).
+ *
+ * Changing the metadata mid-millisecond can still invert ordering relative
+ * to a previous emission with different metadata; the {@link encode}
+ * function itself does not enforce any ordering invariants — that is the
+ * caller's responsibility (see the `createRunId` helper used by `start()`).
  *
  * @example
  * ```ts
@@ -42,10 +53,12 @@ import {
   isTaggedString,
   MAX_REGION,
   MAX_VERSION,
+  REGION_BYTE_INDEX,
   REGION_MASK,
   TAG_BIT_MASK,
   ulidToBytes,
   VERSION_HIGH_MASK,
+  VERSION_LOW_BYTE_INDEX,
   VERSION_LOW_MASK,
 } from './codec.js';
 import { lookupRegion, REGION_IDS, type RegionCode } from './regions.js';
@@ -71,20 +84,25 @@ export interface EncodeOptions {
   version?: number;
 }
 
-export interface DecodedRunId {
+/**
+ * Common fields shared by both tagged and un-tagged decode results.
+ */
+interface DecodedRunIdBase {
   /**
-   * Whether the input had the tag bit set. If `false`, the {@link regionId}
-   * and {@link version} fields will still be populated by reading the same
-   * bit positions, but callers should generally ignore them as they will be
-   * meaningless for un-tagged ULIDs.
-   */
-  tagged: boolean;
-  /**
-   * The input ULID with **only the tag bit cleared**. The 11 encoded bits in
-   * bytes 14–15 are preserved verbatim. For un-tagged input this equals the
-   * input string (uppercased).
+   * The input ULID with **only the tag bit cleared**. For tagged inputs the
+   * 11 metadata bits at the top of the randomness section (bytes 6–7) are
+   * preserved verbatim. For un-tagged input this equals the input string
+   * (uppercased).
    */
   ulid: string;
+}
+
+/**
+ * Decode result for a ULID whose tag bit was set — the metadata fields
+ * carry the values that `encode` wrote.
+ */
+export interface TaggedDecodedRunId extends DecodedRunIdBase {
+  tagged: true;
   /** Encoded format version (0..31). */
   version: number;
   /** Encoded region ID (0..63). 0 represents "unknown". */
@@ -96,6 +114,23 @@ export interface DecodedRunId {
   region: RegionCode | null;
 }
 
+/**
+ * Decode result for a ULID whose tag bit was *not* set. The metadata
+ * fields are `null` rather than populated with garbage bits, forcing
+ * callers to discriminate on {@link tagged} before reading them.
+ */
+export interface UntaggedDecodedRunId extends DecodedRunIdBase {
+  tagged: false;
+  version: null;
+  regionId: null;
+  region: null;
+}
+
+/**
+ * Discriminated union of the decode result; check `tagged` to narrow.
+ */
+export type DecodedRunId = TaggedDecodedRunId | UntaggedDecodedRunId;
+
 function isRegionCode(value: unknown): value is RegionCode {
   return (
     typeof value === 'string' &&
@@ -106,8 +141,9 @@ function isRegionCode(value: unknown): value is RegionCode {
 
 /**
  * Encode a region ID and version into a ULID, producing a 26-character
- * "tagged" ULID. The input ULID's bottom 11 randomness bits and top
- * (timestamp MSB) bit are overwritten.
+ * "tagged" ULID. The input ULID's top 11 randomness bits (the high bits
+ * of byte 6 + the high bits of byte 7) and its timestamp MSB are
+ * overwritten; the low 69 randomness bits are preserved intact.
  *
  * @param ulid - A valid 26-character Crockford-Base32 ULID.
  * @param region - Either a numeric region ID (0..63) or a known
@@ -151,16 +187,21 @@ export function encode(
   // Set the tag bit.
   bytes[0] = bytes[0] | TAG_BIT_MASK;
 
-  // Pack version (5 bits): high 3 bits → byte[14] low 3 bits;
-  //                       low 2 bits  → byte[15] high 2 bits.
-  const versionHigh = (version >> 2) & VERSION_HIGH_MASK; // 3 bits
-  const versionLow = (version & 0x03) << 6; // 2 bits placed at bits 6..7
+  // Pack `regionId` (6 bits) into the top of byte[6] and the high 2 bits
+  // of `version` into the bottom of byte[6]; the remaining low 3 bits of
+  // `version` go into the top of byte[7]. The metadata sits at the **top**
+  // of the 80-bit randomness section so that a monotonic ULID factory's
+  // bottom-bit increments survive encoding intact.
+  const regionShifted = (regionId & MAX_REGION) << 2; // 6 bits at bits 7..2
+  const versionHigh = (version >> 3) & VERSION_HIGH_MASK; // top 2 bits at bits 1..0
+  const versionLow = (version & 0x07) << 5; // low 3 bits at bits 7..5 of byte[7]
 
-  bytes[14] = (bytes[14] & ~VERSION_HIGH_MASK) | versionHigh;
-  bytes[15] =
-    (bytes[15] & ~(VERSION_LOW_MASK | REGION_MASK)) |
-    versionLow |
-    (regionId & REGION_MASK);
+  bytes[REGION_BYTE_INDEX] =
+    (bytes[REGION_BYTE_INDEX] & ~(REGION_MASK | VERSION_HIGH_MASK)) |
+    regionShifted |
+    versionHigh;
+  bytes[VERSION_LOW_BYTE_INDEX] =
+    (bytes[VERSION_LOW_BYTE_INDEX] & ~VERSION_LOW_MASK) | versionLow;
 
   return bytesToUlid(bytes);
 }
@@ -171,9 +212,10 @@ export function encode(
  * input was actually tagged by this scheme.
  *
  * The returned {@link DecodedRunId.ulid} has only the tag bit cleared — the
- * 11 metadata bits remain in place, so `decode(encode(u, r)).ulid` is *not*
- * byte-identical to `u` (the bottom 11 randomness bits of `u` were destroyed
- * by `encode`), but `decode(encode(u, r)).ulid` is byte-identical to
+ * 11 metadata bits at the top of the randomness section remain in place, so
+ * `decode(encode(u, r)).ulid` is *not* byte-identical to `u` (the top 11
+ * randomness bits of `u` were overwritten by `encode`), but
+ * `decode(encode(u, r)).ulid` is byte-identical to
  * `decode(encode(decode(encode(u, r)).ulid, r)).ulid`.
  *
  * @throws If the input is not a syntactically valid 26-character
@@ -183,17 +225,26 @@ export function decode(taggedUlid: string): DecodedRunId {
   const bytes = ulidToBytes(taggedUlid);
   const tagged = (bytes[0] & TAG_BIT_MASK) !== 0;
 
-  const regionId = bytes[15] & REGION_MASK;
-  const version =
-    ((bytes[14] & VERSION_HIGH_MASK) << 2) |
-    ((bytes[15] & VERSION_LOW_MASK) >> 6);
-
   // Clear the tag bit for the returned "untagged" ULID.
   bytes[0] = bytes[0] & ~TAG_BIT_MASK;
   const ulid = bytesToUlid(bytes);
 
+  if (!tagged) {
+    // For un-tagged input, the bits in the metadata positions are
+    // arbitrary randomness from the source ULID. Surfacing them as `null`
+    // forces callers to discriminate on `tagged` before reading them.
+    return { tagged: false, ulid, version: null, regionId: null, region: null };
+  }
+
+  // Pull `regionId` from the top 6 bits of byte[6] and the 5-bit `version`
+  // from the low 2 bits of byte[6] + the high 3 bits of byte[7].
+  const regionId = (bytes[REGION_BYTE_INDEX] & REGION_MASK) >> 2;
+  const version =
+    ((bytes[REGION_BYTE_INDEX] & VERSION_HIGH_MASK) << 3) |
+    ((bytes[VERSION_LOW_BYTE_INDEX] & VERSION_LOW_MASK) >> 5);
+
   return {
-    tagged,
+    tagged: true,
     ulid,
     version,
     regionId,

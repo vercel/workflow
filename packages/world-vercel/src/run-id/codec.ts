@@ -9,14 +9,18 @@
  * The tagged-ULID layout (see ./regions.ts and ./index.ts for context):
  *
  *   byte[0]            bit 7       TAG bit (1 = tagged run ID)
- *   byte[14]           bits 0..2   high 3 bits of `version` (5-bit field)
- *   byte[15]           bits 6..7   low 2 bits of `version`
- *   byte[15]           bits 0..5   `regionId` (6-bit field)
+ *   byte[6]            bits 2..7   `regionId` (6-bit field, MSB-first)
+ *   byte[6]            bits 0..1   high 2 bits of `version` (5-bit field)
+ *   byte[7]            bits 5..7   low 3 bits of `version`
  *
- * Encode sets the tag bit on byte[0] and overwrites the 11 metadata bits in
- * bytes[14..15]. Decode reads + clears only the tag bit, leaving the metadata
- * bits intact in the returned "untagged" ULID (the bottom 11 randomness bits
- * are sacrificed by design — they are the metadata).
+ * Encode sets the tag bit on byte[0] and overwrites the 11 metadata bits at
+ * the **top** of the randomness section (bytes[6..7]). Decode reads + clears
+ * only the tag bit, leaving the metadata bits intact in the returned
+ * "untagged" ULID. Placing the metadata at the top of randomness (rather
+ * than the bottom) leaves the low 69 bits free, so a `monotonicFactory()`-
+ * style ULID generator's bottom-bit increments survive encoding and
+ * intra-millisecond lexicographic order is preserved (provided callers
+ * don't change `(regionId, version)` mid-millisecond).
  */
 
 // Crockford Base32 alphabet (matches the `ulid` spec).
@@ -43,9 +47,15 @@ export const ULID_BYTE_LENGTH = 16;
 
 /** Bit masks used by the tagged-ULID layout. */
 export const TAG_BIT_MASK = 0x80; // byte[0] bit 7
-export const REGION_MASK = 0x3f; // byte[15] bits 0..5  (6 bits)
-export const VERSION_LOW_MASK = 0xc0; // byte[15] bits 6..7  (low 2 bits of version)
-export const VERSION_HIGH_MASK = 0x07; // byte[14] bits 0..2  (high 3 bits of version)
+/** `regionId` occupies the top 6 bits of byte[6]. */
+export const REGION_MASK = 0xfc;
+/** High 2 bits of `version` occupy the bottom 2 bits of byte[6]. */
+export const VERSION_HIGH_MASK = 0x03;
+/** Low 3 bits of `version` occupy the top 3 bits of byte[7]. */
+export const VERSION_LOW_MASK = 0xe0;
+/** Byte indices of the metadata region within the 16-byte ULID buffer. */
+export const REGION_BYTE_INDEX = 6;
+export const VERSION_LOW_BYTE_INDEX = 7;
 export const VERSION_BIT_WIDTH = 5;
 export const REGION_BIT_WIDTH = 6;
 export const MAX_VERSION = (1 << VERSION_BIT_WIDTH) - 1; // 31

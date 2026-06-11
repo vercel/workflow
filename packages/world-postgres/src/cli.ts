@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { makeWorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,23 @@ async function setupDatabase() {
       migrationsTable: 'workflow_migrations',
       migrationsSchema: 'workflow_drizzle',
     });
+
+    // Also bootstrap the graphile-worker schema. Without this, the first
+    // process to call `world.start()` against a fresh DB is responsible
+    // for running graphile-worker's `installSchema`, and concurrent
+    // callers (e.g. the dev server + the test runner) can race on the
+    // not-race-safe `CREATE SCHEMA IF NOT EXISTS` and fail with
+    // `duplicate key value violates unique constraint
+    // "pg_namespace_nspname_index"`. Running it here, single-process,
+    // before any consumer starts means later `installSchema` calls find
+    // the schema present and skip the racing DDL path entirely.
+    console.log('📂 Bootstrapping graphile-worker schema...');
+    const workerUtils = await makeWorkerUtils({ pgPool: pool });
+    try {
+      await workerUtils.migrate();
+    } finally {
+      await workerUtils.release();
+    }
 
     console.log('✅ Database schema created successfully!');
 

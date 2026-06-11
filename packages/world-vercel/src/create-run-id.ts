@@ -4,36 +4,37 @@ import { encode } from './run-id/index.js';
 import { REGION_IDS, type RegionCode } from './run-id/regions.js';
 
 /**
- * Underlying monotonic ULID factory. We post-process its output through
- * {@link encode}, which overwrites the bottom 11 bits of randomness — so
- * within the same millisecond, the monotonic factory's bottom-bit
- * increments would be destroyed if we relied on them naïvely. We layer
- * our own per-process monotonicity check on top (see {@link createRunId}).
+ * Underlying monotonic ULID factory. {@link encode} overwrites only the
+ * top 11 bits of the randomness section, so the factory's same-millisecond
+ * bottom-bit increments survive encoding and consecutive IDs with the same
+ * region/version metadata are naturally monotonic. The per-process check in
+ * {@link createRunId} exists for the remaining edge case: the metadata
+ * changing (e.g. a different `region`) within a single millisecond.
  */
 const ulid = monotonicFactory();
 
 /**
  * Last emitted run ID (the encoded/tagged form), used to enforce strict
  * lexicographic monotonicity across calls within a single process even
- * when many IDs are minted in the same millisecond.
+ * when the region/version metadata changes between same-millisecond calls.
  */
 let lastRunId: string | undefined;
 
 /**
- * Add `1 << 11` to the integer value of a 26-char tagged ULID — i.e.
- * increment the bit immediately above the 11-bit metadata window. This
- * lets us produce a strictly-larger ULID without disturbing the
- * region/version metadata that lives in the bottom 11 bits.
+ * Increment the bit immediately above the 11-bit metadata window of a
+ * 26-char tagged ULID. The metadata occupies the top 11 bits of the
+ * randomness section (all of byte 6 + the top 3 bits of byte 7), so the
+ * next bit up is the lowest bit of the 48-bit timestamp (byte 5) — the
+ * result is effectively the same ULID time-stamped 1ms later. This lets
+ * us produce a strictly-larger ULID regardless of what region/version
+ * metadata is subsequently stamped on top.
  *
  * Throws if the ULID is at its maximum value (timestamp would overflow).
  */
 function bumpAboveMetadata(ulidStr: string): string {
   const bytes = ulidToBytes(ulidStr);
-  // 11-bit metadata occupies the low 3 bits of bytes[14] + all of bytes[15].
-  // The next bit above is bit 3 of bytes[14]; adding 1 << 3 = 8 to bytes[14]
-  // and propagating the carry upward gives us the desired increment.
-  let i = 14;
-  let carry = 0x08;
+  let i = 5;
+  let carry = 0x01;
   while (i >= 0 && carry > 0) {
     const sum = bytes[i] + carry;
     bytes[i] = sum & 0xff;
@@ -41,7 +42,7 @@ function bumpAboveMetadata(ulidStr: string): string {
     i--;
   }
   if (carry > 0) {
-    // 128-bit ULID space exhausted — astronomically unlikely.
+    // 48-bit timestamp space exhausted — astronomically unlikely.
     throw new Error('ULID space exhausted');
   }
   return bytesToUlid(bytes);
@@ -86,12 +87,14 @@ function resolveRegion(
  *   3. Region ID 0 (`unknown`) — the resulting ULID is still tagged but
  *      does not claim a specific region.
  *
- * Monotonicity: because `encode` overwrites the bottom 11 bits of the
- * ULID's randomness with region/version metadata, the underlying ULID
- * factory's monotonic bottom-bit increments are destroyed within a single
- * millisecond. We layer our own monotonicity guarantee on top by tracking
- * the last emitted ID and bumping the candidate lexicographically until
- * it is strictly greater.
+ * Monotonicity: `encode` writes the region/version metadata into the top
+ * 11 bits of the randomness section, leaving the low 69 bits intact, so
+ * the underlying monotonic factory keeps consecutive same-metadata IDs
+ * strictly increasing on its own. The remaining hazard is the metadata
+ * changing between same-millisecond calls (a lower-numbered region sorts
+ * below a higher one at the same timestamp), so we track the last emitted
+ * ID and, on collision, bump the candidate above the metadata window
+ * before re-stamping the requested region/version.
  */
 export function createRunId(
   options?: Readonly<Record<string, unknown>>
@@ -99,13 +102,6 @@ export function createRunId(
   const region = resolveRegion(options);
   const regionId = region == null ? REGION_IDS.unknown : REGION_IDS[region];
   let candidate = encode(ulid(), regionId);
-  // Same-ms calls share a timestamp and the underlying monotonic factory's
-  // bottom-bit increments fall inside the metadata window, so the freshly
-  // encoded `candidate` may be `<=` the previous emission for the same
-  // region (or smaller still when the previous emission belonged to a
-  // higher-numbered region). Bump the candidate above the metadata bits
-  // until it strictly exceeds `lastRunId`, then re-stamp the requested
-  // region/version on top to keep metadata stable.
   if (lastRunId !== undefined) {
     while (candidate <= lastRunId) {
       candidate = encode(bumpAboveMetadata(lastRunId), regionId);

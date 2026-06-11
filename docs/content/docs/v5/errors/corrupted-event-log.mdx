@@ -9,21 +9,21 @@ related:
   - /docs/foundations/errors-and-retries
 ---
 
-This error occurs when the Workflow runtime encounters an event in the event log that no registered consumer can process. This means the event log is in an invalid state — typically due to duplicate or orphaned events.
+This error occurs when the Workflow runtime repeatedly cannot replay events in the event log. This usually means the event log is in an invalid state, such as duplicate or orphaned events, or that a runtime determinism bug persists across retry attempts.
 
-This is a **workflow-level fatal error**. It cannot be caught or handled inside your workflow code. A corrupted event log immediately fails the entire run without executing any more user code. The run must be retried from outside the workflow.
+This is a **workflow-level fatal error**. It cannot be caught or handled inside your workflow code. The runtime first retries transient replay divergence automatically; it marks the run as failed with this error only after replay still cannot recover.
 
 ## Error Message
 
 ```
-Unconsumed event in event log: eventType=<type>, correlationId=<id>, eventId=<id>. This indicates a corrupted or invalid event log.
+Workflow replay diverged <divergenceCount> times after <maxRecoveryReplays> recovery replays; latest divergent event was <eventId>. Last divergence: <details>
 ```
 
 ## Why This Happens
 
 Workflows persist their progress as an ordered event log. During replay, the runtime processes each event in sequence — every event must be consumed by a matching callback (e.g., a step or sleep waiting for its result). When an event has no matching consumer, the runtime cannot advance past it, which would block all subsequent events and hang the workflow indefinitely.
 
-Instead of silently hanging, the runtime raises a `WorkflowRuntimeError` to fail the workflow fast and surface the problem.
+Instead of silently hanging, the runtime retries a divergent replay before failing the workflow and surfacing this terminal error.
 
 Common scenarios that produce this error:
 
@@ -45,7 +45,7 @@ npm install workflow@latest
 
 ### 2. Retry the failed run
 
-Since this is a fatal error, the run is automatically marked as `failed`. You can re-run it using the **Re-run** button in the Workflow Dashboard.
+If this error is displayed, automatic replay recovery has already been exhausted and the run has been marked as `failed`. You can re-run it using the **Re-run** button in the Workflow Dashboard.
 
 ### 3. Report the issue
 

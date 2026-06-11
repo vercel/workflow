@@ -76,10 +76,13 @@ export function lookupRegion(regionId: number): RegionCode | null {
 }
 
 /**
- * Look up a numeric region ID by code. Throws if the code is not recognized.
+ * Look up a numeric region ID by code. The TypeScript signature requires a
+ * known {@link RegionCode}, but the function still validates at runtime
+ * for callers crossing a JS/TS boundary where the input may be any string.
  */
 export function regionIdFor(code: RegionCode): RegionId {
   const id = REGION_IDS[code];
+  /* c8 ignore next 3 -- defensive runtime backstop; unreachable in well-typed TS */
   if (id === undefined) {
     throw new Error(`Unknown Vercel region code: ${String(code)}`);
   }

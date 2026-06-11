@@ -34,11 +34,6 @@ on:
         required: false
         type: string
         default: 'none'
-      setup-command:
-        description: 'Setup command to run after installing the world package'
-        required: false
-        type: string
-        default: ''
       full-suite:
         description: 'Run full benchmark suite including long-running tests'
         required: false
@@ -116,14 +111,18 @@ jobs:
           WORLD_PACKAGE: ${{ inputs.world-package }}
         run: pnpm --filter "$APP_NAME" add "$WORLD_PACKAGE"
 
-      - name: Run setup command
-        if: ${{ inputs.setup-command != '' }}
+      # Per-world setup. Hardcoded (not taken from the matrix) so a malicious
+      # fork PR cannot smuggle arbitrary shell through matrix.world.setup-command.
+      - name: Per-world setup
         env:
           APP_NAME: ${{ inputs.app-name }}
-          SETUP_COMMAND: ${{ inputs.setup-command }}
+          WORLD_ID: ${{ inputs.world-id }}
         run: |
           cd "workbench/$APP_NAME"
-          eval "$SETUP_COMMAND"
+          case "$WORLD_ID" in
+            turso) pnpm exec workflow-turso-setup ;;
+            *) echo "No setup required for $WORLD_ID" ;;
+          esac
 
       - name: Resolve symlinks
         env:

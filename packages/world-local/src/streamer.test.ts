@@ -909,6 +909,40 @@ describe('streamer', () => {
         expect(page2.done).toBe(true);
       });
 
+      it('prefers tagged chunks over untagged and legacy files', async () => {
+        const { testDir } = await setupStreamer();
+        const streamName = 'mixed-format-stream';
+        const taggedStreamer = createStreamer(testDir, 'vitest-0');
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        await fs.mkdir(chunksDir, { recursive: true });
+
+        const writeChunk = (fileName: string, text: string, eof = false) =>
+          fs.writeFile(
+            path.join(chunksDir, fileName),
+            serializeChunk({ chunk: Buffer.from(text), eof })
+          );
+
+        await Promise.all([
+          writeChunk(`${streamName}-chnk_01.json`, 'legacy-shadowed'),
+          writeChunk(`${streamName}-chnk_01.bin`, 'untagged-shadowed'),
+          writeChunk(`${streamName}-chnk_01.vitest-0.bin`, 'tagged'),
+          writeChunk(`${streamName}-chnk_02.json`, 'legacy-shadowed'),
+          writeChunk(`${streamName}-chnk_02.bin`, 'untagged'),
+          writeChunk(`${streamName}-chnk_03.json`, 'legacy'),
+          writeChunk(`${streamName}-chnk_04.vitest-0.bin`, '', true),
+        ]);
+
+        const result = await taggedStreamer.streams.getChunks(
+          TEST_RUN_ID,
+          streamName
+        );
+
+        expect(
+          result.data.map((chunk) => Buffer.from(chunk.data).toString())
+        ).toEqual(['tagged', 'untagged', 'legacy']);
+        expect(result.done).toBe(true);
+      });
+
       it('should return done=false for in-progress stream', async () => {
         const { streamer } = await setupStreamer();
         const streamName = 'in-progress';

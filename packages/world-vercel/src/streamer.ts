@@ -29,6 +29,25 @@ function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   );
 }
 
+function createStreamRequestError(
+  operation: 'write' | 'close',
+  url: URL,
+  response: Response,
+  text: string
+): Error {
+  const context = [`PUT ${url.origin}${url.pathname}`];
+  for (const header of ['x-vercel-id', 'x-vercel-error']) {
+    const value = response.headers.get(header);
+    if (value) {
+      context.push(`${header}=${value}`);
+    }
+  }
+
+  return new Error(
+    `Stream ${operation} failed: HTTP ${response.status} (${context.join('; ')}): ${text}`
+  );
+}
+
 /**
  * Encode multiple chunks into a length-prefixed binary format.
  * Format: [4 bytes big-endian length][chunk bytes][4 bytes length][chunk bytes]...
@@ -101,19 +120,15 @@ export function createStreamer(config?: APIConfig): Streamer {
         const resolvedRunId = await runId;
 
         const httpConfig = await getHttpConfig(config);
-        const response = await fetch(
-          getStreamUrl(name, resolvedRunId, httpConfig),
-          {
-            method: 'PUT',
-            body: chunk,
-            headers: httpConfig.headers,
-          }
-        );
+        const url = getStreamUrl(name, resolvedRunId, httpConfig);
+        const response = await fetch(url, {
+          method: 'PUT',
+          body: chunk,
+          headers: httpConfig.headers,
+        });
         const text = await response.text();
         if (!response.ok) {
-          throw new Error(
-            `Stream write failed: HTTP ${response.status}: ${text}`
-          );
+          throw createStreamRequestError('write', url, response, text);
         }
       },
 
@@ -143,19 +158,15 @@ export function createStreamer(config?: APIConfig): Streamer {
         for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
           const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
           const body = encodeMultiChunks(batch);
-          const response = await fetch(
-            getStreamUrl(name, resolvedRunId, httpConfig),
-            {
-              method: 'PUT',
-              body,
-              headers: httpConfig.headers,
-            }
-          );
+          const url = getStreamUrl(name, resolvedRunId, httpConfig);
+          const response = await fetch(url, {
+            method: 'PUT',
+            body,
+            headers: httpConfig.headers,
+          });
           const text = await response.text();
           if (!response.ok) {
-            throw new Error(
-              `Stream write failed: HTTP ${response.status}: ${text}`
-            );
+            throw createStreamRequestError('write', url, response, text);
           }
         }
       },
@@ -166,18 +177,14 @@ export function createStreamer(config?: APIConfig): Streamer {
 
         const httpConfig = await getHttpConfig(config);
         httpConfig.headers.set('X-Stream-Done', 'true');
-        const response = await fetch(
-          getStreamUrl(name, resolvedRunId, httpConfig),
-          {
-            method: 'PUT',
-            headers: httpConfig.headers,
-          }
-        );
+        const url = getStreamUrl(name, resolvedRunId, httpConfig);
+        const response = await fetch(url, {
+          method: 'PUT',
+          headers: httpConfig.headers,
+        });
         const text = await response.text();
         if (!response.ok) {
-          throw new Error(
-            `Stream close failed: HTTP ${response.status}: ${text}`
-          );
+          throw createStreamRequestError('close', url, response, text);
         }
       },
 

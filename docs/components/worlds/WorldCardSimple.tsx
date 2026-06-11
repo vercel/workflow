@@ -10,7 +10,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { Gauge } from '@/components/ui/gauge';
 import {
   Tooltip,
   TooltipContent,
@@ -24,24 +23,6 @@ interface WorldCardSimpleProps {
 }
 
 export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
-  // Use nextjs-turbopack data for scoring if available, otherwise fall back to total
-  const turbopackData = world.e2e?.nextjsTurbopack;
-
-  // Calculate E2E progress based on nextjs-turbopack data (canonical scoring)
-  // For framework data: passed + failed = tests that ran (excludes skipped)
-  // If failed === 0, that's 100% passing
-  const effectiveFailed = turbopackData
-    ? turbopackData.failed
-    : (world.e2e?.failed ?? 0);
-  const effectivePassed = turbopackData
-    ? turbopackData.passed
-    : (world.e2e?.passed ?? 0);
-  const effectiveTotal = effectivePassed + effectiveFailed;
-  const displayProgress =
-    effectiveTotal > 0
-      ? Math.round((effectivePassed / effectiveTotal) * 100)
-      : 0;
-
   return (
     <Link href={`/worlds/${id}`} className="block group">
       <Card className="h-full transition-colors cursor-pointer overflow-hidden py-0! gap-2">
@@ -72,38 +53,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
             {world.description}
           </p>
         </CardContent>
-        {/* Stats footer */}
-        <div className="flex items-center justify-between px-4 pb-4 pt-2">
-          {/* E2E with gauge */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex items-center gap-2 text-sm">
-                <Gauge
-                  value={world.e2e ? displayProgress : 0}
-                  size="tiny"
-                  colors={
-                    !world.e2e
-                      ? { primary: 'var(--ds-gray-alpha-400)' }
-                      : displayProgress >= 75
-                        ? { primary: 'var(--ds-green-700)' }
-                        : displayProgress >= 50
-                          ? { primary: 'var(--ds-amber-700)' }
-                          : { primary: 'var(--ds-red-700)' }
-                  }
-                />
-                <span className="font-normal text-gray-1000">
-                  E2E:{` `}
-                  <span className="font-mono font-normal">
-                    {world.e2e ? `${displayProgress}%` : '—'}
-                  </span>
-                </span>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[200px]">
-              <p className="text-xs">E2E Test Suite Coverage</p>
-            </TooltipContent>
-          </Tooltip>
-          {/* Encryption badge */}
+        <div className="flex min-h-8 items-center justify-end px-4 pb-4 pt-2">
           {world.features.includes('encryption') && (
             <Tooltip>
               <TooltipTrigger asChild>
