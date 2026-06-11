@@ -258,8 +258,10 @@ export function createQueue(config?: APIConfig): Queue {
 
   /**
    * Options common to every `QueueClient` instantiation. `region` is
-   * intentionally omitted here and added per-call by both `queue()` and the
-   * handler, since the value depends on the payload being sent / received.
+   * intentionally omitted here: `queue()` resolves it per-send from the
+   * payload / opts, and the handler client leaves it unset so the SDK
+   * auto-detects `VERCEL_REGION` (follow-up acks are routed to the region
+   * from the incoming `ce-vqsregion` header regardless).
    */
   const clientOptions = {
     dispatcher: getDispatcher(config),

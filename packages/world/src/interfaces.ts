@@ -381,8 +381,9 @@ export interface World extends Queue, Streamer, Storage {
    *   `@workflow/core`). Worlds should read only the fields they
    *   recognise — for example, `@workflow/world-vercel` reads
    *   `options.region` to embed a region identifier. Unrecognised keys
-   *   must be ignored. When `start()` was called with no options, this is
-   *   `undefined`.
+   *   must be ignored. `start()` always passes an object (an empty one
+   *   when it was called with no options), but implementations should
+   *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
 }

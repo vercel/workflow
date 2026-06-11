@@ -823,9 +823,9 @@ describe('createQueue', () => {
         { region: 'fra1' }
       );
 
-      // QueueClient is constructed twice: once at createQueue() time
-      // (without region, for the handler), and once per send (with region).
-      // The send-time construction is the one we care about.
+      // `queue()` constructs a fresh QueueClient per send (with region);
+      // grab the most recent construction in case other clients (e.g. the
+      // handler's, which omits region) were constructed earlier.
       const ctorCalls = (
         MockQueueClient as unknown as { mock: { calls: unknown[][] } }
       ).mock.calls;

@@ -183,7 +183,8 @@ export interface QueueOptions {
    * `@workflow/world-vercel`, this overrides the region the underlying
    * `@vercel/queue` client uses to route the message; when omitted, the
    * region is resolved from the payload's tagged run ID, then from the
-   * `VERCEL_REGION` environment variable.
+   * `VERCEL_REGION` environment variable, and finally defaults to `'iad1'`
+   * (the pre-regional-routing behaviour).
    */
   region?: string;
 }

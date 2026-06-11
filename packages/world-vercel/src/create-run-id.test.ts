@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRunId } from './create-run-id.js';
 import { decode } from './run-id/index.js';
 import { REGION_IDS } from './run-id/regions.js';
@@ -9,6 +9,7 @@ describe('createRunId', () => {
   afterEach(() => {
     if (originalRegion === undefined) delete process.env.VERCEL_REGION;
     else process.env.VERCEL_REGION = originalRegion;
+    vi.useRealTimers();
   });
 
   describe('when VERCEL_REGION is a known region', () => {
@@ -39,14 +40,33 @@ describe('createRunId', () => {
       expect(new Set(ids).size).toBe(ids.length);
     });
 
-    it('remains monotonic even when 2048+ IDs are minted in the same ms', () => {
-      // 2^11 = 2048: enough calls to roll the entire 11-bit metadata
-      // window over and exercise the fallback-bump path in createRunId.
+    it('remains monotonic when 4096 IDs are minted in the same ms', () => {
+      // Freeze time so every call deterministically lands in the same
+      // millisecond. The metadata sits at the top of the randomness
+      // section, so the underlying monotonic factory's bottom-bit
+      // increments must survive encoding across a high call volume.
+      vi.useFakeTimers();
       const ids = Array.from({ length: 4096 }, () => createRunId());
       for (let i = 1; i < ids.length; i++) {
         expect(ids[i] > ids[i - 1]).toBe(true);
       }
       expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it('remains monotonic when the region changes within the same ms', () => {
+      // Switching to a lower-numbered region mid-millisecond would, without
+      // the lastRunId guard, produce a smaller ID (the region tag sits in
+      // the most-significant randomness bits). This exercises the
+      // bump-above-metadata fallback path in createRunId.
+      vi.useFakeTimers();
+      const first = createRunId({ region: 'fra1' });
+      const second = createRunId({ region: 'iad1' });
+      expect(REGION_IDS.iad1).toBeLessThan(REGION_IDS.fra1);
+      expect(second > first).toBe(true);
+      expect(decode(second).region).toBe('iad1');
+      const third = createRunId({ region: 'fra1' });
+      expect(third > second).toBe(true);
+      expect(decode(third).region).toBe('fra1');
     });
 
     it('reflects later updates to process.env.VERCEL_REGION', () => {
