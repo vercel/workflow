@@ -23,7 +23,11 @@ export function safeWaitUntil(
       const isAbortError =
         err?.name === 'AbortError' || err?.name === 'ResponseAborted';
       if (!isAbortError) {
-        onError(err);
+        try {
+          onError(err);
+        } catch {
+          // Never let onError break the no-reject guarantee.
+        }
       }
     })
   );
