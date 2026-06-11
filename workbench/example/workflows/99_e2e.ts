@@ -607,6 +607,128 @@ export async function hookCleanupTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
+export async function hookHasConflictWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  // Awaiting `hasConflict` suspends the workflow to commit the hook
+  // registration without waiting for payload data.
+  const hasConflict = await hook.hasConflict;
+
+  return {
+    token,
+    customData,
+    hasConflict,
+    hookHasConflictTestData: hasConflict
+      ? 'hook_token_conflict_detected'
+      : 'hook_registered_without_payload',
+  };
+}
+
+async function hookHasConflictStep(customData: string) {
+  'use step';
+  return {
+    customData,
+    hookHasConflictStepData: 'step_completed',
+  };
+}
+
+async function hookHasConflictTimedStep(label: 'A' | 'B', delayMs: number) {
+  'use step';
+  const { stepStartedAt } = getStepMetadata();
+  const startedAt = stepStartedAt.getTime();
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  return {
+    label,
+    startedAt,
+    endedAt: Date.now(),
+  };
+}
+
+export async function hookHasConflictWithPriorStepWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const stepPromise = hookHasConflictStep(customData);
+
+  const hasConflict = await hook.hasConflict;
+
+  return {
+    token,
+    customData,
+    hasConflict,
+    stepResult: await stepPromise,
+    hookHasConflictTestData: 'prior_step_completed_after_registration',
+  };
+}
+
+export async function hookHasConflictWithParallelStepWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const [stepResult, hasConflict] = await Promise.all([
+    hookHasConflictStep(customData),
+    hook.hasConflict,
+  ]);
+
+  return {
+    token,
+    customData,
+    hasConflict,
+    stepResult,
+    hookHasConflictTestData: 'parallel_step_completed_with_registration',
+  };
+}
+
+export async function hookHasConflictThenStepParallelWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const stepBPromise = hook.hasConflict.then(
+    async () => await hookHasConflictTimedStep('B', 100)
+  );
+  const stepAResult = await hookHasConflictTimedStep('A', 10_000);
+  const stepBResult = await stepBPromise;
+
+  return {
+    token,
+    customData,
+    stepAResult,
+    stepBResult,
+    hookHasConflictTestData: 'registration_then_step_runs_in_parallel',
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 /**
  * Workflow for testing early hook disposal - allows another workflow to reuse
  * the token while this workflow is still running.

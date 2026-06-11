@@ -55,6 +55,7 @@ The returned `Webhook` object has:
 
 - `url`: The HTTP endpoint URL that external systems can call
 - `token`: The unique token identifying this webhook
+- `hasConflict`: A promise that resolves to `true` if another active hook already owns this token, or `false` once the webhook endpoint has been registered
 - Implements `AsyncIterable<T>` for handling multiple requests, where `T` is `Request` (default) or `RequestWithResponse` (manual mode)
 
 When using `createWebhook({ respondWith: 'manual' })`, the resolved request type is `RequestWithResponse`, which extends the standard `Request` interface with a `respondWith(response: Response): Promise<void>` method for sending custom responses back to the caller.
