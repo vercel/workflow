@@ -198,9 +198,14 @@ export async function POST(request: Request) {
   // No hook yet: start a new run, then retry the resume so this
   // request's payload still reaches the workflow.
   const run = await start(processOrder, [orderId]); // [!code highlight]
-  await resumeWithRetry(token, payload);
+  const resumed = await resumeWithRetry(token, payload);
 
-  return Response.json({ runId: run.runId, reused: false });
+  // A concurrent request can win the race between `start()` and hook
+  // registration; the resume always reaches the actual active owner.
+  return Response.json({
+    runId: resumed.runId,
+    reused: resumed.runId !== run.runId,
+  });
 }
 ```
 

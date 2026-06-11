@@ -135,19 +135,18 @@ export async function POST(request: Request) {
   const run = await start(processOrder, [orderId]); // [!code highlight]
   const resumed = await resumeOrder(token, payload);
 
-  const result = await run.returnValue; // [!code highlight]
-  if (result.status === "duplicate") { // [!code highlight]
-    // This request's run lost the race; the resume above // [!code highlight]
-    // reached the active owner. // [!code highlight]
-    return Response.json({ runId: resumed.runId, reused: true }); // [!code highlight]
-  } // [!code highlight]
-
-  return Response.json({ runId: run.runId, reused: false });
+  // A concurrent request's run may have won the race between `start()` // [!code highlight]
+  // and hook registration. The resume always reaches the actual active // [!code highlight]
+  // owner, so compare run IDs instead of waiting for this run to finish. // [!code highlight]
+  return Response.json({ // [!code highlight]
+    runId: resumed.runId, // [!code highlight]
+    reused: resumed.runId !== run.runId, // [!code highlight]
+  }); // [!code highlight]
 }
 ```
 
 <Callout type="warn">
-This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the second run observes `hasConflict` resolving with `true` and returns a duplicate status. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.hasConflict`.
+This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `hasConflict` resolving with `true` and returns without doing duplicate-sensitive work — and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.hasConflict`.
 </Callout>
 
 This is active-run coordination. When the workflow completes and disposes the hook, the token can be used again. If a duplicate request after completion must return the original result instead of starting fresh work, persist that completed result under the same domain key.
