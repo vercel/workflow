@@ -243,6 +243,34 @@ const config: NextConfig = {
         destination: '/patterns/distributed-abort-controller',
         permanent: true,
       },
+      // v5 cookbook pages merged into patterns (only advanced/serializable-steps
+      // and advanced/publishing-libraries remain as docs)
+      { source: '/v5/cookbook', destination: '/patterns', permanent: true },
+      {
+        source: '/v5/cookbook/agent-patterns/:id',
+        destination: '/patterns/:id',
+        permanent: true,
+      },
+      {
+        source: '/v5/cookbook/common-patterns/:id',
+        destination: '/patterns/:id',
+        permanent: true,
+      },
+      {
+        source: '/v5/cookbook/integrations/:id',
+        destination: '/patterns/:id',
+        permanent: true,
+      },
+      {
+        source: '/v5/cookbook/advanced/child-workflows',
+        destination: '/patterns/child-workflows',
+        permanent: true,
+      },
+      {
+        source: '/v5/cookbook/advanced/upgrading-workflows',
+        destination: '/patterns/upgrading-workflows',
+        permanent: true,
+      },
       {
         source: '/python',
         destination: '/docs/getting-started/python',
