@@ -10,7 +10,12 @@
  */
 
 import { types } from 'node:util';
-import { FatalError, RetryableError } from '@workflow/errors';
+import {
+  FatalError,
+  HookConflictError,
+  RetryableError,
+  RuntimeDecryptionError,
+} from '@workflow/errors';
 import type { Reducers, Revivers, SerializableSpecial } from '../types.js';
 
 // ---- Base64 helpers ----
@@ -210,6 +215,19 @@ export function getCommonReducers(
     // See `makeErrorSubclassReducer` for implementation details.
     EvalError: makeErrorSubclassReducer('EvalError'),
     FatalError: makeErrorSubclassReducer('FatalError'),
+    HookConflictError: (value) => {
+      const base = reduceNamedErrorSubclassBase('HookConflictError', value);
+      if (!base) return false;
+      const error = value as HookConflictError;
+      const reduced: SerializableSpecial['HookConflictError'] = {
+        ...base,
+        token: error.token,
+      };
+      if (error.conflictingRunId !== undefined) {
+        reduced.conflictingRunId = error.conflictingRunId;
+      }
+      return reduced;
+    },
     RangeError: makeErrorSubclassReducer('RangeError'),
     ReferenceError: makeErrorSubclassReducer('ReferenceError'),
     // RetryableError carries an extra `retryAfter` Date that we serialize as
@@ -241,6 +259,24 @@ export function getCommonReducers(
         ...base,
         retryAfter,
       } satisfies SerializableSpecial['RetryableError'];
+    },
+    // RuntimeDecryptionError carries an extra `context` object (operation,
+    // byteLength, formatPrefix) that the generic Error reducer would drop.
+    // Preserve it so the diagnostic data survives the run-error round trip.
+    RuntimeDecryptionError: (value) => {
+      const base = reduceNamedErrorSubclassBase(
+        'RuntimeDecryptionError',
+        value
+      );
+      if (!base) return false;
+      const reduced: SerializableSpecial['RuntimeDecryptionError'] = {
+        ...base,
+      };
+      const context = (value as RuntimeDecryptionError).context;
+      if (context !== undefined) {
+        reduced.context = context;
+      }
+      return reduced;
     },
     SyntaxError: makeErrorSubclassReducer('SyntaxError'),
     TypeError: makeErrorSubclassReducer('TypeError'),
@@ -361,6 +397,18 @@ export function getCommonRevivers(
       if ('cause' in value) error.cause = value.cause;
       return error;
     },
+    HookConflictError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//HookConflictError')
+        ] as typeof HookConflictError | undefined) ?? HookConflictError;
+      const error = new Ctor(value.token, value.conflictingRunId);
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) {
+        (error as Error & { cause?: unknown }).cause = value.cause;
+      }
+      return error;
+    },
     RangeError: makeErrorSubclassReviver(global, 'RangeError'),
     ReferenceError: makeErrorSubclassReviver(global, 'ReferenceError'),
     RetryableError: (value) => {
@@ -378,6 +426,21 @@ export function getCommonRevivers(
       });
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) error.cause = value.cause;
+      return error;
+    },
+    RuntimeDecryptionError: (value) => {
+      // Resolve from the consumer's globalThis (see the FatalError reviver
+      // above) so `instanceof RuntimeDecryptionError` holds across realms.
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//RuntimeDecryptionError')
+        ] as typeof RuntimeDecryptionError | undefined) ??
+        RuntimeDecryptionError;
+      const opts: ConstructorParameters<typeof RuntimeDecryptionError>[1] = {};
+      if ('cause' in value) opts.cause = value.cause;
+      if (value.context !== undefined) opts.context = value.context;
+      const error = new Ctor(value.message, opts);
+      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     SyntaxError: makeErrorSubclassReviver(global, 'SyntaxError'),

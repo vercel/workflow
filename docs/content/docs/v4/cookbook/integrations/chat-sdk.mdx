@@ -20,6 +20,10 @@ Workflow SDK complements it by making bot **sessions** durable. Each conversatio
 - Survives deploys, cold starts, and crashes — the session picks up from the last step on replay
 - Receives follow-up messages via hooks, so the bot stays responsive while the workflow is still running
 
+<Callout type="info">
+One thread mapped to one workflow run also means the thread stays on the deployment that started it. For channels where each message should use newer code, see [Versioning](/docs/foundations/versioning) for explicit child-run and handoff patterns using `deploymentId: "latest"`.
+</Callout>
+
 The rest of this page covers the integration pattern. For a full Slack + Next.js + Redis walkthrough, see the [Durable chat sessions guide](https://chat-sdk.dev/docs/guides/durable-chat-sessions-nextjs) on chat-sdk.dev.
 
 ## How It Fits Together

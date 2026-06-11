@@ -85,8 +85,10 @@ export const ERROR_SLUGS = {
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
+  REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
+  RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -300,6 +302,117 @@ export class WorkflowRuntimeError extends WorkflowError {
   }
 }
 
+/**
+ * Thrown when the persisted workflow event log cannot be replayed because it
+ * contains orphaned, duplicate, or mismatched events.
+ *
+ * This is a runtime/infrastructure failure rather than user code throwing.
+ * When this reaches run failure handling, it is recorded with the distinct
+ * `CORRUPTED_EVENT_LOG` code so worlds and backends can track it separately
+ * from generic runtime failures.
+ */
+export class CorruptedEventLogError extends WorkflowRuntimeError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, {
+      ...options,
+      slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG,
+    });
+    this.name = 'CorruptedEventLogError';
+  }
+
+  static is(value: unknown): value is CorruptedEventLogError {
+    return isError(value) && value.name === 'CorruptedEventLogError';
+  }
+}
+
+/**
+ * Thrown when the current workflow replay cannot follow the path described by
+ * the recorded event log. A single divergence does not prove that the
+ * persisted history is invalid: a subsequent replay may observe or schedule
+ * work correctly, so the runtime may redeliver before declaring corruption.
+ */
+export class ReplayDivergenceError extends WorkflowRuntimeError {
+  readonly eventId: string;
+
+  constructor(message: string, options: ErrorOptions & { eventId: string }) {
+    super(message, {
+      ...options,
+      slug: ERROR_SLUGS.REPLAY_DIVERGENCE,
+    });
+    this.name = 'ReplayDivergenceError';
+    this.eventId = options.eventId;
+  }
+
+  static is(value: unknown): value is ReplayDivergenceError {
+    return (
+      isError(value) &&
+      value.name === 'ReplayDivergenceError' &&
+      typeof (value as { eventId?: unknown }).eventId === 'string'
+    );
+  }
+}
+
+/**
+ * Optional structured context attached to a {@link RuntimeDecryptionError},
+ * carried over from the underlying decrypt call site to help diagnose the
+ * failure without poking through stacks.
+ */
+export interface RuntimeDecryptionErrorContext {
+  /** The operation that failed — useful to tell encrypt vs decrypt apart. */
+  operation?: 'encrypt' | 'decrypt';
+  /** Byte length of the input payload at the time of the failure. */
+  byteLength?: number;
+  /**
+   * The first 4 bytes of the input payload, decoded as UTF-8 if printable.
+   * Useful for telling apart truncated-but-valid-looking encrypted payloads
+   * from completely unrelated corruption (e.g. an HTML error page surfaced
+   * as a 200 OK).
+   */
+  formatPrefix?: string;
+}
+
+/**
+ * Thrown when the SDK's built-in AES-GCM encryption layer fails to encrypt
+ * or decrypt a workflow payload.
+ *
+ * This is an internal SDK failure — user code never invokes the SDK's
+ * encryption primitives directly. Common causes:
+ *
+ * - A ciphertext / auth tag mismatch, typically surfaced as the native Web
+ *   Crypto `OperationError: The operation failed for an operation-specific
+ *   reason`. Usually caused by ciphertext mutation or truncation in transit
+ *   between storage and read (truncated HTTP response, edge-cache miss
+ *   returning a partial 200, proxy drop during streaming, etc.).
+ * - A key resolution mismatch (wrong deployment, missing key material).
+ * - A malformed encrypted envelope (too short to contain the GCM nonce
+ *   and tag).
+ *
+ * Extends {@link WorkflowRuntimeError} so the run-failure classifier
+ * routes it to `RUNTIME_ERROR`.
+ */
+export class RuntimeDecryptionError extends WorkflowRuntimeError {
+  /** Optional structured context about the failed encrypt/decrypt call. */
+  readonly context?: RuntimeDecryptionErrorContext;
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & { context?: RuntimeDecryptionErrorContext }
+  ) {
+    super(message, {
+      cause: options?.cause,
+      slug: ERROR_SLUGS.RUNTIME_DECRYPTION_FAILED,
+    });
+    this.name = 'RuntimeDecryptionError';
+    if (options?.context !== undefined) {
+      this.context = options.context;
+    }
+  }
+
+  static is(value: unknown): value is RuntimeDecryptionError {
+    return isError(value) && value.name === 'RuntimeDecryptionError';
+  }
+}
+
 interface WorkflowBuildErrorOptions extends ErrorOptions {
   /**
    * An optional actionable hint appended to the main message, explaining how
@@ -501,13 +614,22 @@ export class WorkflowRunNotFoundError extends WorkflowError {
  */
 export class HookConflictError extends WorkflowError {
   token: string;
+  // TODO: Make this required once all persisted hook_conflict events and World
+  // implementations always include the active hook owner's run ID.
+  conflictingRunId?: string;
 
-  constructor(token: string) {
-    super(`Hook token "${token}" is already in use by another workflow`, {
-      slug: ERROR_SLUGS.HOOK_CONFLICT,
-    });
+  constructor(token: string, conflictingRunId?: string) {
+    super(
+      `Hook token "${token}" is already in use by another workflow${conflictingRunId ? ` (run "${conflictingRunId}")` : ''}`,
+      {
+        slug: ERROR_SLUGS.HOOK_CONFLICT,
+      }
+    );
     this.name = 'HookConflictError';
     this.token = token;
+    if (conflictingRunId !== undefined) {
+      this.conflictingRunId = conflictingRunId;
+    }
   }
 
   static is(value: unknown): value is HookConflictError {
@@ -792,7 +914,7 @@ export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
 // Cross-realm class registration
 // ---------------------------------------------------------------------------
 //
-// `FatalError` and `RetryableError` are not built-ins, so different realms
+// `FatalError`, `RetryableError`, and `HookConflictError` are not built-ins, so different realms
 // (e.g. the workflow VM context vs. the host context that runs the queue
 // handler) bundle and load their own copies of this module — meaning each
 // realm has its own distinct class identity. Cross-realm `instanceof` fails
@@ -808,6 +930,12 @@ export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
 // and non-configurable to make accidental clobbering loud.
 const FATAL_ERROR_KEY = Symbol.for('@workflow/errors//FatalError');
 const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
+const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
+  '@workflow/errors//HookConflictError'
+);
+const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
+  '@workflow/errors//RuntimeDecryptionError'
+);
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -821,6 +949,22 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, RETRYABLE_ERROR_KEY)) {
     Object.defineProperty(globalThis, RETRYABLE_ERROR_KEY, {
       value: RetryableError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, HOOK_CONFLICT_ERROR_KEY)) {
+    Object.defineProperty(globalThis, HOOK_CONFLICT_ERROR_KEY, {
+      value: HookConflictError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RUNTIME_DECRYPTION_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RUNTIME_DECRYPTION_ERROR_KEY, {
+      value: RuntimeDecryptionError,
       writable: false,
       enumerable: false,
       configurable: false,

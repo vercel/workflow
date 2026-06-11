@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -12,7 +11,13 @@ import {
 } from '@workflow/errors';
 import { formatStepName, pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
-import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
+import {
+  getQueueTopicPrefix,
+  resolveQueueNamespace,
+  SPEC_VERSION_CURRENT,
+  type Step,
+  StepInvokePayloadSchema,
+} from '@workflow/world';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -36,7 +41,9 @@ import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
+  promoteAbortErrorToFatal,
 } from '../types.js';
+
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
   getQueueOverhead,
@@ -47,14 +54,17 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
+import { safeWaitUntil } from './wait-until.js';
 import { getWorld, getWorldHandlers, type WorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
-const stepHandler = (worldHandlers: WorldHandlers) =>
-  worldHandlers.createQueueHandler(
-    '__wkf_step_',
-    async (message_, metadata) => {
+function createStepHandler(namespace?: string) {
+  const resolvedNamespace = resolveQueueNamespace(namespace);
+  const stepPrefix = getQueueTopicPrefix('step', resolvedNamespace);
+
+  return (worldHandlers: WorldHandlers) =>
+    worldHandlers.createQueueHandler(stepPrefix, async (message_, metadata) => {
       // Check if this is a health check message
       // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
       // They only write a simple status response to a stream and do not expose sensitive data.
@@ -88,7 +98,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
       // is still consumed but with adequate logging that an error occurred.
       // Scoped logger for this step invocation — attaches run/step context to
       // every log line below so callers don't repeat it.
-      const stepNameFromQueue = metadata.queueName.slice('__wkf_step_'.length);
+      const stepNameFromQueue = metadata.queueName.slice(stepPrefix.length);
       const stepRuntimeLogger = runtimeLogger.forRun(
         workflowRunId,
         workflowName,
@@ -115,6 +125,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
               eventData: {
+                stepName: stepNameFromQueue,
                 error: await dehydrateStepError(
                   err,
                   workflowRunId,
@@ -125,11 +136,15 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             { requestId }
           );
           // Re-queue the workflow to handle the failed step
-          await queueMessage(world, getWorkflowQueueName(workflowName), {
-            runId: workflowRunId,
-            traceCarrier: await serializeTraceCarrier(),
-            requestedAt: new Date(),
-          });
+          await queueMessage(
+            world,
+            getWorkflowQueueName(workflowName, resolvedNamespace),
+            {
+              runId: workflowRunId,
+              traceCarrier: await serializeTraceCarrier(),
+              requestedAt: new Date(),
+            }
+          );
         } catch (err) {
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             return;
@@ -157,7 +172,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
       // Execute step within the propagated trace context
       return await withTraceContext(traceContext, async () => {
         // Extract the step name from the topic name
-        const stepName = metadata.queueName.slice('__wkf_step_'.length);
+        const stepName = metadata.queueName.slice(stepPrefix.length);
         const world = await getWorld();
         const isVercel = process.env.VERCEL_URL !== undefined;
 
@@ -208,7 +223,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             // - Step not in terminal state (returns 409)
             // - retryAfter timestamp reached (returns 425 with Retry-After header)
             // - Workflow still active (returns 410 if completed)
-            let step;
+            let step!: Step;
             try {
               const startResult = await world.events.create(
                 workflowRunId,
@@ -216,6 +231,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   eventType: 'step_started',
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
+                  eventData: { stepName },
                 },
                 { requestId }
               );
@@ -268,11 +284,15 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   'step.name': stepName,
                   'step.id': stepId,
                 });
-                await queueMessage(world, getWorkflowQueueName(workflowName), {
-                  runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
-                  requestedAt: new Date(),
-                });
+                await queueMessage(
+                  world,
+                  getWorkflowQueueName(workflowName, resolvedNamespace),
+                  {
+                    runId: workflowRunId,
+                    traceCarrier: await serializeTraceCarrier(),
+                    requestedAt: new Date(),
+                  }
+                );
                 return;
               }
 
@@ -336,6 +356,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         err,
                         workflowRunId,
@@ -367,11 +388,15 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               });
 
               // Re-invoke the workflow to handle the failed step
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
-                runId: workflowRunId,
-                traceCarrier: await serializeTraceCarrier(),
-                requestedAt: new Date(),
-              });
+              await queueMessage(
+                world,
+                getWorkflowQueueName(workflowName, resolvedNamespace),
+                {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                }
+              );
               return;
             }
 
@@ -431,6 +456,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         wrappedError,
                         workflowRunId,
@@ -462,11 +488,15 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               });
 
               // Re-invoke the workflow to handle the failed step
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
-                runId: workflowRunId,
-                traceCarrier: await serializeTraceCarrier(),
-                requestedAt: new Date(),
-              });
+              await queueMessage(
+                world,
+                getWorkflowQueueName(workflowName, resolvedNamespace),
+                {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                }
+              );
               return;
             }
 
@@ -493,6 +523,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         new FatalError(errorMessage),
                         workflowRunId,
@@ -509,11 +540,15 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 throw failErr;
               }
               // Re-queue the workflow so it can process the step failure
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
-                runId: workflowRunId,
-                traceCarrier: await serializeTraceCarrier(),
-                requestedAt: new Date(),
-              });
+              await queueMessage(
+                world,
+                getWorkflowQueueName(workflowName, resolvedNamespace),
+                {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                }
+              );
               return;
             }
             // Capture startedAt for use in async callback (TypeScript narrowing doesn't persist)
@@ -540,7 +575,10 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   step.input,
                   workflowRunId,
                   encryptionKey,
-                  ops
+                  ops,
+                  globalThis,
+                  {},
+                  process.env.VERCEL_DEPLOYMENT_ID
                 );
                 const durationMs = Date.now() - startTime;
                 hydrateSpan?.setAttributes({
@@ -583,6 +621,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         : `http://localhost:${port ?? 3000}`,
                       features: { encryption: !!encryptionKey },
                     },
+                    workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                     ops,
                     closureVars: hydratedInput.closureVars,
                     encryptionKey,
@@ -661,17 +700,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 }
               }
 
-              // Wrap AbortError in FatalError — abort is intentional cancellation, not retryable
-              let effectiveErr: unknown = err;
-              if (
-                err instanceof Error &&
-                err.name === 'AbortError' &&
-                !FatalError.is(err)
-              ) {
-                const fatalErr = new FatalError(`Aborted: ${err.message}`);
-                fatalErr.stack = err.stack;
-                effectiveErr = fatalErr;
-              }
+              // Abort failures can cross VM/serialization realms, where
+              // `instanceof Error` is not reliable.
+              const effectiveErr = promoteAbortErrorToFatal(err);
               const normalizedError = await normalizeUnknownError(effectiveErr);
               const normalizedStack =
                 normalizedError.stack || getErrorStack(effectiveErr) || '';
@@ -691,9 +722,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   : 'transient';
 
               span?.setAttributes({
-                ...Attribute.StepErrorName(getErrorName(err)),
+                ...Attribute.StepErrorName(getErrorName(effectiveErr)),
                 ...Attribute.StepErrorMessage(normalizedError.message),
-                ...Attribute.ErrorType(getErrorName(err)),
+                ...Attribute.ErrorType(getErrorName(effectiveErr)),
                 ...Attribute.ErrorCategory(errorCategory),
                 ...Attribute.ErrorRetryable(!isFatal),
               });
@@ -725,8 +756,8 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   }
                 );
                 // Fail the step via event (event-sourced architecture).
-                // Serialize the original thrown value so its full type identity
-                // and custom properties round-trip through the event log.
+                // Persist the promoted FatalError for aborts so the parent
+                // workflow can distinguish cancellation from retry exhaustion.
                 try {
                   await world.events.create(
                     workflowRunId,
@@ -735,8 +766,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       specVersion: SPEC_VERSION_CURRENT,
                       correlationId: stepId,
                       eventData: {
+                        stepName,
                         error: await dehydrateStepError(
-                          err,
+                          effectiveErr,
                           workflowRunId,
                           encryptionKey
                         ),
@@ -819,6 +851,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         specVersion: SPEC_VERSION_CURRENT,
                         correlationId: stepId,
                         eventData: {
+                          stepName,
                           error: await dehydrateStepError(
                             wrappedError,
                             workflowRunId,
@@ -887,6 +920,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         specVersion: SPEC_VERSION_CURRENT,
                         correlationId: stepId,
                         eventData: {
+                          stepName,
                           error: await dehydrateStepError(
                             err,
                             workflowRunId,
@@ -942,11 +976,15 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               }
 
               // Re-invoke the workflow to handle the failed/retrying step
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
-                runId: workflowRunId,
-                traceCarrier: await serializeTraceCarrier(),
-                requestedAt: new Date(),
-              });
+              await queueMessage(
+                world,
+                getWorkflowQueueName(workflowName, resolvedNamespace),
+                {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                }
+              );
               return;
             }
 
@@ -960,14 +998,16 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             // resilient to the below code not executing on a failed step.
             // (Dehydration already happened above and is accounted for in the
             // userCodeFailed path.)
-            waitUntil(
-              Promise.all(ops).catch((err) => {
-                // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-                const isAbortError =
-                  err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-                if (!isAbortError) throw err;
-              })
-            );
+            // These stream ops are flushed in the background; the promise
+            // handed to waitUntil must never reject (an unconsumed waitUntil
+            // rejection crashes the process as unhandledRejection), so
+            // unexpected failures are logged instead.
+            safeWaitUntil(Promise.all(ops), (err) => {
+              stepRuntimeLogger.warn(
+                'Background flush of step stream ops failed',
+                { error: err instanceof Error ? err.message : String(err) }
+              );
+            });
 
             // Run step_completed and trace serialization concurrently;
             // the trace carrier is used in the final queueMessage call below
@@ -981,6 +1021,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       result: result as Uint8Array,
                     },
                   },
@@ -1014,16 +1055,22 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             });
 
             // Queue the workflow continuation with the concurrently-resolved trace carrier
-            await queueMessage(world, getWorkflowQueueName(workflowName), {
-              runId: workflowRunId,
-              traceCarrier,
-              requestedAt: new Date(),
-            });
+            await queueMessage(
+              world,
+              getWorkflowQueueName(workflowName, resolvedNamespace),
+              {
+                runId: workflowRunId,
+                traceCarrier,
+                requestedAt: new Date(),
+              }
+            );
           }
         );
       });
-    }
-  );
+    });
+}
+
+const stepHandler = createStepHandler();
 
 /**
  * A single route that handles any step execution request and routes to the

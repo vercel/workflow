@@ -1,13 +1,13 @@
 import { createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
-import { MessageId, type QueuePayload } from '@workflow/world';
+import { MessageId, parseQueueName, type QueuePayload } from '@workflow/world';
+import { createLocalWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLocalWorld } from '@workflow/world-local';
 import { stepEntrypoint } from '../../core/dist/runtime/step-handler.js';
-import { createQueue } from './queue.js';
 import { MessageData } from './message.js';
+import { createQueue } from './queue.js';
 
 const transport = new JsonTransport();
 const createdQueues: Array<ReturnType<typeof createQueue>> = [];
@@ -256,6 +256,74 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('serializes namespaced workflow queue execution for the same runId', async () => {
+    let resolveFirstRequestStarted!: () => void;
+    const firstRequestStarted = new Promise<void>((resolve) => {
+      resolveFirstRequestStarted = resolve;
+    });
+    let resolveReleaseFirstRequest!: () => void;
+    const releaseFirstRequest = new Promise<void>((resolve) => {
+      resolveReleaseFirstRequest = resolve;
+    });
+    let requestCount = 0;
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const fetchMock = vi.fn(async () => {
+      requestCount += 1;
+      activeRequests += 1;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+
+      if (requestCount === 1) {
+        resolveFirstRequestStarted();
+        await releaseFirstRequest;
+      }
+
+      activeRequests -= 1;
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.WORKFLOW_LOCAL_BASE_URL = 'http://localhost:3000';
+
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', namespace: 'custom' },
+      pool
+    );
+    try {
+      await queue.start();
+
+      const task = getTaskHandler('workflow_flows');
+      const payload = {
+        runId: 'wrun_01ABC',
+      };
+      const firstExecution = task(
+        buildMessageData('__custom_wkf_workflow_test-workflow', payload, {
+          messageId: MessageId.parse('msg_01ABC'),
+        }),
+        {} as any
+      );
+      const secondExecution = task(
+        buildMessageData('__custom_wkf_workflow_test-workflow', payload, {
+          messageId: MessageId.parse('msg_01ABD'),
+        }),
+        {} as any
+      );
+
+      await firstRequestStarted;
+      await Promise.resolve();
+      expect(requestCount).toBe(1);
+      expect(maxActiveRequests).toBe(1);
+
+      resolveReleaseFirstRequest();
+      await Promise.all([firstExecution, secondExecution]);
+
+      expect(requestCount).toBe(2);
+      expect(maxActiveRequests).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('does not require a runId for workflow health-check payloads', async () => {
     const fetchMock = vi.fn(async () => Response.json({ ok: true }));
     vi.stubGlobal('fetch', fetchMock);
@@ -328,6 +396,40 @@ describe('postgres queue http execution', () => {
       vi.useRealTimers();
     }
   });
+
+  it('queues namespaced producer messages in graphile job metadata', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', namespace: 'custom' },
+      pool
+    );
+    await queue.start();
+
+    await queue.queue(
+      '__custom_wkf_step_test-step',
+      {
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      },
+      {
+        idempotencyKey: 'step_01ABC',
+      }
+    );
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_steps',
+      expect.objectContaining({
+        attempt: 1,
+        id: 'test-step',
+        idempotencyKey: 'step_01ABC',
+      }),
+      expect.objectContaining({
+        jobKey: 'step_01ABC',
+        maxAttempts: 3,
+      })
+    );
+  });
 });
 
 function buildQueue(
@@ -349,9 +451,7 @@ function buildMessageData(
     messageId?: MessageId;
   }
 ) {
-  const [, id] = queueName.startsWith('__wkf_step_')
-    ? ['__wkf_step_', queueName.slice('__wkf_step_'.length)]
-    : ['__wkf_workflow_', queueName.slice('__wkf_workflow_'.length)];
+  const { id } = parseQueueName(queueName);
 
   return MessageData.encode({
     id,

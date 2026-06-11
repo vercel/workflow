@@ -1,8 +1,27 @@
-import { getRun, start } from 'workflow/api';
+import { defineHook } from 'workflow';
+import { start } from 'workflow/api';
+import { z } from 'zod';
 
 async function processItem(item: string): Promise<string> {
   'use step';
   return `processed-${item}`;
+}
+
+const childCompletionHook = defineHook({
+  schema: z.discriminatedUnion('status', [
+    z.object({ status: z.literal('completed'), value: z.unknown() }),
+    z.object({ status: z.literal('failed'), error: z.string() }),
+  ]),
+});
+
+async function resumeParentCompletion(
+  token: string,
+  result:
+    | { status: 'completed'; value: unknown }
+    | { status: 'failed'; error: string }
+) {
+  'use step';
+  await childCompletionHook.resume(token, result);
 }
 
 // Child workflow
@@ -13,29 +32,59 @@ export async function childWorkflow(item: string) {
   return { item, result };
 }
 
-async function spawnChild(item: string): Promise<string> {
+export async function childWorkflowWithCompletion(
+  item: string,
+  completionToken: string
+) {
+  'use workflow';
+
+  let payload:
+    | { status: 'completed'; value: { item: string; result: string } }
+    | { status: 'failed'; error: string }
+    | undefined;
+
+  try {
+    const value = await childWorkflow(item);
+    payload = { status: 'completed', value };
+  } catch (error) {
+    payload = {
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (payload) {
+      await resumeParentCompletion(completionToken, payload);
+    }
+  }
+}
+
+async function spawnChildWithCompletion(
+  item: string,
+  completionToken: string
+): Promise<string> {
   'use step';
 
-  const run = await start(childWorkflow, [item]);
+  const run = await start(childWorkflowWithCompletion, [item, completionToken]);
   return run.runId;
 }
 
-async function collectResult(
-  runId: string
-): Promise<{ item: string; result: string }> {
-  'use step';
-
-  const run = getRun(runId);
-  const value = await run.returnValue;
-  return value as { item: string; result: string };
-}
-
-// Parent workflow — spawns one child and collects its result
+// Parent workflow — spawns one child and waits via hook resume
 export async function parentWorkflow(item: string) {
   'use workflow';
 
-  const runId = await spawnChild(item);
-  const result = await collectResult(runId);
+  const hook = childCompletionHook.create({
+    token: `child-completion:${item}`,
+  });
 
-  return { childRunId: runId, result };
+  const childRunId = await spawnChildWithCompletion(item, hook.token);
+  const completion = await hook;
+
+  if (completion.status === 'failed') {
+    throw new Error(completion.error);
+  }
+
+  return {
+    childRunId,
+    result: completion.value as { item: string; result: string },
+  };
 }

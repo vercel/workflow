@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import type { World } from './types';
 import { WorldCardSimple } from './WorldCardSimple';
 
-type Filter = 'all' | 'vercel' | 'community' | 'compatible' | 'encrypted';
+type Filter = 'all' | 'vercel' | 'community' | 'encrypted';
 
 interface WorldsFilteredGridProps {
   worlds: [string, World][];
@@ -52,8 +52,6 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
         return world.type === 'official';
       case 'community':
         return world.type === 'community';
-      case 'compatible':
-        return world.e2e?.status === 'passing';
       case 'encrypted':
         return world.features?.includes('encryption');
       default:
@@ -65,7 +63,6 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
     all: worlds.length,
     vercel: worlds.filter(([, w]) => w.type === 'official').length,
     community: worlds.filter(([, w]) => w.type === 'community').length,
-    compatible: worlds.filter(([, w]) => w.e2e?.status === 'passing').length,
     encrypted: worlds.filter(([, w]) => w.features.includes('encryption'))
       .length,
   };
@@ -74,7 +71,6 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
     { id: 'all', label: `Show all (${counts.all})` },
     { id: 'vercel', label: `By Vercel (${counts.vercel})` },
     { id: 'community', label: `By Community (${counts.community})` },
-    { id: 'compatible', label: `Fully Compatible (${counts.compatible})` },
     { id: 'encrypted', label: `Encrypted (${counts.encrypted})` },
   ];
 

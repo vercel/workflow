@@ -14,6 +14,10 @@ Use this pattern to make any AI SDK agent durable. The agent becomes a workflow,
 - Long-running agent sessions where losing progress is unacceptable
 - Agents that need per-step observability in the workflow event log
 
+<Callout type="info">
+A durable agent run stays on the deployment that started it. For multi-turn agents that should pick up newer code between turns, see [Versioning](/docs/foundations/versioning) for patterns that start the next turn or next session run with `deploymentId: "latest"`.
+</Callout>
+
 ## Pattern
 
 Replace `Agent` with `DurableAgent`, wrap the function in `"use workflow"`, mark each tool with `"use step"`, and stream output through `getWritable()`.
