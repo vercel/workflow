@@ -97,6 +97,8 @@ export async function fetchRunKey(
     token?: string;
     /** Team ID for team-scoped API requests. */
     teamId?: string;
+    /** Custom HTTP dispatcher. Defaults to the shared undici agent. */
+    dispatcher?: unknown;
   }
 ): Promise<Uint8Array | undefined> {
   // Authenticate via provided token (CLI/config), VERCEL_TOKEN env var
@@ -126,7 +128,7 @@ export async function fetchRunKey(
         Authorization: `Bearer ${token}`,
       },
       // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
-      dispatcher: getDispatcher(),
+      dispatcher: getDispatcher({ dispatcher: options?.dispatcher }),
     }
   );
 
@@ -170,7 +172,8 @@ export async function fetchRunKey(
 export function createGetEncryptionKeyForRun(
   projectId: string | undefined,
   teamId?: string,
-  token?: string
+  token?: string,
+  dispatcher?: unknown
 ): World['getEncryptionKeyForRun'] {
   if (!projectId) return undefined;
 
@@ -215,6 +218,10 @@ export function createGetEncryptionKeyForRun(
     // HKDF derivation server-side so the raw deployment key never leaves
     // the API boundary.
     if (!deploymentId) return undefined;
-    return fetchRunKey(deploymentId, projectId, runId, { token, teamId });
+    return fetchRunKey(deploymentId, projectId, runId, {
+      token,
+      teamId,
+      dispatcher,
+    });
   };
 }

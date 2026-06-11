@@ -927,6 +927,50 @@ describe('e2e', () => {
     expect(await run.returnValue).toEqual('done');
   });
 
+  // A WritableStream passed as a workflow argument to start() should
+  // land raw bytes on the parent's output stream when the child step
+  // writes to it. Covered for both:
+  // - `writableForwardedFromWorkflowWorkflow`: parent calls
+  //   `getWritable()` in workflow context (fake handle revived in the
+  //   intermediary step).
+  // - `writableForwardedFromStepWorkflow`: parent calls `getWritable()`
+  //   in step context (real `serialize.writable` passed straight to
+  //   `start()`).
+  test.each([
+    'writableForwardedFromWorkflowWorkflow',
+    'writableForwardedFromStepWorkflow',
+  ] as const)('%s', { timeout: 120_000 }, async (workflowName) => {
+    const payload = `hello-from-child-${Date.now()}\n`;
+    const run = await start(await e2e(workflowName), [payload]);
+
+    const reader = run.getReadable().getReader();
+    // `fatal: true` makes the decoder throw on any invalid UTF-8
+    // sequence, so a successful decode is itself a round-trip
+    // assertion that the bytes survived intact.
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+
+    // The child step performs exactly one write of `payload` as
+    // UTF-8 bytes, so we should receive a single chunk containing
+    // exactly those bytes before the stream closes.
+    const { value, done } = await reader.read();
+    expect(done).toBeFalsy();
+    assert(value);
+    assert(value instanceof Uint8Array);
+
+    const expectedBytes = new TextEncoder().encode(payload);
+    expect(value.byteLength).toBe(expectedBytes.byteLength);
+    expect(decoder.decode(value)).toBe(payload);
+
+    // Default stream should close cleanly after the parent closes its
+    // writable.
+    expect((await reader.read()).done).toBe(true);
+
+    const returnValue = await run.returnValue;
+    expect(returnValue).toMatchObject({
+      childRunId: expect.stringMatching(/^wrun_/),
+    });
+  });
+
   test('fetchWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('fetchWorkflow'), []);
     const returnValue = await run.returnValue;
@@ -2063,6 +2107,10 @@ describe('e2e', () => {
         timeout: 30000,
       });
       expect(workflowResult.healthy).toBe(true);
+      // The deployed app advertises its `@workflow/core` version so
+      // callers can derive capability metadata (see `getRunCapabilities`
+      // in `capabilities.ts`).
+      expect(typeof workflowResult.workflowCoreVersion).toBe('string');
     }
   );
 
@@ -2855,8 +2903,10 @@ describe('e2e', () => {
         const returnValue = await run.returnValue;
 
         // The workflow races 3 parallel long steps against a 3s sleep.
-        // The sleep wins, so the workflow returns timed out status.
+        // The sleep wins, so the workflow returns timed out status after all
+        // in-flight steps observe the abort and settle through the abort path.
         expect(returnValue.status).toBe('timed out');
+        expect(returnValue.results).toEqual(['aborted', 'aborted', 'aborted']);
       }
     );
 
@@ -2930,11 +2980,8 @@ describe('e2e', () => {
         const token = Math.random().toString(36).slice(2);
         const run = await start(await e2e('abortViaHookWorkflow'), [token]);
 
-        // Wait for the hook to be registered
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-        // Resume the hook with a cancellation payload
-        const hook = await getHookByToken(token);
+        // Resume once the hook is observable; fixed delays race slow starts.
+        const hook = await waitForHook(token, { runId: run.runId });
         expect(hook.runId).toBe(run.runId);
         await resumeHook(hook, { reason: 'user cancelled' });
 
@@ -3106,6 +3153,12 @@ describe('e2e', () => {
         // The AbortError is NOT caught in the step — it propagates as FatalError.
         expect(returnValue.threw).toBe(true);
         expect(returnValue.isFatal).toBe(true);
+
+        const world = await getWorld();
+        const { data: events } = await world.events.list({ runId: run.runId });
+        expect(
+          events.some((event) => event.eventType === 'step_retrying')
+        ).toBe(false);
       }
     );
 
@@ -3122,11 +3175,16 @@ describe('e2e', () => {
         const run = await start(await e2e('abortFetchInFlightWorkflow'), []);
         const returnValue = await run.returnValue;
 
-        expect(returnValue.winner).toBe('timeout');
+        // Include the full returnValue (status + elapsedMs from the step) in
+        // the assertion message so a flaky failure surfaces *why* fetch won
+        // the race — e.g. httpbin returning a 5xx in <1s — instead of just
+        // "expected 'fetch' to be 'timeout'".
+        const summary = JSON.stringify(returnValue);
+        expect(returnValue.winner, summary).toBe('timeout');
         // The step's catch path returned aborted=true (fetch threw AbortError),
         // not the natural-completion path (which would set ok=true,aborted=false).
-        expect(returnValue.fetchResult.aborted).toBe(true);
-        expect(returnValue.fetchResult.ok).toBe(false);
+        expect(returnValue.fetchResult.aborted, summary).toBe(true);
+        expect(returnValue.fetchResult.ok, summary).toBe(false);
       }
     );
 
@@ -3147,8 +3205,12 @@ describe('e2e', () => {
         const run = await start(await e2e('abortVoidSleepTimeoutWorkflow'), []);
         const returnValue = await run.returnValue;
 
-        expect(returnValue.aborted).toBe(true);
-        expect(returnValue.ok).toBe(false);
+        // Same diagnostic treatment as abortFetchInFlightWorkflow: when the
+        // slow upstream returns early the step result includes status and
+        // elapsedMs, which are what we'll need to triage the next flake.
+        const summary = JSON.stringify(returnValue);
+        expect(returnValue.aborted, summary).toBe(true);
+        expect(returnValue.ok, summary).toBe(false);
       }
     );
 
@@ -3278,15 +3340,13 @@ describe('e2e', () => {
           if (resumeBeforeAbort) {
             // For "hook-first" variants, the workflow awaits a step before
             // calling abort(). We resume the hook during that window.
-            await new Promise((resolve) => setTimeout(resolve, 5_000));
-            const hook = await getHookByToken(token);
+            const hook = await waitForHook(token, { runId: run.runId });
             expect(hook.runId).toBe(run.runId);
             await resumeHook(hook, { value: 'hello' });
           } else {
             // For "abort-first" variants, abort happens before the hook
-            // is resumed. We wait then resume so the workflow can complete.
-            await new Promise((resolve) => setTimeout(resolve, 5_000));
-            const hook = await getHookByToken(token);
+            // is resumed. Resume once registration is visible.
+            const hook = await waitForHook(token, { runId: run.runId });
             expect(hook.runId).toBe(run.runId);
             await resumeHook(hook, { value: 'hello' });
           }
@@ -3520,11 +3580,212 @@ describe('e2e', () => {
 
       // Workflow should still be running (grace period), so hook should still be findable
       await sleep(1_000);
-      const hookAfterAbort = await getHookByToken(token).catch(() => null);
+      const _hookAfterAbort = await getHookByToken(token).catch(() => null);
       // Hook may or may not be disposed depending on timing, but run should complete
       const returnValue = await run1.returnValue;
       expect(returnValue.aborted).toBe(true);
       expect(returnValue.reason).toBe('Test complete');
     }
   );
+
+  // ==========================================================================
+  // experimental_setAttributes (experimental MVP)
+  // ==========================================================================
+
+  describe('experimental_setAttributes', () => {
+    test(
+      'start: initial attributes are seeded on run creation',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesWorkflow'),
+          [2],
+          { attributes: { sourceAtStart: 'api' } }
+        );
+        await run.returnValue;
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted.attributes).toEqual({
+          sourceAtStart: 'api',
+          phase: 'done',
+        });
+      }
+    );
+
+    test(
+      'experimentalSetAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesWorkflow'),
+          [7]
+        );
+        const output = await run.returnValue;
+        expect(output).toBe(21);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        // First call sets {phase: 'init', source: 'workflow-body'}; second
+        // overwrites phase; third unsets source via undefined → null.
+        expect(persisted?.attributes).toEqual({ phase: 'done' });
+        expect(persisted?.attributes ?? {}).not.toHaveProperty('source');
+
+        const { data: events } = await world.events.list({ runId: run.runId });
+        const attributeEvents = events.filter(
+          (e) =>
+            e.eventType === 'attr_set' && e.eventData.writer.type === 'workflow'
+        );
+        expect(attributeEvents).toHaveLength(3);
+      }
+    );
+
+    test(
+      'experimentalSetAttributesInsideStepWorkflow: step-body calls append attributed native events',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesInsideStepWorkflow'),
+          [9]
+        );
+        const output = await run.returnValue;
+        expect(output).toBe(36);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        expect(persisted?.attributes).toEqual({
+          phase: 'step-done',
+          source: 'step-body',
+          input: '9',
+        });
+
+        const { data: events } = await world.events.list({ runId: run.runId });
+        expect(
+          events.some(
+            (e) =>
+              e.eventType === 'attr_set' && e.eventData.writer.type === 'step'
+          )
+        ).toBe(true);
+      }
+    );
+
+    test(
+      'fire-and-forget: void experimental_setAttributes lands without awaiting',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesFireAndForgetWorkflow'),
+          []
+        );
+        await run.returnValue;
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted.attributes).toEqual({
+          phase: 'done',
+          mode: 'fire-and-forget',
+        });
+      }
+    );
+
+    test(
+      'Promise.all of disjoint-key writes: every key lands',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesParallelWorkflow'),
+          []
+        );
+        const output = await run.returnValue;
+        expect(output).toBe('done');
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        // Disjoint-key writes never collide, so all three keys must
+        // land regardless of dispatch ordering at the world.
+        expect(persisted?.attributes).toEqual({ a: '1', b: '2', c: '3' });
+      }
+    );
+
+    test(
+      'workflow throws after awaited setAttributes: attribute still persists on the failed run',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesThrowsAfterWorkflow'),
+          []
+        );
+        // The workflow throws — `returnValue` rejects.
+        await expect(run.returnValue).rejects.toThrow(/intentional failure/);
+
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+
+        expect(persisted?.status).toBe('failed');
+        // The attribute was awaited and therefore landed before the
+        // throw. The `run_failed` lifecycle write must preserve the
+        // attribute snapshot — the per-run file lock guarantees the
+        // lifecycle handler reads the fresh value off disk inside its
+        // critical section before writing the failed state back.
+        expect(persisted?.attributes).toEqual({
+          phase: 'about-to-fail',
+          reason: 'intentional',
+        });
+      }
+    );
+
+    test(
+      'validation DX: invalid writes throw catchable FatalErrors naming rule and limit',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesValidationWorkflow'),
+          []
+        );
+        const outcomes = (await run.returnValue) as Record<string, string>;
+
+        // Every invalid call is rejected as a FatalError the workflow can
+        // catch, with a message naming the violated rule and its limit.
+        expect(outcomes.reserved).toMatch(/^FatalError: /);
+        expect(outcomes.reserved).toContain('reserved prefix');
+        expect(outcomes.reserved).toContain('allowReservedAttributes');
+        expect(outcomes.emptyKey).toContain('must not be empty');
+        expect(outcomes.keyTooLong).toContain(
+          'key length 257 exceeds limit 256'
+        );
+        expect(outcomes.valueTooLong).toContain(
+          'byte length 257 exceeds limit 256'
+        );
+        // The value cap is bytes, not characters: 200 two-byte chars.
+        expect(outcomes.valueTooManyBytes).toContain(
+          'byte length 400 exceeds limit 256'
+        );
+        expect(outcomes.overCap).toContain('exceed limit 64');
+        expect(outcomes.nonObject).toContain('requires a plain object');
+
+        // No invalid write reached the run, and the run stayed healthy
+        // enough to complete a valid write afterwards.
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted?.status).toBe('completed');
+        expect(persisted?.attributes).toEqual({ phase: 'validated' });
+      }
+    );
+
+    test(
+      'start: invalid initial attributes are rejected before a run is created',
+      { timeout: 30_000 },
+      async () => {
+        const workflow = await e2e('experimentalSetAttributesWorkflow');
+        await expect(
+          start(workflow, [1], { attributes: { $reserved: 'x' } })
+        ).rejects.toThrow(/reserved prefix/);
+        await expect(
+          start(workflow, [1], { attributes: { note: 'v'.repeat(257) } })
+        ).rejects.toThrow(/exceeds limit 256/);
+      }
+    );
+  });
 });

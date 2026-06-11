@@ -1,5 +1,106 @@
 # @workflow/nitro
 
+## 5.0.0-beta.14
+
+### Patch Changes
+
+- Updated dependencies [[`bf44d4d`](https://github.com/vercel/workflow/commit/bf44d4dd0ac8891732f5a254b37e8f165b71a10d), [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`eb976db`](https://github.com/vercel/workflow/commit/eb976db35bb2cd7591d6a7f3bfa20a69b1c0ad89), [`a813382`](https://github.com/vercel/workflow/commit/a813382216e1c5d3a2f90dc97d205f17ff3f4cd0), [`f5f6d0e`](https://github.com/vercel/workflow/commit/f5f6d0ede6c44ec7cc6a861a78f5ec4ff26910ee)]:
+  - @workflow/core@5.0.0-beta.14
+  - @workflow/builders@5.0.0-beta.14
+  - @workflow/web@5.0.0-beta.14
+  - @workflow/rollup@5.0.0-beta.14
+  - @workflow/vite@5.0.0-beta.14
+
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- Updated dependencies [[`8d75491`](https://github.com/vercel/workflow/commit/8d75491a074991dac3c7cf56823feb15354ab0f1), [`0fd0891`](https://github.com/vercel/workflow/commit/0fd0891cc4acab6d84610d3603f3cb90a33f29b0), [`ccd37e9`](https://github.com/vercel/workflow/commit/ccd37e9a59f1b3629815cdaf1c650610c709a580), [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7), [`aa628b7`](https://github.com/vercel/workflow/commit/aa628b7a8fda1037100c1ac5515c6525f25decb8)]:
+  - @workflow/core@5.0.0-beta.13
+  - @workflow/web@5.0.0-beta.13
+  - @workflow/builders@5.0.0-beta.13
+  - @workflow/rollup@5.0.0-beta.13
+  - @workflow/vite@5.0.0-beta.13
+
+## 5.0.0-beta.12
+
+### Minor Changes
+
+- [#2110](https://github.com/vercel/workflow/pull/2110) [`a651052`](https://github.com/vercel/workflow/commit/a65105235cb0987157357a1aa4949c43bc77ed73) Thanks [@RihanArfan](https://github.com/RihanArfan)! - Add `/_workflow` route in dev mode that opens the workflow observability dashboard.
+
+### Patch Changes
+
+- Updated dependencies [[`52d63d1`](https://github.com/vercel/workflow/commit/52d63d1b61303d9d58e2ad74a655dbe57e4f1b39), [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1), [`12c35b5`](https://github.com/vercel/workflow/commit/12c35b54ebf3d3c9fbc30462b42b05e5ce476a2b)]:
+  - @workflow/core@5.0.0-beta.12
+  - @workflow/web@5.0.0-beta.12
+  - @workflow/builders@5.0.0-beta.12
+  - @workflow/rollup@5.0.0-beta.12
+  - @workflow/vite@5.0.0-beta.12
+
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- Updated dependencies [[`1ee63b8`](https://github.com/vercel/workflow/commit/1ee63b870afbf9754eb1022b1bb5f02d0ab042f9), [`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd)]:
+  - @workflow/core@5.0.0-beta.11
+  - @workflow/builders@5.0.0-beta.11
+  - @workflow/rollup@5.0.0-beta.11
+  - @workflow/vite@5.0.0-beta.11
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies [[`8d0928b`](https://github.com/vercel/workflow/commit/8d0928b2a2ce61b6c05cb8930d29f176b3a83970)]:
+  - @workflow/core@5.0.0-beta.10
+  - @workflow/builders@5.0.0-beta.10
+  - @workflow/rollup@5.0.0-beta.10
+  - @workflow/vite@5.0.0-beta.10
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies [[`4b5f017`](https://github.com/vercel/workflow/commit/4b5f017635b28ff164047bce8ccf4a5981748704), [`409b103`](https://github.com/vercel/workflow/commit/409b1033d9b7dfab9c26fda9a17494c08e43d0ae), [`ae37315`](https://github.com/vercel/workflow/commit/ae37315cb708b413f2ee9945c90a23a57dfd410d)]:
+  - @workflow/core@5.0.0-beta.9
+  - @workflow/builders@5.0.0-beta.9
+  - @workflow/rollup@5.0.0-beta.9
+  - @workflow/vite@5.0.0-beta.9
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`2050656`](https://github.com/vercel/workflow/commit/2050656099349ededd11b33256e951cf97d88a76), [`0d0bb01`](https://github.com/vercel/workflow/commit/0d0bb013d7073f964bb3aea7869e84ed762bf7a9), [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/core@5.0.0-beta.8
+  - @workflow/builders@5.0.0-beta.8
+  - @workflow/rollup@5.0.0-beta.8
+  - @workflow/vite@5.0.0-beta.8
+
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- [#1575](https://github.com/vercel/workflow/pull/1575) [`c1242e8`](https://github.com/vercel/workflow/commit/c1242e8dc5db42748ae2739c7d24f964b39b7232) Thanks [@RihanArfan](https://github.com/RihanArfan)! - Match the webhook `functionRules` key (`:token`) to the handler route on Nitro v3 Vercel deploys so the runtime override is applied to the real `webhook/[token].func` instead of generating a duplicate `webhook/[...].func`. Also propagate `workflow.runtime` to the public manifest route for consistency.
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b), [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335)]:
+  - @workflow/core@5.0.0-beta.7
+  - @workflow/builders@5.0.0-beta.7
+  - @workflow/rollup@5.0.0-beta.7
+  - @workflow/vite@5.0.0-beta.7
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- Updated dependencies [[`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837)]:
+  - @workflow/core@5.0.0-beta.6
+  - @workflow/builders@5.0.0-beta.6
+  - @workflow/rollup@5.0.0-beta.6
+  - @workflow/vite@5.0.0-beta.6
+
 ## 5.0.0-beta.5
 
 ### Minor Changes

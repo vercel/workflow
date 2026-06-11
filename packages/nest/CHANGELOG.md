@@ -1,5 +1,72 @@
 # @workflow/nest
 
+## 5.0.0-beta.14
+
+### Patch Changes
+
+- Updated dependencies [[`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`f5f6d0e`](https://github.com/vercel/workflow/commit/f5f6d0ede6c44ec7cc6a861a78f5ec4ff26910ee)]:
+  - @workflow/builders@5.0.0-beta.14
+
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2080](https://github.com/vercel/workflow/pull/2080) [`d674d6f`](https://github.com/vercel/workflow/commit/d674d6fccdaacfa0bfbce41ca1f17754de533c9c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use AST-based import rewriting for NestJS CommonJS workflow bundles.
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.13
+
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.12
+
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.11
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.10
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.9
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`0d0bb01`](https://github.com/vercel/workflow/commit/0d0bb013d7073f964bb3aea7869e84ed762bf7a9), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/builders@5.0.0-beta.8
+
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.7
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.6
+
 ## 5.0.0-beta.5
 
 ### Minor Changes

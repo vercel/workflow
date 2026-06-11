@@ -10,5 +10,4 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['@node-rs/xxhash'],
 };
 
-// export default nextConfig;
-export default withWorkflow(nextConfig, { workflows: { lazyDiscovery: true } });
+export default withWorkflow(nextConfig);

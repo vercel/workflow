@@ -1,5 +1,106 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2338](https://github.com/vercel/workflow/pull/2338) [`95d7009`](https://github.com/vercel/workflow/commit/95d7009e8a80b8e8602f10489e2a065a317e82d0) Thanks [@xujustinj](https://github.com/xujustinj)! - Use `vitest run` instead of watch mode so local `pnpm test` exits cleanly.
+
+- Updated dependencies [[`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af)]:
+  - @workflow/world@5.0.0-beta.8
+  - @workflow/errors@5.0.0-beta.7
+
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- [#2257](https://github.com/vercel/workflow/pull/2257) [`ccd37e9`](https://github.com/vercel/workflow/commit/ccd37e9a59f1b3629815cdaf1c650610c709a580) Thanks [@pranaygp](https://github.com/pranaygp)! - Avoid unhandled run lookups for unused or empty readable streams and include Vercel request correlation headers in world transport errors.
+
+- [#2255](https://github.com/vercel/workflow/pull/2255) [`81bda49`](https://github.com/vercel/workflow/commit/81bda490ef2726ef36ce457932ec94cc3abc6bc2) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update @vercel/queue from 0.2.1 to 0.3.0
+
+- [#2035](https://github.com/vercel/workflow/pull/2035) [`c19f38d`](https://github.com/vercel/workflow/commit/c19f38d9071f12de3a44e8f5b5442bf9dfbebd80) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Validate ref resolve responses (empty, truncated, or `Content-Length`-mismatched bodies) before use, throwing `WorkflowWorldError` instead of corrupting the event log.
+
+## 5.0.0-beta.11
+
+### Minor Changes
+
+- [#2235](https://github.com/vercel/workflow/pull/2235) [`3a16272`](https://github.com/vercel/workflow/commit/3a16272bd363d56de58c81ef4dba75b89897a749) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Add a `dispatcher` option to `createVercelWorld` for supplying a custom undici dispatcher, used for both HTTP and queue requests. Defaults to the shared undici `RetryAgent`.
+
+### Patch Changes
+
+- [#2231](https://github.com/vercel/workflow/pull/2231) [`b8a337c`](https://github.com/vercel/workflow/commit/b8a337c945cc0566b5d87e4e40026f50aa8c60ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update `undici` to 7.26.0.
+
+- [#2246](https://github.com/vercel/workflow/pull/2246) [`ddc8a79`](https://github.com/vercel/workflow/commit/ddc8a79741e8d281717e9fb361cf0001af460e9b) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update `@vercel/queue` from 0.1.7 to 0.2.1
+
+- Updated dependencies [[`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1)]:
+  - @workflow/errors@5.0.0-beta.7
+  - @workflow/world@5.0.0-beta.7
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- [#2204](https://github.com/vercel/workflow/pull/2204) [`7994629`](https://github.com/vercel/workflow/commit/7994629b8bd0781369a4d55b7034b2b722a8c556) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry transient response-body read/decode failures (truncated or terminated streams, gateway non-CBOR bodies) on idempotent requests inside the HTTP client, so a sporadic `events.list` parse failure no longer surfaces as a fatal error.
+
+- Updated dependencies [[`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd)]:
+  - @workflow/world@5.0.0-beta.6
+  - @workflow/errors@5.0.0-beta.6
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies [[`8d0928b`](https://github.com/vercel/workflow/commit/8d0928b2a2ce61b6c05cb8930d29f176b3a83970)]:
+  - @workflow/errors@5.0.0-beta.6
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- [#2142](https://github.com/vercel/workflow/pull/2142) [`ae37315`](https://github.com/vercel/workflow/commit/ae37315cb708b413f2ee9945c90a23a57dfd410d) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent failed stream writes from surfacing as unhandled rejections and include request correlation details in stream errors.
+
+## 5.0.0-beta.7
+
+### Minor Changes
+
+- [#1978](https://github.com/vercel/workflow/pull/1978) [`b0d0561`](https://github.com/vercel/workflow/commit/b0d0561afc41d20b5203c02bb9a4dbf59d18c214) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `@workflow/world-vercel/run-id` sub-export with `encode`/`decode` helpers that produce ULID-shaped workflow run IDs carrying a tag bit, a 5-bit version, and a 6-bit Vercel region ID.
+
+### Patch Changes
+
+- [#2134](https://github.com/vercel/workflow/pull/2134) [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `experimental_setAttributes()` workflow-level helper for attaching string key/value metadata to a workflow run, surfaced as `run.attributes`
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/world@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.5
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#2038](https://github.com/vercel/workflow/pull/2038) [`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Refresh workflow events after completing elapsed waits so concurrent hook events preserve deterministic replay order.
+
+- [#2013](https://github.com/vercel/workflow/pull/2013) [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Exclude inline step execution from the workflow replay timeout. Long-running steps no longer hit `REPLAY_TIMEOUT` (fixes #2009). Adds a `WORKFLOW_REPLAY_TIMEOUT_MS` env var override and a new optional `World.processExitTriggersQueueRedelivery` capability used to gate the runtime's `process.exit(1)` failure path.
+
+- [#2060](https://github.com/vercel/workflow/pull/2060) [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b) Thanks [@pranaygp](https://github.com/pranaygp)! - Record fatal world response contract failures as non-retryable workflow errors.
+
+- Updated dependencies [[`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b)]:
+  - @workflow/world@5.0.0-beta.4
+  - @workflow/errors@5.0.0-beta.4
+
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#1999](https://github.com/vercel/workflow/pull/1999) [`c43e721`](https://github.com/vercel/workflow/commit/c43e721efc90e93575f0e1f36221b69d50074187) Thanks [@pranaygp](https://github.com/pranaygp)! - Release failed VQS workflow handler messages on the configured retry cadence.
+
+- [#1987](https://github.com/vercel/workflow/pull/1987) [`22b5a12`](https://github.com/vercel/workflow/commit/22b5a1240f8f4dfee5536791fee981d50781ff1f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update to new queue client version
+
+- Updated dependencies [[`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837)]:
+  - @workflow/errors@5.0.0-beta.3
+  - @workflow/world@5.0.0-beta.3
+
 ## 5.0.0-beta.4
 
 ### Major Changes

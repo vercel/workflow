@@ -8,6 +8,26 @@ import {
 } from './flushable-stream.js';
 
 describe('flushable stream behavior', () => {
+  it('does not emit an unhandled rejection before the runtime awaits a failed operation', async () => {
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      const state = createFlushableState();
+      state.reject(new Error('Stream write failed'));
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(unhandledRejections).toEqual([]);
+      await expect(state.promise).rejects.toThrow('Stream write failed');
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
+  });
+
   it('promise should resolve when writable stream lock is released (polling)', async () => {
     // Test the pattern: user writes, releases lock, polling detects it, promise resolves
     const chunks: string[] = [];

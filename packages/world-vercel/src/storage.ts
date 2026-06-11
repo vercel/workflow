@@ -6,7 +6,11 @@ import {
 } from './events.js';
 import { getHook, getHookByToken, listHooks } from './hooks.js';
 import { instrumentObject } from './instrumentObject.js';
-import { getWorkflowRun, listWorkflowRuns } from './runs.js';
+import {
+  experimentalSetAttributes,
+  getWorkflowRun,
+  listWorkflowRuns,
+} from './runs.js';
 import { getStep, listWorkflowRunSteps } from './steps.js';
 import type { APIConfig } from './utils.js';
 
@@ -18,6 +22,8 @@ export function createStorage(config?: APIConfig): Storage {
         getWorkflowRun(id, params, config)) as Storage['runs']['get'],
       list: ((params?: any) =>
         listWorkflowRuns(params, config)) as Storage['runs']['list'],
+      experimentalSetAttributes: (runId, changes, options) =>
+        experimentalSetAttributes(runId, changes, options, config),
     },
     steps: {
       get: ((runId: string, stepId: string, params?: any) =>

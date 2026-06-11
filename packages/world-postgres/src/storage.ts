@@ -8,8 +8,10 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AttributeChange,
   Event,
   EventResult,
+  ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
   ListEventsParams,
@@ -25,6 +27,8 @@ import type {
   WorkflowRunWithoutData,
 } from '@workflow/world';
 import {
+  ATTRIBUTE_MAX_PER_RUN,
+  AttributeValidationError,
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
@@ -32,6 +36,7 @@ import {
   SPEC_VERSION_CURRENT,
   StepSchema,
   stripEventDataRefs,
+  validateAttributeChanges,
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -140,6 +145,88 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
         cursor: values.at(-1)?.runId ?? null,
       };
     }) as Storage['runs']['list'],
+
+    experimentalSetAttributes: async (
+      runId: string,
+      changes: AttributeChange[],
+      options?: { allowReservedAttributes?: boolean }
+    ): Promise<ExperimentalSetAttributesResult> => {
+      // Load existing attributes so the SDK-shape validator can produce
+      // a precise error message (cap, duplicate keys, reserved prefix,
+      // byte length). The authoritative cap enforcement happens inside
+      // the UPDATE statement below — see the `WHERE` clause — so the
+      // race between this read and the UPDATE cannot push the row past
+      // the per-run cap.
+      const [existing] = await drizzle
+        .select({ attributes: runs.attributes })
+        .from(runs)
+        .where(eq(runs.runId, runId))
+        .limit(1);
+      if (!existing) {
+        throw new WorkflowRunNotFoundError(runId);
+      }
+
+      try {
+        validateAttributeChanges(changes, {
+          existingKeys: Object.keys(existing.attributes ?? {}),
+          allowReservedAttributes: options?.allowReservedAttributes,
+        });
+      } catch (err) {
+        if (err instanceof AttributeValidationError) throw err;
+        throw err;
+      }
+
+      // Build a single SQL expression that applies all changes
+      // atomically. Sets fold into nested `jsonb_set` calls; removes
+      // fold into chained `-` (delete) operators.
+      let expr = sql`COALESCE(${runs.attributes}, '{}'::jsonb)`;
+      for (const { key, value } of changes) {
+        if (value === null) {
+          expr = sql`${expr} - ${key}`;
+        } else {
+          expr = sql`jsonb_set(${expr}, ARRAY[${key}]::text[], to_jsonb(${value}::text), true)`;
+        }
+      }
+
+      // Atomic cap enforcement: only commit the UPDATE if the
+      // post-merge key count fits the per-run cap. Computed against
+      // the *current* row state, so two concurrent writers adding
+      // disjoint keys at the cap boundary cannot both succeed.
+      // Drizzle re-renders `expr` twice in the SQL (`SET attributes =
+      // ...` + the count check); `jsonb_set` is cheap so the
+      // duplication is harmless.
+      const [updated] = await drizzle
+        .update(runs)
+        .set({
+          attributes: expr as any,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(runs.runId, runId),
+            sql`(SELECT COUNT(*) FROM jsonb_object_keys(${expr})) <= ${ATTRIBUTE_MAX_PER_RUN}`
+          )
+        )
+        .returning({ attributes: runs.attributes });
+
+      if (!updated) {
+        // Either the run vanished mid-call, or the cap-check WHERE
+        // clause rejected the UPDATE. Re-read to disambiguate.
+        const [stillThere] = await drizzle
+          .select({ attributes: runs.attributes })
+          .from(runs)
+          .where(eq(runs.runId, runId))
+          .limit(1);
+        if (!stillThere) {
+          throw new WorkflowRunNotFoundError(runId);
+        }
+        throw new AttributeValidationError(
+          `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} after concurrent write`
+        );
+      }
+
+      return { attributes: updated.attributes ?? {} };
+    },
   };
 }
 
@@ -368,12 +455,23 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             workflowName?: string;
             input?: any;
             executionContext?: Record<string, any>;
+            attributes?: Record<string, string>;
+            allowReservedAttributes?: true;
           };
           if (
             runInputData.deploymentId &&
             runInputData.workflowName &&
             runInputData.input !== undefined
           ) {
+            validateAttributeChanges(
+              Object.entries(runInputData.attributes ?? {}).map(
+                ([key, value]) => ({ key, value })
+              ),
+              {
+                allowReservedAttributes:
+                  runInputData.allowReservedAttributes === true,
+              }
+            );
             // Create run + run_created event atomically. The
             // transaction ensures we never have an orphaned run
             // without its run_created event.
@@ -388,6 +486,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 executionContext: runInputData.executionContext as
                   | SerializedContent
                   | undefined,
+                attributes: runInputData.attributes,
                 status: 'pending',
               })
               .onConflictDoNothing()
@@ -404,6 +503,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   workflowName: runInputData.workflowName,
                   input: runInputData.input,
                   executionContext: runInputData.executionContext,
+                  attributes: runInputData.attributes,
+                  allowReservedAttributes: runInputData.allowReservedAttributes,
                 },
                 specVersion: effectiveSpecVersion,
               });
@@ -452,6 +553,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             params
           );
         }
+      }
+      if (data.eventType === 'attr_set' && !currentRun) {
+        throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
       // Run terminal state validation
@@ -522,6 +626,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         ) {
           throw new EntityConflictError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`
+          );
+        }
+
+        if (data.eventType === 'attr_set') {
+          throw new EntityConflictError(
+            `Cannot set attributes on run in terminal state "${currentRun.status}"`
           );
         }
       }
@@ -599,7 +709,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           workflowName: string;
           input: any[];
           executionContext?: Record<string, any>;
+          attributes?: Record<string, string>;
+          allowReservedAttributes?: true;
         };
+        validateAttributeChanges(
+          Object.entries(eventData.attributes ?? {}).map(([key, value]) => ({
+            key,
+            value,
+          })),
+          {
+            allowReservedAttributes: eventData.allowReservedAttributes === true,
+          }
+        );
         const [runValue] = await drizzle
           .insert(Schema.runs)
           .values({
@@ -612,6 +733,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             executionContext: eventData.executionContext as
               | SerializedContent
               | undefined,
+            attributes: eventData.attributes,
             status: 'pending',
           })
           .onConflictDoNothing()
@@ -800,6 +922,91 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             .delete(Schema.waits)
             .where(eq(Schema.waits.runId, effectiveRunId)),
         ]);
+      }
+
+      if (data.eventType === 'attr_set') {
+        const { changes, allowReservedAttributes } = data.eventData;
+        // Dedup pre-check for correlated workflow writes: if the event is
+        // already in the log (a redelivered/replayed duplicate), reject
+        // BEFORE materializing onto the run. Without this, a duplicate —
+        // including a pathological one carrying different changes for the
+        // same correlationId — would mutate `run.attributes` and then fail
+        // the event insert, leaving the snapshot out of sync with the
+        // event log. The unique index on the insert below still guards the
+        // truly-concurrent race; both writers of that race carry identical
+        // changes (deterministic replay), so the double-applied update is
+        // idempotent there.
+        if (data.correlationId && data.eventData.writer.type === 'workflow') {
+          const [duplicate] = await drizzle
+            .select({ eventId: events.eventId })
+            .from(events)
+            .where(
+              and(
+                eq(events.runId, effectiveRunId),
+                eq(events.correlationId, data.correlationId),
+                eq(events.eventType, 'attr_set')
+              )
+            )
+            .limit(1);
+          if (duplicate) {
+            throw new EntityConflictError(
+              `attr_set for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+            );
+          }
+        }
+        const [existing] = await drizzle
+          .select({ attributes: Schema.runs.attributes })
+          .from(Schema.runs)
+          .where(eq(Schema.runs.runId, effectiveRunId))
+          .limit(1);
+        if (!existing) {
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
+        validateAttributeChanges(changes, {
+          existingKeys: Object.keys(existing.attributes ?? {}),
+          allowReservedAttributes: allowReservedAttributes === true,
+        });
+
+        let expr = sql`COALESCE(${Schema.runs.attributes}, '{}'::jsonb)`;
+        for (const { key, value } of changes) {
+          if (value === null) {
+            expr = sql`${expr} - ${key}`;
+          } else {
+            expr = sql`jsonb_set(${expr}, ARRAY[${key}]::text[], to_jsonb(${value}::text), true)`;
+          }
+        }
+
+        const [runValue] = await drizzle
+          .update(Schema.runs)
+          .set({
+            attributes: expr as any,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(Schema.runs.runId, effectiveRunId),
+              sql`(SELECT COUNT(*) FROM jsonb_object_keys(${expr})) <= ${ATTRIBUTE_MAX_PER_RUN}`
+            )
+          )
+          .returning();
+        if (!runValue) {
+          // The guarded update matches zero rows either because the cap
+          // condition failed or because the run row disappeared between the
+          // existence check above and this update — distinguish the two so
+          // the error is not misattributed.
+          const [stillExists] = await drizzle
+            .select({ runId: Schema.runs.runId })
+            .from(Schema.runs)
+            .where(eq(Schema.runs.runId, effectiveRunId))
+            .limit(1);
+          if (!stillExists) {
+            throw new WorkflowRunNotFoundError(effectiveRunId);
+          }
+          throw new AttributeValidationError(
+            `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN}`
+          );
+        }
+        run = deserializeRunError(compact(runValue));
       }
 
       // Handle step_created event: create step entity
@@ -1218,7 +1425,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           })
           .returning({ createdAt: events.createdAt });
       } catch (err) {
-        // Translate unique-violation on the entity-creation partial index
+        // Translate unique-violation on the correlated-event partial index
         // (workflow_events_entity_creation_unique) into EntityConflictError
         // so the runtime's existing dedup catch path can handle it. Without
         // this, two concurrent invocations producing identical
@@ -1230,10 +1437,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // these event types (e.g. the events primary key, or any future
         // unique constraint we might add) don't get misclassified as a
         // correlationId conflict.
-        const isEntityCreatingEvent =
+        const isDeduplicatedCorrelatedEvent =
           data.eventType === 'step_created' ||
           data.eventType === 'hook_created' ||
-          data.eventType === 'wait_created';
+          data.eventType === 'wait_created' ||
+          (data.eventType === 'attr_set' &&
+            data.eventData.writer.type === 'workflow');
         const pgErr = (err as { code?: string; constraint?: string }).code
           ? (err as { code?: string; constraint?: string })
           : ((err as { cause?: { code?: string; constraint?: string } })
@@ -1241,7 +1450,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         const pgCode = pgErr.code;
         const pgConstraint = pgErr.constraint;
         if (
-          isEntityCreatingEvent &&
+          isDeduplicatedCorrelatedEvent &&
           pgCode === '23505' &&
           pgConstraint === 'workflow_events_entity_creation_unique'
         ) {
@@ -1275,6 +1484,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
       let allEvents: Event[] | undefined;
+      let cursor: string | null | undefined;
+      let hasMore: boolean | undefined;
       if (data.eventType === 'run_started' && run) {
         const eventRows = await drizzle
           .select()
@@ -1286,6 +1497,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
+        cursor = allEvents.at(-1)?.eventId ?? null;
+        hasMore = false;
       }
 
       return {
@@ -1295,6 +1508,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         hook,
         wait,
         events: allEvents,
+        cursor,
+        hasMore,
       };
     },
     async get(

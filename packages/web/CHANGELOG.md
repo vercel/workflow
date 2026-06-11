@@ -1,5 +1,37 @@
 # @workflow/web
 
+## 5.0.0-beta.14
+
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2301](https://github.com/vercel/workflow/pull/2301) [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
+## 5.0.0-beta.12
+
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- [#2200](https://github.com/vercel/workflow/pull/2200) [`f0f002a`](https://github.com/vercel/workflow/commit/f0f002ae05e6b4a66eb72e1b1c48fda1bcd0f412) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix new trace viewer getting stuck on the first page: re-wire pagination so it auto-loads pages up to an event cap and scroll-loads the rest for very large runs.
+
+- [#2164](https://github.com/vercel/workflow/pull/2164) [`0606949`](https://github.com/vercel/workflow/commit/0606949e4a5c79b8382da5ece916501e85202e92) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a loading skeleton to the new trace viewer that matches the real layout's dimensions, and start with the detail panel closed instead of pre-selecting the first span. The skeleton is also exported as `TraceViewerSkeleton` for consumers that need to render it standalone.
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- [#2107](https://github.com/vercel/workflow/pull/2107) [`ad5c068`](https://github.com/vercel/workflow/commit/ad5c068d7fa3e9d2696edacecbb823c2af92201c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow lookup of exact step ID (`step_`), wait ID (`wait_`), hook ID (`hook_`), or event ID (`evnt_`) in the event list UI.
+
+## 5.0.0-beta.9
+
+## 5.0.0-beta.8
+
+## 5.0.0-beta.7
+
+## 5.0.0-beta.6
+
 ## 5.0.0-beta.5
 
 ### Patch Changes

@@ -1,3 +1,4 @@
+import { RuntimeDecryptionError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from '../class-serialization.js';
@@ -336,6 +337,30 @@ describe('decrypt', () => {
     const encrypted = await encrypt(data, key);
     const decrypted = await decrypt(encrypted, key);
     expect(decrypted).toEqual(data);
+  });
+
+  it('attaches the real `encr` envelope prefix to the diagnostic context on auth-tag failure', async () => {
+    // The low-level AES layer only sees the stripped payload; this
+    // serialization layer is the one that knows the outer envelope marker.
+    // Verify it enriches the RuntimeDecryptionError context with the real
+    // `encr` prefix (not the first nonce bytes).
+    const key = await makeKey();
+    const data = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new Uint8Array([10, 20, 30])
+    ) as Uint8Array;
+    const encrypted = (await encrypt(data, key)) as Uint8Array;
+
+    // Tamper with the last byte (GCM tag) to force an auth-tag failure.
+    const tampered = new Uint8Array(encrypted);
+    tampered[tampered.length - 1] ^= 0xff;
+
+    const error = await decrypt(tampered, key).catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+    expect(error.context).toMatchObject({
+      operation: 'decrypt',
+      formatPrefix: 'encr',
+    });
   });
 });
 

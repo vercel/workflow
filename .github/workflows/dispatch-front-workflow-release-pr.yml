@@ -46,7 +46,7 @@ jobs:
 
       - name: Wait for docs deployment
         id: waitForDocsDeployment
-        uses: ./.github/actions/wait-for-vercel-project
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: workflow-docs
           # The job-level `permissions: contents: read` blocks the default

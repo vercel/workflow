@@ -74,21 +74,21 @@ describe('composeLogLine', () => {
   test('renders sdk-attributed errors with the sdk badge', () => {
     const out = composeLogLine(
       PREFIX,
-      'Workflow myFlow failed due to an SDK runtime error\nWorkflowRuntimeError: corrupted event log',
+      'Workflow myFlow failed due to an SDK runtime error\nCorruptedEventLogError: corrupted event log',
       {
-        errorCode: 'RUNTIME_ERROR',
+        errorCode: 'CORRUPTED_EVENT_LOG',
         errorAttribution: 'sdk',
-        errorName: 'WorkflowRuntimeError',
+        errorName: 'CorruptedEventLogError',
         errorMessage: 'corrupted event log',
         hint: 'This is an internal workflow SDK error.',
       }
     );
     expect(out).toMatchInlineSnapshot(`
       "[workflow-sdk] Workflow myFlow failed due to an SDK runtime error
-        sdk error · WorkflowRuntimeError
-        code   RUNTIME_ERROR
+        sdk error · CorruptedEventLogError
+        code   CORRUPTED_EVENT_LOG
         hint: This is an internal workflow SDK error.
-      WorkflowRuntimeError: corrupted event log"
+      CorruptedEventLogError: corrupted event log"
     `);
   });
 
