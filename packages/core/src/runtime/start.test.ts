@@ -228,6 +228,25 @@ describe('start', () => {
         })
       ).rejects.toThrow(/spec version 4/);
     });
+
+    it('rejects non-string initial attribute values', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          attributes: { tenant: undefined } as any,
+        })
+      ).rejects.toThrow(/must be a string value/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
   });
 
   describe('encryption', () => {

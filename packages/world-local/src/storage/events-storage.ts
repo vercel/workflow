@@ -736,23 +736,6 @@ export function createEventsStorage(
             ]);
           }
         } else if (data.eventType === 'attr_set' && currentRun) {
-          if (data.correlationId && data.eventData.writer.type === 'workflow') {
-            const attrLockName = tag
-              ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
-              : `${effectiveRunId}-${data.correlationId}.created`;
-            const attrLockPath = resolveWithinBase(
-              basedir,
-              '.locks',
-              'attributes',
-              attrLockName
-            );
-            const attrClaimed = await writeExclusive(attrLockPath, '');
-            if (!attrClaimed) {
-              throw new EntityConflictError(
-                `Attribute event "${data.correlationId}" already exists`
-              );
-            }
-          }
           run = await withRunFileLock(effectiveRunId, async () => {
             const fresh = await readJSON(
               taggedPath(basedir, 'runs', effectiveRunId, tag),
@@ -766,6 +749,32 @@ export function createEventsStorage(
               allowReservedAttributes:
                 data.eventData.allowReservedAttributes === true,
             });
+            // Claim the correlation dedup lock only after validation: a
+            // validation failure must leave the correlationId unclaimed so
+            // the runtime's retry of the same event is not misreported as
+            // "already exists" while the event was never written (the
+            // dispatcher would then wait forever for an event that is not
+            // in the log).
+            if (
+              data.correlationId &&
+              data.eventData.writer.type === 'workflow'
+            ) {
+              const attrLockName = tag
+                ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
+                : `${effectiveRunId}-${data.correlationId}.created`;
+              const attrLockPath = resolveWithinBase(
+                basedir,
+                '.locks',
+                'attributes',
+                attrLockName
+              );
+              const attrClaimed = await writeExclusive(attrLockPath, '');
+              if (!attrClaimed) {
+                throw new EntityConflictError(
+                  `Attribute event "${data.correlationId}" already exists`
+                );
+              }
+            }
             const next = {
               ...fresh,
               attributes: applyAttributeChanges(

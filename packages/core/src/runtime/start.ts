@@ -197,6 +197,17 @@ export async function start<TArgs extends unknown[], TResult>(
             'Initial workflow attributes require a World that supports spec version 4 or later.'
           );
         }
+        // `normalizeAttributeChanges` treats `undefined` as "remove this
+        // key", which is meaningless at creation time — reject it up front
+        // so JS callers get a clear error instead of a downstream schema
+        // failure (the types already forbid non-string values).
+        for (const [key, value] of Object.entries(opts.attributes)) {
+          if (typeof value !== 'string') {
+            throw new WorkflowRuntimeError(
+              `Initial workflow attribute ${JSON.stringify(key)} must be a string value.`
+            );
+          }
+        }
         const changes = normalizeAttributeChanges(opts.attributes);
         attributes = Object.fromEntries(
           changes.map(({ key, value }) => [key, value as string])

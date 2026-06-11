@@ -962,6 +962,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           )
           .returning();
         if (!runValue) {
+          // The guarded update matches zero rows either because the cap
+          // condition failed or because the run row disappeared between the
+          // existence check above and this update — distinguish the two so
+          // the error is not misattributed.
+          const [stillExists] = await drizzle
+            .select({ runId: Schema.runs.runId })
+            .from(Schema.runs)
+            .where(eq(Schema.runs.runId, effectiveRunId))
+            .limit(1);
+          if (!stillExists) {
+            throw new WorkflowRunNotFoundError(effectiveRunId);
+          }
           throw new AttributeValidationError(
             `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN}`
           );

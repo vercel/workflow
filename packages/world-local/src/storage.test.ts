@@ -2238,6 +2238,35 @@ describe('Storage', () => {
       ).toHaveLength(1);
     });
 
+    it('should not claim the attr_set correlation lock when validation fails', async () => {
+      // A validation failure must leave the correlationId unclaimed:
+      // otherwise the runtime's retry of the same event would be rejected
+      // with EntityConflictError ("already exists") while the event was
+      // never written, and the workflow would replay forever waiting for
+      // an event that is not in the log.
+      await expect(
+        storage.events.create(testRunId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_validation_retry',
+          eventData: {
+            changes: [{ key: '$reserved', value: 'nope' }],
+            writer: { type: 'workflow' },
+          },
+        })
+      ).rejects.toThrow(/reserved prefix/);
+
+      const retried = await storage.events.create(testRunId, {
+        eventType: 'attr_set',
+        correlationId: 'attr_validation_retry',
+        eventData: {
+          changes: [{ key: '$reserved', value: 'ok' }],
+          writer: { type: 'workflow' },
+          allowReservedAttributes: true,
+        },
+      });
+      expect(retried.run?.attributes).toMatchObject({ $reserved: 'ok' });
+    });
+
     it('should reject sequential duplicate step_created calls', async () => {
       // Sequential (non-racing) duplicates must also be rejected — the
       // constraint file persists across calls.
