@@ -23,7 +23,6 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
 import { queueMessage } from './helpers.js';
-import { waitUntil } from './wait-until.js';
 
 /**
  * Extracts W3C trace context headers from a trace carrier for HTTP propagation.
@@ -316,14 +315,14 @@ export async function handleSuspension({
     }
   }
 
-  // Wait for all step and wait operations to complete
-  waitUntil(
-    Promise.all(ops).catch((opErr) => {
-      const isAbortError =
-        opErr?.name === 'AbortError' || opErr?.name === 'ResponseAborted';
-      if (!isAbortError) throw opErr;
-    })
-  );
+  // Await the step_created / wait_created event creates before returning.
+  // The caller (workflowEntrypoint) only enqueues the step-dispatch queue
+  // messages AFTER handleSuspension resolves, and the queue handler acks
+  // the orchestrator message only after the caller resolves. So the step_created
+  // events must be durable here, and the dispatch sends must complete in the caller,
+  // all before ack. If the process crashes before this resolves, the orchestrator
+  // message is not acked and VQS redelivers, re-creates the (idempotent)
+  // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
 
   // Calculate minimum timeout from waits
