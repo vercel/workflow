@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.10
+
+### Patch Changes
+
+- [#2302](https://github.com/vercel/workflow/pull/2302) [`b93a071`](https://github.com/vercel/workflow/commit/b93a0717960dcdc9b8dc37f83cbebad8ec38f3b9) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
 ## 4.1.9
 
 ## 4.1.8

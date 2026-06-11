@@ -1,5 +1,19 @@
 # @workflow/world-testing
 
+## 4.1.9
+
+### Patch Changes
+
+- [#2302](https://github.com/vercel/workflow/pull/2302) [`b93a071`](https://github.com/vercel/workflow/commit/b93a0717960dcdc9b8dc37f83cbebad8ec38f3b9) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`326d93a`](https://github.com/vercel/workflow/commit/326d93a4aecb11a98a168e2409b5fae4d4c94167), [`5077962`](https://github.com/vercel/workflow/commit/5077962d67c841fd7e81cf29ddedb017581dd501), [`9acd46a`](https://github.com/vercel/workflow/commit/9acd46af13dd9aa55beb9ac6c4630fb7edce0c04), [`b385a2d`](https://github.com/vercel/workflow/commit/b385a2d6ebf35d665d32029777d0cf4018bc82dd), [`b93a071`](https://github.com/vercel/workflow/commit/b93a0717960dcdc9b8dc37f83cbebad8ec38f3b9), [`2ab46de`](https://github.com/vercel/workflow/commit/2ab46de461685e7b93555d911c4b397e29f2e9cf), [`e959124`](https://github.com/vercel/workflow/commit/e9591245bd8befe1a3859690a0027fd76822930f), [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb)]:
+  - @workflow/core@4.4.0
+  - @workflow/world@4.1.5
+  - workflow@4.4.0
+  - @workflow/cli@4.2.9
+
 ## 4.1.8
 
 ### Patch Changes

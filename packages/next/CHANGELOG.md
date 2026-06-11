@@ -1,5 +1,19 @@
 # @workflow/next
 
+## 4.0.10
+
+### Patch Changes
+
+- [#2298](https://github.com/vercel/workflow/pull/2298) [`bc2cf32`](https://github.com/vercel/workflow/commit/bc2cf32eb2f973922a42515faa02ebc18c042a5a) Thanks [@pranaygp](https://github.com/pranaygp)! - Preserve deferred step registration with Turbopack content filtering.
+
+- [#2253](https://github.com/vercel/workflow/pull/2253) [`a06206e`](https://github.com/vercel/workflow/commit/a06206ef418a9ced9fa08280e7c78d256fc7fabe) Thanks [@wbinnssmith](https://github.com/wbinnssmith)! - Always apply turbopack content condition regardless of builder mode to prevent the workflow loader from running on every JS/TS file when lazy discovery is enabled.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`326d93a`](https://github.com/vercel/workflow/commit/326d93a4aecb11a98a168e2409b5fae4d4c94167), [`5077962`](https://github.com/vercel/workflow/commit/5077962d67c841fd7e81cf29ddedb017581dd501), [`9acd46a`](https://github.com/vercel/workflow/commit/9acd46af13dd9aa55beb9ac6c4630fb7edce0c04), [`b385a2d`](https://github.com/vercel/workflow/commit/b385a2d6ebf35d665d32029777d0cf4018bc82dd), [`b93a071`](https://github.com/vercel/workflow/commit/b93a0717960dcdc9b8dc37f83cbebad8ec38f3b9), [`2ab46de`](https://github.com/vercel/workflow/commit/2ab46de461685e7b93555d911c4b397e29f2e9cf), [`e959124`](https://github.com/vercel/workflow/commit/e9591245bd8befe1a3859690a0027fd76822930f), [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb)]:
+  - @workflow/core@4.4.0
+  - @workflow/builders@4.0.10
+
 ## 4.0.9
 
 ### Patch Changes

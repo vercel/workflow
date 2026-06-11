@@ -1,5 +1,16 @@
 # @workflow/nuxt
 
+## 4.0.10
+
+### Patch Changes
+
+- [#2302](https://github.com/vercel/workflow/pull/2302) [`b93a071`](https://github.com/vercel/workflow/commit/b93a0717960dcdc9b8dc37f83cbebad8ec38f3b9) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`8bc2065`](https://github.com/vercel/workflow/commit/8bc206522e37c5b0f0dfb446a304155d68f1d317), [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb)]:
+  - @workflow/nitro@4.1.0
+
 ## 4.0.9
 
 ### Patch Changes

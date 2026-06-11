@@ -1,5 +1,11 @@
 # @workflow/typescript-plugin
 
+## 4.0.3
+
+### Patch Changes
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
 ## 4.0.2
 
 ### Patch Changes

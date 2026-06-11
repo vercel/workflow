@@ -1,5 +1,18 @@
 # @workflow/errors
 
+## 4.1.4
+
+### Patch Changes
+
+- [#2012](https://github.com/vercel/workflow/pull/2012) [`326d93a`](https://github.com/vercel/workflow/commit/326d93a4aecb11a98a168e2409b5fae4d4c94167) Thanks [@pranaygp](https://github.com/pranaygp)! - Expose the active run ID on hook token conflict errors.
+
+- [#2145](https://github.com/vercel/workflow/pull/2145) [`b385a2d`](https://github.com/vercel/workflow/commit/b385a2d6ebf35d665d32029777d0cf4018bc82dd) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Classify SDK-level AES-GCM encryption failures as `RUNTIME_ERROR` instead of `USER_ERROR` via a new `RuntimeDecryptionError`.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`eca3b51`](https://github.com/vercel/workflow/commit/eca3b51a034b51e0c0ca89b949ee28d1f07a2cbb)]:
+  - @workflow/utils@4.1.3
+
 ## 4.1.3
 
 ### Patch Changes
