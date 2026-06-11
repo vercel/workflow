@@ -72,7 +72,7 @@ function MobileMenuButton({
 }
 
 interface MobileMenuProps {
-  items: { label: string; href: string }[];
+  items: { label: string; href: string; badge?: string }[];
 }
 
 export const MobileMenu = ({ items }: MobileMenuProps) => {
@@ -154,14 +154,21 @@ export const MobileMenu = ({ items }: MobileMenuProps) => {
 
         {/* Navigation */}
         <nav className="px-1">
-          {items.map(({ label, href }) => (
+          {items.map(({ label, href, badge }) => (
             <NavLink
               external={href.startsWith('http')}
               href={resolveHref(href)}
               key={href}
               onClick={close}
             >
-              {label}
+              <span className="flex items-center gap-2">
+                {label}
+                {badge && (
+                  <span className="rounded-full bg-blue-300 px-1.5 py-0 font-medium text-[10px] text-blue-700 leading-4">
+                    {badge}
+                  </span>
+                )}
+              </span>
             </NavLink>
           ))}
         </nav>

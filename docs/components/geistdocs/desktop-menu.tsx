@@ -15,8 +15,14 @@ import { cn } from '@/lib/utils';
 
 interface DesktopMenuProps {
   className?: string;
-  items: { label: string; href: string }[];
+  items: { label: string; href: string; badge?: string }[];
 }
+
+const NavBadge = ({ label }: { label: string }) => (
+  <span className="rounded-full bg-blue-300 px-1.5 py-0 font-medium text-[10px] text-blue-700 leading-4">
+    {label}
+  </span>
+);
 
 export const DesktopMenu = ({ items, className }: DesktopMenuProps) => {
   const isMobile = useIsMobile();
@@ -74,8 +80,12 @@ export const DesktopMenu = ({ items, className }: DesktopMenuProps) => {
                     <IconArrowUpRightSmall aria-hidden="true" size={12} />
                   </a>
                 ) : (
-                  <DynamicLink href={`/[lang]${resolveHref(item.href)}`}>
+                  <DynamicLink
+                    className="flex flex-row items-center gap-1.5"
+                    href={`/[lang]${resolveHref(item.href)}`}
+                  >
                     {item.label}
+                    {item.badge && <NavBadge label={item.badge} />}
                   </DynamicLink>
                 )}
               </NavigationMenuLink>

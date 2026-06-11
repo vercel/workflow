@@ -10,18 +10,25 @@ export const github = {
 export const examplesRepositoryUrl =
   'https://github.com/vercel/workflow-examples';
 
-export const nav: { label: string; href: string; preview?: boolean }[] = [
+export const nav: {
+  label: string;
+  href: string;
+  preview?: boolean;
+  /** Optional call-out pill rendered next to the label (e.g. "New"). */
+  badge?: string;
+}[] = [
   {
     label: 'Docs',
     href: '/docs',
   },
   {
-    label: 'Worlds',
-    href: '/worlds',
-  },
-  {
     label: 'Patterns',
     href: '/patterns',
+    badge: 'New',
+  },
+  {
+    label: 'Worlds',
+    href: '/worlds',
   },
   {
     label: 'Examples',
