@@ -85,17 +85,17 @@ describe('getRunCapabilities', () => {
       // betas published before framing shipped must read as raw —
       // a false positive here means framed writes to a consumer that
       // cannot unframe them
-      '5.0.0-beta.13',
+      '5.0.0-beta.14',
     ])('is false for pre-framing version %s', (version) => {
       expect(getRunCapabilities(version).framedByteStreams).toBe(false);
     });
 
-    it('is true at the exact cutoff version (5.0.0-beta.14)', () => {
-      expect(getRunCapabilities('5.0.0-beta.14').framedByteStreams).toBe(true);
+    it('is true at the exact cutoff version (5.0.0-beta.15)', () => {
+      expect(getRunCapabilities('5.0.0-beta.15').framedByteStreams).toBe(true);
     });
 
     it.each([
-      '5.0.0-beta.15',
+      '5.0.0-beta.16',
       '5.0.0',
       '5.1.0',
       '6.0.0',
