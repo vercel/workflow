@@ -1,5 +1,21 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.14
+
+### Patch Changes
+
+- [#2327](https://github.com/vercel/workflow/pull/2327) [`b5396bc`](https://github.com/vercel/workflow/commit/b5396bc932324ab280cb0477c3ca13431aff2c08) Thanks [@mitul-s](https://github.com/mitul-s)! - Move run attributes into their own detail card
+
+- [#2325](https://github.com/vercel/workflow/pull/2325) [`3e49c6e`](https://github.com/vercel/workflow/commit/3e49c6ebf41e2823cc704f5b8d8491268ca4da7c) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix the trace span detail panel showing stale or mixed data while navigating spans
+
+- [#2325](https://github.com/vercel/workflow/pull/2325) [`3e49c6e`](https://github.com/vercel/workflow/commit/3e49c6ebf41e2823cc704f5b8d8491268ca4da7c) Thanks [@mitul-s](https://github.com/mitul-s)! - Make stream and run reference links inside event details clickable in the span detail panel.
+
+- [#2335](https://github.com/vercel/workflow/pull/2335) [`eb2b8c9`](https://github.com/vercel/workflow/commit/eb2b8c988dab2450fa9bf3d7f501060c626eeb2d) Thanks [@mitul-s](https://github.com/mitul-s)! - Show precise, unrounded durations in the new trace viewer: the events list and timeline bar labels now display two-decimal seconds for durations over 1s (e.g. "1.63s") instead of rounding to whole seconds.
+
+- Updated dependencies [[`bf44d4d`](https://github.com/vercel/workflow/commit/bf44d4dd0ac8891732f5a254b37e8f165b71a10d), [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`eb976db`](https://github.com/vercel/workflow/commit/eb976db35bb2cd7591d6a7f3bfa20a69b1c0ad89), [`a813382`](https://github.com/vercel/workflow/commit/a813382216e1c5d3a2f90dc97d205f17ff3f4cd0)]:
+  - @workflow/core@5.0.0-beta.14
+  - @workflow/world@5.0.0-beta.8
+
 ## 5.0.0-beta.13
 
 ### Patch Changes
