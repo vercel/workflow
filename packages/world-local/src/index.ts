@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { World } from '@workflow/world';
+import type { QueuePrefix, World } from '@workflow/world';
 import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
@@ -34,10 +34,7 @@ export type { DirectHandler } from './queue.js';
 
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
-  registerHandler(
-    prefix: '__wkf_step_' | '__wkf_workflow_',
-    handler: DirectHandler
-  ): void;
+  registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
 };

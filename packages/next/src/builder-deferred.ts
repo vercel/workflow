@@ -52,6 +52,7 @@ export async function getNextBuilderDeferred() {
   const {
     BaseBuilder: BaseBuilderClass,
     WORKFLOW_QUEUE_TRIGGER,
+    createWorkflowEntrypointOptionsCode,
     detectWorkflowPatterns,
     applySwcTransform,
     getImportPath,
@@ -648,6 +649,8 @@ export async function getNextBuilderDeferred() {
       const stepManifest =
         await this.createDeferredStepManifest(stepAndSerdeFiles);
       const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
+      const workflowEntrypointOptionsCode =
+        createWorkflowEntrypointOptionsCode();
       const routeCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import 'workflow/internal/builtins';
@@ -656,7 +659,7 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${escapedVMCode}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
 
       await this.writeFileIfChanged(flowOutfile, routeCode);
 

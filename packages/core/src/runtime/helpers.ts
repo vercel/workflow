@@ -7,7 +7,9 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
 } from '@workflow/world';
@@ -35,13 +37,20 @@ const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
  * Ensures the workflow name only contains safe characters before
  * interpolating it into the queue name string.
  */
-export function getWorkflowQueueName(workflowName: string): ValidQueueName {
+export function getWorkflowQueueName(
+  workflowName: string,
+  namespace?: string
+): ValidQueueName {
   if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
     throw new Error(
       `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
     );
   }
-  return `__wkf_workflow_${workflowName}` as ValidQueueName;
+  const prefix = getQueueTopicPrefix(
+    'workflow',
+    resolveQueueNamespace(namespace)
+  );
+  return `${prefix}${workflowName}` as ValidQueueName;
 }
 
 const generateId = monotonicFactory();
@@ -246,16 +255,14 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
 export async function healthCheck(
   world: World,
   endpoint: HealthCheckEndpoint,
-  options?: HealthCheckOptions
+  options?: HealthCheckOptions & { namespace?: string }
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
   const correlationId = generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
-  const queueName: ValidQueueName =
-    endpoint === 'workflow'
-      ? '__wkf_workflow_health_check'
-      : '__wkf_step_health_check';
+  const queueName =
+    `${getQueueTopicPrefix(endpoint, resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
 
   const startTime = Date.now();
 
