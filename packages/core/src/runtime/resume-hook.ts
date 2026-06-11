@@ -21,7 +21,7 @@ import {
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
-import { waitedUntil } from '../util.js';
+import { waitUntil, waitedUntil } from './wait-until.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
 
