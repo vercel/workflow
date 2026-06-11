@@ -1,6 +1,6 @@
 {
-  "lastUpdated": "2026-06-11T17:37:31.133Z",
-  "commit": "ae8d6feeda0d1d31da8da70156d6e04ebb0487d0",
+  "lastUpdated": "2026-06-11T18:20:48.913Z",
+  "commit": "564a47c504e1fb0b3c364e1d9a5cabd7b0203034",
   "branch": "main",
   "type": "e2e",
   "worlds": {
@@ -127,8 +127,8 @@
     "vercel": {
       "status": "partial",
       "total": 1668,
-      "passed": 1421,
-      "failed": 2,
+      "passed": 1422,
+      "failed": 1,
       "skipped": 245,
       "frameworks": {
         "astro": {
@@ -143,8 +143,8 @@
         },
         "fastify": {
           "total": 139,
-          "passed": 112,
-          "failed": 1
+          "passed": 113,
+          "failed": 0
         },
         "hono": {
           "total": 139,
@@ -158,8 +158,8 @@
         },
         "nextjs-webpack": {
           "total": 139,
-          "passed": 136,
-          "failed": 1
+          "passed": 137,
+          "failed": 0
         },
         "nitro": {
           "total": 139,
