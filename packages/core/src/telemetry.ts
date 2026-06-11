@@ -10,6 +10,30 @@ import * as Attr from './telemetry/semantic-conventions.js';
 // ============================================================
 
 /**
+ * Controls how workflow/step queue-handler spans relate to the run-origin
+ * trace context carried in queue messages:
+ *
+ * - `'linked'` (default): each invocation starts a NEW root trace; the
+ *   run-origin context (and the incoming delivery context) are attached as
+ *   span links. This keeps traces bounded per invocation instead of
+ *   stitching a long-lived run into one giant trace.
+ * - `'continuous'`: the restored run-origin context becomes the parent of
+ *   the invocation span (legacy behavior), producing a single trace that
+ *   spans the entire run.
+ */
+export type WorkflowTraceMode = 'linked' | 'continuous';
+
+/**
+ * Resolves the active trace mode from the `WORKFLOW_TRACE_MODE` env var.
+ * Defaults to `'linked'`; any value other than `'continuous'` selects it.
+ */
+export function getWorkflowTraceMode(): WorkflowTraceMode {
+  return process.env.WORKFLOW_TRACE_MODE === 'continuous'
+    ? 'continuous'
+    : 'linked';
+}
+
+/**
  * Serializes the current trace context into a format that can be passed through queues
  * @returns A record of strings representing the trace context
  */
@@ -187,6 +211,25 @@ export function linkToCurrentContext(): Promise<[api.Link] | undefined> {
     if (!context) return;
     return [{ context }];
   });
+}
+
+/**
+ * Builds a span link pointing at the span context embedded in a serialized
+ * trace carrier (e.g. the run-origin context flowing through queue
+ * messages). Returns `undefined` when OTEL is unavailable, the carrier is
+ * absent, or it does not contain a valid span context.
+ */
+export async function linkToTraceCarrier(
+  carrier: Record<string, string> | undefined
+): Promise<api.Link | undefined> {
+  if (!carrier) return;
+  const [context, otel] = await Promise.all([
+    getSpanContextForTraceCarrier(carrier),
+    OtelApi.value,
+  ]);
+  if (!context || !otel) return;
+  if (!otel.trace.isSpanContextValid(context)) return;
+  return { context };
 }
 
 // ============================================================

@@ -1,3 +1,4 @@
+import type { Link } from '@opentelemetry/api';
 import {
   EntityConflictError,
   FatalError,
@@ -32,7 +33,9 @@ import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import {
   getSpanKind,
+  getWorkflowTraceMode,
   linkToCurrentContext,
+  linkToTraceCarrier,
   serializeTraceCarrier,
   trace,
   withTraceContext,
@@ -89,6 +92,23 @@ function createStepHandler(namespace?: string) {
       } = StepInvokePayloadSchema.parse(message_);
       const { requestId } = metadata;
 
+      // --- Trace correlation mode ---
+      // 'linked' (default): the STEP span below starts a NEW root trace with
+      // span links to the delivery context and the run-origin context from
+      // the message's trace carrier. 'continuous': legacy behavior — the
+      // restored run-origin context parents this invocation's spans.
+      const traceMode = getWorkflowTraceMode();
+
+      // Trace carrier to attach to messages this invocation enqueues. In
+      // linked mode the ORIGINAL run-origin carrier is forwarded unchanged
+      // so every future invocation links back to the same origin; in
+      // continuous mode the current (active) context is serialized so the
+      // trace keeps chaining.
+      const getNextTraceCarrier = (): Promise<Record<string, string>> =>
+        traceMode === 'linked' && traceContext
+          ? Promise.resolve(traceContext)
+          : serializeTraceCarrier();
+
       // --- Max delivery check ---
       // Enforce max delivery limit before any infrastructure calls.
       // This prevents runaway steps from consuming infinite queue deliveries.
@@ -141,7 +161,7 @@ function createStepHandler(namespace?: string) {
             getWorkflowQueueName(workflowName, resolvedNamespace),
             {
               runId: workflowRunId,
-              traceCarrier: await serializeTraceCarrier(),
+              traceCarrier: await getNextTraceCarrier(),
               requestedAt: new Date(),
             }
           );
@@ -168,9 +188,33 @@ function createStepHandler(namespace?: string) {
         return;
       }
 
-      const spanLinks = await linkToCurrentContext();
-      // Execute step within the propagated trace context
-      return await withTraceContext(traceContext, async () => {
+      // Link to the incoming delivery context (the active span extracted
+      // from the queue delivery request).
+      const deliveryLinks = await linkToCurrentContext();
+      let spanLinks: Link[] | undefined = deliveryLinks;
+      if (traceMode === 'linked') {
+        // Additionally link to the run-origin context from the trace
+        // carrier (skipped when absent, invalid, or identical to the
+        // delivery context).
+        const originLink = await linkToTraceCarrier(traceContext);
+        if (
+          originLink &&
+          !deliveryLinks?.some(
+            (link) =>
+              link.context.traceId === originLink.context.traceId &&
+              link.context.spanId === originLink.context.spanId
+          )
+        ) {
+          spanLinks = [...(deliveryLinks ?? []), originLink];
+        }
+      }
+
+      // Execute step within the propagated trace context (continuous mode
+      // only — in linked mode the STEP span below becomes a new trace root
+      // carrying span links instead, so withTraceContext is a passthrough).
+      const parentTraceCarrier =
+        traceMode === 'continuous' ? traceContext : undefined;
+      return await withTraceContext(parentTraceCarrier, async () => {
         // Extract the step name from the topic name
         const stepName = metadata.queueName.slice(stepPrefix.length);
         const world = await getWorld();
@@ -193,7 +237,9 @@ function createStepHandler(namespace?: string) {
 
         return trace(
           `STEP ${stepName}`,
-          { kind: spanKind, links: spanLinks },
+          traceMode === 'linked'
+            ? { kind: spanKind, links: spanLinks, root: true }
+            : { kind: spanKind, links: spanLinks },
           async (span) => {
             span?.setAttributes({
               ...Attribute.StepName(stepName),
@@ -216,6 +262,7 @@ function createStepHandler(namespace?: string) {
               ...Attribute.WorkflowRunId(workflowRunId),
               ...Attribute.StepId(stepId),
               ...Attribute.StepTracePropagated(!!traceContext),
+              ...Attribute.WorkflowTraceMode(traceMode),
             });
 
             // step_started validates state and returns the step entity, so no separate
@@ -289,7 +336,7 @@ function createStepHandler(namespace?: string) {
                   getWorkflowQueueName(workflowName, resolvedNamespace),
                   {
                     runId: workflowRunId,
-                    traceCarrier: await serializeTraceCarrier(),
+                    traceCarrier: await getNextTraceCarrier(),
                     requestedAt: new Date(),
                   }
                 );
@@ -393,7 +440,7 @@ function createStepHandler(namespace?: string) {
                 getWorkflowQueueName(workflowName, resolvedNamespace),
                 {
                   runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
+                  traceCarrier: await getNextTraceCarrier(),
                   requestedAt: new Date(),
                 }
               );
@@ -493,7 +540,7 @@ function createStepHandler(namespace?: string) {
                 getWorkflowQueueName(workflowName, resolvedNamespace),
                 {
                   runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
+                  traceCarrier: await getNextTraceCarrier(),
                   requestedAt: new Date(),
                 }
               );
@@ -545,7 +592,7 @@ function createStepHandler(namespace?: string) {
                 getWorkflowQueueName(workflowName, resolvedNamespace),
                 {
                   runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
+                  traceCarrier: await getNextTraceCarrier(),
                   requestedAt: new Date(),
                 }
               );
@@ -988,7 +1035,7 @@ function createStepHandler(namespace?: string) {
                 getWorkflowQueueName(workflowName, resolvedNamespace),
                 {
                   runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
+                  traceCarrier: await getNextTraceCarrier(),
                   requestedAt: new Date(),
                 }
               );
@@ -1049,7 +1096,7 @@ function createStepHandler(namespace?: string) {
                   }
                   throw err;
                 }),
-              serializeTraceCarrier(),
+              getNextTraceCarrier(),
             ]);
 
             if (stepCompleted409) {
