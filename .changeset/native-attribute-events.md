@@ -4,6 +4,7 @@
 '@workflow/world': minor
 '@workflow/world-local': minor
 '@workflow/world-postgres': minor
+'@workflow/world-vercel': minor
 ---
 
 Add native event-based attribute setting and allow passing initial run attributes through `start()`.
