@@ -14,7 +14,9 @@ import { formatStepName, pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
+  type Step,
   StepInvokePayloadSchema,
 } from '@workflow/world';
 import { describeError } from '../describe-error.js';
@@ -57,7 +59,8 @@ import { getWorld, getWorldHandlers, type WorldHandlers } from './world.js';
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
 function createStepHandler(namespace?: string) {
-  const stepPrefix = getQueueTopicPrefix('step', namespace);
+  const resolvedNamespace = resolveQueueNamespace(namespace);
+  const stepPrefix = getQueueTopicPrefix('step', resolvedNamespace);
 
   return (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(stepPrefix, async (message_, metadata) => {
@@ -132,11 +135,15 @@ function createStepHandler(namespace?: string) {
             { requestId }
           );
           // Re-queue the workflow to handle the failed step
-          await queueMessage(world, getWorkflowQueueName(workflowName), {
-            runId: workflowRunId,
-            traceCarrier: await serializeTraceCarrier(),
-            requestedAt: new Date(),
-          });
+          await queueMessage(
+            world,
+            getWorkflowQueueName(workflowName, resolvedNamespace),
+            {
+              runId: workflowRunId,
+              traceCarrier: await serializeTraceCarrier(),
+              requestedAt: new Date(),
+            }
+          );
         } catch (err) {
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             return;
@@ -215,7 +222,7 @@ function createStepHandler(namespace?: string) {
             // - Step not in terminal state (returns 409)
             // - retryAfter timestamp reached (returns 425 with Retry-After header)
             // - Workflow still active (returns 410 if completed)
-            let step;
+            let step!: Step;
             try {
               const startResult = await world.events.create(
                 workflowRunId,
@@ -276,11 +283,15 @@ function createStepHandler(namespace?: string) {
                   'step.name': stepName,
                   'step.id': stepId,
                 });
-                await queueMessage(world, getWorkflowQueueName(workflowName), {
-                  runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
-                  requestedAt: new Date(),
-                });
+                await queueMessage(
+                  world,
+                  getWorkflowQueueName(workflowName, resolvedNamespace),
+                  {
+                    runId: workflowRunId,
+                    traceCarrier: await serializeTraceCarrier(),
+                    requestedAt: new Date(),
+                  }
+                );
                 return;
               }
 
@@ -376,11 +387,15 @@ function createStepHandler(namespace?: string) {
               });
 
               // Re-invoke the workflow to handle the failed step
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
-                runId: workflowRunId,
-                traceCarrier: await serializeTraceCarrier(),
-                requestedAt: new Date(),
-              });
+              await queueMessage(
+                world,
+                getWorkflowQueueName(workflowName, resolvedNamespace),
+                {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                }
+              );
               return;
             }
 
@@ -472,11 +487,15 @@ function createStepHandler(namespace?: string) {
               });
 
               // Re-invoke the workflow to handle the failed step
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
-                runId: workflowRunId,
-                traceCarrier: await serializeTraceCarrier(),
-                requestedAt: new Date(),
-              });
+              await queueMessage(
+                world,
+                getWorkflowQueueName(workflowName, resolvedNamespace),
+                {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                }
+              );
               return;
             }
 
@@ -520,11 +539,15 @@ function createStepHandler(namespace?: string) {
                 throw failErr;
               }
               // Re-queue the workflow so it can process the step failure
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
-                runId: workflowRunId,
-                traceCarrier: await serializeTraceCarrier(),
-                requestedAt: new Date(),
-              });
+              await queueMessage(
+                world,
+                getWorkflowQueueName(workflowName, resolvedNamespace),
+                {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                }
+              );
               return;
             }
             // Capture startedAt for use in async callback (TypeScript narrowing doesn't persist)
@@ -952,11 +975,15 @@ function createStepHandler(namespace?: string) {
               }
 
               // Re-invoke the workflow to handle the failed/retrying step
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
-                runId: workflowRunId,
-                traceCarrier: await serializeTraceCarrier(),
-                requestedAt: new Date(),
-              });
+              await queueMessage(
+                world,
+                getWorkflowQueueName(workflowName, resolvedNamespace),
+                {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                }
+              );
               return;
             }
 
@@ -1025,11 +1052,15 @@ function createStepHandler(namespace?: string) {
             });
 
             // Queue the workflow continuation with the concurrently-resolved trace carrier
-            await queueMessage(world, getWorkflowQueueName(workflowName), {
-              runId: workflowRunId,
-              traceCarrier,
-              requestedAt: new Date(),
-            });
+            await queueMessage(
+              world,
+              getWorkflowQueueName(workflowName, resolvedNamespace),
+              {
+                runId: workflowRunId,
+                traceCarrier,
+                requestedAt: new Date(),
+              }
+            );
           }
         );
       });

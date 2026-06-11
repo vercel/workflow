@@ -1,4 +1,4 @@
-import { getQueueTopicPrefix } from '@workflow/world';
+import { getQueueTopicPrefix, resolveQueueNamespace } from '@workflow/world';
 
 /**
  * Creates a queue trigger configuration for the workflow handler.
@@ -18,9 +18,11 @@ import { getQueueTopicPrefix } from '@workflow/world';
  * createWorkflowQueueTrigger({ namespace: 'custom' })
  */
 export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
+  const namespace = resolveQueueNamespace(options?.namespace);
+
   return {
     type: 'queue/v2beta' as const,
-    topic: `${getQueueTopicPrefix('workflow', options?.namespace)}*`,
+    topic: `${getQueueTopicPrefix('workflow', namespace)}*`,
     consumer: 'default',
     retryAfterSeconds: 5, // Delay between retries (default: 60)
     initialDelaySeconds: 0, // Initial delay before first delivery (default: 0)

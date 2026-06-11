@@ -2,8 +2,10 @@ import * as Stream from 'node:stream';
 import type { Transport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
+  getQueuePrefixKind,
   getQueueTopicPrefix,
   MessageId,
+  parseQueueName,
   type Queue,
   QueuePayloadSchema,
   type QueuePrefix,
@@ -121,9 +123,9 @@ export function createQueue(
   function getJobQueueName(queuePrefix: QueuePrefix): string {
     const jobPrefix = config.jobPrefix || 'workflow_';
 
-    if (queuePrefix.endsWith('wkf_workflow_')) return `${jobPrefix}flows`;
-    if (queuePrefix.endsWith('wkf_step_')) return `${jobPrefix}steps`;
-    throw new Error(`Unknown queue prefix: ${queuePrefix}`);
+    return getQueuePrefixKind(queuePrefix) === 'workflow'
+      ? `${jobPrefix}flows`
+      : `${jobPrefix}steps`;
   }
 
   const createQueueHandler = localWorld.createQueueHandler;
@@ -224,13 +226,7 @@ export function createQueue(
   }
 
   function getQueueRoute(queueName: ValidQueueName): 'flow' | 'step' {
-    if (queueName.startsWith('__wkf_step_')) {
-      return 'step';
-    }
-    if (queueName.startsWith('__wkf_workflow_')) {
-      return 'flow';
-    }
-    throw new Error('Unknown queue name prefix');
+    return parseQueueName(queueName).kind === 'workflow' ? 'flow' : 'step';
   }
 
   async function executeMessageOverHttp({
@@ -355,7 +351,7 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
-    const [queuePrefix, queueId] = parseQueueName(queue);
+    const { prefix: queuePrefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     await addGraphileJob({
@@ -373,13 +369,15 @@ export function createQueue(
   };
 
   function createTaskHandler(queue: QueuePrefix) {
+    const queueKind = getQueuePrefixKind(queue);
+
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
       const graphileAttempt = GraphileHelpers.safeParse(helpers);
       const attempt = graphileAttempt.success
         ? graphileAttempt.data.job.attempts
         : messageData.attempt;
-      const queueName = `${queue}${messageData.id}` as const;
+      const queueName = `${queue}${messageData.id}` as ValidQueueName;
       const bodyStream = Stream.Readable.toWeb(
         Stream.Readable.from([messageData.data])
       );
@@ -388,7 +386,7 @@ export function createQueue(
       );
       QueuePayloadSchema.parse(body);
       const workflowRunSerializationKey =
-        queue === '__wkf_workflow_'
+        queueKind === 'workflow'
           ? (() => {
               const workflowInvoke =
                 WorkflowInvokePayloadSchema.safeParse(body);
@@ -534,13 +532,3 @@ export function createQueue(
     },
   };
 }
-
-const parseQueueName = (name: ValidQueueName): [QueuePrefix, string] => {
-  const prefixes: QueuePrefix[] = ['__wkf_step_', '__wkf_workflow_'];
-  for (const prefix of prefixes) {
-    if (name.startsWith(prefix)) {
-      return [prefix, name.slice(prefix.length)];
-    }
-  }
-  throw new Error(`Invalid queue name: ${name}`);
-};

@@ -2,8 +2,9 @@ import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import {
   MessageId,
+  parseQueueName,
   type Queue,
-  QueuePrefix,
+  type QueuePrefix,
   ValidQueueName,
 } from '@workflow/world';
 import { Sema } from 'async-sema';
@@ -96,20 +97,11 @@ function getQueueRoute(queueName: ValidQueueName): {
   pathname: 'flow' | 'step';
   prefix: QueuePrefix;
 } {
-  // extract prefix + kind from the queue name via regex capture.
-  // the extracted prefix is then validated through the QueuePrefix schema
-  // to ensure it conforms to the namespace format.
-  const match = queueName.match(
-    /^(__(?:[a-z][a-z0-9]*_)?wkf_(workflow|step)_)/
-  );
-
-  if (!match) {
-    throw new Error('Unknown queue name prefix');
-  }
+  const { kind, prefix } = parseQueueName(queueName);
 
   return {
-    pathname: match[2] === 'workflow' ? 'flow' : 'step',
-    prefix: QueuePrefix.parse(match[1]),
+    pathname: kind === 'workflow' ? 'flow' : 'step',
+    prefix,
   };
 }
 

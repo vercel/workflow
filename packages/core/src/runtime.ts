@@ -13,6 +13,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
   getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
@@ -221,7 +222,8 @@ export function workflowEntrypoint(
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
-  const workflowPrefix = getQueueTopicPrefix('workflow', options?.namespace);
+  const namespace = resolveQueueNamespace(options?.namespace);
+  const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
 
   const handler = (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(
@@ -434,7 +436,7 @@ export function workflowEntrypoint(
                       ) {
                         await queueMessage(
                           world,
-                          getWorkflowQueueName(workflowName),
+                          getWorkflowQueueName(workflowName, namespace),
                           {
                             runId,
                             traceCarrier: await serializeTraceCarrier(),
@@ -693,7 +695,7 @@ export function workflowEntrypoint(
                       );
                       await queueMessage(
                         world,
-                        getWorkflowQueueName(workflowName),
+                        getWorkflowQueueName(workflowName, namespace),
                         {
                           runId,
                           traceCarrier: await serializeTraceCarrier(),
@@ -1055,7 +1057,7 @@ export function workflowEntrypoint(
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: step.correlationId,
@@ -1108,7 +1110,7 @@ export function workflowEntrypoint(
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: inlineStep.correlationId,
@@ -1159,7 +1161,7 @@ export function workflowEntrypoint(
                           );
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               traceCarrier: await serializeTraceCarrier(),
@@ -1202,7 +1204,7 @@ export function workflowEntrypoint(
                             );
                             await queueMessage(
                               world,
-                              getWorkflowQueueName(workflowName),
+                              getWorkflowQueueName(workflowName, namespace),
                               {
                                 runId,
                                 traceCarrier: await serializeTraceCarrier(),
