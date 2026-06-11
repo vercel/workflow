@@ -20,10 +20,10 @@ import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { Run } from './run.js';
-import { getWorldLazy } from './get-world-lazy.js';
-import { waitedUntil, waitUntil } from './wait-until.js';
+import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -332,14 +332,19 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       }
 
-      waitUntil(
-        Promise.all(ops).catch((err) => {
-          // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-          const isAbortError =
-            err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-          if (!isAbortError) throw err;
-        })
-      );
+      // These argument-stream ops are flushed in the background; the promise
+      // handed to waitUntil must never reject (an unconsumed waitUntil
+      // rejection crashes the process as unhandledRejection), so unexpected
+      // failures are logged instead.
+      safeWaitUntil(Promise.all(ops), (err) => {
+        runtimeLogger.warn(
+          'Background flush of workflow argument streams failed',
+          {
+            workflowRunId: runId,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
+      });
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),

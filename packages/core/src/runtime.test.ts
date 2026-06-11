@@ -658,6 +658,113 @@ describe('workflowEntrypoint replay guards', () => {
       expect.objectContaining({ eventType: 'run_completed' })
     );
     expect(replayQueuedMessages).toEqual([]);
+
+    it('propagates transient step_created failures to the queue handler without an unhandled rejection', async () => {
+      const createdEvents: unknown[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'wrun_step_created_parse',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_step_created_parse',
+          undefined,
+          []
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+      // Simulates a transient network failure on POST /runs/{id}/events
+      // (e.g. the connection terminated mid-response-body).
+      const parseError = new WorkflowWorldError(
+        'Failed to parse response body for POST /v3/runs/wrun_step_created_parse/events (Content-Type: application/cbor):\n\nTypeError: terminated',
+        { code: 'PARSE_ERROR' }
+      );
+      const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+        if (data.eventType === 'run_started') {
+          return { run: workflowRun, events: [] };
+        }
+        if (data.eventType === 'step_created') {
+          throw parseError;
+        }
+        createdEvents.push(data);
+        return {
+          event: {
+            eventId: `event-${createdEvents.length}`,
+            runId: workflowRun.runId,
+            createdAt: new Date(),
+            ...data,
+          },
+        };
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        createQueueHandler: vi.fn(
+          (
+            _prefix: string,
+            handler: (message: unknown, metadata: unknown) => Promise<unknown>
+          ) => {
+            return async () => {
+              await handler(
+                {
+                  runId: workflowRun.runId,
+                  requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+                },
+                {
+                  requestId: 'req_test',
+                  attempt: 1,
+                  queueName: '__wkf_workflow_workflow',
+                  messageId: 'msg_test',
+                }
+              );
+              return new Response(null, { status: 204 });
+            };
+          }
+        ),
+        events: {
+          create: eventsCreate,
+          list: vi.fn(async () => ({
+            data: [],
+            hasMore: false,
+            cursor: 'cursor_test',
+          })),
+        },
+        runs: {
+          get: vi.fn(async () => workflowRun),
+        },
+        queue: vi.fn(async () => ({ messageId: null })),
+        getEncryptionKeyForRun: vi.fn(async () => undefined),
+      } as any);
+
+      const handler = workflowEntrypoint(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+      async function workflow() {
+        return await add(1, 2);
+      }${getWorkflowTransformCode('workflow')}`
+      );
+
+      // The error must propagate to the queue handler (rejecting the
+      // invocation) so the queue re-drives the message...
+      await expect(
+        handler(new Request('https://example.test'))
+      ).rejects.toThrow('Failed to parse response body');
+
+      // ...the run must not be marked as failed (it will be retried)...
+      expect(createdEvents).not.toContainEqual(
+        expect.objectContaining({ eventType: 'run_failed' })
+      );
+
+      // ...and no promise handed to waitUntil may reject: nothing consumes
+      // waitUntil rejections, so one would crash the process as an
+      // unhandledRejection (this was the regression).
+      const { waitUntil } = await import('@vercel/functions');
+      await Promise.all(
+        vi.mocked(waitUntil).mock.calls.map(([promise]) => promise)
+      );
+    });
   });
 });
 
