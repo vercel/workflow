@@ -366,13 +366,14 @@ export async function handleSuspension({
     }
   }
 
-  // Await the event-create ops directly: a failure (e.g. a transient
-  // network error on POST /runs/{id}/events) propagates to the queue
-  // handler, whose rejection lets the queue re-drive this message.
-  // Deliberately NOT registered with waitUntil — the await keeps the
-  // invocation alive until the ops settle, and an earlier version that
-  // also passed a rethrowing copy to waitUntil crashed the process via
-  // unhandledRejection (nothing consumes waitUntil rejections).
+  // Await the step_created / wait_created event creates before returning.
+  // The caller (workflowEntrypoint) only enqueues the step-dispatch queue
+  // messages AFTER handleSuspension resolves, and the queue handler acks
+  // the orchestrator message only after the caller resolves. So the step_created
+  // events must be durable here, and the dispatch sends must complete in the caller,
+  // all before ack. If the process crashes before this resolves, the orchestrator
+  // message is not acked and VQS redelivers, re-creates the (idempotent)
+  // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
 
   // Calculate minimum timeout from waits
