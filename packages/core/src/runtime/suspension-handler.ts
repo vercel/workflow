@@ -1,5 +1,4 @@
 import type { Span } from '@opentelemetry/api';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   HookNotFoundError,
@@ -316,14 +315,27 @@ export async function handleSuspension({
     }
   }
 
-  // Wait for all step and wait operations to complete
-  waitUntil(
-    Promise.all(ops).catch((opErr) => {
-      const isAbortError =
-        opErr?.name === 'AbortError' || opErr?.name === 'ResponseAborted';
-      if (!isAbortError) throw opErr;
-    })
-  );
+  // Wait for all step and wait operations to complete BEFORE returning.
+  //
+  // Ack-ordering invariant: each `op` above creates the step_created event
+  // AND enqueues the step-dispatch queue message (see the loop over
+  // `stepItems`). The queue handler in @vercel/queue acks (deletes /
+  // PROCESSED) the orchestrator message only after this handler resolves, so
+  // strictly awaiting `Promise.all(ops)` here is what guarantees the dispatch
+  // sends are durably enqueued before the orchestrator message is acked. If
+  // the process crashes before this resolves, the orchestrator message is NOT
+  // acked and VQS redelivers within the 300s lease; replay re-creates the
+  // (idempotent) step_created and re-sends the dispatch, recovering the run.
+  // Acking before the sends complete would orphan the step forever:
+  // step_created is persisted but no queue message exists anywhere to make
+  // the run progress.
+  //
+  // Do NOT additionally register these ops on `waitUntil`. A detached copy
+  // (a) frames progress-critical sends as droppable background work that the
+  // platform may discard after the response/ack, and (b) re-throws on send
+  // failure into a promise nothing consumes, which surfaces as an unhandled
+  // rejection (process exit 128). The strict await below is the only handle we
+  // need and the only one that preserves the ack-ordering invariant.
   await Promise.all(ops);
 
   // Calculate minimum timeout from waits

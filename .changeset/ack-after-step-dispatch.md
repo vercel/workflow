@@ -1,0 +1,5 @@
+---
+"@workflow/core": patch
+---
+
+Never ack the orchestrator's queue message before the step-dispatch sends that make the run progress are durably enqueued. The suspension handler created each `step_created` event and enqueued its step-dispatch queue message inside `ops`, but registered `Promise.all(ops)` on a detached `waitUntil(...)` in addition to awaiting it. The detached copy framed those progress-critical sends as droppable background work and re-threw send failures into a promise nothing consumes (unhandled rejection → process exit 128), which could crash a deployment and leave the orchestrator message acked with the dispatch never sent — orphaning the step (its `step_created` is persisted but no queue message exists anywhere to drive the run). It now strictly awaits the sends only, so a crash before they complete leaves the message un-acked and VQS redelivers within the lease, re-creating the (idempotent) `step_created` and re-sending the dispatch instead of orphaning the step. Complements the crash fix in #2336.
