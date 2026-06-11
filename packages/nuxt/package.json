@@ -30,8 +30,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "NUXT_TELEMETRY_DISABLED=1 nuxt-module-build prepare && NUXT_TELEMETRY_DISABLED=1 nuxt-module-build build",
-    "dev": "NUXT_TELEMETRY_DISABLED=1 nuxt-module-build build --stub && NUXT_TELEMETRY_DISABLED=1 nuxt-module-build prepare",
+    "build": "nuxt-module-build prepare && nuxt-module-build build",
+    "dev": "nuxt-module-build build --stub && nuxt-module-build prepare",
     "clean": "nuxi cleanup && rm -rf dist/"
   },
   "dependencies": {
