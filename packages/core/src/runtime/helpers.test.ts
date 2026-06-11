@@ -104,6 +104,23 @@ describe('getWorkflowQueueName', () => {
   it('should throw for empty string', () => {
     expect(() => getWorkflowQueueName('')).toThrow('Invalid workflow name');
   });
+
+  it('should use default prefix when no namespace is provided', () => {
+    expect(getWorkflowQueueName('myFlow')).toBe('__wkf_workflow_myFlow');
+    expect(getWorkflowQueueName('myFlow', undefined)).toBe(
+      '__wkf_workflow_myFlow'
+    );
+  });
+
+  it('should use namespaced prefix when namespace is provided', () => {
+    expect(getWorkflowQueueName('myFlow', 'custom')).toBe(
+      '__custom_wkf_workflow_myFlow'
+    );
+  });
+
+  it('should reject invalid namespace in queue name construction', () => {
+    expect(() => getWorkflowQueueName('myFlow', '123bad')).toThrow();
+  });
 });
 
 describe('healthCheck response parsing', () => {

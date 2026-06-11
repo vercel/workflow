@@ -1,5 +1,19 @@
 # @workflow/builders
 
+## 5.0.0-beta.14
+
+### Minor Changes
+
+- [#2305](https://github.com/vercel/workflow/pull/2305) [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af) Thanks [@willsather](https://github.com/willsather)! - Add an optional `namespace` parameter that scopes queue topic prefixes to `__{namespace}_wkf_workflow_*`. This allows configuring multiple frameworks in the same deployment without queue topic collision.
+
+### Patch Changes
+
+- [#2018](https://github.com/vercel/workflow/pull/2018) [`f5f6d0e`](https://github.com/vercel/workflow/commit/f5f6d0ede6c44ec7cc6a861a78f5ec4ff26910ee) Thanks [@pranaygp](https://github.com/pranaygp)! - Generate per-file IDs for non-exported workspace package files (previously they collapsed to `name@version` and silently overwrote each other at runtime) and fail the build when two transformed files emit the same step or workflow ID — collisions that used to register silently last-write-wins now surface as a build error.
+
+- Updated dependencies [[`bf44d4d`](https://github.com/vercel/workflow/commit/bf44d4dd0ac8891732f5a254b37e8f165b71a10d), [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`eb976db`](https://github.com/vercel/workflow/commit/eb976db35bb2cd7591d6a7f3bfa20a69b1c0ad89), [`a813382`](https://github.com/vercel/workflow/commit/a813382216e1c5d3a2f90dc97d205f17ff3f4cd0)]:
+  - @workflow/core@5.0.0-beta.14
+  - @workflow/errors@5.0.0-beta.7
+
 ## 5.0.0-beta.13
 
 ### Patch Changes

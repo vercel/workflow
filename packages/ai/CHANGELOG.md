@@ -1,5 +1,12 @@
 # @workflow/ai
 
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@5.0.0-beta.14
+
 ## 5.0.0-beta.7
 
 ### Patch Changes

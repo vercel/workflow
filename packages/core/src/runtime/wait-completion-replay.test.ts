@@ -7,6 +7,7 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
   dehydrateStepArguments,
@@ -25,6 +26,35 @@ vi.mock('@workflow/utils/get-port', () => ({
 }));
 
 const fixedNow = new Date('2026-05-19T12:00:20.000Z');
+
+/**
+ * The inline step executor requires the step entity from the step_started
+ * response. Reconstruct it from the step_created event so the step body can
+ * run to completion.
+ */
+function buildStepEntity(
+  durableEvents: Event[],
+  runId: string,
+  correlationId: string | undefined
+) {
+  const stepCreated = durableEvents.find(
+    (e) => e.eventType === 'step_created' && e.correlationId === correlationId
+  );
+  const stepCreatedData = stepCreated?.eventData as
+    | { stepName?: string; input?: unknown }
+    | undefined;
+  return {
+    runId,
+    stepId: correlationId,
+    stepName: stepCreatedData?.stepName,
+    status: 'running',
+    attempt: 1,
+    input: stepCreatedData?.input,
+    startedAt: fixedNow,
+    createdAt: fixedNow,
+    updatedAt: fixedNow,
+  };
+}
 
 function getWorkflowTransformCode(workflowName: string) {
   return `;globalThis.__private_workflows = new Map([[${JSON.stringify(workflowName)}, ${workflowName}]]);`;
@@ -203,19 +233,26 @@ async function runStaleWaitReplayScenario(options: {
     }
   );
 
+  // Host-side registration for the step the hook branch executes inline.
+  // Without it, the V2 inline executor fails the step as unregistered and
+  // the scenario degenerates into a run failure instead of a suspension.
+  registerStepFunction('drainStep', async () => undefined);
+
+  const runStartedResponse = {
+    run: workflowRun,
+    events: [...staleEvents],
+    ...(options.includePreloadedCursor
+      ? {
+          cursor: staleEventsCursor,
+          hasMore: options.preloadedHasMore ?? false,
+        }
+      : {}),
+  };
+
   const createEvent = vi.fn(
     async (_runId: string, request: CreateEventRequest) => {
       if (request.eventType === 'run_started') {
-        return {
-          run: workflowRun,
-          events: [...staleEvents],
-          ...(options.includePreloadedCursor
-            ? {
-                cursor: staleEventsCursor,
-                hasMore: options.preloadedHasMore ?? false,
-              }
-            : {}),
-        };
+        return runStartedResponse;
       }
 
       if (request.eventType === 'wait_completed') {
@@ -230,6 +267,12 @@ async function runStaleWaitReplayScenario(options: {
       const created = event(request);
       durableEvents.push(created);
       createdEvents.push(created);
+      if (request.eventType === 'step_started') {
+        return {
+          event: created,
+          step: buildStepEntity(durableEvents, runId, request.correlationId),
+        };
+      }
       if (
         request.eventType === 'wait_completed' &&
         options.terminalFailureAfterWaitCompletion
@@ -370,7 +413,10 @@ describe('workflow handler wait completion replay', () => {
       includePreloadedCursor: true,
     });
 
-    expect(result.listEvents).toHaveBeenCalledTimes(1);
+    // The first call is the cursor delta after wait completion; the second
+    // is the next loop iteration's incremental fetch after the hook branch's
+    // drainStep executed inline.
+    expect(result.listEvents).toHaveBeenCalledTimes(2);
     expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
       expect.objectContaining({
         sortOrder: 'asc',
@@ -391,7 +437,9 @@ describe('workflow handler wait completion replay', () => {
       includePreloadedCursor: false,
     });
 
-    expect(result.listEvents).toHaveBeenCalledTimes(1);
+    // Full reload after wait completion, plus the next loop iteration's
+    // incremental fetch after the inline drainStep execution.
+    expect(result.listEvents).toHaveBeenCalledTimes(2);
     expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
       expect.objectContaining({
         sortOrder: 'asc',
@@ -421,7 +469,10 @@ describe('workflow handler wait completion replay', () => {
       preloadedHasMore: true,
     });
 
-    expect(result.listEvents).toHaveBeenCalledTimes(2);
+    // Full reload (partial preload discarded), cursor delta after wait
+    // completion, then the next loop iteration's incremental fetch after
+    // the inline drainStep execution.
+    expect(result.listEvents).toHaveBeenCalledTimes(3);
     expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
       expect.objectContaining({
         sortOrder: 'asc',
@@ -458,7 +509,10 @@ describe('workflow handler wait completion replay', () => {
       omitWaitCompletionFromDelta: true,
     });
 
-    expect(result.listEvents).toHaveBeenCalledTimes(2);
+    // Cursor delta (missing the wait completion), full-reload fallback,
+    // then the next loop iteration's incremental fetch after the inline
+    // drainStep execution.
+    expect(result.listEvents).toHaveBeenCalledTimes(3);
     expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
       expect.objectContaining({
         sortOrder: 'asc',
