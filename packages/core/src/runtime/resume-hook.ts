@@ -23,6 +23,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { waitUntil } from './wait-until.js';
 import { getWorld } from './world.js';
 
 async function materializeResponseBody(response: Response): Promise<Response> {
