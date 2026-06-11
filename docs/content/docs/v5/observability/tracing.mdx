@@ -34,9 +34,11 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | Span name | Kind | Emitted when |
 | --- | --- | --- |
 | `workflow.start <name>` | internal | `start()` is called in your application code |
-| `WORKFLOW_V2 <name>` | internal (root) | a queue delivery invokes the workflow — replay, orchestration, and inline steps run under it |
-| `STEP <name>` | internal | a step function executes |
+| `workflow.execute <name>` | internal (root) | a queue delivery invokes the workflow — replay, orchestration, and inline steps run under it |
+| `step.execute <name>` | internal | a step function executes |
 | `http <method>` | client | the SDK calls the workflow backend (event reads/writes) |
+
+`<name>` is the short function name (for example `processOrder`); the full machine name, including the source module, is available in the `workflow.name` / `step.name` attributes.
 
 ## Key attributes
 

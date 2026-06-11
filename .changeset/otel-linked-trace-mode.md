@@ -13,4 +13,4 @@ Behavioral changes to telemetry under the new default (set `WORKFLOW_TRACE_MODE=
 - `WORKFLOW_V2`/`STEP` invocation spans become parentless roots, which changes parent/child-based queries and service-map edges.
 - Re-enqueued queue messages forward the original run-origin trace carrier unchanged, rather than each invocation's current context.
 
-Span names, existing attributes, and baggage keys are unchanged, and everything remains a no-op when no OpenTelemetry SDK is registered.
+Existing attributes and baggage keys are unchanged, and everything remains a no-op when no OpenTelemetry SDK is registered.

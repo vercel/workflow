@@ -10,7 +10,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { formatStepName, pluralize } from '@workflow/utils';
+import { formatStepName, pluralize, stepDisplayName } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
@@ -236,7 +236,7 @@ function createStepHandler(namespace?: string) {
         ]);
 
         return trace(
-          `STEP ${stepName}`,
+          `step.execute ${stepDisplayName(stepName)}`,
           traceMode === 'linked'
             ? { kind: spanKind, links: spanLinks, root: true }
             : { kind: spanKind, links: spanLinks },

@@ -190,7 +190,7 @@ async function driveHandler(opts: {
 
   const workflowSpan = exporter
     .getFinishedSpans()
-    .find((s) => s.name === 'WORKFLOW_V2 workflow');
+    .find((s) => s.name === 'workflow.execute workflow');
 
   return { workflowSpan, deliverySpan, queuedMessages };
 }

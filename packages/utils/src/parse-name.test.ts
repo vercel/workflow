@@ -5,6 +5,8 @@ import {
   parseClassName,
   parseStepName,
   parseWorkflowName,
+  stepDisplayName,
+  workflowDisplayName,
 } from './parse-name';
 
 describe('parseWorkflowName', () => {
@@ -257,6 +259,47 @@ describe('formatStepName / formatWorkflowName', () => {
     expect(formatStepName('something-weird')).toBe('something-weird');
     expect(formatWorkflowName('step//wrong-tag//fn')).toBe(
       'step//wrong-tag//fn'
+    );
+  });
+});
+
+describe('workflowDisplayName / stepDisplayName', () => {
+  test('returns the short name for raw machine names', () => {
+    expect(
+      workflowDisplayName('workflow//./src/jobs/order//processOrder')
+    ).toBe('processOrder');
+    expect(stepDisplayName('step//./src/jobs/order//chargeCard')).toBe(
+      'chargeCard'
+    );
+  });
+
+  test('returns the short name for module-specifier names', () => {
+    expect(workflowDisplayName('workflow//@myorg/shared@1.2.3//sync')).toBe(
+      'sync'
+    );
+  });
+
+  test('recovers the function name from queue-sanitized names', () => {
+    // `workflow//./src/jobs/order//processOrder` after the queue's
+    // `replace(/[^A-Za-z0-9-_]/g, '-')` sanitization:
+    expect(
+      workflowDisplayName('workflow----src-jobs-order--processOrder')
+    ).toBe('processOrder');
+    expect(stepDisplayName('step----src-jobs-order--chargeCard')).toBe(
+      'chargeCard'
+    );
+  });
+
+  test('sanitized nested functions use the leaf name', () => {
+    expect(
+      stepDisplayName('step----src-jobs-order--processOrder-innerStep')
+    ).toBe('innerStep');
+  });
+
+  test('falls back to the input when unrecognized', () => {
+    expect(workflowDisplayName('my-plain-name')).toBe('my-plain-name');
+    expect(stepDisplayName('workflow--wrong-tag--fn')).toBe(
+      'workflow--wrong-tag--fn'
     );
   });
 });

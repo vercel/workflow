@@ -10,7 +10,10 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { parseWorkflowName } from '@workflow/utils/parse-name';
+import {
+  parseWorkflowName,
+  workflowDisplayName,
+} from '@workflow/utils/parse-name';
 import {
   type Event,
   getQueueTopicPrefix,
@@ -403,7 +406,7 @@ export function workflowEntrypoint(
             async () => {
               const world = await getWorld();
               return trace(
-                `WORKFLOW_V2 ${workflowName}`,
+                `workflow.execute ${workflowDisplayName(workflowName)}`,
                 traceMode === 'linked'
                   ? { root: true, links: spanLinks }
                   : { links: spanLinks },

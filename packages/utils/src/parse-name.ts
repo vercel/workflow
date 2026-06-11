@@ -106,6 +106,41 @@ export function formatWorkflowName(name: string): string {
   return formatParsedName(parseWorkflowName(name), name);
 }
 
+/**
+ * Best-effort short display name for spans and UI labels. Accepts either the
+ * raw machine name (`workflow//./src/jobs/order//processOrder`) or the
+ * queue-sanitized form (`workflow----src-jobs-order--processOrder`, where
+ * every non-alphanumeric character was replaced with `-`) and returns just
+ * the function name (`processOrder`). Falls back to the input unchanged when
+ * neither form is recognized.
+ */
+export function workflowDisplayName(name: string): string {
+  return (
+    parseWorkflowName(name)?.shortName ??
+    shortNameFromSanitized('workflow', name) ??
+    name
+  );
+}
+
+/** See {@link workflowDisplayName} — the step-name equivalent. */
+export function stepDisplayName(name: string): string {
+  return (
+    parseStepName(name)?.shortName ??
+    shortNameFromSanitized('step', name) ??
+    name
+  );
+}
+
+function shortNameFromSanitized(tag: string, name: string): string | null {
+  if (!name.startsWith(`${tag}--`)) return null;
+  // The `//` separators became `--`, and within the function-name part any
+  // nested-function `/` became `-`. Function names are JS identifiers (no
+  // dashes), so the innermost name is the last dash-free segment.
+  const functionPart = name.split('--').filter(Boolean).at(-1);
+  const shortName = functionPart?.split('-').filter(Boolean).at(-1);
+  return shortName || null;
+}
+
 function formatParsedName(
   parsed: {
     shortName: string;
