@@ -33,7 +33,7 @@ import { IconButton } from '../ui/icon-button';
 import { Spinner } from '../ui/spinner';
 import { Kbd } from '../ui/kbd';
 import EventList from './components/event-list';
-import { ROW_HEIGHT_PX } from './components/use-row-window';
+import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { SplitPane } from './components/split-pane';
 import {
   TIMELINE_PADDING_PX,
@@ -353,44 +353,17 @@ function NewTraceViewerContent({
 
   // Bring a row into view when keyboard/button navigation lands on a span that
   // sits outside the shared scroll container's visible area. The list is
-  // windowed (fixed `ROW_HEIGHT_PX` rows), so an off-screen row has no DOM node
-  // to `scrollIntoView` — the target offset is computed from its index instead.
+  // windowed, so an off-screen row has no DOM node to `scrollIntoView` —
+  // `scrollRowIntoView` computes the target offset from the span's index.
   const scrollSpanIntoView = useCallback(
     (spanId: string) => {
-      const container = scrollContainerRef.current;
-      if (!container) return;
-
       const index = trace.spans.findIndex((s) => s.spanId === spanId);
       if (index === -1) return;
 
-      const list = container.querySelector<HTMLElement>('#event-list');
-      if (!list) return;
-
-      // Offset of the list's top within the scroll container's content.
-      const listOffset =
-        list.getBoundingClientRect().top -
-        container.getBoundingClientRect().top +
-        container.scrollTop;
-
-      const rowTop = listOffset + index * ROW_HEIGHT_PX;
-      const rowBottom = rowTop + ROW_HEIGHT_PX;
-      const viewTop = container.scrollTop;
-      const viewBottom = viewTop + container.clientHeight;
-
-      // Reveal one extra row of breathing room past the selected one.
-      const margin = ROW_HEIGHT_PX;
-
-      let nextTop: number | null = null;
-      if (rowTop < viewTop) {
-        nextTop = rowTop - margin;
-      } else if (rowBottom > viewBottom) {
-        nextTop = rowBottom - container.clientHeight + margin;
-      }
-      if (nextTop === null) return;
-
-      const maxTop = container.scrollHeight - container.clientHeight;
-      container.scrollTo({
-        top: Math.max(0, Math.min(maxTop, nextTop)),
+      const list =
+        scrollContainerRef.current?.querySelector<HTMLElement>('#event-list') ??
+        null;
+      scrollRowIntoView(list, index, ROW_HEIGHT_PX, {
         behavior: reducedMotion ? 'auto' : 'smooth',
       });
     },
