@@ -85,6 +85,34 @@ The key points:
 - You need the hook's `token` to resume it
 - The workflow will resume execution right where it left off
 
+### Checking for Token Conflicts
+
+Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.hasConflict` for that:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+declare function processOrder(orderId: string): Promise<void>; // @setup
+
+export async function orderWorkflow(orderId: string) {
+  "use workflow";
+
+  using hook = createHook({
+    token: `order:${orderId}`
+  });
+
+  if (await hook.hasConflict) { // [!code highlight]
+    // Another active run already owns this token.
+    return;
+  }
+
+  // The hook token is registered and reserved here.
+  await processOrder(orderId);
+}
+```
+
+Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.hasConflict` suspends the workflow to commit the hook registration, then resolves with `false` once the hook is registered and ready to receive payloads, or `true` if another active hook already owns the same token (see [`HookConflictError`](/docs/errors/hook-conflict)).
+
 ### Custom Tokens for Deterministic Hooks
 
 By default, hooks generate a random token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.

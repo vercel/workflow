@@ -40,7 +40,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Queue of promises that resolve to the next hook payload
     const promises: PromiseWithResolvers<T>[] = [];
 
+    // Queue of promises that resolve once hook registration is confirmed
+    // (with `false`) or a token conflict is detected (with `true`). These
+    // back the `hook.hasConflict` getter.
+    const hasConflictPromises: PromiseWithResolvers<boolean>[] = [];
+
     let eventLogEmpty = false;
+
+    // Track if the event log confirms hook creation happened
+    let hasCreated = false;
 
     // Track if the event log confirms disposal happened (replay no-op)
     let hasDisposedEvent = false;
@@ -57,7 +65,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (!event) {
         eventLogEmpty = true;
 
-        if (promises.length > 0 && payloadsQueue.length === 0) {
+        if (
+          (promises.length > 0 && payloadsQueue.length === 0) ||
+          (hasConflictPromises.length > 0 && !hasCreated && !hasConflict)
+        ) {
           scheduleWhenIdle(ctx, () => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
@@ -95,6 +106,16 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         if (queueItem && queueItem.type === 'hook') {
           queueItem.hasCreatedEvent = true;
         }
+        hasCreated = true;
+
+        const pendingHasConflictPromises = hasConflictPromises.slice();
+        hasConflictPromises.length = 0;
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          for (const resolver of pendingHasConflictPromises) {
+            resolver.resolve(false);
+          }
+        });
+
         return EventConsumerResult.Consumed;
       }
 
@@ -117,13 +138,21 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
         // Capture and drain pending promises synchronously so the null event
         // handler won't see them and trigger a spurious WorkflowSuspension.
-        // The actual rejections are deferred through promiseQueue for ordering.
+        // The actual settlements are deferred through promiseQueue for
+        // ordering. Payload awaiters reject with HookConflictError, while
+        // `hasConflict` awaiters resolve with `true` so the workflow can
+        // branch on the conflict without throwing.
         const pendingPromises = promises.slice();
         promises.length = 0;
+        const pendingHasConflictPromises = hasConflictPromises.slice();
+        hasConflictPromises.length = 0;
 
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           for (const resolver of pendingPromises) {
             resolver.reject(conflictError);
+          }
+          for (const resolver of pendingHasConflictPromises) {
+            resolver.resolve(true);
           }
         });
 
@@ -291,6 +320,45 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       return resolvers.promise;
     }
 
+    // Helper function to create a promise that resolves with the hook's
+    // registration outcome: `true` when the token is owned by another
+    // active hook, `false` once this hook's registration is committed.
+    // Both fast-paths settle through `ctx.promiseQueue` so resolution
+    // order always matches event-log order.
+    function createHasConflictPromise(): Promise<boolean> {
+      const resolvers = withResolvers<boolean>();
+
+      if (hasCreated) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          resolvers.resolve(false);
+        });
+        return resolvers.promise;
+      }
+
+      if (hasConflict) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          resolvers.resolve(true);
+        });
+        return resolvers.promise;
+      }
+
+      const queueItem = ctx.invocationsQueue.get(correlationId);
+      if (queueItem && queueItem.type === 'hook') {
+        queueItem.hasConflictAwaiter = true;
+      }
+
+      if (eventLogEmpty) {
+        scheduleWhenIdle(ctx, () => {
+          ctx.onWorkflowError(
+            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+          );
+        });
+      }
+
+      hasConflictPromises.push(resolvers);
+      return resolvers.promise;
+    }
+
     // Helper function to dispose the hook
     function disposeHook(): void {
       if (isDisposed) {
@@ -327,6 +395,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     const hook: Hook<T> = {
       token,
+
+      get hasConflict(): Promise<boolean> {
+        return createHasConflictPromise();
+      },
 
       // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
       then<TResult1 = T, TResult2 = never>(
