@@ -55,8 +55,8 @@ export interface SuspensionHandlerResult {
   timeoutSeconds?: number;
   /** Whether a hook conflict was detected (should re-invoke immediately) */
   hasHookConflict: boolean;
-  /** Whether a hook.ready awaiter needs the workflow to continue immediately */
-  hasHookReadyCreation: boolean;
+  /** Whether a `hook.hasConflict` awaiter needs the workflow to continue immediately */
+  hasAwaitedHookCreation: boolean;
   /** Whether native workflow attribute events were written for replay. */
   hasAttributeEvents: boolean;
 }
@@ -75,7 +75,7 @@ async function createHookEvent({
   requestId?: string;
 }): Promise<{
   hasHookConflict: boolean;
-  hasHookReadyCreation: boolean;
+  hasAwaitedHookCreation: boolean;
 }> {
   try {
     const result = await world.events.create(runId, hookEvent, {
@@ -88,13 +88,13 @@ async function createHookEvent({
     if (result.event?.eventType === 'hook_conflict') {
       return {
         hasHookConflict: true,
-        hasHookReadyCreation: false,
+        hasAwaitedHookCreation: false,
       };
     }
 
     return {
       hasHookConflict: false,
-      hasHookReadyCreation: queueItem.hasReadyAwaiter === true,
+      hasAwaitedHookCreation: queueItem.hasConflictAwaiter === true,
     };
   } catch (err) {
     if (EntityConflictError.is(err)) {
@@ -104,7 +104,7 @@ async function createHookEvent({
       });
       return {
         hasHookConflict: false,
-        hasHookReadyCreation: queueItem.hasReadyAwaiter === true,
+        hasAwaitedHookCreation: queueItem.hasConflictAwaiter === true,
       };
     }
 
@@ -115,7 +115,7 @@ async function createHookEvent({
       });
       return {
         hasHookConflict: false,
-        hasHookReadyCreation: false,
+        hasAwaitedHookCreation: false,
       };
     }
 
@@ -198,7 +198,7 @@ export async function handleSuspension({
   // Track any hook conflicts that occur — these are returned to the caller
   // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
-  let hasHookReadyCreation = false;
+  let hasAwaitedHookCreation = false;
 
   if (hookEvents.length > 0) {
     const results = await Promise.all(
@@ -213,8 +213,8 @@ export async function handleSuspension({
       )
     );
     hasHookConflict = results.some((result) => result.hasHookConflict);
-    hasHookReadyCreation = results.some(
-      (result) => result.hasHookReadyCreation
+    hasAwaitedHookCreation = results.some(
+      (result) => result.hasAwaitedHookCreation
     );
   }
 
@@ -518,7 +518,7 @@ export async function handleSuspension({
     createdStepCorrelationIds,
     timeoutSeconds: hasHookConflict ? 0 : (minTimeoutSeconds ?? undefined),
     hasHookConflict,
-    hasHookReadyCreation,
+    hasAwaitedHookCreation,
     hasAttributeEvents: attributeItems.length > 0,
   };
 }

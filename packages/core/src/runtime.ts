@@ -1056,8 +1056,8 @@ export function workflowEntrypoint(
                           pendingSteps: suspensionResult.pendingSteps.length,
                           timeoutSeconds: suspensionResult.timeoutSeconds,
                           hasHookConflict: suspensionResult.hasHookConflict,
-                          hasHookReadyCreation:
-                            suspensionResult.hasHookReadyCreation,
+                          hasAwaitedHookCreation:
+                            suspensionResult.hasAwaitedHookCreation,
                           hasAttributeEvents:
                             suspensionResult.hasAttributeEvents,
                         });
@@ -1080,7 +1080,7 @@ export function workflowEntrypoint(
 
                         if (pendingSteps.length === 0) {
                           // No steps — only waits/hooks
-                          if (suspensionResult.hasHookReadyCreation) {
+                          if (suspensionResult.hasAwaitedHookCreation) {
                             return { timeoutSeconds: 0 };
                           }
                           if (suspensionResult.timeoutSeconds !== undefined) {
@@ -1119,10 +1119,21 @@ export function workflowEntrypoint(
                         // the wait timeout drive a continuation in parallel,
                         // matching V1's behavior where each step ran in a
                         // separate function invocation.
+                        //
+                        // The same applies when a created hook has a
+                        // `hook.hasConflict` awaiter: running a step inline
+                        // would delay the awaiter's continuation until the
+                        // step finishes, serializing work that the workflow
+                        // expressed as parallel (e.g. `hook.hasConflict
+                        // .then(() => stepB())` racing `await stepA()`).
+                        // Queue every step and re-invoke immediately so the
+                        // continuation replays over hook_created while the
+                        // queued steps execute in parallel.
                         const inlineStep:
                           | (typeof pendingSteps)[number]
                           | undefined =
-                          suspensionResult.timeoutSeconds === undefined
+                          suspensionResult.timeoutSeconds === undefined &&
+                          !suspensionResult.hasAwaitedHookCreation
                             ? ownedPendingSteps[0]
                             : undefined;
 
@@ -1165,7 +1176,7 @@ export function workflowEntrypoint(
                         // Nothing to execute inline — we already queued all
                         // pending steps above, exit and let the queue drive.
                         if (!inlineStep) {
-                          if (suspensionResult.hasHookReadyCreation) {
+                          if (suspensionResult.hasAwaitedHookCreation) {
                             return { timeoutSeconds: 0 };
                           }
                           if (suspensionResult.timeoutSeconds !== undefined) {

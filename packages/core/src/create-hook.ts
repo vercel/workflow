@@ -30,20 +30,31 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
   token: string;
 
   /**
-   * Resolves when the hook has been registered and is ready to receive payloads.
+   * Resolves with `true` if another active hook already owns this hook's
+   * token, or `false` once the hook has been registered and is ready to
+   * receive payloads.
    *
-   * This can be awaited when you need to know that the hook token has been
-   * claimed, but you do not want to wait for a hook payload yet. If another
-   * active hook already owns the token, this promise rejects with
+   * Calling `createHook()` alone does not register the hook — registration
+   * only happens when the workflow suspends. Awaiting `hasConflict`
+   * suspends the workflow to commit the hook registration, so it can be
+   * used to claim the token (and detect token conflicts early) without
+   * waiting for payload data.
+   *
+   * Note that awaiting the hook's payload (`await hook`) when the token is
+   * already owned by another active hook still rejects with
    * `HookConflictError`.
    *
    * @example
    * ```ts
    * using hook = createHook({ token: `order:${orderId}` });
-   * await hook.ready; // token is now claimed, without waiting for payload data
+   * if (await hook.hasConflict) {
+   *   // another run already owns this token
+   *   return;
+   * }
+   * // token is now claimed, without waiting for payload data
    * ```
    */
-  readonly ready: Promise<void>;
+  readonly hasConflict: Promise<boolean>;
 
   /**
    * Disposes the hook, releasing its token for reuse by other workflows.

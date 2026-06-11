@@ -2415,7 +2415,7 @@ describe('runWorkflow', () => {
       });
     });
 
-    it('should throw `WorkflowSuspension` when hook.ready is awaited before hook creation is recorded', async () => {
+    it('should throw `WorkflowSuspension` when hook.hasConflict is awaited before hook creation is recorded', async () => {
       let error: Error | undefined;
       try {
         const ops: Promise<any>[] = [];
@@ -2439,8 +2439,8 @@ describe('runWorkflow', () => {
           `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
           async function workflow() {
             const hook = createHook({ token: 'claim-only-token' });
-            await hook.ready;
-            return 'ready';
+            await hook.hasConflict;
+            return 'registered';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
           [],
@@ -2457,7 +2457,7 @@ describe('runWorkflow', () => {
       expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
     });
 
-    it('should resolve hook.ready on hook_created without waiting for hook payload data', async () => {
+    it('should resolve hook.hasConflict with false on hook_created without waiting for hook payload data', async () => {
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {
         runId: 'test-run-123',
@@ -2490,8 +2490,8 @@ describe('runWorkflow', () => {
         `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
         async function workflow() {
           const hook = createHook({ token: 'claim-only-token' });
-          await hook.ready;
-          return 'ready';
+          const hasConflict = await hook.hasConflict;
+          return hasConflict ? 'conflict' : 'registered';
         }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
         events,
@@ -2505,10 +2505,10 @@ describe('runWorkflow', () => {
           noEncryptionKey,
           ops
         )
-      ).toEqual('ready');
+      ).toEqual('registered');
     });
 
-    it('should reject hook.ready with HookConflictError when hook_conflict event is received', async () => {
+    it('should resolve hook.hasConflict with true when hook_conflict event is received', async () => {
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {
         runId: 'test-run-123',
@@ -2539,26 +2539,26 @@ describe('runWorkflow', () => {
         },
       ];
 
-      let error: Error | undefined;
-      try {
-        await runWorkflow(
-          `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-          async function workflow() {
-            const hook = createHook({ token: 'claim-only-token' });
-            await hook.ready;
-            return 'ready';
-          }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          events,
-          noEncryptionKey
-        );
-      } catch (err) {
-        error = err as Error;
-      }
+      const result = await runWorkflow(
+        `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          const hook = createHook({ token: 'claim-only-token' });
+          const hasConflict = await hook.hasConflict;
+          return hasConflict ? 'conflict' : 'registered';
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
 
-      expect(error).toBeInstanceOf(HookConflictError);
-      expect(error?.message).toContain('already in use by another workflow');
-      expect(error?.message).toContain('claim-only-token');
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        )
+      ).toEqual('conflict');
     });
 
     it('should reject with HookConflictError when hook_conflict event is received', async () => {

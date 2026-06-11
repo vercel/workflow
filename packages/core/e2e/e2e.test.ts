@@ -1623,11 +1623,11 @@ describe('e2e', () => {
     }
   );
 
-  test('hookReadyWorkflow - hook.ready registers hook without payload', async () => {
+  test('hookHasConflictWorkflow - awaiting hook.hasConflict registers hook without payload', async () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);
 
-    const run = await start(await e2e('hookReadyWorkflow'), [
+    const run = await start(await e2e('hookHasConflictWorkflow'), [
       token,
       customData,
     ]);
@@ -1636,7 +1636,8 @@ describe('e2e', () => {
     expect(returnValue).toEqual({
       token,
       customData,
-      hookReadyTestData: 'hook_registered_without_payload',
+      hasConflict: false,
+      hookHasConflictTestData: 'hook_registered_without_payload',
     });
 
     const world = await getWorld();
@@ -1646,27 +1647,27 @@ describe('e2e', () => {
 
     expect(
       hookCreated,
-      'awaiting hook.ready should suspend and create the hook'
+      'awaiting hook.hasConflict should suspend and create the hook'
     ).toBeDefined();
     expect(
       hookReceived,
-      'hook.ready should not require or consume hook payload data'
+      'hook.hasConflict should not require or consume hook payload data'
     ).toBeUndefined();
   });
 
   test.each([
     {
-      workflow: 'hookReadyWithPriorStepWorkflow',
-      hookReadyTestData: 'prior_step_completed_after_ready',
+      workflow: 'hookHasConflictWithPriorStepWorkflow',
+      hookHasConflictTestData: 'prior_step_completed_after_registration',
     },
     {
-      workflow: 'hookReadyWithParallelStepWorkflow',
-      hookReadyTestData: 'parallel_step_completed_with_ready',
+      workflow: 'hookHasConflictWithParallelStepWorkflow',
+      hookHasConflictTestData: 'parallel_step_completed_with_registration',
     },
   ])(
-    '$workflow - hook.ready does not block step execution',
+    '$workflow - hook.hasConflict does not block step execution',
     { timeout: 60_000 },
-    async ({ workflow, hookReadyTestData }) => {
+    async ({ workflow, hookHasConflictTestData }) => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
 
@@ -1676,11 +1677,12 @@ describe('e2e', () => {
       expect(returnValue).toEqual({
         token,
         customData,
+        hasConflict: false,
         stepResult: {
           customData,
-          hookReadyStepData: 'step_completed',
+          hookHasConflictStepData: 'step_completed',
         },
-        hookReadyTestData,
+        hookHasConflictTestData,
       });
 
       const world = await getWorld();
@@ -1694,22 +1696,22 @@ describe('e2e', () => {
   );
 
   test(
-    'hookReadyThenStepParallelWorkflow - hook.ready continuation step runs alongside inline step',
+    'hookHasConflictThenStepParallelWorkflow - hook.hasConflict continuation step runs alongside other steps',
     { timeout: 90_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
 
-      const run = await start(await e2e('hookReadyThenStepParallelWorkflow'), [
-        token,
-        customData,
-      ]);
+      const run = await start(
+        await e2e('hookHasConflictThenStepParallelWorkflow'),
+        [token, customData]
+      );
 
       const returnValue = await run.returnValue;
       expect(returnValue).toMatchObject({
         token,
         customData,
-        hookReadyTestData: 'ready_then_step_runs_in_parallel',
+        hookHasConflictTestData: 'registration_then_step_runs_in_parallel',
       });
 
       const { stepAResult, stepBResult } = returnValue;
@@ -1721,7 +1723,7 @@ describe('e2e', () => {
       expect(stepADuration).toBeGreaterThanOrEqual(9_000);
       expect(
         stepBResult.startedAt,
-        'stepB should start before stepA finishes, proving hook.ready can continue independently of the inline step'
+        'stepB should start before stepA finishes, proving hook.hasConflict can continue independently of other steps'
       ).toBeLessThan(stepAResult.endedAt);
       expect(
         stepStartDelta,
@@ -1731,7 +1733,7 @@ describe('e2e', () => {
   );
 
   test(
-    'hookReadyWorkflow - hook.ready rejects when token is already registered',
+    'hookHasConflictWorkflow - hook.hasConflict resolves true when token is already registered',
     { timeout: 60_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
@@ -1744,20 +1746,23 @@ describe('e2e', () => {
 
       const hook = await waitForHook(token, { runId: run1.runId });
 
-      const run2 = await start(await e2e('hookReadyWorkflow'), [
+      const run2 = await start(await e2e('hookHasConflictWorkflow'), [
         token,
         customData,
       ]);
 
-      const run2Error = await run2.returnValue.catch((e: unknown) => e);
-      expect(WorkflowRunFailedError.is(run2Error)).toBe(true);
-      assert(WorkflowRunFailedError.is(run2Error));
-      expect(run2Error.cause.message).toContain(
-        'already in use by another workflow'
-      );
+      // The conflicting run detects the conflict via `hook.hasConflict`
+      // and completes successfully instead of failing.
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toEqual({
+        token,
+        customData,
+        hasConflict: true,
+        hookHasConflictTestData: 'hook_token_conflict_detected',
+      });
 
       const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
-      expect(run2Data.status).toBe('failed');
+      expect(run2Data.status).toBe('completed');
 
       await resumeHook(hook, {
         message: 'ready-conflict-holder',

@@ -65,7 +65,7 @@ export default Hook;`}
 
 The returned `Hook` object also implements `AsyncIterable<T>`, which allows you to iterate over incoming payloads using `for await...of` syntax.
 
-Use `hook.ready` when you need to wait until the hook token has been registered without waiting for hook payload data. It resolves after `hook_created` is recorded and rejects with `HookConflictError` if another active hook already owns the same token.
+Use `hook.hasConflict` to check whether the hook token is already claimed by another active hook, without waiting for hook payload data. Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.hasConflict` suspends the workflow to commit the registration, then resolves with `false` once `hook_created` is recorded, or `true` if another active hook already owns the same token.
 
 ## Examples
 
@@ -114,37 +114,32 @@ export async function slackBotWorkflow(channelId: string) {
 }
 ```
 
-### Waiting for Registration
+### Detecting Token Conflicts
 
-Use `hook.ready` when the workflow needs to claim a hook token before doing other work, but does not need a payload yet:
+Use `hook.hasConflict` when the workflow needs to claim a hook token before doing other work, but does not need a payload yet:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
-import { HookConflictError } from "workflow/errors";
 
 declare function chargeOrder(orderId: string): Promise<void>; // @setup
 
 async function processOrder(orderId: string) {
   "use workflow";
 
-  try {
-    using hook = createHook({ // [!code highlight]
-      token: `order:${orderId}` // [!code highlight]
-    }); // [!code highlight]
+  using hook = createHook({ // [!code highlight]
+    token: `order:${orderId}` // [!code highlight]
+  }); // [!code highlight]
 
-    await hook.ready; // [!code highlight]
-    await chargeOrder(orderId);
-  } catch (error) {
-    if (HookConflictError.is(error)) {
-      return;
-    }
-
-    throw error;
+  if (await hook.hasConflict) { // [!code highlight]
+    // Another active workflow run already owns this token.
+    return;
   }
+
+  await chargeOrder(orderId);
 }
 ```
 
-`hook.ready` only waits for hook registration. To receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
+Because `createHook()` alone does not suspend the workflow, awaiting `hook.hasConflict` is what actually suspends the run and commits the hook registration. It only waits for registration — to receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
 
 ### Waiting for Multiple Payloads
 

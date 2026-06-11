@@ -607,7 +607,10 @@ export async function hookCleanupTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
-export async function hookReadyWorkflow(token: string, customData: string) {
+export async function hookHasConflictWorkflow(
+  token: string,
+  customData: string
+) {
   'use workflow';
 
   using hook = createHook({
@@ -615,24 +618,29 @@ export async function hookReadyWorkflow(token: string, customData: string) {
     metadata: { customData },
   });
 
-  await hook.ready;
+  // Awaiting `hasConflict` suspends the workflow to commit the hook
+  // registration without waiting for payload data.
+  const hasConflict = await hook.hasConflict;
 
   return {
     token,
     customData,
-    hookReadyTestData: 'hook_registered_without_payload',
+    hasConflict,
+    hookHasConflictTestData: hasConflict
+      ? 'hook_token_conflict_detected'
+      : 'hook_registered_without_payload',
   };
 }
 
-async function hookReadyStep(customData: string) {
+async function hookHasConflictStep(customData: string) {
   'use step';
   return {
     customData,
-    hookReadyStepData: 'step_completed',
+    hookHasConflictStepData: 'step_completed',
   };
 }
 
-async function hookReadyTimedStep(label: 'A' | 'B', delayMs: number) {
+async function hookHasConflictTimedStep(label: 'A' | 'B', delayMs: number) {
   'use step';
   const { stepStartedAt } = getStepMetadata();
   const startedAt = stepStartedAt.getTime();
@@ -644,7 +652,7 @@ async function hookReadyTimedStep(label: 'A' | 'B', delayMs: number) {
   };
 }
 
-export async function hookReadyWithPriorStepWorkflow(
+export async function hookHasConflictWithPriorStepWorkflow(
   token: string,
   customData: string
 ) {
@@ -655,19 +663,20 @@ export async function hookReadyWithPriorStepWorkflow(
     metadata: { customData },
   });
 
-  const stepPromise = hookReadyStep(customData);
+  const stepPromise = hookHasConflictStep(customData);
 
-  await hook.ready;
+  const hasConflict = await hook.hasConflict;
 
   return {
     token,
     customData,
+    hasConflict,
     stepResult: await stepPromise,
-    hookReadyTestData: 'prior_step_completed_after_ready',
+    hookHasConflictTestData: 'prior_step_completed_after_registration',
   };
 }
 
-export async function hookReadyWithParallelStepWorkflow(
+export async function hookHasConflictWithParallelStepWorkflow(
   token: string,
   customData: string
 ) {
@@ -678,20 +687,21 @@ export async function hookReadyWithParallelStepWorkflow(
     metadata: { customData },
   });
 
-  const [stepResult] = await Promise.all([
-    hookReadyStep(customData),
-    hook.ready,
+  const [stepResult, hasConflict] = await Promise.all([
+    hookHasConflictStep(customData),
+    hook.hasConflict,
   ]);
 
   return {
     token,
     customData,
+    hasConflict,
     stepResult,
-    hookReadyTestData: 'parallel_step_completed_with_ready',
+    hookHasConflictTestData: 'parallel_step_completed_with_registration',
   };
 }
 
-export async function hookReadyThenStepParallelWorkflow(
+export async function hookHasConflictThenStepParallelWorkflow(
   token: string,
   customData: string
 ) {
@@ -702,10 +712,10 @@ export async function hookReadyThenStepParallelWorkflow(
     metadata: { customData },
   });
 
-  const stepBPromise = hook.ready.then(
-    async () => await hookReadyTimedStep('B', 100)
+  const stepBPromise = hook.hasConflict.then(
+    async () => await hookHasConflictTimedStep('B', 100)
   );
-  const stepAResult = await hookReadyTimedStep('A', 10_000);
+  const stepAResult = await hookHasConflictTimedStep('A', 10_000);
   const stepBResult = await stepBPromise;
 
   return {
@@ -713,7 +723,7 @@ export async function hookReadyThenStepParallelWorkflow(
     customData,
     stepAResult,
     stepBResult,
-    hookReadyTestData: 'ready_then_step_runs_in_parallel',
+    hookHasConflictTestData: 'registration_then_step_runs_in_parallel',
   };
 }
 

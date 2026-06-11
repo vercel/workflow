@@ -285,7 +285,7 @@ describe('createCreateHook', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should resolve ready when hook_created event is received', async () => {
+  it('should resolve hasConflict with false when hook_created event is received', async () => {
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -300,7 +300,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook();
 
-    await expect(hook.ready).resolves.toBeUndefined();
+    await expect(hook.hasConflict).resolves.toBe(false);
 
     expect(ctx.invocationsQueue.size).toBe(1);
     const queueItem = ctx.invocationsQueue.values().next().value;
@@ -309,7 +309,7 @@ describe('createCreateHook', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should suspend when ready is awaited before hook creation is recorded', async () => {
+  it('should suspend when hasConflict is awaited before hook creation is recorded', async () => {
     const ctx = setupWorkflowContext([]);
 
     const errorReceived = withResolvers<Error>();
@@ -319,7 +319,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     void (async () => {
-      await hook.ready;
+      await hook.hasConflict;
     })();
 
     const workflowError = await errorReceived.promise;
@@ -328,12 +328,12 @@ describe('createCreateHook', () => {
       expect(workflowError.hookCount).toBe(1);
       expect(workflowError.steps[0]).toMatchObject({
         type: 'hook',
-        hasReadyAwaiter: true,
+        hasConflictAwaiter: true,
       });
     }
   });
 
-  it('should reject ready with HookConflictError when hook_conflict event is received', async () => {
+  it('should resolve hasConflict with true when hook_conflict event is received', async () => {
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -350,11 +350,13 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook({ token: 'my-conflicting-token' });
 
-    await expect(hook.ready).rejects.toThrow(HookConflictError);
-    await expect(hook.ready).rejects.toThrow(/already in use/);
+    await expect(hook.hasConflict).resolves.toBe(true);
+
+    // Awaiting the hook payload itself still rejects with HookConflictError
+    await expect(hook.then((v) => v)).rejects.toThrow(HookConflictError);
   });
 
-  it('should not consume payloads when ready resolves', async () => {
+  it('should not consume payloads when hasConflict resolves', async () => {
     const ops: Promise<any>[] = [];
     const ctx = setupWorkflowContext([
       {
@@ -385,7 +387,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook<{ data: string }>();
 
-    await hook.ready;
+    await expect(hook.hasConflict).resolves.toBe(false);
     await expect(hook).resolves.toEqual({ data: 'after-ready' });
   });
 

@@ -30,7 +30,7 @@ function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
 }
 
 describe('handleSuspension', () => {
-  it('marks hook.ready creations without converting them into wait timeouts', async () => {
+  it('marks hook.hasConflict-awaited creations without converting them into wait timeouts', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
         eventType: 'hook_created',
@@ -39,12 +39,12 @@ describe('handleSuspension', () => {
     const world = createWorld(eventsCreate);
     const pending = new Map([
       [
-        'hook_ready',
+        'hook_awaited',
         {
           type: 'hook' as const,
-          correlationId: 'hook_ready',
+          correlationId: 'hook_awaited',
           token: 'claim-token',
-          hasReadyAwaiter: true,
+          hasConflictAwaiter: true,
         },
       ],
     ]);
@@ -59,15 +59,15 @@ describe('handleSuspension', () => {
       run.runId,
       expect.objectContaining({
         eventType: 'hook_created',
-        correlationId: 'hook_ready',
+        correlationId: 'hook_awaited',
       }),
       expect.anything()
     );
-    expect(result.hasHookReadyCreation).toBe(true);
+    expect(result.hasAwaitedHookCreation).toBe(true);
     expect(result.timeoutSeconds).toBeUndefined();
   });
 
-  it('still allows inline step execution when hook.ready is created with a step', async () => {
+  it('still returns owned pending steps when an awaited hook is created with a step', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
         eventType: 'hook_created',
@@ -85,12 +85,12 @@ describe('handleSuspension', () => {
         },
       ],
       [
-        'hook_ready',
+        'hook_awaited',
         {
           type: 'hook' as const,
-          correlationId: 'hook_ready',
+          correlationId: 'hook_awaited',
           token: 'claim-token',
-          hasReadyAwaiter: true,
+          hasConflictAwaiter: true,
         },
       ],
     ]);
@@ -101,13 +101,13 @@ describe('handleSuspension', () => {
       run,
     });
 
-    expect(result.hasHookReadyCreation).toBe(true);
+    expect(result.hasAwaitedHookCreation).toBe(true);
     expect(result.timeoutSeconds).toBeUndefined();
     expect(result.pendingSteps).toHaveLength(1);
     expect(result.createdStepCorrelationIds).toContain('step_parallel');
   });
 
-  it('does not immediately continue after creating a hook without a ready awaiter', async () => {
+  it('does not immediately continue after creating a hook without a hasConflict awaiter', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
         eventType: 'hook_created',
@@ -131,7 +131,7 @@ describe('handleSuspension', () => {
       run,
     });
 
-    expect(result.hasHookReadyCreation).toBe(false);
+    expect(result.hasAwaitedHookCreation).toBe(false);
     expect(result.timeoutSeconds).toBeUndefined();
   });
 });
