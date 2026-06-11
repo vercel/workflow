@@ -61,12 +61,22 @@ Instead, the SDK creates **one bounded trace per invocation**. Each `workflow.ex
 
 A span link is OpenTelemetry's relationship for "causally related, but in a different trace." It is the standard pattern for asynchronous messaging, where producing and consuming a message can be separated by arbitrary time.
 
+```mermaid
+flowchart LR
+    O["start() request trace"]
+    A["invocation 1"]
+    B["invocation 2"]
+    C["invocation 3 ..."]
+    A -. "link" .-> O
+    B -. "link" .-> O
+    C -. "link" .-> O
+    B -. "link" .-> A
+    C -. "link" .-> B
+
+    style O fill:#a78bfa,stroke:#8b5cf6,color:#000
 ```
-start() request trace ──────────────┐
-        ▲ link            ▲ link    │ link
-        │                 │         ▼
-  [invocation 1] ──link── [invocation 2] ──link── [invocation 3] ...
-```
+
+Each invocation links back to the trace that enqueued it and to the run origin.
 
 To see a whole run, query by attribute rather than by trace ID — for example `workflow.run.id = wrun_...` in your tracing backend — or follow the span links between invocation traces.
 
