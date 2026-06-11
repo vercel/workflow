@@ -20,14 +20,19 @@ import {
 const waitUntilPromises: Promise<unknown>[] = [];
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn((p: Promise<unknown>) => {
+    // Attach a no-op rejection handler immediately so a rejecting promise can
+    // never surface as a real unhandled rejection in the test process before
+    // `anyWaitUntilPromiseRejected()` inspects it. The original promise is kept
+    // for later `allSettled` inspection.
+    p.catch(() => {});
     waitUntilPromises.push(p);
   }),
 }));
 
 /**
- * Resolves true if any promise handed to `waitUntil` rejects. Attaches a
- * handler to each so the rejection is observed (no real unhandled rejection in
- * the test process) and reports whether one occurred.
+ * Resolves true if any promise handed to `waitUntil` rejects. Reports whether
+ * any registered promise rejected (each already carries a no-op handler from
+ * the mock, so inspecting them here cannot itself leave a rejection unhandled).
  */
 async function anyWaitUntilPromiseRejected(): Promise<boolean> {
   const results = await Promise.allSettled(waitUntilPromises);
@@ -636,6 +641,11 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
   }) {
     const workflowRun = await makeRunningRun(opts.runId);
     const order: string[] = [];
+
+    // Start from a clean slate so the rejection check only observes promises
+    // this handler invocation registers — robust against test reordering or
+    // `.only`, not just the afterEach reset between this suite's tests.
+    waitUntilPromises.length = 0;
 
     const eventsCreate = vi.fn(async (_runId: string, data: any) => {
       if (data.eventType === 'run_started') {
