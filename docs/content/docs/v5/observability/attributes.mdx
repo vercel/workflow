@@ -68,7 +68,6 @@ While attributes are experimental:
 
 - Attributes require a World implementing spec version 4 or later.
 - Writes from workflow and step bodies append native `attr_set` events and immediately materialize `run.attributes`.
-- Workflow-body writes avoid the internal-step overhead used by the original MVP, including for a final fire-and-forget call before returning.
 - Storage errors surface rather than being silently ignored: transient errors on workflow-body writes are retried, and a write the World rejects as invalid (for example, exceeding the per-run attribute cap across multiple calls) fails the run with the validation error.
 - Step-body storage errors throw from `experimental_setAttributes` like any other step-side network write. Catch the error inside the step if the attribute is best-effort.
 - Reading and querying attributes is not available yet. A query API is planned.
