@@ -51,15 +51,14 @@ export interface SuspensionHandlerResult {
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
-  /** Timeout from waits, if any */
-  timeoutSeconds?: number;
   /**
-   * Correlation ID of the wait that produced `timeoutSeconds` (the soonest
-   * pending wait). Used as the idempotency key for the wait-continuation
-   * queue message so that repeated suspension passes over the same pending
-   * wait collapse into a single delayed continuation.
+   * The soonest pending wait, if any: seconds until it elapses and the
+   * correlationId of the wait that produced that timeout. The
+   * correlationId seeds the idempotency key for the wait-continuation
+   * queue message so that repeated suspension passes over the same
+   * pending wait collapse into a single delayed continuation.
    */
-  timeoutWaitCorrelationId?: string;
+  waitTimeout?: { seconds: number; correlationId: string };
   /** Whether a hook conflict was detected (should re-invoke immediately) */
   hasHookConflict: boolean;
   /** Whether native workflow attribute events were written for replay. */
@@ -445,17 +444,18 @@ export async function handleSuspension({
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
 
-  // Calculate minimum timeout from waits, tracking which wait produced it
+  // Find the soonest pending wait (minimum timeout)
   const now = Date.now();
-  let minTimeoutSeconds: number | null = null;
-  let minTimeoutWaitCorrelationId: string | undefined;
+  let soonestWait: { seconds: number; correlationId: string } | undefined;
   for (const queueItem of waitItems) {
     const resumeAtMs = queueItem.resumeAt.getTime();
     const delayMs = Math.max(1000, resumeAtMs - now);
     const timeoutSeconds = Math.ceil(delayMs / 1000);
-    if (minTimeoutSeconds === null || timeoutSeconds < minTimeoutSeconds) {
-      minTimeoutSeconds = timeoutSeconds;
-      minTimeoutWaitCorrelationId = queueItem.correlationId;
+    if (!soonestWait || timeoutSeconds < soonestWait.seconds) {
+      soonestWait = {
+        seconds: timeoutSeconds,
+        correlationId: queueItem.correlationId,
+      };
     }
   }
 
@@ -469,10 +469,9 @@ export async function handleSuspension({
   return {
     pendingSteps: stepItems,
     createdStepCorrelationIds,
-    timeoutSeconds: hasHookConflict ? 0 : (minTimeoutSeconds ?? undefined),
-    timeoutWaitCorrelationId: hasHookConflict
-      ? undefined
-      : minTimeoutWaitCorrelationId,
+    // On hook conflict the caller re-invokes immediately and never reads
+    // the wait timeout, so don't report one.
+    waitTimeout: hasHookConflict ? undefined : soonestWait,
     hasHookConflict,
     hasAttributeEvents: attributeItems.length > 0,
   };

@@ -43,6 +43,7 @@ import {
 } from './runtime/replay-budget.js';
 import { executeStep } from './runtime/step-executor.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
+import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
   getWorld,
   getWorldHandlers,
@@ -1054,7 +1055,7 @@ export function workflowEntrypoint(
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
                           pendingSteps: suspensionResult.pendingSteps.length,
-                          timeoutSeconds: suspensionResult.timeoutSeconds,
+                          timeoutSeconds: suspensionResult.waitTimeout?.seconds,
                           hasHookConflict: suspensionResult.hasHookConflict,
                           hasAttributeEvents:
                             suspensionResult.hasAttributeEvents,
@@ -1121,36 +1122,13 @@ export function workflowEntrypoint(
                         // the wait continuation fires later and no-ops on
                         // the terminal run.
                         //
-                        // The wait continuation is keyed on the wait's
-                        // correlationId: while a wait is pending, every
-                        // replay pass over the run re-observes it (e.g.,
-                        // once per step completion in
-                        // `Promise.all([steps..., sleep()])`), and without
-                        // dedupe each pass would enqueue another delayed
-                        // continuation — each one a spurious full replay
-                        // when the wait elapses, and each a fresh message
-                        // that resets the delivery-attempt runaway guard.
-                        //
-                        // Near-elapsed waits (<= 2s remaining) get a
-                        // second-bucketed suffix instead of the bare
-                        // correlationId. A continuation delivered
-                        // marginally early (clock skew between the
-                        // enqueuing and handling hosts; the ceil() on the
-                        // delay can leave a ~0 margin) re-observes the
-                        // wait as pending with ~1s remaining and must be
-                        // able to enqueue a fresh short-delay retry —
-                        // dedupe windows outlive the first delivery, so
-                        // reusing the bare key would drop that retry and
-                        // stall the run permanently. The bucket suffix
-                        // keeps that retry enqueueable (its >= 1s delay
-                        // guarantees a later bucket) while still
-                        // collapsing same-instant duplicates. A key is
-                        // attached in all cases: some worlds (e.g.
-                        // world-postgres) serialize key-less workflow
-                        // messages per run, which would park the
-                        // continuation behind this handler's own inline
-                        // step execution and defeat the race semantics
-                        // this dispatch exists to provide.
+                        // The continuation's delay is clamped to the
+                        // maximum queue delay (long waits chain across
+                        // multiple hops) and its idempotency key dedupes
+                        // re-observations of the same pending wait across
+                        // suspension passes — see
+                        // runtime/wait-continuation.ts for the full
+                        // delay/key selection rationale.
                         const traceCarrier = await serializeTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
                         for (const step of pendingSteps) {
@@ -1177,7 +1155,7 @@ export function workflowEntrypoint(
                             )
                           );
                         }
-                        if (suspensionResult.timeoutSeconds !== undefined) {
+                        if (suspensionResult.waitTimeout) {
                           dispatches.push(
                             queueMessage(
                               world,
@@ -1187,13 +1165,10 @@ export function workflowEntrypoint(
                                 traceCarrier,
                                 requestedAt: new Date(),
                               },
-                              {
-                                delaySeconds: suspensionResult.timeoutSeconds,
-                                idempotencyKey:
-                                  suspensionResult.timeoutSeconds > 2
-                                    ? suspensionResult.timeoutWaitCorrelationId
-                                    : `${suspensionResult.timeoutWaitCorrelationId}:${Math.floor(Date.now() / 1000)}`,
-                              }
+                              getWaitContinuationDispatch(
+                                suspensionResult.waitTimeout.seconds,
+                                suspensionResult.waitTimeout.correlationId
+                              )
                             )
                           );
                         }
