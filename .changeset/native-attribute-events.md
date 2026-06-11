@@ -7,4 +7,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Add native event-based attribute setting and allow passing initial run attributes through `start()`.
+Allow passing initial run attributes through `start()`, and speed up workflow-level `setAttribute` calls by using native events for recording attributes.
