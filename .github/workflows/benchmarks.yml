@@ -19,16 +19,36 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  ci-scope:
+    name: Detect CI Scope
+    runs-on: ubuntu-latest
+    outputs:
+      fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Classify changed files
+        id: scope
+        uses: ./.github/actions/detect-ci-scope
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
   # Phase 0: Update PR comment to show benchmarks are running
   pr-comment-start:
     name: Create PR Comment
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test')
+    needs: ci-scope
+    if: >-
+      github.event_name == 'pull_request' &&
+      !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
+      (needs.ci-scope.outputs.fast-path != 'true' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     timeout-minutes: 2
 
     steps:
       - name: Find existing benchmark comment
-        uses: peter-evans/find-comment@v3
+        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -86,7 +106,7 @@ jobs:
 
       - name: Create new benchmark comment
         if: steps.find-comment.outputs.comment-id == ''
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: benchmark-results
           message: |
@@ -102,14 +122,14 @@ jobs:
 
       - name: Update existing benchmark comment with stale warning
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results == 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: benchmark-results
           path: ${{ steps.get-comment.outputs.stale-comment-path }}
 
       - name: Update existing benchmark comment without results
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results != 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: benchmark-results
           message: |
@@ -127,7 +147,12 @@ jobs:
   build:
     name: Build Packages
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
+      (needs.ci-scope.outputs.fast-path != 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     timeout-minutes: 30
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -156,8 +181,8 @@ jobs:
   benchmark-local:
     name: Benchmark Local (${{ matrix.app }})
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, build]
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -192,7 +217,7 @@ jobs:
       - name: Download baseline from PR base branch
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
           workflow: benchmarks.yml
           branch: ${{ github.event.pull_request.base.ref }}
@@ -239,8 +264,8 @@ jobs:
   benchmark-postgres:
     name: Benchmark Postgres (${{ matrix.app }})
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, build]
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -292,7 +317,7 @@ jobs:
       - name: Download baseline from PR base branch
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
           workflow: benchmarks.yml
           branch: ${{ github.event.pull_request.base.ref }}
@@ -343,13 +368,14 @@ jobs:
   benchmark-vercel:
     name: Benchmark Vercel (${{ matrix.app.name }})
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, build]
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 90
     permissions:
       id-token: write
       contents: read
       deployments: read
+      statuses: read
     strategy:
       fail-fast: false
       matrix:
@@ -386,7 +412,7 @@ jobs:
       - name: Download baseline from PR base branch
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
           workflow: benchmarks.yml
           branch: ${{ github.event.pull_request.base.ref }}
@@ -396,7 +422,7 @@ jobs:
 
       - name: Wait for Vercel deployment
         id: waitForDeployment
-        uses: ./.github/actions/wait-for-vercel-project
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: ${{ matrix.app.project-slug }}
           timeout: 1000
@@ -445,7 +471,11 @@ jobs:
   getCommunityWorldsMatrix:
     name: Get Community Worlds Matrix
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: ci-scope
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
+      (github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
@@ -470,7 +500,10 @@ jobs:
 
   benchmark-community:
     name: Benchmark Community World (${{ matrix.world.name }})
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
+      (github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     needs: [build, getCommunityWorldsMatrix]
     strategy:
       fail-fast: false
@@ -490,8 +523,12 @@ jobs:
   summary:
     name: Benchmark Summary
     runs-on: ubuntu-latest
-    needs: [benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community]
-    if: always() && !cancelled()
+    needs: [ci-scope, benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community]
+    if: >-
+      always() && !cancelled() &&
+      (needs.ci-scope.outputs.fast-path != 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'community-benchmarks'))
     timeout-minutes: 10
 
     steps:
@@ -511,7 +548,7 @@ jobs:
       - name: Download baseline from PR base branch
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
           workflow: benchmarks.yml
           branch: ${{ github.event.pull_request.base.ref }}
@@ -562,14 +599,14 @@ jobs:
 
       - name: Update PR comment with results
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: benchmark-results
           path: benchmark-summary.md
 
       - name: Append failure notice to PR comment
         if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: benchmark-results
           append: true
@@ -585,7 +622,7 @@ jobs:
 
       - name: Append community warning to PR comment
         if: github.event_name == 'pull_request' && steps.check-status.outputs.has_warnings == 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: benchmark-results
           append: true
@@ -638,9 +675,8 @@ jobs:
             --branch "${{ github.ref_name }}"
 
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: ./.github/actions/publish-to-gh-pages
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs-data
-          destination_dir: ci
-          keep_files: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          source-dir: ./docs-data
+          destination-dir: ci

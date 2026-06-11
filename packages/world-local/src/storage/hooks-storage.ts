@@ -18,7 +18,7 @@ import {
   readJSONWithFallback,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
-import { hashToken } from './helpers.js';
+import { hashToken, hookRecoveryMarkerPath } from './helpers.js';
 
 /**
  * Creates a hooks storage implementation using the filesystem.
@@ -125,13 +125,21 @@ export async function deleteAllHooksForRun(
     const hookPath = path.join(hooksDir, `${file}.json`);
     const hook = await readJSON(hookPath, HookSchema);
     if (hook && hook.runId === runId) {
-      // Delete the token constraint file to free up the token
+      // Delete the token constraint file to free up the token, and
+      // delete the recovery marker (if any) for disk hygiene. The
+      // marker's filename hash includes `(token, runId, hookId)` so
+      // a leaked marker can never corrupt a different lifetime — but
+      // cleaning it up here keeps the tokens/ directory from
+      // accumulating recovered-hook sidecars over time.
       const constraintPath = path.join(
         hooksDir,
         'tokens',
         `${hashToken(hook.token)}.json`
       );
       await deleteJSON(constraintPath);
+      await deleteJSON(
+        hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
+      );
       await deleteJSON(hookPath);
     }
   }

@@ -59,6 +59,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * Each call to `start()` creates a new workflow run. If retried requests must route to one active workflow, have the workflow create a deterministic hook token and use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to reuse an already-registered active hook. The lookup is not atomic with `start()`, so concurrent callers can still create extra runs before the hook is registered; handle that race inside the workflow with [`HookConflictError`](/docs/errors/hook-conflict). Current worlds include `conflictingRunId` on the error, which lets the duplicate run return the active owner to the caller. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
 * All arguments must be [serializable](/docs/foundations/serialization).
 * When `deploymentId` is provided, the argument types and return type become `unknown` since there is no guarantee the workflow function's types will be consistent across different deployments.
+* `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later.
 
 <Callout type="info">
 If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`, the passed function was not transformed as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
@@ -82,7 +83,8 @@ import { start } from "workflow/api";
 import { myWorkflow } from "./workflows/my-workflow";
 
 const run = await start(myWorkflow, ["arg1", "arg2"], { // [!code highlight]
-  deploymentId: "custom-deployment-id" // [!code highlight]
+  deploymentId: "custom-deployment-id", // [!code highlight]
+  attributes: { source: "checkout" } // [!code highlight]
 }); // [!code highlight]
 ```
 

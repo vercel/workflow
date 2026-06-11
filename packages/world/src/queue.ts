@@ -1,13 +1,93 @@
 import { z } from 'zod/v4';
 
-export const QueuePrefix = z.union([
-  z.literal('__wkf_step_'),
-  z.literal('__wkf_workflow_'),
-]);
+export type QueueKind = 'workflow' | 'step';
+
+/**
+ * Pattern matching valid queue prefixes:
+ * - `__wkf_workflow_` / `__wkf_step_` (default, no namespace)
+ * - `__{namespace}_wkf_workflow_` / `__{namespace}_wkf_step_` (namespaced)
+ *
+ * Namespace must be lowercase alphanumeric starting with a letter.
+ */
+export const QueuePrefix = z
+  .string()
+  .regex(
+    /^__(?:[a-z][a-z0-9]*_)?wkf_(?:workflow|step)_$/,
+    'Must match __wkf_{workflow|step}_ or __{namespace}_wkf_{workflow|step}_'
+  );
 export type QueuePrefix = z.infer<typeof QueuePrefix>;
 
-export const ValidQueueName = z.templateLiteral([QueuePrefix, z.string()]);
+export const ValidQueueName = z
+  .string()
+  .regex(
+    /^__(?:[a-z][a-z0-9]*_)?wkf_(?:workflow|step)_.+$/,
+    'Must be a valid queue name with a recognized prefix'
+  );
 export type ValidQueueName = z.infer<typeof ValidQueueName>;
+
+const QueueNamespace = z
+  .string()
+  .regex(
+    /^[a-z][a-z0-9]*$/,
+    'Must be lowercase alphanumeric, starting with a letter'
+  );
+
+/**
+ * Resolves the active queue namespace from an explicit argument or the
+ * `WORKFLOW_QUEUE_NAMESPACE` env var.
+ */
+export function resolveQueueNamespace(namespace?: string): string | undefined {
+  return namespace ?? process.env.WORKFLOW_QUEUE_NAMESPACE ?? undefined;
+}
+
+/**
+ * Builds a queue topic prefix for the given kind and optional namespace.
+ *
+ * - `getQueueTopicPrefix('workflow')` → `'__wkf_workflow_'`
+ * - `getQueueTopicPrefix('workflow', 'custom')` → `'__custom_wkf_workflow_'`
+ */
+export function getQueueTopicPrefix(
+  kind: QueueKind,
+  namespace?: string
+): QueuePrefix {
+  if (namespace !== undefined) {
+    QueueNamespace.parse(namespace);
+    return `__${namespace}_wkf_${kind}_` as QueuePrefix;
+  }
+  return `__wkf_${kind}_` as QueuePrefix;
+}
+
+export function getQueuePrefixKind(prefix: QueuePrefix): QueueKind {
+  const match = QueuePrefix.parse(prefix).match(
+    /^__(?:[a-z][a-z0-9]*_)?wkf_(workflow|step)_$/
+  );
+
+  if (!match) {
+    throw new Error(`Invalid queue prefix: ${prefix}`);
+  }
+
+  return match[1] as QueueKind;
+}
+
+export function parseQueueName(name: ValidQueueName): {
+  prefix: QueuePrefix;
+  kind: QueueKind;
+  id: string;
+} {
+  const match = name.match(
+    /^(__(?:[a-z][a-z0-9]*_)?wkf_(workflow|step)_)(.+)$/
+  );
+
+  if (!match) {
+    throw new Error(`Invalid queue name: ${name}`);
+  }
+
+  return {
+    prefix: QueuePrefix.parse(match[1]),
+    kind: match[2] as QueueKind,
+    id: match[3],
+  };
+}
 
 export const MessageId = z
   .string()
@@ -33,6 +113,8 @@ export const RunInputSchema = z.object({
   workflowName: z.string(),
   specVersion: z.number(),
   executionContext: z.record(z.string(), z.any()).optional(),
+  /** Initial plaintext run attributes, for resilient run creation. */
+  attributes: z.record(z.string(), z.string()).optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 
@@ -40,6 +122,13 @@ export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
   requestedAt: z.coerce.date().optional(),
+  /** Consecutive replay divergences in this recovery chain and latest position. */
+  replayDivergence: z
+    .object({
+      eventId: z.string(),
+      count: z.number().int().positive(),
+    })
+    .optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution

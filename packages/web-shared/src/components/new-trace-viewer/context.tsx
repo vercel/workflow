@@ -9,7 +9,7 @@ import {
   useMemo,
   useState,
 } from 'react';
-import type { Span } from '../trace-viewer/types';
+import type { Span } from './types';
 
 interface ActiveSpanContextValue {
   activeSpanId: string | null;
@@ -28,9 +28,7 @@ export function ActiveSpanProvider({
   spans: Span[];
   children: ReactNode;
 }) {
-  const [activeSpanId, setActiveSpanId] = useState<string | null>(
-    spans[0]?.spanId ?? null
-  );
+  const [activeSpanId, setActiveSpanId] = useState<string | null>(null);
 
   useEffect(() => {
     setActiveSpanId((currentSpanId) => {

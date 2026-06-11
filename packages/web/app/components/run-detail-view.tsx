@@ -345,6 +345,9 @@ export function RunDetailView({
     error,
     update,
     hasEncryptedData,
+    loadMoreTraceData,
+    hasMoreTraceData,
+    isLoadingMoreTraceData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
@@ -363,6 +366,7 @@ export function RunDetailView({
     hasMore: hasMoreEventsTab,
     loadingMore: loadingMoreEventsTab,
     loadMore: loadMoreEventsTab,
+    searchByExactId,
   } = useEventsListData(env, runId, {
     sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
@@ -784,7 +788,11 @@ export function RunDetailView({
                   <NewTraceViewer
                     run={run}
                     events={allEvents ?? []}
+                    loading={loading}
                     sidebarData={sidebarData}
+                    onLoadMore={loadMoreTraceData}
+                    hasMore={hasMoreTraceData}
+                    isLoadingMore={isLoadingMoreTraceData}
                   />
                 </div>
               </ErrorBoundary>
@@ -807,6 +815,7 @@ export function RunDetailView({
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
+                    onExactIdSearch={searchByExactId}
                   />
                 </div>
               </ErrorBoundary>

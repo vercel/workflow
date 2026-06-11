@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-postgres",
-  "version": "5.0.0-beta.5",
+  "version": "5.0.0-beta.13",
   "description": "A reference World implementation based on PostgreSQL",
   "type": "module",
   "main": "dist/index.js",
@@ -52,7 +52,7 @@
     "@workflow/world-local": "workspace:*",
     "cbor-x": "1.6.0",
     "dotenv": "17.3.1",
-    "drizzle-orm": "0.45.1",
+    "drizzle-orm": "0.45.2",
     "graphile-worker": "0.16.6",
     "pg": "8.20.0",
     "ulid": "catalog:",

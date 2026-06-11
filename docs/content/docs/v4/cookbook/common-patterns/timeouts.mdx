@@ -68,6 +68,9 @@ export async function waitForApproval(requestId: string) {
     throw new Error("Approval request expired after 7 days");
   }
 
+  // You may see warnings like `Workflow run completed with 1 uncommitted operations` in your
+  // logs when the workflow completes. This is expected behavior.
+
   return result.approved;
 }
 ```

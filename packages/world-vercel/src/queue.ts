@@ -193,7 +193,7 @@ export function createQueue(config?: APIConfig): Queue {
 
   const clientOptions = {
     region,
-    dispatcher: getDispatcher(),
+    dispatcher: getDispatcher(config),
     transport: dualTransport,
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...

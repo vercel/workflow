@@ -338,9 +338,14 @@ function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
  * // => { moduleSpecifier: 'workflow/internal/builtins@4.0.0' }
  *
  * @example
- * // File in workspace package
- * resolveModuleSpecifier('/project/packages/shared/src/utils.ts', '/project')
+ * // Exported root file in workspace package
+ * resolveModuleSpecifier('/project/packages/shared/src/index.ts', '/project')
  * // => { moduleSpecifier: '@myorg/shared@0.0.0' }
+ *
+ * @example
+ * // Non-exported / deep package file
+ * resolveModuleSpecifier('/project/packages/shared/src/internal/foo.ts', '/project')
+ * // => { moduleSpecifier: undefined }
  *
  * @example
  * // Local app file
@@ -373,14 +378,48 @@ export function resolveModuleSpecifier(
     allowSourceFallback: true,
   });
 
-  // Return the module specifier as "name/subpath@version" or "name@version"
-  const specifier = subpath
-    ? `${pkg.name}${subpath}@${pkg.version}`
-    : `${pkg.name}@${pkg.version}`;
+  if (subpath) {
+    return {
+      moduleSpecifier: `${pkg.name}${subpath}@${pkg.version}`,
+    };
+  }
 
+  if (isRootEntrypointFile(filePath, pkg)) {
+    return {
+      moduleSpecifier: `${pkg.name}@${pkg.version}`,
+    };
+  }
+
+  // Non-exported package file (deep import that isn't reachable as a
+  // package specifier). Returning undefined makes the SWC plugin fall back
+  // to the relative file path, which keeps IDs unique per file. Previously
+  // every non-exported file collapsed to "name@version", causing same-named
+  // step/workflow functions in different files to silently overwrite each
+  // other at runtime registration; the build-time duplicate-ID check now
+  // also catches that class of collision.
   return {
-    moduleSpecifier: specifier,
+    moduleSpecifier: undefined,
   };
+}
+
+/**
+ * Strip the trailing "@<version>" suffix from a module specifier produced by
+ * `resolveModuleSpecifier`, leaving the bare `name` or `name/subpath` form.
+ *
+ * Use this when you want to compare or dedupe specifiers across versions
+ * (e.g. treating `@workflow/ai/agent@5.0.0-beta.4` and
+ * `@workflow/ai/agent@5.0.0-beta.5` as the same logical module).
+ *
+ * Colocated with `resolveModuleSpecifier` so the construction and parsing
+ * stay in sync — see the `${pkg.name}${subpath}@${pkg.version}` and
+ * `${pkg.name}@${pkg.version}` paths above.
+ */
+export function stripPackageVersion(specifier: string): string {
+  // The version is always the final segment after the last "@". Constrain
+  // matching to characters that can't appear in a package name or subpath
+  // (no "/", no nested "@") so scoped packages like `@workflow/ai@1.0.0`
+  // keep their leading "@workflow/ai".
+  return specifier.replace(/@[^/@]+$/, '');
 }
 
 /**

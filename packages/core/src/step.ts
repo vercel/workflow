@@ -1,4 +1,4 @@
-import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
+import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
@@ -78,6 +78,25 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
+        const eventStepName =
+          'eventData' in event &&
+          event.eventData &&
+          'stepName' in event.eventData
+            ? event.eventData.stepName
+            : undefined;
+
+        if (typeof eventStepName === 'string' && eventStepName !== stepName) {
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+            ctx.onWorkflowError(
+              new ReplayDivergenceError(
+                `Replay divergence: step event ${event.eventType} for ${correlationId} belongs to "${eventStepName}", but the current step consumer is "${stepName}"`,
+                { eventId: event.eventId }
+              )
+            );
+          });
+          return EventConsumerResult.Finished;
+        }
+
         if (event.eventType === 'step_created') {
           // Step has been created (registered for execution) - mark as having event
           // but keep in queue so suspension handler knows to queue execution without
@@ -88,8 +107,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             // but the step was never invoked in the workflow during replay.
             ctx.promiseQueue = ctx.promiseQueue.then(() => {
               reject(
-                new WorkflowRuntimeError(
-                  `Corrupted event log: step ${correlationId} (${stepName}) created but not found in invocation queue`
+                new ReplayDivergenceError(
+                  `Replay divergence: step ${correlationId} (${stepName}) created but not found in invocation queue`,
+                  { eventId: event.eventId }
                 )
               );
             });
@@ -182,11 +202,12 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.Finished;
         }
 
-        // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+        // This replay installed a different consumer than the stored event needs.
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
-            new WorkflowRuntimeError(
-              `Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`
+            new ReplayDivergenceError(
+              `Replay divergence: Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`,
+              { eventId: event.eventId }
             )
           );
         });
