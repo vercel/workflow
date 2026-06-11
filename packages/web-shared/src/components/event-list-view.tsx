@@ -10,20 +10,21 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { isEncryptedMarker } from '../lib/hydration';
 import {
-  parseExactWorkflowSearchId,
-  looksLikeWorkflowIdSearchInput,
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
+  looksLikeWorkflowIdSearchInput,
+  parseExactWorkflowSearchId,
 } from '../lib/exact-event-search-id';
-import { DecryptButton } from './ui/decrypt-button';
-import { formatDuration } from '../lib/utils';
+import { isEncryptedMarker } from '../lib/hydration';
 import { useToast } from '../lib/toast';
+import { formatDuration } from '../lib/utils';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
+import { DecryptButton } from './ui/decrypt-button';
 import {
   ErrorStackBlock,
-  isStructuredErrorWithStack,
+  isStructuredError,
+  type StructuredErrorRecord,
 } from './ui/error-stack-block';
 import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
@@ -519,20 +520,20 @@ function deepParseJson(value: unknown): unknown {
 }
 
 /**
- * Extracts a structured error with a stack trace from event data, if present.
+ * Extracts a structured error from event data, if present.
  * Returns the error object to render with ErrorStackBlock, or null if not applicable.
  */
 function extractStructuredError(
   data: unknown,
   eventType?: string
-): (Record<string, unknown> & { stack: string }) | null {
+): StructuredErrorRecord | null {
   if (!eventType || !ERROR_EVENT_TYPES.has(eventType)) return null;
   if (data == null || typeof data !== 'object') return null;
   const record = data as Record<string, unknown>;
   // Check the nested `error` field first (the StructuredError)
-  if (isStructuredErrorWithStack(record.error)) return record.error;
-  // Some error formats put the stack at the top level of eventData
-  if (isStructuredErrorWithStack(record)) return record;
+  if (isStructuredError(record.error)) return record.error;
+  // Some error formats put the message/stack at the top level of eventData.
+  if (isStructuredError(record)) return record;
   return null;
 }
 

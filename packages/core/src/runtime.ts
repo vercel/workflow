@@ -12,6 +12,8 @@ import {
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
@@ -177,6 +179,31 @@ async function recordFatalRunError({
   }
 }
 
+function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+  // Terminal run events are always last by construction (no event creation
+  // succeeds against a terminal run), but scan the full array for
+  // defense-in-depth: a World/backend ordering bug shouldn't make us miss an
+  // actual termination signal.
+  const terminalRunEvent = events.find(
+    (e) =>
+      e.runId === runId &&
+      (e.eventType === 'run_completed' ||
+        e.eventType === 'run_failed' ||
+        e.eventType === 'run_cancelled')
+  );
+
+  if (!terminalRunEvent) {
+    return false;
+  }
+
+  runtimeLogger.debug('Run reached terminal event, exiting', {
+    workflowRunId: runId,
+    eventType: terminalRunEvent.eventType,
+    eventId: terminalRunEvent.eventId,
+  });
+  return true;
+}
+
 /**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
@@ -189,14 +216,18 @@ async function recordFatalRunError({
  * @returns A function that can be used as a Vercel API route
  */
 export function workflowEntrypoint(
-  workflowCode: string
+  workflowCode: string,
+  options?: { namespace?: string }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
+  const namespace = resolveQueueNamespace(options?.namespace);
+  const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+
   const handler = (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(
-      '__wkf_workflow_',
+      workflowPrefix,
       async (message_, metadata) => {
         // Check if this is a health check message
         // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
@@ -222,7 +253,7 @@ export function workflowEntrypoint(
           runInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
         const { requestId } = metadata;
-        const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
+        const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
         // --- Max delivery check ---
         // Enforce max delivery limit before any infrastructure calls.
@@ -405,7 +436,7 @@ export function workflowEntrypoint(
                       ) {
                         await queueMessage(
                           world,
-                          getWorkflowQueueName(workflowName),
+                          getWorkflowQueueName(workflowName, namespace),
                           {
                             runId,
                             traceCarrier: await serializeTraceCarrier(),
@@ -665,7 +696,7 @@ export function workflowEntrypoint(
                       );
                       await queueMessage(
                         world,
-                        getWorkflowQueueName(workflowName),
+                        getWorkflowQueueName(workflowName, namespace),
                         {
                           runId,
                           traceCarrier: await serializeTraceCarrier(),
@@ -754,25 +785,7 @@ export function workflowEntrypoint(
                       // derived from these events, so checking the log here
                       // gives us the same signal as a runs.get() round-trip
                       // without the extra request per loop iteration.
-                      // Terminal run events are always last by construction
-                      // (no event creation succeeds against a terminal run),
-                      // but scan the full array for defense-in-depth: a
-                      // World/backend ordering bug shouldn't make us miss
-                      // an actual termination signal.
-                      const terminalRunEvent = events.find(
-                        (e) =>
-                          e.eventType === 'run_completed' ||
-                          e.eventType === 'run_failed' ||
-                          e.eventType === 'run_cancelled'
-                      );
-                      if (terminalRunEvent) {
-                        runtimeLogger.debug(
-                          'Run completed by concurrent handler, exiting',
-                          {
-                            workflowRunId: runId,
-                            eventType: terminalRunEvent.eventType,
-                          }
-                        );
+                      if (hasRecordedTerminalRunEvent(events, runId)) {
                         return;
                       }
 
@@ -872,6 +885,15 @@ export function workflowEntrypoint(
                           events = loaded.events;
                           eventsCursor = loaded.cursor;
                         }
+                      }
+
+                      // Completing elapsed waits refreshes the event snapshot.
+                      // A concurrent handler may have written the terminal run
+                      // event after the initial snapshot but before this
+                      // replay. Once the event log records that outcome, this
+                      // delivery is done.
+                      if (hasRecordedTerminalRunEvent(events, runId)) {
+                        return;
                       }
 
                       // Update cache reference (may have been set for first time)
@@ -1047,7 +1069,7 @@ export function workflowEntrypoint(
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: step.correlationId,
@@ -1100,7 +1122,7 @@ export function workflowEntrypoint(
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: inlineStep.correlationId,
@@ -1151,7 +1173,7 @@ export function workflowEntrypoint(
                           );
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               traceCarrier: await serializeTraceCarrier(),
@@ -1194,7 +1216,7 @@ export function workflowEntrypoint(
                             );
                             await queueMessage(
                               world,
-                              getWorkflowQueueName(workflowName),
+                              getWorkflowQueueName(workflowName, namespace),
                               {
                                 runId,
                                 traceCarrier: await serializeTraceCarrier(),

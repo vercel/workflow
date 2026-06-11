@@ -58,7 +58,7 @@ export function createResolveLatestDeploymentId(
         Authorization: `Bearer ${token}`,
       },
       // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
-      dispatcher: getDispatcher(),
+      dispatcher: getDispatcher(config),
     });
 
     if (!response.ok) {

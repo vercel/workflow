@@ -8,20 +8,17 @@ import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import {
   DecryptClickContext,
   RunClickContext,
   StreamClickContext,
 } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
-import {
-  ErrorStackBlock,
-  isStructuredErrorWithStack,
-} from '../ui/error-stack-block';
+import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
-import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -264,6 +261,7 @@ const attributeOrder: AttributeKey[] = [
   'eventData',
   'input',
   'output',
+  'attributes',
   'resumeAt',
 ];
 
@@ -287,6 +285,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   runId: 'Run ID',
   token: 'Token',
   eventType: 'Event Type',
+  errorCode: 'Error Code',
   correlationId: 'Correlation ID',
   deploymentId: 'Deployment ID',
   specVersion: 'Spec Version',
@@ -418,11 +417,11 @@ const attributeToDisplayFn: Record<
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
   // Attributes MVP — string-string metadata attached to the run.
-  // Rendered as a JSON block; if empty/missing, hidden by the
-  // hasDisplayContent gate above.
+  // Rendered in its own collapsible DetailCard; if empty/missing, hidden
+  // by the hasDisplayContent gate.
   attributes: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    return JsonBlock(value);
+    return <DetailCard summary="Attributes">{JsonBlock(value)}</DetailCard>;
   },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
   createdAt: timestampWithTooltipOrNull,
@@ -548,9 +547,9 @@ const attributeToDisplayFn: Record<
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
 
-    // If the error object has a `stack` field, render it as readable
-    // pre-formatted text. Otherwise fall back to the raw JSON viewer.
-    if (isStructuredErrorWithStack(value)) {
+    // Structured workflow errors may be persisted as either `{ message }` or
+    // `{ message, stack }`. Render both with the dedicated error block.
+    if (isStructuredError(value)) {
       return (
         <DetailCard summary="Error" defaultOpen>
           <ErrorStackBlock value={value} />
@@ -591,6 +590,7 @@ const resolvableAttributes = [
   'output',
   'error',
   'metadata',
+  'attributes',
   'eventData',
 ];
 
@@ -600,6 +600,7 @@ const selfHeaderedAttributes = new Set([
   'input',
   'output',
   'error',
+  'attributes',
   'eventData',
 ]);
 

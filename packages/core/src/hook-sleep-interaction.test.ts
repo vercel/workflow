@@ -67,6 +67,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       promiseQueueHolder.current = value;
     },
     pendingDeliveries: 0,
+    pendingDeliveryBarriers: new Map(),
   };
   ctxRef.current = ctx;
   return ctx;
@@ -314,7 +315,7 @@ function defineTests(mode: 'sync' | 'async') {
       expect(result).toEqual(['first', 'second']);
     });
 
-    it.fails('should let a queued hook payload win when a reused wait completes after the step that installs the race', async () => {
+    it('should let a queued hook payload win when a reused wait completes after the step that installs the race', async () => {
       await setupHydrateMock();
       const ops: Promise<any>[] = [];
       const [payload, setupResult] = await Promise.all([
@@ -566,7 +567,7 @@ function defineTests(mode: 'sync' | 'async') {
       );
     }
 
-    it.fails('should let a queued hook payload win without mapping the race promises', async () => {
+    it('should let a queued hook payload win without mapping the race promises', async () => {
       await expectRawRaceToChooseQueuedHook(false);
     });
 
@@ -793,6 +794,23 @@ function defineTests(mode: 'sync' | 'async') {
       );
     });
 
+    // KNOWN-INVALID (kept as `it.fails`): this scenario is not reproducible by
+    // the workflow under test and asserts an impossible replay outcome.
+    //
+    // In loop 1, `pendingSleep` is the REUSED sleep, whose `wait_completed`
+    // (evnt_8) is consumed BEFORE loop 1 begins — so `pendingSleep` is an
+    // already-resolved promise by the time loop 1 runs. Loop 1's
+    // `iterator.next()` then claims the only remaining buffered payload
+    // (`hook_received` evnt_9), which also resolves. With BOTH inputs resolved,
+    // `Promise.race([pendingRead, pendingSleep])` resolves to the FIRST array
+    // element by JS semantics — `pendingRead` (the hook). The runtime cannot
+    // change that tie-break; it lives in the workflow author's race-argument
+    // order. So a real producer run of this workflow would take the HOOK
+    // branch in loop 1 (recording `drainStep`), never the sleep branch this
+    // hand-built log encodes (`progressStep` at evnt_14). The fix for the real
+    // hook-vs-sleep ordering bug is verified by the sibling tests; this case
+    // should be re-worked (e.g. so the sleep is not pre-resolved at the race)
+    // or removed. See PR discussion.
     it.fails('should preserve the early waiter with a reused sleep when wait completion wins', async () => {
       const { ctx, error } = await replayEarlyWaiterAcrossDrain({
         winner: 'sleep',

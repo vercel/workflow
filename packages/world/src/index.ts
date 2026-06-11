@@ -1,12 +1,12 @@
 export type * from './attributes.js';
 export {
-  applyAttributeChanges,
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
   ATTRIBUTE_VALUE_MAX_BYTES,
   AttributeChangeSchema,
   AttributeChangesSchema,
   AttributeValidationError,
+  applyAttributeChanges,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
   validateAttributeChanges,
   validateAttributeKey,
@@ -26,11 +26,15 @@ export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
 export type * from './queue.js';
 export {
+  getQueuePrefixKind,
+  getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   MessageId,
+  parseQueueName,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
+  resolveQueueNamespace,
   StepInvokePayloadSchema,
   ValidQueueName,
   WorkflowInvokePayloadSchema,

@@ -1,8 +1,8 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/utils';
-import type { Span } from '../../trace-viewer/types';
-import { formatDuration } from '../../trace-viewer/util/timing';
+import type { Span } from '../types';
+import { formatDurationPrecise } from '../../trace-viewer/util/timing';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -53,8 +53,9 @@ const EventRow = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getSpanDurationMs(span);
-  const isErrored =
-    (span.attributes.data as Record<string, unknown>).status === 'failed';
+  const workflowStatus = (span.attributes.data as Record<string, unknown>)
+    ?.status as string | undefined;
+  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
   const { icon: Icon, className: tagClassName } = getEventStyle(
     span.resource,
     isErrored
@@ -85,7 +86,7 @@ const EventRow = ({
           </div>
           <div className="ml-2 shrink-0">
             <span className="text-label-14 text-gray-900 tabular-nums">
-              {formatDuration(durationMs)}
+              {formatDurationPrecise(durationMs)}
             </span>
           </div>
         </div>

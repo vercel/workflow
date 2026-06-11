@@ -1,5 +1,25 @@
 # @workflow/next
 
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2253](https://github.com/vercel/workflow/pull/2253) [`a51910b`](https://github.com/vercel/workflow/commit/a51910b29a64843822449e3d390ea81ca6b7b45e) Thanks [@wbinnssmith](https://github.com/wbinnssmith)! - Always apply turbopack content condition regardless of builder mode to prevent the workflow loader from running on every JS/TS file when lazy discovery is enabled.
+
+- [#2263](https://github.com/vercel/workflow/pull/2263) [`0b8b077`](https://github.com/vercel/workflow/commit/0b8b077345cd7d51b0726e8248335708e6ac27ea) Thanks [@ijjk](https://github.com/ijjk)! - Avoid creating a separate esbuild steps bundle in Next.js lazy discovery mode.
+
+- Updated dependencies [[`8d75491`](https://github.com/vercel/workflow/commit/8d75491a074991dac3c7cf56823feb15354ab0f1), [`0fd0891`](https://github.com/vercel/workflow/commit/0fd0891cc4acab6d84610d3603f3cb90a33f29b0), [`ccd37e9`](https://github.com/vercel/workflow/commit/ccd37e9a59f1b3629815cdaf1c650610c709a580), [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7), [`aa628b7`](https://github.com/vercel/workflow/commit/aa628b7a8fda1037100c1ac5515c6525f25decb8)]:
+  - @workflow/core@5.0.0-beta.13
+  - @workflow/builders@5.0.0-beta.13
+
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- Updated dependencies [[`52d63d1`](https://github.com/vercel/workflow/commit/52d63d1b61303d9d58e2ad74a655dbe57e4f1b39), [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1), [`12c35b5`](https://github.com/vercel/workflow/commit/12c35b54ebf3d3c9fbc30462b42b05e5ce476a2b)]:
+  - @workflow/core@5.0.0-beta.12
+  - @workflow/builders@5.0.0-beta.12
+
 ## 5.0.0-beta.11
 
 ### Patch Changes

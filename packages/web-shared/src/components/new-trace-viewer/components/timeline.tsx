@@ -4,8 +4,12 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
-import type { Span } from '../../trace-viewer/types';
-import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
+import type { Span } from '../types';
+import {
+  formatDuration,
+  formatDurationPrecise,
+  getHighResInMs,
+} from '../../trace-viewer/util/timing';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Segment, SegmentStatus, TimeMarker } from '../utils';
 import {
@@ -222,7 +226,7 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
   return (
     <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
-        const label = formatDuration(seg.fullDurationMs);
+        const label = formatDurationPrecise(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
         const showLabel = seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
         // Beef up the queued segment when it's too narrow to read.
@@ -234,7 +238,7 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
 
         return (
           <div
-            key={`${seg.status}-${i}`}
+            key={i}
             className={cn(
               'absolute h-full rounded-[0.25rem]',
               SEGMENT_CLASSES[seg.status]
@@ -313,7 +317,7 @@ const TimelineBar = memo(function TimelineBar({
     ? (colors.errorBorder ?? 'var(--ds-red-500)')
     : colors.border;
 
-  const totalLabel = formatDuration(totalDurationMs);
+  const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =
     geometry.visiblePixelWidth >= Math.max(40, totalLabel.length * 6 + 12);
 
@@ -421,7 +425,7 @@ export function TimelineHeader({
       <div className="relative h-full flex-1">
         {markers.map((m) => (
           <span
-            key={`${m.position}-${m.label}`}
+            key={String(m.value)}
             className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
@@ -506,7 +510,7 @@ export function Timeline({
           // Skip the "0s" origin marker since the left edge already implies it.
           Math.abs(marker.value) > 0.000001 ? (
             <div
-              key={`${marker.position}-${marker.label}`}
+              key={String(marker.value)}
               className="absolute top-0 bottom-0 w-px bg-gray-alpha-300"
               style={{ left: `${marker.position * 100}%` }}
             />
