@@ -1,4 +1,5 @@
 import { throwNotInWorkflowContext } from './context-errors.js';
+import type { Run } from './runtime/run.js';
 import type { Serializable } from './schemas.js';
 
 /**
@@ -30,15 +31,21 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
   token: string;
 
   /**
-   * Resolves with `true` if another active hook already owns this hook's
-   * token, or `false` once the hook has been registered and is ready to
-   * receive payloads.
+   * Resolves with the conflicting {@link Run} if another active hook
+   * already owns this hook's token, or `null` once the hook has been
+   * registered and is ready to receive payloads.
    *
    * Calling `createHook()` alone does not register the hook — registration
-   * only happens when the workflow suspends. Awaiting `hasConflict`
+   * only happens when the workflow suspends. Awaiting `getConflict`
    * suspends the workflow to commit the hook registration, so it can be
    * used to claim the token (and detect token conflicts early) without
    * waiting for payload data.
+   *
+   * When a conflict is detected, the resolved `Run` is the run that
+   * currently owns the token. The workflow can decide how to handle the
+   * duplicate in code: return or log `conflict.runId`, inspect
+   * `await conflict.status`, await `conflict.returnValue`, or cancel the
+   * owner with `await conflict.cancel()` and continue in the current run.
    *
    * Note that awaiting the hook's payload (`await hook`) when the token is
    * already owned by another active hook still rejects with
@@ -47,14 +54,15 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * @example
    * ```ts
    * using hook = createHook({ token: `order:${orderId}` });
-   * if (await hook.hasConflict) {
+   * const conflict = await hook.getConflict;
+   * if (conflict) {
    *   // another run already owns this token
-   *   return;
+   *   return { dedupedTo: conflict.runId };
    * }
    * // token is now claimed, without waiting for payload data
    * ```
    */
-  readonly hasConflict: Promise<boolean>;
+  readonly getConflict: Promise<Run<unknown> | null>;
 
   /**
    * Disposes the hook, releasing its token for reuse by other workflows.

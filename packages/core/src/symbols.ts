@@ -44,6 +44,18 @@ export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
  */
 export const WORKFLOW_CLASS_REGISTRY = Symbol.for('workflow-class-registry');
 
+/**
+ * Symbol used to expose the workflow bundle's compiled `Run` class on the
+ * VM's globalThis. The workflow-mode `create-hook` module registers it at
+ * module scope so host-side code (the hook event consumer) can construct
+ * `Run` instances inside the VM — e.g. the conflicting run resolved by
+ * `hook.getConflict`. The bundle's `Run` is the plugin-compiled variant
+ * whose methods are durable step proxies, unlike the host `Run` whose
+ * methods access the World directly (which would be non-deterministic
+ * inside workflow code).
+ */
+export const WORKFLOW_RUN_CLASS = Symbol.for('WORKFLOW_RUN_CLASS');
+
 export const ABORT_STREAM_NAME = Symbol.for('WORKFLOW_ABORT_STREAM_NAME');
 export const ABORT_HOOK_TOKEN = Symbol.for('WORKFLOW_ABORT_HOOK_TOKEN');
 export const ABORT_LISTENER_ATTACHED = Symbol.for(

@@ -1097,13 +1097,13 @@ export function workflowEntrypoint(
                         // batch.
                         //
                         // Skip inline execution when a created hook has a
-                        // `hook.hasConflict` awaiter: an inline `await
+                        // `hook.getConflict` awaiter: an inline `await
                         // executeStep(...)` blocks this handler for the
                         // full step duration, so the awaiter's continuation
                         // (which only advances on the next replay) would be
                         // serialized behind the step — defeating work the
                         // workflow expressed as parallel (e.g.
-                        // `hook.hasConflict.then(() => stepB())` racing
+                        // `hook.getConflict.then(() => stepB())` racing
                         // `await stepA()`). Queue every step and re-invoke
                         // immediately instead: the re-invocation replays
                         // over the just-committed hook_created and resolves
@@ -1196,7 +1196,7 @@ export function workflowEntrypoint(
                         // queued (or no work needs scheduling). Exit and let
                         // the queue drive subsequent replays.
                         if (!inlineStep) {
-                          // A `hook.hasConflict` awaiter needs an immediate
+                          // A `hook.getConflict` awaiter needs an immediate
                           // re-invocation: the replay consumes the
                           // just-committed hook_created and resolves the
                           // awaiter. Without it (no inline step, all work
