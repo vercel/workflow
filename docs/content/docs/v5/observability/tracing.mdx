@@ -54,7 +54,7 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 
 A single workflow run can span hours or days across many separate function invocations: every step completion, `sleep()` wake-up, and retry is a new queue delivery. Stitching all of that into one trace produces giant, slow-loading traces that most tracing backends truncate.
 
-Instead, the SDK creates **one bounded trace per invocation**. Each `WORKFLOW_V2` (or background `STEP`) span starts a new trace root and attaches two **span links**:
+Instead, the SDK creates **one bounded trace per invocation**. Each `workflow.execute` (or background `step.execute`) span starts a new trace root and attaches two **span links**:
 
 - a link to the **enqueue site** — the span that queued the message which triggered this invocation, and
 - a link to the **run origin** — the trace in which `start()` was originally called.
