@@ -17,11 +17,11 @@ import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
-import { safeWaitUntil, waitedUntil } from '../util.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { Run } from './run.js';
+import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();

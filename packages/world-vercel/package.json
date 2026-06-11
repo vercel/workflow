@@ -30,7 +30,7 @@
     "build": "genversion --es6 src/version.ts && tsc",
     "dev": "genversion --es6 src/version.ts && tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist src/version.ts",
-    "test": "vitest",
+    "test": "vitest run src",
     "typecheck": "genversion --es6 src/version.ts && tsc --noEmit"
   },
   "dependencies": {

@@ -12,6 +12,8 @@ import {
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
@@ -214,14 +216,18 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
  * @returns A function that can be used as a Vercel API route
  */
 export function workflowEntrypoint(
-  workflowCode: string
+  workflowCode: string,
+  options?: { namespace?: string }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
+  const namespace = resolveQueueNamespace(options?.namespace);
+  const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+
   const handler = (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(
-      '__wkf_workflow_',
+      workflowPrefix,
       async (message_, metadata) => {
         // Check if this is a health check message
         // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
@@ -247,7 +253,7 @@ export function workflowEntrypoint(
           runInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
         const { requestId } = metadata;
-        const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
+        const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
         // --- Max delivery check ---
         // Enforce max delivery limit before any infrastructure calls.
@@ -430,7 +436,7 @@ export function workflowEntrypoint(
                       ) {
                         await queueMessage(
                           world,
-                          getWorkflowQueueName(workflowName),
+                          getWorkflowQueueName(workflowName, namespace),
                           {
                             runId,
                             traceCarrier: await serializeTraceCarrier(),
@@ -689,7 +695,7 @@ export function workflowEntrypoint(
                       );
                       await queueMessage(
                         world,
-                        getWorkflowQueueName(workflowName),
+                        getWorkflowQueueName(workflowName, namespace),
                         {
                           runId,
                           traceCarrier: await serializeTraceCarrier(),
@@ -1051,7 +1057,7 @@ export function workflowEntrypoint(
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: step.correlationId,
@@ -1104,7 +1110,7 @@ export function workflowEntrypoint(
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               stepId: inlineStep.correlationId,
@@ -1155,7 +1161,7 @@ export function workflowEntrypoint(
                           );
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
                               traceCarrier: await serializeTraceCarrier(),
@@ -1198,7 +1204,7 @@ export function workflowEntrypoint(
                             );
                             await queueMessage(
                               world,
-                              getWorkflowQueueName(workflowName),
+                              getWorkflowQueueName(workflowName, namespace),
                               {
                                 runId,
                                 traceCarrier: await serializeTraceCarrier(),

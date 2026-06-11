@@ -29,9 +29,10 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../types.js';
-import { safeWaitUntil } from '../util.js';
+
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
+import { safeWaitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 

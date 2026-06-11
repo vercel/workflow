@@ -2,10 +2,14 @@ import * as Stream from 'node:stream';
 import type { Transport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
+  getQueuePrefixKind,
+  getQueueTopicPrefix,
   MessageId,
+  parseQueueName,
   type Queue,
   QueuePayloadSchema,
   type QueuePrefix,
+  resolveQueueNamespace,
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
@@ -116,11 +120,13 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  const prefix = config.jobPrefix || 'workflow_';
-  const Queues = {
-    __wkf_workflow_: `${prefix}flows`,
-    __wkf_step_: `${prefix}steps`,
-  } as const satisfies Record<QueuePrefix, string>;
+  function getJobQueueName(queuePrefix: QueuePrefix): string {
+    const jobPrefix = config.jobPrefix || 'workflow_';
+
+    return getQueuePrefixKind(queuePrefix) === 'workflow'
+      ? `${jobPrefix}flows`
+      : `${jobPrefix}steps`;
+  }
 
   const createQueueHandler = localWorld.createQueueHandler;
 
@@ -181,7 +187,7 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      Queues[queuePrefix],
+      getJobQueueName(queuePrefix),
       MessageData.encode({
         id: queueId,
         data: Buffer.from(body),
@@ -220,13 +226,7 @@ export function createQueue(
   }
 
   function getQueueRoute(queueName: ValidQueueName): 'flow' | 'step' {
-    if (queueName.startsWith('__wkf_step_')) {
-      return 'step';
-    }
-    if (queueName.startsWith('__wkf_workflow_')) {
-      return 'flow';
-    }
-    throw new Error('Unknown queue name prefix');
+    return parseQueueName(queueName).kind === 'workflow' ? 'flow' : 'step';
   }
 
   async function executeMessageOverHttp({
@@ -351,7 +351,7 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
-    const [queuePrefix, queueId] = parseQueueName(queue);
+    const { prefix: queuePrefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     await addGraphileJob({
@@ -369,13 +369,15 @@ export function createQueue(
   };
 
   function createTaskHandler(queue: QueuePrefix) {
+    const queueKind = getQueuePrefixKind(queue);
+
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
       const graphileAttempt = GraphileHelpers.safeParse(helpers);
       const attempt = graphileAttempt.success
         ? graphileAttempt.data.job.attempts
         : messageData.attempt;
-      const queueName = `${queue}${messageData.id}` as const;
+      const queueName = `${queue}${messageData.id}` as ValidQueueName;
       const bodyStream = Stream.Readable.toWeb(
         Stream.Readable.from([messageData.data])
       );
@@ -384,7 +386,7 @@ export function createQueue(
       );
       QueuePayloadSchema.parse(body);
       const workflowRunSerializationKey =
-        queue === '__wkf_workflow_'
+        queueKind === 'workflow'
           ? (() => {
               const workflowInvoke =
                 WorkflowInvokePayloadSchema.safeParse(body);
@@ -486,12 +488,12 @@ export function createQueue(
       string,
       (payload: unknown, helpers: unknown) => Promise<void>
     > = {};
-    for (const [prefix, jobName] of Object.entries(Queues) as [
-      QueuePrefix,
-      string,
-    ][]) {
-      taskList[jobName] = createTaskHandler(prefix);
-    }
+    const namespace = resolveQueueNamespace(config.namespace);
+    const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+    const stepPrefix = getQueueTopicPrefix('step', namespace);
+    taskList[getJobQueueName(workflowPrefix)] =
+      createTaskHandler(workflowPrefix);
+    taskList[getJobQueueName(stepPrefix)] = createTaskHandler(stepPrefix);
 
     runner = await run({
       pgPool: pool,
@@ -530,13 +532,3 @@ export function createQueue(
     },
   };
 }
-
-const parseQueueName = (name: ValidQueueName): [QueuePrefix, string] => {
-  const prefixes: QueuePrefix[] = ['__wkf_step_', '__wkf_workflow_'];
-  for (const prefix of prefixes) {
-    if (name.startsWith(prefix)) {
-      return [prefix, name.slice(prefix.length)];
-    }
-  }
-  throw new Error(`Invalid queue name: ${name}`);
-};

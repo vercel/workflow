@@ -261,6 +261,7 @@ const attributeOrder: AttributeKey[] = [
   'eventData',
   'input',
   'output',
+  'attributes',
   'resumeAt',
 ];
 
@@ -416,11 +417,11 @@ const attributeToDisplayFn: Record<
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
   // Attributes MVP — string-string metadata attached to the run.
-  // Rendered as a JSON block; if empty/missing, hidden by the
-  // hasDisplayContent gate above.
+  // Rendered in its own collapsible DetailCard; if empty/missing, hidden
+  // by the hasDisplayContent gate.
   attributes: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    return JsonBlock(value);
+    return <DetailCard summary="Attributes">{JsonBlock(value)}</DetailCard>;
   },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
   createdAt: timestampWithTooltipOrNull,
@@ -589,6 +590,7 @@ const resolvableAttributes = [
   'output',
   'error',
   'metadata',
+  'attributes',
   'eventData',
 ];
 
@@ -598,6 +600,7 @@ const selfHeaderedAttributes = new Set([
   'input',
   'output',
   'error',
+  'attributes',
   'eventData',
 ]);
 
