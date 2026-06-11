@@ -688,7 +688,7 @@ jobs:
           if-no-files-found: ignore
 
   # Community World E2E Tests (dynamically generated from worlds-manifest.json)
-  # Non-blocking on stable (continue-on-error in the reusable workflow; surfaced
+  # Non-blocking (continue-on-error in the reusable workflow; surfaced
   # as a warning in the summary). The community world adapters need an in-process
   # queue worker, which the reusable workflow starts via a CI-only instrumentation
   # kickstart. A fast-fail preflight there guards against the 30-minute hang that
