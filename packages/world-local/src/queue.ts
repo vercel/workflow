@@ -1,6 +1,12 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
+import {
+  MessageId,
+  parseQueueName,
+  type Queue,
+  type QueuePrefix,
+  ValidQueueName,
+} from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
@@ -60,10 +66,7 @@ export type LocalQueue = Queue & {
   /** Close the HTTP agent and release resources. */
   close(): Promise<void>;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
-  registerHandler(
-    prefix: '__wkf_step_' | '__wkf_workflow_',
-    handler: DirectHandler
-  ): void;
+  registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
 };
 
 const DETACHED_ARRAYBUFFER_ERROR =
@@ -92,15 +95,14 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
 
 function getQueueRoute(queueName: ValidQueueName): {
   pathname: 'flow' | 'step';
-  prefix: '__wkf_step_' | '__wkf_workflow_';
+  prefix: QueuePrefix;
 } {
-  if (queueName.startsWith('__wkf_step_')) {
-    return { pathname: 'step', prefix: '__wkf_step_' };
-  }
-  if (queueName.startsWith('__wkf_workflow_')) {
-    return { pathname: 'flow', prefix: '__wkf_workflow_' };
-  }
-  throw new Error('Unknown queue name prefix');
+  const { kind, prefix } = parseQueueName(queueName);
+
+  return {
+    pathname: kind === 'workflow' ? 'flow' : 'step',
+    prefix,
+  };
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {
@@ -353,10 +355,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     queue,
     createQueueHandler,
     getDeploymentId,
-    registerHandler(
-      prefix: '__wkf_step_' | '__wkf_workflow_',
-      handler: DirectHandler
-    ) {
+    registerHandler(prefix: QueuePrefix, handler: DirectHandler) {
       directHandlers.set(prefix, handler);
     },
     async close() {
