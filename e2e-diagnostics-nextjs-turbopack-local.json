@@ -1,0 +1,44 @@
+[
+  {
+    "testName": "start: initial attributes are seeded on run creation",
+    "runId": "wrun_01KTTDM5BZWXBB54GQH8P63D47",
+    "timestamp": "2026-06-11T04:04:11.782Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "experimentalSetAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly",
+    "runId": "wrun_01KTTDM6BMKPGCGVW1RNW0P2ZD",
+    "timestamp": "2026-06-11T04:04:12.790Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "experimentalSetAttributesInsideStepWorkflow: step-body calls append attributed native events",
+    "runId": "wrun_01KTTDM7B9YDRXE388CBVDN49G",
+    "timestamp": "2026-06-11T04:04:13.804Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "fire-and-forget: void experimental_setAttributes lands without awaiting",
+    "runId": "wrun_01KTTDM8AW9RSVHQ019CGQPJEC",
+    "timestamp": "2026-06-11T04:04:14.816Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "Promise.all of disjoint-key writes: every key lands",
+    "runId": "wrun_01KTTDMB9302681YE9E57MMEZP",
+    "timestamp": "2026-06-11T04:04:17.831Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "workflow throws after awaited setAttributes: attribute still persists on the failed run",
+    "runId": "wrun_01KTTDMC8JRHG792AKDFR0ZHJC",
+    "timestamp": "2026-06-11T04:04:18.836Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "validation DX: invalid writes throw catchable FatalErrors naming rule and limit",
+    "runId": "wrun_01KTTDMD8ERFT1X5RZS1VZSDRN",
+    "timestamp": "2026-06-11T04:04:19.858Z",
+    "dashboardUrl": null
+  }
+]

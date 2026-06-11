@@ -3583,5 +3583,57 @@ describe('e2e', () => {
         });
       }
     );
+
+    test(
+      'validation DX: invalid writes throw catchable FatalErrors naming rule and limit',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesValidationWorkflow'),
+          []
+        );
+        const outcomes = (await run.returnValue) as Record<string, string>;
+
+        // Every invalid call is rejected as a FatalError the workflow can
+        // catch, with a message naming the violated rule and its limit.
+        expect(outcomes.reserved).toMatch(/^FatalError: /);
+        expect(outcomes.reserved).toContain('reserved prefix');
+        expect(outcomes.reserved).toContain('allowReservedAttributes');
+        expect(outcomes.emptyKey).toContain('must not be empty');
+        expect(outcomes.keyTooLong).toContain(
+          'key length 257 exceeds limit 256'
+        );
+        expect(outcomes.valueTooLong).toContain(
+          'byte length 257 exceeds limit 256'
+        );
+        // The value cap is bytes, not characters: 200 two-byte chars.
+        expect(outcomes.valueTooManyBytes).toContain(
+          'byte length 400 exceeds limit 256'
+        );
+        expect(outcomes.overCap).toContain('exceed limit 64');
+        expect(outcomes.nonObject).toContain('requires a plain object');
+
+        // No invalid write reached the run, and the run stayed healthy
+        // enough to complete a valid write afterwards.
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted?.status).toBe('completed');
+        expect(persisted?.attributes).toEqual({ phase: 'validated' });
+      }
+    );
+
+    test(
+      'start: invalid initial attributes are rejected before a run is created',
+      { timeout: 30_000 },
+      async () => {
+        const workflow = await e2e('experimentalSetAttributesWorkflow');
+        await expect(
+          start(workflow, [1], { attributes: { $reserved: 'x' } })
+        ).rejects.toThrow(/reserved prefix/);
+        await expect(
+          start(workflow, [1], { attributes: { note: 'v'.repeat(257) } })
+        ).rejects.toThrow(/exceeds limit 256/);
+      }
+    );
   });
 });

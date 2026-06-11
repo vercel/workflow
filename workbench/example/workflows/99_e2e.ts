@@ -3262,3 +3262,44 @@ export async function experimentalSetAttributesThrowsAfterWorkflow() {
   });
   throw new FatalError('intentional failure to test attribute persistence');
 }
+
+/**
+ * Validation DX: every invalid `experimental_setAttributes` call must
+ * throw a catchable `FatalError` in the workflow body — before any event
+ * is written — with a message that names the violated rule and the limit.
+ * The workflow records each error's name and message, then writes one
+ * valid attribute and completes, so the e2e test can assert on error
+ * quality without wedging the run.
+ */
+export async function experimentalSetAttributesValidationWorkflow() {
+  'use workflow';
+  const outcomes: Record<string, string> = {};
+
+  const attempt = async (
+    label: string,
+    attrs: Record<string, string | undefined>
+  ) => {
+    try {
+      await experimental_setAttributes(attrs);
+      outcomes[label] = 'no-error';
+    } catch (err) {
+      const e = err as Error;
+      outcomes[label] = `${e.name}: ${e.message}`;
+    }
+  };
+
+  await attempt('reserved', { $system: 'nope' });
+  await attempt('emptyKey', { '': 'v' });
+  await attempt('keyTooLong', { ['k'.repeat(257)]: 'v' });
+  await attempt('valueTooLong', { note: 'v'.repeat(257) });
+  // Multibyte values: the cap is bytes, not characters.
+  await attempt('valueTooManyBytes', { note: 'é'.repeat(200) });
+  const overCap: Record<string, string> = {};
+  for (let i = 0; i <= 64; i++) overCap[`k${i}`] = 'v';
+  await attempt('overCap', overCap);
+  await attempt('nonObject', 'phase=init' as any);
+
+  // The run must remain healthy after every rejected call.
+  await experimental_setAttributes({ phase: 'validated' });
+  return outcomes;
+}

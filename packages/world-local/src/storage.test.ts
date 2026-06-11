@@ -361,6 +361,107 @@ describe('Storage', () => {
         });
         expect(result.run?.attributes).toEqual({ $system: 'ok' });
       });
+
+      it('should enforce the per-run cap against existing attributes', async () => {
+        const initial: Record<string, string> = {};
+        for (let i = 0; i < 63; i++) initial[`a${i}`] = 'v';
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          attributes: initial,
+        });
+
+        // 64th attribute fits exactly at the cap.
+        const atCap = await storage.events.create(created.runId, {
+          eventType: 'attr_set',
+          specVersion: 4,
+          eventData: {
+            changes: [{ key: 'a63', value: 'v' }],
+            writer: { type: 'workflow' },
+          },
+        });
+        expect(Object.keys(atCap.run?.attributes ?? {})).toHaveLength(64);
+
+        // A 65th attribute exceeds the cap with a clear error.
+        await expect(
+          storage.events.create(created.runId, {
+            eventType: 'attr_set',
+            specVersion: 4,
+            eventData: {
+              changes: [{ key: 'a64', value: 'v' }],
+              writer: { type: 'workflow' },
+            },
+          })
+        ).rejects.toThrow(/exceed limit 64/);
+
+        // Upserting an existing key at the cap is a zero-net change.
+        const upserted = await storage.events.create(created.runId, {
+          eventType: 'attr_set',
+          specVersion: 4,
+          eventData: {
+            changes: [{ key: 'a0', value: 'updated' }],
+            writer: { type: 'step', stepId: 'step_1', attempt: 1 },
+          },
+        });
+        expect(upserted.run?.attributes?.a0).toBe('updated');
+
+        // Removing a key frees room for a new one in the same batch.
+        const swapped = await storage.events.create(created.runId, {
+          eventType: 'attr_set',
+          specVersion: 4,
+          eventData: {
+            changes: [
+              { key: 'a1', value: null },
+              { key: 'replacement', value: 'v' },
+            ],
+            writer: { type: 'workflow' },
+          },
+        });
+        expect(swapped.run?.attributes?.replacement).toBe('v');
+        expect(swapped.run?.attributes).not.toHaveProperty('a1');
+        expect(Object.keys(swapped.run?.attributes ?? {})).toHaveLength(64);
+      });
+
+      it('should reject oversized attribute values on attr_set', async () => {
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        await expect(
+          storage.events.create(created.runId, {
+            eventType: 'attr_set',
+            specVersion: 4,
+            eventData: {
+              changes: [{ key: 'note', value: 'v'.repeat(257) }],
+              writer: { type: 'workflow' },
+            },
+          })
+        ).rejects.toThrow(/byte length 257 exceeds limit 256/);
+      });
+
+      it('should reject invalid initial attributes on run_created', async () => {
+        const overCap: Record<string, string> = {};
+        for (let i = 0; i <= 64; i++) overCap[`a${i}`] = 'v';
+        await expect(
+          createRun(storage, {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+            attributes: overCap,
+          })
+        ).rejects.toThrow(/exceed limit 64/);
+
+        await expect(
+          createRun(storage, {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+            attributes: { $reserved: 'nope' },
+          })
+        ).rejects.toThrow(/reserved prefix/);
+      });
     });
 
     describe('list', () => {

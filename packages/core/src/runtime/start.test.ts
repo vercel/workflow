@@ -247,6 +247,55 @@ describe('start', () => {
       ).rejects.toThrow(/must be a string value/);
       expect(mockEventsCreate).not.toHaveBeenCalled();
     });
+
+    it('rejects reserved-prefix initial attribute keys with guidance', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], { attributes: { $system: 'x' } })
+      ).rejects.toThrow(/reserved prefix/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects oversized initial attribute keys, values, and batches before any write', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          attributes: { ['k'.repeat(257)]: 'v' },
+        })
+      ).rejects.toThrow(/exceeds limit 256/);
+
+      await expect(
+        start(validWorkflow, [], {
+          attributes: { note: 'v'.repeat(257) },
+        })
+      ).rejects.toThrow(/exceeds limit 256/);
+
+      const overCap: Record<string, string> = {};
+      for (let i = 0; i <= 64; i++) overCap[`key_${i}`] = 'v';
+      await expect(
+        start(validWorkflow, [], { attributes: overCap })
+      ).rejects.toThrow(/exceed limit 64/);
+
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
   });
 
   describe('encryption', () => {
