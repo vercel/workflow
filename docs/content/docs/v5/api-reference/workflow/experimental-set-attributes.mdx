@@ -62,4 +62,4 @@ Validation errors throw [`FatalError`](/docs/api-reference/workflow/fatal-error)
 
 Calls from both workflow and step bodies append a native `attr_set` event, which the World materializes onto `run.attributes`. Workflow-originated events record a workflow writer; step-originated events record the originating step ID and attempt.
 
-Native attributes require spec version 4 or later. Storage errors throw from `experimental_setAttributes`; catch them inside a step if the write should be best-effort.
+Native attributes require spec version 4 or later. Step-body storage errors throw from `experimental_setAttributes`; catch them inside the step if the write should be best-effort. Workflow-body writes are committed when the workflow suspends: transient storage errors are retried with the suspension, while a write the World rejects as invalid — such as exceeding the per-run attribute cap across multiple calls — fails the run with the validation error.

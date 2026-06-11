@@ -969,13 +969,87 @@ export function workflowEntrypoint(
 
                         // V2: handle suspension without queuing steps
                         const suspensionStart = Date.now();
-                        const suspensionResult = await handleSuspension({
-                          suspension: err,
-                          world,
-                          run: workflowRun,
-                          span,
-                          requestId,
-                        });
+                        let suspensionResult: Awaited<
+                          ReturnType<typeof handleSuspension>
+                        >;
+                        try {
+                          suspensionResult = await handleSuspension({
+                            suspension: err,
+                            world,
+                            run: workflowRun,
+                            span,
+                            requestId,
+                          });
+                        } catch (suspensionError) {
+                          if (!FatalError.is(suspensionError)) {
+                            // Transient failures propagate to the queue
+                            // handler so the message is redelivered.
+                            throw suspensionError;
+                          }
+                          // Non-retryable failure while committing the
+                          // suspension's events — e.g. an attribute write
+                          // the World rejected as invalid (the cumulative
+                          // per-run cap can only be checked World-side).
+                          // Redelivery would replay the workflow into the
+                          // same write and the same rejection, so fail the
+                          // run with the error instead of wedging the
+                          // message in redelivery.
+                          const errorCode = classifyRunError(suspensionError);
+                          runtimeLogger.error(
+                            'Non-retryable error while committing workflow suspension; failing run',
+                            {
+                              workflowRunId: runId,
+                              errorCode,
+                              errorName: suspensionError.name,
+                              errorMessage: suspensionError.message,
+                            }
+                          );
+                          try {
+                            await world.events.create(
+                              runId,
+                              {
+                                eventType: 'run_failed',
+                                specVersion: SPEC_VERSION_CURRENT,
+                                eventData: {
+                                  error: await dehydrateRunError(
+                                    suspensionError,
+                                    runId,
+                                    encryptionKey
+                                  ),
+                                  errorCode,
+                                },
+                              },
+                              { requestId }
+                            );
+                          } catch (failErr) {
+                            if (
+                              EntityConflictError.is(failErr) ||
+                              RunExpiredError.is(failErr)
+                            ) {
+                              runtimeLogger.info(
+                                'Tried failing workflow run, but run has already finished.',
+                                {
+                                  workflowRunId: runId,
+                                  message: failErr.message,
+                                }
+                              );
+                              return;
+                            }
+                            throw failErr;
+                          }
+                          span?.setAttributes({
+                            ...Attribute.WorkflowRunStatus('failed'),
+                            ...Attribute.WorkflowErrorCode(errorCode),
+                            ...Attribute.WorkflowErrorName(
+                              suspensionError.name
+                            ),
+                            ...Attribute.WorkflowErrorMessage(
+                              suspensionError.message
+                            ),
+                            ...Attribute.ErrorType(suspensionError.name),
+                          });
+                          return;
+                        }
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,

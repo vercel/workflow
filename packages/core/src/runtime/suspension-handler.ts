@@ -1,10 +1,13 @@
 import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
+  FatalError,
   HookNotFoundError,
   RunExpiredError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  AttributeValidationError,
   type CreateEventRequest,
   type SerializedData,
   SPEC_VERSION_CURRENT,
@@ -402,6 +405,21 @@ export async function handleSuspension({
                 message: err.message,
               }
             );
+          } else if (isAttributeValidationFailure(err)) {
+            // Deterministic validation rejection from the World — e.g. the
+            // cumulative per-run attribute cap, which only the World can
+            // check against the run's existing attributes. Redelivering the
+            // orchestrator message replays the workflow into the exact same
+            // write and the exact same rejection, so retrying can never
+            // succeed. Surface it as a FatalError so the caller fails the
+            // run with a clear error instead of wedging it in redelivery.
+            const fatal = new FatalError(
+              `experimental_setAttributes failed World validation: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+            fatal.cause = err;
+            throw fatal;
           } else {
             throw err;
           }
@@ -447,4 +465,21 @@ export async function handleSuspension({
     hasHookConflict,
     hasAttributeEvents: attributeItems.length > 0,
   };
+}
+
+/**
+ * Whether an `events.create` rejection is a deterministic attribute
+ * validation failure rather than a transient/storage error. Local Worlds
+ * (world-local, world-postgres) throw `AttributeValidationError` directly;
+ * remote Worlds surface the equivalent server-side rejection as a
+ * `WorkflowWorldError` with HTTP status 400. The name check covers
+ * `AttributeValidationError` instances from a different copy of
+ * `@workflow/world` than the one this package resolved.
+ */
+function isAttributeValidationFailure(err: unknown): boolean {
+  if (err instanceof AttributeValidationError) return true;
+  if (err instanceof Error && err.name === 'AttributeValidationError') {
+    return true;
+  }
+  return WorkflowWorldError.is(err) && err.status === 400;
 }
