@@ -134,6 +134,14 @@ interface SplitEventData {
     errorCode?: string;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
+    /** Initial run attributes (run_created / resilient-start run_started). */
+    attributes?: Record<string, string>;
+    /** attr_set change list, included verbatim in frame meta. */
+    changes?: Array<Record<string, unknown>>;
+    /** attr_set writer provenance, included verbatim in frame meta. */
+    writer?: Record<string, unknown>;
+    /** Reserved-attribute-key opt-in (attr_set / run_created / run_started). */
+    allowReservedAttributes?: boolean;
   };
 }
 
@@ -141,8 +149,11 @@ interface SplitEventData {
  * Split an AnyEventRequest's `eventData` into (a) the payload bytes that
  * become the v4 frame body and (b) the metadata fields that become the
  * CBOR-encoded meta block of the same frame.
+ *
+ * Exported for unit tests (the meta allowlist is the eventData wire
+ * contract — see the warning on PAYLOAD_FIELD_BY_EVENT_TYPE).
  */
-function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
+export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // Some event types in the AnyEventRequest discriminated union (e.g.
   // run_cancelled) have no eventData. Cast through unknown so this
   // helper can read it defensively without TS narrowing per branch.
@@ -209,6 +220,32 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
       string,
       unknown
     >;
+  }
+  // Native run attributes (spec v4): initial attributes ride on
+  // run_created (and run_started for resilient start); attr_set carries
+  // the change list + writer provenance. All of these are structured
+  // metadata, not user payloads — they ride in the frame meta and the
+  // server validates them against the attribute caps before
+  // materializing run.attributes.
+  if (
+    eventData.attributes !== undefined &&
+    eventData.attributes !== null &&
+    typeof eventData.attributes === 'object'
+  ) {
+    meta.attributes = eventData.attributes as Record<string, string>;
+  }
+  if (Array.isArray(eventData.changes)) {
+    meta.changes = eventData.changes as Array<Record<string, unknown>>;
+  }
+  if (
+    eventData.writer !== undefined &&
+    eventData.writer !== null &&
+    typeof eventData.writer === 'object'
+  ) {
+    meta.writer = eventData.writer as Record<string, unknown>;
+  }
+  if (typeof eventData.allowReservedAttributes === 'boolean') {
+    meta.allowReservedAttributes = eventData.allowReservedAttributes;
   }
 
   let payload: Uint8Array | undefined;

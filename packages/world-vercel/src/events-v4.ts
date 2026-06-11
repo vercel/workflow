@@ -80,6 +80,18 @@ export interface CreateEventV4Input {
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
+  /** Initial run attributes (run_created, and run_started on the
+   *  resilient-start path). Validated server-side against the attribute
+   *  key/value/count caps. */
+  attributes?: Record<string, string>;
+  /** attr_set's attribute change list ({key, value|null} entries). */
+  changes?: Array<Record<string, unknown>>;
+  /** attr_set's writer provenance ({type:'workflow'} or
+   *  {type:'step', stepId, attempt}). */
+  writer?: Record<string, unknown>;
+  /** Opt-in for framework-level callers to write `$`-prefixed reserved
+   *  attribute keys (attr_set / run_created / run_started). */
+  allowReservedAttributes?: boolean;
 }
 
 export interface CreateEventV4Result {
@@ -133,6 +145,12 @@ function buildPostFrameMeta(
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
+  }
+  if (input.attributes !== undefined) meta.attributes = input.attributes;
+  if (input.changes !== undefined) meta.changes = input.changes;
+  if (input.writer !== undefined) meta.writer = input.writer;
+  if (input.allowReservedAttributes !== undefined) {
+    meta.allowReservedAttributes = input.allowReservedAttributes;
   }
   return meta;
 }

@@ -2,7 +2,7 @@ import type { AnyEventRequest } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
-import { createWorkflowRunEvent } from './events.js';
+import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
 
 const ORIGIN = 'https://vercel-workflow.com';
 
@@ -90,6 +90,71 @@ describe('createWorkflowRunEvent with v1Compat', () => {
         { token: 'test-token' }
       )
     ).rejects.toThrow(/requires a runId/);
+  });
+});
+
+/**
+ * The split's meta allowlist IS the eventData wire contract on v4 — any
+ * field not picked out here is silently dropped on the wire (see the
+ * warning on PAYLOAD_FIELD_BY_EVENT_TYPE). These tests lock in coverage
+ * for the native-attributes fields so the contract can't regress.
+ */
+describe('splitEventDataForV4 attribute fields', () => {
+  it('carries attr_set changes/writer/allowReservedAttributes in the frame meta', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'attr_set',
+      correlationId: 'attr_1',
+      specVersion: 4,
+      eventData: {
+        changes: [
+          { key: 'phase', value: 'done' },
+          { key: 'stale', value: null },
+        ],
+        writer: { type: 'step', stepId: 'step_1', attempt: 2 },
+        allowReservedAttributes: true,
+      },
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.changes).toEqual([
+      { key: 'phase', value: 'done' },
+      { key: 'stale', value: null },
+    ]);
+    expect(meta.writer).toEqual({ type: 'step', stepId: 'step_1', attempt: 2 });
+    expect(meta.allowReservedAttributes).toBe(true);
+  });
+
+  it('carries initial run attributes on run_created', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_created',
+      specVersion: 4,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+        attributes: { sourceAtStart: 'api' },
+      },
+    } as AnyEventRequest);
+
+    expect(payload).toBeInstanceOf(Uint8Array);
+    expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
+    expect(meta.deploymentId).toBe('dpl_1');
+    expect(meta.workflowName).toBe('wf');
+  });
+
+  it('carries attributes on resilient-start run_started', () => {
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_started',
+      specVersion: 4,
+      eventData: {
+        input: new TextEncoder().encode('[]'),
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        attributes: { sourceAtStart: 'api' },
+      },
+    } as AnyEventRequest);
+
+    expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
   });
 });
 
