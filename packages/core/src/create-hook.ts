@@ -49,7 +49,10 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    *
    * Note that awaiting the hook's payload (`await hook`) when the token is
    * already owned by another active hook still rejects with
-   * `HookConflictError`.
+   * `HookConflictError`. In the rare case where the conflicting run cannot
+   * be identified (a `hook_conflict` event persisted by an old world that
+   * did not record the owning run's ID), `getConflict` also rejects with
+   * `HookConflictError` rather than resolving with an incomplete value.
    *
    * @example
    * ```ts

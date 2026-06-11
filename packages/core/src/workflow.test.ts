@@ -2542,6 +2542,11 @@ describe('runWorkflow', () => {
 
       const result = await runWorkflow(
         `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        // In real bundles the workflow-mode create-hook module registers
+        // the compiled Run class on this symbol; mirror that here.
+        globalThis[Symbol.for("WORKFLOW_RUN_CLASS")] = class Run {
+          constructor(runId) { this.runId = runId; }
+        };
         async function workflow() {
           const hook = createHook({ token: 'claim-only-token' });
           const conflict = await hook.getConflict;

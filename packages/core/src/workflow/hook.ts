@@ -22,19 +22,26 @@ import { WORKFLOW_RUN_CLASS } from '../symbols.js';
  * The instance is created from the VM bundle's `Run` class (exposed on
  * the VM's globalThis by the workflow-mode `create-hook` module), whose
  * methods are durable step proxies — safe to call from workflow code.
- * If the class is unavailable (e.g. plain unit-test contexts that drive
- * the consumer directly), falls back to a `{ runId }`-shaped object so
- * callers can still identify the owner.
+ *
+ * Returns `null` when a real `Run` cannot be constructed: the conflict
+ * event lacks `conflictingRunId` (written by an old world), or the VM
+ * has no `Run` class registered (a context that never loaded the
+ * workflow-mode `create-hook` module). `getConflict` awaiters then
+ * reject with `HookConflictError` instead of resolving with a value
+ * that doesn't honor the `Run` contract.
  */
 function createConflictingRun(
   ctx: WorkflowOrchestratorContext,
   conflictingRunId: string | undefined
-): Run<unknown> {
-  const RunClass = (ctx.globalThis as any)?.[WORKFLOW_RUN_CLASS];
-  if (RunClass && typeof conflictingRunId === 'string') {
-    return new RunClass(conflictingRunId);
+): Run<unknown> | null {
+  if (typeof conflictingRunId !== 'string') {
+    return null;
   }
-  return { runId: conflictingRunId } as Run<unknown>;
+  const RunClass = (ctx.globalThis as any)?.[WORKFLOW_RUN_CLASS];
+  if (!RunClass) {
+    return null;
+  }
+  return new RunClass(conflictingRunId);
 }
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
@@ -172,7 +179,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // The actual settlements are deferred through promiseQueue for
         // ordering. Payload awaiters reject with HookConflictError, while
         // `getConflict` awaiters resolve with the conflicting run so the
-        // workflow can branch on the conflict without throwing.
+        // workflow can branch on the conflict without throwing. When no
+        // real `Run` can be constructed (see `createConflictingRun`),
+        // `getConflict` awaiters reject with the HookConflictError instead
+        // of resolving with a value that doesn't honor the `Run` contract.
         const pendingPromises = promises.slice();
         promises.length = 0;
         const pendingGetConflictPromises = getConflictPromises.slice();
@@ -183,7 +193,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             resolver.reject(conflictError);
           }
           for (const resolver of pendingGetConflictPromises) {
-            resolver.resolve(conflictRunRef);
+            if (conflictRunRef) {
+              resolver.resolve(conflictRunRef);
+            } else {
+              resolver.reject(conflictError);
+            }
           }
         });
 
@@ -368,7 +382,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
       if (hasConflict) {
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
-          resolvers.resolve(conflictRunRef);
+          if (conflictRunRef) {
+            resolvers.resolve(conflictRunRef);
+          } else {
+            resolvers.reject(conflictErrorRef);
+          }
         });
         return resolvers.promise;
       }
