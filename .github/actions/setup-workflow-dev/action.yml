@@ -39,7 +39,12 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
-        cache: 'pnpm'
+        # Only enable the pnpm store cache when this action actually runs
+        # `pnpm install`. Otherwise the store directory never exists and
+        # setup-node's post step fails the whole job with "Path Validation
+        # Error" whenever the cache restore missed (frequent on branches
+        # whose lockfile hash differs from main's caches).
+        cache: ${{ inputs.install-dependencies == 'true' && 'pnpm' || '' }}
 
     - name: Install Dependencies
       if: ${{ inputs.install-dependencies == 'true' }}
