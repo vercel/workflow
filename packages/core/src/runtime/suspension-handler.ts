@@ -1,5 +1,4 @@
 import type { Span } from '@opentelemetry/api';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   HookNotFoundError,
@@ -24,6 +23,7 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
 import { queueMessage } from './helpers.js';
+import { waitUntil } from './wait-until.js';
 
 /**
  * Extracts W3C trace context headers from a trace carrier for HTTP propagation.
