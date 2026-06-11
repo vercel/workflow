@@ -198,6 +198,8 @@ When a PR adds or updates docs pages (anything under `docs/content/`), add a "Do
 - A simple table with one row per page (and one column per docs version, when both v4 and v5 were updated) works well.
 - The preview deployment sits behind deployment protection, so the links require Vercel team access — that's expected; include them anyway for reviewers.
 
+## SWC Plugin
+
 When modifying the SWC compiler plugin (`packages/swc-plugin-workflow`), you must also update the specification document at `packages/swc-plugin-workflow/spec.md` to reflect any changes to the transformation behavior.
 
 ## Versioning & Release Strategy
