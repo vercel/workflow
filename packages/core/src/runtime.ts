@@ -1045,16 +1045,26 @@ export function workflowEntrypoint(
                         // when the wait elapses, and each a fresh message
                         // that resets the delivery-attempt runaway guard.
                         //
-                        // Exception: near-elapsed waits are enqueued
-                        // WITHOUT the key. A continuation delivered
+                        // Near-elapsed waits (<= 2s remaining) get a
+                        // second-bucketed suffix instead of the bare
+                        // correlationId. A continuation delivered
                         // marginally early (clock skew between the
                         // enqueuing and handling hosts; the ceil() on the
                         // delay can leave a ~0 margin) re-observes the
                         // wait as pending with ~1s remaining and must be
-                        // able to enqueue a fresh short-delay retry — the
-                        // world's dedupe window outlives the first
-                        // delivery, so reusing the key would drop that
-                        // retry and stall the run permanently.
+                        // able to enqueue a fresh short-delay retry —
+                        // dedupe windows outlive the first delivery, so
+                        // reusing the bare key would drop that retry and
+                        // stall the run permanently. The bucket suffix
+                        // keeps that retry enqueueable (its >= 1s delay
+                        // guarantees a later bucket) while still
+                        // collapsing same-instant duplicates. A key is
+                        // attached in all cases: some worlds (e.g.
+                        // world-postgres) serialize key-less workflow
+                        // messages per run, which would park the
+                        // continuation behind this handler's own inline
+                        // step execution and defeat the race semantics
+                        // this dispatch exists to provide.
                         const traceCarrier = await serializeTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
                         for (const step of pendingSteps) {
@@ -1096,7 +1106,7 @@ export function workflowEntrypoint(
                                 idempotencyKey:
                                   suspensionResult.timeoutSeconds > 2
                                     ? suspensionResult.timeoutWaitCorrelationId
-                                    : undefined,
+                                    : `${suspensionResult.timeoutWaitCorrelationId}:${Math.floor(Date.now() / 1000)}`,
                               }
                             )
                           );

@@ -177,7 +177,7 @@ The wait timer is queued as its own continuation rather than encoded in the hand
 
 Step queueing remains unconditional (covers crash recovery: if a prior handler wrote `step_created` but crashed before queueing, a later handler will queue it; idempotency keys dedupe redundant queues across concurrent handlers).
 
-Wait continuations are likewise deduplicated, keyed on the wait's correlation ID: while a wait is pending, every replay pass over the run re-observes it and would otherwise enqueue another delayed continuation. Near-elapsed waits (≤2s remaining) are enqueued without the key — a continuation delivered marginally early re-observes its wait as still pending and must be able to enqueue a fresh short-delay retry, which a world's dedupe window would otherwise drop, stalling the run.
+Wait continuations are likewise deduplicated, keyed on the wait's correlation ID: while a wait is pending, every replay pass over the run re-observes it and would otherwise enqueue another delayed continuation. Near-elapsed waits (≤2s remaining) use a time-bucketed key suffix — a continuation delivered marginally early re-observes its wait as still pending and must be able to enqueue a fresh short-delay retry, which a world's dedupe window would otherwise drop, stalling the run. A key is attached in all cases, since some worlds serialize key-less workflow messages per run, which would park the continuation behind the handler's own inline step execution.
 
 The retry/throttle and hook-conflict paths still return `{ timeoutSeconds }` since their semantics are "redeliver THIS message after a delay" rather than "schedule a fresh wait timer." Those can be unified in a follow-up.
 
