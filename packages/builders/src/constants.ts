@@ -30,6 +30,26 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
 }
 
 /**
+ * Creates the optional second argument for generated `workflowEntrypoint()`
+ * calls. The namespace is resolved while building so generated route files do
+ * not need `WORKFLOW_QUEUE_NAMESPACE` at runtime.
+ */
+export function createWorkflowEntrypointOptionsCode(options?: {
+  namespace?: string;
+}) {
+  const namespace = resolveQueueNamespace(options?.namespace);
+
+  if (!namespace) {
+    return '';
+  }
+
+  // Reuse prefix construction for namespace validation.
+  getQueueTopicPrefix('workflow', namespace);
+
+  return `, { namespace: ${JSON.stringify(namespace)} }`;
+}
+
+/**
  * Default queue trigger (no namespace). Backward compatible.
  */
 export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();

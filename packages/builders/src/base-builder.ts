@@ -14,6 +14,7 @@ import {
   applySwcTransform,
   type WorkflowManifest,
 } from './apply-swc-transform.js';
+import { createWorkflowEntrypointOptionsCode } from './constants.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
@@ -1175,6 +1176,9 @@ export abstract class BaseBuilder {
         }
       }
 
+      const workflowEntrypointOptionsCode =
+        createWorkflowEntrypointOptionsCode();
+
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
 
@@ -1184,7 +1188,7 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {
@@ -1363,6 +1367,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     // 3. Generate combined route file
     const stepsRelativePath = './' + basename(stepsOutfile).replace(/\\/g, '/');
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
+    const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode();
 
     const combinedFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
@@ -1374,7 +1379,7 @@ void __steps_registered;
 
 const workflowCode = \`${escapedVMCode}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
 
     if (!bundleFinalOutput) {
       // Write directly (Next.js will bundle)
@@ -1435,6 +1440,8 @@ export const POST = workflowEntrypoint(workflowCode);`;
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
     const combinedBundleFinal = async (interimBundleText: string) => {
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
+      const workflowEntrypointOptionsCode =
+        createWorkflowEntrypointOptionsCode();
       const code = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
@@ -1444,7 +1451,7 @@ void __steps_registered;
 
 const workflowCode = \`${escaped}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
 
       const outputDir = dirname(flowOutfile);
       await mkdir(outputDir, { recursive: true });
