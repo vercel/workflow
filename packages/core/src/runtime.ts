@@ -9,6 +9,8 @@ import {
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   WorkflowInvokePayloadSchema,
@@ -126,12 +128,16 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
  * @returns A function that can be used as a Vercel API route.
  */
 export function workflowEntrypoint(
-  workflowCode: string
+  workflowCode: string,
+  options?: { namespace?: string }
 ): (req: Request) => Promise<Response> {
+  const namespace = resolveQueueNamespace(options?.namespace);
+  const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+
   const { createQueueHandler, specVersion: worldSpecVersion } =
     getWorldHandlers();
   const handler = createQueueHandler(
-    '__wkf_workflow_',
+    workflowPrefix,
     async (message_, metadata) => {
       // Check if this is a health check message
       // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
@@ -156,7 +162,7 @@ export function workflowEntrypoint(
       } = WorkflowInvokePayloadSchema.parse(message_);
       const { requestId } = metadata;
       // Extract the workflow name from the topic name
-      const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
+      const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
       // --- Max delivery check ---
       // Enforce max delivery limit before any infrastructure calls.
@@ -744,7 +750,7 @@ export function workflowEntrypoint(
                       );
                       await queueMessage(
                         world,
-                        getWorkflowQueueName(workflowName),
+                        getWorkflowQueueName(workflowName, namespace),
                         {
                           runId,
                           traceCarrier: traceContext,

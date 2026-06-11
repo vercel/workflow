@@ -13,6 +13,7 @@ import {
   applySwcTransform,
   type WorkflowManifest,
 } from './apply-swc-transform.js';
+import { createWorkflowEntrypointOptionsCode } from './constants.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import { getImportPath } from './module-specifier.js';
@@ -994,6 +995,9 @@ export abstract class BaseBuilder {
         }
       }
 
+      const workflowEntrypointOptionsCode =
+        createWorkflowEntrypointOptionsCode();
+
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
 
@@ -1003,7 +1007,7 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-const handler = workflowEntrypoint(workflowCode);
+const handler = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});
 
 export const HEAD = handler;
 export const POST = handler;`;

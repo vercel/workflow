@@ -14,10 +14,10 @@ async function normalizeRequest(request) {
 function replaceGeneratedRouteExport(
   content: string,
   pattern: RegExp,
-  replacement: string,
+  replacement: string | ((substring: string, ...args: any[]) => string),
   errorMessage: string
 ) {
-  const replacedContent = content.replace(pattern, replacement);
+  const replacedContent = content.replace(pattern, replacement as any);
   if (replacedContent !== content) {
     return replacedContent;
   }
@@ -30,7 +30,7 @@ function replaceGeneratedRouteExport(
 
   const routeCode = content.slice(0, sourceMapIndex);
   const sourceMap = content.slice(sourceMapIndex);
-  const wrappedRouteCode = routeCode.replace(pattern, replacement);
+  const wrappedRouteCode = routeCode.replace(pattern, replacement as any);
   if (wrappedRouteCode === routeCode) {
     throw new Error(errorMessage);
   }

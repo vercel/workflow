@@ -13,6 +13,8 @@ import {
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import {
+  getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   type Step,
   StepInvokePayloadSchema,
@@ -51,10 +53,13 @@ import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
+const stepNamespace = resolveQueueNamespace();
+const stepPrefix = getQueueTopicPrefix('step', stepNamespace);
+
 const { createQueueHandler, specVersion: worldSpecVersion } =
   getWorldHandlers();
 const stepHandler = createQueueHandler(
-  '__wkf_step_',
+  stepPrefix,
   async (message_, metadata) => {
     // Check if this is a health check message
     // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
@@ -75,7 +80,7 @@ const stepHandler = createQueueHandler(
       requestedAt,
     } = StepInvokePayloadSchema.parse(message_);
     const { requestId } = metadata;
-    const stepNameFromQueue = metadata.queueName.slice('__wkf_step_'.length);
+    const stepNameFromQueue = metadata.queueName.slice(stepPrefix.length);
 
     // --- Max delivery check ---
     // Enforce max delivery limit before any infrastructure calls.
@@ -110,7 +115,7 @@ const stepHandler = createQueueHandler(
           { requestId }
         );
         // Re-queue the workflow to handle the failed step
-        await queueMessage(world, getWorkflowQueueName(workflowName), {
+        await queueMessage(world, getWorkflowQueueName(workflowName, stepNamespace), {
           runId: workflowRunId,
           traceCarrier: await serializeTraceCarrier(),
           requestedAt: new Date(),
@@ -142,7 +147,7 @@ const stepHandler = createQueueHandler(
     // Execute step within the propagated trace context
     return await withTraceContext(traceContext, async () => {
       // Extract the step name from the topic name
-      const stepName = metadata.queueName.slice('__wkf_step_'.length);
+      const stepName = metadata.queueName.slice(stepPrefix.length);
       const world = getWorld();
       const isVercel = process.env.VERCEL_URL !== undefined;
 
@@ -242,7 +247,7 @@ const stepHandler = createQueueHandler(
                 'step.name': stepName,
                 'step.id': stepId,
               });
-              await queueMessage(world, getWorkflowQueueName(workflowName), {
+              await queueMessage(world, getWorkflowQueueName(workflowName, stepNamespace), {
                 runId: workflowRunId,
                 traceCarrier: await serializeTraceCarrier(),
                 requestedAt: new Date(),
@@ -341,7 +346,7 @@ const stepHandler = createQueueHandler(
             });
 
             // Re-invoke the workflow to handle the failed step
-            await queueMessage(world, getWorkflowQueueName(workflowName), {
+            await queueMessage(world, getWorkflowQueueName(workflowName, stepNamespace), {
               runId: workflowRunId,
               traceCarrier: await serializeTraceCarrier(),
               requestedAt: new Date(),
@@ -408,7 +413,7 @@ const stepHandler = createQueueHandler(
             });
 
             // Re-invoke the workflow to handle the failed step
-            await queueMessage(world, getWorkflowQueueName(workflowName), {
+            await queueMessage(world, getWorkflowQueueName(workflowName, stepNamespace), {
               runId: workflowRunId,
               traceCarrier: await serializeTraceCarrier(),
               requestedAt: new Date(),
@@ -455,7 +460,7 @@ const stepHandler = createQueueHandler(
               throw failErr;
             }
             // Re-queue the workflow so it can process the step failure
-            await queueMessage(world, getWorkflowQueueName(workflowName), {
+            await queueMessage(world, getWorkflowQueueName(workflowName, stepNamespace), {
               runId: workflowRunId,
               traceCarrier: await serializeTraceCarrier(),
               requestedAt: new Date(),
@@ -780,7 +785,7 @@ const stepHandler = createQueueHandler(
             }
 
             // Re-invoke the workflow to handle the failed/retrying step
-            await queueMessage(world, getWorkflowQueueName(workflowName), {
+            await queueMessage(world, getWorkflowQueueName(workflowName, stepNamespace), {
               runId: workflowRunId,
               traceCarrier: await serializeTraceCarrier(),
               requestedAt: new Date(),
@@ -869,7 +874,7 @@ const stepHandler = createQueueHandler(
           });
 
           // Queue the workflow continuation with the concurrently-resolved trace carrier
-          await queueMessage(world, getWorkflowQueueName(workflowName), {
+          await queueMessage(world, getWorkflowQueueName(workflowName, stepNamespace), {
             runId: workflowRunId,
             traceCarrier,
             requestedAt: new Date(),
