@@ -48,6 +48,8 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 - **Data residency** - The Vercel World is currently deployed in the `iad1` region. This means independently of the deployment location of your application, the data for your workflows will be stored in the `iad1` region.
 
+- **Stream routes need `supportsCancellation`** - Routes that pipe `run.getReadable()` back to a client keep running — and billing — until the function's max duration, even after the client disconnects. Set [`supportsCancellation`](https://vercel.com/docs/functions/request-cancellation) in `vercel.json` for those routes so client aborts tear the invocation down. See [Streaming — Resuming Streams from a Specific Point](/docs/foundations/streaming#resuming-streams-from-a-specific-point).
+
 ## Observability
 
 Workflow observability is built into the Vercel dashboard on your project page. It respects your existing authentication and project permission settings.

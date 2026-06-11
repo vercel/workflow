@@ -327,3 +327,54 @@ describe('writeToStreamMulti pagination', () => {
     ]);
   });
 });
+
+describe('readFromStream', () => {
+  async function getStreamer() {
+    const { createStreamer } = await import('./streamer.js');
+    return createStreamer();
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('aborts the fetch when the returned stream is cancelled', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    // Upstream that stays pending until aborted — mirrors a long-running
+    // server stream that cancel() should tear down.
+    const makePendingResponse = (signal: AbortSignal) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1, 2, 3]));
+          signal.addEventListener('abort', () => {
+            controller.error(
+              new DOMException('The operation was aborted.', 'AbortError')
+            );
+          });
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      capturedSignal = init?.signal ?? undefined;
+      if (!capturedSignal) throw new Error('expected fetch to receive signal');
+      return makePendingResponse(capturedSignal);
+    });
+
+    const streamer = await getStreamer();
+    const stream = await streamer.readFromStream('s');
+
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal?.aborted).toBe(false);
+
+    const reader = stream.getReader();
+    // Drain the first chunk so the pump is live.
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+
+    await reader.cancel('client done');
+
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+});

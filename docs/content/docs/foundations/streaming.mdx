@@ -87,6 +87,12 @@ export async function GET(
 
 This allows clients to reconnect and continue receiving data from where they left off, rather than restarting from the beginning.
 
+<Callout type="warn">
+**Vercel: long-lived stream routes need `supportsCancellation`**
+
+When a route like the one above pipes `run.getReadable()` out to a client on Vercel, the function keeps running — and billing — until the function's configured max duration, even after the client disconnects. Set [`supportsCancellation`](https://vercel.com/docs/functions/request-cancellation) in `vercel.json` for routes that stream workflow output so Vercel forwards the client abort signal and tears the invocation down when the client goes away.
+</Callout>
+
 `startIndex` also supports **negative values** to read relative to the end of the stream. For example, `startIndex: -5` starts 5 chunks before the current end. This is useful when you want to show the most recent output without reading the entire stream history.
 
 On an active (not-yet-closed) stream, the negative index resolves relative to the chunk count at connection time; any chunks written afterward are still delivered normally.

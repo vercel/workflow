@@ -248,8 +248,14 @@ export function createStreamer(config?: APIConfig): Streamer {
       if (typeof startIndex === 'number') {
         url.searchParams.set('startIndex', String(startIndex));
       }
+      // Attach an AbortController so cancelling the returned stream
+      // (from WorkflowServerReadableStream / getReadable consumers)
+      // actually aborts the in-flight HTTP request instead of leaving
+      // the socket hanging until the server times out.
+      const abortController = new AbortController();
       const response = await fetch(url, {
         headers: httpConfig.headers,
+        signal: abortController.signal,
       });
       if (!response.ok) {
         throw new Error(`Failed to fetch stream: ${response.status}`);
@@ -257,7 +263,33 @@ export function createStreamer(config?: APIConfig): Streamer {
       if (!response.body) {
         throw new Error('No response body for stream');
       }
-      return response.body as ReadableStream<Uint8Array>;
+      const upstream = response.body as ReadableStream<Uint8Array>;
+      // Wrap the body so cancel() propagates to the AbortController —
+      // fetch implementations differ on whether cancelling the body
+      // alone tears down the socket.
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          const reader = upstream.getReader();
+          const pump = async () => {
+            try {
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) {
+                  controller.close();
+                  return;
+                }
+                controller.enqueue(value);
+              }
+            } catch (err) {
+              controller.error(err);
+            }
+          };
+          pump();
+        },
+        cancel(reason) {
+          abortController.abort(reason);
+        },
+      });
     },
 
     async getStreamChunks(
