@@ -879,9 +879,14 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // Wait until the dispatch send has started (the handler has replayed,
     // created step_created, and entered the blocked queue() send), then assert
     // the handler has NOT resolved while the send is still in flight.
-    await vi.waitFor(() => {
-      expect(order).toContain('queue_dispatch_start');
-    });
+    // The full VM replay leading up to the send can take well over
+    // vi.waitFor's default 1s timeout on slow CI runners (notably Windows).
+    await vi.waitFor(
+      () => {
+        expect(order).toContain('queue_dispatch_start');
+      },
+      { timeout: 15_000 }
+    );
     // Flush microtasks so any (incorrect) early resolution would be observable.
     await new Promise((r) => setTimeout(r, 20));
 
