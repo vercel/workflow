@@ -54,6 +54,7 @@ function findResultFiles(dir) {
     'e2e-metadata-',
     'e2e-failures-',
     'e2e-diagnostics-',
+    'e2e-runtime-logs-',
   ]);
 }
 
