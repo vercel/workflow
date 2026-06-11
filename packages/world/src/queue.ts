@@ -1,5 +1,7 @@
 import { z } from 'zod/v4';
 
+export type QueueKind = 'workflow' | 'step';
+
 /**
  * Pattern matching valid queue prefixes:
  * - `__wkf_workflow_` / `__wkf_step_` (default, no namespace)
@@ -45,7 +47,7 @@ export function resolveQueueNamespace(namespace?: string): string | undefined {
  * - `getQueueTopicPrefix('workflow', 'custom')` → `'__custom_wkf_workflow_'`
  */
 export function getQueueTopicPrefix(
-  kind: 'workflow' | 'step',
+  kind: QueueKind,
   namespace?: string
 ): QueuePrefix {
   if (namespace !== undefined) {
@@ -53,6 +55,38 @@ export function getQueueTopicPrefix(
     return `__${namespace}_wkf_${kind}_` as QueuePrefix;
   }
   return `__wkf_${kind}_` as QueuePrefix;
+}
+
+export function getQueuePrefixKind(prefix: QueuePrefix): QueueKind {
+  const match = QueuePrefix.parse(prefix).match(
+    /^__(?:[a-z][a-z0-9]*_)?wkf_(workflow|step)_$/
+  );
+
+  if (!match) {
+    throw new Error(`Invalid queue prefix: ${prefix}`);
+  }
+
+  return match[1] as QueueKind;
+}
+
+export function parseQueueName(name: ValidQueueName): {
+  prefix: QueuePrefix;
+  kind: QueueKind;
+  id: string;
+} {
+  const match = name.match(
+    /^(__(?:[a-z][a-z0-9]*_)?wkf_(workflow|step)_)(.+)$/
+  );
+
+  if (!match) {
+    throw new Error(`Invalid queue name: ${name}`);
+  }
+
+  return {
+    prefix: QueuePrefix.parse(match[1]),
+    kind: match[2] as QueueKind,
+    id: match[3],
+  };
 }
 
 export const MessageId = z

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { getQueueTopicPrefix, QueuePrefix, ValidQueueName } from './queue.js';
+import {
+  getQueuePrefixKind,
+  getQueueTopicPrefix,
+  parseQueueName,
+  QueuePrefix,
+  ValidQueueName,
+} from './queue.js';
 
 describe('getQueueTopicPrefix', () => {
   it('returns default workflow prefix without namespace', () => {
@@ -82,6 +88,18 @@ describe('QueuePrefix schema', () => {
   });
 });
 
+describe('getQueuePrefixKind', () => {
+  it('identifies default prefixes', () => {
+    expect(getQueuePrefixKind('__wkf_workflow_')).toBe('workflow');
+    expect(getQueuePrefixKind('__wkf_step_')).toBe('step');
+  });
+
+  it('identifies namespaced prefixes', () => {
+    expect(getQueuePrefixKind('__custom_wkf_workflow_')).toBe('workflow');
+    expect(getQueuePrefixKind('__custom_wkf_step_')).toBe('step');
+  });
+});
+
 describe('ValidQueueName schema', () => {
   it('accepts default queue names', () => {
     expect(ValidQueueName.parse('__wkf_workflow_myFlow')).toBe(
@@ -105,5 +123,31 @@ describe('ValidQueueName schema', () => {
 
   it('rejects invalid names', () => {
     expect(() => ValidQueueName.parse('not_a_queue_name')).toThrow();
+  });
+});
+
+describe('parseQueueName', () => {
+  it('parses default workflow queue names', () => {
+    expect(parseQueueName('__wkf_workflow_myFlow')).toEqual({
+      prefix: '__wkf_workflow_',
+      kind: 'workflow',
+      id: 'myFlow',
+    });
+  });
+
+  it('parses namespaced workflow queue names', () => {
+    expect(parseQueueName('__custom_wkf_workflow_myFlow')).toEqual({
+      prefix: '__custom_wkf_workflow_',
+      kind: 'workflow',
+      id: 'myFlow',
+    });
+  });
+
+  it('parses namespaced step queue names', () => {
+    expect(parseQueueName('__custom_wkf_step_myStep')).toEqual({
+      prefix: '__custom_wkf_step_',
+      kind: 'step',
+      id: 'myStep',
+    });
   });
 });

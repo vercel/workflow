@@ -10,6 +10,7 @@ export {
   getDecoratorOptionsForDirectoryWithConfigPath,
 } from './config-helpers.js';
 export {
+  createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
   WORKFLOW_QUEUE_TRIGGER,
 } from './constants.js';

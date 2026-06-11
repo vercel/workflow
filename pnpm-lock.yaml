@@ -418,9 +418,6 @@ importers:
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
-      '@workflow/world':
-        specifier: workspace:*
-        version: link:../world
       builtin-modules:
         specifier: 5.0.0
         version: 5.0.0

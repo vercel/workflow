@@ -1,5 +1,4 @@
 import { types } from 'node:util';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -32,6 +31,7 @@ import {
 } from '../types.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
+import { waitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
