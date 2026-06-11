@@ -242,6 +242,37 @@ function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
 }
 
 /**
+ * Run an assembled event through EventSchema so per-event-type
+ * z.coerce.date() (wait_created.resumeAt, wait_completed.resumeAt,
+ * step_retrying.retryAfter) converts the ISO strings DynamoDB returns
+ * back into Date instances — the workflow runtime calls .getTime() on
+ * these and would otherwise crash. safeParse: pass the event through
+ * unchanged if it doesn't match a known shape (legacy / mid-rollout).
+ *
+ * Used by every path that hands events to the runtime: GET/LIST frames
+ * (via buildEventFromV4) and the POST response's `event` / preloaded
+ * `events` bag — all of these can carry events read back from DynamoDB,
+ * where nested eventData dates are stored as ISO strings.
+ */
+function coerceEventDates(raw: Record<string, unknown>): Event {
+  const parsed = EventSchema.safeParse(raw);
+  if (parsed.success) return parsed.data as unknown as Event;
+  if (EventTypeSchema.safeParse(raw.eventType).success) {
+    // The raw-event fallback is for unknown/future event types. A parse
+    // failure on a *known* type means a schema/coercion regression that
+    // would otherwise only surface later as a crash deep in the runtime
+    // (e.g. .getTime() on a resumeAt that stayed a string) — leave a
+    // breadcrumb at the actual failure point.
+    console.debug(
+      `[workflow:world-vercel] v4 event ${raw.eventId} failed ` +
+        `EventSchema parse for known eventType '${raw.eventType}'; ` +
+        `passing through unparsed: ${parsed.error.message}`
+    );
+  }
+  return raw as unknown as Event;
+}
+
+/**
  * Turn a v4 event (frame meta + frame body) into the Event shape the
  * workflow runtime expects.
  *
@@ -280,26 +311,7 @@ function buildEventFromV4(
       : {}),
   };
 
-  // Run the assembled event through EventSchema so per-event-type
-  // z.coerce.date() (wait_created.resumeAt, wait_completed.resumeAt,
-  // step_retrying.retryAfter) converts the ISO strings DynamoDB returns
-  // back into Date instances — the workflow runtime calls .getTime() on
-  // these and would otherwise crash. safeParse: pass the event through
-  // unchanged if it doesn't match a known shape (legacy / mid-rollout).
-  const parsed = EventSchema.safeParse(raw);
-  if (!parsed.success && EventTypeSchema.safeParse(decoded.eventType).success) {
-    // The raw-event fallback is for unknown/future event types. A parse
-    // failure on a *known* type means a schema/coercion regression that
-    // would otherwise only surface later as a crash deep in the runtime
-    // (e.g. .getTime() on a resumeAt that stayed a string) — leave a
-    // breadcrumb at the actual failure point.
-    console.debug(
-      `[workflow:world-vercel] v4 event ${decoded.eventId} failed ` +
-        `EventSchema parse for known eventType '${decoded.eventType}'; ` +
-        `passing through unparsed: ${parsed.error.message}`
-    );
-  }
-  const event = (parsed.success ? parsed.data : raw) as unknown as Event;
+  const event = coerceEventDates(raw);
 
   // For resolveData='none', strip eventData entirely. Reuse the world-
   // side helper so behavior stays in sync with other backends.
@@ -449,14 +461,24 @@ async function createWorkflowRunEventInner(
 
   // The server already CBOR-decoded into result.body — just thread the
   // fields through. Step has a wire-format adapter; runs use the
-  // pass-through deserializeError helper. The returned event honors the
-  // caller's resolveData: 'none' strips payload fields, matching the v3
-  // path's stripEventAndLegacyRefs behavior and the Storage contract.
+  // pass-through deserializeError helper (run/step dates arrive as real
+  // Dates — the server's entity getters convert before CBOR-encoding).
+  // The returned `event` and preloaded `events` go through
+  // coerceEventDates: they can be read back from DynamoDB server-side
+  // (e.g. the run_started TTFB preload queries the event log), where
+  // nested eventData dates are ISO strings — same coercion the GET/LIST
+  // path applies, and the v3 path applied via its zod wire schemas.
+  // The returned event honors the caller's resolveData: 'none' strips
+  // payload fields, matching the v3 path's stripEventAndLegacyRefs
+  // behavior and the Storage contract.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
   return {
     event: body.event
-      ? stripEventDataRefs(body.event as Event, resolveData)
+      ? stripEventDataRefs(
+          coerceEventDates(body.event as Record<string, unknown>),
+          resolveData
+        )
       : undefined,
     run: body.run
       ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
@@ -465,7 +487,10 @@ async function createWorkflowRunEventInner(
       ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
       : undefined,
     hook: body.hook as EventResult['hook'],
-    events: body.events as EventResult['events'],
+    wait: body.wait as EventResult['wait'],
+    events: body.events
+      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
+      : undefined,
     cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,
   };

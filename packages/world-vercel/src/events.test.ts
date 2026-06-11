@@ -93,6 +93,134 @@ describe('createWorkflowRunEvent with v1Compat', () => {
   });
 });
 
+describe('createWorkflowRunEvent response coercion', () => {
+  it('coerces ISO-string dates in the returned event and preloaded events', async () => {
+    // DynamoDB-backed events store nested eventData dates as ISO strings
+    // (the server's entity layer converts Date → toISOString on write with
+    // no inverse getter). The run_started TTFB preload reads events back
+    // from a query, so the POST response's `event`/`events` need the same
+    // EventSchema coercion as the GET/LIST path — the runtime calls
+    // .getTime() on wait_created.resumeAt during replay.
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          run: {
+            runId: 'wrun_1',
+            status: 'running',
+            startedAt: new Date('2026-06-10T00:00:01.000Z'),
+          },
+          event: {
+            eventId: 'evnt_2',
+            runId: 'wrun_1',
+            eventType: 'run_started',
+            createdAt: '2026-06-10T00:00:01.000Z',
+            eventData: {},
+          },
+          events: [
+            {
+              eventId: 'evnt_3',
+              runId: 'wrun_1',
+              eventType: 'wait_created',
+              correlationId: 'wait_1',
+              createdAt: '2026-06-10T00:00:02.000Z',
+              specVersion: 2,
+              eventData: { resumeAt: '2026-06-10T01:00:00.000Z' },
+            },
+          ],
+          cursor: 'cursor-1',
+          hasMore: false,
+        }),
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_2',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:01.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.createdAt).toBeInstanceOf(Date);
+    const preloaded = result.events?.[0] as {
+      createdAt: Date;
+      eventData: { resumeAt: Date };
+    };
+    expect(preloaded.createdAt).toBeInstanceOf(Date);
+    expect(preloaded.eventData.resumeAt).toBeInstanceOf(Date);
+    expect(preloaded.eventData.resumeAt.getTime()).toBe(
+      new Date('2026-06-10T01:00:00.000Z').getTime()
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('threads the wait entity through to the EventResult', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          event: {
+            eventId: 'evnt_4',
+            runId: 'wrun_1',
+            eventType: 'wait_created',
+            correlationId: 'wait_1',
+            createdAt: '2026-06-10T00:00:00.000Z',
+            eventData: { resumeAt: '2026-06-10T01:00:00.000Z' },
+          },
+          wait: {
+            waitId: 'wait_1',
+            runId: 'wrun_1',
+            status: 'pending',
+          },
+        }),
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_4',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'wait_created',
+        correlationId: 'wait_1',
+        specVersion: 2,
+        eventData: { resumeAt: new Date('2026-06-10T01:00:00.000Z') },
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.wait).toMatchObject({ waitId: 'wait_1' });
+    expect(
+      (result.event as { eventData?: { resumeAt?: unknown } })?.eventData
+        ?.resumeAt
+    ).toBeInstanceOf(Date);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('createWorkflowRunEvent resolveData', () => {
   it("strips payload fields from the returned event when resolveData is 'none'", async () => {
     const agent = mockAgent();

@@ -374,14 +374,17 @@ export interface ListEventsV4Result {
  * Drive a v4 frame-stream list response into an in-memory page. Used by
  * both the by-runId and by-correlationId list endpoints — the wire
  * shape is identical, only the URL differs.
+ *
+ * `headers` come from the caller's single getHttpConfig resolution (the
+ * same call that produced the baseUrl in `url`) so each LIST resolves
+ * auth exactly once.
  */
 async function consumeListFrameStream(
   url: string,
+  headers: Headers,
   config: APIConfig | undefined,
   opName: string
 ): Promise<ListEventsV4Result> {
-  const { headers } = await getHttpConfig(config);
-
   const response = await request(url, {
     method: 'GET',
     headers: Object.fromEntries(headers.entries()),
@@ -472,11 +475,11 @@ export async function getWorkflowRunEventsV4(
   params: ListEventsV4Params = {},
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
-  const { baseUrl } = await getHttpConfig(config);
+  const { baseUrl, headers } = await getHttpConfig(config);
   const url =
     `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
     paginationToQuery(params);
-  return consumeListFrameStream(url, config, 'listEvents');
+  return consumeListFrameStream(url, headers, config, 'listEvents');
 }
 
 /**
@@ -492,12 +495,17 @@ export async function getEventsByCorrelationIdV4(
   params: ListEventsV4Params = {},
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
-  const { baseUrl } = await getHttpConfig(config);
+  const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
   sp.set('correlationId', correlationId);
   if (params.cursor) sp.set('cursor', params.cursor);
   if (params.limit !== undefined) sp.set('limit', String(params.limit));
   if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
-  return consumeListFrameStream(url, config, 'listEventsByCorrelationId');
+  return consumeListFrameStream(
+    url,
+    headers,
+    config,
+    'listEventsByCorrelationId'
+  );
 }
