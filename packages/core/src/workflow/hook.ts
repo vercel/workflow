@@ -11,7 +11,31 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
+import type { Run } from '../runtime/run.js';
 import { hydrateStepReturnValue } from '../serialization.js';
+import { WORKFLOW_RUN_CLASS } from '../symbols.js';
+
+/**
+ * Constructs a `Run` handle for the run that owns a conflicting hook
+ * token, for resolution through `hook.getConflict`.
+ *
+ * The instance is created from the VM bundle's `Run` class (exposed on
+ * the VM's globalThis by the workflow-mode `create-hook` module), whose
+ * methods are durable step proxies — safe to call from workflow code.
+ * If the class is unavailable (e.g. plain unit-test contexts that drive
+ * the consumer directly), falls back to a `{ runId }`-shaped object so
+ * callers can still identify the owner.
+ */
+function createConflictingRun(
+  ctx: WorkflowOrchestratorContext,
+  conflictingRunId: string | undefined
+): Run<unknown> {
+  const RunClass = (ctx.globalThis as any)?.[WORKFLOW_RUN_CLASS];
+  if (RunClass && typeof conflictingRunId === 'string') {
+    return new RunClass(conflictingRunId);
+  }
+  return { runId: conflictingRunId } as Run<unknown>;
+}
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
@@ -41,9 +65,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const promises: PromiseWithResolvers<T>[] = [];
 
     // Queue of promises that resolve once hook registration is confirmed
-    // (with `false`) or a token conflict is detected (with `true`). These
-    // back the `hook.hasConflict` getter.
-    const hasConflictPromises: PromiseWithResolvers<boolean>[] = [];
+    // (with `null`) or a token conflict is detected (with the conflicting
+    // `Run`). These back the `hook.getConflict` getter.
+    const getConflictPromises: PromiseWithResolvers<Run<unknown> | null>[] = [];
 
     let eventLogEmpty = false;
 
@@ -56,6 +80,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Track if we have a conflict so we can reject future awaits
     let hasConflict = false;
     let conflictErrorRef: HookConflictError | null = null;
+    // The conflicting run handle, shared by every `getConflict` await so
+    // repeated awaits observe the same instance deterministically.
+    let conflictRunRef: Run<unknown> | null = null;
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
@@ -67,7 +94,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
         if (
           (promises.length > 0 && payloadsQueue.length === 0) ||
-          (hasConflictPromises.length > 0 && !hasCreated && !hasConflict)
+          (getConflictPromises.length > 0 && !hasCreated && !hasConflict)
         ) {
           scheduleWhenIdle(ctx, () => {
             ctx.onWorkflowError(
@@ -108,11 +135,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         }
         hasCreated = true;
 
-        const pendingHasConflictPromises = hasConflictPromises.slice();
-        hasConflictPromises.length = 0;
+        const pendingGetConflictPromises = getConflictPromises.slice();
+        getConflictPromises.length = 0;
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
-          for (const resolver of pendingHasConflictPromises) {
-            resolver.resolve(false);
+          for (const resolver of pendingGetConflictPromises) {
+            resolver.resolve(null);
           }
         });
 
@@ -135,24 +162,28 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Mark that we have a conflict so future awaits also reject
         hasConflict = true;
         conflictErrorRef = conflictError;
+        conflictRunRef = createConflictingRun(
+          ctx,
+          conflictEvent.eventData.conflictingRunId
+        );
 
         // Capture and drain pending promises synchronously so the null event
         // handler won't see them and trigger a spurious WorkflowSuspension.
         // The actual settlements are deferred through promiseQueue for
         // ordering. Payload awaiters reject with HookConflictError, while
-        // `hasConflict` awaiters resolve with `true` so the workflow can
-        // branch on the conflict without throwing.
+        // `getConflict` awaiters resolve with the conflicting run so the
+        // workflow can branch on the conflict without throwing.
         const pendingPromises = promises.slice();
         promises.length = 0;
-        const pendingHasConflictPromises = hasConflictPromises.slice();
-        hasConflictPromises.length = 0;
+        const pendingGetConflictPromises = getConflictPromises.slice();
+        getConflictPromises.length = 0;
 
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           for (const resolver of pendingPromises) {
             resolver.reject(conflictError);
           }
-          for (const resolver of pendingHasConflictPromises) {
-            resolver.resolve(true);
+          for (const resolver of pendingGetConflictPromises) {
+            resolver.resolve(conflictRunRef);
           }
         });
 
@@ -321,23 +352,23 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     }
 
     // Helper function to create a promise that resolves with the hook's
-    // registration outcome: `true` when the token is owned by another
-    // active hook, `false` once this hook's registration is committed.
-    // Both fast-paths settle through `ctx.promiseQueue` so resolution
-    // order always matches event-log order.
-    function createHasConflictPromise(): Promise<boolean> {
-      const resolvers = withResolvers<boolean>();
+    // registration outcome: the conflicting `Run` when the token is owned
+    // by another active hook, `null` once this hook's registration is
+    // committed. Both fast-paths settle through `ctx.promiseQueue` so
+    // resolution order always matches event-log order.
+    function createGetConflictPromise(): Promise<Run<unknown> | null> {
+      const resolvers = withResolvers<Run<unknown> | null>();
 
       if (hasCreated) {
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
-          resolvers.resolve(false);
+          resolvers.resolve(null);
         });
         return resolvers.promise;
       }
 
       if (hasConflict) {
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
-          resolvers.resolve(true);
+          resolvers.resolve(conflictRunRef);
         });
         return resolvers.promise;
       }
@@ -355,7 +386,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         });
       }
 
-      hasConflictPromises.push(resolvers);
+      getConflictPromises.push(resolvers);
       return resolvers.promise;
     }
 
@@ -396,8 +427,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const hook: Hook<T> = {
       token,
 
-      get hasConflict(): Promise<boolean> {
-        return createHasConflictPromise();
+      get getConflict(): Promise<Run<unknown> | null> {
+        return createGetConflictPromise();
       },
 
       // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable

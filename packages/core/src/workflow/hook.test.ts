@@ -285,7 +285,7 @@ describe('createCreateHook', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should resolve hasConflict with false when hook_created event is received', async () => {
+  it('should resolve getConflict with null when hook_created event is received', async () => {
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -300,7 +300,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook();
 
-    await expect(hook.hasConflict).resolves.toBe(false);
+    await expect(hook.getConflict).resolves.toBeNull();
 
     expect(ctx.invocationsQueue.size).toBe(1);
     const queueItem = ctx.invocationsQueue.values().next().value;
@@ -309,7 +309,7 @@ describe('createCreateHook', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should suspend when hasConflict is awaited before hook creation is recorded', async () => {
+  it('should suspend when getConflict is awaited before hook creation is recorded', async () => {
     const ctx = setupWorkflowContext([]);
 
     const errorReceived = withResolvers<Error>();
@@ -319,7 +319,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     void (async () => {
-      await hook.hasConflict;
+      await hook.getConflict;
     })();
 
     const workflowError = await errorReceived.promise;
@@ -333,7 +333,7 @@ describe('createCreateHook', () => {
     }
   });
 
-  it('should resolve hasConflict with true when hook_conflict event is received', async () => {
+  it('should resolve getConflict with the conflicting run when hook_conflict event is received', async () => {
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -342,6 +342,7 @@ describe('createCreateHook', () => {
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'my-conflicting-token',
+          conflictingRunId: 'wrun_conflicting_owner',
         },
         createdAt: new Date(),
       },
@@ -350,13 +351,18 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook({ token: 'my-conflicting-token' });
 
-    await expect(hook.hasConflict).resolves.toBe(true);
+    const conflict = await hook.getConflict;
+    expect(conflict).not.toBeNull();
+    expect(conflict?.runId).toBe('wrun_conflicting_owner');
+
+    // Repeated awaits observe the same conflicting run instance
+    await expect(hook.getConflict).resolves.toBe(conflict);
 
     // Awaiting the hook payload itself still rejects with HookConflictError
     await expect(hook.then((v) => v)).rejects.toThrow(HookConflictError);
   });
 
-  it('should not consume payloads when hasConflict resolves', async () => {
+  it('should not consume payloads when getConflict resolves', async () => {
     const ops: Promise<any>[] = [];
     const ctx = setupWorkflowContext([
       {
@@ -387,7 +393,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook<{ data: string }>();
 
-    await expect(hook.hasConflict).resolves.toBe(false);
+    await expect(hook.getConflict).resolves.toBeNull();
     await expect(hook).resolves.toEqual({ data: 'after-ready' });
   });
 

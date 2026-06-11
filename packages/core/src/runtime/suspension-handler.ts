@@ -61,7 +61,7 @@ export interface SuspensionHandlerResult {
   waitTimeout?: { seconds: number; correlationId: string };
   /** Whether a hook conflict was detected (should re-invoke immediately) */
   hasHookConflict: boolean;
-  /** Whether a `hook.hasConflict` awaiter needs the workflow to continue immediately */
+  /** Whether a `hook.getConflict` awaiter needs the workflow to continue immediately */
   hasAwaitedHookCreation: boolean;
   /** Whether native workflow attribute events were written for replay. */
   hasAttributeEvents: boolean;
