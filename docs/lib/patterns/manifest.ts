@@ -319,6 +319,7 @@ export const registryItems: RegistryItem[] = [
         '**Step limits** — combine with `maxSteps` on `DurableAgent` to cap execution even without a manual stop signal.',
         '**Multiple agents** — scope each `stopHook` to its own run ID so parallel agent chains never interfere.',
         '**Hard Cancellation as a fallback** — wire your stop endpoint to fall back to `getRun(runId).cancel()` if the hook resume errors with `not found` / `expired` (e.g. the hook was already consumed). This guarantees the run is terminated even when the Stop Signal path is unavailable.',
+        "**Using WorkflowAgent instead** — the example uses `DurableAgent`, which is deprecated in Workflow SDK v5 in favor of AI SDK v7's `WorkflowAgent`. The stop mechanics (hook + `Promise.race` + hard-cancel fallback) are identical with either.",
       ],
       keyApis: [
         {
@@ -350,7 +351,7 @@ export const registryItems: RegistryItem[] = [
     logo: 'ai-sdk',
     description: 'Durable multi-turn chat with streaming and tools.',
     longDescription:
-      "[AI SDK](https://ai-sdk.dev/) is Vercel's framework-agnostic TypeScript toolkit for building AI-powered apps and agents — unified provider access, streaming, tool calling, structured output, and UI hooks. Workflow SDK complements it by making those calls durable: the model request, the tool loop, and the multi-turn conversation all survive restarts and timeouts. For most agent use cases, prefer `DurableAgent` which wraps `streamText` and manages the tool loop automatically. This pattern covers using `streamText()` directly when you need lower-level control.",
+      '[AI SDK](https://ai-sdk.dev/) is Vercel\'s framework-agnostic TypeScript toolkit for building AI-powered apps and agents — unified provider access, streaming, tool calling, structured output, and UI hooks. Workflow SDK complements it by making the multi-turn loop durable: the conversation state, hooks, and per-turn responses survive restarts and timeouts. Note that in this pattern the durability boundary is the entire turn — individual tool calls inside a turn are **not** durable on their own (see Pitfalls below). For most agent use cases, prefer `DurableAgent`, which implements the same agent loop as `streamText`, manages tool calling automatically, and runs tools at workflow scope — each tool can be marked `"use step"` for per-call durability and retries. Use this pattern\'s raw `streamText()` approach when you want the exact AI SDK API or when the durability boundary should be an entire user turn.',
     tags: ['ai', 'chat', 'streaming', 'agents', 'durable'],
     categories: ['agent', 'vercel'],
     versions: ['v4', 'v5'],
@@ -405,16 +406,22 @@ export const registryItems: RegistryItem[] = [
     ],
     guide: {
       flatLayout: true,
+      callout: {
+        type: 'info',
+        content:
+          'Because the conversation is one workflow run, it stays on the deployment that started it. If each turn should run on the latest deployment while preserving selected state or streams, see [Versioning](https://workflow-sdk.dev/docs/foundations/versioning) for the child-run continuation pattern.',
+      },
       sourceDescription:
         'One workflow run = one full conversation. The workflow suspends between turns on a hook and resumes when the next user message arrives. Conversation state, tool history, and intermediate computation all live inside the run.',
       whenToUse: [
-        '**Custom stop conditions** — `stopWhen`, `prepareStep`, or `onStepFinish` callbacks',
-        '**Structured output** — `Output.object()` or `Output.array()` alongside tool calling',
-        '**Step-level callbacks** — `onStepFinish` for logging, metrics, or branching logic',
-        '**Provider options** — per-step model switching, reasoning budgets, or custom provider options',
+        '**The raw AI SDK API** — `streamText().toUIMessageStream()`, `onChunk`, `smoothStream`, or other options that map directly to the `streamText` return value rather than `DurableAgent.stream()`',
+        '**Per-turn durability** — wrap the entire agent response (model + tools) in a single `"use step"` function so one user turn is the atomic retry unit; useful when you want all tool calls inside a turn to re-execute together',
+        "**Custom multi-turn orchestration** — manual hook loops, per-turn stream slicing (`sliceUntilFinish`), or other workflow patterns that don't map cleanly to `DurableAgent`",
+        '`DurableAgent` already supports `stopWhen`, `prepareStep`, `onStepFinish`, structured output (`experimental_output`), per-step model switching, and provider options — those are not reasons to drop down to raw `streamText`.',
       ],
       howItWorks: [
         '**One workflow = one conversation.** The workflow loops on a hook, keeping `allMessages`, tool history, and state alive across turns.',
+        '**`runTurn` is the durability boundary.** Each turn is one step. The model request and all tool calls inside it run as plain inline functions within that step. If anything throws mid-turn, the whole `runTurn` retries — individual tool calls are not separately durable.',
         '**Hook is created once.** `turnHook.create({ token: workflowRunId })` outside the loop — calling it twice with the same token throws `HookConflictError`.',
         '**`preventClose: true`** on `pipeTo` keeps the durable writable open so the next turn can write to it.',
         '**`sliceUntilFinish`** in the API reads chunks until `type === "finish"`, then closes the HTTP response. The source reader is released — not cancelled — so the workflow stream keeps flowing.',
@@ -423,42 +430,59 @@ export const registryItems: RegistryItem[] = [
       ],
       approaches: {
         title: 'streamText vs DurableAgent',
-        columns: ['', '`streamText()`', '`DurableAgent`'],
+        columns: ['', '`streamText()` (this pattern)', '`DurableAgent`'],
         rows: [
           {
             aspect: 'Tool loop',
             values: [
               'AI SDK handles via `stopWhen`',
-              'DurableAgent handles internally',
+              'Handles internally (AI SDK–compatible options)',
             ],
           },
           {
             aspect: 'LLM call durability',
             values: [
-              'Re-executes on replay',
+              'Re-executes with the parent turn',
               'Each LLM call is a durable step',
             ],
           },
           {
+            aspect: 'Tool call durability',
+            values: [
+              'Not individually durable — re-executes with the parent turn',
+              'Per tool — mark `"use step"` for a durable, retryable step, or keep at workflow level for `sleep()` / hooks',
+            ],
+          },
+          {
             aspect: 'Stop conditions',
-            values: ['`stopWhen`, `prepareStep`', '`prepareStep` only'],
+            values: ['`stopWhen`, `prepareStep`', '`stopWhen`, `prepareStep`'],
           },
           {
             aspect: 'Structured output',
-            values: ['`Output.object()`, `Output.array()`', 'Not available'],
+            values: [
+              '`Output.object()`, `Output.array()`',
+              '`experimental_output` (`Output.object()`, `Output.text()`)',
+            ],
           },
           {
             aspect: 'Step callbacks',
-            values: ['`onStepFinish`, `onChunk`', 'Not available'],
+            values: [
+              '`onStepFinish`, `onChunk`, etc.',
+              '`onStepFinish`, `onFinish`, `onError`, `onAbort` (`onChunk` not available)',
+            ],
           },
-          { aspect: 'Setup', values: ['Manual stream piping', 'Automatic'] },
+          {
+            aspect: 'Setup',
+            values: ['Manual stream piping and turn slicing', 'Automatic'],
+          },
         ],
         closing:
-          'Use `DurableAgent` for most agent use cases. Use `streamText` when you need the additional control.',
+          'Use `DurableAgent` for most agent use cases. Use `streamText` when you need the raw AI SDK surface or a per-turn durability boundary.',
       },
       adaptingIntro:
         'Non-obvious correctness details worth knowing before adapting this pattern.',
       adapting: [
+        '**Tools are not individually durable** — `streamText()` calls each tool\'s `execute` inside the `runTurn` step, where a `"use step"` directive on the tool body is a no-op. The atomic retry unit is the entire turn: if `processRefund` succeeds and a later call throws, the whole turn retries and `processRefund` runs again. Make side-effectful tools idempotent (dedupe server-side on a stable key), or use `DurableAgent`, which runs tools at workflow scope so each can be its own durable step.',
         '**Snapshot `tailIndex` before resuming the hook** — reversing the order races the workflow: by the time you read `tailIndex`, the next turn may have already written its `start` chunk.',
         '**Don\'t call `writable.close()` inside a workflow function** — I/O operations must happen inside a `"use step"` function. When the workflow returns, the runtime closes the writable for you.',
         "**Don't use `TransformStream.terminate()` to slice the stream** — throws `Invalid state` when late-arriving chunks hit the transform. Use a manual `ReadableStream` pump as shown.",
@@ -515,7 +539,7 @@ export const registryItems: RegistryItem[] = [
     description:
       'Replace a stateless AI agent with a durable one — tools as steps, streamed output, crash-safe by default.',
     longDescription:
-      'Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically.',
+      "Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically. **`DurableAgent` is deprecated in Workflow SDK v5** — for new durable agent work on v5, use AI SDK v7's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent), which implements the same pattern from the AI SDK package. This pattern remains valid for v4 and for existing `DurableAgent` code.",
     tags: ['agents', 'ai', 'durable', 'tools', 'streaming'],
     categories: ['agent'],
     versions: ['v4', 'v5'],
@@ -565,9 +589,9 @@ export const registryItems: RegistryItem[] = [
     guide: {
       flatLayout: true,
       callout: {
-        type: 'info',
+        type: 'warn',
         content:
-          '`WorkflowAgent` from `@ai-sdk/workflow` will replace `DurableAgent` in AI SDK v7. It provides the same durability guarantees with a cleaner API, built-in tool approval flows, and resumable streaming. [View WorkflowAgent docs →](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent)',
+          "`DurableAgent` is deprecated in Workflow SDK v5 and remains documented for existing code only. Use AI SDK v7's `WorkflowAgent` for new durable agent work — it provides the same durability guarantees with a cleaner API, built-in tool approval flows, and resumable streaming, and lives in the AI SDK package. [View WorkflowAgent docs →](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) Existing users can refer to the [`DurableAgent` API reference](https://workflow-sdk.dev/docs/api-reference/workflow-ai/durable-agent) while migrating.",
       },
       sourceDescription:
         'Replace `Agent` with `DurableAgent`, wrap the function in `"use workflow"`, mark each tool with `"use step"`, and stream output through `getWritable()`.',
@@ -709,6 +733,7 @@ export const registryItems: RegistryItem[] = [
         "**Escalation** — if the first approver doesn't respond, use `sleep()` + another hook to escalate to a backup reviewer.",
         '**Adjust timeout** — use `"24h"` for production, shorter durations for demos.',
         '**Workflow-level vs step tools** — tools that use `sleep()`, `defineHook()`, or other workflow primitives must NOT use `"use step"`. Tools with only I/O (API calls, DB queries) should use `"use step"` for retries.',
+        "**Using WorkflowAgent instead** — the example uses `DurableAgent`, which is deprecated in Workflow SDK v5 in favor of AI SDK v7's `WorkflowAgent`. The approval-gate mechanics (hook + `sleep()` race inside a workflow-level tool) are identical with either.",
       ],
       adaptingTitle: 'Adapting to your use case',
       keyApis: [
@@ -1741,7 +1766,7 @@ export const registryItems: RegistryItem[] = [
     description:
       'Call workflows from workflows — direct await for inline composition, start() for independent runs.',
     longDescription:
-      "Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or wants to fire the child off as an independent run (background spawn). For massive fan-out with polling and partial-failure handling, see the Child Workflows pattern.",
+      "Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or wants to fire the child off as an independent run (background spawn). For massive fan-out with hook-based waiting and partial-failure handling, see the Child Workflows pattern.",
     tags: ['composition', 'child-workflow', 'spawn', 'start'],
     categories: ['common'],
     versions: ['v4', 'v5'],
@@ -1837,10 +1862,10 @@ export const registryItems: RegistryItem[] = [
     name: 'Child Workflows',
     logo: 'child-workflows',
     description:
-      'Spawn many independent child workflows from a parent and orchestrate them with spawn-and-poll.',
+      'Spawn many independent child workflows from a parent and wait for completion via hook resume.',
     longDescription:
-      "Use child workflows when a single workflow needs to orchestrate many independent units of work. Each child runs as its own workflow with a separate event log, retry boundary, and failure scope — if one child fails, it doesn't take down the parent or siblings.",
-    tags: ['fan-out', 'spawn', 'poll', 'orchestration'],
+      "Use child workflows when a single workflow needs to orchestrate many independent units of work. Each child runs as its own workflow with a separate event log, retry boundary, and failure scope — if one child fails, it doesn't take down the parent or siblings. Instead of polling `getRun().status` in a sleep loop, each child resumes a completion hook on the parent when it finishes — zero compute while waiting, immediate wake-up, and a typed result payload.",
+    tags: ['fan-out', 'spawn', 'hooks', 'orchestration'],
     categories: ['advanced'],
     versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
@@ -1852,7 +1877,7 @@ export const registryItems: RegistryItem[] = [
       {
         path: 'workflows/child-workflows-workflow.ts',
         description:
-          '`processDocumentBatch()` parent + `processDocument()` child + chunked spawn step + durable polling loop + result-collection step.',
+          '`processDocumentBatch()` parent + `processDocument()` child + completion hook + wrapped child export + `startAndWait()` helper.',
       },
       {
         path: 'app/api/child-workflows/route.ts',
@@ -1884,27 +1909,38 @@ export const registryItems: RegistryItem[] = [
         '**You need per-item observability** — each child workflow has its own run ID, status, and event log for monitoring',
       ],
       sourceDescription:
-        'The workflow file ships the full spawn-and-poll pattern — a child workflow (`processDocument`), a parent (`processDocumentBatch`), a chunked spawn step, a durable polling loop with `sleep()`, and a result-collection step.',
+        'The workflow file ships the full spawn-and-wait pattern — a child workflow (`processDocument`), a wrapped child export that reports its outcome, a completion hook, a spawn step, a `startAndWait()` helper, and a parent (`processDocumentBatch`) that fans out with `Promise.all`.',
       howItWorks: [
-        '**Spawn step** — `start()` is called from inside a `"use step"` function. The step returns an array of `runId`s for all spawned children.',
-        '**Polling loop** — the parent workflow loops, calling a status-check step then sleeping with `sleep(POLL_INTERVAL)`. The loop is durable — replays resume from the event log.',
-        '**Status-check step** — `getRun(runId).status` is awaited inside a `"use step"` function. Steps inside child workflows retry independently; the parent only sees the child\'s final status.',
-        '**Result collection** — once all children complete, a final step calls `getRun(runId).returnValue` for each run ID to gather results.',
+        '**Completion hook** — the parent creates a hook per child (stable token from parent `runId` + child key) and suspends on it. Zero compute while waiting, immediate wake-up when the child finishes.',
+        "**Wrapped child export** — runs the real child in try/catch/finally and resumes the parent's hook with `{ status, value | error }` from a step in `finally`, so the parent always wakes up, even on failure.",
+        '**Spawn step** — `start()` is called from inside a `"use step"` function (in v5 it can also be called directly from the workflow), passing the hook token to the wrapped child.',
+        '**`startAndWait()`** — ties hook creation, spawning, and the typed result together: it throws on `{ status: "failed" }` and returns the child\'s value otherwise.',
       ],
       adapting: [
-        '**`start()` must be called from a step**, not directly from a workflow function. Wrap it in a `"use step"` function to keep spawning deterministic across replays.',
-        '**`getRun()` must also be called from a step.** The polling loop lives in the workflow, but the actual status check must be a step.',
-        '**Set a max iteration count on polling loops** to prevent runaway workflows. Calculate the count from your expected max duration and poll interval.',
-        '**Use chunked spawning for large batches** — spawning 500 children in a single step can time out. Break it into chunks of 10–50.',
-        '**Tolerate partial failures** — instead of throwing on the first failed child, track `completedIds` and `failedIds` separately and apply a `maxFailureRate` threshold before aborting.',
-        '**Retry failed children** — on a failed child, spawn a replacement and continue polling. Track restart counts per child index to prevent infinite loops.',
+        '**Why hooks instead of polling `getRun().status`** — zero compute while waiting, immediate wake-up instead of waiting for the next poll tick, typed payloads (no separate `returnValue` fetch step), and no worker-pool pressure from polling inside steps.',
+        "**`defineHook().resume()` must be called from a step.** The wrapped child's `finally` block calls a step that resumes the parent hook.",
+        '**Export wrapped children at module scope.** The SDK registers `"use workflow"` functions statically — a runtime higher-order function cannot be passed to `start()`.',
+        "**Use stable hook keys** — document ID, job ID, or index — so parallel children inside one parent run don't collide on tokens.",
+        '**Tolerate partial failures** — use `Promise.allSettled` with `startAndWait()` so one failing child doesn\'t abort siblings. The hook payload already carries `{ status: "failed", error }`.',
+        '**Retry failed children** — spawn a replacement with a fresh hook key (e.g. `` `${documentId}:${attempt}` ``) and cap attempts to prevent infinite loops.',
+        '**Use chunked spawning for large batches** — starting 500 children at once creates a large burst of work. Break it into chunks of 10–50.',
         '**Use `deploymentId: "latest"`** if children should run on the most recent deployment. Function name, file path, and argument types must remain compatible across deployments.',
       ],
       adaptingTitle: 'Tips',
       keyApis: [
         { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
-        { label: 'getRun()', url: '/docs/api-reference/workflow-api/get-run' },
-        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        {
+          label: 'resumeHook()',
+          url: '/docs/api-reference/workflow-api/resume-hook',
+        },
+        {
+          label: 'getWorkflowMetadata()',
+          url: '/docs/api-reference/workflow/get-workflow-metadata',
+        },
         {
           label: '"use workflow"',
           url: '/docs/foundations/workflows-and-steps',

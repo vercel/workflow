@@ -7,8 +7,10 @@
  *
  * The pattern: one workflow run = one full conversation. The workflow
  * suspends between turns on a hook and resumes when the next user message
- * arrives. `streamText()` runs inside a `"use step"` so the per-turn LLM
- * stream is durable and can be sliced by index for follow-up turns.
+ * arrives. `streamText()` runs inside a `"use step"` so each user turn is
+ * the durable retry unit and its stream can be sliced by index for
+ * follow-up turns. Tool calls inside a turn are NOT individually durable —
+ * the `"use step"` directive is a no-op when called from another step.
  *
  * Note on escaping: template literal placeholders inside the snippet are
  * escaped as `\${...}` so they stay literal here.
@@ -27,10 +29,11 @@ export const turnHook = defineHook({
   schema: z.object({ message: z.string() }),
 });
 
-// Tool implementations are durable steps — each call is recorded in the
-// event log and replayed (not re-executed) on restart.
+// \`streamText\` invokes tool executes inside \`runTurn\` (a step), so tool
+// calls are not individually durable — the entire turn retries together.
+// Make side-effectful tools idempotent, or use DurableAgent for per-tool
+// durability.
 async function lookupOrder({ orderId }: { orderId: string }) {
-  "use step";
   const res = await fetch(\`https://api.store.com/orders/\${orderId}\`);
   return res.json();
 }
@@ -39,7 +42,6 @@ async function processRefund({
   orderId,
   reason,
 }: { orderId: string; reason: string }) {
-  "use step";
   const res = await fetch("https://api.store.com/refunds", {
     method: "POST",
     body: JSON.stringify({ orderId, reason }),
@@ -114,15 +116,27 @@ export const aiSdkWorkflowInstallSource = `/**
  *      all turns; each new message is delivered via a hook resume().
  *   2. A per-turn "use step" function calls streamText() and pipes the
  *      result into the durable writable (preventClose: true keeps it open
- *      for the next turn).
+ *      for the next turn). The entire turn is the atomic retry unit.
  *   3. The API route slices the run's stream from the current turn's start
  *      index so each HTTP response only contains that turn's chunks.
  *   4. MAX_TURNS caps the conversation; send "/done" to exit cleanly.
  *
  * USEFUL WHEN:
  *   - You want durable multi-turn conversations that survive restarts.
- *   - You need tool calls that are retried without re-running on replay.
+ *   - You want the raw AI SDK API (toUIMessageStream(), onChunk, etc.)
+ *     rather than DurableAgent's wrapper.
+ *   - The durability boundary should be an entire user turn — all tool
+ *     calls inside a turn re-execute together on retry.
  *   - Users can reconnect mid-stream and receive the full response.
+ *
+ * CAVEAT — TOOLS ARE NOT INDIVIDUALLY DURABLE:
+ *   streamText() invokes each tool's execute function inside the runTurn
+ *   step. A "use step" directive on a tool body is a no-op when called from
+ *   another step, so tools run as plain inline functions. If a later tool
+ *   or model call throws, the whole turn retries and earlier tools run
+ *   again. Make side-effectful tools idempotent (dedupe on a stable key),
+ *   or use DurableAgent, which runs tools at workflow scope so each can be
+ *   its own durable, retryable step.
  *
  * TO ADAPT THIS TO YOUR USE CASE:
  *   - Replace lookupOrder / processRefund with your domain tools.
@@ -146,10 +160,11 @@ export const turnHook = defineHook({
   schema: z.object({ message: z.string() }),
 });
 
-// Tool implementations are durable steps — recorded before execution,
-// replayed (not re-run) on restart, retried automatically on failure.
+// streamText invokes tool executes inside runTurn (a step), so tool calls
+// are not individually durable — the entire turn retries together. Make
+// side-effectful tools idempotent (e.g. dedupe refunds on orderId), or use
+// DurableAgent for per-tool durability.
 async function lookupOrder({ orderId }: { orderId: string }) {
-  "use step";
   const res = await fetch(\`https://api.store.com/orders/\${orderId}\`);
   return res.json();
 }
@@ -158,7 +173,6 @@ async function processRefund({
   orderId,
   reason,
 }: { orderId: string; reason: string }) {
-  "use step";
   const res = await fetch("https://api.store.com/refunds", {
     method: "POST",
     body: JSON.stringify({ orderId, reason }),
@@ -180,8 +194,8 @@ const TOOLS = {
 };
 
 // Per-turn step — streams one LLM response into the durable writable.
-// "use step" makes the entire turn replay-safe: if the process restarts
-// mid-stream, the next invocation replays from the last completed step.
+// "use step" makes the entire turn the durability boundary: if the process
+// restarts mid-stream, the whole turn (model + tools) re-executes together.
 async function runTurn(messages: ModelMessage[]) {
   "use step";
 

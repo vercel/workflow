@@ -12,6 +12,11 @@
  * external API calls). Replace the tools with your own — the surrounding
  * shape stays identical.
  *
+ * NOTE: `DurableAgent` is deprecated in Workflow SDK v5 — new durable agent
+ * work on v5 should use AI SDK v7's `WorkflowAgent`, which implements the
+ * same pattern from the AI SDK package. This pattern remains valid for v4
+ * and existing `DurableAgent` code.
+ *
  * Note on escaping: template literal placeholders inside the snippet (e.g.
  * `${runId}`) are escaped as `\${...}` so they stay literal here.
  */
@@ -135,6 +140,12 @@ export const durableAgentWorkflowInstallSource = `/**
  *   - Tool calls are slow (seconds) and you want retry without duplicates.
  *   - You need multi-turn conversation state to survive server restarts.
  *   - You're building a chat UI where users can reconnect mid-generation.
+ *
+ * DEPRECATION NOTE:
+ *   DurableAgent is deprecated in Workflow SDK v5. For new durable agent
+ *   work on v5, use AI SDK v7's WorkflowAgent — same pattern, lives in the
+ *   AI SDK package: https://ai-sdk.dev/v7/docs/agents/workflow-agent
+ *   This file remains valid for v4 and existing DurableAgent code.
  *
  * TO ADAPT THIS TO YOUR USE CASE:
  *   - Replace searchFlights / bookFlight / checkWeather with your tools.

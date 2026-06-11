@@ -121,7 +121,8 @@ export const workflowCompositionWorkflowInstallSource = `/**
  *   - Replace generateReport / processOrder with your background tasks.
  *   - { deploymentId: "latest" } on start() lets the child pick up future
  *     code deployments automatically — omit for pinned behavior.
- *   - If the parent needs to poll / await the child, see Child Workflows.
+ *   - If the parent needs to await the child's result, see Child Workflows
+ *     (hook-based completion instead of polling).
  *
  * DOCS: https://workflow-sdk.dev/patterns/workflow-composition
  */
