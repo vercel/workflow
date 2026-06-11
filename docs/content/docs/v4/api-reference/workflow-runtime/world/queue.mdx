@@ -4,7 +4,7 @@ description: Low-level queue interface for dispatching workflow and step invocat
 type: reference
 summary: "Methods: getDeploymentId(), queue(), createQueueHandler(). Internal queue dispatch — normally handled by the SDK."
 prerequisites:
-  - /docs/api-reference/workflow-api/get-world
+  - /docs/api-reference/workflow-runtime/get-world
 related:
   - /docs/api-reference/workflow-api/start
   - /docs/foundations/starting-workflows
@@ -83,4 +83,4 @@ const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
 
 - [start()](/docs/api-reference/workflow-api/start) — The standard way to start workflow runs
 - [Starting Workflows](/docs/foundations/starting-workflows) — Core concepts for workflow invocation
-- [Storage](/docs/api-reference/workflow-api/world/storage) — Create events that trigger queue dispatch
+- [Storage](/docs/api-reference/workflow-runtime/world/storage) — Create events that trigger queue dispatch

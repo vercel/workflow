@@ -1,12 +1,12 @@
 ---
-title: Observability Utilities
+title: "workflow/observability"
 description: Hydrate step I/O, parse display names, and decrypt workflow data using workflow/observability.
 type: reference
 summary: "Functions: hydrateResourceIO(), parseStepName(), parseWorkflowName(), parseClassName(), getEncryptionKeyForRun(), hydrateResourceIOWithKey()."
 prerequisites:
-  - /docs/api-reference/workflow-api/get-world
+  - /docs/api-reference/workflow-runtime/get-world
 related:
-  - /docs/api-reference/workflow-api/world/storage
+  - /docs/api-reference/workflow-runtime/world/storage
 keywords:
   - workflow/observability
   - hydrateResourceIO
@@ -160,5 +160,5 @@ for (const step of steps.data) {
 
 ## Related
 
-- [Storage](/docs/api-reference/workflow-api/world/storage) — Query runs, steps, hooks, and events
+- [Storage](/docs/api-reference/workflow-runtime/world/storage) — Query runs, steps, hooks, and events
 - [Serialization](/docs/foundations/serialization) — How workflow data is serialized

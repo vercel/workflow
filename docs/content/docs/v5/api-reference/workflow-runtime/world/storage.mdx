@@ -4,11 +4,11 @@ description: Query workflow runs, steps, hooks, and the underlying event log via
 type: reference
 summary: "Interfaces: world.events, world.runs, world.steps, world.hooks. Events are the source of truth; runs, steps, and hooks are materialized views."
 prerequisites:
-  - /docs/api-reference/workflow-api/get-world
+  - /docs/api-reference/workflow-runtime/get-world
 related:
   - /docs/api-reference/workflow-api/get-run
   - /docs/how-it-works/event-sourcing
-  - /docs/api-reference/workflow-api/world/observability
+  - /docs/api-reference/workflow-observability
 keywords:
   - world.events
   - world.runs
@@ -116,6 +116,7 @@ const result = await world.events.listByCorrelationId({ // [!code highlight]
 | Category | Types |
 |----------|-------|
 | Run | `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled` |
+| Attribute | `attr_set` |
 | Step | `step_created`, `step_started`, `step_completed`, `step_failed`, `step_retrying` |
 | Hook | `hook_created`, `hook_received`, `hook_disposed`, `hook_conflict` |
 | Wait | `wait_created`, `wait_completed` |
@@ -229,7 +230,7 @@ const result = await world.steps.list({ // [!code highlight]
 | `retryAfter` | `string \| null` | ISO timestamp for next retry attempt |
 
 <Callout type="info">
-  Step I/O is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. Use `hydrateResourceIO()` from `workflow/observability` to deserialize it for display. See [Observability Utilities](/docs/api-reference/workflow-api/world/observability).
+  Step I/O is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. Use `hydrateResourceIO()` from `workflow/observability` to deserialize it for display. See [Observability Utilities](/docs/api-reference/workflow-observability).
 </Callout>
 
 <Callout type="warn">
@@ -402,7 +403,7 @@ for (const event of events.data) {
 
 - [Event Sourcing](/docs/how-it-works/event-sourcing) — How the event log powers workflow replay and state
 - [getRun()](/docs/api-reference/workflow-api/get-run) — Higher-level API for working with individual runs
-- [Observability Utilities](/docs/api-reference/workflow-api/world/observability) — Hydrate step I/O, parse display names, decrypt data
+- [Observability Utilities](/docs/api-reference/workflow-observability) — Hydrate step I/O, parse display names, decrypt data
 - [resumeHook()](/docs/api-reference/workflow-api/resume-hook) — Resume a workflow by sending a payload to a hook
 - [Hooks](/docs/foundations/hooks) — Core concepts for hooks and pause points
 - [Workflows and Steps](/docs/foundations/workflows-and-steps) — Core concepts for steps

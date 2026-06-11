@@ -4,7 +4,7 @@ description: Low-level API for inspecting and managing workflow runs, steps, eve
 type: overview
 summary: Access workflow infrastructure via await getWorld() for building observability dashboards, admin tools, and custom integrations.
 prerequisites:
-  - /docs/api-reference/workflow-api/get-world
+  - /docs/api-reference/workflow-runtime/get-world
 keywords:
   - getWorld
   - World SDK
@@ -25,17 +25,14 @@ const world = await getWorld(); // [!code highlight]
 ## Interfaces
 
 <Cards>
-    <Card href="/docs/api-reference/workflow-api/world/storage" title="Storage">
+    <Card href="/docs/api-reference/workflow-runtime/world/storage" title="Storage">
         Query runs, steps, hooks, and the underlying event log.
     </Card>
-    <Card href="/docs/api-reference/workflow-api/world/streams" title="Streams">
+    <Card href="/docs/api-reference/workflow-runtime/world/streams" title="Streams">
         Read, write, and manage real-time data streams for workflow runs.
     </Card>
-    <Card href="/docs/api-reference/workflow-api/world/queue" title="Queue">
+    <Card href="/docs/api-reference/workflow-runtime/world/queue" title="Queue">
         Low-level queue dispatch (internal SDK infrastructure).
-    </Card>
-    <Card href="/docs/api-reference/workflow-api/world/observability" title="Observability Utilities">
-        Hydrate step I/O, parse display names, and decrypt workflow data.
     </Card>
 </Cards>
 
@@ -55,4 +52,4 @@ const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highl
 console.log(hydrated.input, hydrated.output);
 ```
 
-See [Observability Utilities](/docs/api-reference/workflow-api/world/observability) for the full API.
+See [Observability Utilities](/docs/api-reference/workflow-observability) for the full API.

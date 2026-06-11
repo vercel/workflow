@@ -4,6 +4,8 @@
     "workflow-globals",
     "workflow",
     "workflow-api",
+    "workflow-runtime",
+    "workflow-observability",
     "workflow-next",
     "workflow-errors",
     "workflow-serde",
