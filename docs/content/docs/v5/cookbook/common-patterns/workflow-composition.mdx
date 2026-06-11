@@ -79,7 +79,7 @@ export async function processOrder(orderId: string) {
 The parent continues immediately after `start()` returns. The child runs independently and can be monitored separately using the returned `runId` (e.g., via [`getRun()`](/docs/api-reference/workflow-api/get-run)).
 
 <Callout type="info">
-Each background spawn creates a separate run. If duplicate requests must route to one active child workflow, have the child create a deterministic hook token from the business key and use that hook as the idempotency point. If concurrent starts race, the losing child can return `HookConflictError.conflictingRunId` to point callers at the active owner. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+Each background spawn creates a separate run. If duplicate requests must route to one active child workflow, have the child create a deterministic hook token from the business key and use that hook as the idempotency point. If concurrent starts race, the losing child can detect the conflict early with `await hook.hasConflict`, or await the hook payload and return `HookConflictError.conflictingRunId` to point callers at the active owner. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
 </Callout>
 
 <Callout type="info">

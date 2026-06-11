@@ -78,7 +78,7 @@ export async function POST(request: Request) {
 }
 ```
 
-The workflow should create and await or iterate the deterministic hook before duplicate-sensitive work. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how to steer an active run with `resumeHook()` and return `HookConflictError.conflictingRunId` after the current race between `start()` and hook registration.
+The workflow should create the deterministic hook and check `await hook.hasConflict` before duplicate-sensitive work — awaiting `hasConflict` suspends the workflow to commit the hook registration and resolves with whether another active run already owns the token. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how to steer an active run with `resumeHook()` and how to handle the current race between `start()` and hook registration.
 
 ## Key APIs
 
