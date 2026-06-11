@@ -1079,6 +1079,7 @@ export function workflowEntrypoint(
 
                         const pendingSteps = suspensionResult.pendingSteps;
 
+
                         // Inline execution is gated on ownership: only the
                         // handler that actually wrote the step_created event
                         // may run the step body inline. The world-level
