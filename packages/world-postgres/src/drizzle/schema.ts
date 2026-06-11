@@ -141,16 +141,17 @@ export const events = schema.table(
   (tb) => [
     index().on(tb.runId),
     index().on(tb.correlationId),
-    // Entity-creating events must be unique per (run, correlation) — without
+    // Runtime-correlated one-shot events must be unique per (run, correlation)
+    // — without
     // this, two concurrent invocations producing identical correlationIds
     // (e.g. the snapshot runtime's deterministic ULIDs across replays) can
-    // both insert events, causing duplicate steps/hooks/waits in the log.
+    // both insert events, causing duplicate operations in the log.
     // The unique violation is caught in events.create and translated to
     // EntityConflictError, matching the runtime's expected dedup contract.
     uniqueIndex('workflow_events_entity_creation_unique')
       .on(tb.runId, tb.correlationId, tb.eventType)
       .where(
-        sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created')`
+        sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created', 'attr_set')`
       ),
   ]
 );

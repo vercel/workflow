@@ -1,10 +1,13 @@
 import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
+  FatalError,
   HookNotFoundError,
   RunExpiredError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  AttributeValidationError,
   type CreateEventRequest,
   type SerializedData,
   SPEC_VERSION_CURRENT,
@@ -13,6 +16,7 @@ import {
 } from '@workflow/world';
 import { importKey } from '../encryption.js';
 import type {
+  AttributeInvocationQueueItem,
   HookInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
@@ -22,7 +26,6 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
-import { waitUntil } from './wait-until.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -59,6 +62,8 @@ export interface SuspensionHandlerResult {
   timeoutWaitCorrelationId?: string;
   /** Whether a hook conflict was detected (should re-invoke immediately) */
   hasHookConflict: boolean;
+  /** Whether native workflow attribute events were written for replay. */
+  hasAttributeEvents: boolean;
 }
 
 /**
@@ -87,6 +92,9 @@ export async function handleSuspension({
   );
   const waitItems = suspension.steps.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
+  );
+  const attributeItems = suspension.steps.filter(
+    (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
   );
 
   // Split hooks by what actions they need
@@ -374,13 +382,67 @@ export async function handleSuspension({
     }
   }
 
-  waitUntil(
-    Promise.all(ops).catch((opErr) => {
-      const isAbortError =
-        opErr?.name === 'AbortError' || opErr?.name === 'ResponseAborted';
-      if (!isAbortError) throw opErr;
-    })
-  );
+  for (const queueItem of attributeItems) {
+    ops.push(
+      (async () => {
+        try {
+          await world.events.create(
+            runId,
+            {
+              eventType: 'attr_set',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: queueItem.correlationId,
+              eventData: {
+                changes: queueItem.changes,
+                writer: { type: 'workflow' },
+                ...(queueItem.allowReservedAttributes
+                  ? { allowReservedAttributes: true }
+                  : {}),
+              },
+            },
+            { requestId }
+          );
+        } catch (err) {
+          if (EntityConflictError.is(err)) {
+            runtimeLogger.info(
+              'Workflow attribute event already exists, continuing',
+              {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              }
+            );
+          } else if (isAttributeValidationFailure(err)) {
+            // Deterministic validation rejection from the World — e.g. the
+            // cumulative per-run attribute cap, which only the World can
+            // check against the run's existing attributes. Redelivering the
+            // orchestrator message replays the workflow into the exact same
+            // write and the exact same rejection, so retrying can never
+            // succeed. Surface it as a FatalError so the caller fails the
+            // run with a clear error instead of wedging it in redelivery.
+            const fatal = new FatalError(
+              `experimental_setAttributes failed World validation: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+            fatal.cause = err;
+            throw fatal;
+          } else {
+            throw err;
+          }
+        }
+      })()
+    );
+  }
+
+  // Await the step_created / wait_created event creates before returning.
+  // The caller (workflowEntrypoint) only enqueues the step-dispatch queue
+  // messages AFTER handleSuspension resolves, and the queue handler acks
+  // the orchestrator message only after the caller resolves. So the step_created
+  // events must be durable here, and the dispatch sends must complete in the caller,
+  // all before ack. If the process crashes before this resolves, the orchestrator
+  // message is not acked and VQS redelivers, re-creates the (idempotent)
+  // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
 
   // Calculate minimum timeout from waits, tracking which wait produced it
@@ -412,5 +474,23 @@ export async function handleSuspension({
       ? undefined
       : minTimeoutWaitCorrelationId,
     hasHookConflict,
+    hasAttributeEvents: attributeItems.length > 0,
   };
+}
+
+/**
+ * Whether an `events.create` rejection is a deterministic attribute
+ * validation failure rather than a transient/storage error. Local Worlds
+ * (world-local, world-postgres) throw `AttributeValidationError` directly;
+ * remote Worlds surface the equivalent server-side rejection as a
+ * `WorkflowWorldError` with HTTP status 400. The name check covers
+ * `AttributeValidationError` instances from a different copy of
+ * `@workflow/world` than the one this package resolved.
+ */
+function isAttributeValidationFailure(err: unknown): boolean {
+  if (err instanceof AttributeValidationError) return true;
+  if (err instanceof Error && err.name === 'AttributeValidationError') {
+    return true;
+  }
+  return WorkflowWorldError.is(err) && err.status === 400;
 }

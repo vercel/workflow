@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_ATTRIBUTES } from '@workflow/world';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
@@ -25,7 +25,11 @@ export function createVercelWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+    // Spec v4: the workflow-server materializes native `attr_set` events
+    // and accepts initial run attributes on creation. New runs are stamped
+    // with this version; the server must be at least this version (it
+    // rejects runs newer than its own SPEC_VERSION_CURRENT).
+    specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
     // On Vercel the platform fails the function invocation when the
     // process exits non-zero, and VQS redelivers the queue message via a
     // fresh invocation. The core runtime uses this to decide whether

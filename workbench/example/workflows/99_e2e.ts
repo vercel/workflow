@@ -1829,19 +1829,24 @@ export async function abortParallelWorkflow() {
   'use workflow';
 
   const controller = new AbortController();
+  const parallelSteps = Promise.all([
+    longStep(controller.signal),
+    longStep(controller.signal),
+    longStep(controller.signal),
+  ]);
 
   const result = await Promise.race([
-    Promise.all([
-      longStep(controller.signal),
-      longStep(controller.signal),
-      longStep(controller.signal),
-    ]),
+    parallelSteps,
     sleep('3s').then(() => 'timeout' as const),
   ]);
 
   if (result === 'timeout') {
     controller.abort();
-    return { status: 'timed out' };
+    // Wait for the in-flight steps to observe the abort before completing the
+    // workflow. Returning immediately leaves the parallel branch dangling and
+    // can keep the run open until the steps hit their natural 30s completion.
+    const results = await parallelSteps;
+    return { status: 'timed out', results };
   }
 
   return { status: 'completed', results: result };
@@ -3177,13 +3182,12 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
 }
 
 //////////////////////////////////////////////////////////
-// Workflow Attributes MVP — workflow and step API.
+// Workflow Attributes - native workflow and step events.
 
 /**
  * Calls `experimental_setAttributes` directly from the workflow body.
- * The call is dispatched through the `__builtin_set_attributes` step
- * bridge, so the mutation gets a `step_created`/`step_completed` event
- * pair. The third call sets a key to `undefined` and the test verifies
+ * Each call appends a native `attr_set` event. The third call sets a key
+ * to `undefined` and the test verifies
  * the key is absent from the final attribute map.
  */
 export async function experimentalSetAttributesWorkflow(input: number) {
@@ -3208,8 +3212,8 @@ async function setAttributesFromStep(input: number) {
 
 /**
  * Calls `experimental_setAttributes` from inside a normal user step. Step
- * bodies already run in host context, so the helper posts directly to the
- * world instead of creating a nested `__builtin_set_attributes` step.
+ * bodies already run in host context, so the helper appends an attributed
+ * `attr_set` event without creating a nested internal step.
  */
 export async function experimentalSetAttributesInsideStepWorkflow(
   input: number
@@ -3221,15 +3225,8 @@ export async function experimentalSetAttributesInsideStepWorkflow(
 /**
  * Fire-and-forget pattern: `void experimental_setAttributes(...)` lets
  * the workflow body proceed without blocking on the attribute write.
- * Each `void` call queues a step on the workflow's next suspension —
- * any later `await` on a runtime primitive (a step, a sleep, a hook).
- * This is the canonical pattern for observability / tracking metadata
- * where the workflow doesn't depend on the write.
- *
- * Note: a `void` call placed *immediately before* `return` (with no
- * later `await`) is currently unreliable — the step is committed but
- * the queue worker skips it once `run_completed` lands. See the
- * `test.todo(...)` for `fire-and-forget` in `packages/core/e2e/e2e.test.ts`.
+ * Each `void` call commits a native event on suspension or final drain,
+ * including the final write immediately before return.
  */
 export async function experimentalSetAttributesFireAndForgetWorkflow() {
   'use workflow';
@@ -3269,4 +3266,45 @@ export async function experimentalSetAttributesThrowsAfterWorkflow() {
     reason: 'intentional',
   });
   throw new FatalError('intentional failure to test attribute persistence');
+}
+
+/**
+ * Validation DX: every invalid `experimental_setAttributes` call must
+ * throw a catchable `FatalError` in the workflow body — before any event
+ * is written — with a message that names the violated rule and the limit.
+ * The workflow records each error's name and message, then writes one
+ * valid attribute and completes, so the e2e test can assert on error
+ * quality without wedging the run.
+ */
+export async function experimentalSetAttributesValidationWorkflow() {
+  'use workflow';
+  const outcomes: Record<string, string> = {};
+
+  const attempt = async (
+    label: string,
+    attrs: Record<string, string | undefined>
+  ) => {
+    try {
+      await experimental_setAttributes(attrs);
+      outcomes[label] = 'no-error';
+    } catch (err) {
+      const e = err as Error;
+      outcomes[label] = `${e.name}: ${e.message}`;
+    }
+  };
+
+  await attempt('reserved', { $system: 'nope' });
+  await attempt('emptyKey', { '': 'v' });
+  await attempt('keyTooLong', { ['k'.repeat(257)]: 'v' });
+  await attempt('valueTooLong', { note: 'v'.repeat(257) });
+  // Multibyte values: the cap is bytes, not characters.
+  await attempt('valueTooManyBytes', { note: 'é'.repeat(200) });
+  const overCap: Record<string, string> = {};
+  for (let i = 0; i <= 64; i++) overCap[`k${i}`] = 'v';
+  await attempt('overCap', overCap);
+  await attempt('nonObject', 'phase=init' as any);
+
+  // The run must remain healthy after every rejected call.
+  await experimental_setAttributes({ phase: 'validated' });
+  return outcomes;
 }

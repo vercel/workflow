@@ -20,12 +20,14 @@ import type {
   WorkflowRun,
 } from '@workflow/world';
 import {
+  applyAttributeChanges,
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  validateAttributeChanges,
   validateUlidTimestamp,
   WaitSchema,
   WorkflowRunSchema,
@@ -275,12 +277,23 @@ export function createEventsStorage(
               workflowName?: string;
               input?: any;
               executionContext?: Record<string, any>;
+              attributes?: Record<string, string>;
+              allowReservedAttributes?: true;
             };
             if (
               runInputData.deploymentId &&
               runInputData.workflowName &&
               runInputData.input !== undefined
             ) {
+              validateAttributeChanges(
+                Object.entries(runInputData.attributes ?? {}).map(
+                  ([key, value]) => ({ key, value })
+                ),
+                {
+                  allowReservedAttributes:
+                    runInputData.allowReservedAttributes === true,
+                }
+              );
               // Atomically try to publish the run entity so only the first
               // writer wins, preventing a TOCTOU race where a concurrent
               // run_created from start() could overwrite a run that was
@@ -297,7 +310,7 @@ export function createEventsStorage(
                 error: undefined,
                 startedAt: undefined,
                 completedAt: undefined,
-                attributes: {},
+                attributes: runInputData.attributes ?? {},
                 createdAt: now,
                 updatedAt: now,
               };
@@ -321,6 +334,9 @@ export function createEventsStorage(
                     workflowName: runInputData.workflowName,
                     input: runInputData.input,
                     executionContext: runInputData.executionContext,
+                    attributes: runInputData.attributes,
+                    allowReservedAttributes:
+                      runInputData.allowReservedAttributes,
                   },
                 };
                 const createdCompositeKey = `${effectiveRunId}-${runCreatedEventId}`;
@@ -349,6 +365,9 @@ export function createEventsStorage(
         // WorkflowRunNotFoundError rather than silently persisting an
         // event for a run that was never created.
         if (data.eventType === 'run_failed' && !currentRun) {
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
+        if (data.eventType === 'attr_set' && !currentRun) {
           throw new WorkflowRunNotFoundError(effectiveRunId);
         }
 
@@ -444,6 +463,12 @@ export function createEventsStorage(
               `Cannot create new entities on run in terminal state "${currentRun.status}"`
             );
           }
+
+          if (data.eventType === 'attr_set') {
+            throw new EntityConflictError(
+              `Cannot set attributes on run in terminal state "${currentRun.status}"`
+            );
+          }
         }
 
         // Step-related event validation (ordering and terminal state)
@@ -533,7 +558,18 @@ export function createEventsStorage(
             workflowName: string;
             input: SerializedData;
             executionContext?: Record<string, any>;
+            attributes?: Record<string, string>;
+            allowReservedAttributes?: true;
           };
+          validateAttributeChanges(
+            Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
+              key,
+              value,
+            })),
+            {
+              allowReservedAttributes: runData.allowReservedAttributes === true,
+            }
+          );
           run = {
             runId: effectiveRunId,
             deploymentId: runData.deploymentId,
@@ -547,7 +583,7 @@ export function createEventsStorage(
             error: undefined,
             startedAt: undefined,
             completedAt: undefined,
-            attributes: {},
+            attributes: runData.attributes ?? {},
             createdAt: now,
             updatedAt: now,
           };
@@ -699,6 +735,61 @@ export function createEventsStorage(
               deleteAllWaitsForRun(basedir, effectiveRunId),
             ]);
           }
+        } else if (data.eventType === 'attr_set' && currentRun) {
+          run = await withRunFileLock(effectiveRunId, async () => {
+            const fresh = await readJSON(
+              taggedPath(basedir, 'runs', effectiveRunId, tag),
+              WorkflowRunSchema
+            );
+            if (!fresh) {
+              throw new WorkflowRunNotFoundError(effectiveRunId);
+            }
+            validateAttributeChanges(data.eventData.changes, {
+              existingKeys: Object.keys(fresh.attributes),
+              allowReservedAttributes:
+                data.eventData.allowReservedAttributes === true,
+            });
+            // Claim the correlation dedup lock only after validation: a
+            // validation failure must leave the correlationId unclaimed so
+            // the runtime's retry of the same event is not misreported as
+            // "already exists" while the event was never written (the
+            // dispatcher would then wait forever for an event that is not
+            // in the log).
+            if (
+              data.correlationId &&
+              data.eventData.writer.type === 'workflow'
+            ) {
+              const attrLockName = tag
+                ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
+                : `${effectiveRunId}-${data.correlationId}.created`;
+              const attrLockPath = resolveWithinBase(
+                basedir,
+                '.locks',
+                'attributes',
+                attrLockName
+              );
+              const attrClaimed = await writeExclusive(attrLockPath, '');
+              if (!attrClaimed) {
+                throw new EntityConflictError(
+                  `Attribute event "${data.correlationId}" already exists`
+                );
+              }
+            }
+            const next = {
+              ...fresh,
+              attributes: applyAttributeChanges(
+                fresh.attributes,
+                data.eventData.changes
+              ),
+              updatedAt: now,
+            } as WorkflowRun;
+            await writeJSON(
+              taggedPath(basedir, 'runs', effectiveRunId, tag),
+              next,
+              { overwrite: true }
+            );
+            return next;
+          });
         } else if (
           // Step lifecycle events
           data.eventType === 'step_created' &&

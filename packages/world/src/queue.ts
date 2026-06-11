@@ -113,6 +113,8 @@ export const RunInputSchema = z.object({
   workflowName: z.string(),
   specVersion: z.number(),
   executionContext: z.record(z.string(), z.any()).optional(),
+  /** Initial plaintext run attributes, for resilient run creation. */
+  attributes: z.record(z.string(), z.string()).optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 

@@ -31,6 +31,7 @@ async function createRun(
     workflowName: string;
     input: Uint8Array;
     executionContext?: Record<string, unknown>;
+    attributes?: Record<string, string>;
   }
 ): Promise<WorkflowRun> {
   const result = await events.create(null, {
@@ -204,6 +205,29 @@ describe('Storage (Postgres integration)', () => {
 
         expect(run.executionContext).toBeUndefined();
         expect(run.input).toEqual(new Uint8Array());
+      });
+
+      it('should seed initial attributes from run_created', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'attributed-workflow',
+          input: new Uint8Array(),
+          attributes: { tenant: 't1', phase: 'created' },
+        });
+
+        expect(run.attributes).toEqual({ tenant: 't1', phase: 'created' });
+      });
+
+      it('treats SQL-looking initial attribute keys as literal JSON keys', async () => {
+        const key = "tenant'); DROP TABLE workflow_runs; --";
+        const run = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'attributed-workflow',
+          input: new Uint8Array(),
+          attributes: { [key]: 'literal' },
+        });
+
+        expect(run.attributes).toEqual({ [key]: 'literal' });
       });
     });
 
@@ -401,6 +425,194 @@ describe('Storage (Postgres integration)', () => {
           { key: 'a', value: null },
         ]);
         expect(result.attributes).toEqual({ b: '2' });
+      });
+    });
+
+    describe('native attr_set events', () => {
+      it('materializes writes and removals on the run', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+          attributes: { stale: 'remove' },
+        });
+        const result = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'attr_1',
+          eventData: {
+            changes: [
+              { key: 'phase', value: 'ready' },
+              { key: 'stale', value: null },
+            ],
+            writer: { type: 'workflow' },
+          },
+        });
+
+        expect(result.event?.eventType).toBe('attr_set');
+        expect(result.run?.attributes).toEqual({ phase: 'ready' });
+        expect((await runs.get(run.runId)).attributes).toEqual({
+          phase: 'ready',
+        });
+      });
+
+      it('requires reserved-key opt-in on native events', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+        });
+        await expect(
+          events.create(run.runId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: '$system', value: 'nope' }],
+              writer: { type: 'workflow' },
+            },
+          })
+        ).rejects.toThrow(/reserved prefix/);
+
+        const result = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [{ key: '$system', value: 'ok' }],
+            writer: { type: 'workflow' },
+            allowReservedAttributes: true,
+          },
+        });
+        expect(result.run?.attributes).toEqual({ $system: 'ok' });
+      });
+
+      it('treats SQL-looking attribute keys as literal JSON keys', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+        });
+        const key = "phase'); DROP TABLE workflow_runs; --";
+
+        const written = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [{ key, value: 'literal' }],
+            writer: { type: 'workflow' },
+          },
+        });
+        expect(written.run?.attributes).toEqual({ [key]: 'literal' });
+
+        const removed = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [{ key, value: null }],
+            writer: { type: 'workflow' },
+          },
+        });
+        expect(removed.run?.attributes).toEqual({});
+      });
+
+      it('enforces the per-run cap against existing attributes', async () => {
+        const initial: Record<string, string> = {};
+        for (let i = 0; i < 63; i++) initial[`a${i}`] = 'v';
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+          attributes: initial,
+        });
+
+        // 64th attribute fits exactly at the cap.
+        const atCap = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [{ key: 'a63', value: 'v' }],
+            writer: { type: 'workflow' },
+          },
+        });
+        expect(Object.keys(atCap.run?.attributes ?? {})).toHaveLength(64);
+
+        // A 65th attribute exceeds the cap with a clear error.
+        await expect(
+          events.create(run.runId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: 'a64', value: 'v' }],
+              writer: { type: 'workflow' },
+            },
+          })
+        ).rejects.toThrow(/exceed limit 64/);
+
+        // Upserting an existing key at the cap is a zero-net change.
+        const upserted = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [{ key: 'a0', value: 'updated' }],
+            writer: { type: 'step', stepId: 'step_1', attempt: 1 },
+          },
+        });
+        expect(upserted.run?.attributes?.a0).toBe('updated');
+
+        // Removing a key frees room for a new one in the same batch.
+        const swapped = await events.create(run.runId, {
+          eventType: 'attr_set',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            changes: [
+              { key: 'a1', value: null },
+              { key: 'replacement', value: 'v' },
+            ],
+            writer: { type: 'workflow' },
+          },
+        });
+        expect(swapped.run?.attributes?.replacement).toBe('v');
+        expect(swapped.run?.attributes).not.toHaveProperty('a1');
+        expect(Object.keys(swapped.run?.attributes ?? {})).toHaveLength(64);
+      });
+
+      it('rejects oversized attribute values on attr_set', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w',
+          input: new Uint8Array(),
+        });
+        await expect(
+          events.create(run.runId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: 'note', value: 'v'.repeat(257) }],
+              writer: { type: 'workflow' },
+            },
+          })
+        ).rejects.toThrow(/byte length 257 exceeds limit 256/);
+      });
+
+      it('rejects invalid initial attributes on run_created', async () => {
+        const overCap: Record<string, string> = {};
+        for (let i = 0; i <= 64; i++) overCap[`a${i}`] = 'v';
+        await expect(
+          createRun(events, {
+            deploymentId: 'd',
+            workflowName: 'w',
+            input: new Uint8Array(),
+            attributes: overCap,
+          })
+        ).rejects.toThrow(/exceed limit 64/);
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'd',
+            workflowName: 'w',
+            input: new Uint8Array(),
+            attributes: { $reserved: 'nope' },
+          })
+        ).rejects.toThrow(/reserved prefix/);
       });
     });
   });
@@ -1244,6 +1456,54 @@ describe('Storage (Postgres integration)', () => {
       ).rejects.toMatchObject({ name: 'EntityConflictError' });
     });
 
+    it('should reject duplicate correlated workflow attr_set events', async () => {
+      await events.create(testRunId, {
+        eventType: 'attr_set',
+        correlationId: 'attr_dup_1',
+        eventData: {
+          changes: [{ key: 'phase', value: 'running' }],
+          writer: { type: 'workflow' },
+        },
+      });
+      await expect(
+        events.create(testRunId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_dup_1',
+          eventData: {
+            changes: [{ key: 'phase', value: 'running' }],
+            writer: { type: 'workflow' },
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // A duplicate carrying *different* changes for the same correlationId
+      // must be rejected before touching the run snapshot — otherwise the
+      // materialized attributes would diverge from the event log.
+      await expect(
+        events.create(testRunId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_dup_1',
+          eventData: {
+            changes: [{ key: 'phase', value: 'DIVERGED' }],
+            writer: { type: 'workflow' },
+          },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      expect((await runs.get(testRunId)).attributes?.phase).toBe('running');
+
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        evts.data.filter(
+          (event) =>
+            event.eventType === 'attr_set' &&
+            event.correlationId === 'attr_dup_1'
+        )
+      ).toHaveLength(1);
+    });
+
     it('should reject duplicate wait_created with EntityConflictError', async () => {
       // Sequential duplicate wait_created — the wait_created insert path
       // uses `INSERT ... onConflictDoNothing()` plus an existence check, so
@@ -1763,6 +2023,28 @@ describe('Storage (Postgres integration)', () => {
         createHook(events, run.runId, {
           hookId: 'new_hook',
           token: 'new-token',
+        })
+      ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject attr_set on completed run', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_after_complete',
+          eventData: {
+            changes: [{ key: 'phase', value: 'too-late' }],
+            writer: { type: 'workflow' },
+          },
         })
       ).rejects.toThrow(/terminal/i);
     });

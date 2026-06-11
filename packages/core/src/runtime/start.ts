@@ -7,10 +7,12 @@ import {
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { normalizeAttributeChanges } from '../attribute-changes.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
@@ -18,10 +20,10 @@ import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { Run } from './run.js';
-import { getWorldLazy } from './get-world-lazy.js';
-import { waitedUntil, waitUntil } from './wait-until.js';
+import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -37,6 +39,13 @@ export interface StartOptionsBase {
    * The spec version to use for the workflow run. Defaults to the latest version.
    */
   specVersion?: number;
+
+  /**
+   * Plaintext attributes to seed on the run as it is created.
+   *
+   * Available for native-attributes runs (spec version 4 and later).
+   */
+  attributes?: Record<string, string>;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -181,6 +190,29 @@ export async function start<TArgs extends unknown[], TResult>(
         world.specVersion ??
         SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
       const v1Compat = isLegacySpecVersion(specVersion);
+      let attributes: Record<string, string> | undefined;
+      if (opts.attributes && Object.keys(opts.attributes).length > 0) {
+        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
+          throw new WorkflowRuntimeError(
+            'Initial workflow attributes require a World that supports spec version 4 or later.'
+          );
+        }
+        // `normalizeAttributeChanges` treats `undefined` as "remove this
+        // key", which is meaningless at creation time — reject it up front
+        // so JS callers get a clear error instead of a downstream schema
+        // failure (the types already forbid non-string values).
+        for (const [key, value] of Object.entries(opts.attributes)) {
+          if (typeof value !== 'string') {
+            throw new WorkflowRuntimeError(
+              `Initial workflow attribute ${JSON.stringify(key)} must be a string value.`
+            );
+          }
+        }
+        const changes = normalizeAttributeChanges(opts.attributes);
+        attributes = Object.fromEntries(
+          changes.map(({ key, value }) => [key, value as string])
+        );
+      }
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
@@ -226,6 +258,7 @@ export async function start<TArgs extends unknown[], TResult>(
               workflowName: workflowName,
               input: workflowArguments,
               executionContext,
+              ...(attributes ? { attributes } : {}),
             },
           },
           { v1Compat }
@@ -243,6 +276,7 @@ export async function start<TArgs extends unknown[], TResult>(
                     workflowName,
                     specVersion,
                     executionContext,
+                    ...(attributes ? { attributes } : {}),
                   },
                 }
               : {}),
@@ -298,14 +332,19 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       }
 
-      waitUntil(
-        Promise.all(ops).catch((err) => {
-          // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-          const isAbortError =
-            err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-          if (!isAbortError) throw err;
-        })
-      );
+      // These argument-stream ops are flushed in the background; the promise
+      // handed to waitUntil must never reject (an unconsumed waitUntil
+      // rejection crashes the process as unhandledRejection), so unexpected
+      // failures are logged instead.
+      safeWaitUntil(Promise.all(ops), (err) => {
+        runtimeLogger.warn(
+          'Background flush of workflow argument streams failed',
+          {
+            workflowRunId: runId,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
+      });
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
