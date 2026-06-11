@@ -366,20 +366,14 @@ export async function handleSuspension({
     }
   }
 
-  // Strictly await the step_created / wait_created event creates before
-  // returning. These gate run progress: the caller (workflowEntrypoint) only
-  // enqueues the step-dispatch queue messages AFTER handleSuspension resolves,
-  // and the queue handler acks the orchestrator message only after the caller
-  // resolves. So the step_created events must be durable here, and the
-  // dispatch sends must complete in the caller, all before ack. If the process
-  // crashes before this resolves, the orchestrator message is not acked and
-  // VQS redelivers within the 300s lease; replay re-creates the (idempotent)
-  // step_created and re-dispatches, recovering the run instead of orphaning it.
-  //
-  // Do NOT additionally register these ops on `waitUntil`: a detached copy
-  // frames progress-critical creates as droppable background work and re-throws
-  // on failure into a promise nothing consumes (unhandled rejection → process
-  // exit 128). The strict await below is the only handle we need.
+  // Await the step_created / wait_created event creates before returning.
+  // The caller (workflowEntrypoint) only enqueues the step-dispatch queue
+  // messages AFTER handleSuspension resolves, and the queue handler acks
+  // the orchestrator message only after the caller resolves. So the step_created
+  // events must be durable here, and the dispatch sends must complete in the caller,
+  // all before ack. If the process crashes before this resolves, the orchestrator
+  // message is not acked and VQS redelivers, re-creates the (idempotent)
+  // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
 
   // Calculate minimum timeout from waits
