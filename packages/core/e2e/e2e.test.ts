@@ -3760,6 +3760,33 @@ describe('e2e', () => {
     );
 
     test(
+      'start: reserved-prefix initial attributes are seeded with allowReservedAttributes',
+      { timeout: 30_000 },
+      async () => {
+        const run = await start(
+          await e2e('experimentalSetAttributesWorkflow'),
+          [2],
+          {
+            attributes: { $seededByFramework: 'e2e', tenant: 't1' },
+            allowReservedAttributes: true,
+          }
+        );
+        await run.returnValue;
+
+        // The reserved key passes validation on the client and at the
+        // world/server boundary, lands on the run at creation, and
+        // survives the workflow's own attr_set writes.
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted.attributes).toEqual({
+          $seededByFramework: 'e2e',
+          tenant: 't1',
+          phase: 'done',
+        });
+      }
+    );
+
+    test(
       'experimentalSetAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly',
       { timeout: 30_000 },
       async () => {
