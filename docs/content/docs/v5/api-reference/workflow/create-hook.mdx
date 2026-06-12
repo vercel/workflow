@@ -142,7 +142,7 @@ async function processOrder(orderId: string) {
 
 Because `createHook()` alone does not suspend the workflow, awaiting `hook.getConflict()` is what actually suspends the run and commits the hook registration. It only waits for registration — to receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
 
-On a conflict, the resolved value is a `Run` handle for the run that currently owns the token, with durable step-backed accessors. The duplicate run can decide in code how to handle it: return or log `conflict.runId`, inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` and continue in the current run. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies in context.
+On a conflict, the resolved value is a `Run` handle for the run that currently owns the token, with durable step-backed accessors. The duplicate run can decide in code how to handle it: return or log `conflict.runId`, inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` and continue in the current run. See [Idempotency](/docs/foundations/idempotency) for these strategies in context.
 
 ### Waiting for Multiple Payloads
 
