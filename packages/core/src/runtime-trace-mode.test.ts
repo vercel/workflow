@@ -3,6 +3,7 @@ import {
   trace as otelTrace,
   propagation,
   type Span,
+  SpanKind,
 } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
@@ -26,10 +27,11 @@ import {
   it,
   vi,
 } from 'vitest';
+import { runtimeLogger } from './logger.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import { dehydrateWorkflowArguments } from './serialization.js';
-import { getWorkflowTraceMode } from './telemetry.js';
+import { getNextTraceCarrier, getWorkflowTraceMode } from './telemetry.js';
 
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn((p: Promise<unknown>) => {
@@ -77,16 +79,6 @@ const getWorkflowTransformCode = (workflowName: string) =>
 
 const simpleWorkflow = `async function workflow() {
     return 'done';
-  }${getWorkflowTransformCode('workflow')}`;
-
-// A workflow that suspends on a step AND a sleep: the pending wait makes the
-// V2 handler queue the step (with a traceCarrier) instead of executing it
-// inline, exercising the re-enqueue trace-carrier path.
-const stepWithSleepWorkflow = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
-  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-  async function workflow() {
-    const [a] = await Promise.all([add(1, 2), sleep('1h')]);
-    return a;
   }${getWorkflowTransformCode('workflow')}`;
 
 async function makeRunningRun(runId: string): Promise<WorkflowRun> {
@@ -209,6 +201,23 @@ describe('getWorkflowTraceMode', () => {
     vi.stubEnv('WORKFLOW_TRACE_MODE', 'continuous');
     expect(getWorkflowTraceMode()).toBe('continuous');
   });
+
+  it('warns once for unrecognized values and falls back to linked', () => {
+    const warnSpy = vi
+      .spyOn(runtimeLogger, 'warn')
+      .mockImplementation(() => {});
+    vi.stubEnv('WORKFLOW_TRACE_MODE', 'continous');
+
+    expect(getWorkflowTraceMode()).toBe('linked');
+    expect(getWorkflowTraceMode()).toBe('linked');
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const message = warnSpy.mock.calls[0][0] as string;
+    expect(message).toContain('"continous"');
+    expect(message).toContain('"linked"');
+    expect(message).toContain('"continuous"');
+    warnSpy.mockRestore();
+  });
 });
 
 describe('workflowEntrypoint trace modes', () => {
@@ -237,6 +246,28 @@ describe('workflowEntrypoint trace modes', () => {
 
     expect(workflowSpan?.attributes['workflow.trace.mode']).toBe('linked');
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(true);
+
+    // Queue-delivered invocation spans use the CONSUMER kind, matching
+    // queue-delivered step.execute spans.
+    expect(workflowSpan?.kind).toBe(SpanKind.CONSUMER);
+  });
+
+  it('linked: treats an empty trace carrier ({}) like an absent one', async () => {
+    const { workflowSpan, deliverySpan } = await driveHandler({
+      runId: 'wrun_trace_linked_empty_carrier',
+      workflowCode: simpleWorkflow,
+      traceCarrier: {},
+    });
+
+    expect(workflowSpan).toBeDefined();
+    expect(workflowSpan?.parentSpanId).toBeUndefined();
+    // Only the delivery link — no origin link is derived from `{}`.
+    expect(workflowSpan?.links).toHaveLength(1);
+    expect(linkTraceIds(workflowSpan)).toContain(
+      deliverySpan.spanContext().traceId
+    );
+    // An empty carrier does not count as propagated trace context.
+    expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(false);
   });
 
   it('linked: without an incoming carrier, still creates a root span with only the delivery link', async () => {
@@ -277,42 +308,52 @@ describe('workflowEntrypoint trace modes', () => {
 
     expect(workflowSpan?.attributes['workflow.trace.mode']).toBe('continuous');
   });
+});
 
-  it('linked: forwards the ORIGINAL run-origin trace carrier unchanged on re-enqueues', async () => {
-    const { workflowSpan, queuedMessages } = await driveHandler({
-      runId: 'wrun_trace_linked_reenqueue',
-      workflowCode: stepWithSleepWorkflow,
-      traceCarrier: ORIGIN_CARRIER,
-    });
-
-    const stepDispatch = queuedMessages.find((m) => m && 'stepId' in m);
-    expect(stepDispatch).toBeDefined();
-    // The original carrier flows forward unchanged — the run-origin
-    // identity is preserved for future links...
-    expect(stepDispatch.traceCarrier).toEqual(ORIGIN_CARRIER);
-    // ...and is NOT replaced with the current invocation's context.
-    expect(stepDispatch.traceCarrier.traceparent).not.toContain(
-      workflowSpan?.spanContext().traceId
-    );
+// The carrier put on re-enqueued messages is produced by getNextTraceCarrier.
+// (The combined V2 handler now executes a single owned step inline rather
+// than queueing it, so this invariant is exercised directly on the helper
+// instead of by inspecting a queued step message.)
+describe('getNextTraceCarrier (re-enqueue carrier semantics)', () => {
+  it('linked: forwards a usable run-origin carrier unchanged', async () => {
+    // The original carrier flows forward unchanged so the run-origin
+    // identity is preserved for future links.
+    const next = await getNextTraceCarrier('linked', ORIGIN_CARRIER);
+    expect(next).toEqual(ORIGIN_CARRIER);
   });
 
-  it('continuous: serializes the current invocation context on re-enqueues', async () => {
-    vi.stubEnv('WORKFLOW_TRACE_MODE', 'continuous');
-
-    const { queuedMessages } = await driveHandler({
-      runId: 'wrun_trace_continuous_reenqueue',
-      workflowCode: stepWithSleepWorkflow,
-      traceCarrier: ORIGIN_CARRIER,
+  it('linked: replaces an empty carrier with the current invocation context', async () => {
+    const tracer = otelTrace.getTracer('test');
+    let activeTraceId = '';
+    const next = await tracer.startActiveSpan('inv', async (span) => {
+      activeTraceId = span.spanContext().traceId;
+      try {
+        return await getNextTraceCarrier('linked', {});
+      } finally {
+        span.end();
+      }
     });
+    // The useless `{}` is not forwarded — this invocation serializes its
+    // own context, becoming the de-facto run origin for future links.
+    expect(next.traceparent).toContain(activeTraceId);
+    expect(next.traceparent).not.toBe(ORIGIN_CARRIER.traceparent);
+  });
 
-    const stepDispatch = queuedMessages.find((m) => m && 'stepId' in m);
-    expect(stepDispatch).toBeDefined();
-    // Continuous mode chains the trace: the queued carrier stays in the
-    // run-origin trace but points at the current invocation's span, not
-    // the original origin span.
-    expect(stepDispatch.traceCarrier.traceparent).toContain(ORIGIN_TRACE_ID);
-    expect(stepDispatch.traceCarrier.traceparent).not.toBe(
-      ORIGIN_CARRIER.traceparent
-    );
+  it('continuous: serializes the current invocation context, not the origin carrier', async () => {
+    const tracer = otelTrace.getTracer('test');
+    let activeTraceId = '';
+    const next = await tracer.startActiveSpan('inv', async (span) => {
+      activeTraceId = span.spanContext().traceId;
+      try {
+        return await getNextTraceCarrier('continuous', ORIGIN_CARRIER);
+      } finally {
+        span.end();
+      }
+    });
+    // Continuous mode always serializes the current context rather than
+    // forwarding the incoming carrier.
+    expect(next.traceparent).toContain(activeTraceId);
+    expect(next.traceparent).not.toBe(ORIGIN_CARRIER.traceparent);
+    expect(activeTraceId).not.toBe(ORIGIN_TRACE_ID);
   });
 });

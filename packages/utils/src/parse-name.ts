@@ -134,10 +134,24 @@ export function stepDisplayName(name: string): string {
 function shortNameFromSanitized(tag: string, name: string): string | null {
   if (!name.startsWith(`${tag}--`)) return null;
   // The `//` separators became `--`, and within the function-name part any
-  // nested-function `/` became `-`. Function names are JS identifiers (no
-  // dashes), so the innermost name is the last dash-free segment.
-  const functionPart = name.split('--').filter(Boolean).at(-1);
-  const shortName = functionPart?.split('-').filter(Boolean).at(-1);
+  // nested-function `/` became `-`. Function names are mostly dash-free, so
+  // the innermost name is the last dash-free segment. This is best-effort:
+  // `$` is a valid JS identifier character but is also sanitized to `-`, so
+  // a name like `process$Order` displays as `Order` — accepted limitation.
+  const segments = name.split('--').filter(Boolean);
+  const functionPart = segments.at(-1);
+  let shortName = functionPart?.split('-').filter(Boolean).at(-1) ?? '';
+  // Mirror parseName's default-export handling: display default exports as
+  // the module's short name (the module part is the second-to-last `--`
+  // segment; its last `-` segment is the module short name), so the same
+  // workflow doesn't render as e.g. `order` from the raw name but
+  // `default` from the sanitized name.
+  if (['default', '__default'].includes(shortName)) {
+    const moduleShortName = segments.at(-2)?.split('-').filter(Boolean).at(-1);
+    if (moduleShortName && moduleShortName !== tag) {
+      shortName = moduleShortName;
+    }
+  }
   return shortName || null;
 }
 

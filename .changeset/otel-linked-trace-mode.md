@@ -16,5 +16,6 @@ Behavioral changes to telemetry under the new default (set `WORKFLOW_TRACE_MODE=
 - `workflow.execute`/`step.execute` invocation spans (formerly `WORKFLOW_V2`/`STEP`) become parentless roots, which changes parent/child-based queries and service-map edges.
 - Re-enqueued queue messages forward the original run-origin trace carrier unchanged, rather than each invocation's current context.
 - Queries or dashboards matching the old `WORKFLOW_V2 ...`/`STEP ...` span names must switch to the new names.
+- The queue-delivered `workflow.execute` span kind changed from `internal` to `consumer`, matching the queue-delivered `step.execute` span (this applies in both modes).
 
 Existing attributes and baggage keys are unchanged, and everything remains a no-op when no OpenTelemetry SDK is registered.

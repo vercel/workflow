@@ -23,14 +23,89 @@ import * as Attr from './telemetry/semantic-conventions.js';
  */
 export type WorkflowTraceMode = 'linked' | 'continuous';
 
+/** Unrecognized `WORKFLOW_TRACE_MODE` values we already warned about. */
+const warnedUnrecognizedTraceModes = new Set<string>();
+
 /**
  * Resolves the active trace mode from the `WORKFLOW_TRACE_MODE` env var.
  * Defaults to `'linked'`; any value other than `'continuous'` selects it.
+ * Unrecognized non-empty values (e.g. typos like `continous`) emit a
+ * one-time warning so silent fallback to `linked` is at least visible.
  */
 export function getWorkflowTraceMode(): WorkflowTraceMode {
-  return process.env.WORKFLOW_TRACE_MODE === 'continuous'
-    ? 'continuous'
-    : 'linked';
+  const value = process.env.WORKFLOW_TRACE_MODE;
+  if (value === 'continuous') return 'continuous';
+  if (value && value !== 'linked' && !warnedUnrecognizedTraceModes.has(value)) {
+    warnedUnrecognizedTraceModes.add(value);
+    runtimeLogger.warn(
+      `Unrecognized WORKFLOW_TRACE_MODE value "${value}"; expected "linked" or "continuous". Falling back to "linked".`
+    );
+  }
+  return 'linked';
+}
+
+/**
+ * Returns whether a serialized trace carrier is usable, i.e. present and
+ * non-empty. `serializeTraceCarrier()` returns `{}` when no OTEL SDK is
+ * registered or no span is active, and `start()` always attaches the
+ * carrier to the first queue message — so an empty carrier must be treated
+ * the same as an absent one wherever the trace-mode logic branches.
+ */
+export function isUsableTraceCarrier(
+  carrier: Record<string, string> | undefined
+): carrier is Record<string, string> {
+  return carrier !== undefined && Object.keys(carrier).length > 0;
+}
+
+/**
+ * Returns the trace carrier to attach to messages the current invocation
+ * enqueues. In `linked` mode the ORIGINAL run-origin carrier is forwarded
+ * unchanged (when usable) so every future invocation links back to the same
+ * origin; otherwise — `continuous` mode, or no usable incoming carrier —
+ * the current (active) context is serialized, so the trace keeps chaining
+ * (continuous) or the first instrumented invocation becomes the de-facto
+ * origin (linked).
+ */
+export function getNextTraceCarrier(
+  traceMode: WorkflowTraceMode,
+  incomingCarrier: Record<string, string> | undefined
+): Promise<Record<string, string>> {
+  return traceMode === 'linked' && isUsableTraceCarrier(incomingCarrier)
+    ? Promise.resolve(incomingCarrier)
+    : serializeTraceCarrier();
+}
+
+/**
+ * Builds the span links for a queue-delivered invocation span
+ * (`workflow.execute` / `step.execute`):
+ *
+ * - a link to the incoming delivery context (the active span extracted from
+ *   the queue delivery request, i.e. the enqueue site once the queue
+ *   propagates producer context), and
+ * - in `linked` mode, a link to the run-origin context from the message's
+ *   trace carrier (skipped when absent, empty, invalid, or identical to the
+ *   delivery context).
+ */
+export async function buildInvocationSpanLinks(
+  traceMode: WorkflowTraceMode,
+  incomingCarrier: Record<string, string> | undefined
+): Promise<api.Link[] | undefined> {
+  const deliveryLinks = await linkToCurrentContext();
+  if (traceMode !== 'linked') return deliveryLinks;
+  const originLink = await linkToTraceCarrier(
+    isUsableTraceCarrier(incomingCarrier) ? incomingCarrier : undefined
+  );
+  if (
+    !originLink ||
+    deliveryLinks?.some(
+      (link) =>
+        link.context.traceId === originLink.context.traceId &&
+        link.context.spanId === originLink.context.spanId
+    )
+  ) {
+    return deliveryLinks;
+  }
+  return [...(deliveryLinks ?? []), originLink];
 }
 
 /**

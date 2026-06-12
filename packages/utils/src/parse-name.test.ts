@@ -296,6 +296,30 @@ describe('workflowDisplayName / stepDisplayName', () => {
     ).toBe('innerStep');
   });
 
+  test('sanitized default exports map to the module short name', () => {
+    // `workflow//./src/jobs/order//default` after sanitization — mirror
+    // parseName's default-export handling so the same workflow doesn't
+    // display as `order` in workflow.start but `default` in
+    // workflow.execute.
+    expect(workflowDisplayName('workflow----src-jobs-order--default')).toBe(
+      'order'
+    );
+    expect(stepDisplayName('step----src-jobs-order--default')).toBe('order');
+    // `__default` survives sanitization (underscores are preserved).
+    expect(workflowDisplayName('workflow----src-jobs-order--__default')).toBe(
+      'order'
+    );
+  });
+
+  test('sanitized names with `$` degrade to the trailing segment (best effort)', () => {
+    // `$` is a valid JS identifier character but sanitizes to `-`, so
+    // `process$Order` is indistinguishable from a nested function — the
+    // best-effort recovery returns just `Order`. Accepted limitation.
+    expect(stepDisplayName('step----src-jobs-order--process-Order')).toBe(
+      'Order'
+    );
+  });
+
   test('falls back to the input when unrecognized', () => {
     expect(workflowDisplayName('my-plain-name')).toBe('my-plain-name');
     expect(stepDisplayName('workflow--wrong-tag--fn')).toBe(
