@@ -105,8 +105,8 @@ To add encryption support to a custom `World`:
 import type { WorkflowRun, World } from "@workflow/world";
 
 export const getEncryptionKeyForRun: World["getEncryptionKeyForRun"] = async (
-  run,
-  context
+  run: WorkflowRun | string,
+  context?: Record<string, unknown>
 ) => {
   const runId = typeof run === "string" ? run : run.runId;
   const deploymentId =
