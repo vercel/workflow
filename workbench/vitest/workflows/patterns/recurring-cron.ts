@@ -5,9 +5,10 @@
  *   1. The workflow sleeps until each ABSOLUTE due time (nextDueAt), runs
  *      the job, then advances nextDueAt by the interval — anchored on the
  *      schedule, not on "now", so drift never accumulates.
- *   2. After ITERATIONS_PER_RUN ticks, the run starts a successor with
- *      { deploymentId: "latest" } and exits (continue-as-new). The event
- *      log stays bounded and the job adopts new deployments within a day.
+ *   2. After ITERATIONS_PER_RUN ticks, the run starts a successor and
+ *      exits (continue-as-new), so the event log stays bounded. On Vercel,
+ *      add { deploymentId: "latest" } to that start() so the job also
+ *      adopts new deployments within a day.
  *   3. A stop hook (token cron:<name>:<generation-start>) races each sleep
  *      so the schedule can be ended cleanly between ticks.
  *
@@ -54,6 +55,12 @@ export async function recurringCron(name: string, state: CronState) {
   'use workflow';
 
   const stop = stopCron.create({ token: `cron:${name}:${state.iteration}` });
+  // ONE shared awaiter for the stop signal, hoisted out of the loop. Each
+  // `stop.then()` would register a fresh awaiter that consumes one payload
+  // in arrival order — racing the hook directly inside the loop leaks an
+  // awaiter per tick, and a stale one from an earlier iteration would
+  // swallow the stop message.
+  const stopRequested = stop.then(() => true as const);
   let current = state;
 
   for (let i = 0; i < ITERATIONS_PER_RUN; i++) {
@@ -61,13 +68,13 @@ export async function recurringCron(name: string, state: CronState) {
     // long or the run was delayed, the next sleep shrinks to compensate.
     const stopped = await Promise.race([
       sleep(new Date(current.nextDueAt)).then(() => false as const),
-      stop.then(() => true as const),
+      stopRequested,
     ]);
     if (stopped) {
       return { name, stoppedAt: current.iteration };
     }
 
-    await runJob(name, current.iteration);
+    await runJob(name, current.iteration, current.nextDueAt);
 
     current = {
       iteration: current.iteration + 1,
@@ -77,22 +84,44 @@ export async function recurringCron(name: string, state: CronState) {
     };
   }
 
-  // Continue-as-new: hand remaining iterations to a fresh run on the
-  // latest deployment. State is the only thing that crosses over.
+  // Continue-as-new: hand the schedule to a fresh run. State is the only
+  // thing that crosses over.
   await continueCron(name, current);
   return { name, continuedAt: current.iteration };
 }
 
-// THE JOB — replace this step body with your real recurring work.
-async function runJob(name: string, iteration: number): Promise<void> {
+// In-memory record of ticks so the demo runs out of the box. (`dueAt` is
+// the drift-corrected absolute time the tick was scheduled for.)
+export const cronTicks = new Map<
+  string,
+  { iteration: number; dueAt: number }[]
+>();
+
+// THE JOB — replace this step body with your real recurring work, e.g.:
+//
+//   await fetch('https://api.your-domain.com/cron-job', {
+//     method: 'POST',
+//     body: JSON.stringify({ name, iteration }),
+//   });
+async function runJob(
+  name: string,
+  iteration: number,
+  dueAt: number
+): Promise<void> {
   'use step';
-  await fetch('https://api.example.com/cron-job', {
-    method: 'POST',
-    body: JSON.stringify({ name, iteration }),
-  });
+  const ticks = cronTicks.get(name) ?? [];
+  // Steps run at-least-once — skip if a transparent retry of this step
+  // already recorded the tick.
+  if (!ticks.some((tick) => tick.iteration === iteration)) {
+    ticks.push({ iteration, dueAt });
+  }
+  cronTicks.set(name, ticks);
 }
 
+// On Vercel, pass { deploymentId: 'latest' } as a third argument to
+// start() so each generation runs on the newest deployment. (Local dev
+// can't resolve 'latest'.)
 async function continueCron(name: string, state: CronState): Promise<void> {
   'use step';
-  await start(recurringCron, [name, state], { deploymentId: 'latest' });
+  await start(recurringCron, [name, state]);
 }

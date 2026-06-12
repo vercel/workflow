@@ -24,12 +24,12 @@
  *   - Replace processData / fetchSlow / sendApprovalRequest with your steps.
  *   - Tune the sleep duration to match your SLA or UX requirements.
  *   - NOTE: the LOSER of Promise.race keeps running — the workflow ignores
- *     its result but side effects still happen. Use the Distributed Abort
- *     Controller pattern if you need hard cross-process cancellation.
+ *     its result but side effects still happen. Use the Kill Switch pattern
+ *     if you need hard cross-process cancellation.
  *
  * DOCS: https://workflow-sdk.dev/patterns/timeouts
  */
-import { sleep, createWebhook } from 'workflow';
+import { createWebhook, sleep } from 'workflow';
 
 // Unique sentinel — can't collide with real return values.
 const TIMEOUT = Symbol('timeout');
@@ -86,23 +86,40 @@ async function processData(data: string): Promise<string> {
   'use step';
   // Replace with real work. The LOSER of Promise.race keeps running —
   // the workflow ignores its result, but side effects still happen.
-  // Use Distributed Abort Controller for hard cross-process cancellation.
+  // Use the Kill Switch pattern for hard cross-process cancellation.
+  // DEMO: inputs starting with "slow:" take 5 wall-clock seconds so you can
+  // watch the timeout win the race.
+  if (data.startsWith('slow:')) {
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
   return data.toUpperCase();
 }
 
 async function fetchSlow(key: string): Promise<string> {
   'use step';
-  const res = await fetch(`https://api.example.com/slow/${key}`);
-  return res.text();
+  // Real: const res = await fetch(`https://api.your-service.com/slow/${key}`);
+  //       return res.text();
+  // DEMO: keys starting with "slow:" take 5 wall-clock seconds so the
+  // fallback path is observable.
+  if (key.startsWith('slow:')) {
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
+  return `fresh_${key}`;
 }
+
+// DEMO OUTBOX — records the approval request instead of calling a real
+// service. (Exported so you can inspect it from a console or test.)
+export const demoApprovalOutbox: Array<{
+  requestId: string;
+  webhookUrl: string;
+}> = [];
 
 async function sendApprovalRequest(
   requestId: string,
   webhookUrl: string
 ): Promise<void> {
   'use step';
-  await fetch('https://api.example.com/approvals', {
-    method: 'POST',
-    body: JSON.stringify({ requestId, webhookUrl }),
-  });
+  // Real: POST { requestId, webhookUrl } to your approvals service / email
+  // the webhookUrl to the approver.
+  demoApprovalOutbox.push({ requestId, webhookUrl });
 }

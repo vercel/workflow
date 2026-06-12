@@ -28,7 +28,7 @@
  *
  * DOCS: https://workflow-sdk.dev/patterns/batch-aggregator
  */
-import { defineHook, sleep } from 'workflow';
+import { defineHook, getStepMetadata, sleep } from 'workflow';
 import { start } from 'workflow/api';
 
 type AggregatorEvent<T = unknown> =
@@ -127,16 +127,43 @@ async function pingAggregator(key: string, timerId: number): Promise<void> {
 
 // THE FLUSH — replace this step body with your real batch operation:
 // bulk-insert into a warehouse, send one digest email, call a batch API.
+// For example:
+//
+//   await fetch('https://api.example.com/batch', {
+//     method: 'POST',
+//     body: JSON.stringify({ key, reason, items }),
+//   });
+//
+// This demo records flushes in memory so the pattern runs out of the box.
+// Step execution is at-least-once, so the demo dedupes by stepId — your
+// real flush should be idempotent too.
+const demoFlushes: Array<{
+  key: string;
+  reason: 'size' | 'deadline';
+  items: unknown[];
+}> = [];
+const flushedSteps = new Set<string>();
+
 async function flushBatch(
   key: string,
   items: unknown[],
   reason: 'size' | 'deadline'
 ): Promise<void> {
   'use step';
-  await fetch('https://api.example.com/batch', {
-    method: 'POST',
-    body: JSON.stringify({ key, reason, items }),
-  });
+  const { stepId } = getStepMetadata();
+  if (flushedSteps.has(stepId)) return;
+  flushedSteps.add(stepId);
+  demoFlushes.push({ key, reason, items: [...items] });
+  console.log(
+    `[aggregator] flushed ${items.length} item(s) for "${key}" (${reason})`
+  );
+}
+
+/** Read the demo flushes for `key`. Goes away with the demo step body. */
+export function readFlushes(
+  key: string
+): Array<{ key: string; reason: 'size' | 'deadline'; items: unknown[] }> {
+  return demoFlushes.filter((f) => f.key === key);
 }
 
 /**

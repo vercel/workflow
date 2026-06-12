@@ -103,9 +103,19 @@ hooks. `getHookByToken` provides create-or-reconnect.
    (`shadcn add @workflow/semaphore`-style).
 4. Consider a `coordination` category if the `advanced` group keeps
    growing.
-5. E2E-test the component patterns in a workbench app (the snippets are
-   hand-verified against hook semantics in `packages/core`, but nothing
-   executes them in CI).
+5. ~~E2E-test the component patterns~~ **Done — see TESTING_PLAN.md.**
+   Canonical sources live in `workbench/vitest/workflows/patterns/` with 74
+   behavioral tests; docs snippets are generated from them
+   (`sync-pattern-source`); every /r payload is validated, typechecked, and
+   `next build`-verified in a fixture app; the shadcn CLI install path runs
+   in CI per PR and nightly against production. Writing the tests found and
+   fixed three shipped bugs: a recurring-cron stop-hook race (stale channel
+   awaiters swallowed the stop payload), `deploymentId: "latest"` failing on
+   non-Vercel worlds in two patterns, and an SWC transform issue stripping
+   module-level consts referenced only by the kill-switch class (also
+   latent in the old cookbook copy — possible upstream swc-plugin issue;
+   plus a transient world-local `WorkflowRunNotFoundError` worth upstream
+   attention).
 6. **Idempotency residuals** (analysis in
    [workflow#2376](https://github.com/vercel/workflow/issues/2376)):
    coordinators now claim tokens with `getConflict()` (clean `{ dedupedTo }`

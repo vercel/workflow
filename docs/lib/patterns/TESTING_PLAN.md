@@ -1,5 +1,8 @@
 # Patterns Testing Plan
 
+**Status: implemented in this PR** (phases A–F; Phase E landed first as the
+foundation). Kept for the rationale and as the map of the moving parts.
+
 E2E pipeline + GitHub Actions to guarantee (a) every pattern's code actually
 works against the current SDK, and (b) every installable pattern is
 installable via the shadcn CLI and the result compiles and runs.

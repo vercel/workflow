@@ -30,7 +30,7 @@
  * DOCS: https://workflow-sdk.dev/patterns/singleton-run
  */
 import { defineHook } from 'workflow';
-import { getHookByToken, start } from 'workflow/api';
+import { getHookByToken } from 'workflow/api';
 
 // Liveness marker + mailbox for each singleton. Creating it (with the
 // deterministic token below) is what makes a run discoverable by key.

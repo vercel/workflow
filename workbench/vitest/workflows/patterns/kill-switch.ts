@@ -30,10 +30,7 @@
  * DOCS: https://workflow-sdk.dev/patterns/kill-switch
  */
 import { defineHook, getWritable, sleep } from 'workflow';
-import { start, getRun, getHookByToken } from 'workflow/api';
-
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-const DEFAULT_GRACE_MS = 60 * 60 * 1000; // 1h grace for late subscribers
+import { getHookByToken, getRun, start } from 'workflow/api';
 
 export const abortHook = defineHook<{ reason?: string }>();
 
@@ -120,7 +117,10 @@ export class KillSwitch {
     id: string,
     options: { ttlMs?: number; graceMs?: number } = {}
   ): Promise<KillSwitch> {
-    const { ttlMs = DEFAULT_TTL_MS, graceMs = DEFAULT_GRACE_MS } = options;
+    const {
+      ttlMs = 24 * 60 * 60 * 1000, // 24h
+      graceMs = 60 * 60 * 1000, // 1h grace for late subscribers
+    } = options;
     const token = getAbortToken(id);
 
     // Reconnect to an existing controller if one is already running.

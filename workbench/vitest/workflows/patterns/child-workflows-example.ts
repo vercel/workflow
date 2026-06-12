@@ -20,8 +20,9 @@
  *   - To retry a failed child, call startAndWait again with a fresh key
  *     (e.g. documentId + ":" + attempt) so the new hook token doesn't
  *     collide with the old one.
- *   - { deploymentId: "latest" } on start() lets children pick up future
- *     code deployments automatically during long-running parent runs.
+ *   - On Vercel deployments, add { deploymentId: "latest" } to start() so
+ *     children pick up future code deployments automatically during
+ *     long-running parent runs. (Local dev can't resolve "latest".)
  *
  * DOCS: https://workflow-sdk.dev/patterns/child-workflows
  */
@@ -54,16 +55,14 @@ export async function processDocumentWithCompletion(
 }
 
 // start() must be called from a step in v4. (In v5 it can also be called
-// directly from a workflow function.) deploymentId: "latest" makes children
-// pick up future deployments.
+// directly from a workflow function.) On Vercel, pass { deploymentId:
+// "latest" } as a third argument so children run on the newest deployment.
 async function spawnProcessDocument(
   documentId: string,
   completionTokenArg: string
 ): Promise<void> {
   'use step';
-  await start(processDocumentWithCompletion, [documentId, completionTokenArg], {
-    deploymentId: 'latest',
-  });
+  await start(processDocumentWithCompletion, [documentId, completionTokenArg]);
 }
 
 // PARENT — orchestrates many children and waits for all of them.

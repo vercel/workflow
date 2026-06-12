@@ -25,9 +25,9 @@
  */
 import {
   createWebhook,
-  sleep,
   FatalError,
   type RequestWithResponse,
+  sleep,
 } from 'workflow';
 
 export async function asyncVerification(documentId: string) {
@@ -50,15 +50,24 @@ export async function asyncVerification(documentId: string) {
   return { documentId, ...result };
 }
 
+// DEMO OUTBOX — records the submission instead of calling a real vendor.
+// (Exported so you can inspect it from a console or test.)
+export const demoVendorOutbox: Array<{
+  documentId: string;
+  callbackUrl: string;
+}> = [];
+
 async function submitToVendor(
   documentId: string,
   callbackUrl: string
 ): Promise<void> {
   'use step';
-  await fetch('https://vendor.example.com/verify', {
-    method: 'POST',
-    body: JSON.stringify({ documentId, callbackUrl }),
-  });
+  // Real: POST the callback URL to your vendor's async API:
+  //   await fetch("https://vendor.your-kyc.com/verify", {
+  //     method: "POST",
+  //     body: JSON.stringify({ documentId, callbackUrl }),
+  //   });
+  demoVendorOutbox.push({ documentId, callbackUrl });
 }
 
 async function processCallback(

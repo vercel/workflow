@@ -82,13 +82,19 @@ export async function batchImport(records: ImportRecord[], batchSize = 10) {
 // Throw an Error (or RetryableError) to trigger a retry; FatalError to skip.
 async function processRecord(record: ImportRecord): Promise<string> {
   'use step';
-  const res = await fetch('https://api.example.com/contacts', {
-    method: 'POST',
-    body: JSON.stringify(record),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to import ${record.email} (${res.status})`);
+  // A real implementation looks like:
+  //   const res = await fetch("https://api.your-crm.com/contacts", {
+  //     method: "POST",
+  //     body: JSON.stringify(record),
+  //   });
+  //   if (!res.ok) throw new Error(`Failed to import ${record.email} (${res.status})`);
+  //   const { id } = await res.json();
+  //   return id;
+
+  // DEMO: validation failure is permanent → FatalError skips the retries
+  // and surfaces immediately in the failures array.
+  if (!record.email.includes('@')) {
+    throw new FatalError(`Invalid email: ${record.email}`);
   }
-  const { id } = await res.json();
-  return id;
+  return `contact_${record.email}`;
 }

@@ -30,7 +30,7 @@
  *
  * DOCS: https://workflow-sdk.dev/patterns/debounce
  */
-import { defineHook, sleep } from 'workflow';
+import { defineHook, getStepMetadata, sleep } from 'workflow';
 import { start } from 'workflow/api';
 
 type DebounceEvent<T = unknown> =
@@ -111,13 +111,33 @@ async function pingDebounce(key: string, timerId: number): Promise<void> {
 
 // THE ACTION — replace this step body with what should happen once the
 // burst goes quiet: rebuild a search index, send one summary notification,
-// sync to a third party, etc.
+// sync to a third party, etc. For example:
+//
+//   await fetch('https://api.example.com/debounced-action', {
+//     method: 'POST',
+//     body: JSON.stringify({ key, payload }),
+//   });
+//
+// This demo records firings in memory so the pattern runs out of the box.
+// Step execution is at-least-once, so the demo dedupes by stepId — your
+// real action should be idempotent too (see CAVEATS above).
+const firedActions: Array<{ key: string; payload: unknown }> = [];
+const firedSteps = new Set<string>();
+
 async function onDebounceFire(key: string, payload: unknown): Promise<void> {
   'use step';
-  await fetch('https://api.example.com/debounced-action', {
-    method: 'POST',
-    body: JSON.stringify({ key, payload }),
-  });
+  const { stepId } = getStepMetadata();
+  if (firedSteps.has(stepId)) return;
+  firedSteps.add(stepId);
+  firedActions.push({ key, payload });
+  console.log(`[debounce] fired for "${key}" with the latest payload`);
+}
+
+/** Read the demo firings for `key`. Goes away with the demo step body. */
+export function readFired(
+  key: string
+): Array<{ key: string; payload: unknown }> {
+  return firedActions.filter((f) => f.key === key);
 }
 
 /**
