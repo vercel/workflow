@@ -17,7 +17,7 @@ import { WORKFLOW_RUN_CLASS } from '../symbols.js';
 
 /**
  * Constructs a `Run` handle for the run that owns a conflicting hook
- * token, for resolution through `hook.getConflict`.
+ * token, for resolution through `hook.getConflict()`.
  *
  * The instance is created from the VM bundle's `Run` class (exposed on
  * the VM's globalThis by the workflow-mode `create-hook` module), whose
@@ -73,7 +73,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     // Queue of promises that resolve once hook registration is confirmed
     // (with `null`) or a token conflict is detected (with the conflicting
-    // `Run`). These back the `hook.getConflict` getter.
+    // `Run`). These back the `hook.getConflict()` getter.
     const getConflictPromises: PromiseWithResolvers<Run<unknown> | null>[] = [];
 
     let eventLogEmpty = false;
@@ -445,7 +445,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const hook: Hook<T> = {
       token,
 
-      get getConflict(): Promise<Run<unknown> | null> {
+      getConflict(): Promise<Run<unknown> | null> {
         return createGetConflictPromise();
       },
 

@@ -30,7 +30,7 @@ function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
 }
 
 describe('handleSuspension', () => {
-  it('marks hook.getConflict-awaited creations without converting them into wait timeouts', async () => {
+  it('marks hook.getConflict()-awaited creations without converting them into wait timeouts', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
         eventType: 'hook_created',

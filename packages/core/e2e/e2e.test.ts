@@ -1761,7 +1761,7 @@ describe('e2e', () => {
     }
   );
 
-  test('hookGetConflictWorkflow - awaiting hook.getConflict registers hook without payload', async () => {
+  test('hookGetConflictWorkflow - awaiting hook.getConflict() registers hook without payload', async () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);
 
@@ -1785,11 +1785,11 @@ describe('e2e', () => {
 
     expect(
       hookCreated,
-      'awaiting hook.getConflict should suspend and create the hook'
+      'awaiting hook.getConflict() should suspend and create the hook'
     ).toBeDefined();
     expect(
       hookReceived,
-      'hook.getConflict should not require or consume hook payload data'
+      'hook.getConflict() should not require or consume hook payload data'
     ).toBeUndefined();
   });
 
@@ -1803,7 +1803,7 @@ describe('e2e', () => {
       hookGetConflictTestData: 'parallel_step_completed_with_registration',
     },
   ])(
-    '$workflow - hook.getConflict does not block step execution',
+    '$workflow - hook.getConflict() does not block step execution',
     { timeout: 60_000 },
     async ({ workflow, hookGetConflictTestData }) => {
       const token = Math.random().toString(36).slice(2);
@@ -1834,7 +1834,7 @@ describe('e2e', () => {
   );
 
   test(
-    'hookGetConflictThenStepParallelWorkflow - hook.getConflict continuation step runs alongside other steps',
+    'hookGetConflictThenStepParallelWorkflow - hook.getConflict() continuation step runs alongside other steps',
     { timeout: 90_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
@@ -1861,7 +1861,7 @@ describe('e2e', () => {
       expect(stepADuration).toBeGreaterThanOrEqual(9_000);
       expect(
         stepBResult.startedAt,
-        'stepB should start before stepA finishes, proving hook.getConflict can continue independently of other steps'
+        'stepB should start before stepA finishes, proving hook.getConflict() can continue independently of other steps'
       ).toBeLessThan(stepAResult.endedAt);
       expect(
         stepStartDelta,
@@ -1871,7 +1871,7 @@ describe('e2e', () => {
   );
 
   test(
-    'hookGetConflictWorkflow - hook.getConflict resolves with the conflicting run when token is already registered',
+    'hookGetConflictWorkflow - hook.getConflict() resolves with the conflicting run when token is already registered',
     { timeout: 60_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
@@ -1889,7 +1889,7 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // The conflicting run detects the conflict via `hook.getConflict`
+      // The conflicting run detects the conflict via `hook.getConflict()`
       // and completes successfully instead of failing. The resolved Run
       // identifies the active owner and exposes durable step-backed
       // accessors like `status`.

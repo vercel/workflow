@@ -87,7 +87,7 @@ The key points:
 
 ### Checking for Token Conflicts
 
-Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict` for that:
+Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict()` for that:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -101,7 +101,7 @@ export async function orderWorkflow(orderId: string) {
     token: `order:${orderId}`
   });
 
-  const conflict = await hook.getConflict; // [!code highlight]
+  const conflict = await hook.getConflict(); // [!code highlight]
   if (conflict) { // [!code highlight]
     // Another active run already owns this token.
     return { dedupedTo: conflict.runId };
@@ -112,7 +112,7 @@ export async function orderWorkflow(orderId: string) {
 }
 ```
 
-Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with a `Run` handle for the run that owns the token if another active hook already claimed it (see [`HookConflictError`](/docs/errors/hook-conflict)). The conflicting run's accessors are durable steps, so the workflow can inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` — see [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies.
+Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with a `Run` handle for the run that owns the token if another active hook already claimed it (see [`HookConflictError`](/docs/errors/hook-conflict)). The conflicting run's accessors are durable steps, so the workflow can inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` — see [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies.
 
 ### Custom Tokens for Deterministic Hooks
 

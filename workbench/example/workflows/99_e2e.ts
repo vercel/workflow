@@ -618,11 +618,11 @@ export async function hookGetConflictWorkflow(
     metadata: { customData },
   });
 
-  // Awaiting `getConflict` suspends the workflow to commit the hook
+  // Awaiting `getConflict()` suspends the workflow to commit the hook
   // registration without waiting for payload data. It resolves with the
   // conflicting `Run` when another active hook owns the token, or `null`
   // once this hook is registered.
-  const conflict = await hook.getConflict;
+  const conflict = await hook.getConflict();
 
   if (conflict) {
     // The conflicting Run's methods are durable step proxies, so the
@@ -678,7 +678,7 @@ export async function hookGetConflictWithPriorStepWorkflow(
 
   const stepPromise = hookGetConflictStep(customData);
 
-  const conflict = await hook.getConflict;
+  const conflict = await hook.getConflict();
 
   return {
     token,
@@ -702,7 +702,7 @@ export async function hookGetConflictWithParallelStepWorkflow(
 
   const [stepResult, conflict] = await Promise.all([
     hookGetConflictStep(customData),
-    hook.getConflict,
+    hook.getConflict(),
   ]);
 
   return {
@@ -725,9 +725,9 @@ export async function hookGetConflictThenStepParallelWorkflow(
     metadata: { customData },
   });
 
-  const stepBPromise = hook.getConflict.then(
-    async () => await hookGetConflictTimedStep('B', 100)
-  );
+  const stepBPromise = hook
+    .getConflict()
+    .then(async () => await hookGetConflictTimedStep('B', 100));
   const stepAResult = await hookGetConflictTimedStep('A', 10_000);
   const stepBResult = await stepBPromise;
 
