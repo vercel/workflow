@@ -10,6 +10,8 @@
     "postinstall": "fumadocs-mdx",
     "lint": "biome check",
     "lint:links": "bun ./scripts/lint.ts",
+    "sync-pattern-source": "bun ./scripts/sync-pattern-source.ts",
+    "validate-registry": "bun ./scripts/validate-registry.ts",
     "lint:rendered-links": "bun ./scripts/lint-rendered-links.ts",
     "format": "biome format --write",
     "test:smoke": "node ./scripts/check-docs-smoke.mjs",

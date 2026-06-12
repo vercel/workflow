@@ -15,11 +15,7 @@ import {
   aiSdkWorkflowSource,
   aiSdkWorkflowInstallSource,
 } from './snippets/ai-sdk';
-import {
-  batchingStartRouteSource,
-  batchingWorkflowSource,
-  batchingWorkflowInstallSource,
-} from './snippets/batching';
+import { batchingStartRouteSource } from './snippets/batching';
 import {
   chatSdkBotSource,
   chatSdkHandlersSource,
@@ -27,65 +23,21 @@ import {
   chatSdkWorkflowSource,
   chatSdkWorkflowInstallSource,
 } from './snippets/chat-sdk';
-import {
-  childWorkflowsStartRouteSource,
-  childWorkflowsHelpersSource,
-  childWorkflowsHelpersInstallSource,
-  childWorkflowsExampleSource,
-  childWorkflowsExampleInstallSource,
-} from './snippets/child-workflows';
+import { childWorkflowsStartRouteSource } from './snippets/child-workflows';
 import {
   killSwitchButtonSource,
-  killSwitchLibSource,
   killSwitchRouteSource,
   killSwitchUsageSource,
-  killSwitchLibInstallSource,
 } from './snippets/kill-switch';
-import {
-  semaphoreWorkflowSource,
-  semaphoreWorkflowInstallSource,
-  semaphoreUsageSource,
-} from './snippets/semaphore';
-import {
-  rateLimiterWorkflowSource,
-  rateLimiterWorkflowInstallSource,
-  rateLimiterUsageSource,
-} from './snippets/rate-limiter';
-import {
-  circuitBreakerWorkflowSource,
-  circuitBreakerWorkflowInstallSource,
-  circuitBreakerUsageSource,
-} from './snippets/circuit-breaker';
-import {
-  debounceWorkflowSource,
-  debounceWorkflowInstallSource,
-  debounceUsageSource,
-} from './snippets/debounce';
-import {
-  batchAggregatorWorkflowSource,
-  batchAggregatorWorkflowInstallSource,
-  batchAggregatorUsageSource,
-} from './snippets/batch-aggregator';
-import {
-  singletonRunWorkflowSource,
-  singletonRunWorkflowInstallSource,
-  singletonRunUsageSource,
-} from './snippets/singleton-run';
-import {
-  pollingWorkflowSource,
-  pollingWorkflowInstallSource,
-  pollingStartRouteSource,
-} from './snippets/polling';
-import {
-  deadLetterQueueWorkflowSource,
-  deadLetterQueueWorkflowInstallSource,
-  deadLetterQueueStartRouteSource,
-} from './snippets/dead-letter-queue';
-import {
-  recurringCronWorkflowSource,
-  recurringCronWorkflowInstallSource,
-  recurringCronStartRouteSource,
-} from './snippets/recurring-cron';
+import { semaphoreUsageSource } from './snippets/semaphore';
+import { rateLimiterUsageSource } from './snippets/rate-limiter';
+import { circuitBreakerUsageSource } from './snippets/circuit-breaker';
+import { debounceUsageSource } from './snippets/debounce';
+import { batchAggregatorUsageSource } from './snippets/batch-aggregator';
+import { singletonRunUsageSource } from './snippets/singleton-run';
+import { pollingStartRouteSource } from './snippets/polling';
+import { deadLetterQueueStartRouteSource } from './snippets/dead-letter-queue';
+import { recurringCronStartRouteSource } from './snippets/recurring-cron';
 import {
   stripeWorkflowSource,
   stripeWorkflowInstallSource,
@@ -110,11 +62,7 @@ import {
   humanInTheLoopWorkflowSource,
   humanInTheLoopWorkflowInstallSource,
 } from './snippets/human-in-the-loop';
-import {
-  idempotencyStartRouteSource,
-  idempotencyWorkflowSource,
-  idempotencyWorkflowInstallSource,
-} from './snippets/idempotency';
+import { idempotencyStartRouteSource } from './snippets/idempotency';
 import {
   handlingRateLimitsStartRouteSource,
   handlingRateLimitsWorkflowSource,
@@ -127,11 +75,7 @@ import {
   resendWorkflowSource,
   resendWorkflowInstallSource,
 } from './snippets/resend';
-import {
-  sagaStartRouteSource,
-  sagaWorkflowSource,
-  sagaWorkflowInstallSource,
-} from './snippets/saga';
+import { sagaStartRouteSource } from './snippets/saga';
 import {
   sandboxClientSource,
   sandboxCommandRouteSource,
@@ -144,26 +88,14 @@ import {
 import {
   schedulingCancelRouteSource,
   schedulingStartRouteSource,
-  schedulingWorkflowSource,
-  schedulingWorkflowInstallSource,
 } from './snippets/scheduling';
 import {
   sequentialAndParallelStartRouteSource,
   sequentialAndParallelWorkflowSource,
   sequentialAndParallelWorkflowInstallSource,
 } from './snippets/sequential-and-parallel';
-import {
-  timeoutsStartRouteSource,
-  timeoutsWorkflowSource,
-  timeoutsWorkflowInstallSource,
-} from './snippets/timeouts';
-import {
-  webhooksStartRouteSource,
-  webhooksEventListenerSource,
-  webhooksRequestReplySource,
-  webhooksEventListenerInstallSource,
-  webhooksRequestReplyInstallSource,
-} from './snippets/webhooks';
+import { timeoutsStartRouteSource } from './snippets/timeouts';
+import { webhooksStartRouteSource } from './snippets/webhooks';
 import {
   workflowCompositionStartRouteSource,
   workflowCompositionWorkflowSource,
@@ -182,6 +114,46 @@ import type {
   RegistryItem,
   RegistryPatternType,
 } from './types';
+import {
+  batchAggregatorDisplaySource,
+  batchAggregatorFullSource,
+  batchingDisplaySource,
+  batchingFullSource,
+  childWorkflowsDisplaySource,
+  childWorkflowsExampleDisplaySource,
+  childWorkflowsExampleFullSource,
+  childWorkflowsFullSource,
+  circuitBreakerDisplaySource,
+  circuitBreakerFullSource,
+  deadLetterQueueDisplaySource,
+  deadLetterQueueFullSource,
+  debounceDisplaySource,
+  debounceFullSource,
+  idempotencyDisplaySource,
+  idempotencyFullSource,
+  killSwitchDisplaySource,
+  killSwitchFullSource,
+  pollingDisplaySource,
+  pollingFullSource,
+  rateLimiterDisplaySource,
+  rateLimiterFullSource,
+  recurringCronDisplaySource,
+  recurringCronFullSource,
+  sagaDisplaySource,
+  sagaFullSource,
+  schedulingDisplaySource,
+  schedulingFullSource,
+  semaphoreDisplaySource,
+  semaphoreFullSource,
+  singletonRunDisplaySource,
+  singletonRunFullSource,
+  timeoutsDisplaySource,
+  timeoutsFullSource,
+  webhooksEventListenerDisplaySource,
+  webhooksEventListenerFullSource,
+  webhooksRequestReplyDisplaySource,
+  webhooksRequestReplyFullSource,
+} from './generated';
 
 /**
  * Public registry of installable Workflow patterns.
@@ -1159,8 +1131,8 @@ export const registryItems: RegistryItem[] = [
         caption: 'workflows/batching-workflow.ts',
         description:
           'The workflow splits records into chunks, processes each chunk concurrently, tracks results per batch, and returns a final tally. Each record runs in its own `"use step"` function with full Node.js access and automatic retries.',
-        code: batchingWorkflowSource,
-        installCode: batchingWorkflowInstallSource,
+        code: batchingDisplaySource,
+        installCode: batchingFullSource,
       },
       {
         label: 'Start route',
@@ -1241,8 +1213,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Workflow',
         lang: 'tsx',
         caption: 'workflows/idempotency-workflow.ts',
-        code: idempotencyWorkflowSource,
-        installCode: idempotencyWorkflowInstallSource,
+        code: idempotencyDisplaySource,
+        installCode: idempotencyFullSource,
       },
       {
         label: 'Start route',
@@ -1401,8 +1373,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Workflow',
         lang: 'tsx',
         caption: 'workflows/saga-workflow.ts',
-        code: sagaWorkflowSource,
-        installCode: sagaWorkflowInstallSource,
+        code: sagaDisplaySource,
+        installCode: sagaFullSource,
       },
       {
         label: 'Start route',
@@ -1491,8 +1463,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Workflow',
         lang: 'tsx',
         caption: 'workflows/scheduling-workflow.ts',
-        code: schedulingWorkflowSource,
-        installCode: schedulingWorkflowInstallSource,
+        code: schedulingDisplaySource,
+        installCode: schedulingFullSource,
       },
       {
         label: 'Start route',
@@ -1680,8 +1652,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Workflow',
         lang: 'tsx',
         caption: 'workflows/timeouts-workflow.ts',
-        code: timeoutsWorkflowSource,
-        installCode: timeoutsWorkflowInstallSource,
+        code: timeoutsDisplaySource,
+        installCode: timeoutsFullSource,
       },
       {
         label: 'Start route',
@@ -1777,8 +1749,8 @@ export const registryItems: RegistryItem[] = [
         caption: 'workflows/webhooks-event-listener-workflow.ts',
         description:
           'Long-running listener that processes multiple requests from one URL and exits on a terminal event — Stripe-style payment ledger.',
-        code: webhooksEventListenerSource,
-        installCode: webhooksEventListenerInstallSource,
+        code: webhooksEventListenerDisplaySource,
+        installCode: webhooksEventListenerFullSource,
       },
       {
         label: 'Request-reply',
@@ -1786,8 +1758,8 @@ export const registryItems: RegistryItem[] = [
         caption: 'workflows/webhooks-request-reply-workflow.ts',
         description:
           'Submit a request to an external vendor with your webhook URL as the callback, then race the response against a 30-second deadline.',
-        code: webhooksRequestReplySource,
-        installCode: webhooksRequestReplyInstallSource,
+        code: webhooksRequestReplyDisplaySource,
+        installCode: webhooksRequestReplyFullSource,
       },
       {
         label: 'Start route',
@@ -1976,8 +1948,8 @@ export const registryItems: RegistryItem[] = [
         caption: 'workflows/child-workflows.ts',
         description:
           'The generic machinery — import `startAndWait()` and `withChildCompletionHook()` from here for any parent/child pair.',
-        code: childWorkflowsHelpersSource,
-        installCode: childWorkflowsHelpersInstallSource,
+        code: childWorkflowsDisplaySource,
+        installCode: childWorkflowsFullSource,
       },
       {
         label: 'Example',
@@ -1985,8 +1957,8 @@ export const registryItems: RegistryItem[] = [
         caption: 'workflows/child-workflows-example.ts',
         description:
           'A worked example — document batch processing wired up with the component.',
-        code: childWorkflowsExampleSource,
-        installCode: childWorkflowsExampleInstallSource,
+        code: childWorkflowsExampleDisplaySource,
+        installCode: childWorkflowsExampleFullSource,
       },
       {
         label: 'Start route',
@@ -2084,8 +2056,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Lib',
         lang: 'tsx',
         caption: 'workflows/kill-switch-workflow.ts',
-        code: killSwitchLibSource,
-        installCode: killSwitchLibInstallSource,
+        code: killSwitchDisplaySource,
+        installCode: killSwitchFullSource,
       },
       {
         label: 'Abort route',
@@ -2178,8 +2150,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Component',
         lang: 'tsx',
         caption: 'workflows/semaphore-workflow.ts',
-        code: semaphoreWorkflowSource,
-        installCode: semaphoreWorkflowInstallSource,
+        code: semaphoreDisplaySource,
+        installCode: semaphoreFullSource,
       },
       {
         label: 'Usage',
@@ -2257,8 +2229,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Component',
         lang: 'tsx',
         caption: 'workflows/rate-limiter-workflow.ts',
-        code: rateLimiterWorkflowSource,
-        installCode: rateLimiterWorkflowInstallSource,
+        code: rateLimiterDisplaySource,
+        installCode: rateLimiterFullSource,
       },
       {
         label: 'Usage',
@@ -2335,8 +2307,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Component',
         lang: 'tsx',
         caption: 'workflows/circuit-breaker-workflow.ts',
-        code: circuitBreakerWorkflowSource,
-        installCode: circuitBreakerWorkflowInstallSource,
+        code: circuitBreakerDisplaySource,
+        installCode: circuitBreakerFullSource,
       },
       {
         label: 'Usage',
@@ -2418,8 +2390,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Component',
         lang: 'tsx',
         caption: 'workflows/debounce-workflow.ts',
-        code: debounceWorkflowSource,
-        installCode: debounceWorkflowInstallSource,
+        code: debounceDisplaySource,
+        installCode: debounceFullSource,
       },
       {
         label: 'Usage',
@@ -2493,8 +2465,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Component',
         lang: 'tsx',
         caption: 'workflows/batch-aggregator-workflow.ts',
-        code: batchAggregatorWorkflowSource,
-        installCode: batchAggregatorWorkflowInstallSource,
+        code: batchAggregatorDisplaySource,
+        installCode: batchAggregatorFullSource,
       },
       {
         label: 'Usage',
@@ -2570,8 +2542,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Component',
         lang: 'tsx',
         caption: 'workflows/singleton-run-workflow.ts',
-        code: singletonRunWorkflowSource,
-        installCode: singletonRunWorkflowInstallSource,
+        code: singletonRunDisplaySource,
+        installCode: singletonRunFullSource,
       },
       {
         label: 'Usage',
@@ -2719,8 +2691,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Workflow',
         lang: 'tsx',
         caption: 'workflows/polling-workflow.ts',
-        code: pollingWorkflowSource,
-        installCode: pollingWorkflowInstallSource,
+        code: pollingDisplaySource,
+        installCode: pollingFullSource,
       },
       {
         label: 'Start route',
@@ -2792,8 +2764,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Workflow',
         lang: 'tsx',
         caption: 'workflows/dead-letter-queue-workflow.ts',
-        code: deadLetterQueueWorkflowSource,
-        installCode: deadLetterQueueWorkflowInstallSource,
+        code: deadLetterQueueDisplaySource,
+        installCode: deadLetterQueueFullSource,
       },
       {
         label: 'Start route',
@@ -2871,8 +2843,8 @@ export const registryItems: RegistryItem[] = [
         label: 'Workflow',
         lang: 'tsx',
         caption: 'workflows/recurring-cron-workflow.ts',
-        code: recurringCronWorkflowSource,
-        installCode: recurringCronWorkflowInstallSource,
+        code: recurringCronDisplaySource,
+        installCode: recurringCronFullSource,
       },
       {
         label: 'Start route',
