@@ -65,6 +65,8 @@ export default Hook;`}
 
 The returned `Hook` object also implements `AsyncIterable<T>`, which allows you to iterate over incoming payloads using `for await...of` syntax.
 
+Use `hook.getConflict()` to check whether the hook token is already claimed by another active hook, without waiting for hook payload data. Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the registration, then resolves with `null` once `hook_created` is recorded, or with the conflicting [`Run`](/docs/api-reference/workflow-api/get-run) if another active hook already owns the same token.
+
 ## Examples
 
 ### Basic Usage
@@ -111,6 +113,36 @@ export async function slackBotWorkflow(channelId: string) {
   }
 }
 ```
+
+### Detecting Token Conflicts
+
+Use `hook.getConflict()` when the workflow needs to claim a hook token before doing other work, but does not need a payload yet:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+declare function chargeOrder(orderId: string): Promise<void>; // @setup
+
+async function processOrder(orderId: string) {
+  "use workflow";
+
+  using hook = createHook({ // [!code highlight]
+    token: `order:${orderId}` // [!code highlight]
+  }); // [!code highlight]
+
+  const conflict = await hook.getConflict(); // [!code highlight]
+  if (conflict) { // [!code highlight]
+    // Another active workflow run already owns this token.
+    return { dedupedTo: conflict.runId };
+  }
+
+  await chargeOrder(orderId);
+}
+```
+
+Because `createHook()` alone does not suspend the workflow, awaiting `hook.getConflict()` is what actually suspends the run and commits the hook registration. It only waits for registration — to receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
+
+On a conflict, the resolved value is a `Run` handle for the run that currently owns the token, with durable step-backed accessors. The duplicate run can decide in code how to handle it: return or log `conflict.runId`, inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` and continue in the current run. See [Idempotency](/docs/foundations/idempotency) for these strategies in context.
 
 ### Waiting for Multiple Payloads
 

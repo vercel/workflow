@@ -6,8 +6,32 @@ import type {
   Webhook,
   WebhookOptions,
 } from '../create-hook.js';
+import {
+  aliasSerializationClass,
+  RUN_CLASS_ID,
+} from '../class-serialization.js';
+import { Run } from '../runtime/run.js';
 import { WORKFLOW_CREATE_HOOK } from '../symbols.js';
 import { getWorkflowMetadata } from './get-workflow-metadata.js';
+
+// Alias this bundle's `Run` class in the serialization class registry
+// under the stable id, so the host-side hook event consumer can construct
+// the conflicting run resolved by `hook.getConflict()` via the same
+// registry that revives serialized `Run` instances (the SWC plugin
+// already auto-registers `Run` here, but under a path-derived id the
+// host cannot know statically).
+//
+// In workflow mode this module is compiled into the workflow bundle and
+// executes inside the VM, so `Run` here is the plugin-compiled variant
+// whose methods are durable step proxies. No environment guard is
+// needed: the registry is keyed per-global, so a stray host-side import
+// of this module registers the host's `Run` on the host's registry —
+// which is the correct class for that context.
+//
+// The value import of `Run` also guarantees `runtime/run.js` is included
+// in any bundle that uses hooks, so the registry entry exists whenever
+// `getConflict()` can resolve.
+aliasSerializationClass(RUN_CLASS_ID, Run);
 
 export function createHook<T = any>(options?: HookOptions): Hook<T> {
   // Inside the workflow VM, the hook function is stored in the globalThis object behind a symbol

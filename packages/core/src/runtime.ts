@@ -1057,6 +1057,8 @@ export function workflowEntrypoint(
                           pendingSteps: suspensionResult.pendingSteps.length,
                           timeoutSeconds: suspensionResult.waitTimeout?.seconds,
                           hasHookConflict: suspensionResult.hasHookConflict,
+                          hasAwaitedHookCreation:
+                            suspensionResult.hasAwaitedHookCreation,
                           hasAttributeEvents:
                             suspensionResult.hasAttributeEvents,
                         });
@@ -1093,9 +1095,25 @@ export function workflowEntrypoint(
                         // The rest of the pending steps, plus any wait
                         // timer, are queued below in a single parallel
                         // batch.
+                        //
+                        // Skip inline execution when a created hook has a
+                        // `hook.getConflict()` awaiter: an inline `await
+                        // executeStep(...)` blocks this handler for the
+                        // full step duration, so the awaiter's continuation
+                        // (which only advances on the next replay) would be
+                        // serialized behind the step — defeating work the
+                        // workflow expressed as parallel (e.g.
+                        // `hook.getConflict().then(() => stepB())` racing
+                        // `await stepA()`). Queue every step and re-invoke
+                        // immediately instead: the re-invocation replays
+                        // over the just-committed hook_created and resolves
+                        // the awaiter while the queued steps execute in
+                        // parallel invocations.
                         const inlineStep:
                           | (typeof pendingSteps)[number]
-                          | undefined = ownedPendingSteps[0];
+                          | undefined = suspensionResult.hasAwaitedHookCreation
+                          ? undefined
+                          : ownedPendingSteps[0];
 
                         // Unified queue dispatch for everything we are NOT
                         // inline-executing. Steps are queued with stepId so
@@ -1178,6 +1196,15 @@ export function workflowEntrypoint(
                         // queued (or no work needs scheduling). Exit and let
                         // the queue drive subsequent replays.
                         if (!inlineStep) {
+                          // A `hook.getConflict()` awaiter needs an immediate
+                          // re-invocation: the replay consumes the
+                          // just-committed hook_created and resolves the
+                          // awaiter. Without it (no inline step, all work
+                          // queued or none pending) the run would sit idle
+                          // until some unrelated message woke it.
+                          if (suspensionResult.hasAwaitedHookCreation) {
+                            return { timeoutSeconds: 0 };
+                          }
                           return;
                         }
 

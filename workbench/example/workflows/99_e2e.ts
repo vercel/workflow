@@ -607,6 +607,141 @@ export async function hookCleanupTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
+export async function hookGetConflictWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  // Awaiting `getConflict()` suspends the workflow to commit the hook
+  // registration without waiting for payload data. It resolves with the
+  // conflicting `Run` when another active hook owns the token, or `null`
+  // once this hook is registered.
+  const conflict = await hook.getConflict();
+
+  if (conflict) {
+    // The conflicting Run's methods are durable step proxies, so the
+    // duplicate run can inspect the active owner before deciding.
+    const conflictStatus = await conflict.status;
+    return {
+      token,
+      customData,
+      conflictRunId: conflict.runId,
+      conflictStatus,
+      hookGetConflictTestData: 'hook_token_conflict_detected',
+    };
+  }
+
+  return {
+    token,
+    customData,
+    conflictRunId: null,
+    hookGetConflictTestData: 'hook_registered_without_payload',
+  };
+}
+
+async function hookGetConflictStep(customData: string) {
+  'use step';
+  return {
+    customData,
+    hookGetConflictStepData: 'step_completed',
+  };
+}
+
+async function hookGetConflictTimedStep(label: 'A' | 'B', delayMs: number) {
+  'use step';
+  const { stepStartedAt } = getStepMetadata();
+  const startedAt = stepStartedAt.getTime();
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  return {
+    label,
+    startedAt,
+    endedAt: Date.now(),
+  };
+}
+
+export async function hookGetConflictWithPriorStepWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const stepPromise = hookGetConflictStep(customData);
+
+  const conflict = await hook.getConflict();
+
+  return {
+    token,
+    customData,
+    conflictRunId: conflict ? conflict.runId : null,
+    stepResult: await stepPromise,
+    hookGetConflictTestData: 'prior_step_completed_after_registration',
+  };
+}
+
+export async function hookGetConflictWithParallelStepWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const [stepResult, conflict] = await Promise.all([
+    hookGetConflictStep(customData),
+    hook.getConflict(),
+  ]);
+
+  return {
+    token,
+    customData,
+    conflictRunId: conflict ? conflict.runId : null,
+    stepResult,
+    hookGetConflictTestData: 'parallel_step_completed_with_registration',
+  };
+}
+
+export async function hookGetConflictThenStepParallelWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const stepBPromise = hook
+    .getConflict()
+    .then(async () => await hookGetConflictTimedStep('B', 100));
+  const stepAResult = await hookGetConflictTimedStep('A', 10_000);
+  const stepBResult = await stepBPromise;
+
+  return {
+    token,
+    customData,
+    stepAResult,
+    stepBResult,
+    hookGetConflictTestData: 'registration_then_step_runs_in_parallel',
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 /**
  * Workflow for testing early hook disposal - allows another workflow to reuse
  * the token while this workflow is still running.
