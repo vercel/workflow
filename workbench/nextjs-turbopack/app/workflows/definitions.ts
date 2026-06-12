@@ -43,6 +43,13 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
     RANDOM_ARG_PLACEHOLDER,
     RANDOM_ARG_PLACEHOLDER,
   ],
+  hookClaimOnlyMutexWorkflow: [RANDOM_ARG_PLACEHOLDER, 1000],
+  hookAdoptOwnerResultWorkflow: [
+    RANDOM_ARG_PLACEHOLDER,
+    RANDOM_ARG_PLACEHOLDER,
+  ],
+  hookSignalOwnerWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
+  hookSupersedeOwnerWorkflow: [RANDOM_ARG_PLACEHOLDER],
   closureVariableWorkflow: [7],
   startFromWorkflow: [42],
   fibonacciWorkflow: [3],
