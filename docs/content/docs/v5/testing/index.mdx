@@ -109,7 +109,7 @@ That's it. The plugin automatically:
 
 1. Transforms `"use workflow"` and `"use step"` directives via SWC
 2. Builds workflow and step bundles before tests run
-3. Sets up an in-process workflow runtime using a fresh [Local World](/docs/worlds/local) instance in each test worker — all workflow data is cleared automatically between test files for full isolation
+3. Sets up an in-process workflow runtime using a fresh [Local World](/worlds/local) instance in each test worker — all workflow data is cleared automatically between test files for full isolation
 
 <Callout type="info">
 Use a separate Vitest configuration and a distinct file naming convention (e.g. `*.integration.test.ts`) to keep unit tests and integration tests separate. Unit tests run with a standard Vitest config without the workflow plugin, while integration tests use the config above.
@@ -117,7 +117,7 @@ Use a separate Vitest configuration and a distinct file naming convention (e.g. 
 
 ### Writing Integration Tests
 
-Use [`start()`](/docs/api-reference/workflow-api/start) to trigger a workflow and [`run.returnValue`](/docs/api-reference/workflow-api/start#returnvalue) to get the result. `returnValue` is a promise that blocks until the workflow completes (or throws if it fails):
+Use [`start()`](/docs/api-reference/workflow-api/start) to trigger a workflow and [`run.returnValue`](/docs/api-reference/workflow-api/start#returns) to get the result. `returnValue` is a promise that blocks until the workflow completes (or throws if it fails):
 
 ```typescript title="workflows/calculate.integration.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";

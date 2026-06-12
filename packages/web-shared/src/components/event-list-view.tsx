@@ -20,6 +20,7 @@ import { isEncryptedMarker } from '../lib/hydration';
 import { useToast } from '../lib/toast';
 import { formatDuration } from '../lib/utils';
 import { AttrSetEventBlock } from './sidebar/attributes-block';
+import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import { DecryptButton } from './ui/decrypt-button';
 import {
@@ -1176,7 +1177,7 @@ function EventRow({
 // Main component
 // ──────────────────────────────────────────────────────────────────────────
 
-export function EventListView({
+function EventListViewInner({
   events,
   run,
   onLoadEventData,
@@ -1757,5 +1758,13 @@ export function EventListView({
         </div>
       </div>
     </DecryptClickContext.Provider>
+  );
+}
+
+export function EventListView(props: EventsListProps) {
+  return (
+    <ContextCardProvider>
+      <EventListViewInner {...props} />
+    </ContextCardProvider>
   );
 }
