@@ -1,5 +1,8 @@
 import 'server-only';
 
+// NOTE: comment edit busts the turbo task hash 70724907c9dd3a29, whose
+// remote-cache entry was poisoned by an esbuild hang during the build of
+// dpl_6UXttzGpjxbrFcpRQZGR6E9v3G2Q (missing .next/routes-manifest.json).
 import { allWorkflows } from '@/_workflows';
 import type { WorkflowDefinition } from './types';
 
