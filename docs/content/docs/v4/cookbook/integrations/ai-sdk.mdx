@@ -376,7 +376,7 @@ Use `DurableAgent` for most agent use cases. Use `streamText` when you need the 
 
 **Workflow SDK**
 
-* [`"use step"`](/docs/api-reference/workflow/use-step) — applied to `runTurn` to make each turn a durable, retryable unit
+* [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) — applied to `runTurn` to make each turn a durable, retryable unit
 * [`defineHook()`](/docs/api-reference/workflow/define-hook) — suspension point for follow-up messages
 * [`getWritable()`](/docs/api-reference/workflow/get-writable) — resumable stream output
 * [`getRun()`](/docs/api-reference/workflow-api/get-run) — `run.getReadable({ startIndex })` for slicing per-turn streams

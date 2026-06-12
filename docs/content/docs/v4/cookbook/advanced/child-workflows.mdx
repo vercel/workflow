@@ -158,7 +158,7 @@ Polling with `getRun().status` in a `sleep()` loop works, but hook resume is pre
 - **Zero compute while waiting** — the parent suspends on the hook instead of waking every poll interval
 - **Immediate wake-up** — the parent resumes as soon as the child finishes, not on the next poll tick
 - **Typed payloads** — the child sends `{ status, value | error }` directly; no separate `returnValue` fetch step
-- **No worker-pool pressure** — `Run#returnValue` polling inside steps can hold worker slots while waiting for children (see [Eager Processing](/changelog/eager-processing))
+- **No worker-pool pressure** — `Run#returnValue` polling inside steps can hold worker slots while waiting for children (see [Eager Processing](/v5/docs/changelog/eager-processing))
 
 When a parent calls a child workflow inline with `await` (flattened into the same run), the same wrapper and hook handshake still works — pass the token and `await processDocumentWithCompletion(...)` inside `startAndWait()` instead of calling `start()`.
 
