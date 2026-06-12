@@ -1,0 +1,59 @@
+---
+title: "workflow/nitro"
+description: Nitro module for automatic workflow bundling and route registration.
+type: overview
+summary: Explore the Nitro module that enables workflow directive transformation in Nitro apps.
+related:
+  - /docs/getting-started/nitro
+---
+
+Nitro integration for Workflow SDK. The `workflow/nitro` entry point's default export is a [Nitro module](https://v3.nitro.build/guide/modules) — it has no callable API. You enable it by adding it to the `modules` array of your Nitro config and configure it via the `workflow` key.
+
+## Usage
+
+```typescript title="nitro.config.ts" lineNumbers
+import { defineConfig } from "nitro";
+
+export default defineConfig({
+  serverDir: "./server",
+  modules: ["workflow/nitro"], // [!code highlight]
+});
+```
+
+When enabled, the module:
+
+- Transforms `"use workflow"` and `"use step"` directives during bundling.
+- Builds the workflow, step, and webhook bundles, and rebuilds them on file changes in development.
+- Registers the workflow runtime routes under `/.well-known/workflow/v1/`.
+- Serves a redirect to the local observability dashboard at `/_workflow` in development.
+- Configures Vercel function rules (queue triggers and `maxDuration`) for the workflow routes when deploying to Vercel.
+
+## Module Options
+
+Options are read from the `workflow` key of your Nitro config. The option type is exported as `ModuleOptions`:
+
+```typescript title="nitro.config.ts" lineNumbers
+import { defineConfig } from "nitro";
+import type { ModuleOptions } from "workflow/nitro"; // [!code highlight]
+
+const workflow: ModuleOptions = {
+  runtime: "nodejs22.x",
+  sourcemap: "inline",
+};
+
+export default defineConfig({
+  modules: ["workflow/nitro"],
+  workflow, // [!code highlight]
+});
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `dirs` | `string[]` | — | Directories to scan for workflows and steps. By default, the `workflows/` directory is scanned from the project root and all layer source directories. |
+| `typescriptPlugin` | `boolean` | `false` | Adds the `workflow` TypeScript plugin to the generated `tsconfig.json` for IDE IntelliSense. |
+| `runtime` | `string` | — | Node.js runtime version for Vercel Functions (e.g. `'nodejs22.x'`, `'nodejs24.x'`). Only applies when deploying to Vercel. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Set to `false` for smaller function bundles (useful for staying under the Vercel 250MB function size limit) at the cost of stack traces pointing at generated code. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+
+## Vite-based Nitro
+
+If you use Nitro through its Vite plugin (`nitro/vite`) instead of a standalone `nitro.config.ts`, use the [`workflow/vite`](/docs/api-reference/workflow-vite) entry point, which wraps this module as a Vite plugin and accepts the same `ModuleOptions`.

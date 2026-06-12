@@ -36,20 +36,17 @@ showSections={["returns"]}
 
 ## World SDK
 
-The World object provides access to several entity interfaces. See the [World SDK](/docs/api-reference/workflow-api/world) reference for complete documentation:
+The World object provides access to several entity interfaces. See the [World SDK](/docs/api-reference/workflow-runtime/world) reference for complete documentation:
 
 <Cards>
-    <Card href="/docs/api-reference/workflow-api/world/storage" title="Storage">
+    <Card href="/docs/api-reference/workflow-runtime/world/storage" title="Storage">
         Query runs, steps, hooks, and the underlying event log.
     </Card>
-    <Card href="/docs/api-reference/workflow-api/world/streams" title="Streams">
+    <Card href="/docs/api-reference/workflow-runtime/world/streams" title="Streams">
         Read, write, and manage data streams.
     </Card>
-    <Card href="/docs/api-reference/workflow-api/world/queue" title="Queue">
+    <Card href="/docs/api-reference/workflow-runtime/world/queue" title="Queue">
         Low-level queue dispatch (internal SDK infrastructure).
-    </Card>
-    <Card href="/docs/api-reference/workflow-api/world/observability" title="Observability">
-        Hydrate step I/O, parse display names, decrypt data.
     </Card>
 </Cards>
 
@@ -64,7 +61,7 @@ const step = await world.steps.get(runId, stepId);
 const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
 ```
 
-See [Observability Utilities](/docs/api-reference/workflow-api/world/observability) for the full hydration, parsing, and encryption API.
+See [`workflow/observability`](/docs/api-reference/workflow-observability) for the full hydration and parsing API.
 
 ### List Workflow Runs (Display Names)
 
@@ -72,7 +69,7 @@ List workflow runs and derive human-readable names from the `workflowName` field
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
-import { parseWorkflowName } from "@workflow/utils/parse-name"; // [!code highlight]
+import { parseWorkflowName } from "workflow/observability"; // [!code highlight]
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -113,7 +110,7 @@ export async function GET(req: Request) {
 
 <Callout type="info">
   The `workflowName` field contains a machine-readable identifier like `workflow//./src/workflows/order//processOrder`.
-  Use `parseWorkflowName()` from `@workflow/utils/parse-name` to extract the `shortName` (e.g., `"processOrder"`)
+  Use [`parseWorkflowName()`](/docs/api-reference/workflow-observability/parse-workflow-name) to extract the `shortName` (e.g., `"processOrder"`)
   and `moduleSpecifier` for display in your UI.
 </Callout>
 
