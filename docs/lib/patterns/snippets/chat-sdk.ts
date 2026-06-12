@@ -273,7 +273,7 @@ export type ChatTurnPayload = {
 export const chatSdkHandlersSource = `import type { Message, Thread } from "chat";
 import { getRun, resumeHook, start } from "workflow/api";
 import { bot, type ThreadState } from "@/lib/bot";
-import { durableChatSession } from "@/app/workflows/chat-sdk";
+import { durableChatSession } from "@/app/workflows/chat-sdk-workflow";
 import type { ChatTurnPayload } from "@/app/workflows/chat-sdk-workflow";
 
 async function startSession(

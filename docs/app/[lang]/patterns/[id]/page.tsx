@@ -65,8 +65,14 @@ export default async function RegistryDetailPage({ params }: PageProps) {
   const item = getRegistryItem(id);
   if (!item) notFound();
 
-  const [blocks, conceptBlocks] = await Promise.all([
-    renderSnippets(item.snippets),
+  // Usage snippets ("how do I call this?") render in their own section
+  // right after Installation; everything else is implementation source.
+  const usageSnippets = item.snippets.filter((s) => s.role === 'usage');
+  const sourceSnippets = item.snippets.filter((s) => s.role !== 'usage');
+
+  const [blocks, usageBlocks, conceptBlocks] = await Promise.all([
+    renderSnippets(sourceSnippets),
+    renderSnippets(usageSnippets),
     item.conceptSnippets
       ? renderSnippets(item.conceptSnippets)
       : Promise.resolve([]),
@@ -120,6 +126,8 @@ export default async function RegistryDetailPage({ params }: PageProps) {
       // flatLayout without per-approach sections: Installation + Source follow normally
       if (installable)
         tocItems.push({ id: 'installation', title: 'Installation', depth: 2 });
+      if (usageBlocks.length > 0)
+        tocItems.push({ id: 'usage', title: 'Usage', depth: 2 });
       if (conceptBlocks.length > 0)
         tocItems.push({ id: 'concept', title: 'Concept', depth: 2 });
       tocItems.push({ id: 'source', title: 'Source', depth: 2 });
@@ -143,6 +151,8 @@ export default async function RegistryDetailPage({ params }: PageProps) {
     }
     if (installable)
       tocItems.push({ id: 'installation', title: 'Installation', depth: 2 });
+    if (usageBlocks.length > 0)
+      tocItems.push({ id: 'usage', title: 'Usage', depth: 2 });
     if (conceptBlocks.length > 0)
       tocItems.push({ id: 'concept', title: 'Concept', depth: 2 });
     tocItems.push({ id: 'source', title: 'Source', depth: 2 });
@@ -529,6 +539,20 @@ export default async function RegistryDetailPage({ params }: PageProps) {
                       </section>
                     )}
 
+                    {usageBlocks.length > 0 && (
+                      <section id="usage" className="space-y-3">
+                        <h2 className="font-semibold text-2xl tracking-tight">
+                          Usage
+                        </h2>
+                        <p className="text-sm text-muted-foreground max-w-2xl">
+                          {item.patternType === 'component'
+                            ? 'The API you write against — import the installed component and call it. You rarely need to touch its internals.'
+                            : 'How to call this pattern from your app once installed.'}
+                        </p>
+                        <RegistryCodeTabs blocks={usageBlocks} />
+                      </section>
+                    )}
+
                     {conceptBlocks.length > 0 && (
                       <section id="concept" className="space-y-3">
                         <h2 className="font-semibold text-2xl tracking-tight">
@@ -549,7 +573,9 @@ export default async function RegistryDetailPage({ params }: PageProps) {
                       </h2>
                       <p className="text-sm text-muted-foreground max-w-2xl">
                         {guide?.sourceDescription ??
-                          'A preview of the code that gets copied into your app.'}
+                          (item.patternType === 'component'
+                            ? 'The full implementation that lands in your project — not a black box. Read it to understand the machinery, then adapt it to your own use cases. This exact code is exercised by the test suite in the Workflow repo.'
+                            : 'A preview of the code that gets copied into your app.')}
                       </p>
                       <RegistryCodeTabs blocks={blocks} />
                     </section>
@@ -619,6 +645,21 @@ export default async function RegistryDetailPage({ params }: PageProps) {
                   </section>
                 )}
 
+                {/* ── Usage: the consumer-facing API ── */}
+                {usageBlocks.length > 0 && (
+                  <section id="usage" className="space-y-3">
+                    <h2 className="font-semibold text-2xl tracking-tight">
+                      Usage
+                    </h2>
+                    <p className="text-sm text-muted-foreground max-w-2xl">
+                      {item.patternType === 'component'
+                        ? 'The API you write against — import the installed component and call it. You rarely need to touch its internals.'
+                        : 'How to call this pattern from your app once installed.'}
+                    </p>
+                    <RegistryCodeTabs blocks={usageBlocks} />
+                  </section>
+                )}
+
                 {/* ── Concept snippets (when educational ≠ plug-and-play) ── */}
                 {conceptBlocks.length > 0 && (
                   <section id="concept" className="space-y-3">
@@ -641,7 +682,9 @@ export default async function RegistryDetailPage({ params }: PageProps) {
                   </h2>
                   <p className="text-sm text-muted-foreground max-w-2xl">
                     {guide?.sourceDescription ??
-                      'A preview of the code that gets copied into your app.'}
+                      (item.patternType === 'component'
+                        ? 'The full implementation that lands in your project — not a black box. Read it to understand the machinery, then adapt it to your own use cases. This exact code is exercised by the test suite in the Workflow repo.'
+                        : 'A preview of the code that gets copied into your app.')}
                   </p>
                   <RegistryCodeTabs blocks={blocks} />
                 </section>

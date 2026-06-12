@@ -21,6 +21,7 @@ import { NextResponse } from 'next/server';
 import { registryItems } from '@/lib/patterns/manifest';
 
 const WORKFLOW_PATH_PREFIX = 'workflows/';
+const LIB_PATH_PREFIX = 'lib/';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,9 +72,15 @@ export async function GET(
     );
   }
 
-  // Collect workflow files from snippets (installCode > code fallback).
-  const workflowSnippets = item.snippets.filter((s) =>
-    s.caption?.startsWith(WORKFLOW_PATH_PREFIX)
+  // Collect installable files from snippets (installCode > code fallback).
+  // Two location conventions:
+  //   - workflows/…  → app/workflows/… (compiled by the workflow plugin)
+  //   - lib/…        → lib/… at the project root (plain modules the
+  //                    workflow files import, e.g. chat-sdk's bot config)
+  const workflowSnippets = item.snippets.filter(
+    (s) =>
+      s.caption?.startsWith(WORKFLOW_PATH_PREFIX) ||
+      s.caption?.startsWith(LIB_PATH_PREFIX)
   );
 
   // Deduplicate by caption path — multiple tabs may point to the same file.
@@ -96,8 +103,11 @@ export async function GET(
       // registry:file tells the shadcn CLI to write the inline `content` field
       // directly to `target` without trying to resolve `path` as a URL.
       type: 'registry:file',
-      // Workflow files live under app/workflows/ in a Next.js app-router project.
-      target: `app/${filePath}`,
+      // Workflow files live under app/workflows/ in a Next.js app-router
+      // project; lib files live at the project root (matching `@/lib/…`).
+      target: filePath.startsWith(WORKFLOW_PATH_PREFIX)
+        ? `app/${filePath}`
+        : filePath,
     });
   }
 
@@ -123,6 +133,10 @@ export async function GET(
     type: 'registry:file' as const,
     title: item.name,
     description: item.description,
+    // npm packages the installed files import — the shadcn CLI installs
+    // these into the target project. Cross-checked against actual imports
+    // by docs/scripts/validate-registry.ts.
+    dependencies: item.dependencies ?? [],
     files,
   };
 

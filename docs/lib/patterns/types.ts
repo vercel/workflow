@@ -66,6 +66,15 @@ export interface RegistryFile {
 export interface RegistrySnippet {
   /** Tab label shown above the code block. */
   label: string;
+  /**
+   * What this snippet is for on the detail page:
+   * - `source` (default) — implementation code, rendered in the Source
+   *   ("under the hood") section.
+   * - `usage` — consumer-facing API examples, rendered in their own Usage
+   *   section right after Installation. This is the "how do I call it"
+   *   surface for installable components.
+   */
+  role?: 'source' | 'usage';
   /** Shiki language identifier (`tsx`, `ts`, `bash`, …). */
   lang: string;
   /** Raw source code — rendered via shiki on the server. */
@@ -336,6 +345,13 @@ export interface RegistryItem {
    * read-and-adapt guide. Defaults to `true`.
    */
   installable?: boolean;
+  /**
+   * npm packages the installed files import (beyond `workflow`, which a
+   * workflow app has by definition). Emitted in the shadcn registry payload
+   * so the CLI installs them; `validate-registry` cross-checks this list
+   * against the actual imports in the emitted files.
+   */
+  dependencies?: string[];
   /** Required environment variables. */
   envVars?: RegistryEnvVar[];
   /** Files that get added to the user's project on install. */

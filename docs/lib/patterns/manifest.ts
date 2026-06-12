@@ -23,7 +23,10 @@ import {
   chatSdkWorkflowSource,
   chatSdkWorkflowInstallSource,
 } from './snippets/chat-sdk';
-import { childWorkflowsStartRouteSource } from './snippets/child-workflows';
+import {
+  childWorkflowsStartRouteSource,
+  childWorkflowsUsageSource,
+} from './snippets/child-workflows';
 import {
   killSwitchButtonSource,
   killSwitchRouteSource,
@@ -88,6 +91,7 @@ import {
 import {
   schedulingCancelRouteSource,
   schedulingStartRouteSource,
+  schedulingUsageSource,
 } from './snippets/scheduling';
 import {
   sequentialAndParallelStartRouteSource,
@@ -178,6 +182,7 @@ export const registryItems: RegistryItem[] = [
     categories: ['agent'],
     versions: ['v4', 'v5'],
     patternType: 'template',
+    dependencies: ['@workflow/ai', 'ai', 'zod'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/agent-patterns/agent-cancellation',
@@ -228,6 +233,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Wire the Stop button into your chat UI',
         code: agentCancellationUsageSource,
@@ -390,6 +396,7 @@ export const registryItems: RegistryItem[] = [
     categories: ['agent', 'vercel'],
     versions: ['v4', 'v5'],
     patternType: 'template',
+    dependencies: ['ai', 'zod'],
     homepage: 'https://ai-sdk.dev',
     docsUrl: 'https://ai-sdk.dev/docs',
     sourceUrl:
@@ -579,6 +586,7 @@ export const registryItems: RegistryItem[] = [
     categories: ['agent'],
     versions: ['v4', 'v5'],
     patternType: 'template',
+    dependencies: ['@workflow/ai', 'ai', 'zod'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/durable-agent',
     sourceUrl:
@@ -681,6 +689,7 @@ export const registryItems: RegistryItem[] = [
     categories: ['agent'],
     versions: ['v4', 'v5'],
     patternType: 'template',
+    dependencies: ['@workflow/ai', 'ai', 'zod'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/agent-patterns/human-in-the-loop',
@@ -739,6 +748,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Wire the card into your chat UI',
         description:
@@ -806,6 +816,12 @@ export const registryItems: RegistryItem[] = [
     categories: ['vercel', 'agent'],
     versions: ['v4', 'v5'],
     patternType: 'example',
+    dependencies: [
+      '@chat-adapter/slack',
+      '@chat-adapter/state-redis',
+      'chat',
+      'zod',
+    ],
     homepage: 'https://chat-sdk.dev',
     docsUrl: 'https://chat-sdk.dev/docs/guides/durable-chat-sessions-nextjs',
     sourceUrl:
@@ -960,6 +976,7 @@ export const registryItems: RegistryItem[] = [
     categories: ['vercel', 'agent'],
     versions: ['v4', 'v5'],
     patternType: 'example',
+    dependencies: ['@vercel/sandbox', 'zod'],
     homepage: 'https://vercel.com/docs/vercel-sandbox',
     docsUrl: 'https://vercel.com/docs/vercel-sandbox',
     sourceUrl:
@@ -970,6 +987,11 @@ export const registryItems: RegistryItem[] = [
         path: 'workflows/sandbox-session-workflow.ts',
         description:
           'The durable session workflow — `sandboxSessionWorkflow()` + `commandHook`, with idle hibernation and proactive sandbox refresh built in.',
+      },
+      {
+        path: 'workflows/sandbox-pipeline-workflow.ts',
+        description:
+          'Pipeline variant — run a fixed command sequence in a sandbox and tear it down, no interactive session.',
       },
       {
         path: 'app/api/sandbox/start/route.ts',
@@ -1197,6 +1219,15 @@ export const registryItems: RegistryItem[] = [
     sourceUrl:
       'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/idempotency.ts',
     shadcnSlug: 'https://workflow-sdk.dev/r/idempotency',
+    envVars: [
+      {
+        name: 'STRIPE_SECRET_KEY',
+        description:
+          'Stripe API secret key — the example charges via Stripe with an idempotency key.',
+        getKeyUrl: 'https://dashboard.stripe.com/apikeys',
+        exampleValue: 'sk_live_********',
+      },
+    ],
     files: [
       {
         path: 'workflows/idempotency-workflow.ts',
@@ -1465,6 +1496,13 @@ export const registryItems: RegistryItem[] = [
         caption: 'workflows/scheduling-workflow.ts',
         code: schedulingDisplaySource,
         installCode: schedulingFullSource,
+      },
+      {
+        label: 'Usage',
+        role: 'usage',
+        lang: 'tsx',
+        caption: 'Defer, cancel, and cancellableSleep in your own workflows',
+        code: schedulingUsageSource,
       },
       {
         label: 'Start route',
@@ -1919,6 +1957,7 @@ export const registryItems: RegistryItem[] = [
     categories: ['advanced'],
     versions: ['v4', 'v5'],
     patternType: 'component',
+    dependencies: ['zod'],
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/child-workflows',
     sourceUrl:
@@ -1959,6 +1998,13 @@ export const registryItems: RegistryItem[] = [
           'A worked example — document batch processing wired up with the component.',
         code: childWorkflowsExampleDisplaySource,
         installCode: childWorkflowsExampleFullSource,
+      },
+      {
+        label: 'Usage',
+        role: 'usage',
+        lang: 'tsx',
+        caption: 'Spawn children and await typed results from any workflow',
+        code: childWorkflowsUsageSource,
       },
       {
         label: 'Start route',
@@ -2073,6 +2119,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Pass `controller.signal` to any AbortSignal-aware API',
         code: killSwitchUsageSource,
@@ -2155,6 +2202,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Call withPermit() / withLock() from any workflow function',
         code: semaphoreUsageSource,
@@ -2234,6 +2282,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Call withRateLimit() from any workflow function',
         code: rateLimiterUsageSource,
@@ -2312,6 +2361,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Wrap dependency calls in withBreaker() from any workflow',
         code: circuitBreakerUsageSource,
@@ -2395,6 +2445,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Call debounceSend() from routes, webhooks, or steps',
         code: debounceUsageSource,
@@ -2470,6 +2521,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Call aggregatorSend() from routes, webhooks, or steps',
         code: batchAggregatorUsageSource,
@@ -2547,6 +2599,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'getOrStart + sendToSingleton from an API route',
         code: singletonRunUsageSource,
@@ -2608,6 +2661,18 @@ export const registryItems: RegistryItem[] = [
     sourceUrl:
       'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/upgrading-workflows.ts',
     shadcnSlug: 'https://workflow-sdk.dev/r/upgrading-workflows',
+    envVars: [
+      {
+        name: 'VERCEL_DEPLOYMENT_ID',
+        description:
+          'Set automatically by Vercel — used to detect which deployment a run is executing on.',
+      },
+      {
+        name: 'VERCEL_GIT_COMMIT_SHA',
+        description:
+          'Set automatically by Vercel — surfaced in the run state for observability.',
+      },
+    ],
     files: [
       {
         path: 'workflows/upgrading-workflows-workflow.ts',
@@ -2897,6 +2962,7 @@ export const registryItems: RegistryItem[] = [
     categories: ['provider', 'payments'],
     versions: ['v4', 'v5'],
     patternType: 'example',
+    dependencies: ['stripe'],
     homepage: 'https://stripe.com',
     docsUrl: 'https://docs.stripe.com/billing/revenue-recovery',
     sourceUrl:
@@ -3092,6 +3158,7 @@ export const registryItems: RegistryItem[] = [
     categories: ['provider'],
     versions: ['v4', 'v5'],
     patternType: 'example',
+    dependencies: ['ms', 'resend'],
     homepage: 'https://resend.com',
     docsUrl: 'https://resend.com/docs/send-with-nodejs',
     sourceUrl:
@@ -3144,6 +3211,7 @@ export const registryItems: RegistryItem[] = [
       },
       {
         label: 'Usage',
+        role: 'usage',
         lang: 'tsx',
         caption: 'Trigger the campaign from your app',
         code: resendUsageSource,

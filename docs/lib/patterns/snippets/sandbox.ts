@@ -120,7 +120,7 @@ export async function sandboxSessionWorkflow() {
 
   await emit({
     type: "created",
-    sandboxId: sandbox.sandboxId,
+    sandboxId: sandbox.name,
     runtime: RUNTIME,
     startedAt,
     sandboxExpiresAt,
@@ -130,7 +130,7 @@ export async function sandboxSessionWorkflow() {
     type: "status",
     state: "active",
     at: Date.now(),
-    sandboxId: sandbox.sandboxId,
+    sandboxId: sandbox.name,
     sandboxExpiresAt,
   });
 
@@ -164,7 +164,7 @@ export async function sandboxSessionWorkflow() {
           type: "status",
           state: "active",
           at: Date.now(),
-          sandboxId: sandbox.sandboxId,
+          sandboxId: sandbox.name,
           sandboxExpiresAt,
         });
 
@@ -204,7 +204,7 @@ export async function sandboxSessionWorkflow() {
             type: "status",
             state: "active",
             at: Date.now(),
-            sandboxId: sandbox.sandboxId,
+            sandboxId: sandbox.name,
             sandboxExpiresAt,
             snapshotId: snap.snapshotId,
           });
@@ -363,8 +363,8 @@ export async function sandboxSessionWorkflow() {
   let sandboxCreatedAt = Date.now();
   let sandboxExpiresAt = sandboxCreatedAt + SANDBOX_TIMEOUT_MS;
 
-  await emit({ type: "created", sandboxId: sandbox.sandboxId, runtime: RUNTIME, startedAt, sandboxExpiresAt, hibernateAfterMs: HIBERNATE_AFTER_MS });
-  await emit({ type: "status", state: "active", at: Date.now(), sandboxId: sandbox.sandboxId, sandboxExpiresAt });
+  await emit({ type: "created", sandboxId: sandbox.name, runtime: RUNTIME, startedAt, sandboxExpiresAt, hibernateAfterMs: HIBERNATE_AFTER_MS });
+  await emit({ type: "status", state: "active", at: Date.now(), sandboxId: sandbox.name, sandboxExpiresAt });
 
   let snapshot: Snapshot | null = null;
   let hibernated = false;
@@ -385,7 +385,7 @@ export async function sandboxSessionWorkflow() {
         sandboxExpiresAt = sandboxCreatedAt + SANDBOX_TIMEOUT_MS;
         hibernated = false;
         snapshot = null;
-        await emit({ type: "status", state: "active", at: Date.now(), sandboxId: sandbox.sandboxId, sandboxExpiresAt });
+        await emit({ type: "status", state: "active", at: Date.now(), sandboxId: sandbox.name, sandboxExpiresAt });
         counter += 1;
         await runCommandAndStream(sandbox, \`cmd-\${counter}\`, payload.command);
         lastActivityAt = Date.now();
@@ -412,7 +412,7 @@ export async function sandboxSessionWorkflow() {
           sandbox = await Sandbox.create({ source: { type: "snapshot", snapshotId: snap.snapshotId }, timeout: SANDBOX_TIMEOUT_MS });
           sandboxCreatedAt = Date.now();
           sandboxExpiresAt = sandboxCreatedAt + SANDBOX_TIMEOUT_MS;
-          await emit({ type: "status", state: "active", at: Date.now(), sandboxId: sandbox.sandboxId, sandboxExpiresAt, snapshotId: snap.snapshotId });
+          await emit({ type: "status", state: "active", at: Date.now(), sandboxId: sandbox.name, sandboxExpiresAt, snapshotId: snap.snapshotId });
           lastActivityAt = Date.now();
         } else {
           // Idle — snapshot and hibernate indefinitely.
