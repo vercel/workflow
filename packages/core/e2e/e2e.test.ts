@@ -1985,7 +1985,7 @@ describe('e2e', () => {
 
   test(
     'hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue',
-    { timeout: 90_000 },
+    { timeout: 120_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
 
@@ -2000,6 +2000,28 @@ describe('e2e', () => {
         token,
         'duplicate-marker',
       ]);
+
+      // Wait until run2 has actually observed the conflict before letting
+      // the owner complete. On slow runtimes run2's first invocation can
+      // otherwise land after the owner finished and released the token,
+      // turning run2 into a fresh owner that waits forever for a payload.
+      const world = await getWorld();
+      const conflictDeadline = Date.now() + 60_000;
+      let sawConflict = false;
+      while (Date.now() < conflictDeadline) {
+        const { data: run2Events } = await world.events.list({
+          runId: run2.runId,
+        });
+        if (run2Events.some((e) => e.eventType === 'hook_conflict')) {
+          sawConflict = true;
+          break;
+        }
+        await sleep(500);
+      }
+      expect(
+        sawConflict,
+        'run2 should observe the hook conflict while the owner is active'
+      ).toBe(true);
 
       // Complete the owner.
       await resumeHook(token, { value: 'adopted-value' });
