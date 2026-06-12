@@ -30,16 +30,16 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
     RANDOM_ARG_PLACEHOLDER,
   ],
   hookCleanupTestWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
-  hookHasConflictWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
-  hookHasConflictWithPriorStepWorkflow: [
+  hookGetConflictWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
+  hookGetConflictWithPriorStepWorkflow: [
     RANDOM_ARG_PLACEHOLDER,
     RANDOM_ARG_PLACEHOLDER,
   ],
-  hookHasConflictWithParallelStepWorkflow: [
+  hookGetConflictWithParallelStepWorkflow: [
     RANDOM_ARG_PLACEHOLDER,
     RANDOM_ARG_PLACEHOLDER,
   ],
-  hookHasConflictThenStepParallelWorkflow: [
+  hookGetConflictThenStepParallelWorkflow: [
     RANDOM_ARG_PLACEHOLDER,
     RANDOM_ARG_PLACEHOLDER,
   ],

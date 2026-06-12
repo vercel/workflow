@@ -542,7 +542,7 @@ export async function hookCleanupTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
-export async function hookHasConflictWorkflow(
+export async function hookGetConflictWorkflow(
   token: string,
   customData: string
 ) {
@@ -553,29 +553,49 @@ export async function hookHasConflictWorkflow(
     metadata: { customData },
   });
 
-  // Awaiting `hasConflict` suspends the workflow to commit the hook
-  // registration without waiting for payload data.
-  const hasConflict = await hook.hasConflict;
+  // Awaiting `getConflict()` suspends the workflow to commit the hook
+  // registration without waiting for payload data. It resolves with
+  // `{ runId }` identifying the conflicting run when another active hook
+  // owns the token, or `null` once this hook is registered.
+  const conflict = await hook.getConflict();
+
+  if (conflict) {
+    // To act on the conflicting run, pass `conflict.runId` to `getRun()`
+    // inside a step — the duplicate run can inspect the active owner
+    // before deciding.
+    const conflictStatus = await hookGetConflictRunStatusStep(conflict.runId);
+    return {
+      token,
+      customData,
+      conflictRunId: conflict.runId,
+      conflictStatus,
+      hookGetConflictTestData: 'hook_token_conflict_detected',
+    };
+  }
 
   return {
     token,
     customData,
-    hasConflict,
-    hookHasConflictTestData: hasConflict
-      ? 'hook_token_conflict_detected'
-      : 'hook_registered_without_payload',
+    conflictRunId: null,
+    hookGetConflictTestData: 'hook_registered_without_payload',
   };
 }
 
-async function hookHasConflictStep(customData: string) {
+async function hookGetConflictRunStatusStep(runId: string) {
+  'use step';
+  const run = getRun(runId);
+  return await run.status;
+}
+
+async function hookGetConflictStep(customData: string) {
   'use step';
   return {
     customData,
-    hookHasConflictStepData: 'step_completed',
+    hookGetConflictStepData: 'step_completed',
   };
 }
 
-async function hookHasConflictTimedStep(label: 'A' | 'B', delayMs: number) {
+async function hookGetConflictTimedStep(label: 'A' | 'B', delayMs: number) {
   'use step';
   const { stepStartedAt } = getStepMetadata();
   const startedAt = stepStartedAt.getTime();
@@ -587,7 +607,7 @@ async function hookHasConflictTimedStep(label: 'A' | 'B', delayMs: number) {
   };
 }
 
-export async function hookHasConflictWithPriorStepWorkflow(
+export async function hookGetConflictWithPriorStepWorkflow(
   token: string,
   customData: string
 ) {
@@ -598,20 +618,20 @@ export async function hookHasConflictWithPriorStepWorkflow(
     metadata: { customData },
   });
 
-  const stepPromise = hookHasConflictStep(customData);
+  const stepPromise = hookGetConflictStep(customData);
 
-  const hasConflict = await hook.hasConflict;
+  const conflict = await hook.getConflict();
 
   return {
     token,
     customData,
-    hasConflict,
+    conflictRunId: conflict ? conflict.runId : null,
     stepResult: await stepPromise,
-    hookHasConflictTestData: 'prior_step_completed_after_registration',
+    hookGetConflictTestData: 'prior_step_completed_after_registration',
   };
 }
 
-export async function hookHasConflictWithParallelStepWorkflow(
+export async function hookGetConflictWithParallelStepWorkflow(
   token: string,
   customData: string
 ) {
@@ -622,21 +642,21 @@ export async function hookHasConflictWithParallelStepWorkflow(
     metadata: { customData },
   });
 
-  const [stepResult, hasConflict] = await Promise.all([
-    hookHasConflictStep(customData),
-    hook.hasConflict,
+  const [stepResult, conflict] = await Promise.all([
+    hookGetConflictStep(customData),
+    hook.getConflict(),
   ]);
 
   return {
     token,
     customData,
-    hasConflict,
+    conflictRunId: conflict ? conflict.runId : null,
     stepResult,
-    hookHasConflictTestData: 'parallel_step_completed_with_registration',
+    hookGetConflictTestData: 'parallel_step_completed_with_registration',
   };
 }
 
-export async function hookHasConflictThenStepParallelWorkflow(
+export async function hookGetConflictThenStepParallelWorkflow(
   token: string,
   customData: string
 ) {
@@ -647,10 +667,10 @@ export async function hookHasConflictThenStepParallelWorkflow(
     metadata: { customData },
   });
 
-  const stepBPromise = hook.hasConflict.then(
-    async () => await hookHasConflictTimedStep('B', 100)
-  );
-  const stepAResult = await hookHasConflictTimedStep('A', 10_000);
+  const stepBPromise = hook
+    .getConflict()
+    .then(async () => await hookGetConflictTimedStep('B', 100));
+  const stepAResult = await hookGetConflictTimedStep('A', 10_000);
   const stepBResult = await stepBPromise;
 
   return {
@@ -658,7 +678,7 @@ export async function hookHasConflictThenStepParallelWorkflow(
     customData,
     stepAResult,
     stepBResult,
-    hookHasConflictTestData: 'registration_then_step_runs_in_parallel',
+    hookGetConflictTestData: 'registration_then_step_runs_in_parallel',
   };
 }
 
