@@ -3,7 +3,7 @@
 /**
  * Auto-generates _workflows.ts registry file for workbenches
  *
- * Usage: node generate-workflows-registry.js [workflowsDir] [outputPath] [--esm]
+ * Usage: node generate-workflows-registry.js [workflowsDir] [outputPath] [--esm] [--include path]
  *
  * Defaults:
  *   workflowsDir: ./workflows
@@ -19,17 +19,37 @@ const path = require('node:path');
 // Parse arguments
 const args = process.argv.slice(2);
 const esmMode = args.includes('--esm');
-const nonFlagArgs = args.filter((arg) => !arg.startsWith('--'));
+const includeFiles = [];
+const nonFlagArgs = [];
+
+for (let index = 0; index < args.length; index++) {
+  const arg = args[index];
+  if (arg === '--esm') {
+    continue;
+  }
+  if (arg === '--include') {
+    const includePath = args[index + 1];
+    if (!includePath || includePath.startsWith('--')) {
+      console.error('Error: --include requires a file path');
+      process.exit(1);
+    }
+    includeFiles.push(includePath);
+    index++;
+    continue;
+  }
+  if (arg.startsWith('--')) {
+    console.error(`Error: Unknown option: ${arg}`);
+    process.exit(1);
+  }
+  nonFlagArgs.push(arg);
+}
 
 // Get arguments or use defaults
 const workflowsDir = nonFlagArgs[0] || './workflows';
 const outputPath = nonFlagArgs[1] || './_workflows.ts';
 
-// Calculate relative path from output to workflows directory
+// Calculate relative path from output to each registered file.
 const outputDir = path.dirname(outputPath);
-const relativeWorkflowsPath = path
-  .relative(outputDir, workflowsDir)
-  .replace(/\\/g, '/');
 
 // Files to skip
 const SKIP_FILES = ['helpers.ts'];
@@ -38,9 +58,9 @@ const SKIP_PREFIX = '_';
 function generateSafeIdentifier(filename) {
   // Convert filename to safe JS identifier
   // e.g., "1_simple.ts" -> "workflow_1_simple"
-  return (
-    'workflow_' + filename.replace(/\.tsx?$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
-  );
+  return `workflow_${filename
+    .replace(/\.tsx?$/, '')
+    .replace(/[^a-zA-Z0-9_]/g, '_')}`;
 }
 
 function generateRegistry() {
@@ -51,7 +71,7 @@ function generateRegistry() {
   }
 
   // Read all files from workflows directory
-  const files = fs
+  const workflowFiles = fs
     .readdirSync(workflowsDir)
     .filter((file) => {
       // Only .ts files
@@ -61,7 +81,26 @@ function generateRegistry() {
       if (file.startsWith(SKIP_PREFIX)) return false;
       return true;
     })
-    .sort(); // Sort for consistent output
+    .map((file) => ({
+      filePath: path.join(workflowsDir, file).replace(/\\/g, '/'),
+      registryKey: `workflows/${file}`,
+    }));
+
+  const extraFiles = includeFiles.map((file) => {
+    const filePath = file.replace(/\\/g, '/');
+    if (!fs.existsSync(filePath)) {
+      console.error(`Error: Included workflow file not found: ${filePath}`);
+      process.exit(1);
+    }
+    return {
+      filePath,
+      registryKey: filePath,
+    };
+  });
+
+  const files = [...workflowFiles, ...extraFiles].sort((a, b) =>
+    a.registryKey.localeCompare(b.registryKey)
+  );
 
   if (files.length === 0) {
     console.warn('Warning: No workflow files found to register');
@@ -72,25 +111,22 @@ function generateRegistry() {
 
   // Generate imports
   const imports = files
-    .map((file) => {
-      const identifier = generateSafeIdentifier(file);
-      // Use relative path from output directory to workflows directory
-      let importPath;
-      const baseName = file.replace(/\.tsx?$/, '');
-      if (relativeWorkflowsPath && relativeWorkflowsPath !== 'workflows') {
-        importPath = `${relativeWorkflowsPath}/${baseName}${importExtension}`;
-      } else {
-        importPath = `./workflows/${baseName}${importExtension}`;
+    .map(({ filePath, registryKey }) => {
+      const identifier = generateSafeIdentifier(registryKey);
+      let importPath = path.relative(outputDir, filePath).replace(/\\/g, '/');
+      if (!importPath.startsWith('.')) {
+        importPath = `./${importPath}`;
       }
+      importPath = importPath.replace(/\.tsx?$/, importExtension);
       return `import * as ${identifier} from '${importPath}';`;
     })
     .join('\n');
 
   // Generate registry object entries
   const registryEntries = files
-    .map((file) => {
-      const identifier = generateSafeIdentifier(file);
-      return `  'workflows/${file}': ${identifier},`;
+    .map(({ registryKey }) => {
+      const identifier = generateSafeIdentifier(registryKey);
+      return `  '${registryKey}': ${identifier},`;
     })
     .join('\n');
 
@@ -109,7 +145,9 @@ ${registryEntries}
   fs.writeFileSync(outputPath, content, 'utf-8');
 
   console.log(`✓ Generated ${outputPath} with ${files.length} workflow(s)`);
-  files.forEach((file) => console.log(`  - workflows/${file}`));
+  files.forEach(({ registryKey }) => {
+    console.log(`  - ${registryKey}`);
+  });
 }
 
 // Run the generator

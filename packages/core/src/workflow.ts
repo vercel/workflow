@@ -119,13 +119,19 @@ async function drainPendingQueueItems(
   }
 }
 
+interface RunWorkflowOptions {
+  drainPendingQueueItems?: boolean;
+}
+
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined
+  encryptionKey: CryptoKey | undefined,
+  options: RunWorkflowOptions = {}
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
+    const shouldDrainPendingQueueItems = options.drainPendingQueueItems ?? true;
     span?.setAttributes({
       ...Attribute.WorkflowName(workflowRun.workflowName),
       ...Attribute.WorkflowRunId(workflowRun.runId),
@@ -817,13 +823,15 @@ export async function runWorkflow(
         ...Attribute.WorkflowResultType(typeof result),
       });
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'completed'
-      );
+      if (shouldDrainPendingQueueItems) {
+        await drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'completed'
+        );
+      }
 
       return dehydrated;
     } catch (err) {
@@ -833,13 +841,15 @@ export async function runWorkflow(
         throw err;
       }
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'failed'
-      );
+      if (shouldDrainPendingQueueItems) {
+        await drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'failed'
+        );
+      }
 
       throw err;
     }

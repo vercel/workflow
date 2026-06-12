@@ -72,6 +72,12 @@ export {
   healthCheck,
 } from './runtime/helpers.js';
 export {
+  type ReplayPendingOperation,
+  type ReplayWorkflowHistoryOptions,
+  type ReplayWorkflowHistoryResult,
+  replayWorkflowHistory,
+} from './runtime/replay-history.js';
+export {
   getHookByToken,
   resumeHook,
   resumeWebhook,

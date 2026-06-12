@@ -4,7 +4,7 @@
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
-    "generate:workflows": "node ../scripts/generate-workflows-registry.js",
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js --include app/.well-known/agent/v1/steps.ts",
     "predev": "pnpm generate:workflows",
     "prebuild": "pnpm generate:workflows",
     "dev": "next dev --turbopack",
