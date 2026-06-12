@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.0-beta.9
+
+### Minor Changes
+
+- [#2226](https://github.com/vercel/workflow/pull/2226) [`ae8d6fe`](https://github.com/vercel/workflow/commit/ae8d6feeda0d1d31da8da70156d6e04ebb0487d0) Thanks [@pranaygp](https://github.com/pranaygp)! - Allow passing initial run attributes through `start()`, and speed up workflow-level `setAttribute` calls by using native events for recording attributes.
+
 ## 5.0.0-beta.8
 
 ### Minor Changes

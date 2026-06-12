@@ -19,6 +19,7 @@ import {
   getSpanDurationMs,
 } from '../utils';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
+import styles from './timeline.module.css';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,6 +34,7 @@ const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   retrying: 'bg-gray-400 border border-gray-500',
   waiting: 'bg-gray-400 border border-gray-500',
   running: 'bg-blue-200 border border-blue-500',
+  completed: 'bg-blue-200 border border-blue-500',
   failed: 'bg-red-200 border border-red-500',
   succeeded: 'bg-green-200 border border-green-500',
   sleeping: 'bg-gray-400 border border-gray-500',
@@ -43,6 +45,15 @@ const TIMELINE_INSET_STYLE: CSSProperties = {
   left: TIMELINE_PADDING_PX,
   right: TIMELINE_PADDING_PX,
 };
+
+const ACTIVE_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
+  'running',
+  'received',
+]);
+
+function RunningStripes(): ReactNode {
+  return <div aria-hidden className={styles.runningStripes} />;
+}
 
 // ---------------------------------------------------------------------------
 // Bar geometry
@@ -272,7 +283,7 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
           <div
             key={i}
             className={cn(
-              'absolute h-full rounded-[0.25rem]',
+              'absolute h-full overflow-hidden rounded-[0.25rem]',
               SEGMENT_CLASSES[seg.status]
             )}
             style={{
@@ -282,6 +293,9 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
               minWidth: 1,
             }}
           >
+            {ACTIVE_SEGMENT_STATUSES.has(seg.status) ? (
+              <RunningStripes />
+            ) : null}
             {showLabel ? <DurationLabel label={label} /> : null}
           </div>
         );
