@@ -1,13 +1,13 @@
 ---
 title: getWorld
-description: Async function that resolves the World instance for low-level storage, queuing, and streaming operations.
+description: Resolves the World instance for low-level storage, queuing, and streaming operations.
 type: reference
-summary: Async function that resolves the World instance for low-level workflow storage, queuing, and streaming backends.
+summary: Resolve the World instance for low-level workflow storage, queuing, and streaming backends.
 prerequisites:
   - /docs/deploying
 ---
 
-Retrieves the World instance for direct access to workflow storage, queuing, and streaming backends. This async function returns a `Promise<World>` which provides low-level access to manage workflow runs, steps, events, and hooks.
+Retrieves the World instance for direct access to workflow storage, queuing, and streaming backends. The returned `World` provides low-level access to manage workflow runs, steps, events, and hooks.
 
 Use this function when you need direct access to the underlying workflow infrastructure, such as listing all runs, querying events, or implementing custom workflow management logic.
 
@@ -17,6 +17,10 @@ import { getWorld } from "workflow/runtime";
 const world = await getWorld(); // [!code highlight]
 ```
 
+<Callout type="info">
+  In workflow 4.x, `getWorld()` is synchronous and returns `World` directly. It becomes async in 5.x, so writing `await getWorld()` works on both versions.
+</Callout>
+
 ## API Signature
 
 ### Parameters
@@ -25,7 +29,7 @@ This function does not accept any parameters.
 
 ### Returns
 
-Returns a `Promise<World>` object:
+Returns the `World` object:
 
 <TSDoc
 definition={`
@@ -61,7 +65,7 @@ const step = await world.steps.get(runId, stepId);
 const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
 ```
 
-See [Observability Utilities](/docs/api-reference/workflow-observability) for the full hydration, parsing, and encryption API.
+See [`workflow/observability`](/docs/api-reference/workflow-observability) for the full hydration and parsing API.
 
 ### List Workflow Runs (Display Names)
 
@@ -69,7 +73,7 @@ List workflow runs and derive human-readable names from the `workflowName` field
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
-import { parseWorkflowName } from "@workflow/utils/parse-name"; // [!code highlight]
+import { parseWorkflowName } from "workflow/observability"; // [!code highlight]
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -110,7 +114,7 @@ export async function GET(req: Request) {
 
 <Callout type="info">
   The `workflowName` field contains a machine-readable identifier like `workflow//./src/workflows/order//processOrder`.
-  Use `parseWorkflowName()` from `@workflow/utils/parse-name` to extract the `shortName` (e.g., `"processOrder"`)
+  Use [`parseWorkflowName()`](/docs/api-reference/workflow-observability/parse-workflow-name) to extract the `shortName` (e.g., `"processOrder"`)
   and `moduleSpecifier` for display in your UI.
 </Callout>
 

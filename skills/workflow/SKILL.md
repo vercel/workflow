@@ -25,7 +25,7 @@ Documentation structure in `node_modules/workflow/docs/`:
 - `api-reference/workflow/` - API docs (sleep.mdx, create-hook.mdx, fatal-error.mdx, etc.)
 - `api-reference/workflow-api/` - Client API (start.mdx, get-run.mdx, resume-hook.mdx, etc.)
 - `api-reference/workflow-runtime/` - Runtime API (get-world.mdx) and `world/` World SDK (storage.mdx, streams.mdx, queue.mdx)
-- `api-reference/workflow-observability.mdx` - Hydration, name parsing, and encryption utilities
+- `api-reference/workflow-observability/` - Hydration and name parsing utilities (hydrate-resource-io.mdx, parse-workflow-name.mdx, etc.)
 - `ai/` - AI SDK integration docs
 - `errors/` - Error code documentation
 
@@ -628,7 +628,7 @@ import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowN
 
 **Key docs** (grep `node_modules/workflow/docs/` for full details):
 - `api-reference/workflow-runtime/world/storage.mdx` — events, runs, steps, hooks (events are source of truth; others are materialized views)
-- `api-reference/workflow-observability.mdx` — hydration, parsing, encryption
+- `api-reference/workflow-observability/` — hydration and name parsing
 
 ### World SDK Method Signatures
 

@@ -1,0 +1,64 @@
+---
+title: NestLocalBuilder
+description: Builder that compiles workflow files into bundles for NestJS apps.
+type: reference
+summary: Use NestLocalBuilder to build workflow bundles programmatically in a NestJS project.
+prerequisites:
+  - /docs/getting-started/nestjs
+---
+
+Builder that scans a NestJS project for workflow files and compiles them into the step, workflow, and webhook bundles plus a manifest. [`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) creates and runs one automatically on startup — instantiate it yourself only when you need to build bundles outside the module lifecycle (e.g. a custom build script for production with `skipBuild`).
+
+## Usage
+
+```typescript title="scripts/build-workflows.ts" lineNumbers
+import { NestLocalBuilder } from "workflow/nest"; // [!code highlight]
+
+const builder = new NestLocalBuilder({
+  dirs: ["src"],
+});
+
+await builder.build(); // [!code highlight]
+
+console.log(`Workflow bundles written to ${builder.outDir}`);
+```
+
+## API Signature
+
+### Constructor
+
+`new NestLocalBuilder(options?)` creates a builder for the given options.
+
+### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `options` | `NestBuilderOptions` | Optional. Configures the workflow build. |
+
+#### NestBuilderOptions
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `workingDir` | `string` | `process.cwd()` | Working directory for the NestJS application. |
+| `dirs` | `string[]` | `['src']` | Directories to scan for workflow files. |
+| `outDir` | `string` | `'.nestjs/workflow'` (relative to `workingDir`) | Output directory for generated workflow bundles. |
+| `watch` | `boolean` | `false` | Enable watch mode for development. |
+| `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. When `'commonjs'`, the builder rewrites externalized imports in the steps bundle to use `require()` via `createRequire`, avoiding ESM/CJS named-export interop issues with SWC's output. |
+| `distDir` | `string` | `'dist'` | Directory where NestJS compiles `.ts` source files to `.js` (relative to `workingDir`). Used when `moduleType` is `'commonjs'` to resolve compiled file paths. Should match the `outDir` in your `tsconfig.json`. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+
+### Methods
+
+#### `build()`
+
+Builds the workflow bundles. Writes `steps.mjs`, `workflows.mjs`, `webhook.mjs`, and `manifest.json` to the output directory (plus a `.gitignore` covering the generated files when not deploying to Vercel). Returns `Promise<void>`.
+
+### Properties
+
+#### `outDir`
+
+Read-only getter that returns the output directory for generated workflow bundles — the `outDir` option as passed, or the default `.nestjs/workflow` resolved against `workingDir`.
+
+### Returns
+
+The constructor returns a `NestLocalBuilder` instance.

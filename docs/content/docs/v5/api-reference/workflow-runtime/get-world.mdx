@@ -61,7 +61,7 @@ const step = await world.steps.get(runId, stepId);
 const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
 ```
 
-See [Observability Utilities](/docs/api-reference/workflow-observability) for the full hydration, parsing, and encryption API.
+See [`workflow/observability`](/docs/api-reference/workflow-observability) for the full hydration and parsing API.
 
 ### List Workflow Runs (Display Names)
 
@@ -69,7 +69,7 @@ List workflow runs and derive human-readable names from the `workflowName` field
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
-import { parseWorkflowName } from "@workflow/utils/parse-name"; // [!code highlight]
+import { parseWorkflowName } from "workflow/observability"; // [!code highlight]
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -110,7 +110,7 @@ export async function GET(req: Request) {
 
 <Callout type="info">
   The `workflowName` field contains a machine-readable identifier like `workflow//./src/workflows/order//processOrder`.
-  Use `parseWorkflowName()` from `@workflow/utils/parse-name` to extract the `shortName` (e.g., `"processOrder"`)
+  Use [`parseWorkflowName()`](/docs/api-reference/workflow-observability/parse-workflow-name) to extract the `shortName` (e.g., `"processOrder"`)
   and `moduleSpecifier` for display in your UI.
 </Callout>
 

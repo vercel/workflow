@@ -230,7 +230,7 @@ const result = await world.steps.list({ // [!code highlight]
 | `retryAfter` | `string \| null` | ISO timestamp for next retry attempt |
 
 <Callout type="info">
-  Step I/O is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. Use `hydrateResourceIO()` from `workflow/observability` to deserialize it for display. See [Observability Utilities](/docs/api-reference/workflow-observability).
+  Step I/O is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. Use `hydrateResourceIO()` from `workflow/observability` to deserialize it for display. See [`hydrateResourceIO()`](/docs/api-reference/workflow-observability/hydrate-resource-io).
 </Callout>
 
 <Callout type="warn">
@@ -403,7 +403,7 @@ for (const event of events.data) {
 
 - [Event Sourcing](/docs/how-it-works/event-sourcing) — How the event log powers workflow replay and state
 - [getRun()](/docs/api-reference/workflow-api/get-run) — Higher-level API for working with individual runs
-- [Observability Utilities](/docs/api-reference/workflow-observability) — Hydrate step I/O, parse display names, decrypt data
+- [`workflow/observability`](/docs/api-reference/workflow-observability) — Hydrate step I/O and parse display names
 - [resumeHook()](/docs/api-reference/workflow-api/resume-hook) — Resume a workflow by sending a payload to a hook
 - [Hooks](/docs/foundations/hooks) — Core concepts for hooks and pause points
 - [Workflows and Steps](/docs/foundations/workflows-and-steps) — Core concepts for steps

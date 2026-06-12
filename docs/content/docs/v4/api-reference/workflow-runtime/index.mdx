@@ -20,13 +20,27 @@ The runtime package provides low-level access to the workflow runtime — resolv
     </Card>
 </Cards>
 
-## Other Exports
+## Infrastructure Functions
 
-These exports are primarily used by framework adapters and custom world setups, and are rarely needed in application code:
+These functions are primarily used by framework adapters and custom world setups, and are rarely needed in application code:
 
-- `createWorld()` — Create a World instance from environment configuration (`WORKFLOW_TARGET_WORLD`).
-- `setWorld()` — Override the cached World instance, for example to inject a custom World or reinitialize after environment changes.
-- `getWorldHandlers()` — Build-time-safe access to the World's queue handlers without binding to runtime environment variables.
-- `workflowEntrypoint()` — Create the HTTP route handler that executes workflow runs from a workflow bundle.
-- `stepEntrypoint()` — Create the HTTP route handler that executes step functions from a step bundle.
-- `healthCheck()` — Check the health of a deployment's workflow infrastructure.
+<Cards>
+    <Card href="/docs/api-reference/workflow-runtime/create-world" title="createWorld()">
+        Create a World instance from environment configuration.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/set-world" title="setWorld()">
+        Override the cached World instance with a custom World.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/get-world-handlers" title="getWorldHandlers()">
+        Build-time-safe access to the World's queue handlers.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/workflow-entrypoint" title="workflowEntrypoint()">
+        Create the HTTP route handler that executes workflow runs.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/step-entrypoint" title="stepEntrypoint">
+        The HTTP route handler that executes step functions.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/health-check" title="healthCheck()">
+        Check the health of a deployment's workflow infrastructure.
+    </Card>
+</Cards>
