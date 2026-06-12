@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/breadcrumb';
 import type { RegistryItem } from '@/lib/patterns/types';
 import { getProviderLogo } from './logos';
+import { PatternTypeBadge } from './PatternTypeBadge';
 import { VersionBadges } from './VersionBadges';
 
 interface RegistryDetailHeroProps {
@@ -58,6 +59,7 @@ export function RegistryDetailHero({ item }: RegistryDetailHeroProps) {
                 {item.shadcnSlug}
               </p>
             )}
+            <PatternTypeBadge type={item.patternType} />
             <VersionBadges versions={item.versions} />
           </div>
           <p className="text-lg text-muted-foreground max-w-2xl">

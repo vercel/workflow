@@ -19,6 +19,19 @@
  */
 export type WorkflowVersion = 'v4' | 'v5';
 
+/**
+ * What kind of artifact a pattern is — based on what the installed code is
+ * worth after adaptation:
+ *
+ * - `component` — the installed code IS the value. Import it and call it;
+ *   domain-free (e.g. Kill Switch, Semaphore).
+ * - `template` — the structure is the value. Keep the skeleton, replace the
+ *   function bodies with your domain logic (e.g. Saga, Batching).
+ * - `example` — the lesson is the value. Read it, then mostly rewrite
+ *   (tutorials and provider integrations).
+ */
+export type RegistryPatternType = 'component' | 'template' | 'example';
+
 export type RegistryCategory =
   | 'provider'
   | 'agent'
@@ -103,7 +116,18 @@ export type RegistryLogoId =
   | 'webhooks'
   | 'child-workflows'
   | 'kill-switch'
-  | 'upgrading-workflows';
+  | 'upgrading-workflows'
+  | 'semaphore'
+  | 'rate-limiter'
+  | 'circuit-breaker'
+  | 'debounce'
+  | 'batch-aggregator'
+  | 'singleton-run'
+  | 'polling'
+  | 'dead-letter-queue'
+  | 'recurring-cron'
+  | 'stripe'
+  | 'slack-approval';
 
 /**
  * Comparison table for patterns that have multiple valid approaches.
@@ -286,6 +310,11 @@ export interface RegistryItem {
    * for one built on v5-only features).
    */
   versions: WorkflowVersion[];
+  /**
+   * Component / template / example — drives the type badge and the type
+   * filter on the listing page. See `RegistryPatternType` for definitions.
+   */
+  patternType: RegistryPatternType;
   /** Provider homepage / product page. */
   homepage: string;
   /** Provider docs entry-point linked from the detail hero. */

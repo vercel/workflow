@@ -1,49 +1,50 @@
 /**
  * Source snippets for the Child Workflows registry entry.
  *
- * Spawn-and-wait-via-hook pattern for orchestrating many independent
- * workflow runs from a parent — each child has its own runId, event log,
- * and retry boundary, so a failing child never takes down siblings or the
- * parent. Instead of polling `getRun().status` in a sleep loop, each child
- * resumes a completion hook on the parent when it finishes: zero compute
- * while waiting, immediate wake-up, and a typed result payload.
- * Ships parent + child + completion hook + spawn step + startAndWait helper.
+ * Split into two installable files:
+ *   - workflows/child-workflows.ts — the generic component: a completion
+ *     hook, `withChildCompletionHook()` wrapper, and `startAndWait()` helper
+ *     that any parent/child pair can reuse unchanged.
+ *   - workflows/child-workflows-example.ts — a worked example (document
+ *     batch processing) showing how to wire the component up.
+ *
+ * Instead of polling `getRun().status` in a sleep loop, each child resumes
+ * a completion hook on the parent when it finishes: zero compute while
+ * waiting, immediate wake-up, and a typed result payload.
  */
 
-export const childWorkflowsWorkflowSource = `import { defineHook, getWorkflowMetadata } from "workflow";
-import { start } from "workflow/api";
+export const childWorkflowsHelpersSource = `import { defineHook, getWorkflowMetadata } from "workflow";
 import { z } from "zod";
 
 // Completion hook — the child resumes this on the parent when it finishes.
 // The discriminated union carries either the child's return value or its
 // error message, so the parent never has to poll or fetch returnValue.
-const childCompletionHook = defineHook({
+export const childCompletionHook = defineHook({
   schema: z.discriminatedUnion("status", [
     z.object({ status: z.literal("completed"), value: z.unknown() }),
     z.object({ status: z.literal("failed"), error: z.string() }),
   ]),
 });
 
+export type ChildCompletion =
+  | { status: "completed"; value: unknown }
+  | { status: "failed"; error: string };
+
 // Stable token per (parent run, child key) so parallel children inside one
 // parent run never collide on hook tokens.
-function completionToken(parentRunId: string, key: string) {
+export function completionToken(parentRunId: string, key: string) {
   return \`child-completion:\${parentRunId}:\${key}\`;
 }
 
 // resume() must be called from a step.
-async function resumeParentCompletion(
-  token: string,
-  result:
-    | { status: "completed"; value: unknown }
-    | { status: "failed"; error: string },
-) {
+async function resumeParentCompletion(token: string, result: ChildCompletion) {
   "use step";
   await childCompletionHook.resume(token, result);
 }
 
 // Runs the real child in try/catch/finally and reports the outcome to the
 // parent's hook — including failures, so the parent always wakes up.
-async function withChildCompletionHook<TResult>(
+export async function withChildCompletionHook<TResult>(
   runChild: () => Promise<TResult>,
   completionTokenArg: string,
 ) {
@@ -66,6 +67,130 @@ async function withChildCompletionHook<TResult>(
     }
   }
 }
+
+// Create the hook, spawn the child with the token, suspend until the child
+// resumes it, then unwrap the typed result. Call from a parent workflow.
+export async function startAndWait<TResult>(
+  key: string,
+  startChild: (completionTokenArg: string) => Promise<void>,
+): Promise<TResult> {
+  const { workflowRunId } = getWorkflowMetadata();
+  const token = completionToken(workflowRunId, key);
+  const hook = childCompletionHook.create({ token });
+
+  await startChild(token);
+
+  const completion = await hook;
+  if (completion.status === "failed") {
+    throw new Error(completion.error);
+  }
+  return completion.value as TResult;
+}
+`;
+
+export const childWorkflowsHelpersInstallSource = `/**
+ * Child Workflows component — spawn independent runs, wait via hook resume.
+ *
+ * This file is the generic, reusable part: import startAndWait() and
+ * withChildCompletionHook() from here for any parent/child pair. See
+ * child-workflows-example.ts for a worked example.
+ *
+ * THE PATTERN:
+ *   1. The parent creates a completion hook per child (stable token derived
+ *      from the parent runId + a child key) and suspends on it — zero
+ *      compute while waiting, immediate wake-up when the child finishes.
+ *   2. Each child is an independent workflow run with its own runId, event
+ *      log, and retry boundary — a failing child never affects siblings.
+ *   3. withChildCompletionHook() runs the real child in try/catch/finally
+ *      and resumes the parent's hook with { status, value | error } from a
+ *      step, so the parent always wakes up, even on failure.
+ *   4. startAndWait() ties hook creation, spawning, and the typed result
+ *      together; Promise.all in the parent fans out over many children.
+ *
+ * WHY HOOKS INSTEAD OF POLLING getRun().status:
+ *   - Zero compute while waiting — no sleep() poll loop waking the parent.
+ *   - Immediate wake-up when the child finishes, not on the next poll tick.
+ *   - Typed payloads — the child sends { status, value | error } directly;
+ *     no separate returnValue fetch step.
+ *   - No worker-pool pressure from polling inside steps.
+ *
+ * DOCS: https://workflow-sdk.dev/patterns/child-workflows
+ */
+import { defineHook, getWorkflowMetadata } from "workflow";
+import { z } from "zod";
+
+// Completion hook — the child resumes this on the parent when it finishes.
+export const childCompletionHook = defineHook({
+  schema: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("completed"), value: z.unknown() }),
+    z.object({ status: z.literal("failed"), error: z.string() }),
+  ]),
+});
+
+export type ChildCompletion =
+  | { status: "completed"; value: unknown }
+  | { status: "failed"; error: string };
+
+// Stable token per (parent run, child key) so parallel children inside one
+// parent run never collide on hook tokens.
+export function completionToken(parentRunId: string, key: string) {
+  return \`child-completion:\${parentRunId}:\${key}\`;
+}
+
+// resume() must be called from a step.
+async function resumeParentCompletion(token: string, result: ChildCompletion) {
+  "use step";
+  await childCompletionHook.resume(token, result);
+}
+
+// Runs the real child in try/catch/finally and reports the outcome to the
+// parent's hook — including failures, so the parent always wakes up.
+export async function withChildCompletionHook<TResult>(
+  runChild: () => Promise<TResult>,
+  completionTokenArg: string,
+) {
+  let result:
+    | { status: "completed"; value: TResult }
+    | { status: "failed"; error: string }
+    | undefined;
+
+  try {
+    const value = await runChild();
+    result = { status: "completed", value };
+  } catch (error) {
+    result = {
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (result) {
+      await resumeParentCompletion(completionTokenArg, result);
+    }
+  }
+}
+
+// Create the hook, spawn the child with the token, suspend until the child
+// resumes it, then unwrap the typed result. Call from a parent workflow.
+export async function startAndWait<TResult>(
+  key: string,
+  startChild: (completionTokenArg: string) => Promise<void>,
+): Promise<TResult> {
+  const { workflowRunId } = getWorkflowMetadata();
+  const token = completionToken(workflowRunId, key);
+  const hook = childCompletionHook.create({ token });
+
+  await startChild(token);
+
+  const completion = await hook;
+  if (completion.status === "failed") {
+    throw new Error(completion.error);
+  }
+  return completion.value as TResult;
+}
+`;
+
+export const childWorkflowsExampleSource = `import { start } from "workflow/api";
+import { startAndWait, withChildCompletionHook } from "./child-workflows";
 
 // CHILD — one independent unit of work. Replace the steps with real logic.
 export async function processDocument(documentId: string) {
@@ -103,25 +228,6 @@ async function spawnProcessDocument(
   await start(processDocumentWithCompletion, [documentId, completionTokenArg], {
     deploymentId: "latest",
   });
-}
-
-// Create the hook, spawn the child with the token, suspend until the child
-// resumes it, then unwrap the typed result.
-async function startAndWait<TResult>(
-  key: string,
-  startChild: (completionTokenArg: string) => Promise<void>,
-): Promise<TResult> {
-  const { workflowRunId } = getWorkflowMetadata();
-  const token = completionToken(workflowRunId, key);
-  const hook = childCompletionHook.create({ token });
-
-  await startChild(token);
-
-  const completion = await hook;
-  if (completion.status === "failed") {
-    throw new Error(completion.error);
-  }
-  return completion.value as TResult;
 }
 
 // PARENT — orchestrates many children and waits for all of them.
@@ -159,34 +265,16 @@ async function generateSummary(analysis: string): Promise<string> {
 }
 `;
 
-export const childWorkflowsWorkflowInstallSource = `/**
- * Child Workflows — spawn independent runs and wait via hook resume.
+export const childWorkflowsExampleInstallSource = `/**
+ * Child Workflows example — document batch processing with startAndWait().
  *
- * THE PATTERN:
- *   1. The parent creates a completion hook per child (stable token derived
- *      from the parent runId + a child key) and suspends on it — zero
- *      compute while waiting, immediate wake-up when the child finishes.
- *   2. Each child is an independent workflow run with its own runId, event
- *      log, and retry boundary — a failing child never affects siblings.
- *   3. A wrapped child export runs the real child in try/catch/finally and
- *      resumes the parent's hook with { status, value | error } from a step,
- *      so the parent always wakes up, even on failure.
- *   4. startAndWait() ties hook creation, spawning, and the typed result
- *      together; Promise.all fans out over many children.
- *
- * WHY HOOKS INSTEAD OF POLLING getRun().status:
- *   - Zero compute while waiting — no sleep() poll loop waking the parent.
- *   - Immediate wake-up when the child finishes, not on the next poll tick.
- *   - Typed payloads — the child sends { status, value | error } directly;
- *     no separate returnValue fetch step.
- *   - No worker-pool pressure from polling inside steps.
- *
- * USEFUL WHEN:
- *   - Processing many independent items (documents, users, records) in
- *     parallel with isolated failure handling per item.
- *   - You need per-item run IDs for individual observability and cancellation.
- *   - Children have long runtimes and you want the parent to survive restarts
- *     while waiting for them.
+ * The generic machinery lives in ./child-workflows (installed alongside
+ * this file). This example shows the wiring:
+ *   - a child workflow (processDocument)
+ *   - a spawnable wrapper export that reports completion to the parent
+ *   - a spawn step (start() must run in a step on v4; v5 also allows
+ *     calling it directly from the workflow)
+ *   - a parent that fans out with Promise.all + startAndWait()
  *
  * TO ADAPT THIS TO YOUR USE CASE:
  *   - Replace processDocument with your child workflow function.
@@ -204,62 +292,8 @@ export const childWorkflowsWorkflowInstallSource = `/**
  *
  * DOCS: https://workflow-sdk.dev/patterns/child-workflows
  */
-import { defineHook, getWorkflowMetadata } from "workflow";
 import { start } from "workflow/api";
-import { z } from "zod";
-
-// Completion hook — the child resumes this on the parent when it finishes.
-// The discriminated union carries either the child's return value or its
-// error message, so the parent never has to poll or fetch returnValue.
-const childCompletionHook = defineHook({
-  schema: z.discriminatedUnion("status", [
-    z.object({ status: z.literal("completed"), value: z.unknown() }),
-    z.object({ status: z.literal("failed"), error: z.string() }),
-  ]),
-});
-
-// Stable token per (parent run, child key) so parallel children inside one
-// parent run never collide on hook tokens.
-function completionToken(parentRunId: string, key: string) {
-  return \`child-completion:\${parentRunId}:\${key}\`;
-}
-
-// resume() must be called from a step.
-async function resumeParentCompletion(
-  token: string,
-  result:
-    | { status: "completed"; value: unknown }
-    | { status: "failed"; error: string },
-) {
-  "use step";
-  await childCompletionHook.resume(token, result);
-}
-
-// Runs the real child in try/catch/finally and reports the outcome to the
-// parent's hook — including failures, so the parent always wakes up.
-async function withChildCompletionHook<TResult>(
-  runChild: () => Promise<TResult>,
-  completionTokenArg: string,
-) {
-  let result:
-    | { status: "completed"; value: TResult }
-    | { status: "failed"; error: string }
-    | undefined;
-
-  try {
-    const value = await runChild();
-    result = { status: "completed", value };
-  } catch (error) {
-    result = {
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    if (result) {
-      await resumeParentCompletion(completionTokenArg, result);
-    }
-  }
-}
+import { startAndWait, withChildCompletionHook } from "./child-workflows";
 
 // CHILD — one independent unit of work. Replace the steps with real logic.
 export async function processDocument(documentId: string) {
@@ -297,25 +331,6 @@ async function spawnProcessDocument(
   await start(processDocumentWithCompletion, [documentId, completionTokenArg], {
     deploymentId: "latest",
   });
-}
-
-// Create the hook, spawn the child with the token, suspend until the child
-// resumes it, then unwrap the typed result.
-async function startAndWait<TResult>(
-  key: string,
-  startChild: (completionTokenArg: string) => Promise<void>,
-): Promise<TResult> {
-  const { workflowRunId } = getWorkflowMetadata();
-  const token = completionToken(workflowRunId, key);
-  const hook = childCompletionHook.create({ token });
-
-  await startChild(token);
-
-  const completion = await hook;
-  if (completion.status === "failed") {
-    throw new Error(completion.error);
-  }
-  return completion.value as TResult;
 }
 
 // PARENT — orchestrates many children and waits for all of them.
@@ -355,7 +370,7 @@ async function generateSummary(analysis: string): Promise<string> {
 
 export const childWorkflowsStartRouteSource = `import { start } from "workflow/api";
 import { NextResponse } from "next/server";
-import { processDocumentBatch } from "@/app/workflows/child-workflows";
+import { processDocumentBatch } from "@/app/workflows/child-workflows-example";
 
 // POST /api/child-workflows { documentIds: string[] }
 export async function POST(request: Request) {

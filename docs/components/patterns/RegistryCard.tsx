@@ -10,6 +10,7 @@ import {
 import { categoryLabels } from '@/lib/patterns/manifest';
 import type { RegistryItem } from '@/lib/patterns/types';
 import { getProviderLogo } from './logos';
+import { PatternTypeBadge } from './PatternTypeBadge';
 import { VersionBadges } from './VersionBadges';
 
 interface RegistryCardProps {
@@ -50,6 +51,7 @@ export function RegistryCard({ item }: RegistryCardProps) {
           </p>
         </CardContent>
         <div className="flex items-center flex-wrap gap-1.5 px-4 pb-4 pt-2">
+          <PatternTypeBadge type={item.patternType} />
           <VersionBadges versions={item.versions} />
           {item.categories.map((category) => (
             <Badge

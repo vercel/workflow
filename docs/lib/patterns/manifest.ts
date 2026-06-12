@@ -29,8 +29,10 @@ import {
 } from './snippets/chat-sdk';
 import {
   childWorkflowsStartRouteSource,
-  childWorkflowsWorkflowSource,
-  childWorkflowsWorkflowInstallSource,
+  childWorkflowsHelpersSource,
+  childWorkflowsHelpersInstallSource,
+  childWorkflowsExampleSource,
+  childWorkflowsExampleInstallSource,
 } from './snippets/child-workflows';
 import {
   killSwitchButtonSource,
@@ -39,6 +41,61 @@ import {
   killSwitchUsageSource,
   killSwitchLibInstallSource,
 } from './snippets/kill-switch';
+import {
+  semaphoreWorkflowSource,
+  semaphoreWorkflowInstallSource,
+  semaphoreUsageSource,
+} from './snippets/semaphore';
+import {
+  rateLimiterWorkflowSource,
+  rateLimiterWorkflowInstallSource,
+  rateLimiterUsageSource,
+} from './snippets/rate-limiter';
+import {
+  circuitBreakerWorkflowSource,
+  circuitBreakerWorkflowInstallSource,
+  circuitBreakerUsageSource,
+} from './snippets/circuit-breaker';
+import {
+  debounceWorkflowSource,
+  debounceWorkflowInstallSource,
+  debounceUsageSource,
+} from './snippets/debounce';
+import {
+  batchAggregatorWorkflowSource,
+  batchAggregatorWorkflowInstallSource,
+  batchAggregatorUsageSource,
+} from './snippets/batch-aggregator';
+import {
+  singletonRunWorkflowSource,
+  singletonRunWorkflowInstallSource,
+  singletonRunUsageSource,
+} from './snippets/singleton-run';
+import {
+  pollingWorkflowSource,
+  pollingWorkflowInstallSource,
+  pollingStartRouteSource,
+} from './snippets/polling';
+import {
+  deadLetterQueueWorkflowSource,
+  deadLetterQueueWorkflowInstallSource,
+  deadLetterQueueStartRouteSource,
+} from './snippets/dead-letter-queue';
+import {
+  recurringCronWorkflowSource,
+  recurringCronWorkflowInstallSource,
+  recurringCronStartRouteSource,
+} from './snippets/recurring-cron';
+import {
+  stripeWorkflowSource,
+  stripeWorkflowInstallSource,
+  stripeWebhookRouteSource,
+} from './snippets/stripe';
+import {
+  slackApprovalWorkflowSource,
+  slackApprovalWorkflowInstallSource,
+  slackApprovalRouteSource,
+} from './snippets/slack-approval';
 import {
   durableAgentClientSource,
   durableAgentStartRouteSource,
@@ -120,7 +177,11 @@ import {
   upgradingWorkflowsMethod1InstallSource,
   upgradingWorkflowsMethod2InstallSource,
 } from './snippets/upgrading-workflows';
-import type { RegistryCategory, RegistryItem } from './types';
+import type {
+  RegistryCategory,
+  RegistryItem,
+  RegistryPatternType,
+} from './types';
 
 /**
  * Public registry of installable Workflow patterns.
@@ -144,6 +205,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['agent', 'cancellation', 'stop-button', 'durable'],
     categories: ['agent'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/agent-patterns/agent-cancellation',
@@ -355,6 +417,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['ai', 'chat', 'streaming', 'agents', 'durable'],
     categories: ['agent', 'vercel'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://ai-sdk.dev',
     docsUrl: 'https://ai-sdk.dev/docs',
     sourceUrl:
@@ -543,6 +606,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['agents', 'ai', 'durable', 'tools', 'streaming'],
     categories: ['agent'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/durable-agent',
     sourceUrl:
@@ -644,6 +708,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['agent', 'approval', 'human-in-the-loop', 'durable'],
     categories: ['agent'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/agent-patterns/human-in-the-loop',
@@ -768,6 +833,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['chat', 'bots', 'slack', 'teams', 'discord', 'durable'],
     categories: ['vercel', 'agent'],
     versions: ['v4', 'v5'],
+    patternType: 'example',
     homepage: 'https://chat-sdk.dev',
     docsUrl: 'https://chat-sdk.dev/docs/guides/durable-chat-sessions-nextjs',
     sourceUrl:
@@ -921,6 +987,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['sandbox', 'agents', 'sessions', 'durable', 'snapshots'],
     categories: ['vercel', 'agent'],
     versions: ['v4', 'v5'],
+    patternType: 'example',
     homepage: 'https://vercel.com/docs/vercel-sandbox',
     docsUrl: 'https://vercel.com/docs/vercel-sandbox',
     sourceUrl:
@@ -1068,6 +1135,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['batching', 'fan-out', 'parallel', 'bulk-import'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/batching',
     sourceUrl:
@@ -1151,6 +1219,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['idempotency', 'stripe', 'retries', 'exactly-once'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/idempotency',
     sourceUrl:
@@ -1226,6 +1295,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['rate-limit', 'retry', 'backoff', '429'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'example',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/handling-rate-limits',
     sourceUrl:
@@ -1309,6 +1379,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['saga', 'transactions', 'rollback', 'compensation'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/saga',
     sourceUrl:
@@ -1393,6 +1464,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['scheduling', 'reminders', 'cancellable', 'sleep'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'component',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/scheduling',
     sourceUrl:
@@ -1445,12 +1517,12 @@ export const registryItems: RegistryItem[] = [
         'Any pattern where "do X, wait N hours, then do Y" needs to be both reliable and interruptible',
       ],
       sourceDescription:
-        'A drip campaign sends emails at intervals, sleeping between each. Each sleep races against a cancellation hook — if an external event fires the hook (e.g. user converts, unsubscribes), the campaign stops immediately.',
+        'The reusable core is `cancellableSleep(token, delay)` — a durable sleep raced against a cancel hook, callable from any workflow. `scheduleAction()` builds the one-shot scheduler on top of it: defer `runAction` until the delay elapses, unless something resumes the cancel hook first.',
       howItWorks: [
         '**Durable sleep** — `sleep("2d")` persists through restarts at zero compute cost. The workflow resumes precisely when the timer fires.',
-        '**Hook creation** — `cancelDrip.create({ token })` registers a hook that resolves when any external system calls `.resume()` with the same token.',
-        '**Race** — `Promise.race([sleep(...), hook])` blocks until either the timer fires or the hook is resumed, whichever comes first.',
-        '**Fresh hooks per window** — after a sleep completes normally, the previous hook instance is consumed. A new `.create()` call registers a fresh hook for the next sleep window, reusing the same token.',
+        '**Hook creation** — `cancelSchedule.create({ token })` registers a hook that resolves when any external system calls `.resume()` with the same token.',
+        '**Race** — `cancellableSleep()` wraps `Promise.race([sleep(...), hook])`: it resolves `"elapsed"` when the timer fires or `"cancelled"` when the hook is resumed first.',
+        '**Semantic tokens** — the hook token is `schedule:<your-id>`, so cancelling needs only the ID you chose at schedule time, not the run ID.',
       ],
       adapting: [
         '**Change durations** — replace `"2d"` with any duration string (`"1h"`, `"7d"`, `"30m"`) or a `Date` object for absolute times.',
@@ -1493,6 +1565,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['composition', 'parallel', 'race', 'pipeline'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'example',
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/common-patterns/sequential-and-parallel',
@@ -1585,6 +1658,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['timeout', 'deadline', 'race', 'sleep'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/timeouts',
     sourceUrl:
@@ -1673,6 +1747,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['webhook', 'callback', 'integration', 'external-api'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/webhooks',
     sourceUrl:
@@ -1772,6 +1847,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['composition', 'child-workflow', 'spawn', 'start'],
     categories: ['common'],
     versions: ['v4', 'v5'],
+    patternType: 'example',
     homepage: 'https://workflow-sdk.dev',
     docsUrl:
       'https://workflow-sdk.dev/cookbook/common-patterns/workflow-composition',
@@ -1870,6 +1946,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['fan-out', 'spawn', 'hooks', 'orchestration'],
     categories: ['advanced'],
     versions: ['v4', 'v5'],
+    patternType: 'component',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/child-workflows',
     sourceUrl:
@@ -1877,9 +1954,14 @@ export const registryItems: RegistryItem[] = [
     shadcnSlug: 'https://workflow-sdk.dev/r/child-workflows',
     files: [
       {
-        path: 'workflows/child-workflows-workflow.ts',
+        path: 'workflows/child-workflows.ts',
         description:
-          '`processDocumentBatch()` parent + `processDocument()` child + completion hook + wrapped child export + `startAndWait()` helper.',
+          'The reusable component — completion hook + `withChildCompletionHook()` + `startAndWait()`. Import these for any parent/child pair; no changes needed.',
+      },
+      {
+        path: 'workflows/child-workflows-example.ts',
+        description:
+          'Worked example — `processDocumentBatch()` parent + `processDocument()` child + spawn step wired up with the component.',
       },
       {
         path: 'app/api/child-workflows/route.ts',
@@ -1889,11 +1971,22 @@ export const registryItems: RegistryItem[] = [
     ],
     snippets: [
       {
-        label: 'Workflow',
+        label: 'Component',
         lang: 'tsx',
-        caption: 'workflows/child-workflows-workflow.ts',
-        code: childWorkflowsWorkflowSource,
-        installCode: childWorkflowsWorkflowInstallSource,
+        caption: 'workflows/child-workflows.ts',
+        description:
+          'The generic machinery — import `startAndWait()` and `withChildCompletionHook()` from here for any parent/child pair.',
+        code: childWorkflowsHelpersSource,
+        installCode: childWorkflowsHelpersInstallSource,
+      },
+      {
+        label: 'Example',
+        lang: 'tsx',
+        caption: 'workflows/child-workflows-example.ts',
+        description:
+          'A worked example — document batch processing wired up with the component.',
+        code: childWorkflowsExampleSource,
+        installCode: childWorkflowsExampleInstallSource,
       },
       {
         label: 'Start route',
@@ -1911,7 +2004,7 @@ export const registryItems: RegistryItem[] = [
         '**You need per-item observability** — each child workflow has its own run ID, status, and event log for monitoring',
       ],
       sourceDescription:
-        'The workflow file ships the full spawn-and-wait pattern — a child workflow (`processDocument`), a wrapped child export that reports its outcome, a completion hook, a spawn step, a `startAndWait()` helper, and a parent (`processDocumentBatch`) that fans out with `Promise.all`.',
+        'Two files install: `workflows/child-workflows.ts` is the reusable component (completion hook, `withChildCompletionHook()`, `startAndWait()`) — import it unchanged for any parent/child pair. `workflows/child-workflows-example.ts` is a worked example: a child workflow (`processDocument`), a wrapped child export that reports its outcome, a spawn step, and a parent (`processDocumentBatch`) that fans out with `Promise.all`.',
       howItWorks: [
         '**Completion hook** — the parent creates a hook per child (stable token from parent `runId` + child key) and suspends on it. Zero compute while waiting, immediate wake-up when the child finishes.',
         "**Wrapped child export** — runs the real child in try/catch/finally and resumes the parent's hook with `{ status, value | error }` from a step in `finally`, so the parent always wakes up, even on failure.",
@@ -1962,6 +2055,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['kill-switch', 'cancellation', 'distributed', 'cross-process'],
     categories: ['advanced'],
     versions: ['v4', 'v5'],
+    patternType: 'component',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/kill-switch',
     sourceUrl:
@@ -2055,6 +2149,474 @@ export const registryItems: RegistryItem[] = [
     },
   },
   {
+    id: 'semaphore',
+    name: 'Semaphore',
+    logo: 'semaphore',
+    description:
+      'At most N concurrent executions of a critical section — across all runs and machines. Includes withLock() mutex.',
+    longDescription:
+      'A distributed semaphore backed by a coordination workflow. `withPermit(key, max, fn)` suspends until one of `max` permits is free — across every workflow run, deployment, and machine — runs `fn`, and releases on the way out (including on failure). `withLock(key, fn)` is the single-permit mutex special case. Waiters cost zero compute while queued, grants are FIFO, and the whole thing self-heals: senders lazily restart the coordinator and waiters re-request if a grant goes missing.',
+    tags: ['semaphore', 'mutex', 'lock', 'concurrency', 'coordination'],
+    categories: ['advanced'],
+    versions: ['v4', 'v5'],
+    patternType: 'component',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/semaphore',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/semaphore.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/semaphore',
+    files: [
+      {
+        path: 'workflows/semaphore-workflow.ts',
+        description:
+          'The complete component — coordinator workflow + `withPermit()` / `withLock()` consumer API. Import and call; nothing to adapt.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Component',
+        lang: 'tsx',
+        caption: 'workflows/semaphore-workflow.ts',
+        code: semaphoreWorkflowSource,
+        installCode: semaphoreWorkflowInstallSource,
+      },
+      {
+        label: 'Usage',
+        lang: 'tsx',
+        caption: 'Call withPermit() / withLock() from any workflow function',
+        code: semaphoreUsageSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**Bounding concurrency against a shared resource** — "at most 3 concurrent syncs to this API" across every run of every workflow',
+        '**Mutual exclusion** — one migration / one writer per tenant at a time, cluster-wide (`withLock`)',
+        '**Fan-out wider than one parent** — `Promise.all` bounds concurrency within a run; a semaphore bounds it across runs',
+      ],
+      sourceDescription:
+        'One file ships the whole component: a per-key coordinator workflow that owns the permit count and reads a single acquire/release event channel, plus the `withPermit()` / `withLock()` consumer API. You import the consumers; the coordinator starts lazily on first use.',
+      howItWorks: [
+        '**Single event channel** — acquires and releases flow through one hook read by one consumer (the coordinator), so ordering is FIFO and no message is lost to racing readers.',
+        '**Grant via reply hook** — each waiter creates a fresh hook, sends its token with the acquire, and suspends. The coordinator resumes that token when capacity frees up. Zero compute while waiting.',
+        '**Lazy start, safe recycle** — senders start the coordinator if resuming fails; the coordinator exits after enough grants once fully idle (`inFlight === 0`, queue empty), keeping its event log bounded.',
+        "**Self-healing waiters** — if a grant doesn't arrive within `ACQUIRE_RETRY_TIMEOUT` (e.g. the coordinator recycled), the waiter disposes its stale hook (so a late grant can't leak capacity) and re-requests.",
+      ],
+      adapting: [
+        '**Call from workflow functions only** — `withPermit()` creates hooks and uses durable sleep, which are workflow-context primitives.',
+        '**Keep `maxConcurrent` consistent per key** — the value used by whichever caller starts the coordinator wins. Bake key + limit pairs into one module to avoid drift.',
+        '**Size `ACQUIRE_RETRY_TIMEOUT` above your longest hold** — waiters that time out rejoin the queue, so too-small values cause churn, not deadlock.',
+        '**Permits are not leases** — a crashed holder releases via its workflow retry/finally semantics, not via expiry. For lease-style timeouts, wrap `fn` in a timeout (see the Timeouts pattern) so the `finally` release always runs.',
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        {
+          label: 'createHook()',
+          url: '/docs/api-reference/workflow/create-hook',
+        },
+        {
+          label: 'resumeHook()',
+          url: '/docs/api-reference/workflow-api/resume-hook',
+        },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+      ],
+    },
+  },
+  {
+    id: 'rate-limiter',
+    name: 'Rate Limiter',
+    logo: 'rate-limiter',
+    description:
+      'Bound your outbound request rate to an API — cluster-wide, with queued waiters and zero infrastructure.',
+    longDescription:
+      'A proactive, distributed rate limiter. `withRateLimit(key, intervalMs, fn)` waits for a request slot, then runs `fn` — and slots are granted at most once per `intervalMs` across every workflow run and machine (100ms → max 10 req/s cluster-wide). Requests queue in arrival order at zero compute cost. This complements the Handling Rate Limits pattern: that one reacts to 429s with `RetryableError`; this one keeps you from hitting the limit in the first place. They compose well — limit proactively, and still handle the occasional 429 reactively.',
+    tags: ['rate-limit', 'throttle', 'concurrency', 'coordination'],
+    categories: ['advanced'],
+    versions: ['v4', 'v5'],
+    patternType: 'component',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/rate-limiter',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/rate-limiter.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/rate-limiter',
+    files: [
+      {
+        path: 'workflows/rate-limiter-workflow.ts',
+        description:
+          'The complete component — coordinator workflow + `withRateLimit()` consumer API.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Component',
+        lang: 'tsx',
+        caption: 'workflows/rate-limiter-workflow.ts',
+        code: rateLimiterWorkflowSource,
+        installCode: rateLimiterWorkflowInstallSource,
+      },
+      {
+        label: 'Usage',
+        lang: 'tsx',
+        caption: 'Call withRateLimit() from any workflow function',
+        code: rateLimiterUsageSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**A vendor caps you at N requests/second** and many concurrent runs all call it — smooth the traffic instead of triggering 429s',
+        '**Protecting your own services** from workflow-driven thundering herds',
+        '**Fairness across runs** — slots are granted in arrival order, so one greedy run cannot starve the others',
+      ],
+      sourceDescription:
+        'One file ships the whole component: a per-key coordinator that grants one slot, sleeps `intervalMs`, then grants the next — plus the `withRateLimit()` consumer API. Queued requests buffer in the hook channel, so the spacing between grants IS the rate limit.',
+      howItWorks: [
+        "**Grant-then-sleep** — the coordinator loop awaits the next request, grants it via the waiter's reply hook, then sleeps `intervalMs`. Maximum cluster-wide rate = `1000 / intervalMs` per second.",
+        '**Backpressure for free** — requests queue in the hook channel in arrival order; waiters suspend at zero compute until granted.',
+        '**Dead-waiter skip** — a waiter that timed out disposes its reply hook; granting it fails and the coordinator moves on WITHOUT burning the interval sleep on it.',
+        '**Lazy start, bounded log** — senders restart the coordinator on demand; it recycles after `RECYCLE_AFTER_GRANTS`. Dropped queue entries self-heal via waiter retry.',
+      ],
+      adapting: [
+        '**Call from workflow functions only** — `withRateLimit()` creates hooks and uses durable sleep.',
+        '**Smooth vs burst** — this is a fixed-spacing limiter. For burst allowances (e.g. 100/min in any shape), track a token count in the coordinator and only sleep when it hits zero.',
+        '**Size `SLOT_RETRY_TIMEOUT` to worst-case queue depth × interval** — timed-out waiters re-request and rejoin the back of the queue.',
+        '**Compose with Handling Rate Limits** — keep throwing `RetryableError` on 429 inside `fn`; the limiter makes those rare rather than redundant.',
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        {
+          label: 'createHook()',
+          url: '/docs/api-reference/workflow/create-hook',
+        },
+        {
+          label: 'resumeHook()',
+          url: '/docs/api-reference/workflow-api/resume-hook',
+        },
+        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+      ],
+    },
+  },
+  {
+    id: 'circuit-breaker',
+    name: 'Circuit Breaker',
+    logo: 'circuit-breaker',
+    description:
+      'Stop hammering a failing dependency — closed/open/half-open state shared across every run.',
+    longDescription:
+      'A distributed circuit breaker backed by a coordination workflow. `withBreaker(key, fn)` asks "may I proceed?" before calling the dependency: while the circuit is open the call is rejected instantly with `CircuitOpenError`; after a cooldown a single half-open probe decides whether to close it again. Because the state machine lives in one durable run, failures observed by ANY workflow protect EVERY workflow that shares the key. The cooldown arrives as a timer message from a tiny child workflow, so the coordinator answers checks instantly in every state.',
+    tags: ['circuit-breaker', 'resilience', 'failure', 'coordination'],
+    categories: ['advanced'],
+    versions: ['v4', 'v5'],
+    patternType: 'component',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/circuit-breaker',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/circuit-breaker.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/circuit-breaker',
+    files: [
+      {
+        path: 'workflows/circuit-breaker-workflow.ts',
+        description:
+          'The complete component — breaker state machine workflow, cooldown timer child, and the `withBreaker()` consumer API.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Component',
+        lang: 'tsx',
+        caption: 'workflows/circuit-breaker-workflow.ts',
+        code: circuitBreakerWorkflowSource,
+        installCode: circuitBreakerWorkflowInstallSource,
+      },
+      {
+        label: 'Usage',
+        lang: 'tsx',
+        caption: 'Wrap dependency calls in withBreaker() from any workflow',
+        code: circuitBreakerUsageSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**A downstream service is melting** and hundreds of concurrent runs retrying independently would make it worse',
+        '**Failures should be shared knowledge** — one run discovering an outage should spare every other run the timeout',
+        '**You want fast failure during outages** — `CircuitOpenError` returns instantly instead of waiting out another timeout',
+      ],
+      sourceDescription:
+        'One file ships the whole component: the breaker state machine (closed → open → half-open) as a per-key coordinator workflow, a cooldown timer child, and the `withBreaker()` consumer API that checks, runs, and reports in one call.',
+      howItWorks: [
+        '**Single event channel** — checks, success/failure reports, and cooldown-timer pings all arrive as messages on one hook; the loop never blocks on anything else, so checks are answered instantly even while open.',
+        '**Consecutive-failure threshold** — `FAILURE_THRESHOLD` failures in a row open the circuit and spawn a cooldown timer child carrying a sequence number; stale timers from superseded cooldowns are ignored.',
+        '**Half-open probe** — after the cooldown message arrives, exactly one caller is allowed through. Success closes the circuit; failure re-opens it and restarts the cooldown.',
+        '**Fail-open default** — if the coordinator is unreachable, `withBreaker` allows the call after `CHECK_TIMEOUT` (and disposes its stale reply hook). The breaker is an optimization, not a correctness gate.',
+      ],
+      adapting: [
+        '**Call from workflow functions only** — `withBreaker()` creates hooks and uses durable sleep.',
+        '**Pair with `RetryableError`** — catch `CircuitOpenError` and rethrow as `RetryableError` with `retryAfter` ≈ the cooldown, so the runtime reschedules instead of failing the run (see Usage tab).',
+        '**Fail-closed if you must** — flip the `CHECK_TIMEOUT` race fallback to `allowed: false` when calling the dependency during coordinator unavailability is worse than skipping it.',
+        '**Window-based thresholds** — the default counts consecutive failures; for a failure-rate window, track timestamps in the coordinator state.',
+        '**Recycling resets the count** — the coordinator only recycles while closed and quiet, so the reset is benign; remove the recycle if you want eternal memory at the cost of an ever-growing event log.',
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        {
+          label: 'createHook()',
+          url: '/docs/api-reference/workflow/create-hook',
+        },
+        {
+          label: 'resumeHook()',
+          url: '/docs/api-reference/workflow-api/resume-hook',
+        },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+        {
+          label: 'RetryableError',
+          url: '/docs/api-reference/workflow/retryable-error',
+        },
+      ],
+    },
+  },
+  {
+    id: 'debounce',
+    name: 'Debounce',
+    logo: 'debounce',
+    description:
+      'Collapse a burst of events into one action that fires after the burst goes quiet — per key, across processes.',
+    longDescription:
+      'Distributed debounce-by-key. Call `debounceSend(key, payload)` from anywhere server-side as events arrive; a short-lived coordination workflow per key absorbs the burst, and when `quietMs` passes with no new events it fires your action exactly once with the latest payload, then exits. Each event "resets the timer" by spawning a fresh timer child with a bumped sequence number — stale timers are simply ignored, so the coordinator never blocks and never loses an event to a racing timeout.',
+    tags: ['debounce', 'throttle', 'events', 'coordination'],
+    categories: ['advanced'],
+    versions: ['v4', 'v5'],
+    patternType: 'component',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/debounce',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/debounce.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/debounce',
+    files: [
+      {
+        path: 'workflows/debounce-workflow.ts',
+        description:
+          'The complete component — per-key coordinator, timer child, `debounceSend()` API, and the `onDebounceFire` step you replace with your action.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Component',
+        lang: 'tsx',
+        caption: 'workflows/debounce-workflow.ts',
+        code: debounceWorkflowSource,
+        installCode: debounceWorkflowInstallSource,
+      },
+      {
+        label: 'Usage',
+        lang: 'tsx',
+        caption: 'Call debounceSend() from routes, webhooks, or steps',
+        code: debounceUsageSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**At most one notification per quiet window** — N triggering events, one email',
+        '**Rebuild an index / cache after writes settle** instead of once per write',
+        '**Sync to a third party when an edit session ends** rather than on every keystroke',
+      ],
+      sourceDescription:
+        'One file ships the whole component: the per-key coordinator that absorbs the burst, the timer child that turns the quiet period into a message, the `debounceSend()` entry point, and an `onDebounceFire` step whose body you replace with your action.',
+      howItWorks: [
+        '**Lazy per-key runs** — the first event of a burst starts the coordinator; it exits after firing, so debounce runs are short-lived and cheap.',
+        '**Timer reset as a message** — each event bumps a sequence number and spawns a fresh timer child (`sleep(quietMs)` then ping). A timer ping only fires the action if its ID is still current; superseded timers are ignored.',
+        '**Latest-payload semantics** — the action receives only the most recent payload. The burst count or full list is intentionally not kept (see Batch Aggregator for that).',
+        "**Never-lost events** — an event landing just as the run exits simply starts a new burst via `debounceSend`'s ensure-and-retry loop.",
+      ],
+      adapting: [
+        '**Replace `onDebounceFire`** with your real action — and make it idempotent: the exit-race means two quick fires are possible in rare timing windows.',
+        '**`debounceSend()` works anywhere server-side** — API routes, server actions, webhook handlers, or steps.',
+        '**Leading-edge variant** — fire immediately on the first event, then use the coordinator only to suppress repeats until quiet.',
+        '**Throttle instead of debounce** — to fire every `intervalMs` during a sustained burst (not just at the end), flush in the timer branch and continue the loop instead of returning.',
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        {
+          label: 'resumeHook()',
+          url: '/docs/api-reference/workflow-api/resume-hook',
+        },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+      ],
+    },
+  },
+  {
+    id: 'batch-aggregator',
+    name: 'Batch Aggregator',
+    logo: 'batch-aggregator',
+    description:
+      'Buffer individually-arriving events, flush once at N items or T elapsed — the inverse of fan-out batching.',
+    longDescription:
+      "Turn a stream of single events into efficient bulk operations. Call `aggregatorSend(key, item)` as events arrive; a short-lived coordination workflow per key buffers them and flushes exactly once — when the buffer reaches `MAX_ITEMS` or `MAX_WAIT_MS` after the first item, whichever comes first — then exits, and the next item opens a fresh buffer. Where the Batching pattern fans a known list out into chunks, the aggregator fans unknown arrivals IN: it's the missing half of batch processing.",
+    tags: ['aggregation', 'buffer', 'batch', 'events', 'coordination'],
+    categories: ['advanced'],
+    versions: ['v4', 'v5'],
+    patternType: 'component',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/batch-aggregator',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/batch-aggregator.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/batch-aggregator',
+    files: [
+      {
+        path: 'workflows/batch-aggregator-workflow.ts',
+        description:
+          'The complete component — per-key buffer coordinator, flush-deadline timer child, `aggregatorSend()` API, and the `flushBatch` step you replace with your bulk operation.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Component',
+        lang: 'tsx',
+        caption: 'workflows/batch-aggregator-workflow.ts',
+        code: batchAggregatorWorkflowSource,
+        installCode: batchAggregatorWorkflowInstallSource,
+      },
+      {
+        label: 'Usage',
+        lang: 'tsx',
+        caption: 'Call aggregatorSend() from routes, webhooks, or steps',
+        code: batchAggregatorUsageSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**Bulk APIs and warehouses** — collect single events into one bulk insert / batch call',
+        '**Digest semantics** — "collect activity for 5 minutes, then send one summary"',
+        '**Bursty producers, slow consumers** — absorb the burst durably and hand the consumer one batch',
+      ],
+      sourceDescription:
+        'One file ships the whole component: the per-key buffer coordinator, the flush-deadline timer child, the `aggregatorSend()` entry point, and a `flushBatch` step whose body you replace with your bulk operation.',
+      howItWorks: [
+        '**First item opens the window** — it lazily starts the coordinator and spawns the flush-deadline timer (a child that sleeps and pings back, so the buffer loop never blocks).',
+        '**Two flush triggers, one winner** — `MAX_ITEMS` reached, or the deadline ping with the current sequence number. Either way the buffer flushes exactly once and the run exits.',
+        '**Buffered in workflow state** — items survive restarts with the run; no Redis or queue infrastructure.',
+        "**Never-lost items** — an item landing just as a flush exits starts a fresh buffer via `aggregatorSend`\'s ensure-and-retry loop.",
+      ],
+      adapting: [
+        '**Replace `flushBatch`** with your bulk operation and tune `MAX_ITEMS` / `MAX_WAIT_MS`.',
+        '**Keep items small** — they live in the event log; for large payloads, send IDs and hydrate inside the flush step.',
+        '**Sliding window** — to extend the deadline on every item (flush only after a quiet period), bump the timer sequence and spawn a fresh timer per item, like the Debounce pattern does.',
+        '**Per-tenant streams** — key by tenant/user (`analytics:tenant-42`) to get independent buffers with independent deadlines.',
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        {
+          label: 'resumeHook()',
+          url: '/docs/api-reference/workflow-api/resume-hook',
+        },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+      ],
+    },
+  },
+  {
+    id: 'singleton-run',
+    name: 'Singleton Run',
+    logo: 'singleton-run',
+    description:
+      'At most one live run per key — getOrStart() dedupes starts, and a built-in mailbox feeds the run.',
+    longDescription:
+      "Guarantee at most one live workflow run per semantic key. The singleton's first act is creating a hook with a deterministic token — that registration doubles as the liveness marker, the start-dedupe mutex, and a mailbox. `getOrStart(key, startRun)` probes the token and only starts a run when none is alive; if two callers race, the duplicate run dies on `HookConflictError` and exactly one survives. `sendToSingleton(key, message)` feeds the live run from anywhere — API routes, webhooks, other workflows — giving you actor-style mailbox loops with no extra infrastructure.",
+    tags: ['singleton', 'dedupe', 'resume-or-start', 'actor', 'coordination'],
+    categories: ['advanced'],
+    versions: ['v4', 'v5'],
+    patternType: 'component',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/singleton-run',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/singleton-run.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/singleton-run',
+    files: [
+      {
+        path: 'workflows/singleton-run-workflow.ts',
+        description:
+          'The component — `getOrStart()`, `sendToSingleton()`, the mailbox hook — plus an example actor-style session workflow.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Component',
+        lang: 'tsx',
+        caption: 'workflows/singleton-run-workflow.ts',
+        code: singletonRunWorkflowSource,
+        installCode: singletonRunWorkflowInstallSource,
+      },
+      {
+        label: 'Usage',
+        lang: 'tsx',
+        caption: 'getOrStart + sendToSingleton from an API route',
+        code: singletonRunUsageSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**One live session / sync / consumer per user, tenant, or resource** — dedupe starts by key instead of tracking run IDs in your database',
+        '**Resume-or-start** — reconnect to in-flight work idempotently from stateless request handlers',
+        '**Actor-style mailboxes** — a long-lived loop fed messages from routes and webhooks, processed in arrival order',
+      ],
+      sourceDescription:
+        'One file ships the component (`getOrStart()`, `sendToSingleton()`, the `singletonMailbox` hook and token scheme) plus a worked example: a per-user session workflow that processes mailbox messages until told to stop.',
+      howItWorks: [
+        '**The hook IS the registry** — creating `singletonMailbox` with the deterministic `singleton:<key>` token is what makes the run discoverable; `getHookByToken()` is the lookup.',
+        '**Conflict as mutex** — two racing starts both come up, but the second `create()` on the same token throws `HookConflictError` and that run exits before doing any work. No lock service needed.',
+        '**Mailbox loop** — `await mailbox` in a loop yields messages in arrival order; messages sent while the run is busy queue up in the channel.',
+        '**Clean exit, clean restart** — when the run returns (stop message, recycle), the token frees up and the next `getOrStart` begins a fresh singleton.',
+      ],
+      adapting: [
+        "**Create the mailbox first** — it must be the workflow's first act so a duplicate dies before causing side effects.",
+        '**Expect conflict-loser runs** — a failed duplicate with `HookConflictError` in the run list is the mechanism working, not a bug.',
+        '**Recycle long-lived singletons** — exit after N messages and let the next send restart the run (see Upgrading Workflows for the state-carrying version).',
+        '**Idle shutdown** — combine with the Debounce timer trick to exit after a quiet period instead of an explicit stop message.',
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'getHookByToken()',
+          url: '/docs/api-reference/workflow-api/get-hook-by-token',
+        },
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        {
+          label: 'resumeHook()',
+          url: '/docs/api-reference/workflow-api/resume-hook',
+        },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+      ],
+    },
+  },
+  {
     id: 'upgrading-workflows',
     name: 'Upgrading Workflows',
     logo: 'upgrading-workflows',
@@ -2065,6 +2627,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['upgrade', 'respawn', 'deployment', 'long-running', 'versioning'],
     categories: ['common', 'advanced'],
     versions: ['v4', 'v5'],
+    patternType: 'template',
     homepage: 'https://workflow-sdk.dev',
     docsUrl: 'https://workflow-sdk.dev/patterns/upgrading-workflows',
     sourceUrl:
@@ -2121,6 +2684,429 @@ export const registryItems: RegistryItem[] = [
     ],
   },
   {
+    id: 'polling',
+    name: 'Polling',
+    logo: 'polling',
+    description:
+      'Wait for an external condition with exponential backoff and a deadline — durable sleeps make day-long waits free.',
+    longDescription:
+      "Poll an external system until a condition holds: a deployment goes live, an export finishes, a KYC review lands. The check is a step (so transient probe failures retry automatically), the wait between polls is a durable sleep (so a day-long wait costs nothing and survives restarts), and backoff plus a deadline keep both fast and slow systems cheap. If the system you're waiting on offers webhooks, prefer the Webhooks pattern — poll only when you must.",
+    tags: ['polling', 'wait', 'backoff', 'condition'],
+    categories: ['common'],
+    versions: ['v4', 'v5'],
+    patternType: 'template',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/polling',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/polling.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/polling',
+    files: [
+      {
+        path: 'workflows/polling-workflow.ts',
+        description:
+          '`waitForCondition()` loop with exponential backoff + deadline, and the `checkCondition` step you replace with your probe.',
+      },
+      {
+        path: 'app/api/polling/route.ts',
+        description: 'POST endpoint that starts a wait for a given target.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Workflow',
+        lang: 'tsx',
+        caption: 'workflows/polling-workflow.ts',
+        code: pollingWorkflowSource,
+        installCode: pollingWorkflowInstallSource,
+      },
+      {
+        label: 'Start route',
+        lang: 'tsx',
+        caption: 'app/api/polling/route.ts',
+        code: pollingStartRouteSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**Waiting on slow external processes** — deployments, exports, batch jobs, model fine-tunes',
+        '**Human-speed waits** — KYC review, domain verification, manual fulfilment',
+        '**No webhook available** — when there is one, use the Webhooks pattern instead and skip polling entirely',
+      ],
+      sourceDescription:
+        'The workflow loops: probe step → done? → durable sleep with exponential backoff → probe again, bounded by a total deadline. Replace the `checkCondition` step body with your real probe.',
+      howItWorks: [
+        '**The check is a step** — a flaky probe (5xx, network) is retried by the runtime as a step failure; only `{ done: false }` schedules the next poll.',
+        '**Durable sleeps between polls** — zero compute while waiting; the run survives restarts and deploys mid-wait.',
+        '**Exponential backoff** — interval doubles from `INITIAL_INTERVAL_MS` up to `MAX_INTERVAL_MS`, so fast conditions resolve fast and slow ones poll cheaply.',
+        '**Deadline** — the loop throws `PollTimeoutError` rather than polling forever; catch it in the caller to handle the timeout as data.',
+      ],
+      adapting: [
+        '**Replace `checkCondition`** with your probe and result shape; return `{ done: true, value }` to resolve the wait with data.',
+        '**Tune the constants** to expected time-to-ready — polling a 30-second deploy and a 3-day review want very different curves.',
+        '**Timeout as data** — return `{ timedOut: true }` instead of throwing if the caller should branch rather than fail.',
+        "**Cancellable waits** — race the loop against a hook (see the Scheduling pattern's `cancellableSleep`) to abort a wait from outside.",
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+        { label: '"use step"', url: '/docs/foundations/workflows-and-steps' },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+      ],
+    },
+  },
+  {
+    id: 'dead-letter-queue',
+    name: 'Dead Letter Queue',
+    logo: 'dead-letter-queue',
+    description:
+      'Isolate poison items instead of failing the batch — record exhausted failures with context, keep processing, redrive later.',
+    longDescription:
+      "Process a batch where individual failures must not abort the rest. Each item runs in a step with the runtime's automatic retries; an item that exhausts them (or throws `FatalError`) is recorded to a dead letter queue with its payload and error, and the batch keeps moving. A redrive workflow pulls dead letters and reprocesses them through the same batch workflow once the underlying issue is fixed.",
+    tags: ['dlq', 'errors', 'batch', 'redrive', 'resilience'],
+    categories: ['common'],
+    versions: ['v4', 'v5'],
+    patternType: 'template',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/dead-letter-queue',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/dead-letter-queue.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/dead-letter-queue',
+    files: [
+      {
+        path: 'workflows/dead-letter-queue-workflow.ts',
+        description:
+          '`processWithDeadLetters()` batch loop + `redriveDeadLetters()` + the steps you replace: `processItem` and the DLQ sink.',
+      },
+      {
+        path: 'app/api/dead-letter-queue/route.ts',
+        description:
+          'POST endpoint that starts a batch, or a redrive of dead letters.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Workflow',
+        lang: 'tsx',
+        caption: 'workflows/dead-letter-queue-workflow.ts',
+        code: deadLetterQueueWorkflowSource,
+        installCode: deadLetterQueueWorkflowInstallSource,
+      },
+      {
+        label: 'Start route',
+        lang: 'tsx',
+        caption: 'app/api/dead-letter-queue/route.ts',
+        code: deadLetterQueueStartRouteSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**One malformed record must not block thousands of good ones**',
+        '**Failures need a paper trail** — payload + error captured for inspection and replay',
+        '**Redrive semantics** — fix the bug, reprocess exactly what failed',
+      ],
+      sourceDescription:
+        'The batch loop catches per-item errors only AFTER the runtime has retried the step — so the DLQ receives genuinely poisoned items, not transient blips. The redrive workflow feeds dead letters back through the same batch.',
+      howItWorks: [
+        '**Retries happen below the catch** — `processItem` is a step; the runtime retries transient failures before the workflow ever sees an error.',
+        '**`FatalError` short-circuits** — throw it for permanent failures (validation, 404s) to dead-letter immediately without burning retries.',
+        "**The DLQ sink is a boring step** — a table insert or queue push with no interesting failure modes; it's the safety net.",
+        '**Redrive reuses the batch** — `redriveDeadLetters` fetches dead items and starts `processWithDeadLetters` over them; items that fail again simply dead-letter again.',
+      ],
+      adapting: [
+        '**Replace `processItem`** with your real work and `sendToDeadLetterQueue` / `fetchDeadLetters` with your real sink (a Postgres table is plenty).',
+        '**Cap redrive loops** — track an `attempts` field in the payload and stop redriving after N failures.',
+        '**Alert on dead letters** — the sink step is a natural place to also ping Slack/PagerDuty.',
+        "**Large batches** — combine with the Batching pattern's chunked processing.",
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'FatalError',
+          url: '/docs/api-reference/workflow/fatal-error',
+        },
+        {
+          label: 'RetryableError',
+          url: '/docs/api-reference/workflow/retryable-error',
+        },
+        { label: '"use step"', url: '/docs/foundations/workflows-and-steps' },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+      ],
+    },
+  },
+  {
+    id: 'recurring-cron',
+    name: 'Recurring Cron',
+    logo: 'recurring-cron',
+    description:
+      'A self-rescheduling recurring job with drift correction, clean stop, and continue-as-new deployment adoption.',
+    longDescription:
+      'Run a job every interval — forever — without cron infrastructure. The workflow sleeps to each ABSOLUTE due time (anchored on the schedule, not on "now", so drift never accumulates), runs the job as a retried step, and advances. After N iterations it hands its state to a fresh run started with `deploymentId: "latest"` (continue-as-new), keeping the event log bounded and adopting new code automatically. A stop hook raced against each sleep ends the schedule cleanly.',
+    tags: ['cron', 'recurring', 'schedule', 'continue-as-new'],
+    categories: ['common'],
+    versions: ['v4', 'v5'],
+    patternType: 'template',
+    homepage: 'https://workflow-sdk.dev',
+    docsUrl: 'https://workflow-sdk.dev/patterns/recurring-cron',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/recurring-cron.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/recurring-cron',
+    files: [
+      {
+        path: 'workflows/recurring-cron-workflow.ts',
+        description:
+          '`recurringCron()` generation loop + stop hook + the `runJob` step you replace with your recurring work.',
+      },
+      {
+        path: 'app/api/recurring-cron/route.ts',
+        description: 'POST endpoint that starts or stops a named schedule.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Workflow',
+        lang: 'tsx',
+        caption: 'workflows/recurring-cron-workflow.ts',
+        code: recurringCronWorkflowSource,
+        installCode: recurringCronWorkflowInstallSource,
+      },
+      {
+        label: 'Start route',
+        lang: 'tsx',
+        caption: 'app/api/recurring-cron/route.ts',
+        code: recurringCronStartRouteSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**Hourly/daily syncs, digests, cleanups** — with each tick durable and retried, and no cron service to operate',
+        '**Schedules that outlive deployments** — continue-as-new adopts new code within one generation',
+        '**One-off deferred actions?** Use the Scheduling pattern instead; this one is for repetition',
+      ],
+      sourceDescription:
+        'One generation = `ITERATIONS_PER_RUN` ticks. Each tick sleeps to the absolute `nextDueAt`, races a stop hook, runs the job, and advances the anchor by the interval. The last act of a generation starts its successor with `deploymentId: "latest"`.',
+      howItWorks: [
+        "**Drift correction** — `sleep(new Date(nextDueAt))` targets the schedule's absolute time; a slow tick shrinks the next sleep instead of shifting every future tick.",
+        '**Continue-as-new** — handing state to a fresh run bounds the event log and is the moment new deployments are adopted. Generation length (interval × iterations) should stay ≲ a day.',
+        "**Clean stop** — each generation's sleep races a stop hook (token `cron:<name>:<generation-start>`); resuming it exits between ticks, never mid-job.",
+        '**No overlap by default** — a long tick delays the next one. For overlapping ticks, spawn `runJob` as a child workflow instead of awaiting it.',
+      ],
+      adapting: [
+        '**Replace `runJob`** and tune `INTERVAL_MS` / `ITERATIONS_PER_RUN`.',
+        "**Idempotent start** — wrap the initial `start()` with the Singleton Run pattern's `getOrStart()` so re-deploys and retries can't create duplicate schedules.",
+        '**Calendar alignment** — for "9am daily" semantics, compute the next `nextDueAt` with a calendar/timezone library inside a step.',
+        '**Observability** — the `iteration` counter in state gives every tick a stable identity across generations.',
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+      ],
+    },
+  },
+  {
+    id: 'stripe',
+    name: 'Stripe',
+    logo: 'stripe',
+    description:
+      'Dunning as one durable function — retry failed payments on a schedule, exit the moment the customer pays.',
+    longDescription:
+      'Failed-payment recovery (dunning) as a single workflow run per invoice. Stripe\'s `invoice.payment_failed` webhook starts the run; each grace period races a durable sleep against an `invoice.paid` hook resumed by the webhook route, so the moment the customer fixes their card the run exits with "recovered" — no polling, no state machine spread across tables. If the whole escalating schedule fails, the account downgrades exactly once.',
+    tags: ['stripe', 'payments', 'dunning', 'billing', 'webhooks'],
+    categories: ['provider', 'payments'],
+    versions: ['v4', 'v5'],
+    patternType: 'example',
+    homepage: 'https://stripe.com',
+    docsUrl: 'https://docs.stripe.com/billing/revenue-recovery',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/stripe.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/stripe',
+    envVars: [
+      {
+        name: 'STRIPE_SECRET_KEY',
+        description: 'Stripe API secret key.',
+        getKeyUrl: 'https://dashboard.stripe.com/apikeys',
+        exampleValue: 'sk_live_********',
+      },
+      {
+        name: 'STRIPE_WEBHOOK_SECRET',
+        description: 'Signing secret for the webhook endpoint.',
+        getKeyUrl: 'https://dashboard.stripe.com/webhooks',
+        exampleValue: 'whsec_********',
+      },
+    ],
+    files: [
+      {
+        path: 'workflows/stripe-workflow.ts',
+        description:
+          '`dunningWorkflow()` — the escalating retry timeline + `invoicePaid` hook.',
+      },
+      {
+        path: 'app/api/webhooks/stripe/route.ts',
+        description:
+          'Stripe webhook endpoint — verifies signatures, starts dunning on payment_failed, resumes the hook on invoice.paid.',
+      },
+    ],
+    snippets: [
+      {
+        label: 'Workflow',
+        lang: 'tsx',
+        caption: 'workflows/stripe-workflow.ts',
+        code: stripeWorkflowSource,
+        installCode: stripeWorkflowInstallSource,
+      },
+      {
+        label: 'Webhook route',
+        lang: 'tsx',
+        caption: 'app/api/webhooks/stripe/route.ts',
+        description:
+          "One endpoint handles both event types: `invoice.payment_failed` starts a dunning run; `invoice.paid` resumes the matching run's hook (and is a no-op for invoices with no run waiting).",
+        code: stripeWebhookRouteSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**Failed-payment recovery** where you want the timeline, notifications, and downgrade logic in your own code with per-invoice observability',
+        '**Any multi-step billing timeline** — trial expiry sequences, seat true-ups, usage-cap warnings',
+        '**Note:** Stripe Smart Retries can handle pure retrying; this pattern earns its keep when recovery involves YOUR side effects',
+      ],
+      sourceDescription:
+        'One run per invoice owns the recovery timeline: notify → grace period (durable sleep raced against the `invoice.paid` hook) → retry the charge → escalate → downgrade once.',
+      howItWorks: [
+        '**Webhook starts the run** — `invoice.payment_failed` maps to `start(dunningWorkflow, …)`; the run IS the dunning state for that invoice.',
+        '**Early exit on payment** — `invoice.paid` resumes the hook keyed by invoice ID; whichever grace-period race is in flight resolves to "paid" and the run returns "recovered".',
+        '**Escalating schedule** — `RETRY_DELAYS` drives notify → wait → retry rounds; each retry charges via `stripe.invoices.pay`.',
+        '**Exactly-once downgrade** — the downgrade step runs only after every round fails, and is retried/recorded like any step.',
+      ],
+      adapting: [
+        '**Verify signatures first** — the route uses `stripe.webhooks.constructEvent`; never resume hooks from unverified payloads.',
+        '**Tune `RETRY_DELAYS`** to your dunning policy, and swap `notifyCustomer` for your email provider (see the Resend pattern).',
+        '**Make the downgrade yours** — cancel subscriptions, flip entitlements, or open a CS ticket instead.',
+        "**Idempotent starts** — Stripe retries webhooks; use the Singleton Run pattern's `getOrStart()` keyed by invoice ID to dedupe.",
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+        { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
+        {
+          label: 'Stripe webhooks',
+          url: 'https://docs.stripe.com/webhooks',
+        },
+      ],
+    },
+  },
+  {
+    id: 'slack-approval',
+    name: 'Slack Approval',
+    logo: 'slack-approval',
+    description:
+      'Human-in-the-loop where the Approve button lives in Slack — post, suspend, resume on click.',
+    longDescription:
+      "Gate a consequential action on a human decision made in Slack. The workflow posts an interactive message whose Approve / Reject buttons carry the hook token as their value, then suspends — zero compute while humans deliberate. Slack's interactivity webhook resumes the hook with the decision and who made it; a 24h deadline race turns silence into rejection. Same mechanics as the Human In The Loop pattern, different approval surface.",
+    tags: ['slack', 'approval', 'human-in-the-loop', 'buttons'],
+    categories: ['provider', 'communication'],
+    versions: ['v4', 'v5'],
+    patternType: 'example',
+    homepage: 'https://api.slack.com',
+    docsUrl: 'https://api.slack.com/messaging/interactivity',
+    sourceUrl:
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/slack-approval.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/slack-approval',
+    envVars: [
+      {
+        name: 'SLACK_BOT_TOKEN',
+        description: 'Bot token with chat:write scope.',
+        getKeyUrl: 'https://api.slack.com/apps',
+        exampleValue: 'xoxb-********',
+      },
+      {
+        name: 'SLACK_CHANNEL_ID',
+        description: 'Channel where approval requests are posted.',
+      },
+      {
+        name: 'SLACK_SIGNING_SECRET',
+        description: 'Used to verify interactivity payloads are from Slack.',
+        getKeyUrl: 'https://api.slack.com/apps',
+      },
+    ],
+    files: [
+      {
+        path: 'workflows/slack-approval-workflow.ts',
+        description:
+          '`requestSlackApproval()` — posts the interactive message, suspends on the decision hook with a deadline, runs the approved action.',
+      },
+      {
+        path: 'app/api/slack/interactions/route.ts',
+        description:
+          "Slack interactivity endpoint — extracts the hook token from the clicked button's value and resumes the decision hook.",
+      },
+    ],
+    snippets: [
+      {
+        label: 'Workflow',
+        lang: 'tsx',
+        caption: 'workflows/slack-approval-workflow.ts',
+        code: slackApprovalWorkflowSource,
+        installCode: slackApprovalWorkflowInstallSource,
+      },
+      {
+        label: 'Interactions route',
+        lang: 'tsx',
+        caption: 'app/api/slack/interactions/route.ts',
+        code: slackApprovalRouteSource,
+      },
+    ],
+    guide: {
+      flatLayout: true,
+      whenToUse: [
+        '**Deploy gates, refunds, publishing** — anywhere the approvers already live in Slack',
+        '**Approval state belongs in the workflow** — one run = one request, instead of a table + cron + reminder job',
+        '**In-app approval UI instead?** See the Human In The Loop pattern — identical hook mechanics, React card surface',
+      ],
+      sourceDescription:
+        'The workflow posts the Block Kit message (buttons carry the hook token as `value`), suspends on the decision hook raced against a 24h deadline, posts the resolution back to the channel, and runs the approved action only on approval.',
+      howItWorks: [
+        "**Token rides the button** — each button's `value` is the hook token, so the interactivity route needs no lookup table to find the right run.",
+        "**Suspend while humans think** — the run costs nothing between post and click; restarts and deploys don't lose the pending approval.",
+        '**Timeout = rejection** — the deadline race resolves `{ approved: false, decidedBy: "timeout" }` so silence is an explicit, logged outcome.',
+        '**Double-clicks are safe** — a second click hits an already-consumed hook; the route swallows that error.',
+      ],
+      adapting: [
+        '**Verify Slack signatures** — check `X-Slack-Signature` with your signing secret before resuming hooks; the route marks where.',
+        '**Replace `performApprovedAction`** with the thing approval unlocks.',
+        '**Escalation tiers** — on timeout, post to an escalation channel and wait again instead of rejecting.',
+        '**Update the original message** — use `response_url` from the interactivity payload to replace the buttons with the outcome in place.',
+      ],
+      adaptingTitle: 'Tips',
+      keyApis: [
+        {
+          label: 'defineHook()',
+          url: '/docs/api-reference/workflow/define-hook',
+        },
+        { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
+        {
+          label: 'Slack interactivity',
+          url: 'https://api.slack.com/messaging/interactivity',
+        },
+        {
+          label: 'Block Kit',
+          url: 'https://api.slack.com/block-kit',
+        },
+      ],
+    },
+  },
+  {
     id: 'resend',
     name: 'Resend',
     logo: 'resend',
@@ -2130,6 +3116,7 @@ export const registryItems: RegistryItem[] = [
     tags: ['email', 'drip', 'cancellable', 'durable'],
     categories: ['provider'],
     versions: ['v4', 'v5'],
+    patternType: 'example',
     homepage: 'https://resend.com',
     docsUrl: 'https://resend.com/docs/send-with-nodejs',
     sourceUrl:
@@ -2210,4 +3197,10 @@ export const categoryLabels: Record<RegistryCategory, string> = {
   payments: 'Payments',
   communication: 'Communication',
   other: 'Other',
+};
+
+export const patternTypeLabels: Record<RegistryPatternType, string> = {
+  component: 'Component',
+  template: 'Template',
+  example: 'Example',
 };

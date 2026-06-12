@@ -1,12 +1,14 @@
 /**
  * Source snippets for the Scheduling registry entry.
  *
- * Schedule any future action minutes / hours / days / weeks ahead using
- * durable sleep. Race the sleep against a defineHook() so external events
- * (user converts, unsubscribes, snoozes) can cancel or reschedule the
- * pending action without ever touching a database flag. Generic shape —
- * customise the runAction step for emails, push notifications, webhooks,
- * Slack messages, etc.
+ * Two layers:
+ *   - `cancellableSleep()` — the reusable component: a durable sleep raced
+ *     against a cancel hook, usable inside any workflow.
+ *   - `scheduleAction()` — a thin scheduling workflow built on it: defer any
+ *     action minutes / hours / days ahead, cancellable by semantic ID.
+ *
+ * No cron jobs, no DB flags, no scheduler infrastructure — durable sleep
+ * suspends the run for free, and the hook cancels it from anywhere.
  */
 
 export const schedulingWorkflowSource = `import { defineHook, sleep } from "workflow";
@@ -16,6 +18,23 @@ export const schedulingWorkflowSource = `import { defineHook, sleep } from "work
 // caller doesn't need to know the run ID.
 export const cancelSchedule = defineHook<{ reason?: string }>();
 
+/**
+ * REUSABLE COMPONENT — durable sleep raced against a cancel hook.
+ * Call from any workflow. Resolves "elapsed" when the delay passes, or
+ * "cancelled" when \`cancelSchedule.resume(token)\` fires first.
+ */
+export async function cancellableSleep(
+  token: string,
+  delay: string | number | Date,
+): Promise<"elapsed" | "cancelled"> {
+  const hook = cancelSchedule.create({ token });
+  const result = await Promise.race([
+    sleep(delay as any).then(() => "elapsed" as const),
+    hook.then(() => "cancelled" as const),
+  ]);
+  return result;
+}
+
 export interface ScheduledAction {
   id: string;
   /** Duration string ("2d", "1h"), millis, or absolute Date. */
@@ -24,18 +43,17 @@ export interface ScheduledAction {
   payload: Record<string, unknown>;
 }
 
+// Scheduling workflow — defer runAction until the delay elapses, unless
+// cancelled first. One run per scheduled action.
 export async function scheduleAction(action: ScheduledAction) {
   "use workflow";
 
-  // Race the durable sleep against the cancel hook. Whoever resolves first
-  // wins — no manual flag-checking, no extra database tables.
-  const hook = cancelSchedule.create({ token: \`schedule:\${action.id}\` });
-  const cancelled = await Promise.race([
-    sleep(action.delay as any).then(() => false as const),
-    hook.then(() => true as const),
-  ]);
+  const outcome = await cancellableSleep(
+    \`schedule:\${action.id}\`,
+    action.delay,
+  );
 
-  if (cancelled) {
+  if (outcome === "cancelled") {
     return { id: action.id, status: "cancelled" as const };
   }
 
@@ -61,10 +79,15 @@ export const schedulingWorkflowInstallSource = `/**
  * THE PATTERN:
  *   1. sleep() suspends the workflow until the delay elapses — no cron
  *      jobs, no DB flags, no scheduler infrastructure required.
- *   2. A cancelSchedule hook races against the sleep. Whichever resolves
- *      first wins: the action executes or is cancelled.
+ *   2. cancellableSleep() races the sleep against a cancel hook. Whichever
+ *      resolves first wins: "elapsed" runs the action, "cancelled" skips it.
  *   3. The hook token is keyed by the schedule ID, not the run ID, so the
  *      cancel API only needs the ID you provided at schedule time.
+ *
+ * REUSABLE COMPONENT:
+ *   cancellableSleep(token, delay) is generic — call it from ANY workflow
+ *   where you want a delay that something external can cut short (snooze,
+ *   user conversion, unsubscribe, manual override).
  *
  * USEFUL WHEN:
  *   - Sending a reminder email N days after signup.
@@ -78,7 +101,7 @@ export const schedulingWorkflowInstallSource = `/**
  *   - The delay field accepts a duration string ("2d", "1h", "30m"), millis,
  *     or an absolute Date for scheduling to a specific timestamp.
  *   - Add payload fields to ScheduledAction for everything your action needs.
- *   - For recurring schedules, loop back and sleep again after runAction.
+ *   - For recurring schedules, see the Recurring Cron pattern.
  *
  * DOCS: https://workflow-sdk.dev/patterns/scheduling
  */
@@ -86,6 +109,23 @@ import { defineHook, sleep } from "workflow";
 
 // Exported so the cancel API route can resume it with just the schedule ID.
 export const cancelSchedule = defineHook<{ reason?: string }>();
+
+/**
+ * REUSABLE COMPONENT — durable sleep raced against a cancel hook.
+ * Call from any workflow. Resolves "elapsed" when the delay passes, or
+ * "cancelled" when cancelSchedule.resume(token) fires first.
+ */
+export async function cancellableSleep(
+  token: string,
+  delay: string | number | Date,
+): Promise<"elapsed" | "cancelled"> {
+  const hook = cancelSchedule.create({ token });
+  const result = await Promise.race([
+    sleep(delay as any).then(() => "elapsed" as const),
+    hook.then(() => "cancelled" as const),
+  ]);
+  return result;
+}
 
 export interface ScheduledAction {
   id: string;
@@ -95,18 +135,17 @@ export interface ScheduledAction {
   payload: Record<string, unknown>;
 }
 
+// Scheduling workflow — defer runAction until the delay elapses, unless
+// cancelled first. One run per scheduled action.
 export async function scheduleAction(action: ScheduledAction) {
   "use workflow";
 
-  // Race: sleep fires when the delay elapses; hook fires when cancelled.
-  // No manual flag-checking or extra DB tables — the runtime handles it.
-  const hook = cancelSchedule.create({ token: \`schedule:\${action.id}\` });
-  const cancelled = await Promise.race([
-    sleep(action.delay as any).then(() => false as const),
-    hook.then(() => true as const),
-  ]);
+  const outcome = await cancellableSleep(
+    \`schedule:\${action.id}\`,
+    action.delay,
+  );
 
-  if (cancelled) {
+  if (outcome === "cancelled") {
     return { id: action.id, status: "cancelled" as const };
   }
 
@@ -127,7 +166,7 @@ async function runAction(action: ScheduledAction): Promise<void> {
 
 export const schedulingStartRouteSource = `import { start } from "workflow/api";
 import { NextResponse } from "next/server";
-import { scheduleAction, type ScheduledAction } from "@/app/workflows/scheduling";
+import { scheduleAction, type ScheduledAction } from "@/app/workflows/scheduling-workflow";
 
 // POST /api/scheduling { id, delay, payload }
 export async function POST(request: Request) {
@@ -145,7 +184,7 @@ export async function POST(request: Request) {
 `;
 
 export const schedulingCancelRouteSource = `import { NextResponse } from "next/server";
-import { cancelSchedule } from "@/app/workflows/scheduling";
+import { cancelSchedule } from "@/app/workflows/scheduling-workflow";
 
 // POST /api/scheduling/cancel { scheduleId, reason? }
 // Idempotent: returns success even if the hook has already fired or expired.

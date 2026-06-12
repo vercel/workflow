@@ -164,6 +164,7 @@ export default async function RegistryDetailPage({ params }: PageProps) {
     `# ${item.name}`,
     item.description,
     `Works with Workflow SDK: ${item.versions.join(', ')}`,
+    `Pattern type: ${item.patternType}`,
     item.longDescription ?? '',
     ...(guide?.introBullets ?? []).map((b) => `- ${b}`),
   ];

@@ -1,122 +1,108 @@
 # Patterns Roadmap
 
 Working plan for evolving the `/patterns` page from "19 installable recipes"
-into a tiered library of components, templates, and examples. Iterate on this
-doc directly — check things off, reorder, strike out, add.
+into a tiered library of components, templates, and examples.
+
+**Status: phases 0–5 implemented in this PR.** Remaining open items are at
+the bottom.
 
 ## Guiding taxonomy
 
-Every pattern is one of three types, based on what the installed code is
+Every pattern declares a `patternType`, based on what the installed code is
 worth after adaptation:
 
 | Type | The value is… | Archetype |
 |---|---|---|
-| **Component** | the installed code itself — import and call, domain-free | `distributed-abort-controller` |
+| **Component** | the installed code itself — import it and call it, domain-free | `kill-switch`, `semaphore` |
 | **Template** | the structure — keep the skeleton, replace the function bodies | `saga` |
-| **Example** | the lesson — read it, then mostly rewrite | `resend` |
+| **Example** | the lesson — read it, then mostly rewrite | `resend`, `stripe` |
 
-Components install to `lib/`, templates to `workflows/`, examples wherever
-fits the integration. "Component" is the bar new patterns should aim for.
-
----
-
-## Phase 0 — Cleanups (small, do anytime)
-
-- [ ] **Rename `rate-limiting`** → it teaches 429-handling with
-      `RetryableError` + backoff, not rate limiting. New name candidates:
-      `handling-rate-limits`, `retry-with-backoff`. Add redirect from the old
-      slug. Frees the `rate-limiting` name for a real limiter (Phase 3).
-- [ ] **Fix `resend` install paths** — installs to
-      `app/workflows/providers/resendWorkflow.ts`; every other pattern uses
-      `workflows/<id>-workflow.ts`. Make consistent.
-- [ ] **De-emphasize install for pure tutorials** —
-      `sequential-and-parallel` and `workflow-composition` install only
-      placeholder code. Keep the pages, but consider hiding/downplaying the
-      install CTA (e.g. render as "Concept" pages).
-- [ ] **Decide fate of `provider` category** — currently a category of one
-      (resend). Either grow it (Phase 5) or retitle resend as
-      "Email sequences" under `common`.
-
-## Phase 1 — Type facet in the UI
-
-Mirror the `versions` badge work:
-
-- [ ] Add `patternType: 'component' | 'template' | 'example'` to
-      `RegistryItem` (required, like `versions`).
-- [ ] Classify all 19:
-  - component: `distributed-abort-controller`
-  - template: `saga`, `batching`, `webhooks`, `idempotency`, `timeouts`,
-    `upgrading-workflows`, `ai-sdk`, `durable-agent`, `child-workflows`,
-    `scheduling`, `agent-cancellation`, `human-in-the-loop`
-    (last four graduate to component after Phase 2)
-  - example: `rate-limiting`*, `sequential-and-parallel`,
-    `workflow-composition`, `sandbox`, `chat-sdk`, `resend`
-- [ ] Badge on card + detail hero; filter row on the listing page.
-- [ ] Include in copy-page text and search matching.
-
-## Phase 2 — Componentize what's already half-generic
-
-Extract the generic machinery into `lib/` files; the example workflow
-imports them instead of inlining.
-
-- [ ] **`child-workflows`** → `lib/child-workflows.ts` exporting
-      `startAndWait()`, `withChildCompletionHook()`, `completionToken()`;
-      example parent/child stays in `workflows/`.
-- [ ] **`scheduling`** → `lib/scheduled-action.ts`: generic
-      deferred-cancellable-action (durable sleep raced against a cancel
-      hook), parameterized over the action.
-- [ ] Evaluate same split for **`agent-cancellation`** (stopHook race) and
-      **`human-in-the-loop`** (approval hook + card are already reusable;
-      maybe just relabel as component once typed).
-
-## Phase 3 — New components (the coordination-primitives family)
-
-All buildable on the coordination-workflow + hooks trick the abort
-controller demonstrates. Each installs a `lib/` class/helper + a small demo.
-
-Priority order:
-
-- [ ] **Semaphore / concurrency limiter** — "at most N running across all
-      workers."
-- [ ] **Distributed lock / mutex** — single-flight per key.
-- [ ] **Singleton run (`resume-or-start`)** — `getOrStart(key)` dedupe.
-      ⚠ Blocked on the `cookbook-resume-hook` branch landing on main;
-      port it as a pattern when it does.
-- [ ] **Rate limiter (real one)** — token bucket / sliding window.
-      Takes over the `rate-limiting` slug after the Phase 0 rename.
-- [ ] **Circuit breaker** — open after N failures, half-open probe,
-      wraps any step.
-- [ ] **Debounce / throttle by key** — "at most one notification per user
-      per hour," collapse bursts.
-- [ ] **Batch aggregator / buffer** — inverse of `batching`: accumulate
-      events via hook until N items or T minutes, then flush. Uniquely
-      suited to a durable runtime — good showcase.
-
-## Phase 4 — New templates
-
-- [ ] **Wait-for-condition / poller** — poll external system with backoff +
-      timeout until a condition holds.
-- [ ] **Dead-letter queue** — after retries exhaust, persist failure and
-      continue the batch. Companion to saga/batching.
-- [ ] **Recurring cron loop** — self-rescheduling recurring workflow using
-      the `upgrading-workflows` continuation trick for long-lived runs.
-      (Current `scheduling` is one-shot deferred, not recurring.)
-
-## Phase 5 — Provider examples (only if `provider` category stays)
-
-- [ ] **Stripe** — payment lifecycle / dunning via webhook request-reply.
-- [ ] **Slack approval** — human-in-the-loop with Slack as the approval
-      surface instead of a React card.
+"Component" is the bar new patterns should aim for.
 
 ---
 
-## Open questions
+## Phase 0 — Cleanups ✅
 
-1. Naming for the renamed 429 pattern (`handling-rate-limits` vs
-   `retry-with-backoff`)?
-2. Should tutorials (`sequential-and-parallel`, `workflow-composition`)
-   remain installable at all, or become non-installable "Concept" pages?
-3. Grow `provider` (Stripe/Slack) or fold resend into `common`?
-4. For Phase 3 components: one shadcn item per primitive, or a single
-   `workflow-primitives` bundle?
-5. Does this roadmap doc stay in the repo (and the PR) or move to an issue?
+- [x] **Renamed `rate-limiting` → `handling-rate-limits`** (it teaches 429
+      handling with `RetryableError`, not rate limiting) — freed the name
+      for the real limiter. Redirects added.
+- [x] **Renamed `distributed-abort-controller` → `kill-switch`** — v5
+      shipped native AbortController support (Cancellation docs), so the
+      old name collided. Copy now explains the relationship: KillSwitch is
+      the named, durable, cross-process complement. Redirects added.
+- [x] **Fixed `resend` install paths** — now follows the `workflows/`
+      convention; its `/r` payload previously contained zero files.
+- [x] **Tutorials are concept-only** — `sequential-and-parallel` and
+      `workflow-composition` are `installable: false`: no Installation
+      section, `/r` returns a pointer to the readable page.
+- [x] **`provider` category kept** and grown (stripe, slack-approval).
+
+## Phase 1 — Type facet ✅
+
+- [x] Required `patternType: 'component' | 'template' | 'example'` on every
+      item; tier badge on cards + detail hero; type filter row on the
+      listing page; search matching; copy-page text.
+
+## Phase 2 — Componentize ✅
+
+- [x] **`child-workflows`** now installs two files: the reusable component
+      (`workflows/child-workflows.ts` — completion hook,
+      `withChildCompletionHook()`, `startAndWait()`) and a worked example.
+- [x] **`scheduling`** exposes `cancellableSleep(token, delay)` as its
+      reusable core.
+- [ ] `agent-cancellation` / `human-in-the-loop` — left as templates; their
+      hook mechanics are reusable but tightly woven into the agent
+      examples. Revisit if demand shows up.
+
+## Phase 3 — Coordination components ✅
+
+All built on the same architecture: a per-key coordination workflow reading
+a single event-channel hook (one consumer → FIFO, no lost messages),
+timeouts injected as messages from timer child workflows, senders that
+lazily (re)start coordinators, and waiters that self-heal with fresh reply
+hooks. `getHookByToken` provides create-or-reconnect.
+
+- [x] **`semaphore`** — `withPermit(key, max, fn)` + `withLock()` mutex
+- [x] **`rate-limiter`** — `withRateLimit(key, intervalMs, fn)`, smooth
+      spacing limiter
+- [x] **`circuit-breaker`** — `withBreaker(key, fn)`, closed/open/half-open,
+      fail-open default
+- [x] **`debounce`** — `debounceSend(key, payload)`, latest-payload,
+      timer-reset via sequence numbers
+- [x] **`batch-aggregator`** — `aggregatorSend(key, item)`, flush at N items
+      or T elapsed
+- [x] **`singleton-run`** — `getOrStart()` / `sendToSingleton()`,
+      HookConflictError as the start-dedupe mutex
+      (supersedes the `cookbook-resume-hook` branch's recipe — reconcile if
+      that branch lands)
+
+## Phase 4 — Templates ✅
+
+- [x] **`polling`** — wait-for-condition with exponential backoff + deadline
+- [x] **`dead-letter-queue`** — isolate poison items, redrive later
+- [x] **`recurring-cron`** — drift-corrected recurring loop with
+      continue-as-new deployment adoption and a clean stop hook
+
+## Phase 5 — Provider examples ✅
+
+- [x] **`stripe`** — dunning (failed-payment recovery) with webhook-driven
+      early exit
+- [x] **`slack-approval`** — human-in-the-loop with Slack buttons as the
+      approval surface
+
+---
+
+## Open items
+
+1. `agent-cancellation` / `human-in-the-loop` componentization (see
+   Phase 2).
+2. The `/r` registry payload doesn't declare npm `dependencies` (e.g.
+   `stripe`, `resend`, `zod`) — shadcn supports a `dependencies` field;
+   wire it up from a per-pattern list.
+3. Submit the registry to the shadcn registry index so short names work
+   (`shadcn add @workflow/semaphore`-style).
+4. Consider a `coordination` category if the `advanced` group keeps
+   growing.
+5. E2E-test the component patterns in a workbench app (the snippets are
+   hand-verified against hook semantics in `packages/core`, but nothing
+   executes them in CI).
