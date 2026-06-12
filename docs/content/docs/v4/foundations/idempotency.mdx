@@ -153,7 +153,7 @@ This is active-run coordination. When the workflow completes and disposes the ho
 
 ### Conflict-handling strategies
 
-Some workflow systems resolve duplicate IDs with a fixed, pre-declared policy — for example, Temporal's [Workflow ID conflict policy](https://docs.temporal.io/workflow-execution/workflowid-runid) chooses between failing the new execution, using the existing one, or terminating it. Workflow has no policy enum. `hook.getConflict()` hands the duplicate run the conflicting run's ID, and the policy is ordinary code — including policies that inspect state before deciding, which static configuration can't express. Retrieve a `Run` handle for the owner with [`getRun()`](/docs/api-reference/workflow-api/get-run) inside a step:
+Some workflow systems resolve duplicate IDs with a fixed, pre-declared policy — typically a static choice between rejecting the new execution, deferring to the existing one, or terminating it. Workflow has no policy enum. `hook.getConflict()` hands the duplicate run the conflicting run's ID, and the policy is ordinary code — including policies that inspect state before deciding, which static configuration can't express. Retrieve a `Run` handle for the owner with [`getRun()`](/docs/api-reference/workflow-api/get-run) inside a step:
 
 ```typescript lineNumbers
 import { getRun } from "workflow/api";
