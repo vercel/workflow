@@ -11,24 +11,30 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
+import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
+import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Run } from '../runtime/run.js';
 import { hydrateStepReturnValue } from '../serialization.js';
-import { WORKFLOW_RUN_CLASS } from '../symbols.js';
 
 /**
  * Constructs a `Run` handle for the run that owns a conflicting hook
  * token, for resolution through `hook.getConflict()`.
  *
- * The instance is created from the VM bundle's `Run` class (exposed on
- * the VM's globalThis by the workflow-mode `create-hook` module), whose
- * methods are durable step proxies — safe to call from workflow code.
+ * The instance is created through the serialization class registry on
+ * the VM's globalThis — the same channel that revives serialized `Run`
+ * instances (e.g. `start()` return values crossing from a step into the
+ * workflow). The registered class is the VM bundle's plugin-compiled
+ * `Run`, whose methods are durable step proxies — safe to call from
+ * workflow code — and construction goes through its
+ * `WORKFLOW_DESERIALIZE` hook, exactly as the `Instance` reviver would.
  *
  * Returns `null` when a real `Run` cannot be constructed: the conflict
- * event lacks `conflictingRunId` (written by an old world), or the VM
- * has no `Run` class registered (a context that never loaded the
- * workflow-mode `create-hook` module). `getConflict` awaiters then
- * reject with `HookConflictError` instead of resolving with a value
- * that doesn't honor the `Run` contract.
+ * event lacks `conflictingRunId` (written by an old world), or the VM's
+ * registry has no `Run` (a context that never evaluated the
+ * workflow-mode `create-hook` module, which aliases it under
+ * `RUN_CLASS_ID`). `getConflict` awaiters then reject with
+ * `HookConflictError` instead of resolving with a value that doesn't
+ * honor the `Run` contract.
  */
 function createConflictingRun(
   ctx: WorkflowOrchestratorContext,
@@ -37,11 +43,16 @@ function createConflictingRun(
   if (typeof conflictingRunId !== 'string') {
     return null;
   }
-  const RunClass = (ctx.globalThis as any)?.[WORKFLOW_RUN_CLASS];
-  if (!RunClass) {
+  const RunClass = getSerializationClass(RUN_CLASS_ID, ctx.globalThis) as
+    | (abstract new (
+        ...args: never
+      ) => Run<unknown>)
+    | undefined;
+  const deserialize = (RunClass as any)?.[WORKFLOW_DESERIALIZE];
+  if (typeof deserialize !== 'function') {
     return null;
   }
-  return new RunClass(conflictingRunId);
+  return deserialize.call(RunClass, { runId: conflictingRunId });
 }
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {

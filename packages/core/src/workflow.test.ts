@@ -2542,11 +2542,19 @@ describe('runWorkflow', () => {
 
       const result = await runWorkflow(
         `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-        // In real bundles the workflow-mode create-hook module registers
-        // the compiled Run class on this symbol; mirror that here.
-        globalThis[Symbol.for("WORKFLOW_RUN_CLASS")] = class Run {
-          constructor(runId) { this.runId = runId; }
-        };
+        // In real bundles the SWC plugin auto-registers the compiled Run
+        // class in the serialization class registry and the workflow-mode
+        // create-hook module aliases it under the stable id; mirror that
+        // here, including the WORKFLOW_DESERIALIZE hook the host-side
+        // consumer constructs through.
+        {
+          const registrySym = Symbol.for("workflow-class-registry");
+          const registry = globalThis[registrySym] || (globalThis[registrySym] = new Map());
+          registry.set("class//workflow//Run", class Run {
+            static [Symbol.for("workflow-deserialize")](data) { return new Run(data.runId); }
+            constructor(runId) { this.runId = runId; }
+          });
+        }
         async function workflow() {
           const hook = createHook({ token: 'claim-only-token' });
           const conflict = await hook.getConflict();

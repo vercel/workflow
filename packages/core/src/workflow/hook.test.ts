@@ -8,12 +8,15 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  aliasSerializationClass,
+  RUN_CLASS_ID,
+} from '../class-serialization.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { Run } from '../runtime/run.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
-import { WORKFLOW_RUN_CLASS } from '../symbols.js';
 import { createContext } from '../vm/index.js';
 import { createWebhook } from './create-hook.js';
 import { createCreateHook } from './hook.js';
@@ -24,10 +27,11 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
-  // In real workflow bundles the workflow-mode create-hook module exposes
-  // the bundle's compiled Run class on this symbol; mirror that here so
-  // `hook.getConflict()` can construct the conflicting run.
-  (context.globalThis as any)[WORKFLOW_RUN_CLASS] = Run;
+  // In real workflow bundles the workflow-mode create-hook module aliases
+  // the bundle's compiled Run class in the serialization class registry;
+  // mirror that here so `hook.getConflict()` can construct the
+  // conflicting run through the registry.
+  aliasSerializationClass(RUN_CLASS_ID, Run, context.globalThis);
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {

@@ -6,25 +6,32 @@ import type {
   Webhook,
   WebhookOptions,
 } from '../create-hook.js';
+import {
+  aliasSerializationClass,
+  RUN_CLASS_ID,
+} from '../class-serialization.js';
 import { Run } from '../runtime/run.js';
-import { WORKFLOW_CREATE_HOOK, WORKFLOW_RUN_CLASS } from '../symbols.js';
+import { WORKFLOW_CREATE_HOOK } from '../symbols.js';
 import { getWorkflowMetadata } from './get-workflow-metadata.js';
 
-// Expose this bundle's `Run` class to the host-side hook event consumer.
+// Alias this bundle's `Run` class in the serialization class registry
+// under the stable id, so the host-side hook event consumer can construct
+// the conflicting run resolved by `hook.getConflict()` via the same
+// registry that revives serialized `Run` instances (the SWC plugin
+// already auto-registers `Run` here, but under a path-derived id the
+// host cannot know statically).
+//
 // In workflow mode this module is compiled into the workflow bundle and
 // executes inside the VM, so `Run` here is the plugin-compiled variant
-// whose methods are durable step proxies. The host-side consumer uses it
-// to construct the conflicting run resolved by `hook.getConflict()`.
+// whose methods are durable step proxies. No environment guard is
+// needed: the registry is keyed per-global, so a stray host-side import
+// of this module registers the host's `Run` on the host's registry —
+// which is the correct class for that context.
 //
-// Guarded on the workflow runtime being present (the VM installs
-// WORKFLOW_CREATE_HOOK on its globalThis before evaluating the bundle):
-// outside the VM this module can still be imported — where `createHook()`
-// just throws — and registering the host-side `Run` there would both
-// mutate the host global and expose a class whose methods are NOT step
-// proxies.
-if ((globalThis as any)[WORKFLOW_CREATE_HOOK]) {
-  (globalThis as any)[WORKFLOW_RUN_CLASS] ??= Run;
-}
+// The value import of `Run` also guarantees `runtime/run.js` is included
+// in any bundle that uses hooks, so the registry entry exists whenever
+// `getConflict()` can resolve.
+aliasSerializationClass(RUN_CLASS_ID, Run);
 
 export function createHook<T = any>(options?: HookOptions): Hook<T> {
   // Inside the workflow VM, the hook function is stored in the globalThis object behind a symbol
