@@ -37,7 +37,9 @@ export function RegistryCard({ item }: RegistryCardProps) {
                 <span className="truncate">{item.name}</span>
               </CardTitle>
               <CardDescription className="text-xs font-mono truncate">
-                {item.shadcnSlug}
+                {item.installable !== false
+                  ? item.shadcnSlug
+                  : 'concept — read & adapt'}
               </CardDescription>
             </div>
           </div>

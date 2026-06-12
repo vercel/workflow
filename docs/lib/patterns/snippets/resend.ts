@@ -242,7 +242,7 @@ import { NextResponse } from "next/server";
 import {
   cancelNudges,
   emailSequence,
-} from "@/app/workflows/providers/resendWorkflow";
+} from "@/app/workflows/resend-workflow";
 
 export async function POST(req: Request) {
   const { name, email, interval } = (await req.json()) as {
@@ -275,7 +275,7 @@ export async function POST(req: Request) {
 `;
 
 export const resendCancelRouteSource = `import { NextResponse } from "next/server";
-import { cancelNudges } from "@/app/workflows/providers/resendWorkflow";
+import { cancelNudges } from "@/app/workflows/resend-workflow";
 
 export async function POST(req: Request) {
   const { email, reason } = await req.json();
@@ -305,7 +305,7 @@ export async function POST(req: Request) {
 `;
 
 export const resendUsageSource = `import { start } from "workflow/api";
-import { emailSequence } from "@/app/workflows/providers/resendWorkflow";
+import { emailSequence } from "@/app/workflows/resend-workflow";
 
 // Anywhere in your app — e.g. a /signup API route — kick off the campaign:
 const run = await start(emailSequence, [

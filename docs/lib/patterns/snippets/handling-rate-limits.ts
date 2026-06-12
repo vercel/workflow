@@ -1,12 +1,12 @@
 /**
- * Source snippets for the Rate Limiting registry entry.
+ * Source snippets for the Handling Rate Limits registry entry.
  *
  * Throw RetryableError with a Retry-After value and the workflow runtime
  * reschedules the step automatically — no manual sleep-retry loops. Includes
  * exponential-backoff variant via getStepMetadata().
  */
 
-export const rateLimitingWorkflowSource = `import { RetryableError, getStepMetadata } from "workflow";
+export const handlingRateLimitsWorkflowSource = `import { RetryableError, getStepMetadata } from "workflow";
 
 export async function syncContact(contactId: string) {
   "use workflow";
@@ -65,8 +65,8 @@ async function upsertToWarehouse(
 upsertToWarehouse.maxRetries = 10;
 `;
 
-export const rateLimitingWorkflowInstallSource = `/**
- * Rate Limiting — handle 429s and back-pressure without manual sleep loops.
+export const handlingRateLimitsWorkflowInstallSource = `/**
+ * Handling Rate Limits — handle 429s and back-pressure without manual sleep loops.
  *
  * THE PATTERN:
  *   1. On a 429 response, throw RetryableError with a retryAfter value
@@ -90,7 +90,7 @@ export const rateLimitingWorkflowInstallSource = `/**
  *     retryAfter from your own logic and throw RetryableError the same way.
  *   - Increase maxRetries beyond 10 for very spiky endpoints.
  *
- * DOCS: https://workflow-sdk.dev/patterns/rate-limiting
+ * DOCS: https://workflow-sdk.dev/patterns/handling-rate-limits
  */
 import { RetryableError, getStepMetadata } from "workflow";
 
@@ -154,11 +154,11 @@ async function upsertToWarehouse(
 upsertToWarehouse.maxRetries = 10;
 `;
 
-export const rateLimitingStartRouteSource = `import { start } from "workflow/api";
+export const handlingRateLimitsStartRouteSource = `import { start } from "workflow/api";
 import { NextResponse } from "next/server";
-import { syncContact } from "@/app/workflows/rate-limiting";
+import { syncContact } from "@/app/workflows/handling-rate-limits";
 
-// POST /api/rate-limiting { contactId }
+// POST /api/handling-rate-limits { contactId }
 export async function POST(request: Request) {
   const { contactId } = await request.json();
   if (!contactId) {

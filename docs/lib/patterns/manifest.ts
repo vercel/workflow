@@ -33,12 +33,12 @@ import {
   childWorkflowsWorkflowInstallSource,
 } from './snippets/child-workflows';
 import {
-  distributedAbortControllerButtonSource,
-  distributedAbortControllerLibSource,
-  distributedAbortControllerRouteSource,
-  distributedAbortControllerUsageSource,
-  distributedAbortControllerLibInstallSource,
-} from './snippets/distributed-abort-controller';
+  killSwitchButtonSource,
+  killSwitchLibSource,
+  killSwitchRouteSource,
+  killSwitchUsageSource,
+  killSwitchLibInstallSource,
+} from './snippets/kill-switch';
 import {
   durableAgentClientSource,
   durableAgentStartRouteSource,
@@ -59,10 +59,10 @@ import {
   idempotencyWorkflowInstallSource,
 } from './snippets/idempotency';
 import {
-  rateLimitingStartRouteSource,
-  rateLimitingWorkflowSource,
-  rateLimitingWorkflowInstallSource,
-} from './snippets/rate-limiting';
+  handlingRateLimitsStartRouteSource,
+  handlingRateLimitsWorkflowSource,
+  handlingRateLimitsWorkflowInstallSource,
+} from './snippets/handling-rate-limits';
 import {
   resendCancelRouteSource,
   resendStartRouteSource,
@@ -1216,29 +1216,29 @@ export const registryItems: RegistryItem[] = [
     },
   },
   {
-    id: 'rate-limiting',
-    name: 'Rate Limiting',
-    logo: 'rate-limiting',
+    id: 'handling-rate-limits',
+    name: 'Handling Rate Limits',
+    logo: 'handling-rate-limits',
     description:
       'Handle 429 responses and transient failures with RetryableError + automatic backoff.',
     longDescription:
-      'Use this pattern when calling external APIs that enforce rate limits. Instead of writing manual retry loops, throw `RetryableError` with a `retryAfter` value and let the workflow runtime handle rescheduling — more efficient than wall-clock sleeps and survives cold starts.',
+      'Use this pattern when calling external APIs that enforce rate limits. Instead of writing manual retry loops, throw `RetryableError` with a `retryAfter` value and let the workflow runtime handle rescheduling — more efficient than wall-clock sleeps and survives cold starts. To bound your own outbound request rate proactively (rather than reacting to 429s), see the Rate Limiter component.',
     tags: ['rate-limit', 'retry', 'backoff', '429'],
     categories: ['common'],
     versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
-    docsUrl: 'https://workflow-sdk.dev/patterns/rate-limiting',
+    docsUrl: 'https://workflow-sdk.dev/patterns/handling-rate-limits',
     sourceUrl:
-      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/rate-limiting.ts',
-    shadcnSlug: 'https://workflow-sdk.dev/r/rate-limiting',
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/handling-rate-limits.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/handling-rate-limits',
     files: [
       {
-        path: 'workflows/rate-limiting-workflow.ts',
+        path: 'workflows/handling-rate-limits-workflow.ts',
         description:
           '`syncContact()` — Retry-After header on 429, exponential backoff on 5xx, `maxRetries = 10` override for known-flaky endpoints.',
       },
       {
-        path: 'app/api/rate-limiting/route.ts',
+        path: 'app/api/handling-rate-limits/route.ts',
         description: 'POST endpoint that starts the rate-limited sync.',
       },
     ],
@@ -1246,15 +1246,15 @@ export const registryItems: RegistryItem[] = [
       {
         label: 'Workflow',
         lang: 'tsx',
-        caption: 'workflows/rate-limiting-workflow.ts',
-        code: rateLimitingWorkflowSource,
-        installCode: rateLimitingWorkflowInstallSource,
+        caption: 'workflows/handling-rate-limits-workflow.ts',
+        code: handlingRateLimitsWorkflowSource,
+        installCode: handlingRateLimitsWorkflowInstallSource,
       },
       {
         label: 'Start route',
         lang: 'tsx',
-        caption: 'app/api/rate-limiting/route.ts',
-        code: rateLimitingStartRouteSource,
+        caption: 'app/api/handling-rate-limits/route.ts',
+        code: handlingRateLimitsStartRouteSource,
       },
     ],
     guide: {
@@ -1484,6 +1484,7 @@ export const registryItems: RegistryItem[] = [
   {
     id: 'sequential-and-parallel',
     name: 'Sequential & Parallel',
+    installable: false,
     logo: 'sequential-and-parallel',
     description:
       'Compose steps with await, Promise.all, and Promise.race against durable sleeps and webhooks.',
@@ -1762,6 +1763,7 @@ export const registryItems: RegistryItem[] = [
   {
     id: 'workflow-composition',
     name: 'Workflow Composition',
+    installable: false,
     logo: 'workflow-composition',
     description:
       'Call workflows from workflows — direct await for inline composition, start() for independent runs.',
@@ -1950,27 +1952,26 @@ export const registryItems: RegistryItem[] = [
     },
   },
   {
-    id: 'distributed-abort-controller',
-    name: 'Distributed Abort Controller',
-    logo: 'distributed-abort-controller',
+    id: 'kill-switch',
+    name: 'Kill Switch',
+    logo: 'kill-switch',
     description:
-      'AbortController-shaped API for cross-process cancellation, backed by a durable workflow.',
+      'Named, durable cancellation flag that works across processes and machines — trip it anywhere, observe it everywhere.',
     longDescription:
-      'Use this pattern when you need an `AbortController`-like interface that works across distributed systems. The controller uses a durable workflow to coordinate cancellation — calling `.abort()` on one machine triggers the `.signal` on any other machine.',
-    tags: ['abort', 'cancellation', 'distributed', 'cross-process'],
+      "Use this pattern when you need a cancellation flag that works across distributed systems. A `KillSwitch` is identified by a semantic ID (not a runId) — calling `.abort()` on one machine fires the `.signal` `AbortSignal` on any other machine that created a switch with the same ID. Workflow v5 ships native `AbortController`/`AbortSignal` support *within* a run (see the Cancellation docs); a kill switch is the cross-process, cross-run complement: a named durable flag backed by a coordination workflow, with TTL auto-expiry and a grace period for late subscribers. Because `.signal` is a real `AbortSignal`, it plugs into `fetch` and anything else AbortSignal-aware — including v5's native cancellation support.",
+    tags: ['kill-switch', 'cancellation', 'distributed', 'cross-process'],
     categories: ['advanced'],
     versions: ['v4', 'v5'],
     homepage: 'https://workflow-sdk.dev',
-    docsUrl:
-      'https://workflow-sdk.dev/cookbook/advanced/distributed-abort-controller',
+    docsUrl: 'https://workflow-sdk.dev/patterns/kill-switch',
     sourceUrl:
-      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/distributed-abort-controller.ts',
-    shadcnSlug: 'https://workflow-sdk.dev/r/distributed-abort-controller',
+      'https://github.com/vercel/workflow/blob/main/docs/lib/patterns/snippets/kill-switch.ts',
+    shadcnSlug: 'https://workflow-sdk.dev/r/kill-switch',
     files: [
       {
-        path: 'lib/distributed-abort-controller.ts',
+        path: 'workflows/kill-switch-workflow.ts',
         description:
-          'Coordination workflow + `DistributedAbortController` class with `.abort()` and `.signal` (an `AbortSignal`).',
+          'Coordination workflow + `KillSwitch` class with `.abort()` and `.signal` (an `AbortSignal`).',
       },
       {
         path: 'app/api/abort/[id]/route.ts',
@@ -1987,27 +1988,27 @@ export const registryItems: RegistryItem[] = [
       {
         label: 'Lib',
         lang: 'tsx',
-        caption: 'workflows/distributed-abort-controller-workflow.ts',
-        code: distributedAbortControllerLibSource,
-        installCode: distributedAbortControllerLibInstallSource,
+        caption: 'workflows/kill-switch-workflow.ts',
+        code: killSwitchLibSource,
+        installCode: killSwitchLibInstallSource,
       },
       {
         label: 'Abort route',
         lang: 'tsx',
         caption: 'app/api/abort/[id]/route.ts',
-        code: distributedAbortControllerRouteSource,
+        code: killSwitchRouteSource,
       },
       {
         label: 'Cancel button',
         lang: 'tsx',
         caption: 'components/cancel-button.tsx',
-        code: distributedAbortControllerButtonSource,
+        code: killSwitchButtonSource,
       },
       {
         label: 'Usage',
         lang: 'tsx',
         caption: 'Pass `controller.signal` to any AbortSignal-aware API',
-        code: distributedAbortControllerUsageSource,
+        code: killSwitchUsageSource,
       },
     ],
     guide: {
@@ -2144,7 +2145,7 @@ export const registryItems: RegistryItem[] = [
     ],
     files: [
       {
-        path: 'app/workflows/providers/resendWorkflow.ts',
+        path: 'workflows/resend-workflow.ts',
         description:
           'The durable email drip workflow — `emailSequence()` + `cancelNudges` hook + the three send-email steps.',
       },
@@ -2163,7 +2164,7 @@ export const registryItems: RegistryItem[] = [
       {
         label: 'Workflow',
         lang: 'tsx',
-        caption: 'workflows/providers/resendWorkflow.ts',
+        caption: 'workflows/resend-workflow.ts',
         code: resendWorkflowSource,
         installCode: resendWorkflowInstallSource,
       },

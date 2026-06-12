@@ -74,6 +74,7 @@ export default async function RegistryDetailPage({ params }: PageProps) {
 
   const guide = item.guide;
   const hasApproachSections = (guide?.approachSections?.length ?? 0) > 0;
+  const installable = item.installable !== false;
 
   // Index conceptSnippets by label for O(1) lookup in approach sections
   const conceptBlocksByLabel = new Map(conceptBlocks.map((b) => [b.label, b]));
@@ -117,7 +118,8 @@ export default async function RegistryDetailPage({ params }: PageProps) {
       }
     } else {
       // flatLayout without per-approach sections: Installation + Source follow normally
-      tocItems.push({ id: 'installation', title: 'Installation', depth: 2 });
+      if (installable)
+        tocItems.push({ id: 'installation', title: 'Installation', depth: 2 });
       if (conceptBlocks.length > 0)
         tocItems.push({ id: 'concept', title: 'Concept', depth: 2 });
       tocItems.push({ id: 'source', title: 'Source', depth: 2 });
@@ -139,7 +141,8 @@ export default async function RegistryDetailPage({ params }: PageProps) {
           depth: 3,
         });
     }
-    tocItems.push({ id: 'installation', title: 'Installation', depth: 2 });
+    if (installable)
+      tocItems.push({ id: 'installation', title: 'Installation', depth: 2 });
     if (conceptBlocks.length > 0)
       tocItems.push({ id: 'concept', title: 'Concept', depth: 2 });
     tocItems.push({ id: 'source', title: 'Source', depth: 2 });
@@ -511,17 +514,19 @@ export default async function RegistryDetailPage({ params }: PageProps) {
                 ) : (
                   /* ── flatLayout without per-approach sections: Installation + Source ── */
                   <>
-                    <section id="installation" className="space-y-3">
-                      <h2 className="font-semibold text-2xl tracking-tight">
-                        Installation
-                      </h2>
-                      <p className="text-sm text-muted-foreground max-w-2xl">
-                        The shadcn CLI copies every file in this recipe into
-                        your project — you own the code after install and can
-                        customize it freely.
-                      </p>
-                      <RegistryInstallTabs slug={item.shadcnSlug} />
-                    </section>
+                    {installable && (
+                      <section id="installation" className="space-y-3">
+                        <h2 className="font-semibold text-2xl tracking-tight">
+                          Installation
+                        </h2>
+                        <p className="text-sm text-muted-foreground max-w-2xl">
+                          The shadcn CLI copies every file in this recipe into
+                          your project — you own the code after install and can
+                          customize it freely.
+                        </p>
+                        <RegistryInstallTabs slug={item.shadcnSlug} />
+                      </section>
+                    )}
 
                     {conceptBlocks.length > 0 && (
                       <section id="concept" className="space-y-3">
@@ -599,17 +604,19 @@ export default async function RegistryDetailPage({ params }: PageProps) {
                   )}
 
                 {/* ── Installation ── */}
-                <section id="installation" className="space-y-3">
-                  <h2 className="font-semibold text-2xl tracking-tight">
-                    Installation
-                  </h2>
-                  <p className="text-sm text-muted-foreground max-w-2xl">
-                    The shadcn CLI copies every file in this recipe into your
-                    project — you own the code after install and can customize
-                    it freely.
-                  </p>
-                  <RegistryInstallTabs slug={item.shadcnSlug} />
-                </section>
+                {installable && (
+                  <section id="installation" className="space-y-3">
+                    <h2 className="font-semibold text-2xl tracking-tight">
+                      Installation
+                    </h2>
+                    <p className="text-sm text-muted-foreground max-w-2xl">
+                      The shadcn CLI copies every file in this recipe into your
+                      project — you own the code after install and can customize
+                      it freely.
+                    </p>
+                    <RegistryInstallTabs slug={item.shadcnSlug} />
+                  </section>
+                )}
 
                 {/* ── Concept snippets (when educational ≠ plug-and-play) ── */}
                 {conceptBlocks.length > 0 && (

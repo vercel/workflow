@@ -53,9 +53,11 @@ export function RegistryDetailHero({ item }: RegistryDetailHeroProps) {
             </h1>
           </div>
           <div className="flex items-center flex-wrap gap-2">
-            <p className="font-mono text-sm text-muted-foreground">
-              {item.shadcnSlug}
-            </p>
+            {item.installable !== false && (
+              <p className="font-mono text-sm text-muted-foreground">
+                {item.shadcnSlug}
+              </p>
+            )}
             <VersionBadges versions={item.versions} />
           </div>
           <p className="text-lg text-muted-foreground max-w-2xl">

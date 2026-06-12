@@ -60,6 +60,17 @@ export async function GET(
     );
   }
 
+  // Educational/concept patterns are not installable — their code is all
+  // placeholder. Point the CLI user at the readable page instead.
+  if (item.installable === false) {
+    return NextResponse.json(
+      {
+        error: `Pattern "${name}" is a concept guide, not an installable item. Read it at https://workflow-sdk.dev/patterns/${name}`,
+      },
+      { status: 404 }
+    );
+  }
+
   // Collect workflow files from snippets (installCode > code fallback).
   const workflowSnippets = item.snippets.filter((s) =>
     s.caption?.startsWith(WORKFLOW_PATH_PREFIX)

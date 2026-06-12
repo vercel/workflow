@@ -1,18 +1,18 @@
 /**
- * Source snippets for the Distributed Abort Controller registry entry.
+ * Source snippets for the Kill Switch registry entry.
  *
- * AbortController-shaped API backed by a durable workflow — calling .abort()
+ * Distributed kill switch backed by a durable workflow — an AbortController-shaped API that works across processes and machines — calling .abort()
  * on one machine fires the .signal AbortSignal on any other machine that
  * created a controller with the same semantic ID. TTL auto-expires stale
  * controllers; grace period keeps the hook alive for late subscribers.
  *
  * Ships:
- *   - lib/distributed-abort-controller.ts — workflow + class
+ *   - workflows/kill-switch-workflow.ts — coordination workflow + KillSwitch class
  *   - app/api/abort/[id]/route.ts          — remote abort endpoint
  *   - components/cancel-button.tsx         — drop-in client cancel button
  */
 
-export const distributedAbortControllerLibSource = `import { defineHook, getWritable, sleep } from "workflow";
+export const killSwitchLibSource = `import { defineHook, getWritable, sleep } from "workflow";
 import { start, getRun, getHookByToken } from "workflow/api";
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -45,7 +45,7 @@ async function writeAbortSignal(reason?: string, expired?: boolean) {
 // Coordination workflow — races a manual abort against TTL expiration,
 // writes the result to the run's stream, then sleeps through the grace
 // period (only on TTL expiry) so late subscribers can still observe it.
-export async function abortControllerWorkflow(
+export async function killSwitchWorkflow(
   id: string,
   ttlMs: number,
   graceMs: number,
@@ -80,11 +80,14 @@ export async function abortControllerWorkflow(
 }
 
 /**
- * AbortController-shaped API on top of a durable workflow.
+ * Distributed kill switch on top of a durable workflow. Unlike the native
+ * AbortController support that ships in Workflow v5 (scoped to a single
+ * run), a KillSwitch is a named, durable flag shared across processes,
+ * machines, and runs.
  * Calling \`.abort()\` on any process triggers \`.signal\` on any other
  * process that created a controller with the same ID.
  */
-export class DistributedAbortController {
+export class KillSwitch {
   private id: string;
   readonly runId: string;
 
@@ -101,17 +104,17 @@ export class DistributedAbortController {
   static async create(
     id: string,
     options: { ttlMs?: number; graceMs?: number } = {},
-  ): Promise<DistributedAbortController> {
+  ): Promise<KillSwitch> {
     const { ttlMs = DEFAULT_TTL_MS, graceMs = DEFAULT_GRACE_MS } = options;
     const token = getAbortToken(id);
 
     const existingHook = await getHookByToken(token).catch(() => null);
     if (existingHook) {
-      return new DistributedAbortController(id, existingHook.runId);
+      return new KillSwitch(id, existingHook.runId);
     }
 
-    const run = await start(abortControllerWorkflow, [id, ttlMs, graceMs]);
-    return new DistributedAbortController(id, run.runId);
+    const run = await start(killSwitchWorkflow, [id, ttlMs, graceMs]);
+    return new KillSwitch(id, run.runId);
   }
 
   /**
@@ -172,12 +175,12 @@ export class DistributedAbortController {
 }
 `;
 
-export const distributedAbortControllerLibInstallSource = `/**
- * Distributed Abort Controller — cross-process AbortController backed by a
+export const killSwitchLibInstallSource = `/**
+ * Kill Switch — cross-process cancellation flag backed by a
  * durable workflow.
  *
  * THE PATTERN:
- *   1. DistributedAbortController.create(id) spawns a coordination workflow
+ *   1. KillSwitch.create(id) spawns a coordination workflow
  *      that races a manual abort hook against a TTL sleep.
  *   2. Any process that creates a controller with the same semantic ID gets
  *      a handle to the same underlying run — no runId sharing required.
@@ -201,7 +204,7 @@ export const distributedAbortControllerLibInstallSource = `/**
  *   - Pass controller.signal to any fetch() or async operation that respects
  *     AbortSignal — including OpenAI SDK, axios, and Node.js streams.
  *
- * DOCS: https://workflow-sdk.dev/patterns/distributed-abort-controller
+ * DOCS: https://workflow-sdk.dev/patterns/kill-switch
  */
 import { defineHook, getWritable, sleep } from "workflow";
 import { start, getRun, getHookByToken } from "workflow/api";
@@ -236,7 +239,7 @@ async function writeAbortSignal(reason?: string, expired?: boolean) {
 // Coordination workflow — races a manual abort against TTL expiration.
 // The result is written to the run's stream so any .signal subscriber
 // receives it regardless of when they connect.
-export async function abortControllerWorkflow(
+export async function killSwitchWorkflow(
   id: string,
   ttlMs: number,
   graceMs: number,
@@ -267,11 +270,14 @@ export async function abortControllerWorkflow(
 }
 
 /**
- * AbortController-shaped API on top of a durable workflow.
+ * Distributed kill switch on top of a durable workflow. Unlike the native
+ * AbortController support that ships in Workflow v5 (scoped to a single
+ * run), a KillSwitch is a named, durable flag shared across processes,
+ * machines, and runs.
  * Calling .abort() on any process triggers .signal on any other process
  * that created a controller with the same ID.
  */
-export class DistributedAbortController {
+export class KillSwitch {
   private id: string;
   readonly runId: string;
 
@@ -287,18 +293,18 @@ export class DistributedAbortController {
   static async create(
     id: string,
     options: { ttlMs?: number; graceMs?: number } = {},
-  ): Promise<DistributedAbortController> {
+  ): Promise<KillSwitch> {
     const { ttlMs = DEFAULT_TTL_MS, graceMs = DEFAULT_GRACE_MS } = options;
     const token = getAbortToken(id);
 
     // Reconnect to an existing controller if one is already running.
     const existingHook = await getHookByToken(token).catch(() => null);
     if (existingHook) {
-      return new DistributedAbortController(id, existingHook.runId);
+      return new KillSwitch(id, existingHook.runId);
     }
 
-    const run = await start(abortControllerWorkflow, [id, ttlMs, graceMs]);
-    return new DistributedAbortController(id, run.runId);
+    const run = await start(killSwitchWorkflow, [id, ttlMs, graceMs]);
+    return new KillSwitch(id, run.runId);
   }
 
   /**
@@ -357,8 +363,8 @@ export class DistributedAbortController {
 }
 `;
 
-export const distributedAbortControllerRouteSource = `import { NextResponse } from "next/server";
-import { DistributedAbortController } from "@/lib/distributed-abort-controller";
+export const killSwitchRouteSource = `import { NextResponse } from "next/server";
+import { KillSwitch } from "@/lib/kill-switch";
 
 // POST /api/abort/[id] { reason? }
 // Idempotent — triggering abort twice or after expiry is a no-op.
@@ -371,14 +377,14 @@ export async function POST(
     .json()
     .catch(() => ({ reason: undefined }))) as { reason?: string };
 
-  const controller = await DistributedAbortController.create(id);
+  const controller = await KillSwitch.create(id);
   await controller.abort(reason ?? "Cancelled via API");
 
   return NextResponse.json({ success: true, id });
 }
 `;
 
-export const distributedAbortControllerButtonSource = `"use client";
+export const killSwitchButtonSource = `"use client";
 
 import { useState } from "react";
 
@@ -420,12 +426,12 @@ export function CancelButton({ taskId, label = "Cancel" }: CancelButtonProps) {
 }
 `;
 
-export const distributedAbortControllerUsageSource = `// Server-side example: cancel a long-running fetch when the user clicks
+export const killSwitchUsageSource = `// Server-side example: cancel a long-running fetch when the user clicks
 // the cancel button on a different machine / tab.
-import { DistributedAbortController } from "@/lib/distributed-abort-controller";
+import { KillSwitch } from "@/lib/kill-switch";
 
 export async function runLongOperation(taskId: string) {
-  const controller = await DistributedAbortController.create(taskId, {
+  const controller = await KillSwitch.create(taskId, {
     // Optional: shorter TTL for quick tasks.
     ttlMs: 10 * 60 * 1000, // 10 minutes
   });
@@ -446,6 +452,6 @@ export async function runLongOperation(taskId: string) {
 // Cross-process: any other process can cancel by recreating the controller
 // with the same semantic ID — no run ID sharing needed.
 //
-//   const same = await DistributedAbortController.create(taskId);
+//   const same = await KillSwitch.create(taskId);
 //   await same.abort("Cancelled by admin");
 `;

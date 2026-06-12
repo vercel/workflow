@@ -136,6 +136,27 @@ const config: NextConfig = {
         destination: '/patterns/:id',
         permanent: true,
       },
+      // Renamed patterns
+      {
+        source: '/patterns/distributed-abort-controller',
+        destination: '/patterns/kill-switch',
+        permanent: true,
+      },
+      {
+        source: '/r/distributed-abort-controller',
+        destination: '/r/kill-switch',
+        permanent: true,
+      },
+      {
+        source: '/patterns/rate-limiting',
+        destination: '/patterns/handling-rate-limits',
+        permanent: true,
+      },
+      {
+        source: '/r/rate-limiting',
+        destination: '/r/handling-rate-limits',
+        permanent: true,
+      },
       // Cookbook → Patterns redirects (cookbook pages merged into patterns)
       { source: '/cookbook', destination: '/patterns', permanent: true },
       {
@@ -190,7 +211,7 @@ const config: NextConfig = {
       },
       {
         source: '/cookbook/common-patterns/rate-limiting',
-        destination: '/patterns/rate-limiting',
+        destination: '/patterns/handling-rate-limits',
         permanent: true,
       },
       {
@@ -230,7 +251,7 @@ const config: NextConfig = {
       },
       {
         source: '/cookbook/common-patterns/distributed-abort-controller',
-        destination: '/patterns/distributed-abort-controller',
+        destination: '/patterns/kill-switch',
         permanent: true,
       },
       {
@@ -240,7 +261,7 @@ const config: NextConfig = {
       },
       {
         source: '/cookbook/advanced/distributed-abort-controller',
-        destination: '/patterns/distributed-abort-controller',
+        destination: '/patterns/kill-switch',
         permanent: true,
       },
       // v5 cookbook pages merged into patterns (only advanced/serializable-steps

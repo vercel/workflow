@@ -96,13 +96,13 @@ export type RegistryLogoId =
   | 'workflow-composition'
   | 'saga'
   | 'batching'
-  | 'rate-limiting'
+  | 'handling-rate-limits'
   | 'scheduling'
   | 'timeouts'
   | 'idempotency'
   | 'webhooks'
   | 'child-workflows'
-  | 'distributed-abort-controller'
+  | 'kill-switch'
   | 'upgrading-workflows';
 
 /**
@@ -300,6 +300,13 @@ export interface RegistryItem {
    * verbatim.
    */
   shadcnSlug: string;
+  /**
+   * Set to `false` for purely educational patterns (tutorials/concepts)
+   * where the installed code would be all placeholder. Hides the
+   * Installation section and the install slug; the page renders as a
+   * read-and-adapt guide. Defaults to `true`.
+   */
+  installable?: boolean;
   /** Required environment variables. */
   envVars?: RegistryEnvVar[];
   /** Files that get added to the user's project on install. */
