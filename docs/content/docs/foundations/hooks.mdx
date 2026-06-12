@@ -87,7 +87,7 @@ The key points:
 
 ### Checking for Token Conflicts
 
-Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.hasConflict` for that:
+Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict()` for that:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -101,9 +101,10 @@ export async function orderWorkflow(orderId: string) {
     token: `order:${orderId}`
   });
 
-  if (await hook.hasConflict) { // [!code highlight]
+  const conflict = await hook.getConflict(); // [!code highlight]
+  if (conflict) { // [!code highlight]
     // Another active run already owns this token.
-    return;
+    return { dedupedTo: conflict.runId };
   }
 
   // The hook token is registered and reserved here.
@@ -111,7 +112,7 @@ export async function orderWorkflow(orderId: string) {
 }
 ```
 
-Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.hasConflict` suspends the workflow to commit the hook registration, then resolves with `false` once the hook is registered and ready to receive payloads, or `true` if another active hook already owns the same token (see [`HookConflictError`](/docs/errors/hook-conflict)).
+Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with `{ runId }` identifying the run that owns the token if another active hook already claimed it (see [`HookConflictError`](/docs/errors/hook-conflict)). For `hook_conflict` events persisted by older worlds that did not record the owning run's ID, `getConflict()` rejects with `HookConflictError` instead of resolving with an incomplete handle. To act on the owner — inspect its status, wait for its result, or cancel it — pass `conflict.runId` to [`getRun()`](/docs/api-reference/workflow-api/get-run) inside a step. See [Idempotency](/docs/foundations/idempotency) for these strategies.
 
 ### Custom Tokens for Deterministic Hooks
 

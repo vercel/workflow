@@ -31,7 +31,7 @@ function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
 }
 
 describe('handleSuspension', () => {
-  it('schedules an immediate continuation for hook.hasConflict-awaited creations', async () => {
+  it('schedules an immediate continuation for hook.getConflict()-awaited creations', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
         eventType: 'hook_created',
@@ -117,7 +117,7 @@ describe('handleSuspension', () => {
     expect(result.timeoutSeconds).toBe(0);
   });
 
-  it('does not immediately continue after creating a hook without a hasConflict awaiter', async () => {
+  it('does not immediately continue after creating a hook without a getConflict awaiter', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
         eventType: 'hook_created',
