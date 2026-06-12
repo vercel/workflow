@@ -222,19 +222,51 @@ function PlainBar({
   );
 }
 
+function LeadInConnector({
+  leftPct,
+  widthPct,
+  label,
+}: {
+  leftPct: number;
+  widthPct: number;
+  label: string | null;
+}): ReactNode {
+  return (
+    <div
+      className="absolute top-1/2 h-6 -translate-y-1/2"
+      style={{
+        left: `calc(${leftPct}% + 0.5px)`,
+        width: `calc(${widthPct}% - 1px)`,
+      }}
+    >
+      <div className="absolute left-0 top-1/2 h-4 w-px -translate-y-1/2 bg-gray-500" />
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-gray-500" />
+      {label ? <DurationLabel label={label} /> : null}
+    </div>
+  );
+}
+
 function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
   return (
     <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
+        if (seg.status === 'queued') {
+          const leadInLabel = formatDurationPrecise(seg.fullDurationMs);
+          const showLeadInLabel =
+            seg.pixelWidth >= Math.max(40, leadInLabel.length * 6 + 12);
+          return (
+            <LeadInConnector
+              key={i}
+              leftPct={seg.leftPct}
+              widthPct={seg.widthPct}
+              label={showLeadInLabel ? leadInLabel : null}
+            />
+          );
+        }
+
         const label = formatDurationPrecise(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
         const showLabel = seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
-        // Beef up the queued segment when it's too narrow to read.
-        const isNarrowQueued = seg.status === 'queued' && seg.pixelWidth < 20;
-        const overrideBg = isNarrowQueued ? 'var(--ds-gray-400)' : undefined;
-        const overrideBorder = isNarrowQueued
-          ? 'var(--ds-gray-500)'
-          : undefined;
 
         return (
           <div
@@ -248,8 +280,6 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
               left: `calc(${seg.leftPct}% + 0.5px)`,
               width: `calc(${seg.widthPct}% - 1px)`,
               minWidth: 1,
-              background: overrideBg,
-              borderColor: overrideBorder,
             }}
           >
             {showLabel ? <DurationLabel label={label} /> : null}
