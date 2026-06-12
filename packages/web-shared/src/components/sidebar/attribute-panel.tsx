@@ -3,17 +3,19 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
+import { format } from 'date-fns';
 import { Lock } from 'lucide-react';
-import { Spinner } from '../ui/spinner';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import { ContextCardProvider } from '../ui/context-card';
 import { DecryptClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { Spinner } from '../ui/spinner';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock } from './copyable-data-block';
@@ -352,15 +354,7 @@ const parseDateValue = (value: unknown): Date | null => {
 };
 
 const formatLocalMillisecondTime = (date: Date): string =>
-  date.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-    fractionalSecondDigits: 3,
-  });
+  format(date, 'MMM dd HH:mm:ss.SS OO').toUpperCase();
 
 export const localMillisecondTime = (value: unknown): string => {
   const date = parseDateValue(value);
@@ -368,7 +362,6 @@ export const localMillisecondTime = (value: unknown): string => {
     return '-';
   }
 
-  // e.g. 12/17/2025, 9:08:55.182 AM
   return formatLocalMillisecondTime(date);
 };
 
@@ -828,122 +821,126 @@ export const AttributePanel = ({
   }, []);
 
   return (
-    <StreamClickContext.Provider value={onStreamClick}>
-      <DecryptClickContext.Provider
-        value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
-      >
-        <div>
-          {/* Basic attributes in a vertical layout with border */}
-          {visibleBasicAttributes.length > 0 && (
-            <div
-              className="mb-3 flex flex-col overflow-hidden rounded-lg border"
-              style={{
-                borderColor: 'var(--ds-gray-300)',
-              }}
-            >
-              {orderedBasicAttributes.map((attribute, index) => {
-                const displayValue = attributeToDisplayFn[
-                  attribute as keyof typeof attributeToDisplayFn
-                ]?.(displayData[attribute as keyof typeof displayData]);
-                const isModuleSpecifier = attribute === 'moduleSpecifier';
-                const moduleSpecifierValue =
-                  typeof displayValue === 'string'
-                    ? displayValue
-                    : String(displayValue ?? displayData.moduleSpecifier ?? '');
-                const shouldCapitalizeLabel =
-                  attribute !== 'workflowCoreVersion';
-                const showResumeAtSkeleton =
-                  isLoading && resource === 'sleep' && !displayData.resumeAt;
-                const showDivider =
-                  index < orderedBasicAttributes.length - 1 ||
-                  showResumeAtSkeleton;
+    <ContextCardProvider>
+      <StreamClickContext.Provider value={onStreamClick}>
+        <DecryptClickContext.Provider
+          value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
+        >
+          <div>
+            {/* Basic attributes in a vertical layout with border */}
+            {visibleBasicAttributes.length > 0 && (
+              <div
+                className="mb-3 flex flex-col overflow-hidden rounded-lg border"
+                style={{
+                  borderColor: 'var(--ds-gray-300)',
+                }}
+              >
+                {orderedBasicAttributes.map((attribute, index) => {
+                  const displayValue = attributeToDisplayFn[
+                    attribute as keyof typeof attributeToDisplayFn
+                  ]?.(displayData[attribute as keyof typeof displayData]);
+                  const isModuleSpecifier = attribute === 'moduleSpecifier';
+                  const moduleSpecifierValue =
+                    typeof displayValue === 'string'
+                      ? displayValue
+                      : String(
+                          displayValue ?? displayData.moduleSpecifier ?? ''
+                        );
+                  const shouldCapitalizeLabel =
+                    attribute !== 'workflowCoreVersion';
+                  const showResumeAtSkeleton =
+                    isLoading && resource === 'sleep' && !displayData.resumeAt;
+                  const showDivider =
+                    index < orderedBasicAttributes.length - 1 ||
+                    showResumeAtSkeleton;
 
-                return (
-                  <div key={attribute} className="py-1">
+                  return (
+                    <div key={attribute} className="py-1">
+                      <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                        <span
+                          className={
+                            shouldCapitalizeLabel
+                              ? 'text-[14px] first-letter:uppercase'
+                              : 'text-[14px]'
+                          }
+                          style={{ color: 'var(--ds-gray-700)' }}
+                        >
+                          {getAttributeDisplayName(attribute)}
+                        </span>
+                        {isModuleSpecifier ? (
+                          <button
+                            type="button"
+                            className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
+                            style={{
+                              color: 'var(--ds-gray-1000)',
+                              background: 'transparent',
+                              border: 'none',
+                              padding: 0,
+                            }}
+                            title={moduleSpecifierValue}
+                            onClick={() =>
+                              handleCopyModuleSpecifier(moduleSpecifierValue)
+                            }
+                          >
+                            {moduleSpecifierValue}
+                          </button>
+                        ) : (
+                          <span
+                            className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
+                            style={{ color: 'var(--ds-gray-1000)' }}
+                          >
+                            {displayValue}
+                          </span>
+                        )}
+                      </div>
+                      {showDivider ? (
+                        <div
+                          className="mx-2.5 border-b"
+                          style={{ borderColor: 'var(--ds-gray-300)' }}
+                        />
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {isLoading && resource === 'sleep' && !displayData.resumeAt && (
+                  <div className="py-1">
                     <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
                       <span
-                        className={
-                          shouldCapitalizeLabel
-                            ? 'text-[14px] first-letter:uppercase'
-                            : 'text-[14px]'
-                        }
+                        className="text-[14px] first-letter:uppercase"
                         style={{ color: 'var(--ds-gray-700)' }}
                       >
-                        {getAttributeDisplayName(attribute)}
+                        resumeAt
                       </span>
-                      {isModuleSpecifier ? (
-                        <button
-                          type="button"
-                          className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                          style={{
-                            color: 'var(--ds-gray-1000)',
-                            background: 'transparent',
-                            border: 'none',
-                            padding: 0,
-                          }}
-                          title={moduleSpecifierValue}
-                          onClick={() =>
-                            handleCopyModuleSpecifier(moduleSpecifierValue)
-                          }
-                        >
-                          {moduleSpecifierValue}
-                        </button>
-                      ) : (
-                        <span
-                          className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                          style={{ color: 'var(--ds-gray-1000)' }}
-                        >
-                          {displayValue}
-                        </span>
-                      )}
+                      <Skeleton className="h-4 w-[55%]" />
                     </div>
-                    {showDivider ? (
-                      <div
-                        className="mx-2.5 border-b"
-                        style={{ borderColor: 'var(--ds-gray-300)' }}
-                      />
-                    ) : null}
                   </div>
-                );
-              })}
-              {isLoading && resource === 'sleep' && !displayData.resumeAt && (
-                <div className="py-1">
-                  <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                    <span
-                      className="text-[14px] first-letter:uppercase"
-                      style={{ color: 'var(--ds-gray-700)' }}
-                    >
-                      resumeAt
-                    </span>
-                    <Skeleton className="h-4 w-[55%]" />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          {error ? (
-            <ErrorCard
-              title="Failed to load resource details"
-              details={error.message}
-              className="my-4"
-            />
-          ) : hasExpired ? (
-            <ExpiredDataMessage />
-          ) : (
-            <>
-              {resolvedAttributes.map((attribute) => (
-                <AttributeBlock
-                  isLoading={isLoading}
-                  key={attribute}
-                  attribute={attribute}
-                  value={displayData[attribute as keyof typeof displayData]}
-                  context={displayContext}
-                />
-              ))}
-            </>
-          )}
-        </div>
-      </DecryptClickContext.Provider>
-    </StreamClickContext.Provider>
+                )}
+              </div>
+            )}
+            {error ? (
+              <ErrorCard
+                title="Failed to load resource details"
+                details={error.message}
+                className="my-4"
+              />
+            ) : hasExpired ? (
+              <ExpiredDataMessage />
+            ) : (
+              <>
+                {resolvedAttributes.map((attribute) => (
+                  <AttributeBlock
+                    isLoading={isLoading}
+                    key={attribute}
+                    attribute={attribute}
+                    value={displayData[attribute as keyof typeof displayData]}
+                    context={displayContext}
+                  />
+                ))}
+              </>
+            )}
+          </div>
+        </DecryptClickContext.Provider>
+      </StreamClickContext.Provider>
+    </ContextCardProvider>
   );
 };
