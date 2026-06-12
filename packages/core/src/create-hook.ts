@@ -31,12 +31,12 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
   token: string;
 
   /**
-   * Resolves with the conflicting {@link Run} if another active hook
-   * already owns this hook's token, or `null` once the hook has been
-   * registered and is ready to receive payloads.
+   * Returns a promise that resolves with the conflicting {@link Run} if
+   * another active hook already owns this hook's token, or `null` once
+   * the hook has been registered and is ready to receive payloads.
    *
    * Calling `createHook()` alone does not register the hook — registration
-   * only happens when the workflow suspends. Awaiting `getConflict`
+   * only happens when the workflow suspends. Awaiting `getConflict()`
    * suspends the workflow to commit the hook registration, so it can be
    * used to claim the token (and detect token conflicts early) without
    * waiting for payload data.
@@ -49,12 +49,15 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    *
    * Note that awaiting the hook's payload (`await hook`) when the token is
    * already owned by another active hook still rejects with
-   * `HookConflictError`.
+   * `HookConflictError`. In the rare case where the conflicting run cannot
+   * be identified (a `hook_conflict` event persisted by an old world that
+   * did not record the owning run's ID), `getConflict()` also rejects with
+   * `HookConflictError` rather than resolving with an incomplete value.
    *
    * @example
    * ```ts
    * using hook = createHook({ token: `order:${orderId}` });
-   * const conflict = await hook.getConflict;
+   * const conflict = await hook.getConflict();
    * if (conflict) {
    *   // another run already owns this token
    *   return { dedupedTo: conflict.runId };
@@ -62,7 +65,7 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * // token is now claimed, without waiting for payload data
    * ```
    */
-  readonly getConflict: Promise<Run<unknown> | null>;
+  getConflict(): Promise<Run<unknown> | null>;
 
   /**
    * Disposes the hook, releasing its token for reuse by other workflows.

@@ -14,7 +14,7 @@ import { getWorkflowMetadata } from './get-workflow-metadata.js';
 // In workflow mode this module is compiled into the workflow bundle and
 // executes inside the VM, so `Run` here is the plugin-compiled variant
 // whose methods are durable step proxies. The host-side consumer uses it
-// to construct the conflicting run resolved by `hook.getConflict`.
+// to construct the conflicting run resolved by `hook.getConflict()`.
 (globalThis as any)[WORKFLOW_RUN_CLASS] ??= Run;
 
 export function createHook<T = any>(options?: HookOptions): Hook<T> {

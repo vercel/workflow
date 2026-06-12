@@ -11,7 +11,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
+import { Run } from '../runtime/run.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
+import { WORKFLOW_RUN_CLASS } from '../symbols.js';
 import { createContext } from '../vm/index.js';
 import { createWebhook } from './create-hook.js';
 import { createCreateHook } from './hook.js';
@@ -22,6 +24,10 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
+  // In real workflow bundles the workflow-mode create-hook module exposes
+  // the bundle's compiled Run class on this symbol; mirror that here so
+  // `hook.getConflict()` can construct the conflicting run.
+  (context.globalThis as any)[WORKFLOW_RUN_CLASS] = Run;
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
@@ -300,7 +306,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook();
 
-    await expect(hook.getConflict).resolves.toBeNull();
+    await expect(hook.getConflict()).resolves.toBeNull();
 
     expect(ctx.invocationsQueue.size).toBe(1);
     const queueItem = ctx.invocationsQueue.values().next().value;
@@ -319,7 +325,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     void (async () => {
-      await hook.getConflict;
+      await hook.getConflict();
     })();
 
     const workflowError = await errorReceived.promise;
@@ -351,15 +357,40 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook({ token: 'my-conflicting-token' });
 
-    const conflict = await hook.getConflict;
-    expect(conflict).not.toBeNull();
+    const conflict = await hook.getConflict();
+    expect(conflict).toBeInstanceOf(Run);
     expect(conflict?.runId).toBe('wrun_conflicting_owner');
 
     // Repeated awaits observe the same conflicting run instance
-    await expect(hook.getConflict).resolves.toBe(conflict);
+    await expect(hook.getConflict()).resolves.toBe(conflict);
 
     // Awaiting the hook payload itself still rejects with HookConflictError
     await expect(hook.then((v) => v)).rejects.toThrow(HookConflictError);
+  });
+
+  it('should reject getConflict with HookConflictError when the conflict event lacks conflictingRunId', async () => {
+    // Simulates a hook_conflict event persisted by an old world that did
+    // not record the owning run's ID. getConflict must never resolve with
+    // a value that doesn't honor the Run contract, so it rejects instead.
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_conflict',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'my-conflicting-token',
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'my-conflicting-token' });
+
+    await expect(hook.getConflict()).rejects.toThrow(HookConflictError);
+    // The fast-path for late awaits rejects the same way
+    await expect(hook.getConflict()).rejects.toThrow(HookConflictError);
   });
 
   it('should not consume payloads when getConflict resolves', async () => {
@@ -393,7 +424,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook<{ data: string }>();
 
-    await expect(hook.getConflict).resolves.toBeNull();
+    await expect(hook.getConflict()).resolves.toBeNull();
     await expect(hook).resolves.toEqual({ data: 'after-ready' });
   });
 
