@@ -27,8 +27,9 @@ export function singletonToken(key: string) {
  *   const mailbox = singletonMailbox.create({ token: singletonToken(key) });
  *
  * That registration is also the mutual exclusion: if two getOrStart calls
- * race and both start a run, the second run's create() hits
- * HookConflictError and that run exits — only one survives.
+ * race and both start a run, the duplicate detects the conflict via
+ * \`mailbox.getConflict()\` and returns \`{ dedupedTo }\` cleanly — only
+ * one run survives, and the loser's return value points at the winner.
  */
 export async function getOrStart(
   key: string,
@@ -61,11 +62,15 @@ type SessionMessage =
 export async function userSession(userId: string) {
   "use workflow";
 
-  // First act: claim the singleton slot. A concurrent duplicate run dies
-  // here with HookConflictError before doing any work.
+  // First act: claim the singleton slot. If another run already owns the
+  // token (a lost start race), exit cleanly pointing at the winner.
   const mailbox = singletonMailbox.create({
     token: singletonToken(\`user-session:\${userId}\`),
   });
+  const conflict = await mailbox.getConflict();
+  if (conflict) {
+    return { userId, dedupedTo: conflict.runId };
+  }
 
   let processed = 0;
   for (;;) {
@@ -99,8 +104,8 @@ export const singletonRunWorkflowInstallSource = `/**
  *   2. getOrStart(key, startRun) probes the token with getHookByToken():
  *      hit → return the existing run; miss → start a fresh one.
  *   3. The hook token is also the mutex: if two callers race and both
- *      start a run, the duplicate dies on HookConflictError when it tries
- *      to create the same token — exactly one run survives.
+ *      start a run, the duplicate detects the conflict via getConflict()
+ *      and returns { dedupedTo: winnerRunId } — exactly one run survives.
  *   4. sendToSingleton(key, message) lets any process feed the run.
  *
  * USEFUL WHEN:
@@ -111,10 +116,9 @@ export const singletonRunWorkflowInstallSource = `/**
  *
  * CAVEATS / TO ADAPT:
  *   - Replace userSession / handleTask with your singleton's real work.
- *   - The losing run of a start race exits with HookConflictError — that
- *     error in the run list is expected noise, not a failure to fix.
- *   - A caller that got the loser's runId can re-probe getOrStart() to
- *     find the winner.
+ *   - The losing run of a start race returns { dedupedTo } cleanly. A
+ *     caller that got the loser's runId can read that return value or
+ *     re-probe getOrStart() to find the winner.
  *   - End the run somehow (a stop message, an idle timeout via the
  *     Debounce timer trick, or a max-messages recycle) — see Upgrading
  *     Workflows for long-lived loop hygiene.

@@ -41,6 +41,14 @@ export async function semaphoreCoordinator(
   "use workflow";
 
   const events = semaphoreEvents.create({ token: semaphoreToken(key) });
+  // Claim the token before doing anything else. If another run already
+  // owns it (we lost a start race), exit cleanly pointing at the owner
+  // instead of dying with HookConflictError.
+  const conflict = await events.getConflict();
+  if (conflict) {
+    return { dedupedTo: conflict.runId };
+  }
+
   let inFlight = 0;
   let grants = 0;
   const waiting: string[] = [];
@@ -89,8 +97,8 @@ async function grantPermit(grantToken: string): Promise<boolean> {
 }
 
 // Deliver an event to the coordinator, starting it if it isn't running.
-// The double-start race is harmless: the loser run hits HookConflictError
-// on the channel token and exits without any state.
+// The double-start race is harmless: the loser run detects the conflict
+// via getConflict() and returns { dedupedTo } without doing any work.
 async function sendSemaphoreEvent(
   key: string,
   maxConcurrent: number,

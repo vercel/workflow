@@ -43,6 +43,14 @@ export async function breakerCoordinator(key: string) {
   "use workflow";
 
   const events = breakerEvents.create({ token: breakerToken(key) });
+  // Claim the token before doing anything else. If another run already
+  // owns it (we lost a start race), exit cleanly pointing at the owner
+  // instead of dying with HookConflictError.
+  const conflict = await events.getConflict();
+  if (conflict) {
+    return { dedupedTo: conflict.runId };
+  }
+
   let state: BreakerState = "closed";
   let consecutiveFailures = 0;
   let probeOutstanding = false;

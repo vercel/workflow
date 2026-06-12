@@ -106,3 +106,12 @@ hooks. `getHookByToken` provides create-or-reconnect.
 5. E2E-test the component patterns in a workbench app (the snippets are
    hand-verified against hook semantics in `packages/core`, but nothing
    executes them in CI).
+6. **Idempotency residuals** (analysis in
+   [workflow#2376](https://github.com/vercel/workflow/issues/2376)):
+   coordinators now claim tokens with `getConflict()` (clean `{ dedupedTo }`
+   losers), kill-switch adopts the registered owner's runId after racing
+   starts, and the aggregator dedupes by item id — but three gaps need SDK
+   support: atomic keyed `start()` (exactly-once child spawns, post-completion
+   webhook dedupe), native `resumeOrStart` (replaces every send-with-ensure
+   helper), and channel close+drain (closes the aggregator/debounce
+   acknowledged-but-dropped flush window).

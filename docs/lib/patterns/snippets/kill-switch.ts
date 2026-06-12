@@ -113,8 +113,20 @@ export class KillSwitch {
       return new KillSwitch(id, existingHook.runId);
     }
 
-    const run = await start(killSwitchWorkflow, [id, ttlMs, graceMs]);
-    return new KillSwitch(id, run.runId);
+    await start(killSwitchWorkflow, [id, ttlMs, graceMs]);
+
+    // Adopt the REGISTERED owner's runId, not the run we just started. If
+    // two create() calls raced, the loser run dies on HookConflictError —
+    // and a handle pointing at the loser would have a .signal that never
+    // fires. Only the winner ever registers the hook, so poll for it.
+    for (let i = 0; i < 10; i++) {
+      const owner = await getHookByToken(token).catch(() => null);
+      if (owner) {
+        return new KillSwitch(id, owner.runId);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    throw new Error(\`Kill switch "\${id}" failed to register\`);
   }
 
   /**
@@ -303,8 +315,20 @@ export class KillSwitch {
       return new KillSwitch(id, existingHook.runId);
     }
 
-    const run = await start(killSwitchWorkflow, [id, ttlMs, graceMs]);
-    return new KillSwitch(id, run.runId);
+    await start(killSwitchWorkflow, [id, ttlMs, graceMs]);
+
+    // Adopt the REGISTERED owner's runId, not the run we just started. If
+    // two create() calls raced, the loser run dies on HookConflictError —
+    // and a handle pointing at the loser would have a .signal that never
+    // fires. Only the winner ever registers the hook, so poll for it.
+    for (let i = 0; i < 10; i++) {
+      const owner = await getHookByToken(token).catch(() => null);
+      if (owner) {
+        return new KillSwitch(id, owner.runId);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    throw new Error(\`Kill switch "\${id}" failed to register\`);
   }
 
   /**

@@ -37,6 +37,14 @@ export async function rateLimiterCoordinator(key: string, intervalMs: number) {
   "use workflow";
 
   const events = rateLimiterEvents.create({ token: limiterToken(key) });
+  // Claim the token before doing anything else. If another run already
+  // owns it (we lost a start race), exit cleanly pointing at the owner
+  // instead of dying with HookConflictError.
+  const conflict = await events.getConflict();
+  if (conflict) {
+    return { dedupedTo: conflict.runId };
+  }
+
   let grants = 0;
 
   for (;;) {

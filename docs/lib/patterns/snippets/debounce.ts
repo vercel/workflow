@@ -28,6 +28,14 @@ export async function debounceCoordinator(key: string, quietMs: number) {
   "use workflow";
 
   const events = debounceEvents.create({ token: debounceToken(key) });
+  // Claim the token before doing anything else. If another run already
+  // owns it (we lost a start race), exit cleanly pointing at the owner
+  // instead of dying with HookConflictError.
+  const conflict = await events.getConflict();
+  if (conflict) {
+    return { dedupedTo: conflict.runId };
+  }
+
   let latest: unknown;
   let hasPayload = false;
   let timerSeq = 0;
@@ -110,7 +118,8 @@ export async function debounceSend(
       return;
     } catch {
       // No active coordinator for this key — start one and retry. A lost
-      // double-start race is harmless: the loser exits on HookConflictError.
+      // double-start race is harmless: the loser run detects it via
+      // getConflict() and returns { dedupedTo } cleanly.
     }
     try {
       await start(debounceCoordinator, [key, quietMs]);

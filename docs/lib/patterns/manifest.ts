@@ -2020,6 +2020,7 @@ export const registryItems: RegistryItem[] = [
         '**Retry failed children** — spawn a replacement with a fresh hook key (e.g. `` `${documentId}:${attempt}` ``) and cap attempts to prevent infinite loops.',
         '**Use chunked spawning for large batches** — starting 500 children at once creates a large burst of work. Break it into chunks of 10–50.',
         '**Use `deploymentId: "latest"`** if children should run on the most recent deployment. Function name, file path, and argument types must remain compatible across deployments.',
+        "**Spawns are at-least-once** — if the spawn step crashes after `start()` succeeds, its retry starts a second child. Both report completion (the parent consumes one), but the duplicate's side effects still run — keep child work idempotent. A keyed/atomic `start()` (see workflow#2376) will make spawns exactly-once.",
       ],
       adaptingTitle: 'Tips',
       keyApis: [
@@ -2443,7 +2444,7 @@ export const registryItems: RegistryItem[] = [
         "**Never-lost events** — an event landing just as the run exits simply starts a new burst via `debounceSend`'s ensure-and-retry loop.",
       ],
       adapting: [
-        '**Replace `onDebounceFire`** with your real action — and make it idempotent: the exit-race means two quick fires are possible in rare timing windows.',
+        "**Replace `onDebounceFire`** with your real action — and make it idempotent: an event acknowledged while the fire step is executing is dropped by the exiting run, and the sender's next event starts a fresh burst, so two quick fires (or a swallowed payload) are possible in rare timing windows.",
         '**`debounceSend()` works anywhere server-side** — API routes, server actions, webhook handlers, or steps.',
         '**Leading-edge variant** — fire immediately on the first event, then use the coordinator only to suppress repeats until quiet.',
         '**Throttle instead of debounce** — to fire every `intervalMs` during a sustained burst (not just at the end), flush in the timer branch and continue the loop instead of returning.',
@@ -2519,6 +2520,8 @@ export const registryItems: RegistryItem[] = [
       ],
       adapting: [
         '**Replace `flushBatch`** with your bulk operation and tune `MAX_ITEMS` / `MAX_WAIT_MS`.',
+        '**Pass a stable `id` to `aggregatorSend`** (event ID, or stepId + index from steps) — sends from retried steps are at-least-once, and the coordinator dedupes by id.',
+        '**Know the flush window** — an item resumed while the flush step is executing is acknowledged but lands in a buffer the exiting run never reads. The window is the flush duration; make flushes fast, and prefer idempotent bulk operations so a rare re-send is safe.',
         '**Keep items small** — they live in the event log; for large payloads, send IDs and hydrate inside the flush step.',
         '**Sliding window** — to extend the deadline on every item (flush only after a quiet period), bump the timer sequence and spawn a fresh timer per item, like the Debounce pattern does.',
         '**Per-tenant streams** — key by tenant/user (`analytics:tenant-42`) to get independent buffers with independent deadlines.',
@@ -2545,7 +2548,7 @@ export const registryItems: RegistryItem[] = [
     description:
       'At most one live run per key — getOrStart() dedupes starts, and a built-in mailbox feeds the run.',
     longDescription:
-      "Guarantee at most one live workflow run per semantic key. The singleton's first act is creating a hook with a deterministic token — that registration doubles as the liveness marker, the start-dedupe mutex, and a mailbox. `getOrStart(key, startRun)` probes the token and only starts a run when none is alive; if two callers race, the duplicate run dies on `HookConflictError` and exactly one survives. `sendToSingleton(key, message)` feeds the live run from anywhere — API routes, webhooks, other workflows — giving you actor-style mailbox loops with no extra infrastructure.",
+      "Guarantee at most one live workflow run per semantic key. The singleton's first act is creating a hook with a deterministic token — that registration doubles as the liveness marker, the start-dedupe mutex, and a mailbox. `getOrStart(key, startRun)` probes the token and only starts a run when none is alive; if two callers race, the duplicate detects the conflict via `getConflict()` and returns `{ dedupedTo: winnerRunId }` cleanly — exactly one survives. `sendToSingleton(key, message)` feeds the live run from anywhere — API routes, webhooks, other workflows — giving you actor-style mailbox loops with no extra infrastructure.",
     tags: ['singleton', 'dedupe', 'resume-or-start', 'actor', 'coordination'],
     categories: ['advanced'],
     versions: ['v4', 'v5'],
@@ -2588,13 +2591,13 @@ export const registryItems: RegistryItem[] = [
         'One file ships the component (`getOrStart()`, `sendToSingleton()`, the `singletonMailbox` hook and token scheme) plus a worked example: a per-user session workflow that processes mailbox messages until told to stop.',
       howItWorks: [
         '**The hook IS the registry** — creating `singletonMailbox` with the deterministic `singleton:<key>` token is what makes the run discoverable; `getHookByToken()` is the lookup.',
-        '**Conflict as mutex** — two racing starts both come up, but the second `create()` on the same token throws `HookConflictError` and that run exits before doing any work. No lock service needed.',
+        '**Conflict as mutex** — two racing starts both come up, but the duplicate detects the conflict via `getConflict()` (which commits hook registration early) and returns `{ dedupedTo: winnerRunId }` before doing any work. No lock service needed.',
         '**Mailbox loop** — `await mailbox` in a loop yields messages in arrival order; messages sent while the run is busy queue up in the channel.',
         '**Clean exit, clean restart** — when the run returns (stop message, recycle), the token frees up and the next `getOrStart` begins a fresh singleton.',
       ],
       adapting: [
         "**Create the mailbox first** — it must be the workflow's first act so a duplicate dies before causing side effects.",
-        '**Expect conflict-loser runs** — a failed duplicate with `HookConflictError` in the run list is the mechanism working, not a bug.',
+        "**Conflict losers resolve cleanly** — a duplicate run returns `{ dedupedTo: winnerRunId }` instead of failing; a caller holding the loser's runId can read that return value to find the winner.",
         '**Recycle long-lived singletons** — exit after N messages and let the next send restart the run (see Upgrading Workflows for the state-carrying version).',
         '**Idle shutdown** — combine with the Debounce timer trick to exit after a quiet period instead of an explicit stop message.',
       ],
@@ -2890,7 +2893,7 @@ export const registryItems: RegistryItem[] = [
       howItWorks: [
         "**Drift correction** — `sleep(new Date(nextDueAt))` targets the schedule's absolute time; a slow tick shrinks the next sleep instead of shifting every future tick.",
         '**Continue-as-new** — handing state to a fresh run bounds the event log and is the moment new deployments are adopted. Generation length (interval × iterations) should stay ≲ a day.',
-        "**Clean stop** — each generation's sleep races a stop hook (token `cron:<name>:<generation-start>`); resuming it exits between ticks, never mid-job.",
+        "**Clean stop, accidental-fork guard** — each generation's sleep races a stop hook whose token is generation-keyed (`cron:<name>:<generation-start>`). Resuming it exits between ticks; the same token also guards against schedule forking: if the continue-as-new step ever retried after a successful `start()`, the duplicate generation dies on the token conflict instead of running a parallel schedule forever.",
         '**No overlap by default** — a long tick delays the next one. For overlapping ticks, spawn `runJob` as a child workflow instead of awaiting it.',
       ],
       adapting: [

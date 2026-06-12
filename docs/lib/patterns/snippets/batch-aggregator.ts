@@ -11,7 +11,7 @@ const BATCH_AGGREGATOR_BODY = `import { defineHook, sleep } from "workflow";
 import { start } from "workflow/api";
 
 type AggregatorEvent<T = unknown> =
-  | { type: "item"; item: T }
+  | { type: "item"; item: T; id?: string }
   | { type: "timer"; timerId: number };
 
 export const aggregatorEvents = defineHook<AggregatorEvent>();
@@ -31,13 +31,28 @@ export async function aggregatorCoordinator(key: string) {
   "use workflow";
 
   const events = aggregatorEvents.create({ token: aggregatorToken(key) });
+  // Claim the token before doing anything else. If another run already
+  // owns it (we lost a start race), exit cleanly pointing at the owner
+  // instead of dying with HookConflictError.
+  const conflict = await events.getConflict();
+  if (conflict) {
+    return { dedupedTo: conflict.runId };
+  }
+
   const items: unknown[] = [];
+  // Sends from retried steps are at-least-once — the same item can arrive
+  // twice. Items that carry an id are deduped here.
+  const seenIds = new Set<string>();
   let timerSeq = 0;
 
   for (;;) {
     const ev = await events;
 
     if (ev.type === "item") {
+      if (ev.id !== undefined) {
+        if (seenIds.has(ev.id)) continue;
+        seenIds.add(ev.id);
+      }
       items.push(ev.item);
 
       if (items.length === 1) {
@@ -107,21 +122,29 @@ async function flushBatch(
  * Add an item to the \`key\` buffer. The buffer flushes at MAX_ITEMS or
  * MAX_WAIT_MS after its first item — whichever comes first. Callable from
  * API routes, steps — anywhere server-side.
+ *
+ * Pass a stable \`id\` (e.g. the event ID, or stepId + index when sending
+ * from a step) to dedupe at-least-once delivery: a step that crashes after
+ * a successful send will resend on retry, and without an id the item
+ * counts twice.
  */
 export async function aggregatorSend(
   key: string,
   item: unknown,
+  id?: string,
 ): Promise<void> {
   for (let i = 0; i < 3; i++) {
     try {
       await aggregatorEvents.resume(aggregatorToken(key), {
         type: "item",
         item,
+        id,
       });
       return;
     } catch {
       // No active buffer for this key — start one and retry. A lost
-      // double-start race is harmless: the loser exits on HookConflictError.
+      // double-start race is harmless: the loser run detects it via
+      // getConflict() and returns { dedupedTo } cleanly.
     }
     try {
       await start(aggregatorCoordinator, [key]);
@@ -176,11 +199,16 @@ export async function POST(request: Request) {
 
   // Events pile up per tenant; flushBatch() fires with up to 100 of them,
   // or whatever has accumulated after 5 minutes.
-  await aggregatorSend(\`analytics:\${event.tenantId}\`, {
-    type: event.type,
-    userId: event.userId,
-    at: event.timestamp,
-  });
+  await aggregatorSend(
+    \`analytics:\${event.tenantId}\`,
+    {
+      type: event.type,
+      userId: event.userId,
+      at: event.timestamp,
+    },
+    // Stable id dedupes webhook redeliveries and step-retry resends.
+    event.id,
+  );
 
   return Response.json({ queued: true });
 }
