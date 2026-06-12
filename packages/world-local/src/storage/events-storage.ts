@@ -27,6 +27,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  ulidToDate,
   validateAttributeChanges,
   validateUlidTimestamp,
   WaitSchema,
@@ -48,7 +49,12 @@ import {
   writeJSON,
 } from '../fs.js';
 import { stripEventDataRefs } from './filters.js';
-import { getObjectCreatedAt, hashToken, monotonicUlid } from './helpers.js';
+import {
+  getObjectCreatedAt,
+  hashToken,
+  hookRecoveryMarkerPath,
+  monotonicUlid,
+} from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
@@ -65,10 +71,56 @@ import { withRunFileLock } from './runs-storage.js';
  * (retries legitimately re-start a step), only writes to an already-terminal
  * step are rejected.
  */
-const stepLocks = new Map<string, Promise<unknown>>();
+// `stepLocks` and `hookLocks` are now instantiated per
+// `createEventsStorage` call (see inside the function) rather than
+// being module-level. The on-disk constraint / claim files remain
+// the durable source of truth across processes; the in-process
+// mutex is a per-instance optimization that closes a short race
+// window in the dedup-recovery path. Per-instance scoping lets
+// tests simulate cross-process behavior with two storage instances
+// sharing one data directory (each instance has independent locks
+// but a shared filesystem), exactly matching the cross-process
+// semantics without spawning subprocesses.
 
 const HookTokenClaimSchema = z.object({
+  // The token-claim writer below has always persisted `hookId`, but
+  // this read schema previously omitted it, which is the bug fixed
+  // by https://github.com/vercel/workflow/issues/2283. `optional()`
+  // is defensive: any claim file that somehow lacks the field still
+  // parses (yielding `undefined`) and falls through to the cross-
+  // hook conflict branch, matching pre-fix behavior.
+  hookId: z.string().optional(),
   runId: z.string(),
+  // `eventId` is the canonical hook_created event ID the claiming
+  // worker committed to publishing. Persisting it here turns the
+  // claim file into a durable convergence key for cross-worker /
+  // cross-process retries (see comment on the hook_created branch).
+  // `optional()` for backward compatibility: a legacy claim file
+  // written before this field existed falls through to the recovery-
+  // marker upgrade path, which atomically pins a canonical eventId
+  // via a sidecar marker (also a `writeExclusive`).
+  eventId: z.string().optional(),
+});
+
+/**
+ * Sidecar recovery marker that pins a canonical `hook_created`
+ * eventId for a legacy token claim — one written by a version of
+ * this storage that did not yet persist `eventId` inline in the
+ * claim file. Without this marker, two cross-process retries
+ * reading a legacy claim each generate their own eventId, land
+ * their `writeExclusive(eventPath)` calls at different paths, and
+ * append two `hook_created` events for the same `(runId, hookId)`.
+ *
+ * The marker is written via `writeExclusive` — the first retry to
+ * land it pins its candidate eventId as canonical, and every
+ * subsequent retry reads and adopts that eventId before the common
+ * event publish. Schema is just `{ eventId }` because identity is
+ * already encoded in the marker's filename hash, so different token
+ * lifetimes can never share one marker (see
+ * `hookRecoveryMarkerPath`).
+ */
+const HookRecoveryMarkerSchema = z.object({
+  eventId: z.string(),
 });
 
 async function readHookTokenClaim(
@@ -84,8 +136,186 @@ async function readHookTokenClaim(
   }
 }
 
-function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const prev = stepLocks.get(key);
+async function readHookRecoveryMarker(
+  markerPath: string
+): Promise<z.infer<typeof HookRecoveryMarkerSchema> | null> {
+  try {
+    return await readJSON(markerPath, HookRecoveryMarkerSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Probe the run's event log for an existing `hook_created` event
+ * with the given correlationId. Used by the legacy-claim recovery
+ * path to detect "already published by a pre-upgrade write" before
+ * pinning a canonical eventId — without this check, a post-upgrade
+ * retry encountering a legacy claim whose `hook_created` was
+ * already written (with the pre-upgrade writer's own eventId) would
+ * pin a *different* eventId via the marker and publish a duplicate
+ * event at the marker's path.
+ *
+ * The inline-`eventId` fast path does NOT need this probe: the
+ * canonical eventId is durable in the claim file, so the existing
+ * publish (`writeExclusive(eventPath)`) will fail iff the event
+ * already exists at that exact path — which is the correct
+ * "already-published" semantic.
+ */
+async function findExistingHookCreatedEventId(
+  basedir: string,
+  runId: string,
+  correlationId: string
+): Promise<string | null> {
+  const result = await paginatedFileSystemQuery({
+    directory: path.join(basedir, 'events'),
+    schema: EventSchema,
+    filePrefix: `${runId}-`,
+    filter: (event) =>
+      event.eventType === 'hook_created' &&
+      event.correlationId === correlationId,
+    limit: 1,
+    getCreatedAt: getObjectCreatedAt('evnt'),
+    getId: (event) => event.eventId,
+  });
+  return result.data[0]?.eventId ?? null;
+}
+
+/**
+ * Repair an "event-first orphan": the hook entity write is deferred
+ * until after the `hook_created` event publish commits (so a failed
+ * publish cannot mutate already-committed state — see the comment on
+ * the deferred write), which opens the inverse crash window — a
+ * crash AFTER the event publish but BEFORE the deferred entity write
+ * leaves the event in the log with the hook entity missing. A retry
+ * then collides at the event publish and throws
+ * `EntityConflictError` (correct — the event IS committed), but
+ * without this repair the entity would stay missing forever and the
+ * hook would be unresolvable.
+ *
+ * The entity MUST be reconstructed from the persisted canonical
+ * event's payload — NOT the retry's `eventData` — otherwise a retry
+ * carrying different `metadata` / `isWebhook` would silently change
+ * committed state. The write uses `writeExclusive` (create-if-absent)
+ * so a concurrent writer racing this repair cannot be overwritten;
+ * whichever write lands first, the content is identical because both
+ * derive from the same persisted event.
+ */
+async function repairHookEntityFromPersistedEvent(
+  basedir: string,
+  runId: string,
+  hookId: string,
+  persistedEventId: string,
+  tag: string | undefined
+): Promise<void> {
+  const compositeKey = `${runId}-${persistedEventId}`;
+  const persistedEvent = await readJSONWithFallback(
+    basedir,
+    'events',
+    compositeKey,
+    EventSchema,
+    tag
+  );
+  if (
+    !persistedEvent ||
+    persistedEvent.eventType !== 'hook_created' ||
+    persistedEvent.correlationId !== hookId
+  ) {
+    // Nothing trustworthy to repair from.
+    return;
+  }
+  const existingHook = await readJSONWithFallback(
+    basedir,
+    'hooks',
+    hookId,
+    HookSchema,
+    tag
+  );
+  if (existingHook) {
+    // Entity already present — not an orphan, leave it untouched.
+    return;
+  }
+  const eventData = (persistedEvent.eventData ?? {}) as {
+    token?: string;
+    metadata?: SerializedData;
+    isWebhook?: boolean;
+    isSystem?: boolean;
+  };
+  if (typeof eventData.token !== 'string') {
+    return;
+  }
+  const hook: Hook = {
+    runId,
+    hookId,
+    token: eventData.token,
+    metadata: eventData.metadata,
+    ownerId: 'local-owner',
+    projectId: 'local-project',
+    environment: 'local',
+    createdAt: persistedEvent.createdAt,
+    specVersion: persistedEvent.specVersion,
+    isWebhook: eventData.isWebhook ?? false,
+    isSystem: eventData.isSystem ?? false,
+  };
+  await writeExclusive(
+    taggedPath(basedir, 'hooks', hookId, tag),
+    JSON.stringify(hook, jsonReplacer, 2)
+  );
+}
+
+/**
+ * Atomically pin a canonical `hook_created` eventId for a legacy
+ * claim (one without an inline `eventId`). The first retry to
+ * `writeExclusive` the recovery marker wins; its `candidateEventId`
+ * becomes canonical. Subsequent retries read the marker and adopt
+ * its `eventId`. Together with the `writeExclusive(eventPath)` in
+ * the outer event publish, this gives the legacy-fallback path the
+ * same single-event convergence guarantee as the inline-`eventId`
+ * fast path.
+ *
+ * Returns the canonical eventId for the caller to adopt, or `null`
+ * if we lost the marker race AND the resulting marker file is
+ * unreadable (extremely rare; corrupted disk). Callers treat `null`
+ * as "give up, throw `EntityConflictError`" so the runtime's
+ * concurrent-replay catch path swallows this attempt and lets
+ * another one through.
+ */
+async function pinCanonicalEventIdForLegacyClaim(
+  basedir: string,
+  token: string,
+  runId: string,
+  hookId: string,
+  candidateEventId: string
+): Promise<string | null> {
+  const markerPath = hookRecoveryMarkerPath(basedir, token, runId, hookId);
+  const markerContent = JSON.stringify({ eventId: candidateEventId });
+  const won = await writeExclusive(markerPath, markerContent);
+  if (won) {
+    return candidateEventId;
+  }
+  const existing = await readHookRecoveryMarker(markerPath);
+  return existing?.eventId ?? null;
+}
+
+/**
+ * In-process per-key async mutex backed by a caller-supplied `Map`.
+ * Used by `createEventsStorage` to serialize same-key event writes
+ * (`step_*` for the same step, `hook_created` for the same hook).
+ * The map is instantiated per-storage-instance — different
+ * instances do NOT share locks, so two instances sharing one data
+ * directory behave exactly like two separate OS processes from the
+ * locking standpoint. Cross-instance / cross-process arbitration
+ * relies on the on-disk constraint / claim files instead.
+ */
+function withInProcessLock<T>(
+  locks: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prev = locks.get(key);
   const taskBox: { task?: Promise<T> } = {};
   const task = (async () => {
     if (prev) {
@@ -95,13 +325,13 @@ function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
     } finally {
-      if (stepLocks.get(key) === taskBox.task) {
-        stepLocks.delete(key);
+      if (locks.get(key) === taskBox.task) {
+        locks.delete(key);
       }
     }
   })();
   taskBox.task = task;
-  stepLocks.set(key, task);
+  locks.set(key, task);
   return task;
 }
 
@@ -170,6 +400,25 @@ export function createEventsStorage(
   basedir: string,
   tag?: string
 ): Storage['events'] {
+  // Per-instance in-process mutexes. Two storage instances sharing
+  // one data directory get independent lock maps, which makes them
+  // behave like two separate OS processes from the locking
+  // standpoint — cross-instance arbitration relies on the on-disk
+  // `writeExclusive` constraint / claim files instead. Tests use
+  // this to exercise cross-process convergence without spawning
+  // subprocesses.
+  //
+  // `stepLocks` serializes step lifecycle events for the same
+  // (runId, correlationId): see comment further down in the
+  // `isStepEvent` branch.
+  //
+  // `hookLocks` serializes `hook_created` calls for the same
+  // (runId, correlationId) so the "claim token, then write hook
+  // entity + event" sequence runs to completion before another
+  // in-process invocation enters the dedup branch.
+  const stepLocks = new Map<string, Promise<unknown>>();
+  const hookLocks = new Map<string, Promise<unknown>>();
+
   return {
     async create(runId, data, params): Promise<EventResult> {
       // Validate request-supplied IDs before they're concatenated into
@@ -205,12 +454,32 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return withStepLock(lockKey, () => createImpl());
+        return withInProcessLock(stepLocks, lockKey, () => createImpl());
+      }
+      // `hook_created` is serialized per-(runId, hookId) so the
+      // "claim token, write hook entity, write event" sequence runs to
+      // completion before another in-process invocation enters the
+      // same-hook dedup branch. Without this, two same-tick concurrent
+      // callers can race between the winner's `writeExclusive(claim)`
+      // and `writeJSON(hook)`, making the second caller momentarily
+      // observe a claim with no matching hook entity — which the
+      // crash-recovery path below would misinterpret as a prior crash
+      // and incorrectly fall through to a second hook entity write.
+      if (data.eventType === 'hook_created' && runId && data.correlationId) {
+        const lockKey = tag
+          ? `${runId}-${data.correlationId}.hook.${tag}`
+          : `${runId}-${data.correlationId}.hook`;
+        return withInProcessLock(hookLocks, lockKey, () => createImpl());
       }
       return createImpl();
 
       async function createImpl(): Promise<EventResult> {
-        const eventId = `evnt_${monotonicUlid()}`;
+        // Most paths use the freshly-generated candidate eventId. The
+        // hook_created dedup-recovery path below may reassign it to
+        // the canonical eventId persisted in the durable token claim
+        // so concurrent / cross-process workers converge on a single
+        // event in the log.
+        let eventId = `evnt_${monotonicUlid()}`;
         const now = new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
@@ -532,7 +801,12 @@ export function createEventsStorage(
             throw new HookNotFoundError(data.correlationId);
           }
         }
-        const event: Event = {
+        // `event` may be reassigned later in the `hook_created`
+        // dedup-recovery branch to swap in a canonical eventId /
+        // createdAt persisted in the durable token claim so
+        // concurrent / cross-process workers converge on a single
+        // event in the log.
+        let event: Event = {
           ...data,
           runId: effectiveRunId,
           eventId,
@@ -549,6 +823,15 @@ export function createEventsStorage(
         let step: Step | undefined;
         let hook: Hook | undefined;
         let wait: Wait | undefined;
+        // For `hook_created`, the hook entity write is deferred until
+        // AFTER the outer event publish succeeds, so a retry that
+        // collides with an already-published `hook_created` does not
+        // mutate the durable hook entity with the retry's payload.
+        // `hookEntityWriteOptions` carries the `{ overwrite }` mode
+        // chosen by the dedup-recovery branch above (undefined for
+        // first writers, `{ overwrite: true }` for retries that may
+        // be repairing an orphaned partial write).
+        let hookEntityWriteOptions: { overwrite: boolean } | undefined;
 
         // Create/update entity based on event type (event-sourced architecture)
         // Run lifecycle events
@@ -1022,58 +1305,225 @@ export function createEventsStorage(
             'tokens',
             `${hashToken(hookData.token)}.json`
           );
+          // Persist `eventId` in the claim so concurrent / cross-
+          // process retries can converge on a single canonical
+          // `hook_created` event path. See the recovery comment
+          // below.
           const tokenClaimed = await writeExclusive(
             constraintPath,
             JSON.stringify({
               token: hookData.token,
               hookId: data.correlationId,
               runId: effectiveRunId,
+              eventId,
             })
           );
+
+          // Recovery shape: the durable record of a successful hook
+          // creation is the `hook_created` event in the event log. The
+          // claim file and hook entity are written before the event,
+          // and the three writes are NOT atomic, so a crash at any
+          // point can leave one or two of them on disk without the
+          // event. Treating those as "completed" would have the
+          // suspension handler swallow the retry and permanently lose
+          // the `hook_created` event from the log.
+          //
+          // When the dedup branch fires for the same `(runId, hookId)`,
+          // we converge on the canonical `eventId` persisted in the
+          // claim file by the original (winning) `writeExclusive`. By
+          // adopting that eventId for this retry's event write — and
+          // letting the outer no-overwrite `writeJSON` for the event
+          // throw `EntityConflictError` on collision — concurrent /
+          // cross-process workers either:
+          //   - publish the same event at the same path exactly once
+          //     (the loser's `writeJSON` throws EntityConflictError,
+          //     which the runtime's existing concurrent-replay catch
+          //     path at suspension-handler.ts:142 swallows), or
+          //   - converge on a single recovery write when the prior
+          //     claim was orphaned by a crash before the event landed.
+          //
+          // The legacy fallback (`existingClaim.eventId` undefined)
+          // is for claim files written before this field was added —
+          // those probe the event log directly and fall through to a
+          // fresh-eventId recovery write. The legacy path does not
+          // converge across workers but cannot regress behavior for
+          // freshly-written claims.
+          //
+          // The `withHookLock` in-process mutex above keeps two same-
+          // tick in-process callers from racing into this branch with
+          // the winner mid-write, but is not sufficient across
+          // processes — the durable convergence key (`claim.eventId`)
+          // is what closes the cross-process race.
+          let writeHookEntityWithOverwrite = false;
 
           if (!tokenClaimed) {
             const existingClaim = await readHookTokenClaim(constraintPath);
 
-            // Create hook_conflict event instead of hook_created
-            // This allows the workflow to continue and fail gracefully when the hook is awaited
-            const conflictEvent: Event = {
-              eventType: 'hook_conflict',
-              correlationId: data.correlationId,
-              eventData: {
-                token: hookData.token,
-                ...(existingClaim
-                  ? { conflictingRunId: existingClaim.runId }
-                  : {}),
-              },
-              runId: effectiveRunId,
-              eventId,
-              createdAt: now,
-              specVersion: effectiveSpecVersion,
-            };
+            if (
+              existingClaim?.runId === effectiveRunId &&
+              existingClaim.hookId === data.correlationId
+            ) {
+              // Adopt a canonical eventId for the recovery write. The
+              // outer event publish (`writeExclusive(eventPath)`)
+              // either succeeds (we publish the canonical event,
+              // repairing a partial write left by the original
+              // claimant) or returns `false` and we throw
+              // `EntityConflictError` (the event was already
+              // published — a real duplicate). Either way the log
+              // ends with exactly one `hook_created` event for this
+              // `(runId, hookId)`.
+              //
+              // The canonical eventId comes from one of two places:
+              //
+              //   - `existingClaim.eventId` for claims written by
+              //     this version (the writer above persists the
+              //     candidate eventId atomically with the claim).
+              //     The eventId is durable, so the outer
+              //     `writeExclusive(eventPath)` alone is enough to
+              //     arbitrate publication: it fails iff the event
+              //     was already published at that exact path.
+              //
+              //   - The recovery-marker sidecar for legacy claims
+              //     written before `eventId` was persisted inline
+              //     in the claim. The marker is itself a
+              //     `writeExclusive`, so the first retry pins its
+              //     candidate eventId as canonical and subsequent
+              //     retries adopt it. Without this, two processes
+              //     both reading the same legacy claim would each
+              //     generate their own eventId, land their
+              //     `writeExclusive(eventPath)` calls at different
+              //     paths, and append two events.
+              //
+              //     For legacy claims we also must probe the event
+              //     log for an existing `hook_created` event BEFORE
+              //     pinning a canonical eventId: the pre-upgrade
+              //     writer may have already published the event
+              //     with its own eventId, and the marker has no way
+              //     of knowing that eventId after the fact. Without
+              //     this probe, a post-upgrade retry would pin a
+              //     different eventId, write a hook entity, and
+              //     publish a duplicate event at the marker's path.
+              let canonicalEventId: string;
+              if (existingClaim.eventId) {
+                canonicalEventId = existingClaim.eventId;
+              } else {
+                const alreadyPublishedEventId =
+                  await findExistingHookCreatedEventId(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId
+                  );
+                if (alreadyPublishedEventId !== null) {
+                  // The pre-upgrade writer may have crashed between
+                  // its event publish and its hook entity write —
+                  // repair the entity from the persisted event's
+                  // payload before surfacing the benign duplicate.
+                  await repairHookEntityFromPersistedEvent(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId,
+                    alreadyPublishedEventId,
+                    tag
+                  );
+                  throw new EntityConflictError(
+                    `Hook "${data.correlationId}" already created`
+                  );
+                }
+                const pinned = await pinCanonicalEventIdForLegacyClaim(
+                  basedir,
+                  hookData.token,
+                  effectiveRunId,
+                  data.correlationId,
+                  eventId
+                );
+                if (pinned === null) {
+                  // Lost the marker race and the marker file is
+                  // unreadable (extremely rare; corrupted disk).
+                  // Treat as a real duplicate so the runtime's
+                  // concurrent-replay catch path swallows this
+                  // attempt instead of risking divergent
+                  // publication.
+                  throw new EntityConflictError(
+                    `Hook "${data.correlationId}" already created`
+                  );
+                }
+                canonicalEventId = pinned;
+              }
 
-            // Store the conflict event
-            const compositeKey = `${effectiveRunId}-${eventId}`;
-            await writeJSON(
-              taggedPath(basedir, 'events', compositeKey, tag),
-              conflictEvent
-            );
+              // Rebuild `event` with the canonical eventId and a
+              // deterministic `createdAt` derived from the eventId
+              // (a ULID) so two workers writing the same event
+              // produce byte-identical content.
+              eventId = canonicalEventId;
+              const canonicalCreatedAt =
+                ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
+              event = {
+                ...data,
+                runId: effectiveRunId,
+                eventId,
+                createdAt: canonicalCreatedAt,
+                specVersion: effectiveSpecVersion,
+              };
+              writeHookEntityWithOverwrite = true;
+            } else {
+              // Cross-hook / cross-run conflict: a different
+              // (runId, hookId) holds this token. Create a
+              // hook_conflict event so the workflow can fail
+              // gracefully when the hook is awaited.
+              const conflictEvent: Event = {
+                eventType: 'hook_conflict',
+                correlationId: data.correlationId,
+                eventData: {
+                  token: hookData.token,
+                  ...(existingClaim
+                    ? { conflictingRunId: existingClaim.runId }
+                    : {}),
+                },
+                runId: effectiveRunId,
+                eventId,
+                createdAt: now,
+                specVersion: effectiveSpecVersion,
+              };
 
-            const resolveData =
-              params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-            const filteredEvent = stripEventDataRefs(
-              conflictEvent,
-              resolveData
-            );
+              const compositeKey = `${effectiveRunId}-${eventId}`;
+              await writeJSON(
+                taggedPath(basedir, 'events', compositeKey, tag),
+                conflictEvent
+              );
 
-            // Return EventResult with conflict event (no hook entity created)
-            return {
-              event: filteredEvent,
-              run,
-              step,
-              hook: undefined,
-            };
+              const resolveData =
+                params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+              const filteredEvent = stripEventDataRefs(
+                conflictEvent,
+                resolveData
+              );
+
+              // Return EventResult with conflict event (no hook entity created)
+              return {
+                event: filteredEvent,
+                run,
+                step,
+                hook: undefined,
+              };
+            }
           }
 
+          // Compute the hook entity now, but defer its write until
+          // AFTER the outer event publish at the bottom of this
+          // function commits. The retry path can reach this branch
+          // for a hook whose `hook_created` event was already
+          // published successfully (an "already-committed
+          // duplicate"); in that case the outer `writeExclusive`
+          // for the event will return false and we will throw
+          // `EntityConflictError`. Writing the hook entity here
+          // first would mutate already-committed durable state with
+          // the retry's payload (e.g. different `metadata` or
+          // `isWebhook`) before the event publish proved which
+          // outcome we are in — leaving the entity and event log
+          // inconsistent. By deferring, the entity is only written
+          // when the publish actually succeeds (first writer or
+          // orphan recovery). See pranaygp's review on PR #2295 for
+          // the karthikscale3 repro.
           hook = {
             runId: effectiveRunId,
             hookId: data.correlationId,
@@ -1082,16 +1532,18 @@ export function createEventsStorage(
             ownerId: 'local-owner',
             projectId: 'local-project',
             environment: 'local',
-            createdAt: now,
+            // Use the (possibly canonical) event's createdAt so two
+            // workers writing the same hook entity produce byte-
+            // identical content during convergence.
+            createdAt: event.createdAt,
             // Propagate specVersion from the event to the hook entity
             specVersion: effectiveSpecVersion,
             isWebhook: hookData.isWebhook ?? false,
             isSystem: hookData.isSystem ?? false,
           };
-          await writeJSON(
-            taggedPath(basedir, 'hooks', data.correlationId, tag),
-            hook
-          );
+          hookEntityWriteOptions = writeHookEntityWithOverwrite
+            ? { overwrite: true }
+            : undefined;
         } else if (data.eventType === 'hook_disposed') {
           // hook_disposed: Deletes hook entity, rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
@@ -1126,7 +1578,12 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Delete the token constraint file to free up the token for reuse
+            // Delete the token constraint file to free up the token
+            // for reuse, and delete this hook's recovery marker (if
+            // any) for disk hygiene. The marker's filename hash
+            // includes `(token, runId, hookId)` so different
+            // lifetimes never collide, but cleaning up reduces disk
+            // leak for hooks that go through the recovery path.
             const disposedConstraintPath = path.join(
               basedir,
               'hooks',
@@ -1134,6 +1591,14 @@ export function createEventsStorage(
               `${hashToken(existingHook.token)}.json`
             );
             await deleteJSON(disposedConstraintPath);
+            await deleteJSON(
+              hookRecoveryMarkerPath(
+                basedir,
+                existingHook.token,
+                existingHook.runId,
+                existingHook.hookId
+              )
+            );
           }
           await deleteJSON(hookPath);
         } else if (data.eventType === 'wait_created' && 'eventData' in data) {
@@ -1229,12 +1694,67 @@ export function createEventsStorage(
         // Note: hook_received events are stored in the event log but don't
         // modify the Hook entity (which doesn't have a payload field)
 
-        // Store event using composite key {runId}-{eventId}
+        // Store event using composite key {runId}-{eventId}.
+        //
+        // `writeExclusive` (O_CREAT|O_EXCL via temp-file + hard-link)
+        // is the cross-process atomic publish primitive: if the file
+        // already exists, returns false instead of overwriting. This
+        // is critical for the hook_created dedup-recovery convergence
+        // (above) — two workers that adopt the same canonical eventId
+        // race here; whoever links the file first wins, the loser
+        // throws EntityConflictError, and the runtime's existing
+        // concurrent-replay catch path at suspension-handler.ts:142
+        // swallows it. For all other event types, eventIds are
+        // monotonic ULIDs (globally unique by construction) so a
+        // collision indicates a real bug and EntityConflictError is
+        // also the right surface — same shape as step_created's
+        // claim-file behavior.
         const compositeKey = `${effectiveRunId}-${eventId}`;
-        await writeJSON(
+        const eventPublished = await writeExclusive(
           taggedPath(basedir, 'events', compositeKey, tag),
-          event
+          JSON.stringify(event, jsonReplacer, 2)
         );
+        if (!eventPublished) {
+          // For `hook_created`, losing the event publish means the
+          // event was already committed at this exact (canonical)
+          // path. The original publisher may have crashed between
+          // its event publish and its deferred hook-entity write
+          // (the inverse of the crash window the deferral closes),
+          // leaving an event-first orphan: the event is in the log
+          // but the entity is missing and the hook is unresolvable.
+          // Repair the entity from the PERSISTED event's payload
+          // (never the retry's — different retry metadata must not
+          // change committed state) before surfacing the benign
+          // duplicate to the runtime's concurrent-replay catch path.
+          if (data.eventType === 'hook_created' && data.correlationId) {
+            await repairHookEntityFromPersistedEvent(
+              basedir,
+              effectiveRunId,
+              data.correlationId,
+              eventId,
+              tag
+            );
+          }
+          throw new EntityConflictError(
+            `Event "${eventId}" already exists for run "${effectiveRunId}"`
+          );
+        }
+
+        // Write the hook entity ONLY now that the event publish has
+        // committed. Doing this earlier (in the `hook_created`
+        // branch above) would mutate an already-committed hook
+        // entity with the retry's payload before the event publish
+        // proved whether this attempt was repairing a missing event
+        // or just colliding with an already-published `hook_created`.
+        // The branch sets `hookEntityWriteOptions` iff this event
+        // type writes an entity.
+        if (hook && data.eventType === 'hook_created') {
+          await writeJSON(
+            taggedPath(basedir, 'hooks', hook.hookId, tag),
+            hook,
+            hookEntityWriteOptions
+          );
+        }
 
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);

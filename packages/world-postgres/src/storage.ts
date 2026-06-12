@@ -365,6 +365,23 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .limit(1)
     .prepare('events_get_hook_by_token');
 
+  // Used to distinguish a real same-hook duplicate from an orphaned
+  // hook row left behind by a process / database interruption between
+  // the hook INSERT and the events INSERT below (see the recovery
+  // logic in the hook_created branch).
+  const getHookCreatedEvent = drizzle
+    .select({ eventId: events.eventId })
+    .from(events)
+    .where(
+      and(
+        eq(events.runId, sql.placeholder('runId')),
+        eq(events.correlationId, sql.placeholder('correlationId')),
+        eq(events.eventType, sql.placeholder('eventType'))
+      )
+    )
+    .limit(1)
+    .prepare('events_get_hook_created_for_run_correlation');
+
   const getWaitForValidation = drizzle
     .select({
       status: Schema.waits.status,
@@ -1241,69 +1258,121 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           token: eventData.token,
         });
         if (existingHook) {
-          // Create hook_conflict event instead of throwing 409
-          // This allows the workflow to continue and fail gracefully when the hook is awaited
-          const conflictEventData = {
-            token: eventData.token,
-            conflictingRunId: existingHook.runId,
-          };
+          // Idempotency: if the existing hook is the *same* (runId, hookId)
+          // we are trying to create, this is either a duplicate / replayed
+          // processing of the same hook_created (not a real conflict), or
+          // an orphaned hook row from a prior crashed attempt (the hook
+          // INSERT below landed but the events INSERT below didn't —
+          // these writes are not in one transaction). Distinguish by
+          // checking whether the `hook_created` event actually exists in
+          // the event log:
+          //   - exists → real duplicate: throw EntityConflictError so the
+          //     runtime's concurrent-replay catch path (matching the
+          //     step_created path) swallows it, instead of producing a
+          //     self-conflict in the event log that would later replay
+          //     as HookConflictError.
+          //     See https://github.com/vercel/workflow/issues/2283.
+          //   - missing → orphaned hook row (crash between hook INSERT
+          //     and events INSERT): skip the hook insert (the existing
+          //     row already has the desired state) and fall through to
+          //     the events INSERT below, completing the partial write.
+          if (
+            existingHook.runId === effectiveRunId &&
+            existingHook.hookId === data.correlationId
+          ) {
+            const [existingEvent] = await getHookCreatedEvent.execute({
+              runId: effectiveRunId,
+              correlationId: data.correlationId,
+              eventType: 'hook_created',
+            });
+            if (existingEvent) {
+              throw new EntityConflictError(
+                `Hook "${data.correlationId}" already created`
+              );
+            }
+            // Orphaned hook row: hook row exists but no hook_created
+            // event in the log. Skip the hook insert below (the row
+            // already exists with our (runId, hookId)) and let the
+            // outer code path emit the hook_created event, completing
+            // the partial write. We also re-fetch the existing hook
+            // row so the EventResult carries the actual persisted
+            // entity rather than `undefined`.
+            const [recoveredHookValue] = await drizzle
+              .select()
+              .from(Schema.hooks)
+              .where(eq(Schema.hooks.hookId, data.correlationId!))
+              .limit(1);
+            if (recoveredHookValue) {
+              recoveredHookValue.metadata ||= recoveredHookValue.metadataJson;
+              hook = HookSchema.parse(compact(recoveredHookValue));
+            }
+          } else {
+            // Cross-hook / cross-run conflict: a different
+            // (runId, hookId) holds this token. Create a hook_conflict
+            // event instead of throwing 409 — this lets the workflow
+            // continue and fail gracefully when the hook is awaited.
+            const conflictEventData = {
+              token: eventData.token,
+              conflictingRunId: existingHook.runId,
+            };
 
-          const [conflictValue] = await drizzle
-            .insert(events)
-            .values({
+            const [conflictValue] = await drizzle
+              .insert(events)
+              .values({
+                runId: effectiveRunId,
+                eventId,
+                correlationId: data.correlationId,
+                eventType: 'hook_conflict',
+                eventData: conflictEventData,
+                specVersion: effectiveSpecVersion,
+              })
+              .returning({ createdAt: events.createdAt });
+
+            if (!conflictValue) {
+              throw new EntityConflictError(
+                `Event ${eventId} could not be created`
+              );
+            }
+
+            const conflictResult = {
+              eventType: 'hook_conflict' as const,
+              correlationId: data.correlationId,
+              eventData: conflictEventData,
+              ...conflictValue,
               runId: effectiveRunId,
               eventId,
-              correlationId: data.correlationId,
-              eventType: 'hook_conflict',
-              eventData: conflictEventData,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: events.createdAt });
-
-          if (!conflictValue) {
-            throw new EntityConflictError(
-              `Event ${eventId} could not be created`
-            );
+            };
+            const parsedConflict = EventSchema.parse(conflictResult);
+            const resolveData = params?.resolveData ?? 'all';
+            return {
+              event: stripEventDataRefs(parsedConflict, resolveData),
+              run,
+              step,
+              hook: undefined,
+            };
           }
-
-          const conflictResult = {
-            eventType: 'hook_conflict' as const,
-            correlationId: data.correlationId,
-            eventData: conflictEventData,
-            ...conflictValue,
-            runId: effectiveRunId,
-            eventId,
-          };
-          const parsedConflict = EventSchema.parse(conflictResult);
-          const resolveData = params?.resolveData ?? 'all';
-          return {
-            event: stripEventDataRefs(parsedConflict, resolveData),
-            run,
-            step,
-            hook: undefined,
-          };
-        }
-
-        const [hookValue] = await drizzle
-          .insert(Schema.hooks)
-          .values({
-            runId: effectiveRunId,
-            hookId: data.correlationId!,
-            token: eventData.token,
-            metadata: eventData.metadata as SerializedContent,
-            ownerId: '', // TODO: get from context
-            projectId: '', // TODO: get from context
-            environment: '', // TODO: get from context
-            // Propagate specVersion from the event to the hook entity
-            specVersion: effectiveSpecVersion,
-            isWebhook: eventData.isWebhook,
-            isSystem: eventData.isSystem ?? false,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (hookValue) {
-          hookValue.metadata ||= hookValue.metadataJson;
-          hook = HookSchema.parse(compact(hookValue));
+        } else {
+          const [hookValue] = await drizzle
+            .insert(Schema.hooks)
+            .values({
+              runId: effectiveRunId,
+              hookId: data.correlationId!,
+              token: eventData.token,
+              metadata: eventData.metadata as SerializedContent,
+              ownerId: '', // TODO: get from context
+              projectId: '', // TODO: get from context
+              environment: '', // TODO: get from context
+              // Propagate specVersion from the event to the hook entity
+              specVersion: effectiveSpecVersion,
+              isWebhook: eventData.isWebhook,
+              isSystem: eventData.isSystem ?? false,
+            })
+            .onConflictDoNothing()
+            .returning();
+          if (hookValue) {
+            hookValue.metadata ||= hookValue.metadataJson;
+            hook = HookSchema.parse(compact(hookValue));
+          }
         }
       }
 

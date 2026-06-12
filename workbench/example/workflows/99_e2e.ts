@@ -607,6 +607,141 @@ export async function hookCleanupTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
+export async function hookGetConflictWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  // Awaiting `getConflict()` suspends the workflow to commit the hook
+  // registration without waiting for payload data. It resolves with the
+  // conflicting `Run` when another active hook owns the token, or `null`
+  // once this hook is registered.
+  const conflict = await hook.getConflict();
+
+  if (conflict) {
+    // The conflicting Run's methods are durable step proxies, so the
+    // duplicate run can inspect the active owner before deciding.
+    const conflictStatus = await conflict.status;
+    return {
+      token,
+      customData,
+      conflictRunId: conflict.runId,
+      conflictStatus,
+      hookGetConflictTestData: 'hook_token_conflict_detected',
+    };
+  }
+
+  return {
+    token,
+    customData,
+    conflictRunId: null,
+    hookGetConflictTestData: 'hook_registered_without_payload',
+  };
+}
+
+async function hookGetConflictStep(customData: string) {
+  'use step';
+  return {
+    customData,
+    hookGetConflictStepData: 'step_completed',
+  };
+}
+
+async function hookGetConflictTimedStep(label: 'A' | 'B', delayMs: number) {
+  'use step';
+  const { stepStartedAt } = getStepMetadata();
+  const startedAt = stepStartedAt.getTime();
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  return {
+    label,
+    startedAt,
+    endedAt: Date.now(),
+  };
+}
+
+export async function hookGetConflictWithPriorStepWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const stepPromise = hookGetConflictStep(customData);
+
+  const conflict = await hook.getConflict();
+
+  return {
+    token,
+    customData,
+    conflictRunId: conflict ? conflict.runId : null,
+    stepResult: await stepPromise,
+    hookGetConflictTestData: 'prior_step_completed_after_registration',
+  };
+}
+
+export async function hookGetConflictWithParallelStepWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const [stepResult, conflict] = await Promise.all([
+    hookGetConflictStep(customData),
+    hook.getConflict(),
+  ]);
+
+  return {
+    token,
+    customData,
+    conflictRunId: conflict ? conflict.runId : null,
+    stepResult,
+    hookGetConflictTestData: 'parallel_step_completed_with_registration',
+  };
+}
+
+export async function hookGetConflictThenStepParallelWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const stepBPromise = hook
+    .getConflict()
+    .then(async () => await hookGetConflictTimedStep('B', 100));
+  const stepAResult = await hookGetConflictTimedStep('A', 10_000);
+  const stepBResult = await stepBPromise;
+
+  return {
+    token,
+    customData,
+    stepAResult,
+    stepBResult,
+    hookGetConflictTestData: 'registration_then_step_runs_in_parallel',
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 /**
  * Workflow for testing early hook disposal - allows another workflow to reuse
  * the token while this workflow is still running.
@@ -1829,19 +1964,24 @@ export async function abortParallelWorkflow() {
   'use workflow';
 
   const controller = new AbortController();
+  const parallelSteps = Promise.all([
+    longStep(controller.signal),
+    longStep(controller.signal),
+    longStep(controller.signal),
+  ]);
 
   const result = await Promise.race([
-    Promise.all([
-      longStep(controller.signal),
-      longStep(controller.signal),
-      longStep(controller.signal),
-    ]),
+    parallelSteps,
     sleep('3s').then(() => 'timeout' as const),
   ]);
 
   if (result === 'timeout') {
     controller.abort();
-    return { status: 'timed out' };
+    // Wait for the in-flight steps to observe the abort before completing the
+    // workflow. Returning immediately leaves the parallel branch dangling and
+    // can keep the run open until the steps hit their natural 30s completion.
+    const results = await parallelSteps;
+    return { status: 'timed out', results };
   }
 
   return { status: 'completed', results: result };
@@ -3302,4 +3442,79 @@ export async function experimentalSetAttributesValidationWorkflow() {
   // The run must remain healthy after every rejected call.
   await experimental_setAttributes({ phase: 'validated' });
   return outcomes;
+}
+
+//////////////////////////////////////////////////////////
+
+async function parallelHookRaceStep(label: string) {
+  'use step';
+  // A small matching delay makes both step_completed events more likely
+  // to land within the same suspension-flush tick, which is what
+  // triggers the same-body re-walk race.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return label;
+}
+
+/**
+ * Regression test for https://github.com/vercel/workflow/issues/1665
+ * and https://github.com/vercel/workflow/issues/2283. This matches
+ * Paolo's exact minimal repro on #1665:
+ *
+ * ```ts
+ * await Promise.all([get_data(), get_settings()]);
+ * using webhook = createWebhook();
+ * await webhook;
+ * ```
+ *
+ * Two parallel steps complete close enough in time that both
+ * `step_completed` events trigger replay-and-suspend before either
+ * pass's `hook_created` has been observed by the events consumer
+ * (`hasCreatedEvent: false`). Both passes then call
+ * `world.events.create(runId, hook_created)` with the same
+ * deterministic `(correlationId, token)`.
+ *
+ * Before the world-side idempotency fix, the world accepted the first
+ * `hook_created` and wrote a `hook_conflict` event for the second —
+ * even though both events carried the same `(runId, hookId, token)`.
+ * On replay, the hook's awaitable saw the `hook_conflict` and
+ * rejected with `HookConflictError`, even though no other run
+ * actually owned the token.
+ *
+ * With the fix, the world rejects the duplicate with
+ * `EntityConflictError` (which the suspension handler already
+ * swallows at `suspension-handler.ts:142`), no `hook_conflict` event
+ * is written, and the webhook resolves normally.
+ *
+ * The race is timing-sensitive — a single
+ * "parallel-steps-then-webhook" sequence may not always reproduce it
+ * on faster runtimes. The workflow runs the sequence in a loop
+ * (`iterations` independent attempts in series, each with its own
+ * webhook). On the pre-fix code any single iteration that hits the
+ * race surfaces a `hook_conflict` event in the log (and on subsequent
+ * replay throws `HookConflictError`), so a large enough iteration
+ * count gives the race many independent opportunities to fire.
+ */
+export async function parallelStepsThenWebhookWorkflow(iterations: number) {
+  'use workflow';
+
+  const tokens: string[] = [];
+  for (let i = 0; i < iterations; i++) {
+    await Promise.all([
+      parallelHookRaceStep(`${i}-a`),
+      parallelHookRaceStep(`${i}-b`),
+    ]);
+
+    using webhook = createWebhook();
+    const token = webhook.token;
+    tokens.push(token);
+
+    const req = await webhook;
+    const body = await req.text();
+    if (body !== `body-${token}`) {
+      throw new FatalError(
+        `iteration ${i}: expected body-${token}, got ${body}`
+      );
+    }
+  }
+  return tokens;
 }

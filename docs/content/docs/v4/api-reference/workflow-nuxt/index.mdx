@@ -1,0 +1,47 @@
+---
+title: "workflow/nuxt"
+description: Nuxt module for automatic workflow bundling and runtime configuration.
+type: overview
+summary: Explore the Nuxt module that enables workflow directive transformation in Nuxt apps.
+related:
+  - /docs/getting-started/nuxt
+---
+
+Nuxt integration for Workflow SDK. The `workflow/nuxt` entry point's default export is a Nuxt module — it has no callable API. You enable it by adding it to the `modules` array of your Nuxt config and configure it via the `workflow` key.
+
+## Usage
+
+```typescript title="nuxt.config.ts" lineNumbers
+import { defineNuxtConfig } from "nuxt/config";
+
+export default defineNuxtConfig({
+  modules: ["workflow/nuxt"], // [!code highlight]
+  compatibilityDate: "latest",
+});
+```
+
+When enabled, the module:
+
+- Registers the [`workflow/nitro`](/docs/api-reference/workflow-nitro) module on Nuxt's Nitro server, which transforms `"use workflow"` and `"use step"` directives, builds the workflow bundles, and registers the workflow runtime routes under `/.well-known/workflow/v1/`.
+- Configures Vite to bundle (rather than externalize) the Workflow SDK packages in SSR mode so workflow code is transformed correctly.
+- Enables the `workflow` TypeScript plugin by default for IDE IntelliSense.
+
+## Module Options
+
+Options are read from the `workflow` key of your Nuxt config. The option type is exported as `ModuleOptions`:
+
+```typescript title="nuxt.config.ts" lineNumbers
+import { defineNuxtConfig } from "nuxt/config";
+
+export default defineNuxtConfig({
+  modules: ["workflow/nuxt"],
+  workflow: {
+    typescriptPlugin: false, // [!code highlight]
+  },
+  compatibilityDate: "latest",
+});
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `typescriptPlugin` | `boolean` | `true` | Adds the `workflow` TypeScript plugin to the generated `tsconfig.json` for IDE IntelliSense. Set to `false` to disable it. |

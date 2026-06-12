@@ -13,6 +13,7 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
+import { getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
@@ -21,9 +22,20 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
-import { getWorkflowQueueName } from './helpers.js';
+import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
+
+/**
+ * Timeout for the cross-deployment capability probe done before
+ * dehydrating workflow arguments. Kept tight on purpose: the probe is
+ * an optimization (it lets the caller emit the framed byte-stream wire
+ * format when the target supports it), and the fallback on timeout is
+ * the legacy raw format which always works. Long delays here would just
+ * make `start({ deploymentId: ... })` slower for users whose target
+ * deployments don't recognize the health check at all.
+ */
+const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -158,7 +170,8 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       const world = opts?.world ?? (await getWorldLazy());
-      let deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+      const currentDeploymentId = await world.getDeploymentId();
+      let deploymentId = opts.deploymentId ?? currentDeploymentId;
 
       // When 'latest' is requested, resolve the actual latest deployment ID
       // for the current deployment's environment (same production target or
@@ -170,6 +183,32 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         deploymentId = await world.resolveLatestDeploymentId();
+      }
+
+      // Decide whether to write byte streams in the framed wire format.
+      // For same-deployment starts (the common case) we know the target is
+      // running this same SDK version, so framing is safe. For cross-
+      // deployment starts (explicit deploymentId or 'latest' that resolves
+      // to a different deployment) we probe the target via healthCheck to
+      // learn its workflow-core version, then derive the capability. The
+      // probe has a tight timeout — on miss/failure we fall back to the
+      // legacy raw byte format, which is universally readable.
+      //
+      // Worlds that don't expose the `streams` API (e.g. minimal test
+      // mocks) can't service health checks, so we skip the probe for them.
+      let framedByteStreams: boolean;
+      if (deploymentId === currentDeploymentId) {
+        framedByteStreams = true;
+      } else if (typeof world.streams?.get !== 'function') {
+        framedByteStreams = false;
+      } else {
+        const probe = await healthCheck(world, 'workflow', {
+          deploymentId,
+          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+        }).catch(() => undefined);
+        framedByteStreams = getRunCapabilities(
+          probe?.workflowCoreVersion
+        ).framedByteStreams;
       }
 
       const ops: Promise<void>[] = [];
@@ -235,7 +274,8 @@ export async function start<TArgs extends unknown[], TResult>(
         encryptionKey,
         ops,
         globalThis,
-        v1Compat
+        v1Compat,
+        framedByteStreams
       );
 
       const executionContext = {

@@ -51,12 +51,82 @@ export interface SuspensionHandlerResult {
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
-  /** Timeout from waits, if any */
-  timeoutSeconds?: number;
+  /**
+   * The soonest pending wait, if any: seconds until it elapses and the
+   * correlationId of the wait that produced that timeout. The
+   * correlationId seeds the idempotency key for the wait-continuation
+   * queue message so that repeated suspension passes over the same
+   * pending wait collapse into a single delayed continuation.
+   */
+  waitTimeout?: { seconds: number; correlationId: string };
   /** Whether a hook conflict was detected (should re-invoke immediately) */
   hasHookConflict: boolean;
+  /** Whether a `hook.getConflict()` awaiter needs the workflow to continue immediately */
+  hasAwaitedHookCreation: boolean;
   /** Whether native workflow attribute events were written for replay. */
   hasAttributeEvents: boolean;
+}
+
+async function createHookEvent({
+  world,
+  runId,
+  hookEvent,
+  queueItem,
+  requestId,
+}: {
+  world: World;
+  runId: string;
+  hookEvent: CreateEventRequest;
+  queueItem: HookInvocationQueueItem;
+  requestId?: string;
+}): Promise<{
+  hasHookConflict: boolean;
+  hasAwaitedHookCreation: boolean;
+}> {
+  try {
+    const result = await world.events.create(runId, hookEvent, {
+      requestId,
+    });
+
+    // Check if the world returned a hook_conflict event instead of hook_created.
+    // The hook_conflict event is stored in the event log and will be replayed
+    // on the next workflow invocation, causing the hook's promise to reject.
+    if (result.event?.eventType === 'hook_conflict') {
+      return {
+        hasHookConflict: true,
+        hasAwaitedHookCreation: false,
+      };
+    }
+
+    return {
+      hasHookConflict: false,
+      hasAwaitedHookCreation: queueItem.hasConflictAwaiter === true,
+    };
+  } catch (err) {
+    if (EntityConflictError.is(err)) {
+      runtimeLogger.info('Hook already exists, continuing', {
+        workflowRunId: runId,
+        message: err.message,
+      });
+      return {
+        hasHookConflict: false,
+        hasAwaitedHookCreation: queueItem.hasConflictAwaiter === true,
+      };
+    }
+
+    if (RunExpiredError.is(err)) {
+      runtimeLogger.info('Workflow run already completed, skipping hook', {
+        workflowRunId: runId,
+        message: err.message,
+      });
+      return {
+        hasHookConflict: false,
+        hasAwaitedHookCreation: false,
+      };
+    }
+
+    throw err;
+  }
 }
 
 /**
@@ -101,7 +171,7 @@ export async function handleSuspension({
   const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
   // Build and process hook_created events (same as V1)
-  const hookEvents: CreateEventRequest[] = await Promise.all(
+  const hookEvents = await Promise.all(
     hooksNeedingCreation.map(async (queueItem) => {
       const hookMetadata: SerializedData | undefined =
         typeof queueItem.metadata === 'undefined'
@@ -113,14 +183,17 @@ export async function handleSuspension({
               suspension.globalThis
             )) as SerializedData);
       return {
-        eventType: 'hook_created' as const,
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: queueItem.correlationId,
-        eventData: {
-          token: queueItem.token,
-          metadata: hookMetadata,
-          isWebhook: queueItem.isWebhook ?? false,
-          ...(queueItem.isSystem && { isSystem: true }),
+        queueItem,
+        hookEvent: {
+          eventType: 'hook_created' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+          eventData: {
+            token: queueItem.token,
+            metadata: hookMetadata,
+            isWebhook: queueItem.isWebhook ?? false,
+            ...(queueItem.isSystem && { isSystem: true }),
+          },
         },
       };
     })
@@ -131,35 +204,23 @@ export async function handleSuspension({
   // Track any hook conflicts that occur — these are returned to the caller
   // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
+  let hasAwaitedHookCreation = false;
 
   if (hookEvents.length > 0) {
-    await Promise.all(
-      hookEvents.map(async (hookEvent) => {
-        try {
-          const result = await world.events.create(runId, hookEvent, {
-            requestId,
-          });
-          // Check if the world returned a hook_conflict event instead of hook_created.
-          // The hook_conflict event is stored in the event log and will be replayed
-          // on the next workflow invocation, causing the hook's promise to reject.
-          // Note: hook events always create an event (legacy runs throw, not return undefined)
-          if (result.event!.eventType === 'hook_conflict') {
-            hasHookConflict = true;
-          }
-        } catch (err) {
-          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
-            runtimeLogger.info(
-              'Workflow run already completed, skipping hook',
-              {
-                workflowRunId: runId,
-                message: err.message,
-              }
-            );
-          } else {
-            throw err;
-          }
-        }
-      })
+    const results = await Promise.all(
+      hookEvents.map(({ hookEvent, queueItem }) =>
+        createHookEvent({
+          world,
+          runId,
+          hookEvent,
+          queueItem,
+          requestId,
+        })
+      )
+    );
+    hasHookConflict = results.some((result) => result.hasHookConflict);
+    hasAwaitedHookCreation = results.some(
+      (result) => result.hasAwaitedHookCreation
     );
   }
 
@@ -438,18 +499,20 @@ export async function handleSuspension({
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
 
-  // Calculate minimum timeout from waits
+  // Find the soonest pending wait (minimum timeout)
   const now = Date.now();
-  const minTimeoutSeconds = waitItems.reduce<number | null>(
-    (min, queueItem) => {
-      const resumeAtMs = queueItem.resumeAt.getTime();
-      const delayMs = Math.max(1000, resumeAtMs - now);
-      const timeoutSeconds = Math.ceil(delayMs / 1000);
-      if (min === null) return timeoutSeconds;
-      return Math.min(min, timeoutSeconds);
-    },
-    null
-  );
+  let soonestWait: { seconds: number; correlationId: string } | undefined;
+  for (const queueItem of waitItems) {
+    const resumeAtMs = queueItem.resumeAt.getTime();
+    const delayMs = Math.max(1000, resumeAtMs - now);
+    const timeoutSeconds = Math.ceil(delayMs / 1000);
+    if (!soonestWait || timeoutSeconds < soonestWait.seconds) {
+      soonestWait = {
+        seconds: timeoutSeconds,
+        correlationId: queueItem.correlationId,
+      };
+    }
+  }
 
   span?.setAttributes({
     ...Attribute.WorkflowRunStatus('workflow_suspended'),
@@ -461,8 +524,11 @@ export async function handleSuspension({
   return {
     pendingSteps: stepItems,
     createdStepCorrelationIds,
-    timeoutSeconds: hasHookConflict ? 0 : (minTimeoutSeconds ?? undefined),
+    // On hook conflict the caller re-invokes immediately and never reads
+    // the wait timeout, so don't report one.
+    waitTimeout: hasHookConflict ? undefined : soonestWait,
     hasHookConflict,
+    hasAwaitedHookCreation,
     hasAttributeEvents: attributeItems.length > 0,
   };
 }

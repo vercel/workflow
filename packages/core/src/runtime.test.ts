@@ -1,4 +1,8 @@
-import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  RUN_ERROR_CODES,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -889,10 +893,14 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     `;globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
 
-  // A workflow that suspends on a step AND a sleep. The pending wait makes the
-  // V2 handler queue the step (instead of running it inline), exercising the
-  // progress-critical step-dispatch queue() send that must complete before the
-  // orchestrator message is acked.
+  // A workflow that suspends on a step AND a sleep. The harness's
+  // events.create answers step_created with EntityConflictError (see
+  // driveHandler), so this handler observes the pending step without owning
+  // it — the crash-recovery shape where a prior handler wrote step_created
+  // but died before queueing. That forces the unified dispatch to QUEUE the
+  // step (inline execution is ownership-gated), exercising the
+  // progress-critical step-dispatch queue() send that must complete before
+  // the orchestrator message is acked.
   const stepWithSleepWorkflow = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
     const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
     async function workflow() {
@@ -944,6 +952,10 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       }
       if (data.eventType === 'step_created') {
         order.push('step_created');
+        // Concurrent-handler simulation: the step_created event already
+        // exists, so this handler doesn't own the step and must queue it
+        // rather than execute it inline.
+        throw new EntityConflictError('step already exists');
       }
       return {
         event: {

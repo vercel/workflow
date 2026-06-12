@@ -547,6 +547,144 @@ describe('e2e', () => {
     expect(returnValue[2].body).toBe('{"message":"three"}');
   });
 
+  // Skipped on world-postgres: the same-tick replay pattern this test
+  // stresses also surfaces a SEPARATE, pre-existing world-postgres bug
+  // — the step entity UPDATE and the event INSERT are not atomic, so a
+  // late concurrent `step_started` can pass the non-terminal
+  // conditional UPDATE before `step_completed` commits but append its
+  // event after it, producing a duplicate `step_started` after
+  // `step_completed` in the log and a `CorruptedEventLogError` on
+  // replay. That is a step-lifecycle ordering bug, not the hook
+  // self-conflict fixed by this PR (the postgres log in the failing CI
+  // run shows duplicate `hook_created` inserts were correctly rejected
+  // by `workflow_events_entity_creation_unique`). Tracked separately
+  // in https://github.com/vercel/workflow/issues/2331 — re-enable on
+  // postgres when that lands. The deterministic unit tests in
+  // `world-local` and `world-postgres` cover the hook idempotency
+  // invariant on both worlds regardless.
+  const isPostgresWorld =
+    !!process.env.WORKFLOW_TARGET_WORLD?.includes('postgres');
+  test.skipIf(isPostgresWorld)(
+    'parallelStepsThenWebhookWorkflow - no hook_conflict from same-tick replay race',
+    { timeout: 120_000 },
+    async () => {
+      // Regression test for https://github.com/vercel/workflow/issues/1665
+      // and https://github.com/vercel/workflow/issues/2283.
+      //
+      // The workflow runs N sequential iterations of
+      //   await Promise.all([stepA, stepB]);
+      //   using webhook = createWebhook();
+      //   await webhook;
+      // (Paolo's minimal repro). Each iteration is an independent
+      // chance for the two `step_completed` events to land in the
+      // same suspension-flush tick, which would cause the workflow
+      // body to be re-walked twice and both walks to submit
+      // `hook_created` with the same deterministic
+      // `(correlationId, token)`.
+      //
+      // Before the world-side idempotency fix, the world accepted the
+      // first `hook_created` and wrote a `hook_conflict` event for
+      // the second — even though both events carried the same
+      // `(runId, hookId, token)`. On replay the hook's awaitable saw
+      // the `hook_conflict` and rejected with `HookConflictError`,
+      // failing the run.
+      //
+      // With the fix, the duplicate is rejected with
+      // `EntityConflictError` (which the suspension handler at
+      // suspension-handler.ts:142 swallows as a benign concurrent-
+      // replay outcome), no `hook_conflict` event is written, and
+      // the webhook resolves normally.
+      //
+      // Note: the race is timing-sensitive — a single workflow body
+      // does not reproduce it on every run, especially on fast local
+      // dev. The unit tests in `world-local` and `world-postgres`
+      // cover the same `(runId, hookId)` idempotency invariant
+      // deterministically. This test exists as a higher-level
+      // regression net: the assertions (no `hook_conflict` event in
+      // the log, no `HookConflictError`-failed run) are correct
+      // whether the race fires or not, and will catch any future
+      // regression that reintroduces the self-conflict on a run that
+      // does hit the race.
+      const ITERATIONS = 10;
+      const run = await start(await e2e('parallelStepsThenWebhookWorkflow'), [
+        ITERATIONS,
+      ]);
+
+      const world = await getWorld();
+
+      // The workflow processes iterations sequentially, one webhook
+      // at a time. After each iteration's webhook is registered, fire
+      // it to unblock the next iteration. Track which tokens we've
+      // already served so we only POST once per webhook.
+      const servedTokens = new Set<string>();
+      const deadline = Date.now() + 150_000;
+      while (Date.now() < deadline) {
+        // Is the run done?
+        const runRow = await world.runs.get(run.runId);
+        if (runRow.status !== 'pending' && runRow.status !== 'running') break;
+
+        const { data: hooks } = await world.hooks.list({ runId: run.runId });
+        const unservedHook = hooks.find((h) => !servedTokens.has(h.token));
+        if (!unservedHook) {
+          await sleep(100);
+          continue;
+        }
+
+        const res = await fetch(
+          new URL(
+            `/.well-known/workflow/v1/webhook/${encodeURIComponent(unservedHook.token)}`,
+            deploymentUrl
+          ),
+          {
+            method: 'POST',
+            headers: await getTrustedSourcesHeaders(),
+            body: `body-${unservedHook.token}`,
+          }
+        );
+        expect(res.status).toBe(202);
+        servedTokens.add(unservedHook.token);
+      }
+
+      // Workflow should complete cleanly with no HookConflictError.
+      const result = (await run.returnValue) as string[];
+      expect(result).toHaveLength(ITERATIONS);
+      // Every webhook the workflow created should have been served.
+      expect(servedTokens.size).toBe(ITERATIONS);
+      for (const token of result) {
+        expect(servedTokens.has(token)).toBe(true);
+      }
+
+      // Inspect the event log: there must be no hook_conflict event,
+      // even if the replay race triggered duplicate `hook_created`
+      // submissions to the world. Paginate to cover all events — the
+      // default page limit is 20 and an N-iteration run can produce
+      // many hundreds of events.
+      const allEvents: Array<{ eventType: string }> = [];
+      let cursor: string | undefined;
+      while (true) {
+        const page = await world.events.list({
+          runId: run.runId,
+          pagination: { limit: 100, cursor },
+        });
+        allEvents.push(...page.data);
+        if (!page.cursor) break;
+        cursor = page.cursor;
+      }
+      const hookConflictEvents = allEvents.filter(
+        (e) => e.eventType === 'hook_conflict'
+      );
+      const hookCreatedEvents = allEvents.filter(
+        (e) => e.eventType === 'hook_created'
+      );
+      expect(hookConflictEvents).toEqual([]);
+      // There should be exactly ITERATIONS hook_created events in the log.
+      expect(hookCreatedEvents).toHaveLength(ITERATIONS);
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
+
   test('webhook route with invalid token', { timeout: 60_000 }, async () => {
     const invalidWebhookUrl = new URL(
       `/.well-known/workflow/v1/webhook/${encodeURIComponent('invalid')}`,
@@ -1620,6 +1758,164 @@ describe('e2e', () => {
 
       const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
       expect(run1Data.status).toBe('completed');
+    }
+  );
+
+  test('hookGetConflictWorkflow - awaiting hook.getConflict() registers hook without payload', async () => {
+    const token = Math.random().toString(36).slice(2);
+    const customData = Math.random().toString(36).slice(2);
+
+    const run = await start(await e2e('hookGetConflictWorkflow'), [
+      token,
+      customData,
+    ]);
+
+    const returnValue = await run.returnValue;
+    expect(returnValue).toEqual({
+      token,
+      customData,
+      conflictRunId: null,
+      hookGetConflictTestData: 'hook_registered_without_payload',
+    });
+
+    const world = await getWorld();
+    const { data: events } = await world.events.list({ runId: run.runId });
+    const hookCreated = events.find((e) => e.eventType === 'hook_created');
+    const hookReceived = events.find((e) => e.eventType === 'hook_received');
+
+    expect(
+      hookCreated,
+      'awaiting hook.getConflict() should suspend and create the hook'
+    ).toBeDefined();
+    expect(
+      hookReceived,
+      'hook.getConflict() should not require or consume hook payload data'
+    ).toBeUndefined();
+  });
+
+  test.each([
+    {
+      workflow: 'hookGetConflictWithPriorStepWorkflow',
+      hookGetConflictTestData: 'prior_step_completed_after_registration',
+    },
+    {
+      workflow: 'hookGetConflictWithParallelStepWorkflow',
+      hookGetConflictTestData: 'parallel_step_completed_with_registration',
+    },
+  ])(
+    '$workflow - hook.getConflict() does not block step execution',
+    { timeout: 60_000 },
+    async ({ workflow, hookGetConflictTestData }) => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      const run = await start(await e2e(workflow), [token, customData]);
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        token,
+        customData,
+        conflictRunId: null,
+        stepResult: {
+          customData,
+          hookGetConflictStepData: 'step_completed',
+        },
+        hookGetConflictTestData,
+      });
+
+      const world = await getWorld();
+      const { data: events } = await world.events.list({ runId: run.runId });
+
+      expect(events.some((e) => e.eventType === 'hook_created')).toBe(true);
+      expect(events.some((e) => e.eventType === 'hook_received')).toBe(false);
+      expect(events.some((e) => e.eventType === 'step_created')).toBe(true);
+      expect(events.some((e) => e.eventType === 'step_completed')).toBe(true);
+    }
+  );
+
+  test(
+    'hookGetConflictThenStepParallelWorkflow - hook.getConflict() continuation step runs alongside other steps',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      const run = await start(
+        await e2e('hookGetConflictThenStepParallelWorkflow'),
+        [token, customData]
+      );
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toMatchObject({
+        token,
+        customData,
+        hookGetConflictTestData: 'registration_then_step_runs_in_parallel',
+      });
+
+      const { stepAResult, stepBResult } = returnValue;
+      const stepADuration = stepAResult.endedAt - stepAResult.startedAt;
+      const stepStartDelta = stepBResult.startedAt - stepAResult.startedAt;
+
+      expect(stepAResult.label).toBe('A');
+      expect(stepBResult.label).toBe('B');
+      expect(stepADuration).toBeGreaterThanOrEqual(9_000);
+      expect(
+        stepBResult.startedAt,
+        'stepB should start before stepA finishes, proving hook.getConflict() can continue independently of other steps'
+      ).toBeLessThan(stepAResult.endedAt);
+      expect(
+        stepStartDelta,
+        'stepB should start roughly alongside stepA instead of only after stepA finishes'
+      ).toBeLessThan(8_000);
+    }
+  );
+
+  test(
+    'hookGetConflictWorkflow - hook.getConflict() resolves with the conflicting run when token is already registered',
+    { timeout: 60_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      const run1 = await start(await e2e('hookCleanupTestWorkflow'), [
+        token,
+        customData,
+      ]);
+
+      const hook = await waitForHook(token, { runId: run1.runId });
+
+      const run2 = await start(await e2e('hookGetConflictWorkflow'), [
+        token,
+        customData,
+      ]);
+
+      // The conflicting run detects the conflict via `hook.getConflict()`
+      // and completes successfully instead of failing. The resolved Run
+      // identifies the active owner and exposes durable step-backed
+      // accessors like `status`.
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toEqual({
+        token,
+        customData,
+        conflictRunId: run1.runId,
+        conflictStatus: 'running',
+        hookGetConflictTestData: 'hook_token_conflict_detected',
+      });
+
+      const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
+      expect(run2Data.status).toBe('completed');
+
+      await resumeHook(hook, {
+        message: 'ready-conflict-holder',
+        customData: (hook.metadata as any)?.customData,
+      });
+
+      const run1Result = await run1.returnValue;
+      expect(run1Result).toMatchObject({
+        message: 'ready-conflict-holder',
+        customData,
+        hookCleanupTestData: 'workflow_completed',
+      });
     }
   );
 
@@ -2753,8 +3049,10 @@ describe('e2e', () => {
         const returnValue = await run.returnValue;
 
         // The workflow races 3 parallel long steps against a 3s sleep.
-        // The sleep wins, so the workflow returns timed out status.
+        // The sleep wins, so the workflow returns timed out status after all
+        // in-flight steps observe the abort and settle through the abort path.
         expect(returnValue.status).toBe('timed out');
+        expect(returnValue.results).toEqual(['aborted', 'aborted', 'aborted']);
       }
     );
 
