@@ -3,6 +3,7 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
+import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
@@ -10,6 +11,7 @@ import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { CopyButton } from '../new-trace-viewer/components/copy-button';
 import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
+import { ContextCardProvider } from '../ui/context-card';
 import {
   DecryptClickContext,
   RunClickContext,
@@ -339,15 +341,7 @@ const parseDateValue = (value: unknown): Date | null => {
 };
 
 const formatLocalMillisecondTime = (date: Date): string =>
-  date.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-    fractionalSecondDigits: 3,
-  });
+  format(date, 'MMM dd HH:mm:ss.SS OO').toUpperCase();
 
 export const localMillisecondTime = (value: unknown): string => {
   const date = parseDateValue(value);
@@ -355,7 +349,6 @@ export const localMillisecondTime = (value: unknown): string => {
     return '-';
   }
 
-  // e.g. 12/17/2025, 9:08:55.182 AM
   return formatLocalMillisecondTime(date);
 };
 
@@ -846,113 +839,117 @@ export const AttributePanel = ({
     : outerDecryptCtx;
 
   return (
-    <RunClickContext.Provider value={onRunClick}>
-      <StreamClickContext.Provider value={onStreamClick}>
-        <DecryptClickContext.Provider value={decryptValue}>
-          {visibleBasicAttributes.length > 0 && (
-            <div className="flex flex-col overflow-hidden divide-y divide-gray-alpha-400 mb-3">
-              {orderedBasicAttributes.map((attribute) => {
-                const displayValue = attributeToDisplayFn[
-                  attribute as keyof typeof attributeToDisplayFn
-                ]?.(displayData[attribute as keyof typeof displayData]);
-                const isModuleSpecifier = attribute === 'moduleSpecifier';
-                const isCopyableBasicAttribute =
-                  copyableBasicAttributes.has(attribute as AttributeKey) &&
-                  typeof displayValue === 'string';
-                const moduleSpecifierValue =
-                  typeof displayValue === 'string'
-                    ? displayValue
-                    : String(displayValue ?? displayData.moduleSpecifier ?? '');
+    <ContextCardProvider>
+      <RunClickContext.Provider value={onRunClick}>
+        <StreamClickContext.Provider value={onStreamClick}>
+          <DecryptClickContext.Provider value={decryptValue}>
+            {visibleBasicAttributes.length > 0 && (
+              <div className="flex flex-col overflow-hidden divide-y divide-gray-alpha-400 mb-3">
+                {orderedBasicAttributes.map((attribute) => {
+                  const displayValue = attributeToDisplayFn[
+                    attribute as keyof typeof attributeToDisplayFn
+                  ]?.(displayData[attribute as keyof typeof displayData]);
+                  const isModuleSpecifier = attribute === 'moduleSpecifier';
+                  const isCopyableBasicAttribute =
+                    copyableBasicAttributes.has(attribute as AttributeKey) &&
+                    typeof displayValue === 'string';
+                  const moduleSpecifierValue =
+                    typeof displayValue === 'string'
+                      ? displayValue
+                      : String(
+                          displayValue ?? displayData.moduleSpecifier ?? ''
+                        );
 
-                return (
-                  <div
-                    className="flex items-center justify-between py-2"
-                    key={attribute}
-                  >
-                    <span className="text-label-14 text-gray-900">
-                      {getAttributeDisplayName(attribute)}
-                    </span>
-                    {isModuleSpecifier ? (
-                      <button
-                        type="button"
-                        className="min-w-0 max-w-[70%] truncate text-right text-label-13 font-mono"
-                        style={{
-                          color: 'var(--ds-gray-1000)',
-                          background: 'transparent',
-                          border: 'none',
-                          padding: 0,
-                        }}
-                        title={moduleSpecifierValue}
-                        onClick={() =>
-                          handleCopyModuleSpecifier(moduleSpecifierValue)
-                        }
-                      >
-                        {moduleSpecifierValue}
-                      </button>
-                    ) : isCopyableBasicAttribute ? (
-                      <div
-                        className="flex min-w-0 max-w-[70%] items-center justify-end gap-1 text-right text-[13px] font-mono"
-                        style={{
-                          color: 'var(--ds-gray-1000)',
-                        }}
-                        title={displayValue}
-                      >
-                        <MiddleTruncate
-                          value={displayValue}
-                          className="flex-1"
-                        />
-                        <CopyButton
-                          copyText={displayValue}
-                          ariaLabel={`Copy ${getAttributeDisplayName(attribute)}`}
-                          className="shrink-0 -mr-1"
-                        />
-                      </div>
-                    ) : (
-                      <span className="text-right text-label-13 font-mono">
-                        {displayValue}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-              {isLoading && resource === 'sleep' && !displayData.resumeAt && (
-                <div className="py-1">
-                  <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                    <span
-                      className="text-[14px] first-letter:uppercase"
-                      style={{ color: 'var(--ds-gray-700)' }}
+                  return (
+                    <div
+                      className="flex items-center justify-between py-2"
+                      key={attribute}
                     >
-                      resumeAt
-                    </span>
-                    <Skeleton className="h-4 w-[55%]" />
+                      <span className="text-label-14 text-gray-900">
+                        {getAttributeDisplayName(attribute)}
+                      </span>
+                      {isModuleSpecifier ? (
+                        <button
+                          type="button"
+                          className="min-w-0 max-w-[70%] truncate text-right text-label-13 font-mono"
+                          style={{
+                            color: 'var(--ds-gray-1000)',
+                            background: 'transparent',
+                            border: 'none',
+                            padding: 0,
+                          }}
+                          title={moduleSpecifierValue}
+                          onClick={() =>
+                            handleCopyModuleSpecifier(moduleSpecifierValue)
+                          }
+                        >
+                          {moduleSpecifierValue}
+                        </button>
+                      ) : isCopyableBasicAttribute ? (
+                        <div
+                          className="flex min-w-0 max-w-[70%] items-center justify-end gap-1 text-right text-[13px] font-mono"
+                          style={{
+                            color: 'var(--ds-gray-1000)',
+                          }}
+                          title={displayValue}
+                        >
+                          <MiddleTruncate
+                            value={displayValue}
+                            className="flex-1"
+                          />
+                          <CopyButton
+                            copyText={displayValue}
+                            ariaLabel={`Copy ${getAttributeDisplayName(attribute)}`}
+                            className="shrink-0 -mr-1"
+                          />
+                        </div>
+                      ) : (
+                        <span className="text-right text-label-13 font-mono">
+                          {displayValue}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+                {isLoading && resource === 'sleep' && !displayData.resumeAt && (
+                  <div className="py-1">
+                    <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                      <span
+                        className="text-[14px] first-letter:uppercase"
+                        style={{ color: 'var(--ds-gray-700)' }}
+                      >
+                        resumeAt
+                      </span>
+                      <Skeleton className="h-4 w-[55%]" />
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
-          {error ? (
-            <ErrorCard
-              title="Failed to load resource details"
-              details={error.message}
-              className="my-4"
-            />
-          ) : hasExpired ? (
-            <ExpiredDataMessage />
-          ) : resolvedAttributes.length > 0 ? (
-            <>
-              {resolvedAttributes.map((attribute) => (
-                <AttributeBlock
-                  isLoading={isLoading}
-                  key={attribute}
-                  attribute={attribute}
-                  value={displayData[attribute as keyof typeof displayData]}
-                  context={displayContext}
-                />
-              ))}
-            </>
-          ) : null}
-        </DecryptClickContext.Provider>
-      </StreamClickContext.Provider>
-    </RunClickContext.Provider>
+                )}
+              </div>
+            )}
+            {error ? (
+              <ErrorCard
+                title="Failed to load resource details"
+                details={error.message}
+                className="my-4"
+              />
+            ) : hasExpired ? (
+              <ExpiredDataMessage />
+            ) : resolvedAttributes.length > 0 ? (
+              <>
+                {resolvedAttributes.map((attribute) => (
+                  <AttributeBlock
+                    isLoading={isLoading}
+                    key={attribute}
+                    attribute={attribute}
+                    value={displayData[attribute as keyof typeof displayData]}
+                    context={displayContext}
+                  />
+                ))}
+              </>
+            ) : null}
+          </DecryptClickContext.Provider>
+        </StreamClickContext.Provider>
+      </RunClickContext.Provider>
+    </ContextCardProvider>
   );
 };

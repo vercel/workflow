@@ -555,6 +555,8 @@ export function workflowEntrypoint(
                                   workflowName: runInput.workflowName,
                                   executionContext: runInput.executionContext,
                                   attributes: runInput.attributes,
+                                  allowReservedAttributes:
+                                    runInput.allowReservedAttributes,
                                 },
                               }
                             : {}),
