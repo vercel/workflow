@@ -15,11 +15,19 @@
  *    `@workflow/core` version that supports it
  * 3. The `getRunCapabilities()` function will automatically include it
  *
+ * ## Adding a new non-format capability
+ *
+ * Some capabilities aren't serialization format prefixes — e.g.
+ * byte-stream wire framing is an envelope around chunks rather than
+ * a content format. For those, add a boolean field to `RunCapabilities`
+ * and an entry in `CAPABILITY_VERSION_TABLE` below.
+ *
  * ## History
  *
  * - `encr` (AES-256-GCM encryption): added in `4.2.0-beta.64`
  *   Commit: 7618ac36 "Wire AES-GCM encryption into serialization layer (#1251)"
  *   https://github.com/vercel/workflow/commit/7618ac36
+ * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.15`
  */
 
 import semver from 'semver';
@@ -38,6 +46,16 @@ export interface RunCapabilities {
    * if encryption is supported, etc.
    */
   supportedFormats: ReadonlySet<SerializationFormatType>;
+
+  /**
+   * Whether the target run can decode wire-framed byte streams. When true,
+   * byte streams (`type: 'bytes'` ReadableStreams passed across boundaries)
+   * are wrapped in a length-prefixed frame envelope on the wire so the
+   * reader can identify chunk boundaries — which enables auto-reconnect
+   * on transient stream errors. When false, byte streams are written as
+   * raw bytes (the legacy format) for compatibility with older runs.
+   */
+  framedByteStreams: boolean;
 }
 
 /**
@@ -56,6 +74,20 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
 ];
 
 /**
+ * Maps non-format capability flags (booleans on `RunCapabilities`) to the
+ * minimum `@workflow/core` version that introduced support for them.
+ */
+const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
+  capability: keyof Omit<RunCapabilities, 'supportedFormats'>;
+  minVersion: string;
+  // TODO(release): verify this matches the actual version that ships byte-stream
+  // framing. If a "Version Packages (beta)" PR merges before this change, bump
+  // to the next beta. A too-low cutoff makes new producers write framed bytes to
+  // consumers that cannot unframe them (silent corruption); too-high merely
+  // delays the optimization (safe).
+}> = [{ capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' }];
+
+/**
  * The set of formats supported by all specVersion 2 runs, regardless of
  * `@workflow/core` version. These are the baseline formats that were present
  * from the start of the specVersion 2 protocol.
@@ -70,13 +102,17 @@ const BASELINE_FORMATS: ReadonlySet<SerializationFormatType> = new Set([
  *
  * When the version is `undefined`, not a string, or not a valid semver string
  * (e.g. very old runs that predate the field, or corrupted metadata),
- * we assume the most conservative capabilities (baseline formats only).
+ * we assume the most conservative capabilities (baseline formats only,
+ * non-format capabilities all `false`).
  */
 export function getRunCapabilities(
   workflowCoreVersion: string | undefined
 ): RunCapabilities {
   if (!workflowCoreVersion || !semver.valid(workflowCoreVersion)) {
-    return { supportedFormats: BASELINE_FORMATS };
+    return {
+      supportedFormats: BASELINE_FORMATS,
+      framedByteStreams: false,
+    };
   }
 
   const formats = new Set<SerializationFormatType>(BASELINE_FORMATS);
@@ -87,5 +123,16 @@ export function getRunCapabilities(
     }
   }
 
-  return { supportedFormats: formats };
+  const result: RunCapabilities = {
+    supportedFormats: formats,
+    framedByteStreams: false,
+  };
+
+  for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {
+    if (semver.gte(workflowCoreVersion, minVersion)) {
+      result[capability] = true;
+    }
+  }
+
+  return result;
 }
