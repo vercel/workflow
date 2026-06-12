@@ -15,7 +15,16 @@ import { getWorkflowMetadata } from './get-workflow-metadata.js';
 // executes inside the VM, so `Run` here is the plugin-compiled variant
 // whose methods are durable step proxies. The host-side consumer uses it
 // to construct the conflicting run resolved by `hook.getConflict()`.
-(globalThis as any)[WORKFLOW_RUN_CLASS] ??= Run;
+//
+// Guarded on the workflow runtime being present (the VM installs
+// WORKFLOW_CREATE_HOOK on its globalThis before evaluating the bundle):
+// outside the VM this module can still be imported — where `createHook()`
+// just throws — and registering the host-side `Run` there would both
+// mutate the host global and expose a class whose methods are NOT step
+// proxies.
+if ((globalThis as any)[WORKFLOW_CREATE_HOOK]) {
+  (globalThis as any)[WORKFLOW_RUN_CLASS] ??= Run;
+}
 
 export function createHook<T = any>(options?: HookOptions): Hook<T> {
   // Inside the workflow VM, the hook function is stored in the globalThis object behind a symbol
