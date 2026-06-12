@@ -129,12 +129,13 @@ export async function resumeHook<T = any>(
         // Check the target run's capabilities to ensure we encode the
         // payload in a format the run's deployment can decode. For example,
         // runs created before encryption support was added cannot decode
-        // the 'encr' serialization format.
+        // the 'encr' serialization format, and runs created before
+        // byte-stream framing support cannot decode framed byte streams.
         const rawVersion = workflowRun.executionContext?.workflowCoreVersion;
-        const { supportedFormats } = getRunCapabilities(
+        const capabilities = getRunCapabilities(
           typeof rawVersion === 'string' ? rawVersion : undefined
         );
-        if (!supportedFormats.has(SerializationFormat.ENCRYPTED)) {
+        if (!capabilities.supportedFormats.has(SerializationFormat.ENCRYPTED)) {
           encryptionKey = undefined;
         }
 
@@ -147,7 +148,8 @@ export async function resumeHook<T = any>(
           encryptionKey,
           ops,
           globalThis,
-          v1Compat
+          v1Compat,
+          capabilities.framedByteStreams
         );
         // These payload-stream ops are flushed in the background; the
         // promise handed to waitUntil must never reject (an unconsumed

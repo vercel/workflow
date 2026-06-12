@@ -11,7 +11,6 @@ The `@workflow/vitest` package provides a Vitest plugin and test helpers for run
 
 Returns a Vite plugin array that handles SWC transforms, bundle building, and in-process handler registration automatically.
 
-{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
 
 ```typescript
 import { defineConfig } from "vitest/config";
@@ -24,7 +23,6 @@ export default defineConfig({
 
 Pass a [`WorkflowTestOptions`](#workflowtestoptions) object when your project uses a non-standard layout — for example, a monorepo where `workflows/` does not live at the Vitest config's directory, or when the default `.workflow-data` / `.workflow-vitest` output locations need to move. The plugin forwards these paths to `buildWorkflowTests()` and `setupWorkflowTests()` through Vitest's per-project provided context, so each Vitest workspace project stays isolated.
 
-{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
 
 ```typescript
 import { defineConfig } from "vitest/config";
@@ -54,7 +52,6 @@ export default defineConfig({
 
 Builds workflow and step bundles to disk. Called automatically by the `workflow()` plugin in `globalSetup`. Use directly only for [manual setup](/docs/testing#manual-setup).
 
-{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
 
 ```typescript
 import { buildWorkflowTests } from "@workflow/vitest";
@@ -76,7 +73,6 @@ Sets up an in-process workflow runtime in each test worker. Imports pre-built bu
 
 Called automatically by the `workflow()` plugin in `setupFiles`. Use directly only for [manual setup](/docs/testing#manual-setup).
 
-{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
 
 ```typescript
 import { beforeAll, afterAll } from "vitest";
@@ -118,7 +114,6 @@ Tears down the workflow test world. Clears the global world and closes the Local
 
 Polls the event log until the workflow has a pending `sleep()` call — one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
 
-{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
 
 ```typescript
 import { waitForSleep } from "@workflow/vitest"; // [!code highlight]
@@ -147,7 +142,6 @@ await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlig
 
 Polls the hook list and event log until a hook matching the optional `token` filter exists that hasn't been received yet. Returns the matching hook object.
 
-{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
 
 ```typescript
 import { waitForHook } from "@workflow/vitest"; // [!code highlight]

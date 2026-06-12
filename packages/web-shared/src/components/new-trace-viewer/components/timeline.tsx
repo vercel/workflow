@@ -19,6 +19,7 @@ import {
   getSpanDurationMs,
 } from '../utils';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
+import styles from './timeline.module.css';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,6 +34,7 @@ const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   retrying: 'bg-gray-400 border border-gray-500',
   waiting: 'bg-gray-400 border border-gray-500',
   running: 'bg-blue-200 border border-blue-500',
+  completed: 'bg-blue-200 border border-blue-500',
   failed: 'bg-red-200 border border-red-500',
   succeeded: 'bg-green-200 border border-green-500',
   sleeping: 'bg-gray-400 border border-gray-500',
@@ -43,6 +45,15 @@ const TIMELINE_INSET_STYLE: CSSProperties = {
   left: TIMELINE_PADDING_PX,
   right: TIMELINE_PADDING_PX,
 };
+
+const ACTIVE_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
+  'running',
+  'received',
+]);
+
+function RunningStripes(): ReactNode {
+  return <div aria-hidden className={styles.runningStripes} />;
+}
 
 // ---------------------------------------------------------------------------
 // Bar geometry
@@ -222,25 +233,57 @@ function PlainBar({
   );
 }
 
+function LeadInConnector({
+  leftPct,
+  widthPct,
+  label,
+}: {
+  leftPct: number;
+  widthPct: number;
+  label: string | null;
+}): ReactNode {
+  return (
+    <div
+      className="absolute top-1/2 h-6 -translate-y-1/2"
+      style={{
+        left: `calc(${leftPct}% + 0.5px)`,
+        width: `calc(${widthPct}% - 1px)`,
+      }}
+    >
+      <div className="absolute left-0 top-1/2 h-4 w-px -translate-y-1/2 bg-gray-500" />
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-gray-500" />
+      {label ? <DurationLabel label={label} /> : null}
+    </div>
+  );
+}
+
 function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
   return (
     <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
+        if (seg.status === 'queued') {
+          const leadInLabel = formatDurationPrecise(seg.fullDurationMs);
+          const showLeadInLabel =
+            seg.pixelWidth >= Math.max(40, leadInLabel.length * 6 + 12);
+          return (
+            <LeadInConnector
+              key={i}
+              leftPct={seg.leftPct}
+              widthPct={seg.widthPct}
+              label={showLeadInLabel ? leadInLabel : null}
+            />
+          );
+        }
+
         const label = formatDurationPrecise(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
         const showLabel = seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
-        // Beef up the queued segment when it's too narrow to read.
-        const isNarrowQueued = seg.status === 'queued' && seg.pixelWidth < 20;
-        const overrideBg = isNarrowQueued ? 'var(--ds-gray-400)' : undefined;
-        const overrideBorder = isNarrowQueued
-          ? 'var(--ds-gray-500)'
-          : undefined;
 
         return (
           <div
             key={i}
             className={cn(
-              'absolute h-full rounded-[0.25rem]',
+              'absolute h-full overflow-hidden rounded-[0.25rem]',
               SEGMENT_CLASSES[seg.status]
             )}
             style={{
@@ -248,10 +291,11 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
               left: `calc(${seg.leftPct}% + 0.5px)`,
               width: `calc(${seg.widthPct}% - 1px)`,
               minWidth: 1,
-              background: overrideBg,
-              borderColor: overrideBorder,
             }}
           >
+            {ACTIVE_SEGMENT_STATUSES.has(seg.status) ? (
+              <RunningStripes />
+            ) : null}
             {showLabel ? <DurationLabel label={label} /> : null}
           </div>
         );

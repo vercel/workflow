@@ -120,6 +120,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
 
+  // Aborted by close(): cancels every pending sleep (delayed deliveries,
+  // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
+  // hostage by a timer and no delivery is attempted against the closed
+  // agent. The resulting AbortError is silently dropped by the
+  // isAbortError check in the delivery catch handler.
+  const closeController = new AbortController();
+  const closeSignal = closeController.signal;
+
   /**
    * holds inflight messages by idempotency key to ensure
    * that we don't queue the same message multiple times
@@ -159,6 +167,17 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     (async () => {
+      // Honor the caller's requested delivery delay before acquiring a queue
+      // slot. Sleeping outside the semaphore so a delayed message doesn't
+      // hold a worker hostage for its delay window — the worker should be
+      // free to process other (immediate) messages until this one is ready.
+      // VQS-side queues honor delaySeconds at the broker, so this brings
+      // world-local in line with production behavior.
+      if (opts?.delaySeconds && opts.delaySeconds > 0) {
+        const delayMs = Math.min(opts.delaySeconds * 1000, MAX_SAFE_TIMEOUT_MS);
+        await setTimeout(delayMs, undefined, { signal: closeSignal });
+      }
+
       const token = semaphore.tryAcquire();
       if (!token) {
         console.warn(
@@ -221,7 +240,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     timeoutSeconds * 1000,
                     MAX_SAFE_TIMEOUT_MS
                   );
-                  await setTimeout(timeoutMs);
+                  await setTimeout(timeoutMs, undefined, {
+                    signal: closeSignal,
+                  });
                 }
                 continue;
               }
@@ -244,7 +265,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           // VQS uses 5s linear for attempts 1–32, then exponential, but for
           // local dev linear 5s is sufficient — the handler enforces the real
           // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000);
+          await setTimeout(5000, undefined, { signal: closeSignal });
         }
 
         console.error(
@@ -359,6 +380,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       directHandlers.set(prefix, handler);
     },
     async close() {
+      // Idempotent: shutdown paths (CLI signal handlers, test teardown)
+      // may close the queue more than once.
+      if (closeSignal.aborted) return;
+      closeController.abort();
       await httpAgent.close();
     },
   };

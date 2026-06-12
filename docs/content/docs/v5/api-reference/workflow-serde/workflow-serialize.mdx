@@ -6,7 +6,6 @@ A symbol used to define custom serialization for user-defined class instances. T
 
 ## Usage
 
-{/* @expect-error:2351 */}
 
 ```typescript lineNumbers
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
@@ -26,7 +25,7 @@ class Point {
 
 ## API Signature
 
-{/* @skip-typecheck */}
+{/* @skip-typecheck: type-only signature snippet, not compilable code */}
 
 ```typescript
 static [WORKFLOW_SERIALIZE](instance: T): SerializableData
