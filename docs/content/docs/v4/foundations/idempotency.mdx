@@ -100,7 +100,6 @@ The runtime creates the hook atomically. At most one active hook can own `order:
 
 Outside the workflow, try to resume the hook first. If the hook is not registered yet, start the workflow and retry the resume until the new run creates the hook:
 
-{/* @skip-typecheck - depends on processOrder defined in the previous block */}
 ```typescript lineNumbers
 import { resumeHook, start } from "workflow/api";
 import { HookNotFoundError } from "workflow/errors";
@@ -179,25 +178,56 @@ The example above implements **reject the duplicate**: return the owner's `runId
 
 **Adopt the owner's result.** Wait for the active run to finish and return its result, so callers cannot tell which run did the work:
 
-{/* @skip-typecheck - strategy fragment, see processOrder and the step helpers above for full context */}
 ```typescript lineNumbers
-const conflict = await request.getConflict();
-if (conflict) {
-  return (await getOwnerResult(conflict.runId)) as OrderResult; // [!code highlight]
+import { createHook } from "workflow";
+
+type OrderRequest = { confirmed: boolean };
+declare function getOwnerResult(runId: string): Promise<unknown>; // @setup
+declare function processOwnedOrder(orderId: string): Promise<{ status: string }>; // @setup
+
+export async function processOrder(orderId: string) {
+  "use workflow";
+
+  using request = createHook<OrderRequest>({
+    token: `order:${orderId}`,
+  });
+
+  const conflict = await request.getConflict();
+  if (conflict) {
+    // Callers get the same result regardless of which run did the work.
+    return await getOwnerResult(conflict.runId); // [!code highlight]
+  }
+
+  return await processOwnedOrder(orderId);
 }
 ```
 
 **Inspect the owner before deciding.** Branch on the owner's live state:
 
-{/* @skip-typecheck - strategy fragment, see processOrder and the step helpers above for full context */}
 ```typescript lineNumbers
-const conflict = await request.getConflict();
-if (conflict) {
-  const status = await getOwnerStatus(conflict.runId); // [!code highlight]
-  if (status === "running") {
-    return { status: "duplicate" as const, runId: conflict.runId };
+import { createHook } from "workflow";
+
+type OrderRequest = { confirmed: boolean };
+declare function getOwnerStatus(runId: string): Promise<string>; // @setup
+declare function processOwnedOrder(orderId: string): Promise<{ status: string }>; // @setup
+
+export async function processOrder(orderId: string) {
+  "use workflow";
+
+  using request = createHook<OrderRequest>({
+    token: `order:${orderId}`,
+  });
+
+  const conflict = await request.getConflict();
+  if (conflict) {
+    const status = await getOwnerStatus(conflict.runId); // [!code highlight]
+    if (status === "running") {
+      return { status: "duplicate" as const, runId: conflict.runId };
+    }
+    // Owner already reached a terminal state; its hook will be released.
   }
-  // Owner already reached a terminal state; its hook will be released.
+
+  return await processOwnedOrder(orderId);
 }
 ```
 

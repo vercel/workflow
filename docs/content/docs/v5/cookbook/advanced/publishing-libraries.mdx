@@ -288,8 +288,9 @@ async function getWorkflowStepId(): Promise<string | null> { // [!code highlight
 
 A payments utility that uses the current workflow step ID as a Stripe idempotency key when available, and a fresh UUID otherwise:
 
-{/* @skip-typecheck - depends on getWorkflowStepId defined in the previous block */}
 ```typescript lineNumbers
+declare function getWorkflowStepId(): Promise<string | null>; // @setup (defined in the previous block)
+
 export async function processPayment(amount: number, currency: string) {
   const stepId = await getWorkflowStepId();
   const idempotencyKey = stepId ? `payment:${stepId}` : crypto.randomUUID(); // [!code highlight]
