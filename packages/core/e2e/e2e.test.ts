@@ -2096,7 +2096,11 @@ describe('e2e', () => {
       ]);
       await waitForHook(token, { runId: run2.runId, timeoutMs: 60_000 });
 
-      // The superseded owner ends up cancelled.
+      // The superseded owner ends up cancelled — assert via both the
+      // rejected returnValue (also prevents an unhandled rejection from
+      // leaking out of this test) and the inspected run status.
+      const run1Error = await run1.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunCancelledError.is(run1Error)).toBe(true);
       const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
       expect(run1Data.status).toBe('cancelled');
 
