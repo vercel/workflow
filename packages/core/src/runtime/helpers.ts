@@ -20,10 +20,22 @@ import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { EventLogCache } from './event-log-cache.js';
 import { getWorldLazy } from './get-world-lazy.js';
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
+
+const eventLogCaches = new WeakMap<World, EventLogCache>();
+
+function getEventLogCache(world: World): EventLogCache {
+  let cache = eventLogCaches.get(world);
+  if (!cache) {
+    cache = new EventLogCache();
+    eventLogCaches.set(world, cache);
+  }
+  return cache;
+}
 
 /**
  * Pattern for safe workflow names. Only allows alphanumeric characters,
@@ -358,7 +370,7 @@ function recordRequestedEventCursor(
 function appendUniqueEvents(
   target: Event[],
   targetIds: Set<string>,
-  events: Event[]
+  events: readonly Event[]
 ): void {
   for (const event of events) {
     if (!targetIds.has(event.eventId)) {
@@ -401,6 +413,51 @@ function shouldRetryWithoutEventCursor(
   );
 }
 
+function initializeEventLoadState(
+  cache: EventLogCache,
+  runId: string,
+  afterCursor: string | undefined
+): {
+  loadedEvents: Event[];
+  loadedEventIds: Set<string>;
+  cursor: string | null;
+} {
+  const cachedLog = afterCursor === undefined ? cache.get(runId) : undefined;
+  const loadedEvents = cachedLog ? [...cachedLog.events] : [];
+  return {
+    loadedEvents,
+    loadedEventIds: new Set(loadedEvents.map((event) => event.eventId)),
+    cursor: afterCursor ?? cachedLog?.cursor ?? null,
+  };
+}
+
+function retainEventLoad(
+  cache: EventLogCache,
+  runId: string,
+  afterCursor: string | undefined,
+  events: readonly Event[],
+  cursor: string | null,
+  retainedPrefix?: readonly Event[]
+): void {
+  if (afterCursor === undefined) {
+    cache.set(runId, events, cursor);
+    return;
+  }
+
+  if (retainedPrefix === undefined) {
+    return;
+  }
+
+  // Incremental callers already own the replay prefix. Merge the new delta
+  // into that prefix before replacing the warm-cache baseline.
+  const retainedEvents: Event[] = [...retainedPrefix];
+  const retainedEventIds = new Set(
+    retainedEvents.map((event) => event.eventId)
+  );
+  appendUniqueEvents(retainedEvents, retainedEventIds, events);
+  cache.set(runId, retainedEvents, cursor);
+}
+
 /**
  * Loads workflow run events by iterating through all pages of paginated
  * results. Events are returned in chronological (ascending) order for
@@ -414,7 +471,8 @@ function shouldRetryWithoutEventCursor(
  */
 export async function loadWorkflowRunEvents(
   runId: string,
-  afterCursor?: string
+  afterCursor?: string,
+  retainedPrefix?: readonly Event[]
 ): Promise<{ events: Event[]; cursor: string | null }> {
   const incremental = afterCursor !== undefined;
   return trace(
@@ -424,15 +482,19 @@ export async function loadWorkflowRunEvents(
         ...Attribute.WorkflowRunId(runId),
       });
 
-      const loadedEvents: Event[] = [];
-      const loadedEventIds = new Set<string>();
+      const world = await getWorldLazy();
+      const cache = getEventLogCache(world);
+      const {
+        loadedEvents,
+        loadedEventIds,
+        cursor: initialCursor,
+      } = initializeEventLoadState(cache, runId, afterCursor);
       const requestedCursors = new Set<string>();
-      let cursor: string | null = afterCursor ?? null;
+      let cursor = initialCursor;
       let hasMore = true;
       let pagesLoaded = 0;
       let retriedWithoutCursor = false;
 
-      const world = await getWorldLazy();
       const loadStart = Date.now();
       while (hasMore) {
         // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
@@ -515,6 +577,15 @@ export async function loadWorkflowRunEvents(
         ...Attribute.WorkflowEventsCount(loadedEvents.length),
         ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
       });
+
+      retainEventLoad(
+        cache,
+        runId,
+        afterCursor,
+        loadedEvents,
+        cursor,
+        retainedPrefix
+      );
 
       return { events: loadedEvents, cursor };
     }

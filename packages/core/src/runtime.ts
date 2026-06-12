@@ -728,7 +728,8 @@ export function workflowEntrypoint(
                         // Subsequent iteration: fetch only new events since last cursor
                         const loaded = await loadWorkflowRunEvents(
                           runId,
-                          eventsCursor
+                          eventsCursor,
+                          cachedEvents
                         );
                         // Dedupe by eventId: a previous iteration may have
                         // appended a refreshed wait-completion delta before
@@ -849,6 +850,8 @@ export function workflowEntrypoint(
                         // cursor, or if the cursor delta does not include the
                         // wait completion this handler just attempted.
                         if (eventsCursor) {
+                          // Keep this delta out of the warm cache until we
+                          // know it contains every completion attempted above.
                           const loaded = await loadWorkflowRunEvents(
                             runId,
                             eventsCursor

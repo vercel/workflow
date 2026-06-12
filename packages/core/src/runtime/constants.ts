@@ -48,9 +48,18 @@ export const MIN_REPLAY_TIMEOUT_MS = 30_000;
  */
 export const MAX_REPLAY_TIMEOUT_MS = 780_000;
 
+/**
+ * Default bounds for the in-process event-prefix cache. These can be
+ * overridden with `WORKFLOW_EVENT_CACHE_MAX_BYTES` and
+ * `WORKFLOW_EVENT_CACHE_MAX_ENTRIES`.
+ */
+export const EVENT_CACHE_MAX_BYTES = 4 * 1024 * 1024;
+export const EVENT_CACHE_MAX_ENTRIES = 64;
+
 // Track which raw env var values we've already warned about so the warning
 // log only fires once per process (the function may be called many times).
 const warnedReplayTimeoutValues = new Set<string>();
+const warnedEventCacheValues = new Set<string>();
 
 function warnOnce(
   raw: string,
@@ -110,6 +119,71 @@ export function getReplayTimeoutMs(): number {
  */
 export function _resetReplayTimeoutWarnCacheForTests(): void {
   warnedReplayTimeoutValues.clear();
+}
+
+function warnEventCacheOnce(
+  name: string,
+  raw: string,
+  message: string,
+  data: Record<string, unknown>
+): void {
+  const key = `${name}:${raw}`;
+  if (warnedEventCacheValues.has(key)) return;
+  warnedEventCacheValues.add(key);
+  runtimeLogger.warn(message, data);
+}
+
+function getPositiveIntegerEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    warnEventCacheOnce(
+      name,
+      raw,
+      `Ignoring ${name}: not a positive safe integer; using default`,
+      { raw, defaultValue }
+    );
+    return defaultValue;
+  }
+
+  return parsed;
+}
+
+/**
+ * Whether the event-prefix cache is enabled for this invocation.
+ *
+ * Set `WORKFLOW_DISABLE_EVENT_CACHE=1` to force the cold full-load path.
+ */
+export function isEventCacheEnabled(): boolean {
+  return process.env.WORKFLOW_DISABLE_EVENT_CACHE !== '1';
+}
+
+/** Resolve the effective total event-cache byte budget. */
+export function getEventCacheMaxBytes(): number {
+  return getPositiveIntegerEnv(
+    'WORKFLOW_EVENT_CACHE_MAX_BYTES',
+    EVENT_CACHE_MAX_BYTES
+  );
+}
+
+/** Resolve the effective number of cached event-cache entries. */
+export function getEventCacheMaxEntries(): number {
+  return getPositiveIntegerEnv(
+    'WORKFLOW_EVENT_CACHE_MAX_ENTRIES',
+    EVENT_CACHE_MAX_ENTRIES
+  );
+}
+
+/**
+ * Reset event-cache warning state. Test-only — exported so unit tests can
+ * exercise invalid env values repeatedly without shared process state.
+ *
+ * @internal
+ */
+export function _resetEventCacheWarnCacheForTests(): void {
+  warnedEventCacheValues.clear();
 }
 
 // Number of queue delivery attempts to allow before permanently failing a run

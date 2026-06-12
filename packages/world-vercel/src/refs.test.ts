@@ -23,13 +23,21 @@ vi.mock('./utils.js', async () => {
 });
 
 import type { RefDescriptor } from './refs.js';
-import { resolveRefDescriptor } from './refs.js';
+import { RefCache, resolveRefDescriptor } from './refs.js';
+import { createStorage } from './storage.js';
 
 const TEST_RUN_ID = 'wrun_01TEST00000000000000000000';
 const TEST_REF = `s3rf:team_o:prj_p:production:${TEST_RUN_ID}:wf:01TEST`;
 
 function s3RemoteRef(ref: string = TEST_REF): RefDescriptor {
   return { _type: 'RemoteRef', _ref: ref };
+}
+
+function response(bytes: Uint8Array, contentType = 'application/cbor') {
+  return new Response(bytes, {
+    status: 200,
+    headers: { 'content-type': contentType },
+  });
 }
 
 describe('resolveRefDescriptor', () => {
@@ -66,6 +74,24 @@ describe('resolveRefDescriptor', () => {
         status: 200,
         headers: {
           'Content-Type': 'application/octet-stream',
+          'Content-Length': String(payload.byteLength),
+        },
+      })
+    );
+
+    const result = await resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID);
+
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect(Array.from(result as Uint8Array)).toEqual(Array.from(payload));
+  });
+
+  it('recognizes case-insensitive octet-stream content types with parameters', async () => {
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    mockFetch.mockResolvedValueOnce(
+      new Response(payload, {
+        status: 200,
+        headers: {
+          'Content-Type': 'Application/Octet-Stream; charset=binary',
           'Content-Length': String(payload.byteLength),
         },
       })
@@ -329,5 +355,174 @@ describe('resolveRefDescriptor', () => {
 
     expect(result).toEqual(payload);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('recognizes inline octet-stream content types with parameters', async () => {
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    const ref: RefDescriptor = {
+      _type: 'RemoteRef',
+      _ref: 'dbrf:team_o:prj_p:production:wrun_x:wf:01INLINE',
+      _data: Buffer.from(payload).toString('base64'),
+      _ct: 'Application/Octet-Stream; charset=binary',
+    };
+
+    const result = await resolveRefDescriptor(ref, TEST_RUN_ID);
+
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect(Array.from(result as Uint8Array)).toEqual(Array.from(payload));
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('RefCache', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('reuses raw remote ref bytes and decodes a new result for each caller', async () => {
+    mockFetch.mockResolvedValue(response(encode({ value: 'cached' })));
+    const cache = new RefCache();
+
+    const first = (await resolveRefDescriptor(
+      s3RemoteRef('s3rf:one'),
+      'wrun_one',
+      undefined,
+      cache
+    )) as { value: string };
+    first.value = 'mutated';
+    const second = await resolveRefDescriptor(
+      s3RemoteRef('s3rf:one'),
+      'wrun_one',
+      undefined,
+      cache
+    );
+
+    expect(second).toEqual({ value: 'cached' });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('copies cached CBOR bytes before decoding for each caller', async () => {
+    mockFetch.mockResolvedValue(
+      response(encode({ value: new Uint8Array([1, 2, 3]) }))
+    );
+    const cache = new RefCache();
+
+    const first = (await resolveRefDescriptor(
+      s3RemoteRef('s3rf:one'),
+      'wrun_one',
+      undefined,
+      cache
+    )) as { value: Uint8Array };
+    first.value[0] = 9;
+    const second = (await resolveRefDescriptor(
+      s3RemoteRef('s3rf:one'),
+      'wrun_one',
+      undefined,
+      cache
+    )) as { value: Uint8Array };
+
+    expect(Array.from(second.value)).toEqual([1, 2, 3]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('copies cached binary payloads for each caller', async () => {
+    mockFetch.mockResolvedValue(
+      response(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream')
+    );
+    const cache = new RefCache();
+
+    const first = (await resolveRefDescriptor(
+      s3RemoteRef('s3rf:one'),
+      'wrun_one',
+      undefined,
+      cache
+    )) as Uint8Array;
+    first[0] = 9;
+    const second = (await resolveRefDescriptor(
+      s3RemoteRef('s3rf:one'),
+      'wrun_one',
+      undefined,
+      cache
+    )) as Uint8Array;
+
+    expect(Array.from(second)).toEqual([1, 2, 3, 4]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('evicts least recently used ref bytes when its memory budget is reached', async () => {
+    mockFetch.mockImplementation(() =>
+      Promise.resolve(
+        response(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream')
+      )
+    );
+    const cache = new RefCache(7, 2);
+
+    await resolveRefDescriptor(
+      s3RemoteRef('s3rf:a'),
+      'wrun_one',
+      undefined,
+      cache
+    );
+    await resolveRefDescriptor(
+      s3RemoteRef('s3rf:b'),
+      'wrun_one',
+      undefined,
+      cache
+    );
+    await resolveRefDescriptor(
+      s3RemoteRef('s3rf:a'),
+      'wrun_one',
+      undefined,
+      cache
+    );
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('event ref hydration', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('shares immutable ref bytes across repeated event listings on one storage', async () => {
+    const lazyEvent = {
+      eventId: 'evnt_one',
+      runId: 'wrun_one',
+      eventType: 'run_completed',
+      eventDataRef: s3RemoteRef('s3rf:result'),
+      createdAt: new Date().toISOString(),
+      specVersion: 1,
+    };
+    mockFetch.mockImplementation((request: Request | string) => {
+      const url = typeof request === 'string' ? request : request.url;
+      if (url.includes('/refs?')) {
+        return Promise.resolve(
+          response(encode({ output: new Uint8Array([1, 2, 3]) }))
+        );
+      }
+      return Promise.resolve(
+        response(
+          encode({
+            data: [lazyEvent],
+            cursor: 'eid:evnt_one',
+            hasMore: false,
+          })
+        )
+      );
+    });
+    const storage = createStorage();
+
+    await storage.events.list({ runId: 'wrun_one' });
+    await storage.events.list({ runId: 'wrun_one' });
+
+    expect(
+      mockFetch.mock.calls.filter(([request]) => {
+        const url =
+          typeof request === 'string' ? request : (request as Request).url;
+        return url.includes('/refs?');
+      })
+    ).toHaveLength(1);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 });

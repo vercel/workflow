@@ -45,6 +45,8 @@ export function isRefDescriptor(value: unknown): value is RefDescriptor {
  * Limits peak concurrency to avoid overwhelming the server.
  */
 const REF_RESOLVE_CONCURRENCY = 10;
+const REF_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+const REF_CACHE_MAX_ENTRIES = 128;
 
 /**
  * Minimum number of bytes a stored *binary* (octet-stream) ref payload can
@@ -52,54 +54,107 @@ const REF_RESOLVE_CONCURRENCY = 10;
  *
  * The SDK writes every binary ref payload with a 4-byte format prefix (see
  * `FORMAT_PREFIX_LENGTH` / `encodeWithFormatPrefix` in
- * `@workflow/core/src/serialization/format.ts`). A 1–3 byte
+ * `@workflow/core/src/serialization/format.ts`). A 1-3 byte
  * `application/octet-stream` body is therefore never a valid stored binary
- * ref — it indicates a server-side corruption or a transport-layer
- * truncation (proxy drop, edge-cache miss returning a partial 200, abort
- * during streaming, etc.).
- *
- * Without a transport-layer guard, those bytes would flow into the
- * workflow's deterministic event-log replay and fail downstream with
- * `Data too short to contain format prefix: expected at least 4 bytes, got N`.
- * By that point the in-memory event snapshot is already poisoned: the same
- * failure replays deterministically forever, downstream `resumeHook()`
- * calls surface as `Hook not found`, and the run only unsticks when
- * stale-run cleanup terminates the sandbox.
+ * ref.
  *
  * This minimum does NOT apply to `application/cbor` refs: the server still
- * stores non-binary values as raw CBOR (`S3RemoteRef`/Redis refs encode
- * non-`Uint8Array` values and mark them `application/cbor`), and valid CBOR
- * primitives like `true`, `0`, or `null` encode to a single byte.
+ * stores non-binary values as raw CBOR, and valid CBOR primitives like `true`,
+ * `0`, or `null` encode to a single byte.
  */
 const MIN_BINARY_REF_PAYLOAD_BYTES = 4;
+
+interface CachedRefPayload {
+  bytes: Uint8Array;
+  contentType: string;
+}
+
+interface CachedRefEntry extends CachedRefPayload {
+  size: number;
+}
+
+function normalizeContentType(contentType: string): string {
+  return contentType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+}
+
+function isBinaryContentType(contentType: string): boolean {
+  return normalizeContentType(contentType) === 'application/octet-stream';
+}
+
+/**
+ * Bounded process-local storage for immutable remote ref payloads.
+ *
+ * Raw bytes are retained instead of decoded objects so the cache stays bounded
+ * by retained payload bytes and callers cannot mutate an object held in the
+ * cache.
+ */
+export class RefCache {
+  private readonly entries = new Map<string, CachedRefEntry>();
+  private readonly inFlight = new Map<string, Promise<CachedRefPayload>>();
+  private retainedBytes = 0;
+
+  constructor(
+    private readonly maxBytes = REF_CACHE_MAX_BYTES,
+    private readonly maxEntries = REF_CACHE_MAX_ENTRIES
+  ) {}
+
+  async getOrLoad(
+    key: string,
+    load: () => Promise<CachedRefPayload>
+  ): Promise<CachedRefPayload> {
+    const cached = this.entries.get(key);
+    if (cached) {
+      this.entries.delete(key);
+      this.entries.set(key, cached);
+      return cached;
+    }
+
+    const pending = this.inFlight.get(key);
+    if (pending) return pending;
+
+    const request = load()
+      .then((payload) => {
+        this.set(key, payload);
+        return payload;
+      })
+      .finally(() => {
+        this.inFlight.delete(key);
+      });
+    this.inFlight.set(key, request);
+    return request;
+  }
+
+  private set(key: string, payload: CachedRefPayload): void {
+    const size = payload.bytes.byteLength;
+    const existing = this.entries.get(key);
+    if (existing) {
+      this.entries.delete(key);
+      this.retainedBytes -= existing.size;
+    }
+    if (size > this.maxBytes) return;
+
+    while (
+      this.entries.size >= this.maxEntries ||
+      this.retainedBytes + size > this.maxBytes
+    ) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.entries.get(oldestKey);
+      if (!oldest) break;
+      this.entries.delete(oldestKey);
+      this.retainedBytes -= oldest.size;
+    }
+
+    this.entries.set(key, { ...payload, size });
+    this.retainedBytes += size;
+  }
+}
 
 /**
  * Defense-in-depth validation for ref resolve response bodies.
  *
- * Rejects:
- *   1. Zero-byte bodies (never valid for any content type — an empty body
- *      cannot CBOR-decode and is never a valid stored binary payload).
- *   2. `application/octet-stream` bodies shorter than the 4-byte format
- *      prefix the SDK always writes ({@link MIN_BINARY_REF_PAYLOAD_BYTES}).
- *      CBOR bodies are exempt because valid CBOR primitives are 1 byte.
- *   3. Bodies whose actual length disagrees with a well-formed
- *      `Content-Length` header (catches truncation when the server
- *      declared a length we can compare against).
- *
- * A `Content-Length` that is not a plain run of digits (e.g. `"abc"`,
- * `"12junk"`, `"12, 12"`, negative) is treated as absent — surfacing it as
- * a "truncated" error would mask the actual cause. The checks above still
- * defend against truncation in that case.
- *
- * The length comparison is also skipped when the response carries a
- * non-`identity` `Content-Encoding` (e.g. `gzip`, `br`). `fetch`/`undici`
- * transparently decompresses the body but leaves `Content-Length`
- * describing the *encoded* size, so the decompressed `byteLength` would not
- * match the header and a perfectly valid compressed ref would otherwise be
- * rejected as a phantom truncation.
- *
- * Throws {@link WorkflowWorldError} so the runtime retry layer can treat
- * this as a transport-level error instead of poisoning replay.
+ * Rejects empty bodies, truncated binary payloads, and well-formed
+ * `Content-Length` mismatches before the bytes can poison replay.
  */
 function assertValidRefBody(
   buffer: ArrayBuffer,
@@ -123,7 +178,7 @@ function assertValidRefBody(
     span,
   } = ctx;
   const actualLength = buffer.byteLength;
-  const isBinary = contentType.includes('application/octet-stream');
+  const isBinary = isBinaryContentType(contentType);
 
   const throwInvalid = (code: string, message: string): never => {
     const error = new WorkflowWorldError(message, { url, status, code });
@@ -139,8 +194,6 @@ function assertValidRefBody(
     );
   }
 
-  // The 4-byte format-prefix minimum only applies to raw binary payloads.
-  // CBOR refs can legitimately be 1–3 bytes (e.g. the primitives true/0/null).
   if (isBinary && actualLength < MIN_BINARY_REF_PAYLOAD_BYTES) {
     throwInvalid(
       'truncated-ref-body',
@@ -150,20 +203,11 @@ function assertValidRefBody(
 
   if (contentLengthHeader == null) return;
 
-  // Skip the comparison for compressed responses. fetch/undici transparently
-  // decompresses the body but leaves Content-Length describing the encoded
-  // (compressed) size, so the decompressed byteLength legitimately differs
-  // from the header. An absent or `identity` encoding means no transform was
-  // applied, so the lengths are directly comparable.
   if (contentEncodingHeader != null) {
     const encoding = contentEncodingHeader.trim().toLowerCase();
     if (encoding !== '' && encoding !== 'identity') return;
   }
 
-  // Only a plain run of digits is a well-formed Content-Length. parseInt
-  // would happily accept numeric-prefixed garbage ("12junk" -> 12,
-  // "12, 12" -> 12), which could fabricate a phantom mismatch or silently
-  // accept an invalid header. Anything else is treated as absent.
   if (!/^\d+$/.test(contentLengthHeader)) return;
 
   const declaredLength = Number.parseInt(contentLengthHeader, 10);
@@ -182,7 +226,6 @@ function assertValidRefBody(
  * descriptor's `_data` field — no network request is needed.
  *
  * For S3 refs (s3rf:) and Redis refs (kvrf:), a request is made to the
- * `GET /v2/runs/:runId/refs` endpoint on workflow-server which returns
  * raw CBOR or binary bytes.
  *
  * @param descriptor - The ref descriptor to resolve
@@ -192,7 +235,8 @@ function assertValidRefBody(
 export async function resolveRefDescriptor(
   descriptor: RefDescriptor,
   runId: string,
-  config?: APIConfig
+  config?: APIConfig,
+  cache?: RefCache
 ): Promise<unknown> {
   const ref = descriptor._ref;
 
@@ -201,15 +245,41 @@ export async function resolveRefDescriptor(
     if (!descriptor._data) {
       throw new Error(`Inline ref descriptor missing _data field: ${ref}`);
     }
-    const contentType = descriptor._ct ?? 'application/cbor';
+    const contentType = normalizeContentType(
+      descriptor._ct ?? 'application/cbor'
+    );
     const binaryData = Buffer.from(descriptor._data, 'base64');
-    if (contentType === 'application/octet-stream') {
+    if (isBinaryContentType(contentType)) {
       // Buffer is a Uint8Array subclass — return directly to avoid a copy.
       return binaryData;
     }
     // CBOR-encoded data — decode it. Buffer is accepted by cbor-x directly.
     return decode(binaryData);
   }
+
+  const cacheKey = `${runId}\0${ref}`;
+  const payload = cache
+    ? await cache.getOrLoad(cacheKey, () =>
+        fetchRemoteRefPayload(descriptor, runId, config)
+      )
+    : await fetchRemoteRefPayload(descriptor, runId, config);
+
+  if (isBinaryContentType(payload.contentType)) {
+    // Copy cached binary values so consumers cannot alter retained bytes.
+    return cache ? payload.bytes.slice() : payload.bytes;
+  }
+
+  // cbor-x's decoded Uint8Array fields can alias the input bytes, so decode
+  // from a private copy whenever this payload is retained in the cache.
+  return decode(cache ? payload.bytes.slice() : payload.bytes);
+}
+
+async function fetchRemoteRefPayload(
+  descriptor: RefDescriptor,
+  runId: string,
+  config?: APIConfig
+): Promise<CachedRefPayload> {
+  const ref = descriptor._ref;
 
   // Remote refs (s3rf:, kvrf:) — fetch raw bytes from the server.
   // The server returns the raw stored bytes directly (not wrapped in a
@@ -259,11 +329,12 @@ export async function resolveRefDescriptor(
         throw error;
       }
 
-      const contentType = response.headers.get('content-type') || '';
+      const contentType = normalizeContentType(
+        response.headers.get('content-type') || ''
+      );
       const contentLengthHeader = response.headers.get('content-length');
       const contentEncodingHeader = response.headers.get('content-encoding');
       const buffer = await response.arrayBuffer();
-
       assertValidRefBody(buffer, {
         ref,
         url,
@@ -273,14 +344,7 @@ export async function resolveRefDescriptor(
         contentEncodingHeader,
         span,
       });
-
-      if (contentType.includes('application/octet-stream')) {
-        // Raw binary data (e.g., Uint8Array stored by the workflow)
-        return new Uint8Array(buffer);
-      }
-
-      // CBOR-encoded data (the common case for structured values)
-      return decode(new Uint8Array(buffer));
+      return { contentType, bytes: new Uint8Array(buffer) };
     }
   );
 }
@@ -307,7 +371,8 @@ export interface RefWithRunId {
 export async function resolveRefDescriptors(
   refs: RefWithRunId[],
   config?: APIConfig,
-  concurrency?: number
+  concurrency?: number,
+  cache?: RefCache
 ): Promise<unknown[]> {
   if (refs.length === 0) return [];
 
@@ -329,7 +394,9 @@ export async function resolveRefDescriptors(
     // Simple case: if under concurrency limit, resolve all at once
     if (refs.length <= limit) {
       return Promise.all(
-        refs.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
+        refs.map((r) =>
+          resolveRefDescriptor(r.descriptor, r.runId, config, cache)
+        )
       );
     }
 
@@ -340,7 +407,9 @@ export async function resolveRefDescriptors(
     for (let i = 0; i < refs.length; i += limit) {
       const batch = refs.slice(i, i + limit);
       const batchResults = await Promise.all(
-        batch.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
+        batch.map((r) =>
+          resolveRefDescriptor(r.descriptor, r.runId, config, cache)
+        )
       );
       for (let j = 0; j < batchResults.length; j++) {
         results[i + j] = batchResults[j];
