@@ -15,7 +15,13 @@ const STATIC_APP_LINK_FILES = [
   'geistdocs.tsx',
   'app/[lang]/(home)/components/templates/index.tsx',
 ];
-const KNOWN_APP_PATHS = new Set(['/', '/docs', '/cookbook', '/worlds']);
+const KNOWN_APP_PATHS = new Set([
+  '/',
+  '/docs',
+  '/cookbook',
+  '/worlds',
+  '/patterns',
+]);
 
 async function checkLinks() {
   // Pre-fetch all page content and headings
