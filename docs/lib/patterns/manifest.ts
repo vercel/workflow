@@ -557,7 +557,7 @@ export const registryItems: RegistryItem[] = [
           label: 'useChat()',
           url: 'https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat',
         },
-        { label: '"use step"', url: '/docs/api-reference/workflow/use-step' },
+        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
         {
           label: 'defineHook()',
           url: '/docs/api-reference/workflow/define-hook',
@@ -662,9 +662,9 @@ export const registryItems: RegistryItem[] = [
       keyApis: [
         {
           label: '"use workflow"',
-          url: '/docs/api-reference/workflow/use-workflow',
+          url: '/docs/foundations/workflows-and-steps#workflow-functions',
         },
-        { label: '"use step"', url: '/docs/api-reference/workflow/use-step' },
+        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
         {
           label: 'DurableAgent',
           url: '/docs/api-reference/workflow-ai/durable-agent',
@@ -786,9 +786,9 @@ export const registryItems: RegistryItem[] = [
       keyApis: [
         {
           label: '"use workflow"',
-          url: '/docs/api-reference/workflow/use-workflow',
+          url: '/docs/foundations/workflows-and-steps#workflow-functions',
         },
-        { label: '"use step"', url: '/docs/api-reference/workflow/use-step' },
+        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
         {
           label: 'defineHook()',
           url: '/docs/api-reference/workflow/define-hook',
@@ -1276,12 +1276,12 @@ export const registryItems: RegistryItem[] = [
       keyApis: [
         {
           label: '"use workflow"',
-          url: '/docs/api-reference/workflow/use-workflow',
+          url: '/docs/foundations/workflows-and-steps#workflow-functions',
         },
-        { label: '"use step"', url: '/docs/api-reference/workflow/use-step' },
+        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
         {
           label: 'getStepMetadata()',
-          url: '/docs/api-reference/step/get-step-metadata',
+          url: '/docs/api-reference/workflow/get-step-metadata',
         },
         { label: 'start()', url: '/docs/api-reference/workflow-api/start' },
       ],
@@ -1365,7 +1365,7 @@ export const registryItems: RegistryItem[] = [
         },
         {
           label: 'getStepMetadata()',
-          url: '/docs/api-reference/step/get-step-metadata',
+          url: '/docs/api-reference/workflow/get-step-metadata',
         },
         { label: 'sleep()', url: '/docs/api-reference/workflow/sleep' },
       ],
@@ -1442,9 +1442,9 @@ export const registryItems: RegistryItem[] = [
       keyApis: [
         {
           label: '"use workflow"',
-          url: '/docs/api-reference/workflow/use-workflow',
+          url: '/docs/foundations/workflows-and-steps#workflow-functions',
         },
-        { label: '"use step"', url: '/docs/api-reference/workflow/use-step' },
+        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
         {
           label: 'FatalError',
           url: '/docs/api-reference/workflow/fatal-error',
