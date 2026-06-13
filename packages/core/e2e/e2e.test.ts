@@ -1636,7 +1636,10 @@ describe('e2e', () => {
         token,
         15_000,
       ]);
-      await waitForHook(token, { runId: run1.runId });
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
 
       // A duplicate started while the owner holds the token observes the
       // conflict and identifies the owner.
@@ -1698,7 +1701,10 @@ describe('e2e', () => {
         token,
         'owner-marker',
       ]);
-      await waitForHook(token, { runId: run1.runId });
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
 
       // The duplicate suspends on the owner's returnValue.
       const run2 = await start(await e2e('hookAdoptOwnerResultWorkflow'), [
@@ -1759,7 +1765,10 @@ describe('e2e', () => {
         token,
         'owner-input',
       ]);
-      await waitForHook(token, { runId: run1.runId });
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
 
       // The duplicate forwards its own input into the owner's hook
       // instead of doing the work itself.
@@ -1793,13 +1802,20 @@ describe('e2e', () => {
       const run1 = await start(await e2e('hookSupersedeOwnerWorkflow'), [
         token,
       ]);
-      await waitForHook(token, { runId: run1.runId });
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
 
       // Newest-wins: the second run cancels the owner and claims the token.
       const run2 = await start(await e2e('hookSupersedeOwnerWorkflow'), [
         token,
       ]);
-      await waitForHook(token, { runId: run2.runId, timeoutMs: 60_000 });
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run2.runId,
+        60_000
+      );
 
       // The superseded owner ends up cancelled — assert via both the
       // rejected returnValue (also prevents an unhandled rejection from

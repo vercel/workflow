@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getRun, start } from 'workflow/api';
+import { getRun, resumeHook, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -721,6 +721,16 @@ export async function hookClaimOnlyMutexWorkflow(
 }
 
 /**
+ * Awaits the active owner's result via `getRun()` inside a step. On this
+ * channel `getConflict()` resolves with `{ runId }`, so the duplicate
+ * resolves the owning run by id to read its return value.
+ */
+async function adoptOwnerResult(runId: string) {
+  'use step';
+  return await getRun(runId).returnValue;
+}
+
+/**
  * "Adopt the owner's result" strategy: the duplicate run waits for the
  * active owner to finish and returns the owner's result, so callers
  * cannot tell which run did the work.
@@ -735,7 +745,7 @@ export async function hookAdoptOwnerResultWorkflow(
 
   const conflict = await hook.getConflict();
   if (conflict) {
-    const adopted = await conflict.returnValue;
+    const adopted = await adoptOwnerResult(conflict.runId);
     return {
       role: 'duplicate' as const,
       conflictRunId: conflict.runId,
@@ -782,6 +792,16 @@ export async function hookSignalOwnerWorkflow(token: string, message: string) {
 }
 
 /**
+ * Cancels the active owner via `getRun()` inside a step. `getConflict()`
+ * resolves with `{ runId }`, so the superseding run resolves the owner by
+ * id to cancel it before reclaiming the token.
+ */
+async function cancelOwner(runId: string) {
+  'use step';
+  await getRun(runId).cancel();
+}
+
+/**
  * "Supersede the owner" strategy (newest-wins): cancel the active owner
  * and claim the released token. Cancellation disposes the owner's hooks;
  * the retry loop covers the window where disposal has not propagated.
@@ -802,7 +822,7 @@ export async function hookSupersedeOwnerWorkflow(token: string) {
       };
     }
 
-    await conflict.cancel();
+    await cancelOwner(conflict.runId);
   }
 
   throw new Error(`Could not claim ${token} after cancelling the owner`);
