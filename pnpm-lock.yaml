@@ -22,8 +22,8 @@ catalogs:
       specifier: 3.2.0
       version: 3.2.0
     '@vercel/queue':
-      specifier: 0.3.0
-      version: 0.3.0
+      specifier: 0.3.1
+      version: 0.3.1
     '@vitest/coverage-v8':
       specifier: ^4.0.18
       version: 4.0.18
@@ -1334,7 +1334,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.3.0
+        version: 0.3.1
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1380,7 +1380,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.3.0
+        version: 0.3.1
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1487,7 +1487,7 @@ importers:
         version: 3.2.0
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.3.0
+        version: 0.3.1
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -9741,8 +9741,8 @@ packages:
     resolution: {integrity: sha512-4Uk9LOvDPVYqBJGrNDk4fdLte4CmFERXCUJI2y7SRYX1d//dI96Ww7sgKZF4+YDj/YaBXoCZ11AU0HYkVwW9Eg==}
     engines: {node: '>=20.0.0'}
 
-  '@vercel/queue@0.3.0':
-    resolution: {integrity: sha512-TGZlA2GGZtUVR592d5ORAqZXqWqUs7JD8MjazXMv07AxpsbLtUAbCxXOqRj/weoX7j6LrfZfD6cGfd7Llk24/Q==}
+  '@vercel/queue@0.3.1':
+    resolution: {integrity: sha512-6pjdXyNfdCQnj1nyeB1rPtll/XUhmciyeZJD0rpIUUwmcIfR+utDl6+iFvlHvsBdqAVT8UC6ydObT0v+xldfUQ==}
     engines: {node: '>=20.0.0'}
 
   '@vercel/react-router@1.2.6':
@@ -26349,10 +26349,10 @@ snapshots:
       picocolors: 1.1.1
     optional: true
 
-  '@vercel/queue@0.3.0':
+  '@vercel/queue@0.3.1':
     dependencies:
       '@vercel/oidc': 3.2.0
-      minimatch: 10.2.4
+      minimatch: 10.2.5
       mixpart: 0.0.6
       picocolors: 1.1.1
 

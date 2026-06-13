@@ -12,7 +12,7 @@ catalog:
   "@types/node": 22.19.0
   "@vercel/functions": ^3.4.3
   "@vercel/oidc": 3.2.0
-  "@vercel/queue": 0.3.0
+  "@vercel/queue": 0.3.1
   "@vitest/coverage-v8": ^4.0.18
   ai: 6.0.116
   enhanced-resolve: 5.19.0
