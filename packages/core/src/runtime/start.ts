@@ -9,6 +9,7 @@ import {
   isLegacySpecVersion,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -17,7 +18,10 @@ import { getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
-import { dehydrateWorkflowArguments } from '../serialization.js';
+import {
+  dehydrateWorkflowArguments,
+  SerializationFormat,
+} from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
@@ -211,18 +215,23 @@ export async function start<TArgs extends unknown[], TResult>(
       // Worlds that don't expose the `streams` API (e.g. minimal test
       // mocks) can't service health checks, so we skip the probe for them.
       let framedByteStreams: boolean;
+      let targetSupportsCompression: boolean;
       if (deploymentId === currentDeploymentId) {
         framedByteStreams = true;
+        targetSupportsCompression = true;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
+        targetSupportsCompression = false;
       } else {
         const probe = await healthCheck(world, 'workflow', {
           deploymentId,
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
         }).catch(() => undefined);
-        framedByteStreams = getRunCapabilities(
-          probe?.workflowCoreVersion
-        ).framedByteStreams;
+        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
+        framedByteStreams = capabilities.framedByteStreams;
+        targetSupportsCompression = capabilities.supportedFormats.has(
+          SerializationFormat.GZIP
+        );
       }
 
       const ops: Promise<void>[] = [];
@@ -296,6 +305,13 @@ export async function start<TArgs extends unknown[], TResult>(
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
+      // Compress workflow arguments only when the run itself is marked as
+      // possibly containing compressed payloads (specVersion >= 5) AND the
+      // target deployment can decode them (same-deployment, or probed
+      // capability for cross-deployment starts).
+      const compression =
+        targetSupportsCompression &&
+        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -303,7 +319,8 @@ export async function start<TArgs extends unknown[], TResult>(
         ops,
         globalThis,
         v1Compat,
-        framedByteStreams
+        framedByteStreams,
+        compression
       );
 
       const executionContext = {

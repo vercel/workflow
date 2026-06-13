@@ -32,6 +32,8 @@ export const SerializationFormat = {
   DEVALUE_V1: 'devl' as FormatPrefix,
   /** Encrypted payload (inner payload has its own format prefix) */
   ENCRYPTED: 'encr' as FormatPrefix,
+  /** Gzip-compressed payload (inner payload has its own format prefix) */
+  GZIP: 'gzip' as FormatPrefix,
 } as const;
 
 // ---- Serializable Types ----

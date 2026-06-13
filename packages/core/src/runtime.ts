@@ -15,6 +15,7 @@ import {
   getQueueTopicPrefix,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -155,7 +156,13 @@ async function recordFatalRunError({
         eventType: 'run_failed',
         specVersion: SPEC_VERSION_CURRENT,
         eventData: {
-          error: await dehydrateRunError(err, runId, await getEncryptionKey()),
+          error: await dehydrateRunError(
+            err,
+            runId,
+            await getEncryptionKey(),
+            globalThis,
+            (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+          ),
           errorCode,
         },
       },
@@ -418,6 +425,7 @@ export function workflowEntrypoint(
                           workflowStartedAt: bgStartedAt,
                           stepId: incomingStepId,
                           stepName: incomingStepName,
+                          runSpecVersion: bgRun.specVersion,
                         });
                       } finally {
                         replayBudget.resume();
@@ -1017,7 +1025,10 @@ export function workflowEntrypoint(
                                   error: await dehydrateRunError(
                                     suspensionError,
                                     runId,
-                                    encryptionKey
+                                    encryptionKey,
+                                    globalThis,
+                                    (workflowRun?.specVersion ?? 0) >=
+                                      SPEC_VERSION_SUPPORTS_COMPRESSION
                                   ),
                                   errorCode,
                                 },
@@ -1228,6 +1239,7 @@ export function workflowEntrypoint(
                             workflowStartedAt,
                             stepId: inlineStep.correlationId,
                             stepName: inlineStep.stepName,
+                            runSpecVersion: workflowRun.specVersion,
                           });
                         } finally {
                           replayBudget.resume();
@@ -1403,7 +1415,10 @@ export function workflowEntrypoint(
                                 error: await dehydrateRunError(
                                   terminalError,
                                   runId,
-                                  encryptionKey
+                                  encryptionKey,
+                                  globalThis,
+                                  (workflowRun?.specVersion ?? 0) >=
+                                    SPEC_VERSION_SUPPORTS_COMPRESSION
                                 ),
                                 errorCode,
                               },

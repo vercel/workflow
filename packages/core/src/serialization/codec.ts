@@ -54,6 +54,16 @@ export interface CodecOptions {
    * or other mode-specific type revivers.
    */
   extraRevivers?: Record<string, (value: any) => any>;
+
+  /**
+   * Whether to gzip-compress the serialized payload (write side only;
+   * reads always handle both compressed and uncompressed data). Must
+   * only be enabled when the target run supports compressed payloads:
+   * run specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION, and for
+   * cross-deployment writes the target deployment's capabilities (see
+   * `getRunCapabilities` in capabilities.ts). Defaults to `false`.
+   */
+  compression?: boolean;
 }
 
 export interface Codec {

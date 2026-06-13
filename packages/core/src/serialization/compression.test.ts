@@ -1,0 +1,298 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { getRunCapabilities } from '../capabilities.js';
+import { importKey } from '../encryption.js';
+import {
+  dehydrateStepError,
+  hydrateStepError,
+  hydrateStepReturnValue,
+} from '../serialization.js';
+import {
+  hydrateData,
+  hydrateDataWithKey,
+  isCompressedData,
+} from '../serialization-format.js';
+import * as clientModule from './client.js';
+import {
+  COMPRESSION_MIN_BYTES,
+  compress,
+  decompress,
+  isCompressed,
+} from './compression.js';
+import { decrypt } from './encryption.js';
+import {
+  decodeFormatPrefix,
+  encodeWithFormatPrefix,
+  peekFormatPrefix,
+} from './format.js';
+import * as stepModule from './step.js';
+import { SerializationFormat } from './types.js';
+
+const textEncoder = new TextEncoder();
+
+/** A large, highly compressible value (repetitive JSON-ish content). */
+function makeCompressibleValue(items = 200) {
+  return {
+    users: Array.from({ length: items }, (_, i) => ({
+      id: `user_${i}`,
+      name: `Test User Number ${i}`,
+      email: `test.user.${i}@example.com`,
+      role: i % 3 === 0 ? 'admin' : 'member',
+      createdAt: '2026-01-15T10:30:00.000Z',
+      preferences: { theme: 'dark', locale: 'en-US', notifications: true },
+    })),
+  };
+}
+
+function makeKey() {
+  return importKey(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+describe('compression layer (compress/decompress)', () => {
+  it('round-trips a compressible payload through compress/decompress', async () => {
+    const original = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+    ) as Uint8Array;
+
+    const compressed = await compress(original, true);
+    expect(compressed).toBeInstanceOf(Uint8Array);
+    expect(isCompressed(compressed)).toBe(true);
+    expect((compressed as Uint8Array).length).toBeLessThan(original.length);
+
+    const decompressed = (await decompress(compressed)) as Uint8Array;
+    expect(decompressed).toEqual(original);
+  });
+
+  it('passes small payloads through unchanged', async () => {
+    const small = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode('"hello"')
+    ) as Uint8Array;
+    expect(small.length).toBeLessThan(COMPRESSION_MIN_BYTES);
+
+    const result = await compress(small, true);
+    expect(result).toBe(small);
+    expect(isCompressed(result)).toBe(false);
+  });
+
+  it('keeps the original when compression does not help (incompressible data)', async () => {
+    // Random bytes are incompressible — gzip output would be larger.
+    const random = crypto.getRandomValues(new Uint8Array(4096));
+    const prefixed = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      random
+    ) as Uint8Array;
+
+    const result = await compress(prefixed, true);
+    expect(result).toBe(prefixed);
+    expect(isCompressed(result)).toBe(false);
+  });
+
+  it('does not compress when disabled', async () => {
+    const original = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+    ) as Uint8Array;
+
+    const result = await compress(original, false);
+    expect(result).toBe(original);
+  });
+
+  it('decompress passes non-compressed and non-binary data through', async () => {
+    const plain = textEncoder.encode('devl"hello"');
+    expect(await decompress(plain)).toBe(plain);
+    const legacy = [1, 2, 3];
+    expect(await decompress(legacy)).toBe(legacy);
+  });
+});
+
+describe('WORKFLOW_DISABLE_COMPRESSION kill switch', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_DISABLE_COMPRESSION;
+  });
+
+  it('disables write-side compression', async () => {
+    process.env.WORKFLOW_DISABLE_COMPRESSION = '1';
+    const original = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+    ) as Uint8Array;
+
+    const result = await compress(original, true);
+    expect(result).toBe(original);
+  });
+
+  it('does not affect reads of already-compressed data', async () => {
+    const original = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+    ) as Uint8Array;
+    const compressed = await compress(original, true);
+    expect(isCompressed(compressed)).toBe(true);
+
+    process.env.WORKFLOW_DISABLE_COMPRESSION = '1';
+    const decompressed = (await decompress(compressed)) as Uint8Array;
+    expect(decompressed).toEqual(original);
+  });
+});
+
+describe('mode serializers with compression', () => {
+  it('step serialize/deserialize round-trips with compression enabled', async () => {
+    const value = makeCompressibleValue();
+
+    const compressed = await stepModule.serialize(value, undefined, {
+      compression: true,
+    });
+    expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
+
+    const uncompressed = await stepModule.serialize(value, undefined, {});
+    expect(peekFormatPrefix(uncompressed)).toBe(SerializationFormat.DEVALUE_V1);
+    expect((compressed as Uint8Array).length).toBeLessThan(
+      (uncompressed as Uint8Array).length
+    );
+
+    const result = await stepModule.deserialize(compressed, undefined, {});
+    expect(result).toEqual(value);
+  });
+
+  it('client serialize/deserialize round-trips with compression enabled', async () => {
+    const value = makeCompressibleValue();
+    const data = await clientModule.serialize(value, undefined, {
+      compression: true,
+    });
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.GZIP);
+    const result = await clientModule.deserialize(data, undefined, {});
+    expect(result).toEqual(value);
+  });
+
+  it('nests compression inside encryption: encr(gzip(devl))', async () => {
+    const key = await makeKey();
+    const value = makeCompressibleValue();
+
+    const data = await stepModule.serialize(value, key, {
+      compression: true,
+    });
+    // Outer layer must be encryption (encrypted bytes don't compress)
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.ENCRYPTED);
+
+    // White-box: the decrypted inner payload carries the gzip prefix
+    const inner = await decrypt(data, key);
+    expect(peekFormatPrefix(inner)).toBe(SerializationFormat.GZIP);
+    const { payload: deflated } = decodeFormatPrefix(inner);
+    expect(deflated.length).toBeGreaterThan(0);
+
+    // Full round-trip through the public API
+    const result = await stepModule.deserialize(data, key, {});
+    expect(result).toEqual(value);
+  });
+
+  it('deserializes uncompressed data written without compression (backwards compat)', async () => {
+    const value = makeCompressibleValue();
+    const data = await stepModule.serialize(value, undefined, {});
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.DEVALUE_V1);
+    const result = await stepModule.deserialize(data, undefined, {});
+    expect(result).toEqual(value);
+  });
+
+  it('hydrateStepReturnValue (workflow replay path) decompresses step outputs', async () => {
+    const value = makeCompressibleValue();
+    const data = await stepModule.serialize(value, undefined, {
+      compression: true,
+    });
+    const result = await hydrateStepReturnValue(data, 'wrun_test', undefined);
+    expect(result).toEqual(value);
+  });
+
+  it('small values stay uncompressed even with compression enabled', async () => {
+    const data = await stepModule.serialize({ ok: true }, undefined, {
+      compression: true,
+    });
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.DEVALUE_V1);
+  });
+});
+
+describe('dehydrateStepError with compression', () => {
+  it('compresses large errors and round-trips through hydrateStepError', async () => {
+    const error = new Error('boom');
+    // Inflate the stack to push the payload over the compression threshold
+    error.stack = `Error: boom\n${'    at someVeryLongFunctionName (/app/node_modules/some-package/dist/index.js:123:45)\n'.repeat(50)}`;
+
+    const data = await dehydrateStepError(
+      error,
+      'wrun_test',
+      undefined,
+      [],
+      globalThis,
+      true
+    );
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.GZIP);
+
+    const hydrated = (await hydrateStepError(
+      data,
+      'wrun_test',
+      undefined
+    )) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.message).toBe('boom');
+    expect(hydrated.stack).toBe(error.stack);
+  });
+});
+
+describe('o11y hydration of compressed payloads', () => {
+  it('hydrateData (sync, Node) decompresses gzip payloads', async () => {
+    const value = makeCompressibleValue();
+    const data = await stepModule.serialize(value, undefined, {
+      compression: true,
+    });
+    expect(isCompressedData(data)).toBe(true);
+    const hydrated = hydrateData(data, {});
+    expect(hydrated).toEqual(value);
+  });
+
+  it('hydrateDataWithKey decompresses encrypted + compressed payloads', async () => {
+    const key = await makeKey();
+    const value = makeCompressibleValue();
+    const data = await stepModule.serialize(value, key, {
+      compression: true,
+    });
+    const hydrated = await hydrateDataWithKey(data, {}, key);
+    expect(hydrated).toEqual(value);
+  });
+
+  it('hydrateDataWithKey decompresses unencrypted compressed payloads', async () => {
+    const value = makeCompressibleValue();
+    const data = await stepModule.serialize(value, undefined, {
+      compression: true,
+    });
+    const hydrated = await hydrateDataWithKey(data, {}, undefined);
+    expect(hydrated).toEqual(value);
+  });
+});
+
+describe('run capabilities for gzip', () => {
+  it('supports gzip for core versions >= 5.0.0-beta.16', () => {
+    expect(
+      getRunCapabilities('5.0.0-beta.16').supportedFormats.has(
+        SerializationFormat.GZIP
+      )
+    ).toBe(true);
+  });
+
+  it('does not support gzip for older core versions', () => {
+    for (const version of ['5.0.0-beta.15', '4.2.1', '4.0.0']) {
+      expect(
+        getRunCapabilities(version).supportedFormats.has(
+          SerializationFormat.GZIP
+        )
+      ).toBe(false);
+    }
+  });
+
+  it('assumes no gzip support when the version is unknown', () => {
+    expect(
+      getRunCapabilities(undefined).supportedFormats.has(
+        SerializationFormat.GZIP
+      )
+    ).toBe(false);
+  });
+});

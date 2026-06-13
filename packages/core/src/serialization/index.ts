@@ -34,6 +34,14 @@ export {
   type EncryptionKeyParam,
 } from './encryption.js';
 
+// Re-export composable compression
+export {
+  compress,
+  decompress,
+  isCompressed,
+  COMPRESSION_MIN_BYTES,
+} from './compression.js';
+
 // Re-export mode-specific modules as namespaces
 import * as workflow from './workflow.js';
 import * as step from './step.js';

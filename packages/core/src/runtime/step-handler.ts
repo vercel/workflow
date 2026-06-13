@@ -15,6 +15,7 @@ import {
   getQueueTopicPrefix,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type Step,
   StepInvokePayloadSchema,
 } from '@workflow/world';
@@ -224,6 +225,14 @@ function createStepHandler(namespace?: string) {
             // - retryAfter timestamp reached (returns 425 with Retry-After header)
             // - Workflow still active (returns 410 if completed)
             let step!: Step;
+            // Gate payload compression on the step entity's specVersion
+            // (stamped by the same-deployment orchestrator that created the
+            // step, so spec >= 5 implies every reader of this run's payloads
+            // understands the 'gzip' format). Returns false on the early
+            // failure paths where step_started didn't return an entity.
+            const compressionForStep = () =>
+              ((step as Step | undefined)?.specVersion ?? 0) >=
+              SPEC_VERSION_SUPPORTS_COMPRESSION;
             try {
               const startResult = await world.events.create(
                 workflowRunId,
@@ -360,7 +369,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         err,
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -460,7 +472,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         wrappedError,
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -527,7 +542,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         new FatalError(errorMessage),
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -666,7 +684,8 @@ function createStepHandler(namespace?: string) {
                       ops,
                       globalThis,
                       false,
-                      true
+                      true,
+                      compressionForStep()
                     );
                     const durationMs = Date.now() - startTime;
                     dehydrateSpan?.setAttributes({
@@ -777,7 +796,10 @@ function createStepHandler(namespace?: string) {
                         error: await dehydrateStepError(
                           effectiveErr,
                           workflowRunId,
-                          encryptionKey
+                          encryptionKey,
+                          [],
+                          globalThis,
+                          compressionForStep()
                         ),
                       },
                     },
@@ -862,7 +884,10 @@ function createStepHandler(namespace?: string) {
                           error: await dehydrateStepError(
                             wrappedError,
                             workflowRunId,
-                            encryptionKey
+                            encryptionKey,
+                            [],
+                            globalThis,
+                            compressionForStep()
                           ),
                         },
                       },
@@ -931,7 +956,10 @@ function createStepHandler(namespace?: string) {
                           error: await dehydrateStepError(
                             err,
                             workflowRunId,
-                            encryptionKey
+                            encryptionKey,
+                            [],
+                            globalThis,
+                            compressionForStep()
                           ),
                           ...(RetryableError.is(err) && {
                             retryAfter: err.retryAfter,

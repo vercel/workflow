@@ -886,7 +886,10 @@ describe('step-handler fatal vs retryable behavior', () => {
     expect(dehydrateStepError).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'FatalError', fatal: true }),
       'wrun_test123',
-      undefined
+      undefined,
+      [],
+      globalThis,
+      expect.any(Boolean)
     );
   });
 

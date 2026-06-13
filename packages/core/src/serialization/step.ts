@@ -8,6 +8,7 @@
 import { SerializationError } from '@workflow/errors';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
+import { compress, decompress } from './compression.js';
 import {
   type CryptoKey,
   decrypt as decryptData,
@@ -31,7 +32,9 @@ export async function serialize(
       SerializationFormat.DEVALUE_V1,
       payload
     ) as Uint8Array;
-    return encryptData(prefixed, encryptionKey);
+    // Compress before encrypting — encrypted bytes don't compress.
+    const compressed = await compress(prefixed, options?.compression === true);
+    return encryptData(compressed, encryptionKey);
   } catch (error) {
     rethrowIfRuntimeError(error);
     const { message, hint } = formatSerializationError('step value', error);
@@ -47,7 +50,7 @@ export async function deserialize(
   encryptionKey?: CryptoKey,
   options?: CodecOptions
 ): Promise<unknown> {
-  const decrypted = await decryptData(data, encryptionKey);
+  const decrypted = await decompress(await decryptData(data, encryptionKey));
 
   if (!(decrypted instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {

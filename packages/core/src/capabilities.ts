@@ -28,6 +28,7 @@
  *   Commit: 7618ac36 "Wire AES-GCM encryption into serialization layer (#1251)"
  *   https://github.com/vercel/workflow/commit/7618ac36
  * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.15`
+ * - `gzip` (gzip payload compression): added in `5.0.0-beta.16`
  */
 
 import semver from 'semver';
@@ -68,6 +69,12 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
   minVersion: string;
 }> = [
   { format: SerializationFormat.ENCRYPTED, minVersion: '4.2.0-beta.64' },
+  // TODO(release): verify this matches the actual version that ships gzip
+  // payload compression. If a "Version Packages (beta)" PR merges before this
+  // change, bump to the next beta. A too-low cutoff makes new producers write
+  // compressed payloads to consumers that cannot decompress them; too-high
+  // merely delays the optimization (safe).
+  { format: SerializationFormat.GZIP, minVersion: '5.0.0-beta.16' },
   // Future entries:
   // { format: SerializationFormat.CBOR, minVersion: '5.x.y' },
   // { format: SerializationFormat.ENCRYPTED_V2, minVersion: '5.x.y' },
