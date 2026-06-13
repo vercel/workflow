@@ -15,7 +15,7 @@ catalog:
   "@vercel/queue": 0.3.0
   "@vitest/coverage-v8": ^4.0.18
   ai: 6.0.116
-  esbuild: ^0.27.3
+  esbuild: ^0.28.1
   nitro: 3.0.1-alpha.1
   semver: 7.7.4
   typescript: ^5.9.3
@@ -36,3 +36,5 @@ minimumReleaseAgeExclude:
   - 'turbo'
   - '@vercel/*'
   - '@workflow/*'
+  - 'esbuild'
+  - '@esbuild/*'
