@@ -15,6 +15,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
 import { start } from './start.js';
@@ -514,7 +515,11 @@ describe('start', () => {
       );
     });
 
-    it('should throw WorkflowRuntimeError when "latest" is used with a World that does not implement resolveLatestDeploymentId', async () => {
+    it('should warn and fall back to the current deployment ID when "latest" is used with a World that does not implement resolveLatestDeploymentId', async () => {
+      const warnSpy = vi
+        .spyOn(runtimeLogger, 'warn')
+        .mockImplementation(() => {});
+
       setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
@@ -522,15 +527,35 @@ describe('start', () => {
         // No resolveLatestDeploymentId
       } as any);
 
-      await expect(
-        start(validWorkflow, [], { deploymentId: 'latest' })
-      ).rejects.toThrow(WorkflowRuntimeError);
+      // Should not throw — 'latest' is a no-op in worlds without atomic
+      // deployments.
+      await start(validWorkflow, [], { deploymentId: 'latest' });
 
-      await expect(
-        start(validWorkflow, [], { deploymentId: 'latest' })
-      ).rejects.toThrow(
-        "deploymentId 'latest' requires a World that implements resolveLatestDeploymentId()"
+      // It should warn that 'latest' had no effect in this world.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("deploymentId: 'latest' has no effect"),
+        expect.objectContaining({ currentDeploymentId: 'deploy_123' })
       );
+
+      // The run should fall back to the current deployment ID in both the
+      // run_created event and the queue call.
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          eventData: expect.objectContaining({
+            deploymentId: 'deploy_123',
+          }),
+        }),
+        expect.anything()
+      );
+      expect(mockQueue).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Object),
+        expect.objectContaining({ deploymentId: 'deploy_123' })
+      );
+
+      warnSpy.mockRestore();
     });
 
     it('should not call resolveLatestDeploymentId when a normal deploymentId is provided', async () => {

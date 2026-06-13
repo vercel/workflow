@@ -100,6 +100,8 @@ const run = await start(myWorkflow, ["arg1", "arg2"], { // [!code highlight]
 
 <Callout type="info">
 The `deploymentId` option is currently a Vercel-specific feature. Other Worlds may implement this option differently to match their own deployment runtimes, and the World spec may rename it from `deploymentId` to `version` in a future SDK version. On Vercel, `"latest"` resolves to the most recent deployment matching your current environment — the same production target for production deployments, or the same git branch for preview deployments.
+
+In Worlds without atomic, immutable deployments (such as local development or self-hosted Postgres), there is no notion of multiple deployments to resolve between, so `deploymentId: "latest"` has no effect: the SDK logs a warning and the run targets the current deployment. This means a workflow that opts into `"latest"` on Vercel still runs unchanged in local development.
 </Callout>
 
 <Callout type="warn">
