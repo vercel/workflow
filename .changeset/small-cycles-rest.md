@@ -4,4 +4,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Bump @vercel/queues package, which adds native retries for 429s and ECONNRESET
+Update @vercel/queues from 0.3.0 to 0.3.1, which adds native retries for 429s and ECONNRESET
