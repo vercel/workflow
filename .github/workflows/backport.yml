@@ -18,10 +18,14 @@ concurrency: backport-stable
 
 # AI model used by every opencode invocation in this workflow. The
 # `vercel/` provider prefix is added at each use site, so this should
-# be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-4-8`).
+# be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-4.8`).
+# The model slug must match an id the Vercel AI Gateway exposes (see
+# https://ai-gateway.vercel.sh/v1/models) — note the dot in the version
+# (`claude-opus-4.8`, not `claude-opus-4-8`), or opencode fails with a
+# `ProviderModelNotFoundError`.
 # Manual `workflow_dispatch` runs may override this via the `model` input.
 env:
-  AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-4-8' }}
+  AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-4.8' }}
 
 jobs:
   backport:
