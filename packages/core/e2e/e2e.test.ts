@@ -1583,7 +1583,11 @@ describe('e2e', () => {
         customData,
       ]);
 
-      const hook = await waitForHook(token, { runId: run1.runId });
+      const hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+      assert(hook, 'Expected hook to belong to run1');
 
       const run2 = await start(await e2e('hookGetConflictWorkflow'), [
         token,
