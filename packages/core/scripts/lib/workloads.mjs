@@ -1,23 +1,14 @@
-// Benchmark: serialized payload sizes with and without gzip compression.
+// Shared real-world-style workloads for the compression benchmarks.
 //
-// Measures the exact bytes the serialization layer hands to the World
-// storage backends (S3/DynamoDB refs for world-vercel, bytea columns for
-// world-postgres, JSON files for world-local) for a set of real-world-style
-// workloads, with compression off vs on.
+// Used by both `benchmark-compression-size.mjs` (storage bytes) and
+// `benchmark-compression-cpu.mjs` (serialize/deserialize CPU cost) so the
+// two benchmarks measure the exact same payloads and stay comparable.
 //
-// Usage (from packages/core, after `pnpm build`):
-//   node scripts/benchmark-compression.mjs
-//
-// Note: backends that store binary as base64 (DynamoDB inline refs,
-// world-local JSON files) amplify every byte by 4/3, so the absolute
-// savings there are ~33% larger than the raw numbers below.
+// All generators are deterministic (seeded PRNG) so benchmark runs are
+// reproducible and diffable across commits / algorithms.
 
-import * as step from '../dist/serialization/step.js';
-
-const encoder = new TextEncoder();
-
-// Deterministic PRNG (xorshift32) so benchmark runs are reproducible.
-function makeRng(seed = 0x9e3779b9) {
+// Deterministic PRNG (xorshift32).
+export function makeRng(seed = 0x9e3779b9) {
   let state = seed;
   return () => {
     state ^= state << 13;
@@ -33,7 +24,7 @@ const VOCAB =
   );
 
 /** Generate plausible, non-repetitive English-ish text deterministically. */
-function makeText(rng, words) {
+export function makeText(rng, words) {
   const out = [];
   let sentenceLen = 0;
   for (let i = 0; i < words; i++) {
@@ -51,12 +42,8 @@ function makeText(rng, words) {
   return out.join(' ');
 }
 
-// ---------------------------------------------------------------------------
-// Real-world-style workloads
-// ---------------------------------------------------------------------------
-
 /** AI agent chat history — the canonical DurableAgent workload. */
-function aiChatHistory(messages = 60) {
+export function aiChatHistory(messages = 60) {
   const rng = makeRng(0xc0ffee);
   const out = [];
   for (let i = 0; i < messages; i++) {
@@ -89,7 +76,7 @@ function aiChatHistory(messages = 60) {
 }
 
 /** Paginated REST API response — list endpoints fetched in steps. */
-function apiUserList(count = 250) {
+export function apiUserList(count = 250) {
   return {
     users: Array.from({ length: count }, (_, i) => ({
       id: `usr_${i.toString(16).padStart(8, '0')}`,
@@ -113,7 +100,7 @@ function apiUserList(count = 250) {
 }
 
 /** E-commerce order — checkout/fulfillment workflow state. */
-function ecommerceOrder(lineItems = 30) {
+export function ecommerceOrder(lineItems = 30) {
   return {
     orderId: 'ord_2WqK9mPx7nL4vR8t',
     status: 'processing',
@@ -156,7 +143,7 @@ function ecommerceOrder(lineItems = 30) {
 }
 
 /** Scraped/generated document text — summarization pipelines. */
-function markdownDocument(paragraphs = 40) {
+export function markdownDocument(paragraphs = 40) {
   const rng = makeRng(0xd0c5);
   const parts = [];
   for (let i = 0; i < paragraphs; i++) {
@@ -171,7 +158,7 @@ function markdownDocument(paragraphs = 40) {
 }
 
 /** Time-series metrics — monitoring/aggregation workloads. */
-function timeSeries(points = 2000) {
+export function timeSeries(points = 2000) {
   const base = 1749700000000;
   return {
     metric: 'http.server.request.duration',
@@ -184,13 +171,13 @@ function timeSeries(points = 2000) {
 }
 
 /** Tiny payload — stays below the compression threshold by design. */
-function tinyPayload() {
+export function tinyPayload() {
   return { ok: true, id: 'wrun_01J5XYZ', count: 3 };
 }
 
 /** Incompressible binary — e.g. an image/zip passed through a step. */
-function binaryPayload(bytes = 256 * 1024) {
-  // Deterministic pseudo-random bytes (xorshift) so runs are reproducible
+export function binaryPayload(bytes = 256 * 1024) {
+  // Deterministic pseudo-random bytes (xorshift) so runs are reproducible.
   let state = 0x12345678;
   const data = new Uint8Array(bytes);
   for (let i = 0; i < bytes; i++) {
@@ -202,63 +189,16 @@ function binaryPayload(bytes = 256 * 1024) {
   return data;
 }
 
-// ---------------------------------------------------------------------------
-// Measurement
-// ---------------------------------------------------------------------------
-
-function byteLength(data) {
-  if (data instanceof Uint8Array) return data.byteLength;
-  return encoder.encode(JSON.stringify(data)).byteLength;
-}
-
-function fmt(n) {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
-}
-
-const WORKLOADS = [
+/**
+ * The standard workload set, shared by both benchmarks. Each entry is
+ * `[label, value]`. Order matters only for display.
+ */
+export const WORKLOADS = [
   ['AI chat history (60 messages)', aiChatHistory()],
   ['API response (250 users)', apiUserList()],
   ['E-commerce order (30 items)', ecommerceOrder()],
-  ['Scraped document (~14 KB text)', markdownDocument()],
+  ['Scraped document (~27 KB text)', markdownDocument()],
   ['Time series (2000 points)', timeSeries()],
   ['Random binary (256 KB)', binaryPayload()],
   ['Tiny payload (<1 KB)', tinyPayload()],
 ];
-
-const rows = [];
-for (const [name, value] of WORKLOADS) {
-  const off = await step.serialize(value, undefined, {});
-  const on = await step.serialize(value, undefined, { compression: true });
-  const offBytes = byteLength(off);
-  const onBytes = byteLength(on);
-  const savings = ((1 - onBytes / offBytes) * 100).toFixed(1);
-  rows.push({ name, offBytes, onBytes, savings });
-}
-
-console.log('| Workload | Uncompressed | Compressed | Savings |');
-console.log('| --- | ---: | ---: | ---: |');
-for (const { name, offBytes, onBytes, savings } of rows) {
-  const note = offBytes === onBytes ? ' (passthrough)' : '';
-  console.log(
-    `| ${name} | ${fmt(offBytes)} | ${fmt(onBytes)}${note} | ${offBytes === onBytes ? '—' : `${savings}%`} |`
-  );
-}
-
-// Simulated event-log total for a representative run: an AI agent workflow
-// with 10 steps that each return a growing chat history (the replay model
-// re-serializes the full conversation at every step boundary).
-let totalOff = 0;
-let totalOn = 0;
-for (let i = 1; i <= 10; i++) {
-  const value = aiChatHistory(6 * i);
-  totalOff += byteLength(await step.serialize(value, undefined, {}));
-  totalOn += byteLength(
-    await step.serialize(value, undefined, { compression: true })
-  );
-}
-console.log('');
-console.log(
-  `Simulated 10-step AI agent run (event log total): ${fmt(totalOff)} → ${fmt(totalOn)} (${((1 - totalOn / totalOff) * 100).toFixed(1)}% smaller)`
-);
