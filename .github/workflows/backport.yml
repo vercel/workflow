@@ -18,10 +18,10 @@ concurrency: backport-stable
 
 # AI model used by every opencode invocation in this workflow. The
 # `vercel/` provider prefix is added at each use site, so this should
-# be specified as `<provider>/<model>` (e.g. `anthropic/claude-fable-5`).
+# be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-4-8`).
 # Manual `workflow_dispatch` runs may override this via the `model` input.
 env:
-  AI_MODEL: ${{ inputs.model || 'anthropic/claude-fable-5' }}
+  AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-4-8' }}
 
 jobs:
   backport:
@@ -952,4 +952,53 @@ jobs:
                 `  --body "Manual backport of #${prNumber} (cherry-pick ${shortSha}) to \\\`stable\\\`."`,
                 '```'
               ].join('\n')
+            });
+
+      - name: Comment on backport failure
+        # Catch-all for task/infra failures that fail the job outright — e.g.
+        # the configured AI model not being found, AI Gateway errors, opencode
+        # crashes, or any other step erroring out. Without this, such failures
+        # only surface as a red workflow run with no signal on the source PR.
+        #
+        # This is deliberately disjoint from "Comment on conflict failure"
+        # above: that step handles the case where the AI ran cleanly but
+        # couldn't resolve conflicts (`resolved == 'false'`), which exits 0 and
+        # does NOT fail the job — so `failure()` is false there and we won't
+        # double-comment. We also skip if no source PR is associated (nowhere
+        # to comment) or if the failure occurred before the PR lookup ran.
+        if: |
+          failure() &&
+          steps.pr-lookup.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const sha = process.env.SHA || '';
+            const prNumber = Number(process.env.PR_NUMBER);
+            const shortSha = sha ? sha.slice(0, 12) : '(unknown)';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const workflowUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/backport.yml`;
+            const lines = [
+              `**Backport to \`stable\` failed** for ${shortSha} due to a workflow error ([backport job run](${runUrl})).`,
+              '',
+              'This is usually an infrastructure problem (e.g. the configured AI model could not be found, an AI Gateway error, or an opencode crash) rather than a merge conflict. Check the job logs linked above for details.',
+            ];
+            if (sha) {
+              lines.push(
+                '',
+                `Once the underlying issue is fixed, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` and paste this commit SHA into the \`ref\` input:`,
+                '',
+                '```',
+                sha,
+                '```'
+              );
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: lines.join('\n')
             });
