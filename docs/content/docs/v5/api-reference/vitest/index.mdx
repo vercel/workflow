@@ -69,7 +69,7 @@ export async function setup() {
 
 ### `setupWorkflowTests()`
 
-Sets up an in-process workflow runtime in each test worker. Imports pre-built bundles, creates a [Local World](/docs/worlds/local) instance with direct handlers, and sets it as the global world. Clears all workflow data on each invocation for full test isolation.
+Sets up an in-process workflow runtime in each test worker. Imports pre-built bundles, creates a [Local World](/worlds/local) instance with direct handlers, and sets it as the global world. Clears all workflow data on each invocation for full test isolation.
 
 Called automatically by the `workflow()` plugin in `setupFiles`. Use directly only for [manual setup](/docs/testing#manual-setup).
 
