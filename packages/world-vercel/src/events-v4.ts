@@ -13,9 +13,8 @@
  * - **LIST events**: response body is a stream of frames terminated by a
  *   sentinel frame (meta = `{_end: 1, next?: cursor}`).
  *
- * The few HTTP response headers v4 still uses (eventId / runId /
- * createdAt) are for client convenience — they let the caller read those
- * three fields without decoding the response body.
+ * Requests carry special HTTP response headers (eventId / runId / createdAt)
+ * for client convenience, to allow metadata access without decoding the body.
  *
  * Higher-level callers (the world-vercel adapter) CBOR-encode their JS
  * values into the `payload` parameter and CBOR-decode returned `body`
@@ -36,9 +35,8 @@ import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
- * The few HTTP response headers v4 still uses. POST surfaces these so
- * callers can read the freshly-created eventId without decoding the
- * CBOR response body. Mirror of the backend's v4 response-header set.
+ * POST surfaces these so callers can read the created eventId without
+ * decoding the CBOR response body
  */
 export const V4_RESPONSE_HEADERS = {
   eventId: 'x-wf-event-id',
@@ -47,10 +45,7 @@ export const V4_RESPONSE_HEADERS = {
 } as const;
 
 export interface CreateEventV4Input {
-  /** runId in the URL. Required for run_created too — v4 has no
-   *  `/runs/null/events` shortcut because the runId is part of the key
-   *  the payload is stored under. Higher-level callers generate the ULID
-   *  locally. */
+  // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
   eventType: string;
   /** Opaque payload bytes. Pass undefined for events that don't carry
