@@ -275,6 +275,11 @@ export async function executeStep(
       return { type: 'failed' };
     }
 
+    // Ops that must be durably committed before step completion (e.g. a
+    // step-initiated abort's hook_received event). See StepContext. Declared
+    // outside the try so the failure path below can also drain them.
+    const preCompletionOps: Promise<void>[] = [];
+
     try {
       const attempt = step.attempt;
 
@@ -336,6 +341,7 @@ export async function executeStep(
             },
             workflowDeploymentId: params.workflowDeploymentId,
             ops,
+            preCompletionOps,
             closureVars: hydratedInput.closureVars,
             encryptionKey,
           },
@@ -402,6 +408,15 @@ export async function executeStep(
         ]);
       }
 
+      // Commit must-be-durable ops (e.g. a step-initiated abort's
+      // hook_received event) before writing step_completed, so any workflow
+      // continuation triggered by that event observes the abort rather than
+      // racing it. These ops swallow their own errors, so awaiting only
+      // enforces ordering. See StepContext.preCompletionOps.
+      if (preCompletionOps.length > 0) {
+        await Promise.all(preCompletionOps);
+      }
+
       // Create step_completed event
       let stepCompleted409 = false;
       await world.events
@@ -451,6 +466,14 @@ export async function executeStep(
       // and queue a continuation so waitUntil can flush them.
       return { type: 'completed', hasPendingOps: !opsSettled };
     } catch (err: unknown) {
+      // Order any must-be-durable ops (e.g. a step-initiated abort's
+      // hook_received event) ahead of step_failed too — a step that aborts and
+      // then throws must still have the abort recorded before the failure
+      // continuation observes it. See StepContext.preCompletionOps.
+      if (preCompletionOps.length > 0) {
+        await Promise.all(preCompletionOps);
+      }
+
       const effectiveErr = promoteAbortErrorToFatal(err);
 
       const normalizedError = await normalizeUnknownError(effectiveErr);

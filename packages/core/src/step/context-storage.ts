@@ -23,6 +23,22 @@ export type StepContext = {
   /** Deployment that owns the current workflow run, used for forwarded streams. */
   workflowDeploymentId?: string;
   ops: Promise<void>[];
+  /**
+   * Operations that MUST be durably committed before the step's
+   * `step_completed`/`step_failed` event is written, because the workflow
+   * continuation triggered by that event depends on them.
+   *
+   * The canonical case is a step-initiated `AbortController.abort()`: the
+   * durable `hook_received` event records the cancellation in the workflow's
+   * event log. If it is flushed in the background (like `ops`), the workflow
+   * continuation enqueued by `step_completed` can run — and advance past the
+   * abort, dispatching a later step with a stale, non-aborted `signal` — before
+   * the `hook_received` event exists. Awaiting these inline before completion
+   * guarantees the abort is ordered ahead of any continuation that observes the
+   * step's result. Unlike these, `ops` holds best-effort real-time stream
+   * writes that should fire ASAP and are intentionally left in the background.
+   */
+  preCompletionOps?: Promise<void>[];
   closureVars?: Record<string, any>;
   encryptionKey?: CryptoKey;
   writables?: Map<string, CachedWritable>;
