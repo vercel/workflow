@@ -94,10 +94,12 @@ describe('createWorkflowRunEvent with v1Compat', () => {
 });
 
 /**
- * The split's meta allowlist IS the eventData wire contract on v4 — any
- * field not picked out here is silently dropped on the wire (see the
- * warning on PAYLOAD_FIELD_BY_EVENT_TYPE). These tests lock in coverage
- * for the native-attributes fields so the contract can't regress.
+ * The split's meta allowlist IS the eventData wire contract on v4. The
+ * type-level `assertEventDataWireContractExhaustive` guard in events.ts
+ * fails the build if a schema field is routed to neither the payload body
+ * nor the frame meta, so a *missing* field can't silently regress. These
+ * runtime tests are the complement: they prove the fields that ARE routed
+ * actually reach the frame meta with the right values and renames.
  */
 describe('splitEventDataForV4 attribute fields', () => {
   it('carries attr_set changes/writer/allowReservedAttributes in the frame meta', () => {

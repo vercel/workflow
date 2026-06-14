@@ -71,22 +71,24 @@ import {
  * its value, and ships it as the frame body. Everything else in
  * `eventData` rides in the frame's CBOR meta block.
  *
- * ⚠️ This map and `splitEventDataForV4`'s meta allowlist below ARE the
- * wire contract for `eventData` on v4. Unlike v3 (which serialized the
- * whole object), a new field added to an event schema in @workflow/world
- * is silently dropped unless it is (a) split out here and (b) accepted by
- * the backend's meta parser. There is no type error, test failure, or
- * runtime warning when a field is missing — `step_retrying.retryAfter`
- * hit exactly this. When adding an event field, update both sides.
+ * This map's values, together with `MetaSourceField` below, ARE the wire
+ * contract for `eventData` on v4: every field a @workflow/world event
+ * schema can put in `eventData` must be routed either to the frame body
+ * (a payload field here) or the frame meta (a `MetaSourceField`). Unlike
+ * v3 (which serialized the whole object), a field that is neither does not
+ * cross the wire. `assertEventDataWireContractExhaustive` turns that into a
+ * compile error — the silent drop that bit `step_retrying.retryAfter` is
+ * now a build break that names the unrouted field. (The backend's meta
+ * parser still has to accept any new meta field independently, so a new
+ * field is a two-sided change.)
  */
-const PAYLOAD_FIELD_BY_EVENT_TYPE: Record<string, string> = {
+const PAYLOAD_FIELD_BY_EVENT_TYPE = {
   run_created: 'input',
   // run_started normally has no payload, but on the resilient-start path
   // the runtime piggybacks `runInput.input` here so the server can
   // synthesize the missing run_created. Without this entry the v4 split
-  // would silently drop those bytes and EventsService's
-  // "run_started arrived before run_created" fallback would have nothing
-  // to backfill from.
+  // would silently drop those bytes and the backend's "run_started arrived
+  // before run_created" fallback would have nothing to backfill from.
   run_started: 'input',
   run_completed: 'output',
   run_failed: 'error',
@@ -96,7 +98,39 @@ const PAYLOAD_FIELD_BY_EVENT_TYPE: Record<string, string> = {
   step_retrying: 'error',
   hook_created: 'metadata',
   hook_received: 'payload',
-};
+} as const satisfies Record<string, string>;
+
+/**
+ * The payload field names — the values of the map above. These are the
+ * fields that become the opaque frame body rather than frame meta.
+ */
+type PayloadField =
+  (typeof PAYLOAD_FIELD_BY_EVENT_TYPE)[keyof typeof PAYLOAD_FIELD_BY_EVENT_TYPE];
+
+/**
+ * Look up the payload field for an event type, or undefined for the event
+ * types that carry no user payload (run_cancelled, attr_set, step_started,
+ * wait_*, hook_disposed). The map is `as const` so it can drive
+ * `PayloadField`; the cast keeps the lookup callable with any event-type
+ * string.
+ */
+function payloadFieldFor(eventType: string): PayloadField | undefined {
+  return (
+    PAYLOAD_FIELD_BY_EVENT_TYPE as Record<string, PayloadField | undefined>
+  )[eventType];
+}
+
+/**
+ * Union of every field a user-creatable event can carry in `eventData`,
+ * derived from the @workflow/world `CreateEventSchema` discriminated union
+ * (via `AnyEventRequest`). Adding a field to any event schema there widens
+ * this union automatically, which is what drives the exhaustiveness guard
+ * below. Event types with no `eventData` (run_cancelled) and with optional
+ * `eventData` (run_started, step_started, …) both contribute correctly.
+ */
+type EventDataField<E = AnyEventRequest> = E extends { eventData?: infer D }
+  ? keyof NonNullable<D> & string
+  : never;
 
 // Events whose POST response the workflow runtime reads immediately
 // (so the materialized entity must come back fully resolved).
@@ -146,6 +180,55 @@ interface SplitEventData {
 }
 
 /**
+ * Source field names in `eventData` that `splitEventDataForV4` lifts into
+ * the frame meta (some are renamed on the wire, e.g. `token` → `hookToken`).
+ * This is the metadata half of the v4 `eventData` allowlist; the payload
+ * half is `PayloadField`. The exhaustiveness guard below keeps this in sync
+ * with the @workflow/world schema in both directions; the per-field
+ * extraction in `splitEventDataForV4` is bespoke, so it must read each field
+ * listed here.
+ */
+type MetaSourceField =
+  | 'deploymentId'
+  | 'workflowName'
+  | 'stepName'
+  | 'attempt'
+  | 'resumeAt'
+  | 'retryAfter'
+  | 'token'
+  | 'isWebhook'
+  | 'isSystem'
+  | 'errorCode'
+  | 'executionContext'
+  | 'attributes'
+  | 'changes'
+  | 'writer'
+  | 'allowReservedAttributes';
+
+/**
+ * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
+ * against the @workflow/world event schemas.
+ *
+ * - `Unhandled`: schema fields routed to neither the payload body
+ *   (`PayloadField`) nor the frame meta (`MetaSourceField`).
+ * - `Stale`: allowlisted meta fields that no longer exist on any schema.
+ *
+ * Both must be `never`. Add a field to a @workflow/world event schema
+ * without routing it here and the `assertEventDataWireContractExhaustive`
+ * call fails to compile with `Type '["theField", never]' does not satisfy
+ * the constraint '[never, never]'` — the historical "silently dropped"
+ * footgun, now a build break that names the field.
+ */
+type Unhandled = Exclude<EventDataField, PayloadField | MetaSourceField>;
+type Stale = Exclude<MetaSourceField, EventDataField>;
+function assertEventDataWireContractExhaustive<
+  _Check extends [never, never],
+>(): void {
+  // Type-level assertion only; the empty body is never relied on.
+}
+assertEventDataWireContractExhaustive<[Unhandled, Stale]>();
+
+/**
  * Split an AnyEventRequest's `eventData` into (a) the payload bytes that
  * become the v4 frame body and (b) the metadata fields that become the
  * CBOR-encoded meta block of the same frame.
@@ -160,7 +243,7 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   const eventData = ((
     data as unknown as { eventData?: Record<string, unknown> }
   ).eventData ?? {}) as Record<string, unknown>;
-  const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[data.eventType];
+  const payloadField = payloadFieldFor(data.eventType);
   const meta: SplitEventData['meta'] = {};
 
   if (typeof eventData.deploymentId === 'string') {
@@ -329,7 +412,7 @@ function buildEventFromV4(
   const eventData = (decoded.eventData ?? {}) as Record<string, unknown>;
 
   if (payloadBody.byteLength > 0) {
-    const payloadField = PAYLOAD_FIELD_BY_EVENT_TYPE[decoded.eventType];
+    const payloadField = payloadFieldFor(decoded.eventType);
     if (payloadField) eventData[payloadField] = payloadBody;
   }
 
