@@ -43,6 +43,8 @@ export interface StepExecutorParams {
   workflowDeploymentId?: string;
   workflowName: string;
   workflowStartedAt: number;
+  /** Root run id of this run's lineage, carried into the step context. */
+  rootRunId?: string;
   stepId: string;
   stepName: string;
   encryptionKey?: CryptoKey;
@@ -335,6 +337,7 @@ export async function executeStep(
               features: { encryption: !!encryptionKey },
             },
             workflowDeploymentId: params.workflowDeploymentId,
+            rootRunId: params.rootRunId,
             ops,
             closureVars: hydratedInput.closureVars,
             encryptionKey,

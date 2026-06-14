@@ -13,6 +13,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
   getQueueTopicPrefix,
+  ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
@@ -203,6 +204,17 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
     eventId: terminalRunEvent.eventId,
   });
   return true;
+}
+
+/**
+ * The lineage root of a loaded run: its `$rootRunId` attribute, or its own id
+ * when it is itself a root.
+ */
+function rootRunIdFrom(
+  attributes: Record<string, string> | undefined,
+  runId: string
+): string {
+  return attributes?.[ROOT_RUN_ID_ATTRIBUTE] ?? runId;
 }
 
 /**
@@ -416,6 +428,7 @@ export function workflowEntrypoint(
                           workflowDeploymentId: bgRun.deploymentId,
                           workflowName,
                           workflowStartedAt: bgStartedAt,
+                          rootRunId: rootRunIdFrom(bgRun.attributes, runId),
                           stepId: incomingStepId,
                           stepName: incomingStepName,
                         });
@@ -1226,6 +1239,10 @@ export function workflowEntrypoint(
                             workflowDeploymentId: workflowRun.deploymentId,
                             workflowName,
                             workflowStartedAt,
+                            rootRunId: rootRunIdFrom(
+                              workflowRun.attributes,
+                              runId
+                            ),
                             stepId: inlineStep.correlationId,
                             stepName: inlineStep.stepName,
                           });
