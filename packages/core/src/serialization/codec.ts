@@ -14,6 +14,7 @@
  *   plain objects). No Date, Map, Set, typed arrays, etc.
  */
 
+import type { CompressionStats } from './compression.js';
 import type { FormatPrefix } from './types.js';
 
 /**
@@ -64,6 +65,13 @@ export interface CodecOptions {
    * `getRunCapabilities` in capabilities.ts). Defaults to `false`.
    */
   compression?: boolean;
+
+  /**
+   * Optional telemetry sink populated by the compression layer with what
+   * it did to the payload (whether it compressed, logical vs stored size).
+   * Used by the dehydrate/hydrate wrappers to emit OTel span attributes.
+   */
+  compressionStats?: CompressionStats;
 }
 
 export interface Codec {

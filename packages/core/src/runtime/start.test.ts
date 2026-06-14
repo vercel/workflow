@@ -29,6 +29,7 @@ vi.mock('@vercel/functions', () => ({
 vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),
   trace: vi.fn((_name, fn) => fn(undefined)),
+  getActiveSpan: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('start', () => {

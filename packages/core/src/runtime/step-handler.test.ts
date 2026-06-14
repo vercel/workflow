@@ -97,6 +97,7 @@ vi.mock('../telemetry.js', () => ({
   getSpanKind: vi.fn().mockResolvedValue(undefined),
   linkToCurrentContext: vi.fn().mockResolvedValue([]),
   withWorkflowBaggage: vi.fn((_attrs: unknown, fn: () => unknown) => fn()),
+  getActiveSpan: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock logger

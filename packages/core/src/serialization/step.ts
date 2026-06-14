@@ -33,7 +33,11 @@ export async function serialize(
       payload
     ) as Uint8Array;
     // Compress before encrypting — encrypted bytes don't compress.
-    const compressed = await compress(prefixed, options?.compression === true);
+    const compressed = await compress(
+      prefixed,
+      options?.compression === true,
+      options?.compressionStats
+    );
     return encryptData(compressed, encryptionKey);
   } catch (error) {
     rethrowIfRuntimeError(error);
@@ -50,7 +54,10 @@ export async function deserialize(
   encryptionKey?: CryptoKey,
   options?: CodecOptions
 ): Promise<unknown> {
-  const decrypted = await decompress(await decryptData(data, encryptionKey));
+  const decrypted = await decompress(
+    await decryptData(data, encryptionKey),
+    options?.compressionStats
+  );
 
   if (!(decrypted instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {

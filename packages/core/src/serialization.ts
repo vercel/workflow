@@ -26,7 +26,11 @@ import { getStepFunction } from './private.js';
 // `docs/content/docs/changelog/eager-processing.mdx`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import * as clientModule from './serialization/client.js';
-import { compress, decompress } from './serialization/compression.js';
+import {
+  type CompressionStats,
+  compress,
+  decompress,
+} from './serialization/compression.js';
 import {
   decrypt,
   type EncryptionKeyParam,
@@ -78,6 +82,8 @@ import {
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
+import * as Attr from './telemetry/semantic-conventions.js';
+import { getActiveSpan } from './telemetry.js';
 import { getAbortStreamId } from './util.js';
 import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 
@@ -160,6 +166,43 @@ function unwrapSerializationCause(error: unknown): unknown {
     return error.cause;
   }
   return error;
+}
+
+/**
+ * Emit compression telemetry onto the active span after a (de)serialize.
+ *
+ * The compression layer populates `stats` only when it actually ran (binary
+ * data on a spec >= 5 path); legacy / v1Compat paths leave it unrecorded, so
+ * this no-ops for them and avoids the `getActiveSpan` lookup. Attributes land
+ * on whatever span is active — typically the dedicated `step.dehydrate` /
+ * `step.hydrate` span, otherwise the enclosing run/start span.
+ */
+async function recordCompression(
+  stats: CompressionStats,
+  operation: 'serialize' | 'deserialize'
+): Promise<void> {
+  if (!stats.recorded) return;
+  // Telemetry must never break the serialize/deserialize data path — a
+  // missing/failing tracer is purely an observability loss.
+  try {
+    const span = await getActiveSpan();
+    if (!span) return;
+    const uncompressedBytes = stats.uncompressedBytes ?? 0;
+    const storedBytes = stats.storedBytes ?? 0;
+    span.setAttributes({
+      ...Attr.SerializationOperation(operation),
+      ...Attr.SerializationCompressed(stats.compressed ?? false),
+      ...Attr.SerializationUncompressedBytes(uncompressedBytes),
+      ...Attr.SerializationStoredBytes(storedBytes),
+      ...(stats.compressed && uncompressedBytes > 0
+        ? Attr.SerializationCompressionRatio(
+            1 - storedBytes / uncompressedBytes
+          )
+        : {}),
+    });
+  } catch {
+    // ignore telemetry failures
+  }
 }
 
 export function getSerializeStream(
@@ -2458,13 +2501,17 @@ export async function dehydrateWorkflowArguments(
     return revive(str);
   }
   try {
-    return await clientModule.serialize(value, key, {
+    const compressionStats: CompressionStats = {};
+    const result = await clientModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
         getExternalReducers(global, ops, runId, key, framedByteStreams)
       ),
       compression,
+      compressionStats,
     });
+    await recordCompression(compressionStats, 'serialize');
+    return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError(
@@ -2486,16 +2533,19 @@ export async function hydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<any> {
-  return workflowModule.deserialize(
-    await decompress(await maybeDecrypt(value, key)),
-    {
-      global,
-      extraRevivers: {
-        ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-        ...extraRevivers,
-      },
-    }
+  const compressionStats: CompressionStats = {};
+  const inflated = await decompress(
+    await maybeDecrypt(value, key),
+    compressionStats
   );
+  await recordCompression(compressionStats, 'deserialize');
+  return workflowModule.deserialize(inflated, {
+    global,
+    extraRevivers: {
+      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
+      ...extraRevivers,
+    },
+  });
 }
 
 /**
@@ -2514,11 +2564,15 @@ export async function dehydrateWorkflowReturnValue(
     return revive(str);
   }
   try {
-    return await stepModule.serialize(value, key, {
+    const compressionStats: CompressionStats = {};
+    const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
+      compressionStats,
     });
+    await recordCompression(compressionStats, 'serialize');
+    return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError(
@@ -2541,7 +2595,8 @@ export async function hydrateWorkflowReturnValue(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<any> {
-  return clientModule.deserialize(value, key, {
+  const compressionStats: CompressionStats = {};
+  const result = await clientModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
@@ -2549,7 +2604,10 @@ export async function hydrateWorkflowReturnValue(
       ),
       ...extraRevivers,
     },
+    compressionStats,
   });
+  await recordCompression(compressionStats, 'deserialize');
+  return result;
 }
 
 /**
@@ -2569,11 +2627,15 @@ export async function dehydrateStepArguments(
     return revive(str);
   }
   try {
-    return await stepModule.serialize(value, key, {
+    const compressionStats: CompressionStats = {};
+    const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
+      compressionStats,
     });
+    await recordCompression(compressionStats, 'serialize');
+    return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError('step arguments', cause);
@@ -2594,7 +2656,8 @@ export async function hydrateStepArguments(
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string
 ): Promise<any> {
-  return stepModule.deserialize(value, key, {
+  const compressionStats: CompressionStats = {};
+  const result = await stepModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
@@ -2602,7 +2665,10 @@ export async function hydrateStepArguments(
       ),
       ...extraRevivers,
     },
+    compressionStats,
   });
+  await recordCompression(compressionStats, 'deserialize');
+  return result;
 }
 
 /**
@@ -2640,13 +2706,17 @@ export async function dehydrateStepReturnValue(
     return revive(str);
   }
   try {
-    return await stepModule.serialize(value, key, {
+    const compressionStats: CompressionStats = {};
+    const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
         getStepReducers(global, ops, runId, key, framedByteStreams)
       ),
       compression,
+      compressionStats,
     });
+    await recordCompression(compressionStats, 'serialize');
+    return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError(
@@ -2689,8 +2759,18 @@ export async function dehydrateStepError(
       payload
     ) as Uint8Array;
     // Compress before encrypting — encrypted bytes don't compress.
-    const compressed = await compress(serialized, compression);
-    return (await maybeEncrypt(compressed as Uint8Array, key)) as Uint8Array;
+    const compressionStats: CompressionStats = {};
+    const compressed = await compress(
+      serialized,
+      compression,
+      compressionStats
+    );
+    const encrypted = (await maybeEncrypt(
+      compressed as Uint8Array,
+      key
+    )) as Uint8Array;
+    await recordCompression(compressionStats, 'serialize');
+    return encrypted;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError('step error', cause);
@@ -2717,7 +2797,12 @@ export async function hydrateStepError(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<unknown> {
-  const decrypted = await decompress(await maybeDecrypt(value, key));
+  const compressionStats: CompressionStats = {};
+  const decrypted = await decompress(
+    await maybeDecrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
 
   if (!(decrypted instanceof Uint8Array)) {
     // Treated as a devalue "flattened" array. In production this branch is
@@ -2774,8 +2859,18 @@ export async function dehydrateRunError(
       payload
     ) as Uint8Array;
     // Compress before encrypting — encrypted bytes don't compress.
-    const compressed = await compress(serialized, compression);
-    return (await maybeEncrypt(compressed as Uint8Array, key)) as Uint8Array;
+    const compressionStats: CompressionStats = {};
+    const compressed = await compress(
+      serialized,
+      compression,
+      compressionStats
+    );
+    const encrypted = (await maybeEncrypt(
+      compressed as Uint8Array,
+      key
+    )) as Uint8Array;
+    await recordCompression(compressionStats, 'serialize');
+    return encrypted;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError('run error', cause);
@@ -2803,7 +2898,12 @@ export async function hydrateRunError(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<unknown> {
-  const decrypted = await decompress(await maybeDecrypt(value, key));
+  const compressionStats: CompressionStats = {};
+  const decrypted = await decompress(
+    await maybeDecrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
 
   if (!(decrypted instanceof Uint8Array)) {
     // See the matching note in `hydrateStepError`: this branch is for
@@ -2849,16 +2949,19 @@ export async function hydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<any> {
-  return workflowModule.deserialize(
-    await decompress(await maybeDecrypt(value, key)),
-    {
-      global,
-      extraRevivers: {
-        ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-        ...extraRevivers,
-      },
-    }
+  const compressionStats: CompressionStats = {};
+  const inflated = await decompress(
+    await maybeDecrypt(value, key),
+    compressionStats
   );
+  await recordCompression(compressionStats, 'deserialize');
+  return workflowModule.deserialize(inflated, {
+    global,
+    extraRevivers: {
+      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
+      ...extraRevivers,
+    },
+  });
 }
 
 // ---- Helpers to extract stream/Request/Response reducers and revivers ----

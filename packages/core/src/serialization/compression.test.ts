@@ -14,6 +14,7 @@ import {
 import * as clientModule from './client.js';
 import {
   COMPRESSION_MIN_BYTES,
+  type CompressionStats,
   compress,
   decompress,
   isCompressed,
@@ -103,6 +104,115 @@ describe('compression layer (compress/decompress)', () => {
     expect(await decompress(plain)).toBe(plain);
     const legacy = [1, 2, 3];
     expect(await decompress(legacy)).toBe(legacy);
+  });
+});
+
+describe('CompressionStats telemetry sink', () => {
+  function devlBytes(json: string): Uint8Array {
+    return encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(json)
+    ) as Uint8Array;
+  }
+
+  it('records a kept compression on the write path', async () => {
+    const original = devlBytes(JSON.stringify(makeCompressibleValue()));
+    const stats: CompressionStats = {};
+    const compressed = await compress(original, true, stats);
+
+    expect(stats.recorded).toBe(true);
+    expect(stats.compressed).toBe(true);
+    expect(stats.uncompressedBytes).toBe(original.length);
+    expect(stats.storedBytes).toBe((compressed as Uint8Array).length);
+    expect(stats.storedBytes!).toBeLessThan(stats.uncompressedBytes!);
+  });
+
+  it('records compressed=false for incompressible data (kept original)', async () => {
+    const random = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      crypto.getRandomValues(new Uint8Array(4096))
+    ) as Uint8Array;
+    const stats: CompressionStats = {};
+    const result = await compress(random, true, stats);
+
+    expect(result).toBe(random);
+    expect(stats.recorded).toBe(true);
+    expect(stats.compressed).toBe(false);
+    expect(stats.uncompressedBytes).toBe(random.length);
+    expect(stats.storedBytes).toBe(random.length);
+  });
+
+  it('records compressed=false for below-threshold payloads', async () => {
+    const small = devlBytes('"hi"');
+    expect(small.length).toBeLessThan(COMPRESSION_MIN_BYTES);
+    const stats: CompressionStats = {};
+    await compress(small, true, stats);
+
+    expect(stats.recorded).toBe(true);
+    expect(stats.compressed).toBe(false);
+    expect(stats.uncompressedBytes).toBe(small.length);
+    expect(stats.storedBytes).toBe(small.length);
+  });
+
+  it('records the uncompressed baseline even when compression is disabled', async () => {
+    const original = devlBytes(JSON.stringify(makeCompressibleValue()));
+    const stats: CompressionStats = {};
+    await compress(original, false, stats);
+
+    expect(stats.recorded).toBe(true);
+    expect(stats.compressed).toBe(false);
+    expect(stats.uncompressedBytes).toBe(original.length);
+    expect(stats.storedBytes).toBe(original.length);
+  });
+
+  it('does not record for non-binary (legacy) data', async () => {
+    const stats: CompressionStats = {};
+    await compress({ not: 'binary' }, true, stats);
+    expect(stats.recorded).toBeFalsy();
+  });
+
+  it('records the inflate on the read path', async () => {
+    const original = devlBytes(JSON.stringify(makeCompressibleValue()));
+    const compressed = (await compress(original, true)) as Uint8Array;
+
+    const stats: CompressionStats = {};
+    const inflated = (await decompress(compressed, stats)) as Uint8Array;
+
+    expect(inflated).toEqual(original);
+    expect(stats.recorded).toBe(true);
+    expect(stats.compressed).toBe(true);
+    expect(stats.storedBytes).toBe(compressed.length);
+    expect(stats.uncompressedBytes).toBe(original.length);
+    expect(stats.storedBytes!).toBeLessThan(stats.uncompressedBytes!);
+  });
+
+  it('records compressed=false when reading uncompressed data', async () => {
+    const plain = devlBytes('"hello"');
+    const stats: CompressionStats = {};
+    await decompress(plain, stats);
+
+    expect(stats.recorded).toBe(true);
+    expect(stats.compressed).toBe(false);
+    expect(stats.uncompressedBytes).toBe(plain.length);
+    expect(stats.storedBytes).toBe(plain.length);
+  });
+
+  it('round-trips stats through the step mode serializer (write + read)', async () => {
+    const value = makeCompressibleValue();
+    const writeStats: CompressionStats = {};
+    const data = await stepModule.serialize(value, undefined, {
+      compression: true,
+      compressionStats: writeStats,
+    });
+    expect(writeStats.compressed).toBe(true);
+
+    const readStats: CompressionStats = {};
+    const result = await stepModule.deserialize(data, undefined, {
+      compressionStats: readStats,
+    });
+    expect(result).toEqual(value);
+    expect(readStats.compressed).toBe(true);
+    expect(readStats.uncompressedBytes).toBe(writeStats.uncompressedBytes);
   });
 });
 
