@@ -151,8 +151,10 @@ export interface WorkflowOrchestratorContext {
   promiseQueue: Promise<void>;
   /**
    * Counter of in-flight async data delivery operations (step result
-   * hydration, hook payload hydration). Suspensions must wait for this
-   * to reach 0 before firing, to avoid preempting data delivery.
+   * hydration, hook payload hydration, abort signal hydration). Suspensions
+   * must wait for this to reach 0 before firing, to avoid preempting data
+   * delivery — e.g. dehydrating a step's arguments while an abort that should
+   * be reflected in those arguments is still hydrating its reason.
    */
   pendingDeliveries: number;
   /**
