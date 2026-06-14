@@ -130,6 +130,10 @@ export async function POST(req: Request) {
 }
 ```
 
+<Callout type="info">
+This route starts a new agent run for each request. If retried submissions should reconnect to the same agent run, store the returned `runId` behind an atomic conversation or request key before returning it. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
 ## How it works
 
 1. **DurableAgent wraps Agent** — same API as AI SDK's `Agent`, but backed by a workflow. If the process crashes, the agent resumes from the last completed step on replay.
@@ -152,3 +156,4 @@ export async function POST(req: Request) {
 - [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — durable wrapper around AI SDK's Agent
 - [`getWritable()`](/docs/api-reference/workflow/get-writable) — streams agent output to the client
 - [`start()`](/docs/api-reference/workflow-api/start) — starts a workflow run from an API route
+- [Idempotency](/docs/foundations/idempotency) — deduplicate duplicate-sensitive starts and step side effects

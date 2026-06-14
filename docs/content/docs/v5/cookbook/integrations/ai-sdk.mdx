@@ -130,6 +130,10 @@ export async function supportWorkflow(initialMessages: ModelMessage[]) {
 
 One endpoint handles first turn, follow-ups, and the `/done` exit. The client sends `runId` in the body to distinguish first vs follow-up.
 
+<Callout type="info">
+The first turn calls `start()` and then returns the `runId`. If your client or platform can retry that first request before it receives and stores the `runId`, use an atomic conversation or request key before starting the workflow. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
 ```typescript title="app/api/support/route.ts" lineNumbers
 import type { UIMessage, UIMessageChunk } from "ai";
 import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
@@ -350,6 +354,10 @@ In `sliceUntilFinish`, use `reader.releaseLock()` in the `finally` block rather 
 
 Clients can send a `runId` from a long-gone workflow (localStorage, back button, server restart). Wrap the follow-up path in a try/catch for `not found` / `expired` and fall through to the first-turn code path to start a fresh workflow.
 
+### Make the first turn idempotent when needed
+
+This example stores the `runId` after the first response. For strict one-session-per-thread behavior, use a deterministic hook token derived from the thread ID or conversation ID and route retries through the active hook. See [Idempotency](/docs/foundations/idempotency).
+
 ## streamText vs DurableAgent
 
 | | `streamText()` (this pattern) | `DurableAgent` |
@@ -381,3 +389,4 @@ Use `DurableAgent` for most agent use cases. Use `streamText` when you need the 
 * [`getWritable()`](/docs/api-reference/workflow/get-writable) — resumable stream output
 * [`getRun()`](/docs/api-reference/workflow-api/get-run) — `run.getReadable({ startIndex })` for slicing per-turn streams
 * [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) — passes `runId` between turns
+* [Idempotency](/docs/foundations/idempotency) — protect duplicate-sensitive first turns and side effects

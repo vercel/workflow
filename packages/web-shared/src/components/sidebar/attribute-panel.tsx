@@ -21,6 +21,7 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import { RunAttributesCard } from './attributes-block';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -409,12 +410,12 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // Attributes MVP — string-string metadata attached to the run.
-  // Rendered in its own collapsible DetailCard; if empty/missing, hidden
-  // by the hasDisplayContent gate.
+  // Attributes — string-string metadata attached to the run.
+  // Rendered as key-value rows in its own collapsible DetailCard;
+  // if empty/missing, hidden by the hasDisplayContent gate.
   attributes: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    return <DetailCard summary="Attributes">{JsonBlock(value)}</DetailCard>;
+    return <RunAttributesCard attributes={value as Record<string, string>} />;
   },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
   createdAt: timestampWithTooltipOrNull,

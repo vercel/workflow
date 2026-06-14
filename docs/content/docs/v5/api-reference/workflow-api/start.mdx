@@ -5,6 +5,8 @@ type: reference
 summary: Use start to programmatically enqueue a new workflow run.
 prerequisites:
   - /docs/foundations/starting-workflows
+related:
+  - /docs/foundations/idempotency
 ---
 
 Start/enqueue a new workflow run.
@@ -54,6 +56,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * In v5, `start()` can also be called directly from a workflow function to spawn a child run or continue work in a new run. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) and [Versioning](/docs/foundations/versioning).
 * This is different from calling workflow functions directly, which is the typical pattern in Next.js applications.
 * The function returns immediately after enqueuing the workflow - it doesn't wait for the workflow to complete.
+* Each call to `start()` creates a new workflow run. If retried requests must route to one active workflow, have the workflow create a deterministic hook token and use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to reuse an already-registered active hook. The lookup is not atomic with `start()`, so concurrent callers can still create extra runs before the hook is registered; handle that race inside the workflow by checking `await hook.getConflict()` before duplicate-sensitive work — on a conflict it resolves with the run that owns the token, so the duplicate can return the active owner to the caller. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
 * All arguments must be [serializable](/docs/foundations/serialization).
 * When `deploymentId` is provided, the argument types and return type become `unknown` since there is no guarantee the workflow function's types will be consistent across different deployments.
 * `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later. Keys that start with `$` are reserved for framework and library code; framework-level callers can pass `allowReservedAttributes: true` to seed reserved keys, with the same semantics as the [`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) option of the same name.

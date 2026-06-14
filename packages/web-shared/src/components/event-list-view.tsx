@@ -19,6 +19,7 @@ import {
 import { isEncryptedMarker } from '../lib/hydration';
 import { useToast } from '../lib/toast';
 import { formatDuration } from '../lib/utils';
+import { AttrSetEventBlock } from './sidebar/attributes-block';
 import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import { DecryptButton } from './ui/decrypt-button';
@@ -96,6 +97,10 @@ function getStatusDotColor(eventType: string): string {
   // Retrying → amber
   if (eventType === 'step_retrying') {
     return 'var(--ds-amber-700)';
+  }
+  // Attribute changes → teal
+  if (eventType === 'attr_set') {
+    return 'var(--ds-teal-900)';
   }
   // Completed/succeeded → green
   if (
@@ -259,7 +264,10 @@ function isRunLevel(eventType: string): boolean {
     eventType === 'run_cancelled' ||
     eventType === 'workflow_started' ||
     eventType === 'workflow_completed' ||
-    eventType === 'workflow_failed'
+    eventType === 'workflow_failed' ||
+    // attr_set carries a dedup correlationId rather than a child entity ID,
+    // so it groups and labels with the run itself.
+    eventType === 'attr_set'
   );
 }
 
@@ -593,6 +601,12 @@ function PayloadBlock({
         <ErrorStackBlock value={structuredError} />
       </div>
     );
+  }
+
+  // Attribute changes — render the changed keys and the writer instead of
+  // the raw JSON payload.
+  if (eventType === 'attr_set') {
+    return <AttrSetEventBlock data={cleaned} />;
   }
 
   return (
