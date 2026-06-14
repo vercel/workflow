@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getRun, start } from 'workflow/api';
+import { getRun, resumeHook, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -680,6 +680,152 @@ export async function hookGetConflictThenStepParallelWorkflow(
     stepBResult,
     hookGetConflictTestData: 'registration_then_step_runs_in_parallel',
   };
+}
+
+//////////////////////////////////////////////////////////
+// Run idempotency / conflict-handling strategy workflows.
+// These mirror the patterns documented in
+// docs/content/docs/*/foundations/idempotency.mdx.
+//////////////////////////////////////////////////////////
+
+/**
+ * Claim-only run mutex: the hook is used purely for run idempotency —
+ * the workflow claims the token, holds it while doing unrelated work,
+ * and never awaits hook payload data. Duplicates started while the
+ * owner holds the token observe the conflict and return early.
+ */
+export async function hookClaimOnlyMutexWorkflow(
+  token: string,
+  holdMs: number
+) {
+  'use workflow';
+
+  using hook = createHook({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+    };
+  }
+
+  // Hold the token for the duration of the work without ever awaiting
+  // hook payload data.
+  const work = await hookGetConflictTimedStep('A', holdMs);
+
+  return {
+    role: 'owner' as const,
+    workEndedAt: work.endedAt,
+  };
+}
+
+/**
+ * Awaits the active owner's result via `getRun()` inside a step. On this
+ * channel `getConflict()` resolves with `{ runId }`, so the duplicate
+ * resolves the owning run by id to read its return value.
+ */
+async function adoptOwnerResult(runId: string) {
+  'use step';
+  return await getRun(runId).returnValue;
+}
+
+/**
+ * "Adopt the owner's result" strategy: the duplicate run waits for the
+ * active owner to finish and returns the owner's result, so callers
+ * cannot tell which run did the work.
+ */
+export async function hookAdoptOwnerResultWorkflow(
+  token: string,
+  marker: string
+) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    const adopted = await adoptOwnerResult(conflict.runId);
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+      adopted,
+    };
+  }
+
+  const payload = await hook;
+  return {
+    role: 'owner' as const,
+    marker,
+    value: payload.value,
+  };
+}
+
+async function forwardPayloadToOwner(token: string, message: string) {
+  'use step';
+  await resumeHook(token, { message });
+}
+
+/**
+ * "Signal the owner" strategy: the duplicate run forwards its input to
+ * the active owner's hook from a step instead of doing the work itself.
+ */
+export async function hookSignalOwnerWorkflow(token: string, message: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    await forwardPayloadToOwner(token, message);
+    return {
+      role: 'duplicate' as const,
+      forwardedTo: conflict.runId,
+    };
+  }
+
+  const payload = await hook;
+  return {
+    role: 'owner' as const,
+    received: payload.message,
+  };
+}
+
+/**
+ * Cancels the active owner via `getRun()` inside a step. `getConflict()`
+ * resolves with `{ runId }`, so the superseding run resolves the owner by
+ * id to cancel it before reclaiming the token.
+ */
+async function cancelOwner(runId: string) {
+  'use step';
+  await getRun(runId).cancel();
+}
+
+/**
+ * "Supersede the owner" strategy (newest-wins): cancel the active owner
+ * and claim the released token. Cancellation disposes the owner's hooks;
+ * the retry loop covers the window where disposal has not propagated.
+ */
+export async function hookSupersedeOwnerWorkflow(token: string) {
+  'use workflow';
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    using hook = createHook<{ message: string }>({ token });
+
+    const conflict = await hook.getConflict();
+    if (!conflict) {
+      const payload = await hook;
+      return {
+        role: 'owner' as const,
+        attempt,
+        received: payload.message,
+      };
+    }
+
+    await cancelOwner(conflict.runId);
+  }
+
+  throw new Error(`Could not claim ${token} after cancelling the owner`);
 }
 
 //////////////////////////////////////////////////////////
