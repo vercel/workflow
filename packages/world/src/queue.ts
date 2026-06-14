@@ -115,6 +115,12 @@ export const RunInputSchema = z.object({
   executionContext: z.record(z.string(), z.any()).optional(),
   /** Initial plaintext run attributes, for resilient run creation. */
   attributes: z.record(z.string(), z.string()).optional(),
+  /**
+   * Permits reserved `$`-prefixed keys in `attributes`, mirrored from the
+   * `start()` option so resilient run creation validates the same way as
+   * the original `run_created` attempt.
+   */
+  allowReservedAttributes: z.literal(true).optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 

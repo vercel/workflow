@@ -259,6 +259,12 @@ const hook = await world.hooks.get(hookId); // [!code highlight]
 
 Look up a hook by its token. Useful in webhook resume flows where you receive a token in the callback URL.
 
+<Callout type="info">
+For runtime application code, prefer [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token). Use `world.hooks.getByToken()` when you are working directly with the World storage interface for custom tooling, admin views, or low-level integrations.
+
+Hook-token lookup is the low-level form of the recommended idempotency flow: if a hook is already registered for your business key, reuse the hook's `runId` or resume that hook instead of starting another run. If no hook exists yet, start a workflow that creates the deterministic hook near the beginning and checks `await hook.getConflict()` to detect whether another run claimed the token first — on a conflict it resolves with the run that owns the token. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
 ```typescript lineNumbers
 const hook = await world.hooks.getByToken(token); // [!code highlight]
 ```

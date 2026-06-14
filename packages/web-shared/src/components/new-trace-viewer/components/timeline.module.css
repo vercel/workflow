@@ -1,0 +1,31 @@
+.runningStripes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 0.25rem;
+  opacity: 0.5;
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--ds-blue-500) 0,
+    var(--ds-blue-500) 1.5px,
+    transparent 1.5px,
+    transparent 8px
+  );
+  background-size: 11.314px 11.314px;
+  animation: running-stripes 0.6s linear infinite;
+}
+
+@keyframes running-stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 11.314px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runningStripes {
+    animation: none;
+  }
+}

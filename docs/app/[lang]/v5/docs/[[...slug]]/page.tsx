@@ -1,9 +1,10 @@
+import { Card, type CardProps } from 'fumadocs-ui/components/card';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
-import type { ComponentProps } from 'react';
 import { notFound, permanentRedirect } from 'next/navigation';
+import type { ComponentProps } from 'react';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { AskAI } from '@/components/geistdocs/ask-ai';
@@ -56,14 +57,19 @@ const Page = async ({ params }: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
   // browsing under /v5/docs/..., those links would escape to the v4 route.
   // Rewrite /docs/... → /v5/docs/... so all inline links stay inside the v5
   // context, matching how the sidebar tree is rewritten by rewriteNodeUrls in
-  // version-source.ts.
+  // version-source.ts. Card renders its own Link (not the `a` component), so
+  // it needs the same rewrite applied separately.
+  function v5Href<T>(href: T): T {
+    return typeof href === 'string' && href.startsWith('/docs/')
+      ? (`/v5${href}` as T)
+      : href;
+  }
   const baseLink = createRelativeLink(v5Source, page);
   function v5Link(props: ComponentProps<typeof baseLink>) {
-    const href =
-      typeof props.href === 'string' && props.href.startsWith('/docs/')
-        ? `/v5${props.href}`
-        : props.href;
-    return baseLink({ ...props, href });
+    return baseLink({ ...props, href: v5Href(props.href) });
+  }
+  function V5Card(props: CardProps) {
+    return <Card {...props} href={v5Href(props.href)} />;
   }
 
   return (
@@ -74,7 +80,7 @@ const Page = async ({ params }: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
         footer: (
           <div className="my-3 space-y-3">
             <Separator />
-            <EditSource path={page.path} />
+            <EditSource path={page.path} version="v5" />
             <ScrollTop />
             <Feedback />
             <CopyPage text={markdown} />
@@ -93,6 +99,7 @@ const Page = async ({ params }: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
         <MDX
           components={getMDXComponents({
             a: v5Link,
+            Card: V5Card,
             AgentTraces,
             FluidComputeCallout,
             Badge,

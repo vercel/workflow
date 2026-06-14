@@ -83,7 +83,7 @@ export async function waitForApproval(requestId: string) {
 4. **Throw to fail the workflow** — inside a workflow function, throwing an `Error` exits the run with that error. Use `FatalError` inside steps; throw plain errors inside workflows.
 
 <Callout type="warn">
-**The losing operation keeps running.** `Promise.race` doesn't cancel — when the sleep wins, the underlying step (or model call, or HTTP request) continues to completion in the background. This is fine for idempotent reads but matters when the operation has side effects or costs money. For hard cancellation across processes, see [Distributed Abort Controller](/cookbook/advanced/distributed-abort-controller).
+**The losing operation keeps running.** `Promise.race` doesn't cancel — when the sleep wins, the underlying step (or model call, or HTTP request) continues to completion in the background. This is fine for idempotent reads but matters when the operation has side effects or costs money. Use idempotency keys for non-idempotent side effects. For hard cancellation across processes, see [Distributed Abort Controller](/cookbook/advanced/distributed-abort-controller), and see [Idempotency](/docs/foundations/idempotency) for retry-safe side effects.
 </Callout>
 
 ## Adapting to your use case
@@ -99,4 +99,5 @@ export async function waitForApproval(requestId: string) {
 - [`sleep()`](/docs/api-reference/workflow/sleep) — durable wait (survives restarts, zero compute cost)
 - [`createWebhook()`](/docs/api-reference/workflow/create-webhook) — create a webhook URL the workflow can race against
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) — typed hook for in-process cancellation
+- [Idempotency](/docs/foundations/idempotency) — protect side effects that may keep running after a timeout
 - [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race) — race operations against deadlines

@@ -7,6 +7,7 @@ import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
@@ -30,6 +31,7 @@ const DATA_EVENT_TYPES = new Set([
   'run_failed',
   'wait_created',
   'wait_completed',
+  'attr_set',
 ]);
 
 /**
@@ -224,6 +226,12 @@ function EventDataBlock({
 
   if (hasEncryptedFields({ eventType, eventData: data })) {
     return <EncryptedDataBlock />;
+  }
+
+  // Attribute changes — render the changed keys and the writer instead of
+  // the raw JSON payload.
+  if (eventType === 'attr_set') {
+    return <AttrSetEventBlock data={data} />;
   }
 
   // For error events (step_failed, step_retrying), the eventData has the shape

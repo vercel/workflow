@@ -7,11 +7,16 @@ prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/errors/fetch-in-workflow
+  - /docs/foundations/idempotency
 ---
 
 Makes HTTP requests from within a workflow. This is a special step function that wraps the standard `fetch` API, automatically handling serialization and providing retry semantics.
 
 This is useful when you need to call external APIs or services from within your workflow.
+
+<Callout type="warn">
+Because workflow `fetch()` has retry semantics, use idempotency keys when the request mutates an external system, such as creating a charge, sending an email, or enqueueing work. See [Idempotency](/docs/foundations/idempotency).
+</Callout>
 
 <Callout>
 `fetch` is a *special* type of step function provided and should be called directly inside workflow functions.

@@ -185,6 +185,7 @@ export function getResourceColor(resource: string): {
 export type SegmentStatus =
   | 'queued'
   | 'running'
+  | 'completed'
   | 'failed'
   | 'retrying'
   | 'succeeded'
@@ -373,6 +374,12 @@ function computeSleepSegmentsFromSpan(
   return [{ startFraction: 0, endFraction: 1, status: 'sleeping' }];
 }
 
+function runSegmentStatus(runStatus: string | undefined): SegmentStatus {
+  if (runStatus === 'failed') return 'failed';
+  if (runStatus === 'running' || runStatus === 'pending') return 'running';
+  return 'completed';
+}
+
 function computeRunSegmentsFromSpan(
   startMs: number,
   duration: number,
@@ -387,11 +394,12 @@ function computeRunSegmentsFromSpan(
     .map((e) => ({ name: e.name, time: getHighResInMs(e.timestamp) }))
     .sort((a, b) => a.time - b.time);
 
+  const runData = attributes?.data as Record<string, unknown> | undefined;
+  const runStatus = runData?.status as string | undefined;
+
   const hasRunCreated = sorted.some((e) => e.name === 'run_created');
 
   if (!hasRunCreated) {
-    const runData = attributes?.data as Record<string, unknown> | undefined;
-    const runStatus = runData?.status as string | undefined;
     return computeV1RunSegments(startMs, duration, activeStartMs, runStatus);
   }
 
@@ -413,7 +421,7 @@ function computeRunSegmentsFromSpan(
   segments.push({
     startFraction: cursor,
     endFraction: 1,
-    status: failedEvent ? 'failed' : 'running',
+    status: failedEvent ? 'failed' : runSegmentStatus(runStatus),
   });
 
   return segments;
@@ -443,7 +451,7 @@ function computeV1RunSegments(
   segments.push({
     startFraction: cursor,
     endFraction: 1,
-    status: runStatus === 'failed' ? 'failed' : 'running',
+    status: runSegmentStatus(runStatus),
   });
 
   return segments;

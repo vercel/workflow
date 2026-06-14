@@ -214,6 +214,14 @@ describe('start', () => {
       expect(mockQueue.mock.calls[0]?.[1].runInput.attributes).toEqual({
         tenant: 't1',
       });
+      // The reserved-namespace escape hatch was not requested, so the
+      // flag must not appear on either payload.
+      expect(mockEventsCreate.mock.calls[0]?.[1].eventData).not.toHaveProperty(
+        'allowReservedAttributes'
+      );
+      expect(mockQueue.mock.calls[0]?.[1].runInput).not.toHaveProperty(
+        'allowReservedAttributes'
+      );
     });
 
     it('rejects initial attributes for pre-v4 runs', async () => {
@@ -262,6 +270,64 @@ describe('start', () => {
       await expect(
         start(validWorkflow, [], { attributes: { $system: 'x' } })
       ).rejects.toThrow(/reserved prefix/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('seeds reserved-prefix initial attributes with allowReservedAttributes and forwards the flag on both payloads', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(validWorkflow, [], {
+        attributes: { $rootRunId: 'wrun_root', tenant: 't1' },
+        allowReservedAttributes: true,
+      });
+
+      // run_created carries the attributes and the flag, so server-side
+      // validation permits the reserved keys the same way the client did.
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          eventData: expect.objectContaining({
+            attributes: { $rootRunId: 'wrun_root', tenant: 't1' },
+            allowReservedAttributes: true,
+          }),
+        }),
+        expect.anything()
+      );
+      // The resilient-start queue input carries both too, so a run
+      // bootstrapped from run_started validates identically.
+      expect(mockQueue.mock.calls[0]?.[1].runInput).toEqual(
+        expect.objectContaining({
+          attributes: { $rootRunId: 'wrun_root', tenant: 't1' },
+          allowReservedAttributes: true,
+        })
+      );
+    });
+
+    it('still enforces non-reserved validation rules when allowReservedAttributes is set', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          attributes: { $note: 'v'.repeat(257) },
+          allowReservedAttributes: true,
+        })
+      ).rejects.toThrow(/exceeds limit 256/);
       expect(mockEventsCreate).not.toHaveBeenCalled();
     });
 

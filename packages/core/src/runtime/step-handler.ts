@@ -655,11 +655,18 @@ function createStepHandler(namespace?: string) {
                   {},
                   async (dehydrateSpan) => {
                     const startTime = Date.now();
+                    // Step return values are consumed by the workflow VM
+                    // running on this same deployment (version skew
+                    // protection ensures it). Byte-stream framing is
+                    // therefore always safe here.
                     const dehydrated = await dehydrateStepReturnValue(
                       result,
                       workflowRunId,
                       encryptionKey,
-                      ops
+                      ops,
+                      globalThis,
+                      false,
+                      true
                     );
                     const durationMs = Date.now() - startTime;
                     dehydrateSpan?.setAttributes({
