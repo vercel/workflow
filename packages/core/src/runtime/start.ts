@@ -40,6 +40,22 @@ const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
 
+// `deploymentId: 'latest'` is a no-op in Worlds without atomic deployments.
+// The warning that explains this only needs to fire once per process: a
+// workflow that hardcodes 'latest' for its Vercel deployment would otherwise
+// log it on every local/Postgres run, flooding tight dev loops.
+let hasWarnedLatestNoOp = false;
+
+/**
+ * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only —
+ * exported so unit tests can exercise the warn path across `start()` calls.
+ *
+ * @internal
+ */
+export function _resetLatestNoOpWarnForTests(): void {
+  hasWarnedLatestNoOp = false;
+}
+
 export interface StartOptionsBase {
   /**
    * The world to use for the workflow run creation,
@@ -204,12 +220,16 @@ export async function start<TArgs extends unknown[], TResult>(
         if (world.resolveLatestDeploymentId) {
           deploymentId = await world.resolveLatestDeploymentId();
         } else {
-          runtimeLogger.warn(
-            "deploymentId: 'latest' has no effect in this world and was ignored. " +
-              'It is only supported by worlds with atomic deployments, such as Vercel. ' +
-              'The run will target the current deployment.',
-            { currentDeploymentId }
-          );
+          // Warn once per process — see hasWarnedLatestNoOp above.
+          if (!hasWarnedLatestNoOp) {
+            hasWarnedLatestNoOp = true;
+            runtimeLogger.warn(
+              "deploymentId: 'latest' has no effect in this world and was ignored. " +
+                'It is only supported by worlds with atomic deployments, such as Vercel. ' +
+                'The run will target the current deployment.',
+              { currentDeploymentId }
+            );
+          }
           deploymentId = currentDeploymentId;
         }
       }
