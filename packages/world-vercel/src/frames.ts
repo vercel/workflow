@@ -1,8 +1,7 @@
 /**
  * Length-prefixed binary frame codec for the v4 list-events response.
  *
- * Mirrors the server-side encoder in
- * workflow-server/lib/handlers/v4/frames.ts. Wire format:
+ * Mirrors the server-side encoder in the world-vercel backend. Wire format:
  *
  *   list-response := frame*  end-frame
  *   frame         := u32_be(meta_len) || cbor_meta || u32_be(body_len) || body_bytes

@@ -7,8 +7,8 @@ import {
   V4_FRAME_CONTENT_TYPE,
 } from './frames.js';
 
-/** Server's wire encoder (matches the workflow-server/lib/handlers/v4/frames.ts
- *  end-frame helper). Re-implemented here so the client tests don't depend on
+/** Server's wire encoder (matches the world-vercel backend's v4 end-frame
+ *  helper). Re-implemented here so the client tests don't depend on
  *  importing from another package. */
 function encodeEndFrame(next?: string): Uint8Array {
   const meta: Record<string, unknown> = { _end: 1 };

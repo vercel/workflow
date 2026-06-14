@@ -160,8 +160,8 @@ describe('splitEventDataForV4 attribute fields', () => {
 
 describe('createWorkflowRunEvent response coercion', () => {
   it('coerces ISO-string dates in the returned event and preloaded events', async () => {
-    // DynamoDB-backed events store nested eventData dates as ISO strings
-    // (the server's entity layer converts Date → toISOString on write with
+    // Persisted events store nested eventData dates as ISO strings
+    // (the backend's entity layer converts Date → toISOString on write with
     // no inverse getter). The run_started TTFB preload reads events back
     // from a query, so the POST response's `event`/`events` need the same
     // EventSchema coercion as the GET/LIST path — the runtime calls

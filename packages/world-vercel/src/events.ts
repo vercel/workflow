@@ -8,9 +8,9 @@
  *   frame := [u32_be meta_len][cbor_meta][u32_be body_len][body_bytes]
  *
  * `cbor_meta` is the structured event metadata; `body_bytes` is the
- * opaque user payload, never CBOR-decoded by the server. See
- * workflow-server/lib/handlers/v4/ for the matching server-side handlers
- * and ../events-v4.ts for the wire-level client.
+ * opaque user payload, never CBOR-decoded by the server. See the
+ * world-vercel backend's v4 handlers for the matching server-side
+ * encoding and ../events-v4.ts for the wire-level client.
  *
  * Key shape changes vs. v2/v3:
  *
@@ -281,15 +281,15 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
 /**
  * Run an assembled event through EventSchema so per-event-type
  * z.coerce.date() (wait_created.resumeAt, wait_completed.resumeAt,
- * step_retrying.retryAfter) converts the ISO strings DynamoDB returns
- * back into Date instances — the workflow runtime calls .getTime() on
+ * step_retrying.retryAfter) converts the ISO strings the backing store
+ * returns back into Date instances — the workflow runtime calls .getTime() on
  * these and would otherwise crash. safeParse: pass the event through
  * unchanged if it doesn't match a known shape (legacy / mid-rollout).
  *
  * Used by every path that hands events to the runtime: GET/LIST frames
  * (via buildEventFromV4) and the POST response's `event` / preloaded
- * `events` bag — all of these can carry events read back from DynamoDB,
- * where nested eventData dates are stored as ISO strings.
+ * `events` bag — all of these can carry events read back from the
+ * backing store, where nested eventData dates are stored as ISO strings.
  */
 function coerceEventDates(raw: Record<string, unknown>): Event {
   const parsed = EventSchema.safeParse(raw);
@@ -461,8 +461,8 @@ async function createWorkflowRunEventInner(
   if (id === null) {
     throw new WorkflowWorldError(
       'world-vercel v4: createWorkflowRunEvent requires a client-generated ' +
-        'runId for run_created (the runId is part of the S3 ref key). ' +
-        'Generate a wrun_ ULID before calling.',
+        'runId for run_created (the runId is part of the payload storage ' +
+        'ref key). Generate a wrun_ ULID before calling.',
       { status: 400 }
     );
   }
@@ -501,10 +501,11 @@ async function createWorkflowRunEventInner(
   // pass-through deserializeError helper (run/step dates arrive as real
   // Dates — the server's entity getters convert before CBOR-encoding).
   // The returned `event` and preloaded `events` go through
-  // coerceEventDates: they can be read back from DynamoDB server-side
-  // (e.g. the run_started TTFB preload queries the event log), where
-  // nested eventData dates are ISO strings — same coercion the GET/LIST
-  // path applies, and the v3 path applied via its zod wire schemas.
+  // coerceEventDates: they can be read back from the backing store
+  // server-side (e.g. the run_started TTFB preload queries the event
+  // log), where nested eventData dates are ISO strings — same coercion
+  // the GET/LIST path applies, and the v3 path applied via its zod wire
+  // schemas.
   // The returned event honors the caller's resolveData: 'none' strips
   // payload fields, matching the v3 path's stripEventAndLegacyRefs
   // behavior and the Storage contract.

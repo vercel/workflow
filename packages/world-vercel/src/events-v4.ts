@@ -8,7 +8,7 @@
  * - **POST**: request body is one frame. `cbor_meta` carries structured
  *   event metadata (eventType, specVersion, deploymentId, workflowName,
  *   …, executionContext); `body_bytes` is the opaque user payload that
- *   the server streams straight to S3 without decoding.
+ *   the server stores without ever decoding it.
  * - **GET single event**: response body is one frame.
  * - **LIST events**: response body is a stream of frames terminated by a
  *   sentinel frame (meta = `{_end: 1, next?: cursor}`).
@@ -38,8 +38,7 @@ import { type APIConfig, getHttpConfig } from './utils.js';
 /**
  * The few HTTP response headers v4 still uses. POST surfaces these so
  * callers can read the freshly-created eventId without decoding the
- * CBOR response body. Mirror of
- * workflow-server/lib/handlers/v4/headers.ts `V4_RESPONSE_HEADERS`.
+ * CBOR response body. Mirror of the backend's v4 response-header set.
  */
 export const V4_RESPONSE_HEADERS = {
   eventId: 'x-wf-event-id',
@@ -49,8 +48,9 @@ export const V4_RESPONSE_HEADERS = {
 
 export interface CreateEventV4Input {
   /** runId in the URL. Required for run_created too — v4 has no
-   *  `/runs/null/events` shortcut because the runId is part of the S3
-   *  key. Higher-level callers generate the ULID locally. */
+   *  `/runs/null/events` shortcut because the runId is part of the key
+   *  the payload is stored under. Higher-level callers generate the ULID
+   *  locally. */
   runId: string;
   eventType: string;
   /** Opaque payload bytes. Pass undefined for events that don't carry
@@ -311,7 +311,7 @@ function readHeader(
  * Returns one v4 frame: the full event entity (CBOR-decoded from the
  * frame meta) plus the resolved payload bytes (frame body, possibly
  * empty). The wire format is identical to a single LIST frame so the
- * server can stream the payload from S3 without buffering — callers
+ * server can stream the payload back without buffering — callers
  * are responsible for splicing `body` into `event.eventData[payloadField]`
  * when they need the resolved value. The world-vercel adapter does this
  * in events.ts.
