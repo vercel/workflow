@@ -2,7 +2,12 @@ import type { AnyEventRequest } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
-import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
+import {
+  createWorkflowRunEvent,
+  getWorkflowRunEvents,
+  splitEventDataForV4,
+} from './events.js';
+import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 
 const ORIGIN = 'https://vercel-workflow.com';
 
@@ -341,6 +346,85 @@ describe('createWorkflowRunEvent resolveData', () => {
       ?.eventData;
     expect(eventData?.result).toBeUndefined();
     expect(eventData?.stepName).toBe('my-step');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
+  // A v4 LIST response: one run_created frame (with payload body) + sentinel.
+  function listResponse(body: Uint8Array): Buffer {
+    return Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {
+            input: { _type: 'RemoteRef', _ref: 's3rf:wrun_1/input' },
+            workflowName: 'wf',
+          },
+        },
+        body
+      ),
+      encodeFrame({ _end: 1 }, new Uint8Array(0)),
+    ]);
+  }
+
+  it("sends remoteRefBehavior=lazy for resolveData 'none' and strips any returned body", async () => {
+    const agent = mockAgent();
+    // The interceptor only matches when the request carries
+    // ?remoteRefBehavior=lazy — so a missing/wrong param fails the request.
+    // The reply still includes payload bytes, simulating a backend that
+    // predates the flag: the adapter must strip them regardless.
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { remoteRefBehavior: 'lazy' },
+      })
+      .reply(200, listResponse(new TextEncoder().encode('"payload"')), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'none' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    const eventData = (
+      result.data[0] as { eventData?: Record<string, unknown> }
+    ).eventData;
+    expect(eventData?.input).toBeUndefined();
+    expect(eventData?.workflowName).toBe('wf');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('sends remoteRefBehavior=resolve by default and splices the body bytes', async () => {
+    const agent = mockAgent();
+    const body = new TextEncoder().encode('"payload"');
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, listResponse(body), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    // No resolveData → defaults to 'all' → resolve.
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    const eventData = (
+      result.data[0] as { eventData?: Record<string, unknown> }
+    ).eventData;
+    expect(eventData?.input).toEqual(body);
     agent.assertNoPendingInterceptors();
   });
 });
