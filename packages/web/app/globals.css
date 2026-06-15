@@ -4,12 +4,6 @@
 @source "../../web-shared/src";
 @source "./components";
 
-/*
- * Theme variants used by @workflow/web-shared components (e.g. the context
- * card arrow stroke). These mirror the declarations in
- * @workflow/web-shared/styles.css, which this app does not import, so the
- * `dark-theme:`/`light-theme:` variants compile here too.
- */
 @custom-variant dark-theme (&:where(.dark-theme, .dark-theme *, .dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
 @custom-variant light-theme (&:where(.light-theme, .light-theme *, .light, .light *));
 
@@ -72,12 +66,6 @@
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
 
-  /*
-   * Geist design system tokens used by @workflow/web-shared components that
-   * have no Tailwind default equivalent (e.g. the context card background and
-   * the highest-contrast gray). Without these, utilities like
-   * `bg-background-100` and `text-gray-1000` emit no rule.
-   */
   --color-background-100: var(--ds-background-100);
   --color-background-200: var(--ds-background-200);
   --color-gray-1000: var(--ds-gray-1000);
