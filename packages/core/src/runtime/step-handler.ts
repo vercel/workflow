@@ -828,11 +828,18 @@ const stepHandler = createQueueHandler(
           result = await trace('step.dehydrate', {}, async (dehydrateSpan) => {
             const startTime = Date.now();
             const returnValueOpsStart = ops.length;
+            // Step return values are consumed by the workflow VM
+            // running on this same deployment (version skew
+            // protection ensures it). Byte-stream framing is
+            // therefore always safe here.
             const dehydrated = await dehydrateStepReturnValue(
               result,
               workflowRunId,
               encryptionKey,
-              ops
+              ops,
+              globalThis,
+              false,
+              true
             );
             await Promise.all(ops.slice(returnValueOpsStart));
             const durationMs = Date.now() - startTime;
