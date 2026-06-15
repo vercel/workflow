@@ -409,6 +409,7 @@ function NodeRenderer({
   name,
   data,
   isNonenumerable,
+  expanded,
 }: {
   depth: number;
   name?: string;
@@ -500,12 +501,66 @@ function NodeRenderer({
     );
   }
 
+  // Expanded plain object / array → show just the opening bracket instead of
+  // the inline preview. react-inspector renders the children below regardless,
+  // so showing the preview here duplicates the same data on the label row.
+  if (expanded && isPlainContainer(data)) {
+    return (
+      <OpenBracketLabel
+        name={name}
+        isArray={Array.isArray(data)}
+        isNonenumerable={isNonenumerable}
+      />
+    );
+  }
+
   // Default rendering (same as react-inspector's built-in)
   if (depth === 0) {
     return <ObjectRootLabel name={name} data={data} />;
   }
   return (
     <ObjectLabel name={name} data={data} isNonenumerable={isNonenumerable} />
+  );
+}
+
+/**
+ * True for values react-inspector renders as an expandable bracketed container
+ * that we want to show as `{ … }` / `[ … ]`: arrays and plain objects. Class
+ * instances (Date, Map, Set, Error, …) keep their descriptive labels.
+ */
+function isPlainContainer(data: unknown): boolean {
+  if (Array.isArray(data)) return true;
+  if (data === null || typeof data !== 'object') return false;
+  const proto = Object.getPrototypeOf(data);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Label for an expanded object/array: `[name: ]{` or `[name: ][`. The marker
+ * classes drive the CSS that renders the matching closing bracket on its own
+ * line below the children (see BRACKET_STYLES).
+ */
+function OpenBracketLabel({
+  name,
+  isArray,
+  isNonenumerable,
+}: {
+  name?: string;
+  isArray: boolean;
+  isNonenumerable?: boolean;
+}) {
+  return (
+    <span
+      className={`wf-di-bracket ${isArray ? 'wf-di-square' : 'wf-di-curly'}`}
+    >
+      {typeof name === 'string' && (
+        <>
+          <ObjectName name={name} dimmed={isNonenumerable} />
+          <span>: </span>
+        </>
+      )}
+      <span>{isArray ? '[' : '{'}</span>
+    </span>
   );
 }
 
@@ -583,6 +638,33 @@ export function collapseRefs(data: unknown): unknown {
   return result;
 }
 
+/**
+ * Renders the closing bracket for expanded objects/arrays on its own line.
+ *
+ * react-inspector's TreeNode markup is `<li><div>label</div><ol>children</ol></li>`
+ * and has no concept of a closing bracket, so we synthesize it with a `::after`
+ * pseudo-element on the expanded node. The bracket character is picked via
+ * `:has()` so arrays close with `]` and objects with `}`. The opening bracket
+ * (and these marker classes) are emitted by NodeRenderer only when the node is
+ * expanded, so the rule never matches collapsed nodes.
+ */
+const BRACKET_STYLES = `
+.wf-di-tree li[role="treeitem"]:has(> div > .wf-di-bracket)::after {
+  display: block;
+  /* Aligns the closing bracket with the opening bracket's line. 12px matches
+     react-inspector's TREENODE_PADDING_LEFT (the child indent), which is a
+     fixed value independent of the disclosure-arrow glyph width. */
+  padding-left: 12px;
+  white-space: pre;
+}
+.wf-di-tree li[role="treeitem"]:has(> div > .wf-di-curly)::after {
+  content: "}";
+}
+.wf-di-tree li[role="treeitem"]:has(> div > .wf-di-square)::after {
+  content: "]";
+}
+`;
+
 export interface DataInspectorProps {
   /** The data to inspect */
   data: unknown;
@@ -625,15 +707,22 @@ export function DataInspector({
 
   const content = (
     <ExtendedThemeContext.Provider value={extendedTheme}>
-      <ObjectInspector
-        data={stableData}
-        name={name}
-        // @ts-expect-error react-inspector accepts theme objects at runtime despite
-        // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
-        theme={isDark ? inspectorThemeDark : inspectorThemeLight}
-        expandLevel={initialExpandLevel}
-        nodeRenderer={NodeRenderer}
-      />
+      {/* React 19 hoists & dedupes this <style> by href, so it is emitted once
+          regardless of how many inspectors are mounted. */}
+      <style href="wf-di-brackets" precedence="default">
+        {BRACKET_STYLES}
+      </style>
+      <div className="wf-di-tree">
+        <ObjectInspector
+          data={stableData}
+          name={name}
+          // @ts-expect-error react-inspector accepts theme objects at runtime despite
+          // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
+          theme={isDark ? inspectorThemeDark : inspectorThemeLight}
+          expandLevel={initialExpandLevel}
+          nodeRenderer={NodeRenderer}
+        />
+      </div>
     </ExtendedThemeContext.Provider>
   );
 
