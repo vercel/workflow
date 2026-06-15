@@ -1,0 +1,40 @@
+---
+title: parseStepName
+description: Parse a machine-readable step name into display-friendly components.
+type: reference
+summary: Use parseStepName to extract a display-friendly short name from a step's machine-readable identifier.
+related:
+  - /docs/api-reference/workflow-observability/parse-workflow-name
+  - /docs/api-reference/workflow-observability/parse-class-name
+---
+
+Step names are stored as machine-readable identifiers like `step//./src/workflows/order//processPayment`. This function parses them into components suitable for display in a UI.
+
+```typescript lineNumbers
+import { parseStepName } from "workflow/observability"; // [!code highlight]
+
+const parsed = parseStepName("step//./src/workflows/order//processPayment"); // [!code highlight]
+// parsed?.shortName → "processPayment"
+// parsed?.moduleSpecifier → "./src/workflows/order"
+// parsed?.functionName → "processPayment"
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The machine-readable step name (e.g. from `step.stepName`) |
+
+### Returns
+
+`{ shortName: string; moduleSpecifier: string; functionName: string } | null`
+
+| Property | Description |
+|----------|-------------|
+| `shortName` | The display name — the last segment of the function name. For nested steps like `processOrder/chargeCard`, this is `"chargeCard"`. |
+| `moduleSpecifier` | The module the step is defined in — a relative path (`./src/workflows/order`) or a package specifier (`@myorg/tasks@2.0.0`). |
+| `functionName` | The full function name including nesting (e.g. `processOrder/chargeCard`). |
+
+Returns `null` when the input is not a valid step name.

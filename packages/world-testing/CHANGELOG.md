@@ -1,5 +1,17 @@
 # @workflow/world-testing
 
+## 4.1.10
+
+### Patch Changes
+
+- [#2338](https://github.com/vercel/workflow/pull/2338) [`253eeea`](https://github.com/vercel/workflow/commit/253eeeae0fbf8dc1d9aa551cc7b54260244d3a46) Thanks [@xujustinj](https://github.com/xujustinj)! - Use `vitest run` instead of watch mode so local `pnpm test` exits cleanly.
+
+- Updated dependencies [[`2100fc3`](https://github.com/vercel/workflow/commit/2100fc3a362f6c6c1b2668663991ef9c2b6c182c), [`15507bd`](https://github.com/vercel/workflow/commit/15507bdccf8bb62b9d3fd5646428ada33c29caec), [`296b785`](https://github.com/vercel/workflow/commit/296b785db063add70db69645b07d158d6f1bf54f), [`9c667e0`](https://github.com/vercel/workflow/commit/9c667e05c2aad0158698099ac84a846e10ed5700), [`4291c59`](https://github.com/vercel/workflow/commit/4291c5950d5abe087b3f2ea288926553d08f7b8a), [`73975ad`](https://github.com/vercel/workflow/commit/73975ada17b10e5dc8f344f2aa356ad067ddc56e)]:
+  - @workflow/core@4.5.0
+  - @workflow/cli@4.2.10
+  - workflow@4.5.0
+  - @workflow/world@4.2.0
+
 ## 4.1.9
 
 ### Patch Changes

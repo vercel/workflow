@@ -17,7 +17,7 @@ export interface HookInvocationQueueItem {
   token: string;
   metadata?: Serializable;
   hasCreatedEvent?: boolean;
-  /** Whether the workflow is awaiting `hook.hasConflict` for this hook */
+  /** Whether the workflow is awaiting `hook.getConflict()` for this hook */
   hasConflictAwaiter?: boolean;
   disposed?: boolean;
   isWebhook?: boolean;

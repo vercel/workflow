@@ -1,5 +1,19 @@
 # @workflow/world-vercel
 
+## 4.4.1
+
+### Patch Changes
+
+- [#2338](https://github.com/vercel/workflow/pull/2338) [`253eeea`](https://github.com/vercel/workflow/commit/253eeeae0fbf8dc1d9aa551cc7b54260244d3a46) Thanks [@xujustinj](https://github.com/xujustinj)! - Use `vitest run` instead of watch mode so local `pnpm test` exits cleanly.
+
+- [#1847](https://github.com/vercel/workflow/pull/1847) [`73975ad`](https://github.com/vercel/workflow/commit/73975ada17b10e5dc8f344f2aa356ad067ddc56e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Propagate client stream cancellation
+
+- [#2399](https://github.com/vercel/workflow/pull/2399) [`b5569a8`](https://github.com/vercel/workflow/commit/b5569a859052d0e3a7e43f2143cabef3e298c567) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update @vercel/queues from 0.3.0 to 0.3.1, which adds native retries for 429s and ECONNRESET
+
+- Updated dependencies [[`9c667e0`](https://github.com/vercel/workflow/commit/9c667e05c2aad0158698099ac84a846e10ed5700)]:
+  - @workflow/world@4.2.0
+  - @workflow/errors@4.1.4
+
 ## 4.4.0
 
 ### Minor Changes

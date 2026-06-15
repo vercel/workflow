@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  HookNotFoundError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowWorldError,
@@ -1600,11 +1601,11 @@ describe('e2e', () => {
     }
   );
 
-  test('hookHasConflictWorkflow - awaiting hook.hasConflict registers hook without payload', async () => {
+  test('hookGetConflictWorkflow - awaiting hook.getConflict() registers hook without payload', async () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);
 
-    const run = await start(await e2e('hookHasConflictWorkflow'), [
+    const run = await start(await e2e('hookGetConflictWorkflow'), [
       token,
       customData,
     ]);
@@ -1613,8 +1614,8 @@ describe('e2e', () => {
     expect(returnValue).toEqual({
       token,
       customData,
-      hasConflict: false,
-      hookHasConflictTestData: 'hook_registered_without_payload',
+      conflictRunId: null,
+      hookGetConflictTestData: 'hook_registered_without_payload',
     });
 
     const world = await getWorld();
@@ -1624,27 +1625,27 @@ describe('e2e', () => {
 
     expect(
       hookCreated,
-      'awaiting hook.hasConflict should suspend and create the hook'
+      'awaiting hook.getConflict() should suspend and create the hook'
     ).toBeDefined();
     expect(
       hookReceived,
-      'hook.hasConflict should not require or consume hook payload data'
+      'hook.getConflict() should not require or consume hook payload data'
     ).toBeUndefined();
   });
 
   test.each([
     {
-      workflow: 'hookHasConflictWithPriorStepWorkflow',
-      hookHasConflictTestData: 'prior_step_completed_after_registration',
+      workflow: 'hookGetConflictWithPriorStepWorkflow',
+      hookGetConflictTestData: 'prior_step_completed_after_registration',
     },
     {
-      workflow: 'hookHasConflictWithParallelStepWorkflow',
-      hookHasConflictTestData: 'parallel_step_completed_with_registration',
+      workflow: 'hookGetConflictWithParallelStepWorkflow',
+      hookGetConflictTestData: 'parallel_step_completed_with_registration',
     },
   ])(
-    '$workflow - hook.hasConflict does not block step execution',
+    '$workflow - hook.getConflict() does not block step execution',
     { timeout: 60_000 },
-    async ({ workflow, hookHasConflictTestData }) => {
+    async ({ workflow, hookGetConflictTestData }) => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
 
@@ -1654,12 +1655,12 @@ describe('e2e', () => {
       expect(returnValue).toEqual({
         token,
         customData,
-        hasConflict: false,
+        conflictRunId: null,
         stepResult: {
           customData,
-          hookHasConflictStepData: 'step_completed',
+          hookGetConflictStepData: 'step_completed',
         },
-        hookHasConflictTestData,
+        hookGetConflictTestData,
       });
 
       const world = await getWorld();
@@ -1673,14 +1674,14 @@ describe('e2e', () => {
   );
 
   test(
-    'hookHasConflictThenStepParallelWorkflow - hook.hasConflict continuation step runs alongside other steps',
+    'hookGetConflictThenStepParallelWorkflow - hook.getConflict() continuation step runs alongside other steps',
     { timeout: 90_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
 
       const run = await start(
-        await e2e('hookHasConflictThenStepParallelWorkflow'),
+        await e2e('hookGetConflictThenStepParallelWorkflow'),
         [token, customData]
       );
 
@@ -1688,7 +1689,7 @@ describe('e2e', () => {
       expect(returnValue).toMatchObject({
         token,
         customData,
-        hookHasConflictTestData: 'registration_then_step_runs_in_parallel',
+        hookGetConflictTestData: 'registration_then_step_runs_in_parallel',
       });
 
       const { stepAResult, stepBResult } = returnValue;
@@ -1700,7 +1701,7 @@ describe('e2e', () => {
       expect(stepADuration).toBeGreaterThanOrEqual(9_000);
       expect(
         stepBResult.startedAt,
-        'stepB should start before stepA finishes, proving hook.hasConflict can continue independently of other steps'
+        'stepB should start before stepA finishes, proving hook.getConflict() can continue independently of other steps'
       ).toBeLessThan(stepAResult.endedAt);
       expect(
         stepStartDelta,
@@ -1710,7 +1711,7 @@ describe('e2e', () => {
   );
 
   test(
-    'hookHasConflictWorkflow - hook.hasConflict resolves true when token is already registered',
+    'hookGetConflictWorkflow - hook.getConflict() resolves with the conflicting run when token is already registered',
     { timeout: 60_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
@@ -1721,21 +1722,28 @@ describe('e2e', () => {
         customData,
       ]);
 
-      const hook = await waitForHook(token, { runId: run1.runId });
+      const hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+      assert(hook, 'Expected hook to belong to run1');
 
-      const run2 = await start(await e2e('hookHasConflictWorkflow'), [
+      const run2 = await start(await e2e('hookGetConflictWorkflow'), [
         token,
         customData,
       ]);
 
-      // The conflicting run detects the conflict via `hook.hasConflict`
-      // and completes successfully instead of failing.
+      // The conflicting run detects the conflict via `hook.getConflict()`
+      // and completes successfully instead of failing. The resolved
+      // `{ runId }` identifies the active owner, which the workflow can
+      // act on via `getRun()` inside a step (e.g. reading its status).
       const run2Result = await run2.returnValue;
       expect(run2Result).toEqual({
         token,
         customData,
-        hasConflict: true,
-        hookHasConflictTestData: 'hook_token_conflict_detected',
+        conflictRunId: run1.runId,
+        conflictStatus: 'running',
+        hookGetConflictTestData: 'hook_token_conflict_detected',
       });
 
       const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
@@ -1751,6 +1759,262 @@ describe('e2e', () => {
         message: 'ready-conflict-holder',
         customData,
         hookCleanupTestData: 'workflow_completed',
+      });
+    }
+  );
+
+  test(
+    'hookClaimOnlyMutexWorkflow - hook works as a pure run mutex without payload data',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      // Owner claims the token and holds it during unrelated work,
+      // never awaiting payload data.
+      const run1 = await start(await e2e('hookClaimOnlyMutexWorkflow'), [
+        token,
+        15_000,
+      ]);
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+
+      // A duplicate started while the owner holds the token observes the
+      // conflict and identifies the owner.
+      const run2 = await start(await e2e('hookClaimOnlyMutexWorkflow'), [
+        token,
+        15_000,
+      ]);
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toEqual({
+        role: 'duplicate',
+        conflictRunId: run1.runId,
+      });
+
+      // The owner completes without ever receiving a payload.
+      const run1Result = await run1.returnValue;
+      expect(run1Result).toMatchObject({ role: 'owner' });
+
+      const world = await getWorld();
+      const { data: events } = await world.events.list({ runId: run1.runId });
+      expect(
+        events.some((e) => e.eventType === 'hook_received'),
+        'claim-only owner should never receive hook payload data'
+      ).toBe(false);
+
+      // Completion releases the token: a later run claims it cleanly.
+      const waitForTokenRelease = async () => {
+        const timeoutAt = Date.now() + 20_000;
+        while (Date.now() < timeoutAt) {
+          try {
+            await getHookByToken(token);
+          } catch (error) {
+            if (HookNotFoundError.is(error)) {
+              return;
+            }
+            throw error;
+          }
+          await sleep(1_000);
+        }
+        throw new Error(`Timed out waiting for token ${token} to be released`);
+      };
+      await waitForTokenRelease();
+
+      const run3 = await start(await e2e('hookClaimOnlyMutexWorkflow'), [
+        token,
+        100,
+      ]);
+      const run3Result = await run3.returnValue;
+      expect(run3Result).toMatchObject({ role: 'owner' });
+    }
+  );
+
+  test(
+    'hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue',
+    { timeout: 120_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      const run1 = await start(await e2e('hookAdoptOwnerResultWorkflow'), [
+        token,
+        'owner-marker',
+      ]);
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+
+      // The duplicate suspends on the owner's returnValue.
+      const run2 = await start(await e2e('hookAdoptOwnerResultWorkflow'), [
+        token,
+        'duplicate-marker',
+      ]);
+
+      // Wait until run2 has actually observed the conflict before letting
+      // the owner complete. On slow runtimes run2's first invocation can
+      // otherwise land after the owner finished and released the token,
+      // turning run2 into a fresh owner that waits forever for a payload.
+      const world = await getWorld();
+      const conflictDeadline = Date.now() + 60_000;
+      let sawConflict = false;
+      while (Date.now() < conflictDeadline) {
+        const { data: run2Events } = await world.events.list({
+          runId: run2.runId,
+        });
+        if (run2Events.some((e) => e.eventType === 'hook_conflict')) {
+          sawConflict = true;
+          break;
+        }
+        await sleep(500);
+      }
+      expect(
+        sawConflict,
+        'run2 should observe the hook conflict while the owner is active'
+      ).toBe(true);
+
+      // Complete the owner.
+      await resumeHook(token, { value: 'adopted-value' });
+
+      const run1Result = await run1.returnValue;
+      expect(run1Result).toEqual({
+        role: 'owner',
+        marker: 'owner-marker',
+        value: 'adopted-value',
+      });
+
+      // The duplicate returns the owner's exact result, so callers cannot
+      // tell which run did the work.
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toEqual({
+        role: 'duplicate',
+        conflictRunId: run1.runId,
+        adopted: run1Result,
+      });
+    }
+  );
+
+  test(
+    'hookSignalOwnerWorkflow - duplicate forwards its payload to the owner via resumeHook',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      const run1 = await start(await e2e('hookSignalOwnerWorkflow'), [
+        token,
+        'owner-input',
+      ]);
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+
+      // The duplicate forwards its own input into the owner's hook
+      // instead of doing the work itself.
+      const run2 = await start(await e2e('hookSignalOwnerWorkflow'), [
+        token,
+        'forwarded-from-duplicate',
+      ]);
+
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toEqual({
+        role: 'duplicate',
+        forwardedTo: run1.runId,
+      });
+
+      // The owner receives the duplicate's payload and completes with it.
+      const run1Result = await run1.returnValue;
+      expect(run1Result).toEqual({
+        role: 'owner',
+        received: 'forwarded-from-duplicate',
+      });
+    }
+  );
+
+  test(
+    'hookSupersedeOwnerWorkflow - duplicate cancels the owner and claims the released token',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      // The first run claims the token and waits for a payload.
+      const run1 = await start(await e2e('hookSupersedeOwnerWorkflow'), [
+        token,
+      ]);
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+
+      // Newest-wins: the second run cancels the owner and claims the token.
+      const run2 = await start(await e2e('hookSupersedeOwnerWorkflow'), [
+        token,
+      ]);
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run2.runId,
+        60_000
+      );
+
+      // The superseded owner ends up cancelled — assert via both the
+      // rejected returnValue (also prevents an unhandled rejection from
+      // leaking out of this test) and the inspected run status.
+      const run1Error = await run1.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunCancelledError.is(run1Error)).toBe(true);
+      const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
+      expect(run1Data.status).toBe('cancelled');
+
+      // The new owner receives payloads on the reclaimed token.
+      await resumeHook(token, { message: 'post-supersede' });
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toMatchObject({
+        role: 'owner',
+        received: 'post-supersede',
+      });
+    }
+  );
+
+  test(
+    'resume-or-start route pattern - resumeHook retried after start() reaches the new run',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      // No active run yet: the resume half fails with HookNotFoundError.
+      await expect(
+        resumeHook(token, { message: 'too-early' })
+      ).rejects.toSatisfy((e: unknown) => HookNotFoundError.is(e));
+
+      // Start the workflow, then retry the resume until the run registers
+      // its deterministic hook — the documented route-side pattern.
+      const run = await start(await e2e('hookSignalOwnerWorkflow'), [
+        token,
+        'unused-owner-input',
+      ]);
+
+      const deadline = Date.now() + 30_000;
+      let resumed: Awaited<ReturnType<typeof resumeHook>> | undefined;
+      while (Date.now() < deadline) {
+        try {
+          resumed = await resumeHook(token, { message: 'delivered' });
+          break;
+        } catch (error) {
+          if (!HookNotFoundError.is(error)) throw error;
+          await sleep(250);
+        }
+      }
+      expect(
+        resumed,
+        'resume retry should reach the started run'
+      ).toBeDefined();
+
+      // The resume reached the run this request started (no concurrent
+      // racer in this test), and the payload was not dropped.
+      expect(resumed?.runId).toBe(run.runId);
+      const result = await run.returnValue;
+      expect(result).toEqual({
+        role: 'owner',
+        received: 'delivered',
       });
     }
   );
