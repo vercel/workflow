@@ -248,6 +248,7 @@ export abstract class BaseBuilder {
       '**/.workflow-data/**',
       '**/.workflow-vitest/**',
       '**/.well-known/workflow/**',
+      '**/.swc/**',
       '**/.svelte-kit/**',
       '**/.turbo/**',
       '**/.cache/**',
@@ -895,8 +896,7 @@ export abstract class BaseBuilder {
       })
     );
 
-    // Create .gitignore in .swc directory
-    await this.createSwcGitignore();
+    await this.ensureSwcIgnored();
 
     if (this.config.watch) {
       return { context: esbuildCtx, manifest: workflowManifest };
@@ -1125,8 +1125,7 @@ export abstract class BaseBuilder {
         );
       }
 
-      // Create .gitignore in .swc directory
-      await this.createSwcGitignore();
+      await this.ensureSwcIgnored();
 
       if (
         !interimBundle.outputFiles ||
@@ -1595,8 +1594,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
 
     this.logEsbuildMessages(clientResult, 'client library bundle');
 
-    // Create .gitignore in .swc directory
-    await this.createSwcGitignore();
+    await this.ensureSwcIgnored();
   }
 
   /**
@@ -1778,7 +1776,47 @@ export const OPTIONS = handler;`;
     await mkdir(dirname(filePath), { recursive: true });
   }
 
-  private async createSwcGitignore(): Promise<void> {
+  protected async ensureSwcIgnored(): Promise<void> {
+    await this.ensureProjectSwcGitignoreEntry();
+    await this.createSwcDirectoryGitignore();
+  }
+
+  private async ensureProjectSwcGitignoreEntry(): Promise<void> {
+    const gitignorePath = join(this.config.workingDir, '.gitignore');
+
+    try {
+      let content = '';
+      try {
+        content = await readFile(gitignorePath, 'utf-8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          return;
+        }
+      }
+
+      const hasSwcEntry = content.split(/\r?\n/).some((line) => {
+        const trimmed = line.trim();
+        return (
+          trimmed === '.swc' ||
+          trimmed === '.swc/' ||
+          trimmed === '/.swc' ||
+          trimmed === '/.swc/'
+        );
+      });
+
+      if (hasSwcEntry) {
+        return;
+      }
+
+      const separator =
+        content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+      await writeFile(gitignorePath, `${content}${separator}/.swc\n`);
+    } catch {
+      // We're intentionally silently ignoring this error - updating .gitignore isn't critical
+    }
+  }
+
+  private async createSwcDirectoryGitignore(): Promise<void> {
     try {
       await writeFile(
         join(this.config.workingDir, '.swc', '.gitignore'),
