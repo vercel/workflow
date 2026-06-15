@@ -76,7 +76,7 @@ function formatResponseDiagnostics(response: Response): string {
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-opg7mhs3w.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
