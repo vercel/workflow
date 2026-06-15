@@ -139,16 +139,16 @@
   --ds-background-200: rgb(250 250 250);
 
   /* Gray Scale */
-  --ds-gray-100: rgb(250 250 250);
-  --ds-gray-200: rgb(245 245 245);
-  --ds-gray-300: rgb(229 229 229);
-  --ds-gray-400: rgb(212 212 212);
-  --ds-gray-500: rgb(163 163 163);
-  --ds-gray-600: rgb(115 115 115);
-  --ds-gray-700: rgb(82 82 82);
-  --ds-gray-800: rgb(64 64 64);
-  --ds-gray-900: rgb(23 23 23);
-  --ds-gray-1000: rgb(0 0 0);
+  --ds-gray-100: hsl(0, 0%, 95%);
+  --ds-gray-200: hsl(0, 0%, 92%);
+  --ds-gray-300: hsl(0, 0%, 90%);
+  --ds-gray-400: hsl(0, 0%, 92%);
+  --ds-gray-500: hsl(0, 0%, 79%);
+  --ds-gray-600: hsl(0, 0%, 66%);
+  --ds-gray-700: hsl(0, 0%, 56%);
+  --ds-gray-800: hsl(0, 0%, 49%);
+  --ds-gray-900: hsl(0, 0%, 40%);
+  --ds-gray-1000: hsl(0, 0%, 9%);
 
   /* Gray Alpha */
   --ds-gray-alpha-100: rgba(0, 0, 0, 0.05);
@@ -292,20 +292,20 @@
 
   /* Geist Design System Colors - Dark Mode */
   /* Backgrounds */
-  --ds-background-100: rgb(0 0 0);
-  --ds-background-200: rgb(10 10 10);
+  --ds-background-100: hsl(0, 0%, 7%);
+  --ds-background-200: hsl(0, 0%, 10%);
 
   /* Gray Scale */
-  --ds-gray-100: rgb(17 17 17);
-  --ds-gray-200: rgb(23 23 23);
-  --ds-gray-300: rgb(41 41 41);
-  --ds-gray-400: rgb(64 64 64);
-  --ds-gray-500: rgb(115 115 115);
-  --ds-gray-600: rgb(163 163 163);
-  --ds-gray-700: rgb(212 212 212);
-  --ds-gray-800: rgb(229 229 229);
-  --ds-gray-900: rgb(245 245 245);
-  --ds-gray-1000: rgb(255 255 255);
+  --ds-gray-100: hsl(0, 0%, 11%);
+  --ds-gray-200: hsl(0, 0%, 14%);
+  --ds-gray-300: hsl(0, 0%, 17%);
+  --ds-gray-400: hsl(0, 0%, 14%);
+  --ds-gray-500: hsl(0, 0%, 23%);
+  --ds-gray-600: hsl(0, 0%, 34%);
+  --ds-gray-700: hsl(0, 0%, 44%);
+  --ds-gray-800: hsl(0, 0%, 51%);
+  --ds-gray-900: hsl(0, 0%, 63%);
+  --ds-gray-1000: hsl(0, 0%, 93%);
 
   /* Gray Alpha - Dark Mode */
   --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
@@ -450,18 +450,18 @@
     --node-bg-conditional: #7f1d1d;
 
     /* Geist Design System Colors - Dark Mode (same as .dark) */
-    --ds-background-100: rgb(0 0 0);
-    --ds-background-200: rgb(10 10 10);
-    --ds-gray-100: rgb(17 17 17);
-    --ds-gray-200: rgb(23 23 23);
-    --ds-gray-300: rgb(41 41 41);
-    --ds-gray-400: rgb(64 64 64);
-    --ds-gray-500: rgb(115 115 115);
-    --ds-gray-600: rgb(163 163 163);
-    --ds-gray-700: rgb(212 212 212);
-    --ds-gray-800: rgb(229 229 229);
-    --ds-gray-900: rgb(245 245 245);
-    --ds-gray-1000: rgb(255 255 255);
+    --ds-background-100: hsl(0, 0%, 7%);
+    --ds-background-200: hsl(0, 0%, 10%);
+    --ds-gray-100: hsl(0, 0%, 11%);
+    --ds-gray-200: hsl(0, 0%, 14%);
+    --ds-gray-300: hsl(0, 0%, 17%);
+    --ds-gray-400: hsl(0, 0%, 14%);
+    --ds-gray-500: hsl(0, 0%, 23%);
+    --ds-gray-600: hsl(0, 0%, 34%);
+    --ds-gray-700: hsl(0, 0%, 44%);
+    --ds-gray-800: hsl(0, 0%, 51%);
+    --ds-gray-900: hsl(0, 0%, 63%);
+    --ds-gray-1000: hsl(0, 0%, 93%);
     --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
     --ds-gray-alpha-200: rgba(255, 255, 255, 0.09);
     --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
