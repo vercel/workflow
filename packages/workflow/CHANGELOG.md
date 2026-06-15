@@ -1,5 +1,26 @@
 # workflow
 
+## 4.5.0
+
+### Minor Changes
+
+- [#2373](https://github.com/vercel/workflow/pull/2373) [`296b785`](https://github.com/vercel/workflow/commit/296b785db063add70db69645b07d158d6f1bf54f) Thanks [@pranaygp](https://github.com/pranaygp)! - Replace `hook.hasConflict` (a `Promise<boolean>` property) with `hook.getConflict()`, a method returning a promise that suspends the workflow to commit hook registration and resolves with `{ runId }` identifying the conflicting run when another active hook owns the token (or `null` once the hook is registered), without waiting for hook payload data. Code using `await hook.hasConflict` should migrate to `const conflict = await hook.getConflict()` and branch on `conflict !== null`.
+
+### Patch Changes
+
+- Updated dependencies [[`2100fc3`](https://github.com/vercel/workflow/commit/2100fc3a362f6c6c1b2668663991ef9c2b6c182c), [`15507bd`](https://github.com/vercel/workflow/commit/15507bdccf8bb62b9d3fd5646428ada33c29caec), [`296b785`](https://github.com/vercel/workflow/commit/296b785db063add70db69645b07d158d6f1bf54f), [`9c667e0`](https://github.com/vercel/workflow/commit/9c667e05c2aad0158698099ac84a846e10ed5700), [`4291c59`](https://github.com/vercel/workflow/commit/4291c5950d5abe087b3f2ea288926553d08f7b8a), [`73975ad`](https://github.com/vercel/workflow/commit/73975ada17b10e5dc8f344f2aa356ad067ddc56e)]:
+  - @workflow/core@4.5.0
+  - @workflow/cli@4.2.10
+  - @workflow/next@4.0.11
+  - @workflow/nitro@4.1.1
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/astro@4.0.10
+  - @workflow/nest@0.0.10
+  - @workflow/rollup@4.0.10
+  - @workflow/sveltekit@4.0.10
+  - @workflow/errors@4.1.4
+  - @workflow/nuxt@4.0.11
+
 ## 4.4.0
 
 ### Minor Changes

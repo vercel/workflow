@@ -407,9 +407,9 @@ export async function handleSuspension({
     return { timeoutSeconds: 0 };
   }
 
-  // A `hook.hasConflict` awaiter needs an immediate re-invocation: the
+  // A `hook.getConflict()` awaiter needs an immediate re-invocation: the
   // replay consumes the just-committed hook_created and resolves the
-  // awaiter with `false`. Without it the run would sit idle until some
+  // awaiter with `null`. Without it the run would sit idle until some
   // unrelated message woke it. Any pending steps were already queued
   // above, so they execute in parallel invocations regardless.
   if (hasAwaitedHookCreation) {

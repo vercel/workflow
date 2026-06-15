@@ -1,0 +1,60 @@
+---
+title: HookConflictError
+description: Thrown when creating a hook with a token that is already in use by another workflow run.
+type: reference
+summary: Catch HookConflictError when a hook token is already claimed by another active workflow run.
+related:
+  - /docs/api-reference/workflow/create-hook
+  - /docs/foundations/hooks
+  - /docs/errors/hook-conflict
+---
+
+`HookConflictError` is thrown when creating a hook with a token that is already in use by another active workflow run. Hook tokens must be unique across all running workflows — see the [hook-conflict](/docs/errors/hook-conflict) error guide for resolution strategies.
+
+```typescript lineNumbers
+import { HookConflictError } from "workflow/errors"
+declare function startApprovalWorkflow(token: string): Promise<void>; // @setup
+declare const token: string; // @setup
+
+try {
+  await startApprovalWorkflow(token);
+} catch (error) {
+  if (HookConflictError.is(error)) { // [!code highlight]
+    console.error(
+      `Token "${error.token}" already in use by run ${error.conflictingRunId}`
+    );
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface HookConflictError {
+  /** The hook token that conflicted. */
+  token: string;
+  /** The run ID of the workflow currently holding the token, when known. */
+  conflictingRunId?: string;
+  /** The error message. */
+  message: string;
+}
+export default HookConflictError;`}
+/>
+
+### Static Methods
+
+#### `HookConflictError.is(value)`
+
+Type-safe check for `HookConflictError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { HookConflictError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (HookConflictError.is(error)) {
+  // error is typed as HookConflictError
+}
+```

@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getRun, start } from 'workflow/api';
+import { getRun, resumeHook, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -542,7 +542,7 @@ export async function hookCleanupTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
-export async function hookHasConflictWorkflow(
+export async function hookGetConflictWorkflow(
   token: string,
   customData: string
 ) {
@@ -553,29 +553,49 @@ export async function hookHasConflictWorkflow(
     metadata: { customData },
   });
 
-  // Awaiting `hasConflict` suspends the workflow to commit the hook
-  // registration without waiting for payload data.
-  const hasConflict = await hook.hasConflict;
+  // Awaiting `getConflict()` suspends the workflow to commit the hook
+  // registration without waiting for payload data. It resolves with
+  // `{ runId }` identifying the conflicting run when another active hook
+  // owns the token, or `null` once this hook is registered.
+  const conflict = await hook.getConflict();
+
+  if (conflict) {
+    // To act on the conflicting run, pass `conflict.runId` to `getRun()`
+    // inside a step — the duplicate run can inspect the active owner
+    // before deciding.
+    const conflictStatus = await hookGetConflictRunStatusStep(conflict.runId);
+    return {
+      token,
+      customData,
+      conflictRunId: conflict.runId,
+      conflictStatus,
+      hookGetConflictTestData: 'hook_token_conflict_detected',
+    };
+  }
 
   return {
     token,
     customData,
-    hasConflict,
-    hookHasConflictTestData: hasConflict
-      ? 'hook_token_conflict_detected'
-      : 'hook_registered_without_payload',
+    conflictRunId: null,
+    hookGetConflictTestData: 'hook_registered_without_payload',
   };
 }
 
-async function hookHasConflictStep(customData: string) {
+async function hookGetConflictRunStatusStep(runId: string) {
+  'use step';
+  const run = getRun(runId);
+  return await run.status;
+}
+
+async function hookGetConflictStep(customData: string) {
   'use step';
   return {
     customData,
-    hookHasConflictStepData: 'step_completed',
+    hookGetConflictStepData: 'step_completed',
   };
 }
 
-async function hookHasConflictTimedStep(label: 'A' | 'B', delayMs: number) {
+async function hookGetConflictTimedStep(label: 'A' | 'B', delayMs: number) {
   'use step';
   const { stepStartedAt } = getStepMetadata();
   const startedAt = stepStartedAt.getTime();
@@ -587,7 +607,7 @@ async function hookHasConflictTimedStep(label: 'A' | 'B', delayMs: number) {
   };
 }
 
-export async function hookHasConflictWithPriorStepWorkflow(
+export async function hookGetConflictWithPriorStepWorkflow(
   token: string,
   customData: string
 ) {
@@ -598,20 +618,20 @@ export async function hookHasConflictWithPriorStepWorkflow(
     metadata: { customData },
   });
 
-  const stepPromise = hookHasConflictStep(customData);
+  const stepPromise = hookGetConflictStep(customData);
 
-  const hasConflict = await hook.hasConflict;
+  const conflict = await hook.getConflict();
 
   return {
     token,
     customData,
-    hasConflict,
+    conflictRunId: conflict ? conflict.runId : null,
     stepResult: await stepPromise,
-    hookHasConflictTestData: 'prior_step_completed_after_registration',
+    hookGetConflictTestData: 'prior_step_completed_after_registration',
   };
 }
 
-export async function hookHasConflictWithParallelStepWorkflow(
+export async function hookGetConflictWithParallelStepWorkflow(
   token: string,
   customData: string
 ) {
@@ -622,21 +642,21 @@ export async function hookHasConflictWithParallelStepWorkflow(
     metadata: { customData },
   });
 
-  const [stepResult, hasConflict] = await Promise.all([
-    hookHasConflictStep(customData),
-    hook.hasConflict,
+  const [stepResult, conflict] = await Promise.all([
+    hookGetConflictStep(customData),
+    hook.getConflict(),
   ]);
 
   return {
     token,
     customData,
-    hasConflict,
+    conflictRunId: conflict ? conflict.runId : null,
     stepResult,
-    hookHasConflictTestData: 'parallel_step_completed_with_registration',
+    hookGetConflictTestData: 'parallel_step_completed_with_registration',
   };
 }
 
-export async function hookHasConflictThenStepParallelWorkflow(
+export async function hookGetConflictThenStepParallelWorkflow(
   token: string,
   customData: string
 ) {
@@ -647,10 +667,10 @@ export async function hookHasConflictThenStepParallelWorkflow(
     metadata: { customData },
   });
 
-  const stepBPromise = hook.hasConflict.then(
-    async () => await hookHasConflictTimedStep('B', 100)
-  );
-  const stepAResult = await hookHasConflictTimedStep('A', 10_000);
+  const stepBPromise = hook
+    .getConflict()
+    .then(async () => await hookGetConflictTimedStep('B', 100));
+  const stepAResult = await hookGetConflictTimedStep('A', 10_000);
   const stepBResult = await stepBPromise;
 
   return {
@@ -658,8 +678,154 @@ export async function hookHasConflictThenStepParallelWorkflow(
     customData,
     stepAResult,
     stepBResult,
-    hookHasConflictTestData: 'registration_then_step_runs_in_parallel',
+    hookGetConflictTestData: 'registration_then_step_runs_in_parallel',
   };
+}
+
+//////////////////////////////////////////////////////////
+// Run idempotency / conflict-handling strategy workflows.
+// These mirror the patterns documented in
+// docs/content/docs/*/foundations/idempotency.mdx.
+//////////////////////////////////////////////////////////
+
+/**
+ * Claim-only run mutex: the hook is used purely for run idempotency —
+ * the workflow claims the token, holds it while doing unrelated work,
+ * and never awaits hook payload data. Duplicates started while the
+ * owner holds the token observe the conflict and return early.
+ */
+export async function hookClaimOnlyMutexWorkflow(
+  token: string,
+  holdMs: number
+) {
+  'use workflow';
+
+  using hook = createHook({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+    };
+  }
+
+  // Hold the token for the duration of the work without ever awaiting
+  // hook payload data.
+  const work = await hookGetConflictTimedStep('A', holdMs);
+
+  return {
+    role: 'owner' as const,
+    workEndedAt: work.endedAt,
+  };
+}
+
+/**
+ * Awaits the active owner's result via `getRun()` inside a step. On this
+ * channel `getConflict()` resolves with `{ runId }`, so the duplicate
+ * resolves the owning run by id to read its return value.
+ */
+async function adoptOwnerResult(runId: string) {
+  'use step';
+  return await getRun(runId).returnValue;
+}
+
+/**
+ * "Adopt the owner's result" strategy: the duplicate run waits for the
+ * active owner to finish and returns the owner's result, so callers
+ * cannot tell which run did the work.
+ */
+export async function hookAdoptOwnerResultWorkflow(
+  token: string,
+  marker: string
+) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    const adopted = await adoptOwnerResult(conflict.runId);
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+      adopted,
+    };
+  }
+
+  const payload = await hook;
+  return {
+    role: 'owner' as const,
+    marker,
+    value: payload.value,
+  };
+}
+
+async function forwardPayloadToOwner(token: string, message: string) {
+  'use step';
+  await resumeHook(token, { message });
+}
+
+/**
+ * "Signal the owner" strategy: the duplicate run forwards its input to
+ * the active owner's hook from a step instead of doing the work itself.
+ */
+export async function hookSignalOwnerWorkflow(token: string, message: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    await forwardPayloadToOwner(token, message);
+    return {
+      role: 'duplicate' as const,
+      forwardedTo: conflict.runId,
+    };
+  }
+
+  const payload = await hook;
+  return {
+    role: 'owner' as const,
+    received: payload.message,
+  };
+}
+
+/**
+ * Cancels the active owner via `getRun()` inside a step. `getConflict()`
+ * resolves with `{ runId }`, so the superseding run resolves the owner by
+ * id to cancel it before reclaiming the token.
+ */
+async function cancelOwner(runId: string) {
+  'use step';
+  await getRun(runId).cancel();
+}
+
+/**
+ * "Supersede the owner" strategy (newest-wins): cancel the active owner
+ * and claim the released token. Cancellation disposes the owner's hooks;
+ * the retry loop covers the window where disposal has not propagated.
+ */
+export async function hookSupersedeOwnerWorkflow(token: string) {
+  'use workflow';
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    using hook = createHook<{ message: string }>({ token });
+
+    const conflict = await hook.getConflict();
+    if (!conflict) {
+      const payload = await hook;
+      return {
+        role: 'owner' as const,
+        attempt,
+        received: payload.message,
+      };
+    }
+
+    await cancelOwner(conflict.runId);
+  }
+
+  throw new Error(`Could not claim ${token} after cancelling the owner`);
 }
 
 //////////////////////////////////////////////////////////
@@ -1811,4 +1977,79 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
   'use workflow';
   const childRunId = await startChildWithStepWritable(payload);
   return { childRunId };
+}
+
+//////////////////////////////////////////////////////////
+
+async function parallelHookRaceStep(label: string) {
+  'use step';
+  // A small matching delay makes both step_completed events more likely
+  // to land within the same suspension-flush tick, which is what
+  // triggers the same-body re-walk race.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return label;
+}
+
+/**
+ * Regression test for https://github.com/vercel/workflow/issues/1665
+ * and https://github.com/vercel/workflow/issues/2283. This matches
+ * Paolo's exact minimal repro on #1665:
+ *
+ * ```ts
+ * await Promise.all([get_data(), get_settings()]);
+ * using webhook = createWebhook();
+ * await webhook;
+ * ```
+ *
+ * Two parallel steps complete close enough in time that both
+ * `step_completed` events trigger replay-and-suspend before either
+ * pass's `hook_created` has been observed by the events consumer
+ * (`hasCreatedEvent: false`). Both passes then call
+ * `world.events.create(runId, hook_created)` with the same
+ * deterministic `(correlationId, token)`.
+ *
+ * Before the world-side idempotency fix, the world accepted the first
+ * `hook_created` and wrote a `hook_conflict` event for the second —
+ * even though both events carried the same `(runId, hookId, token)`.
+ * On replay, the hook's awaitable saw the `hook_conflict` and
+ * rejected with `HookConflictError`, even though no other run
+ * actually owned the token.
+ *
+ * With the fix, the world rejects the duplicate with
+ * `EntityConflictError` (which the suspension handler already
+ * swallows at `suspension-handler.ts:142`), no `hook_conflict` event
+ * is written, and the webhook resolves normally.
+ *
+ * The race is timing-sensitive — a single
+ * "parallel-steps-then-webhook" sequence may not always reproduce it
+ * on faster runtimes. The workflow runs the sequence in a loop
+ * (`iterations` independent attempts in series, each with its own
+ * webhook). On the pre-fix code any single iteration that hits the
+ * race surfaces a `hook_conflict` event in the log (and on subsequent
+ * replay throws `HookConflictError`), so a large enough iteration
+ * count gives the race many independent opportunities to fire.
+ */
+export async function parallelStepsThenWebhookWorkflow(iterations: number) {
+  'use workflow';
+
+  const tokens: string[] = [];
+  for (let i = 0; i < iterations; i++) {
+    await Promise.all([
+      parallelHookRaceStep(`${i}-a`),
+      parallelHookRaceStep(`${i}-b`),
+    ]);
+
+    using webhook = createWebhook();
+    const token = webhook.token;
+    tokens.push(token);
+
+    const req = await webhook;
+    const body = await req.text();
+    if (body !== `body-${token}`) {
+      throw new FatalError(
+        `iteration ${i}: expected body-${token}, got ${body}`
+      );
+    }
+  }
+  return tokens;
 }
