@@ -1,5 +1,19 @@
 # @workflow/world-local
 
+## 4.2.0
+
+### Minor Changes
+
+- [#2305](https://github.com/vercel/workflow/pull/2305) [`9c667e0`](https://github.com/vercel/workflow/commit/9c667e05c2aad0158698099ac84a846e10ed5700) Thanks [@willsather](https://github.com/willsather)! - Add an optional `namespace` parameter that scopes queue topic prefixes to `__{namespace}_wkf_workflow_*`. This allows configuring multiple frameworks in the same deployment without queue topic collision.
+
+### Patch Changes
+
+- [#2399](https://github.com/vercel/workflow/pull/2399) [`b5569a8`](https://github.com/vercel/workflow/commit/b5569a859052d0e3a7e43f2143cabef3e298c567) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update @vercel/queues from 0.3.0 to 0.3.1, which adds native retries for 429s and ECONNRESET
+
+- Updated dependencies [[`9c667e0`](https://github.com/vercel/workflow/commit/9c667e05c2aad0158698099ac84a846e10ed5700)]:
+  - @workflow/world@4.2.0
+  - @workflow/errors@4.1.4
+
 ## 4.1.5
 
 ### Patch Changes
