@@ -62,6 +62,25 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+
+  --color-background-100: var(--ds-background-100);
+  --color-background-200: var(--ds-background-200);
+  --color-gray-100: var(--ds-gray-100);
+  --color-gray-200: var(--ds-gray-200);
+  --color-gray-300: var(--ds-gray-300);
+  --color-gray-400: var(--ds-gray-400);
+  --color-gray-500: var(--ds-gray-500);
+  --color-gray-600: var(--ds-gray-600);
+  --color-gray-700: var(--ds-gray-700);
+  --color-gray-800: var(--ds-gray-800);
+  --color-gray-900: var(--ds-gray-900);
+  --color-gray-1000: var(--ds-gray-1000);
+  --color-gray-alpha-100: var(--ds-gray-alpha-100);
+  --color-gray-alpha-200: var(--ds-gray-alpha-200);
+  --color-gray-alpha-400: var(--ds-gray-alpha-400);
+  --color-gray-alpha-700: var(--ds-gray-alpha-700);
+  --color-gray-alpha-1000: var(--ds-gray-alpha-1000);
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -117,16 +136,16 @@
   --ds-background-200: rgb(250 250 250);
 
   /* Gray Scale */
-  --ds-gray-100: rgb(250 250 250);
-  --ds-gray-200: rgb(245 245 245);
-  --ds-gray-300: rgb(229 229 229);
-  --ds-gray-400: rgb(212 212 212);
-  --ds-gray-500: rgb(163 163 163);
-  --ds-gray-600: rgb(115 115 115);
-  --ds-gray-700: rgb(82 82 82);
-  --ds-gray-800: rgb(64 64 64);
-  --ds-gray-900: rgb(23 23 23);
-  --ds-gray-1000: rgb(0 0 0);
+  --ds-gray-100: hsl(0, 0%, 95%);
+  --ds-gray-200: hsl(0, 0%, 92%);
+  --ds-gray-300: hsl(0, 0%, 90%);
+  --ds-gray-400: hsl(0, 0%, 92%);
+  --ds-gray-500: hsl(0, 0%, 79%);
+  --ds-gray-600: hsl(0, 0%, 66%);
+  --ds-gray-700: hsl(0, 0%, 56%);
+  --ds-gray-800: hsl(0, 0%, 49%);
+  --ds-gray-900: hsl(0, 0%, 40%);
+  --ds-gray-1000: hsl(0, 0%, 9%);
 
   /* Gray Alpha */
   --ds-gray-alpha-100: rgba(0, 0, 0, 0.05);
@@ -217,6 +236,9 @@
   --ds-shadow-small: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 24px rgba(0, 0, 0, 0.05);
   --ds-shadow-medium: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 4px 8px rgba(0, 0, 0, 0.07), 0 24px 48px rgba(0, 0, 0, 0.07);
   --ds-shadow-large: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 8px 16px rgba(0, 0, 0, 0.10), 0 48px 96px rgba(0, 0, 0, 0.10);
+  --ds-shadow-tooltip:
+    0 0 0 1px rgba(0, 0, 0, 0.08), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
   --ds-shadow-menu: var(--ds-shadow-medium);
 
   /* Legacy aliases used by trace-viewer.module.css */
@@ -270,20 +292,20 @@
 
   /* Geist Design System Colors - Dark Mode */
   /* Backgrounds */
-  --ds-background-100: rgb(0 0 0);
-  --ds-background-200: rgb(10 10 10);
+  --ds-background-100: hsl(0, 0%, 7%);
+  --ds-background-200: hsl(0, 0%, 10%);
 
   /* Gray Scale */
-  --ds-gray-100: rgb(17 17 17);
-  --ds-gray-200: rgb(23 23 23);
-  --ds-gray-300: rgb(41 41 41);
-  --ds-gray-400: rgb(64 64 64);
-  --ds-gray-500: rgb(115 115 115);
-  --ds-gray-600: rgb(163 163 163);
-  --ds-gray-700: rgb(212 212 212);
-  --ds-gray-800: rgb(229 229 229);
-  --ds-gray-900: rgb(245 245 245);
-  --ds-gray-1000: rgb(255 255 255);
+  --ds-gray-100: hsl(0, 0%, 11%);
+  --ds-gray-200: hsl(0, 0%, 14%);
+  --ds-gray-300: hsl(0, 0%, 17%);
+  --ds-gray-400: hsl(0, 0%, 14%);
+  --ds-gray-500: hsl(0, 0%, 23%);
+  --ds-gray-600: hsl(0, 0%, 34%);
+  --ds-gray-700: hsl(0, 0%, 44%);
+  --ds-gray-800: hsl(0, 0%, 51%);
+  --ds-gray-900: hsl(0, 0%, 63%);
+  --ds-gray-1000: hsl(0, 0%, 93%);
 
   /* Gray Alpha - Dark Mode */
   --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
@@ -374,6 +396,9 @@
   --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
   --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
   --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+  --ds-shadow-tooltip:
+    0 0 0 1px rgba(255, 255, 255, 0.145), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
   --ds-shadow-menu: var(--ds-shadow-medium);
 
   /* Legacy aliases used by trace-viewer.module.css */
@@ -428,18 +453,18 @@
     --node-bg-conditional: #7f1d1d;
 
     /* Geist Design System Colors - Dark Mode (same as .dark) */
-    --ds-background-100: rgb(0 0 0);
-    --ds-background-200: rgb(10 10 10);
-    --ds-gray-100: rgb(17 17 17);
-    --ds-gray-200: rgb(23 23 23);
-    --ds-gray-300: rgb(41 41 41);
-    --ds-gray-400: rgb(64 64 64);
-    --ds-gray-500: rgb(115 115 115);
-    --ds-gray-600: rgb(163 163 163);
-    --ds-gray-700: rgb(212 212 212);
-    --ds-gray-800: rgb(229 229 229);
-    --ds-gray-900: rgb(245 245 245);
-    --ds-gray-1000: rgb(255 255 255);
+    --ds-background-100: hsl(0, 0%, 7%);
+    --ds-background-200: hsl(0, 0%, 10%);
+    --ds-gray-100: hsl(0, 0%, 11%);
+    --ds-gray-200: hsl(0, 0%, 14%);
+    --ds-gray-300: hsl(0, 0%, 17%);
+    --ds-gray-400: hsl(0, 0%, 14%);
+    --ds-gray-500: hsl(0, 0%, 23%);
+    --ds-gray-600: hsl(0, 0%, 34%);
+    --ds-gray-700: hsl(0, 0%, 44%);
+    --ds-gray-800: hsl(0, 0%, 51%);
+    --ds-gray-900: hsl(0, 0%, 63%);
+    --ds-gray-1000: hsl(0, 0%, 93%);
     --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
     --ds-gray-alpha-200: rgba(255, 255, 255, 0.09);
     --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
@@ -512,6 +537,9 @@
     --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
     --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
     --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+    --ds-shadow-tooltip:
+      0 0 0 1px rgba(255, 255, 255, 0.145), 0px 1px 1px rgba(0, 0, 0, 0.02),
+      0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
     --ds-shadow-menu: var(--ds-shadow-medium);
     --geist-background: var(--ds-background-100);
     --accents-2: var(--ds-gray-300);
