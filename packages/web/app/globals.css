@@ -239,6 +239,9 @@
   --ds-shadow-small: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 24px rgba(0, 0, 0, 0.05);
   --ds-shadow-medium: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 4px 8px rgba(0, 0, 0, 0.07), 0 24px 48px rgba(0, 0, 0, 0.07);
   --ds-shadow-large: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 8px 16px rgba(0, 0, 0, 0.10), 0 48px 96px rgba(0, 0, 0, 0.10);
+  --ds-shadow-tooltip:
+    0 0 0 1px rgba(0, 0, 0, 0.08), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
   --ds-shadow-menu: var(--ds-shadow-medium);
 
   /* Legacy aliases used by trace-viewer.module.css */
@@ -396,6 +399,9 @@
   --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
   --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
   --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+  --ds-shadow-tooltip:
+    0 0 0 1px rgba(255, 255, 255, 0.145), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
   --ds-shadow-menu: var(--ds-shadow-medium);
 
   /* Legacy aliases used by trace-viewer.module.css */
@@ -534,6 +540,9 @@
     --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
     --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
     --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+    --ds-shadow-tooltip:
+      0 0 0 1px rgba(255, 255, 255, 0.145), 0px 1px 1px rgba(0, 0, 0, 0.02),
+      0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
     --ds-shadow-menu: var(--ds-shadow-medium);
     --geist-background: var(--ds-background-100);
     --accents-2: var(--ds-gray-300);
