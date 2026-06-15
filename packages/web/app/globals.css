@@ -71,6 +71,18 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+
+  /*
+   * Geist design system tokens used by @workflow/web-shared components that
+   * have no Tailwind default equivalent (e.g. the context card background and
+   * the highest-contrast gray). Without these, utilities like
+   * `bg-background-100` and `text-gray-1000` emit no rule.
+   */
+  --color-background-100: var(--ds-background-100);
+  --color-background-200: var(--ds-background-200);
+  --color-gray-1000: var(--ds-gray-1000);
+  --color-gray-alpha-400: var(--ds-gray-alpha-400);
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
