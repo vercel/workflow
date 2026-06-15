@@ -2,7 +2,12 @@ import type { AnyEventRequest } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
-import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
+import {
+  createWorkflowRunEvent,
+  getWorkflowRunEvents,
+  splitEventDataForV4,
+} from './events.js';
+import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 
 const ORIGIN = 'https://vercel-workflow.com';
 
@@ -100,63 +105,88 @@ describe('createWorkflowRunEvent with v1Compat', () => {
  * nor the frame meta, so a *missing* field can't silently regress. These
  * runtime tests are the complement: they prove the fields that ARE routed
  * actually reach the frame meta with the right values and renames.
+ *
+ * This line's runtime does not serialize run/step errors through the
+ * dehydration pipeline — it emits them as a plain string (step_failed /
+ * step_retrying) or a `{ message, stack }` object (run_failed). The split
+ * must carry these in the frame meta (not as an opaque body), or the v4
+ * write path would throw on the non-Uint8Array error and every failure
+ * event would die on the wire.
  */
-describe('splitEventDataForV4 attribute fields', () => {
-  it('carries attr_set changes/writer/allowReservedAttributes in the frame meta', () => {
+describe('splitEventDataForV4 structured errors', () => {
+  it('routes a step_failed string error + stack into the frame meta (no body)', () => {
+    const stack = 'Error: boom\n    at fn (/app/step.js:10:5)';
     const { payload, meta } = splitEventDataForV4({
-      eventType: 'attr_set',
-      correlationId: 'attr_1',
-      specVersion: 4,
-      eventData: {
-        changes: [
-          { key: 'phase', value: 'done' },
-          { key: 'stale', value: null },
-        ],
-        writer: { type: 'step', stepId: 'step_1', attempt: 2 },
-        allowReservedAttributes: true,
-      },
+      eventType: 'step_failed',
+      correlationId: 'step_1',
+      specVersion: 2,
+      eventData: { stepName: 'a-step', error: 'boom', stack },
     } as AnyEventRequest);
 
     expect(payload).toBeUndefined();
-    expect(meta.changes).toEqual([
-      { key: 'phase', value: 'done' },
-      { key: 'stale', value: null },
-    ]);
-    expect(meta.writer).toEqual({ type: 'step', stepId: 'step_1', attempt: 2 });
-    expect(meta.allowReservedAttributes).toBe(true);
+    expect(meta.error).toBe('boom');
+    expect(meta.stack).toBe(stack);
+    expect(meta.stepName).toBe('a-step');
   });
 
-  it('carries initial run attributes on run_created', () => {
+  it('routes a step_retrying string error + stack + retryAfter into the meta', () => {
+    const stack = 'Error: flake\n    at fn (/app/step.js:11:5)';
+    const retryAfter = new Date('2026-06-10T12:00:00.000Z');
     const { payload, meta } = splitEventDataForV4({
-      eventType: 'run_created',
-      specVersion: 4,
-      eventData: {
-        deploymentId: 'dpl_1',
-        workflowName: 'wf',
-        input: new TextEncoder().encode('[]'),
-        attributes: { sourceAtStart: 'api' },
-      },
+      eventType: 'step_retrying',
+      correlationId: 'step_1',
+      specVersion: 2,
+      eventData: { stepName: 'a-step', error: 'flake', stack, retryAfter },
     } as AnyEventRequest);
 
-    expect(payload).toBeInstanceOf(Uint8Array);
-    expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
-    expect(meta.deploymentId).toBe('dpl_1');
-    expect(meta.workflowName).toBe('wf');
+    expect(payload).toBeUndefined();
+    expect(meta.error).toBe('flake');
+    expect(meta.stack).toBe(stack);
+    expect(meta.retryAfter).toEqual(retryAfter);
   });
 
-  it('carries attributes on resilient-start run_started', () => {
-    const { meta } = splitEventDataForV4({
-      eventType: 'run_started',
-      specVersion: 4,
-      eventData: {
-        input: new TextEncoder().encode('[]'),
-        deploymentId: 'dpl_1',
-        workflowName: 'wf',
-        attributes: { sourceAtStart: 'api' },
-      },
+  it('routes a run_failed { message, stack } error object into the meta', () => {
+    const error = { message: 'kaboom', stack: 'Error: kaboom\n    at main' };
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_failed',
+      specVersion: 2,
+      eventData: { error, errorCode: 'RUNTIME_ERROR' },
     } as AnyEventRequest);
 
-    expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
+    expect(payload).toBeUndefined();
+    expect(meta.error).toEqual(error);
+    expect(meta.errorCode).toBe('RUNTIME_ERROR');
+    // run_failed carries its stack inside the error object, not as a sibling.
+    expect(meta.stack).toBeUndefined();
+  });
+
+  it('keeps an already-dehydrated (Uint8Array) error on the body path', () => {
+    // A runtime that DOES dehydrate errors hands the split a Uint8Array;
+    // it must stream as the opaque frame body, untouched, with no meta.error.
+    const bytes = new TextEncoder().encode('dehydrated-error-blob');
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'step_failed',
+      correlationId: 'step_1',
+      specVersion: 2,
+      eventData: { stepName: 'a-step', error: bytes },
+    } as AnyEventRequest);
+
+    expect(payload).toBe(bytes);
+    expect(meta.error).toBeUndefined();
+  });
+
+  it('still throws on a non-Uint8Array, non-error payload field', () => {
+    // input/output/result/etc. are always the runtime's dehydrated bytes —
+    // a plain value there is a real contract violation, not a structured
+    // error, so the loud guard must stay.
+    expect(() =>
+      splitEventDataForV4({
+        eventType: 'step_completed',
+        correlationId: 'step_1',
+        specVersion: 2,
+        eventData: { stepName: 'a-step', result: { not: 'bytes' } },
+      } as unknown as AnyEventRequest)
+    ).toThrow(/must be a Uint8Array/);
   });
 });
 
@@ -341,6 +371,61 @@ describe('createWorkflowRunEvent resolveData', () => {
       ?.eventData;
     expect(eventData?.result).toBeUndefined();
     expect(eventData?.stepName).toBe('my-step');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
+ * Read-side complement to the structured-error write tests. The backend
+ * materializes run/step errors into a StructuredError and stores it as a
+ * CBOR-encoded ref; on the v4 read that ref's bytes arrive in the frame
+ * body. `getWorkflowRunEvents` must decode them back to the { message,
+ * stack } object the core step-event reducer reads directly — it has no
+ * hydrate step for errors on this line, so raw bytes would surface as
+ * "Unknown error" with no stack during replay.
+ */
+describe('getWorkflowRunEvents structured-error decode', () => {
+  it('decodes a step_failed CBOR error body back into eventData.error', async () => {
+    const agent = mockAgent();
+    const structuredError = {
+      message: 'boom',
+      stack: 'Error: boom\n    at fn (/app/step.js:10:5)',
+    };
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'step_failed',
+          correlationId: 'step_1',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          // `stack` is stripped from inline eventData server-side (it lives
+          // inside the structuredError ref), so it is absent from the meta.
+          eventData: { stepName: 'a-step' },
+        },
+        new Uint8Array(encode(structuredError))
+      ),
+      encodeFrame({ _end: 1 }, new Uint8Array(0)),
+    ]);
+
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'all' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.data).toHaveLength(1);
+    const eventData = (
+      result.data[0] as { eventData?: Record<string, unknown> }
+    ).eventData;
+    // Decoded back to the object form — not the raw CBOR Uint8Array.
+    expect(eventData?.error).toEqual(structuredError);
     agent.assertNoPendingInterceptors();
   });
 });

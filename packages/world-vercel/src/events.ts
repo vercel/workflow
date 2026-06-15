@@ -47,6 +47,7 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
+import { decode } from 'cbor-x';
 import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
@@ -147,6 +148,20 @@ const hookEventsRequiringExistence = new Set<string>([
   'hook_received',
 ]);
 
+// Event types whose payload field carries a backend-materialized
+// StructuredError ({ message, stack }) rather than the runtime's opaque
+// dehydrated bytes. This runtime sends run/step errors un-dehydrated (a
+// string or a { message, stack } object), so the backend stores them as a
+// CBOR-encoded structuredError ref; on read its bytes arrive in the frame
+// body and must be CBOR-decoded back to the object the core step-event
+// reducer reads `.message` / `.stack` off of — there is no hydrate step
+// for errors on this line. Mirrors the meta routing in splitEventDataForV4.
+const structuredErrorEventTypes = new Set<string>([
+  'run_failed',
+  'step_failed',
+  'step_retrying',
+]);
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -163,19 +178,27 @@ interface SplitEventData {
     resumeAt?: Date;
     retryAfter?: Date;
     hookToken?: string;
-    hookIsWebhook?: boolean;
-    hookIsSystem?: boolean;
     errorCode?: string;
+    /**
+     * Structured run/step error carried inline in the frame meta. This
+     * runtime sends run/step errors as a plain string (step_failed /
+     * step_retrying) or a `{ message, stack }` object (run_failed) rather
+     * than a dehydrated SerializedData blob, so there is nothing to stream
+     * as an opaque body — the backend rebuilds the same StructuredError it
+     * did on the pre-v4 wire from this meta. (A runtime that dehydrates
+     * errors into a Uint8Array instead routes them through the frame body
+     * via `payload`.)
+     */
+    error?: unknown;
+    /**
+     * Companion stack string for step_failed / step_retrying, whose `error`
+     * is a bare message. The backend folds it into the step's
+     * structuredError. run_failed carries its stack inside the `error`
+     * object instead.
+     */
+    stack?: string;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
-    /** Initial run attributes (run_created / resilient-start run_started). */
-    attributes?: Record<string, string>;
-    /** attr_set change list, included verbatim in frame meta. */
-    changes?: Array<Record<string, unknown>>;
-    /** attr_set writer provenance, included verbatim in frame meta. */
-    writer?: Record<string, unknown>;
-    /** Reserved-attribute-key opt-in (attr_set / run_created / run_started). */
-    allowReservedAttributes?: boolean;
   };
 }
 
@@ -196,14 +219,10 @@ type MetaSourceField =
   | 'resumeAt'
   | 'retryAfter'
   | 'token'
-  | 'isWebhook'
-  | 'isSystem'
   | 'errorCode'
-  | 'executionContext'
-  | 'attributes'
-  | 'changes'
-  | 'writer'
-  | 'allowReservedAttributes';
+  // step_failed / step_retrying error stack (sibling of the message string)
+  | 'stack'
+  | 'executionContext';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -285,14 +304,15 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.token === 'string') {
     meta.hookToken = eventData.token;
   }
-  if (typeof eventData.isWebhook === 'boolean') {
-    meta.hookIsWebhook = eventData.isWebhook;
-  }
-  if (typeof eventData.isSystem === 'boolean') {
-    meta.hookIsSystem = eventData.isSystem;
-  }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
+  }
+  // step_failed / step_retrying carry the error stack as a sibling of the
+  // (string) error message. It rides in the meta and the backend folds it
+  // into the step's structuredError. run_failed keeps its stack inside the
+  // error object, so there is no top-level `stack` to lift there.
+  if (typeof eventData.stack === 'string') {
+    meta.stack = eventData.stack;
   }
   if (
     eventData.executionContext !== undefined &&
@@ -304,57 +324,47 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
       unknown
     >;
   }
-  // Native run attributes (spec v4): initial attributes ride on
-  // run_created (and run_started for resilient start); attr_set carries
-  // the change list + writer provenance. All of these are structured
-  // metadata, not user payloads — they ride in the frame meta and the
-  // server validates them against the attribute caps before
-  // materializing run.attributes.
-  if (
-    eventData.attributes !== undefined &&
-    eventData.attributes !== null &&
-    typeof eventData.attributes === 'object'
-  ) {
-    meta.attributes = eventData.attributes as Record<string, string>;
-  }
-  if (Array.isArray(eventData.changes)) {
-    meta.changes = eventData.changes as Array<Record<string, unknown>>;
-  }
-  if (
-    eventData.writer !== undefined &&
-    eventData.writer !== null &&
-    typeof eventData.writer === 'object'
-  ) {
-    meta.writer = eventData.writer as Record<string, unknown>;
-  }
-  if (typeof eventData.allowReservedAttributes === 'boolean') {
-    meta.allowReservedAttributes = eventData.allowReservedAttributes;
-  }
+  // Note: native run attributes (the attr_set event and the `attributes` /
+  // `changes` / `writer` / `allowReservedAttributes` eventData fields) are
+  // a newer feature that does not exist on this line's @workflow/world
+  // event schema, so there is nothing to lift here. The exhaustiveness
+  // guard above keeps this honest — if the schema gains those fields, it
+  // will fail to compile until they are routed.
 
   let payload: Uint8Array | undefined;
   if (payloadField && payloadField in eventData) {
     const value = eventData[payloadField];
     if (value !== undefined) {
-      // Payload fields (input / output / result / error / payload /
-      // metadata) reach this layer already serialized as Uint8Array — the
-      // runtime calls dehydrateRunError / dehydrateStepReturnValue / etc.
-      // before invoking events.create. Pass the bytes through unchanged
-      // so runs.get and the events stream return the same raw form that
-      // hydrateRunError / hydrateStepIO expect. CBOR-encoding here would
-      // double-wrap on write and (since runs.get bypasses the v4 frame
-      // decode) leave the consumer with cbor(Uint8Array) rather than the
-      // devalue blob it was looking for.
-      if (!(value instanceof Uint8Array)) {
-        // Surface non-Uint8Array values loudly — current SDK callers go
-        // through the dehydrate helpers, so anything else is either a
-        // legacy caller or a bug.
+      if (value instanceof Uint8Array) {
+        // Payload fields (input / output / result / error / payload /
+        // metadata) normally reach this layer already serialized as
+        // Uint8Array — the runtime calls the dehydrate helpers before
+        // invoking events.create. Pass the bytes through unchanged so
+        // runs.get and the events stream return the same raw form that
+        // hydrateStepIO etc. expect. CBOR-encoding here would double-wrap
+        // on write and (since runs.get bypasses the v4 frame decode) leave
+        // the consumer with cbor(Uint8Array) rather than the devalue blob
+        // it was looking for.
+        payload = value;
+      } else if (payloadField === 'error') {
+        // This runtime does not dehydrate run/step errors: it sends
+        // `error` as a plain string (step_failed / step_retrying) or a
+        // `{ message, stack }` object (run_failed). Carry the structured
+        // value in the frame meta so the backend rebuilds the same
+        // StructuredError the pre-v4 wire produced, instead of wrapping it
+        // as an opaque body the backend would store verbatim. The matching
+        // read path (buildEventFromV4) decodes it back.
+        meta.error = value;
+      } else {
+        // Any other payload field arriving as a non-Uint8Array is a real
+        // contract violation (those fields are always dehydrated bytes) —
+        // surface it loudly rather than silently mis-encoding.
         throw new TypeError(
           `world-vercel v4: eventData.${payloadField} for ${data.eventType} ` +
             `must be a Uint8Array (the runtime's dehydrated wire form); ` +
             `got ${typeof value === 'object' ? (value === null ? 'null' : ((value as object).constructor?.name ?? typeof value)) : typeof value}.`
         );
       }
-      payload = value;
     }
   }
 
@@ -399,10 +409,13 @@ function coerceEventDates(raw: Record<string, unknown>): Event {
  * Both GET single-event and LIST use the same frame format: meta is the
  * full event entity with the payload field as a RefDescriptor, body is
  * the resolved payload bytes (possibly empty). This helper splices the
- * body bytes into `eventData[fieldName]` unchanged — the runtime's
- * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume the raw
- * devalue-with-format-prefix Uint8Array directly. No CBOR decode here,
- * symmetric with the pass-through write in `splitEventDataForV4`.
+ * body bytes into `eventData[fieldName]` — for most event types unchanged,
+ * so the runtime's hydrate helpers (hydrateStepIO, …) consume the raw
+ * devalue-with-format-prefix Uint8Array directly, symmetric with the
+ * pass-through write in `splitEventDataForV4`. The exception is the
+ * structured-error event types (see `structuredErrorEventTypes`), whose
+ * body is a CBOR-encoded StructuredError that must be decoded back to the
+ * { message, stack } object the consumer reads directly.
  */
 function buildEventFromV4(
   decoded: DecodedV4Event,
@@ -413,7 +426,21 @@ function buildEventFromV4(
 
   if (payloadBody.byteLength > 0) {
     const payloadField = payloadFieldFor(decoded.eventType);
-    if (payloadField) eventData[payloadField] = payloadBody;
+    if (payloadField) {
+      if (structuredErrorEventTypes.has(decoded.eventType)) {
+        // CBOR-decode the materialized StructuredError back to its object
+        // form. Fall back to the raw bytes if it somehow isn't CBOR, so an
+        // unexpected encoding degrades to the pre-existing pass-through
+        // rather than throwing mid-replay.
+        try {
+          eventData[payloadField] = decode(payloadBody);
+        } catch {
+          eventData[payloadField] = payloadBody;
+        }
+      } else {
+        eventData[payloadField] = payloadBody;
+      }
+    }
   }
 
   const raw = {

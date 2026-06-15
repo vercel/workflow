@@ -69,24 +69,18 @@ export interface CreateEventV4Input {
    *  the step entity for premature-delivery pacing and observability. */
   retryAfter?: Date;
   hookToken?: string;
-  hookIsWebhook?: boolean;
-  hookIsSystem?: boolean;
   errorCode?: string;
+  /** Structured run/step error carried inline in the frame meta (a plain
+   *  string for step_failed / step_retrying, a `{ message, stack }` object
+   *  for run_failed) when the runtime sends it un-dehydrated. The backend
+   *  rebuilds the same StructuredError the pre-v4 wire produced. Bounded by
+   *  the server's structured-error cap. */
+  error?: unknown;
+  /** Companion stack string for step_failed / step_retrying. */
+  stack?: string;
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
-  /** Initial run attributes (run_created, and run_started on the
-   *  resilient-start path). Validated server-side against the attribute
-   *  key/value/count caps. */
-  attributes?: Record<string, string>;
-  /** attr_set's attribute change list ({key, value|null} entries). */
-  changes?: Array<Record<string, unknown>>;
-  /** attr_set's writer provenance ({type:'workflow'} or
-   *  {type:'step', stepId, attempt}). */
-  writer?: Record<string, unknown>;
-  /** Opt-in for framework-level callers to write `$`-prefixed reserved
-   *  attribute keys (attr_set / run_created / run_started). */
-  allowReservedAttributes?: boolean;
 }
 
 export interface CreateEventV4Result {
@@ -134,18 +128,11 @@ function buildPostFrameMeta(
   if (input.resumeAt !== undefined) meta.resumeAt = input.resumeAt;
   if (input.retryAfter !== undefined) meta.retryAfter = input.retryAfter;
   if (input.hookToken !== undefined) meta.hookToken = input.hookToken;
-  if (input.hookIsWebhook !== undefined)
-    meta.hookIsWebhook = input.hookIsWebhook;
-  if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
+  if (input.error !== undefined) meta.error = input.error;
+  if (input.stack !== undefined) meta.stack = input.stack;
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
-  }
-  if (input.attributes !== undefined) meta.attributes = input.attributes;
-  if (input.changes !== undefined) meta.changes = input.changes;
-  if (input.writer !== undefined) meta.writer = input.writer;
-  if (input.allowReservedAttributes !== undefined) {
-    meta.allowReservedAttributes = input.allowReservedAttributes;
   }
   return meta;
 }
