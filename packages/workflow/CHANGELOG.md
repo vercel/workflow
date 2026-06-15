@@ -1,5 +1,26 @@
 # workflow
 
+## 5.0.0-beta.16
+
+### Minor Changes
+
+- [#2385](https://github.com/vercel/workflow/pull/2385) [`628795a`](https://github.com/vercel/workflow/commit/628795aa8729bef442c7a1583cf2f3d986e9e4fc) Thanks [@pranaygp](https://github.com/pranaygp)! - Add an `allowReservedAttributes` option to `start()` so framework-level callers can seed reserved `$`-prefixed run attributes at creation, matching the existing `experimental_setAttributes` option. The flag is carried through the resilient-start queue input so lazy run creation validates identically.
+
+### Patch Changes
+
+- Updated dependencies [[`011d482`](https://github.com/vercel/workflow/commit/011d482808793e8deb0e8523a9c16af129490ee6), [`628795a`](https://github.com/vercel/workflow/commit/628795aa8729bef442c7a1583cf2f3d986e9e4fc)]:
+  - @workflow/cli@5.0.0-beta.16
+  - @workflow/core@5.0.0-beta.16
+  - @workflow/astro@5.0.0-beta.16
+  - @workflow/nest@5.0.0-beta.16
+  - @workflow/next@5.0.0-beta.16
+  - @workflow/nitro@5.0.0-beta.16
+  - @workflow/rollup@5.0.0-beta.16
+  - @workflow/sveltekit@5.0.0-beta.16
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/errors@5.0.0-beta.7
+  - @workflow/nuxt@5.0.0-beta.16
+
 ## 5.0.0-beta.15
 
 ### Minor Changes
