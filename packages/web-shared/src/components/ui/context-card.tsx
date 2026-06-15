@@ -274,7 +274,7 @@ export function ContextCardProvider({
               >
                 <div
                   className={cn(
-                    'absolute bg-background-100 bg-clip-padding rounded-[6px] overflow-visible pointer-events-none z-[1000000] shadow-[var(--ds-shadow-tooltip),0_0_0_1px_var(--ds-background-100)] w-fit [--context-card-tip-stroke:#DBDBDB] dark-theme:[--context-card-tip-stroke:#252525]',
+                    'absolute bg-background-100 bg-clip-padding rounded-[6px] overflow-visible pointer-events-none z-[1000000] shadow-[var(--ds-shadow-tooltip),0_0_0_1px_var(--ds-background-100)] w-fit [--context-card-tip-stroke:var(--ds-gray-alpha-400)]',
                     skipTransition
                       ? '!transition-none'
                       : 'transition-[transform,width,height] duration-250 ease-[easing-function:cubic-bezier(0.29,0.31,0.05,0.96)] will-change-[transform,width,height] motion-reduce:!transition-none'

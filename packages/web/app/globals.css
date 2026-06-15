@@ -4,9 +4,6 @@
 @source "../../web-shared/src";
 @source "./components";
 
-@custom-variant dark-theme (&:where(.dark-theme, .dark-theme *, .dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
-@custom-variant light-theme (&:where(.light-theme, .light-theme *, .light, .light *));
-
 /* Geist fonts — referenced directly from the "geist" npm package. */
 /* Vite resolves these at build time and bundles them into the output. */
 @font-face {
