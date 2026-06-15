@@ -77,9 +77,7 @@ function formatResponseDiagnostics(response: Response): string {
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
 export const WORKFLOW_SERVER_URL_OVERRIDE =
-  process.env.NODE_ENV === 'test'
-    ? ''
-    : 'https://workflow-server-git-platform-directed-multiregion-preview.vercel.sh';
+  'https://workflow-server-git-platform-directed-multiregion-preview.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).

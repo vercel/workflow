@@ -3,8 +3,9 @@ import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
 import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
-const ORIGIN = 'https://vercel-workflow.com';
+const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
 
 function mockAgent() {
   const agent = new MockAgent();

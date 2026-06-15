@@ -14,6 +14,7 @@ import {
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 /**
  * The v4 client must preserve the typed-error contract of the v3
@@ -93,7 +94,8 @@ describe('throwForErrorResponse', () => {
  */
 describe('getWorkflowRunEventsV4 over HTTP', () => {
   it('parses a frame stream fetched via a custom dispatcher', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -133,7 +135,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -170,7 +173,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
 describe('createWorkflowRunEventV4 over HTTP', () => {
   it('POSTs to the /events/:eventType alias and decodes the response', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
