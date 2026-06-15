@@ -170,7 +170,10 @@ const HookCreatedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     token: z.string(),
     metadata: SerializedDataSchema.optional(),
-    // Preserved on read so crash-recovery paths can rebuild the hook
+    // Marks a hook created for a webhook (not resumable via the public
+    // webhook endpoint). The runtime emits this on hook_created and the
+    // backend consumes it; declaring it here keeps it on the wire.
+    // Also preserved on read so crash-recovery paths can rebuild the hook
     // entity from the persisted `hook_created` event's payload (see
     // `repairHookEntityFromPersistedEvent` in `@workflow/world-local`).
     isWebhook: z.boolean().optional(),

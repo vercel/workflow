@@ -178,6 +178,7 @@ interface SplitEventData {
     resumeAt?: Date;
     retryAfter?: Date;
     hookToken?: string;
+    hookIsWebhook?: boolean;
     errorCode?: string;
     /**
      * Structured run/step error carried inline in the frame meta. This
@@ -219,6 +220,8 @@ type MetaSourceField =
   | 'resumeAt'
   | 'retryAfter'
   | 'token'
+  // hook_created webhook flag (renamed to hookIsWebhook on the wire)
+  | 'isWebhook'
   | 'errorCode'
   // step_failed / step_retrying error stack (sibling of the message string)
   | 'stack'
@@ -303,6 +306,13 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // `hookToken` in the frame meta, so do the rename here.
   if (typeof eventData.token === 'string') {
     meta.hookToken = eventData.token;
+  }
+  // hook_created carries the webhook flag so the backend can mark webhook
+  // hooks (which are not resumable via the public webhook endpoint). The
+  // runtime emits it even though this line's @workflow/world schema only
+  // recently started declaring it — see MetaSourceField.
+  if (typeof eventData.isWebhook === 'boolean') {
+    meta.hookIsWebhook = eventData.isWebhook;
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;

@@ -69,6 +69,7 @@ export interface CreateEventV4Input {
    *  the step entity for premature-delivery pacing and observability. */
   retryAfter?: Date;
   hookToken?: string;
+  hookIsWebhook?: boolean;
   errorCode?: string;
   /** Structured run/step error carried inline in the frame meta (a plain
    *  string for step_failed / step_retrying, a `{ message, stack }` object
@@ -128,6 +129,9 @@ function buildPostFrameMeta(
   if (input.resumeAt !== undefined) meta.resumeAt = input.resumeAt;
   if (input.retryAfter !== undefined) meta.retryAfter = input.retryAfter;
   if (input.hookToken !== undefined) meta.hookToken = input.hookToken;
+  if (input.hookIsWebhook !== undefined) {
+    meta.hookIsWebhook = input.hookIsWebhook;
+  }
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.error !== undefined) meta.error = input.error;
   if (input.stack !== undefined) meta.stack = input.stack;

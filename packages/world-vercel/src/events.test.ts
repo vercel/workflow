@@ -190,6 +190,27 @@ describe('splitEventDataForV4 structured errors', () => {
   });
 });
 
+describe('splitEventDataForV4 hook fields', () => {
+  it('routes hook_created token + isWebhook into the frame meta', () => {
+    // The runtime marks webhook hooks via eventData.isWebhook; the backend
+    // reads it to reject public-webhook-endpoint resumption. Dropping it
+    // from the wire silently breaks that — guard the routing here.
+    const { meta } = splitEventDataForV4({
+      eventType: 'hook_created',
+      correlationId: 'hook_1',
+      specVersion: 2,
+      eventData: {
+        token: 'tok_1',
+        metadata: new TextEncoder().encode('{}'),
+        isWebhook: true,
+      },
+    } as AnyEventRequest);
+
+    expect(meta.hookToken).toBe('tok_1');
+    expect(meta.hookIsWebhook).toBe(true);
+  });
+});
+
 describe('createWorkflowRunEvent response coercion', () => {
   it('coerces ISO-string dates in the returned event and preloaded events', async () => {
     // Persisted events store nested eventData dates as ISO strings
