@@ -95,7 +95,15 @@ vi.mock('../telemetry.js', () => ({
   }),
   withTraceContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
   getSpanKind: vi.fn().mockResolvedValue(undefined),
+  getWorkflowTraceMode: vi.fn(() => 'linked'),
+  isUsableTraceCarrier: vi.fn(
+    (carrier?: Record<string, string>) =>
+      carrier !== undefined && Object.keys(carrier).length > 0
+  ),
+  getNextTraceCarrier: vi.fn().mockResolvedValue({}),
+  buildInvocationSpanLinks: vi.fn().mockResolvedValue([]),
   linkToCurrentContext: vi.fn().mockResolvedValue([]),
+  linkToTraceCarrier: vi.fn().mockResolvedValue(undefined),
   withWorkflowBaggage: vi.fn((_attrs: unknown, fn: () => unknown) => fn()),
 }));
 

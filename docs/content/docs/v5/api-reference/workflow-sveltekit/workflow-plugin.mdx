@@ -1,0 +1,42 @@
+---
+title: workflowPlugin
+description: Configure Vite to transform workflow directives in SvelteKit.
+type: reference
+summary: Add workflowPlugin to your Vite config to enable workflow directive transformation in SvelteKit apps.
+prerequisites:
+  - /docs/getting-started/sveltekit
+---
+
+Returns the Vite plugins that transform workflow code (`"use step"`/`"use workflow"` directives) and build the workflow bundles in a SvelteKit app.
+
+## Usage
+
+To enable `"use step"` and `"use workflow"` directives while developing locally or deploying to production, add `workflowPlugin()` to the `plugins` array of your Vite config.
+
+```typescript title="vite.config.ts" lineNumbers
+import { sveltekit } from "@sveltejs/kit/vite";
+import { defineConfig } from "vite";
+import { workflowPlugin } from "workflow/sveltekit"; // [!code highlight]
+
+export default defineConfig({
+  plugins: [sveltekit(), workflowPlugin()], // [!code highlight]
+});
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `options` | `WorkflowPluginOptions` | Optional. Configures the workflow build. |
+
+#### WorkflowPluginOptions
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Set to `false` for smaller function bundles (useful for staying under the Vercel 250MB function size limit) at the cost of stack traces pointing at generated code. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+
+### Returns
+
+Returns an array of Vite `Plugin` objects. Spread or pass the array directly to the `plugins` option of your Vite config — Vite flattens nested plugin arrays automatically.

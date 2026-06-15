@@ -326,6 +326,7 @@ describe('withWorkflow builder config', () => {
       expect(warning).toContain('workflow-auto-remove-a');
       expect(warning).toContain('serverExternalPackages');
       expect(warning).toContain('removed');
+      expect(warning).toContain('compiling the packages anyway');
     } finally {
       warnSpy.mockRestore();
       process.chdir(originalCwd);

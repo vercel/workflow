@@ -1,4 +1,8 @@
-import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  RUN_ERROR_CODES,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -586,6 +590,190 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
+  it('replays attribute events before executing a step that loses the same race', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_attribute_step_race',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_attribute_step_race',
+        undefined,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const workflowCode = `
+      const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+      const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
+      const slowStep = useStep("slowStep");
+      async function workflow() {
+        await Promise.race([
+          setAttributes([{ key: "winner", value: "attribute" }]),
+          slowStep(),
+        ]);
+        return "attribute won";
+      }${getWorkflowTransformCode('workflow')}`;
+
+    const firstAttemptEvents: any[] = [];
+    const firstAttemptMessages: unknown[] = [];
+    await runWorkflowHandlerWithEvents(workflowCode, workflowRun, [], {
+      createdEvents: firstAttemptEvents,
+      queuedMessages: firstAttemptMessages,
+    });
+
+    expect(firstAttemptEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'attr_set' })
+    );
+    expect(firstAttemptEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'step_created' })
+    );
+    expect(firstAttemptMessages).toEqual([]);
+
+    const replayEvents = firstAttemptEvents
+      .filter(
+        (event) =>
+          event.eventType === 'attr_set' || event.eventType === 'step_created'
+      )
+      .map((event, index) => ({
+        ...event,
+        eventId: `event-${index}`,
+        runId: workflowRun.runId,
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      })) as Event[];
+    const replayCreatedEvents: unknown[] = [];
+    const replayQueuedMessages: unknown[] = [];
+
+    await runWorkflowHandlerWithEvents(
+      workflowCode,
+      workflowRun,
+      replayEvents,
+      {
+        createdEvents: replayCreatedEvents,
+        queuedMessages: replayQueuedMessages,
+      }
+    );
+
+    expect(replayCreatedEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_completed' })
+    );
+    expect(replayQueuedMessages).toEqual([]);
+  });
+
+  it('fails the run when the World rejects an attr_set event as invalid', async () => {
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_attr_validation',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_attr_validation',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    // The cumulative per-run attribute cap can only be checked by the World
+    // against the run's existing attributes — the VM-side validation in
+    // normalizeAttributeChanges cannot see them. The rejection is
+    // deterministic: redelivering the message replays the same write into
+    // the same 400, so the run must FAIL (run_failed) rather than reject
+    // the delivery and wedge the run in queue redelivery.
+    const capError = new WorkflowWorldError(
+      'Run attribute count would exceed limit 64',
+      { status: 400 }
+    );
+    const createdEvents: any[] = [];
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        return { run: workflowRun, events: [] };
+      }
+      if (data.eventType === 'attr_set') {
+        throw capError;
+      }
+      createdEvents.push(data);
+      return {
+        event: {
+          eventId: `event-${createdEvents.length}`,
+          runId: workflowRun.runId,
+          createdAt: new Date(),
+          ...data,
+        },
+      };
+    });
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) => {
+          return async () => {
+            await handler(
+              {
+                runId: workflowRun.runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              },
+              {
+                requestId: 'req_test',
+                attempt: 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_test',
+              }
+            );
+            return new Response(null, { status: 204 });
+          };
+        }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [],
+          hasMore: false,
+          cursor: 'cursor_test',
+        })),
+      },
+      runs: {
+        get: vi.fn(async () => workflowRun),
+      },
+      queue: vi.fn(async () => ({ messageId: null })),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handler = workflowEntrypoint(
+      `const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+      async function workflow() {
+        await setAttributes([{ key: "one_too_many", value: "v" }]);
+        return "wrote";
+      }${getWorkflowTransformCode('workflow')}`
+    );
+
+    // The handler must resolve (ack) — a deterministic validation failure
+    // must not reject the delivery into a redelivery loop.
+    await handler(new Request('https://example.test'));
+
+    // The run is failed with the World's validation message so the user can
+    // see why, instead of the run hanging in "running" forever.
+    const runFailed = createdEvents.find((e) => e.eventType === 'run_failed') as
+      | { eventData: { error: Uint8Array } }
+      | undefined;
+    expect(runFailed).toBeDefined();
+    const serializedError = new TextDecoder().decode(
+      runFailed?.eventData.error
+    );
+    expect(serializedError).toContain(
+      'Run attribute count would exceed limit 64'
+    );
+  });
+
   it('propagates transient step_created failures to the queue handler without an unhandled rejection', async () => {
     const createdEvents: unknown[] = [];
     const workflowRun: WorkflowRun = {
@@ -705,10 +893,14 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     `;globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
 
-  // A workflow that suspends on a step AND a sleep. The pending wait makes the
-  // V2 handler queue the step (instead of running it inline), exercising the
-  // progress-critical step-dispatch queue() send that must complete before the
-  // orchestrator message is acked.
+  // A workflow that suspends on a step AND a sleep. The harness's
+  // events.create answers step_created with EntityConflictError (see
+  // driveHandler), so this handler observes the pending step without owning
+  // it — the crash-recovery shape where a prior handler wrote step_created
+  // but died before queueing. That forces the unified dispatch to QUEUE the
+  // step (inline execution is ownership-gated), exercising the
+  // progress-critical step-dispatch queue() send that must complete before
+  // the orchestrator message is acked.
   const stepWithSleepWorkflow = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
     const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
     async function workflow() {
@@ -760,6 +952,10 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       }
       if (data.eventType === 'step_created') {
         order.push('step_created');
+        // Concurrent-handler simulation: the step_created event already
+        // exists, so this handler doesn't own the step and must queue it
+        // rather than execute it inline.
+        throw new EntityConflictError('step already exists');
       }
       return {
         event: {
@@ -879,9 +1075,14 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // Wait until the dispatch send has started (the handler has replayed,
     // created step_created, and entered the blocked queue() send), then assert
     // the handler has NOT resolved while the send is still in flight.
-    await vi.waitFor(() => {
-      expect(order).toContain('queue_dispatch_start');
-    });
+    // The full VM replay leading up to the send can take well over
+    // vi.waitFor's default 1s timeout on slow CI runners (notably Windows).
+    await vi.waitFor(
+      () => {
+        expect(order).toContain('queue_dispatch_start');
+      },
+      { timeout: 15_000 }
+    );
     // Flush microtasks so any (incorrect) early resolution would be observable.
     await new Promise((r) => setTimeout(r, 20));
 

@@ -377,6 +377,10 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
+      - name: Record E2E start time
+        id: e2eStart
+        run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
+
       - name: Run E2E Tests
         run: pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME.json"
         env:
@@ -401,6 +405,18 @@ jobs:
           # so production runs hit the public vercel-workflow.com URL.
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
+      - name: Capture runtime logs on failure
+        if: failure()
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          E2E_START_MS: ${{ steps.e2eStart.outputs.ms }}
+        run: node .github/scripts/fetch-e2e-runtime-logs.mjs
+
       - name: Generate E2E summary
         if: always()
         env:
@@ -417,6 +433,7 @@ jobs:
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
+            e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
           if-no-files-found: ignore
 

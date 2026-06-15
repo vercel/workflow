@@ -188,6 +188,16 @@ This project uses pnpm with workspace configuration. The required version is spe
 - When modifying package functionality, ensure corresponding README updates are included
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
+### Docs Preview Links in PR Descriptions
+
+When a PR adds or updates docs pages (anything under `docs/content/`), add a "Docs Preview" section to the PR description with direct links to each changed page on the `workflow-docs` preview deployment:
+
+- Get the preview base URL from the `vercel[bot]` comment on the PR — use the Preview link from the `workflow-docs` project row (e.g. `https://workflow-docs-git-<branch-slug>.vercel.sh`). Don't construct the URL by hand; Vercel's branch-slug normalization is not a simple substitution.
+- Map content paths to routes: `docs/content/docs/v4/<path>.mdx` is served at `/docs/<path>` (v4 is the default/latest version) and `docs/content/docs/v5/<path>.mdx` at `/v5/docs/<path>`.
+- When a change is scoped to a specific section of a page, link to its heading anchor (e.g. `/docs/foundations/hooks#checking-for-token-conflicts`) and verify the anchor matches a real heading in the MDX.
+- A simple table with one row per page (and one column per docs version, when both v4 and v5 were updated) works well.
+- The preview deployment sits behind deployment protection, so the links require Vercel team access — that's expected; include them anyway for reviewers.
+
 ## SWC Plugin
 
 When modifying the SWC compiler plugin (`packages/swc-plugin-workflow`), you must also update the specification document at `packages/swc-plugin-workflow/spec.md` to reflect any changes to the transformation behavior.

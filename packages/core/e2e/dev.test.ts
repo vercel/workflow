@@ -38,6 +38,17 @@ export function createDevTests(config?: DevTestConfig) {
     );
   }
   describe('dev e2e', () => {
+    // Each prewarm/trigger fetch is hard-bounded by this so cleanup never hangs
+    // on a wedged dev server.
+    const PREWARM_FETCH_TIMEOUT_MS = 5_000;
+    // The afterEach cleanup can issue two *sequential* prewarms (before and
+    // after deleting an added file) while the dev server is mid-rebuild — the
+    // teardown of a test that added a workflow file and edited an import is
+    // exactly when both rebuild and respond slowly. Its budget must therefore
+    // exceed 2× PREWARM_FETCH_TIMEOUT_MS (plus file IO) with headroom, or it
+    // trips vitest's 10s default hook timeout. The bounded fetches mean this
+    // can't hang indefinitely, so a generous budget is safe.
+    const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
     const appPath = getWorkbenchAppPath();
     const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
@@ -92,7 +103,7 @@ export function createDevTests(config?: DevTestConfig) {
       }
 
       return fetch(new URL(pathname, deploymentUrl), {
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(PREWARM_FETCH_TIMEOUT_MS),
       });
     };
 
@@ -115,7 +126,7 @@ export function createDevTests(config?: DevTestConfig) {
             workflowName,
             args,
           }),
-          signal: AbortSignal.timeout(5_000),
+          signal: AbortSignal.timeout(PREWARM_FETCH_TIMEOUT_MS),
         }
       );
 
@@ -171,7 +182,7 @@ export function createDevTests(config?: DevTestConfig) {
 
     beforeAll(async () => {
       await prewarm();
-    });
+    }, CLEANUP_HOOK_TIMEOUT_MS);
 
     afterEach(async () => {
       // Restore file contents before deleting any files. If a deletion races
@@ -190,7 +201,7 @@ export function createDevTests(config?: DevTestConfig) {
       await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
       await prewarm();
       restoreFiles.length = 0;
-    });
+    }, CLEANUP_HOOK_TIMEOUT_MS);
 
     test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);

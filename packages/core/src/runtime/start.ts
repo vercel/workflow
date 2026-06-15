@@ -4,13 +4,17 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { normalizeAttributeChanges } from '../attribute-changes.js';
+import { getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
@@ -19,9 +23,20 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
-import { getWorkflowQueueName } from './helpers.js';
+import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
+
+/**
+ * Timeout for the cross-deployment capability probe done before
+ * dehydrating workflow arguments. Kept tight on purpose: the probe is
+ * an optimization (it lets the caller emit the framed byte-stream wire
+ * format when the target supports it), and the fallback on timeout is
+ * the legacy raw format which always works. Long delays here would just
+ * make `start({ deploymentId: ... })` slower for users whose target
+ * deployments don't recognize the health check at all.
+ */
+const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -49,6 +64,27 @@ export interface StartOptionsBase {
    * Worlds without a regional dimension ignore this field.
    */
   region?: string;
+
+  /**
+   * Plaintext attributes to seed on the run as it is created.
+   *
+   * Available for native-attributes runs (spec version 4 and later).
+   */
+  attributes?: Record<string, string>;
+
+  /**
+   * Permit reserved `$`-prefixed keys in `attributes`. The `$` namespace
+   * is reserved for framework/library code built on top of the workflow
+   * SDK (telemetry, agent metadata, platform-emitted tags, etc.); user
+   * code MUST NOT write keys in it, and validation rejects them so
+   * accidental collisions with tooling-owned keys can't slip through.
+   *
+   * Only flip this to `true` if your caller is itself a framework or
+   * library that owns a `$`-prefixed sub-namespace and knows the
+   * conventions of any other tools writing into it. Same semantics as
+   * the `experimental_setAttributes` option of the same name.
+   */
+  allowReservedAttributes?: boolean;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -142,7 +178,8 @@ export async function start<TArgs extends unknown[], TResult>(
       );
     }
 
-    return trace(`workflow.start ${workflowName}`, async (span) => {
+    const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
+    return trace(spanName, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -161,7 +198,8 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       const world = opts?.world ?? (await getWorldLazy());
-      let deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+      const currentDeploymentId = await world.getDeploymentId();
+      let deploymentId = opts.deploymentId ?? currentDeploymentId;
 
       // When 'latest' is requested, resolve the actual latest deployment ID
       // for the current deployment's environment (same production target or
@@ -173,6 +211,32 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         deploymentId = await world.resolveLatestDeploymentId();
+      }
+
+      // Decide whether to write byte streams in the framed wire format.
+      // For same-deployment starts (the common case) we know the target is
+      // running this same SDK version, so framing is safe. For cross-
+      // deployment starts (explicit deploymentId or 'latest' that resolves
+      // to a different deployment) we probe the target via healthCheck to
+      // learn its workflow-core version, then derive the capability. The
+      // probe has a tight timeout — on miss/failure we fall back to the
+      // legacy raw byte format, which is universally readable.
+      //
+      // Worlds that don't expose the `streams` API (e.g. minimal test
+      // mocks) can't service health checks, so we skip the probe for them.
+      let framedByteStreams: boolean;
+      if (deploymentId === currentDeploymentId) {
+        framedByteStreams = true;
+      } else if (typeof world.streams?.get !== 'function') {
+        framedByteStreams = false;
+      } else {
+        const probe = await healthCheck(world, 'workflow', {
+          deploymentId,
+          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+        }).catch(() => undefined);
+        framedByteStreams = getRunCapabilities(
+          probe?.workflowCoreVersion
+        ).framedByteStreams;
       }
 
       const ops: Promise<void>[] = [];
@@ -202,6 +266,43 @@ export async function start<TArgs extends unknown[], TResult>(
         world.specVersion ??
         SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
       const v1Compat = isLegacySpecVersion(specVersion);
+      const allowReservedAttributes = opts.allowReservedAttributes === true;
+      let attributes: Record<string, string> | undefined;
+      if (opts.attributes && Object.keys(opts.attributes).length > 0) {
+        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
+          throw new WorkflowRuntimeError(
+            'Initial workflow attributes require a World that supports spec version 4 or later.'
+          );
+        }
+        // `normalizeAttributeChanges` treats `undefined` as "remove this
+        // key", which is meaningless at creation time — reject it up front
+        // so JS callers get a clear error instead of a downstream schema
+        // failure (the types already forbid non-string values).
+        for (const [key, value] of Object.entries(opts.attributes)) {
+          if (typeof value !== 'string') {
+            throw new WorkflowRuntimeError(
+              `Initial workflow attribute ${JSON.stringify(key)} must be a string value.`
+            );
+          }
+        }
+        const changes = normalizeAttributeChanges(opts.attributes, {
+          allowReservedAttributes,
+        });
+        attributes = Object.fromEntries(
+          changes.map(({ key, value }) => [key, value as string])
+        );
+      }
+      // Seed payload shared by run_created and the resilient-start queue
+      // input. The flag rides along so server-side validation matches the
+      // client-side check above on both paths.
+      const attributeSeed = attributes
+        ? {
+            attributes,
+            ...(allowReservedAttributes
+              ? { allowReservedAttributes: true as const }
+              : {}),
+          }
+        : {};
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
@@ -224,7 +325,8 @@ export async function start<TArgs extends unknown[], TResult>(
         encryptionKey,
         ops,
         globalThis,
-        v1Compat
+        v1Compat,
+        framedByteStreams
       );
 
       const executionContext = {
@@ -247,6 +349,7 @@ export async function start<TArgs extends unknown[], TResult>(
               workflowName: workflowName,
               input: workflowArguments,
               executionContext,
+              ...attributeSeed,
             },
           },
           { v1Compat }
@@ -264,6 +367,7 @@ export async function start<TArgs extends unknown[], TResult>(
                     workflowName,
                     specVersion,
                     executionContext,
+                    ...attributeSeed,
                   },
                 }
               : {}),

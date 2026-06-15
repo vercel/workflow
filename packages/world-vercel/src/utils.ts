@@ -18,6 +18,7 @@ import {
   getSpanKind,
   HttpRequestMethod,
   HttpResponseStatusCode,
+  injectTraceContextIntoHeaders,
   PeerService,
   RpcService,
   RpcSystem,
@@ -75,7 +76,10 @@ function formatResponseDiagnostics(response: Response): string {
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  process.env.NODE_ENV === 'test'
+    ? ''
+    : 'https://workflow-server-git-platform-directed-multiregion-preview.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
@@ -331,6 +335,13 @@ export async function makeRequest<T>({
       });
 
       headers.set('Accept', 'application/cbor');
+
+      // Explicitly propagate the active trace context (traceparent /
+      // tracestate / baggage) onto the outgoing request so workflow-server
+      // can parent its spans to this client span — without relying on the
+      // customer app having undici auto-instrumentation. No-ops when no
+      // OTEL SDK is registered.
+      await injectTraceContextIntoHeaders(headers);
 
       // Encode body as CBOR if data is provided
       let body: Buffer | undefined;
