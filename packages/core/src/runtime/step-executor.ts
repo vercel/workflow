@@ -1,5 +1,4 @@
 import { types } from 'node:util';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -9,7 +8,7 @@ import {
   TooEarlyError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
+import { pluralize, stepDisplayName } from '@workflow/utils';
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { CryptoKey } from '../encryption.js';
@@ -30,8 +29,10 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../types.js';
+
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
+import { safeWaitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
@@ -79,7 +80,8 @@ export async function executeStep(
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
 
-  return trace(`STEP ${stepName}`, {}, async (span) => {
+  const spanName = `step.execute ${stepDisplayName(stepName)}`;
+  return trace(spanName, {}, async (span) => {
     span?.setAttributes({
       ...Attribute.StepName(stepName),
       ...Attribute.WorkflowName(workflowName),
@@ -372,14 +374,31 @@ export async function executeStep(
       // across steps), waitUntil handles the rest.
       let opsSettled = true;
       if (ops.length > 0) {
-        const opsPromise = Promise.all(ops).catch((err) => {
-          const isAbortError =
-            err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-          if (!isAbortError) throw err;
+        const opsPromise = Promise.all(ops);
+        // The race below surfaces failures inline when ops settle quickly;
+        // if the 500ms timeout wins, the failure is only observed here. The
+        // promise handed to waitUntil must never reject (an unconsumed
+        // waitUntil rejection crashes the process as unhandledRejection),
+        // so unexpected failures are logged instead.
+        safeWaitUntil(opsPromise, (err) => {
+          runtimeLogger.warn('Background flush of step stream ops failed', {
+            workflowRunId,
+            stepId,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
-        waitUntil(opsPromise);
         opsSettled = await Promise.race([
-          opsPromise.then(() => true as const),
+          opsPromise.then(
+            () => true as const,
+            (err) => {
+              // Ignore expected client disconnect errors (e.g., browser
+              // refresh during streaming)
+              const isAbortError =
+                err?.name === 'AbortError' || err?.name === 'ResponseAborted';
+              if (isAbortError) return true as const;
+              throw err;
+            }
+          ),
           new Promise<false>((r) => setTimeout(() => r(false), 500)),
         ]);
       }

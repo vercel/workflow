@@ -4,9 +4,6 @@ import { experimental_setAttributes } from './set-attributes.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
 
 const WORLD_CACHE = Symbol.for('@workflow/world//cache');
-const UNSUPPORTED_WORLD_WARNED = Symbol.for(
-  '@workflow/setAttributes//unsupportedWorldWarned'
-);
 const globals = globalThis as Record<symbol, unknown>;
 
 function stepContext(runId = 'run_123'): StepContext {
@@ -37,11 +34,9 @@ async function runInStepContext<T>(
 
 describe('experimental_setAttributes (host-side)', () => {
   let originalWorld: unknown;
-  let originalUnsupportedWorldWarned: unknown;
 
   beforeEach(() => {
     originalWorld = globals[WORLD_CACHE];
-    originalUnsupportedWorldWarned = globals[UNSUPPORTED_WORLD_WARNED];
   });
 
   afterEach(() => {
@@ -51,12 +46,6 @@ describe('experimental_setAttributes (host-side)', () => {
       delete globals[WORLD_CACHE];
     } else {
       globals[WORLD_CACHE] = originalWorld;
-    }
-
-    if (originalUnsupportedWorldWarned === undefined) {
-      delete globals[UNSUPPORTED_WORLD_WARNED];
-    } else {
-      globals[UNSUPPORTED_WORLD_WARNED] = originalUnsupportedWorldWarned;
     }
   });
 
@@ -69,35 +58,36 @@ describe('experimental_setAttributes (host-side)', () => {
     );
   });
 
-  it('posts normalized changes directly to the world when called from a step', async () => {
-    const experimentalSetAttributes = vi.fn().mockResolvedValue({
-      attributes: { phase: 'ready' },
-    });
+  it('posts normalized changes as a native event when called from a step', async () => {
+    const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
       name: 'test-world',
-      runs: { experimentalSetAttributes },
+      events: { create },
     };
 
     await runInStepContext(() =>
       experimental_setAttributes({ phase: 'ready', stale: undefined })
     );
 
-    expect(experimentalSetAttributes).toHaveBeenCalledWith(
+    expect(create).toHaveBeenCalledWith(
       'run_123',
-      [
-        { key: 'phase', value: 'ready' },
-        { key: 'stale', value: null },
-      ],
-      {}
+      expect.objectContaining({
+        eventType: 'attr_set',
+        eventData: {
+          changes: [
+            { key: 'phase', value: 'ready' },
+            { key: 'stale', value: null },
+          ],
+          writer: { type: 'step', stepId: 'step', attempt: 1 },
+        },
+      })
     );
   });
 
   it('forwards allowReservedAttributes for step-side reserved namespace writes', async () => {
-    const experimentalSetAttributes = vi.fn().mockResolvedValue({
-      attributes: { '$agent.kind': 'durable-agent' },
-    });
+    const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
-      runs: { experimentalSetAttributes },
+      events: { create },
     };
 
     await runInStepContext(() =>
@@ -107,40 +97,28 @@ describe('experimental_setAttributes (host-side)', () => {
       )
     );
 
-    expect(experimentalSetAttributes).toHaveBeenCalledWith(
+    expect(create).toHaveBeenCalledWith(
       'run_123',
-      [{ key: '$agent.kind', value: 'durable-agent' }],
-      { allowReservedAttributes: true }
+      expect.objectContaining({
+        eventType: 'attr_set',
+        eventData: {
+          changes: [{ key: '$agent.kind', value: 'durable-agent' }],
+          writer: { type: 'step', stepId: 'step', attempt: 1 },
+          allowReservedAttributes: true,
+        },
+      })
     );
   });
 
   it('rejects validation errors before posting from a step', async () => {
-    const experimentalSetAttributes = vi.fn();
+    const create = vi.fn();
     globals[WORLD_CACHE] = {
-      runs: { experimentalSetAttributes },
+      events: { create },
     };
 
     await expect(
       runInStepContext(() => experimental_setAttributes({ $sys: 'x' }))
     ).rejects.toBeInstanceOf(FatalError);
-    expect(experimentalSetAttributes).not.toHaveBeenCalled();
-  });
-
-  it('warns once and no-ops in a step when the world does not support attributes', async () => {
-    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    globals[WORLD_CACHE] = {
-      name: 'legacy-world',
-      runs: {},
-    };
-
-    await runInStepContext(() =>
-      experimental_setAttributes({ phase: 'ignored' })
-    );
-    await runInStepContext(() =>
-      experimental_setAttributes({ phase: 'ignored-again' })
-    );
-
-    expect(consoleWarn).toHaveBeenCalledTimes(1);
-    expect(consoleWarn.mock.calls[0]?.[0]).toContain('legacy-world');
+    expect(create).not.toHaveBeenCalled();
   });
 });

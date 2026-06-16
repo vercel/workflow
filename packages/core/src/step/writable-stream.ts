@@ -73,8 +73,12 @@ export function getWritable<W = any>(
     return cached.writable as WritableStream<W>;
   }
 
+  // Create a transform stream that serializes chunks and pipes to the workflow server.
+  // The target run is the workflow run that owns this step, which (per
+  // version skew protection) is on this same SDK version, so byte-stream
+  // framing is always safe here.
   const serialize = getSerializeStream(
-    getExternalReducers(globalThis, ctx.ops, runId, ctx.encryptionKey),
+    getExternalReducers(globalThis, ctx.ops, runId, ctx.encryptionKey, true),
     ctx.encryptionKey
   );
 

@@ -1,4 +1,7 @@
 {
   "title": "Observability",
-  "pages": ["attributes"]
+  "pages": [
+    "tracing",
+    "attributes"
+  ]
 }

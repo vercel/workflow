@@ -166,6 +166,52 @@ const config: NextConfig = {
         destination: '/docs/getting-started/python',
         permanent: true,
       },
+      // API reference restructure: getWorld and the World SDK moved from the
+      // workflow-api section to workflow-runtime, and the observability
+      // utilities page became its own workflow-observability section —
+      // matching the `workflow/runtime` and `workflow/observability` import
+      // paths these APIs are actually exported from. The observability rules
+      // must come before the world/:path* catch-alls (first match wins).
+      {
+        source: '/docs/api-reference/workflow-api/world/observability',
+        destination: '/docs/api-reference/workflow-observability',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/api-reference/workflow-api/world/observability',
+        destination: '/v5/docs/api-reference/workflow-observability',
+        permanent: true,
+      },
+      {
+        source: '/docs/api-reference/workflow-api/get-world',
+        destination: '/docs/api-reference/workflow-runtime/get-world',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/api-reference/workflow-api/get-world',
+        destination: '/v5/docs/api-reference/workflow-runtime/get-world',
+        permanent: true,
+      },
+      {
+        source: '/docs/api-reference/workflow-api/world',
+        destination: '/docs/api-reference/workflow-runtime/world',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/api-reference/workflow-api/world',
+        destination: '/v5/docs/api-reference/workflow-runtime/world',
+        permanent: true,
+      },
+      {
+        source: '/docs/api-reference/workflow-api/world/:path*',
+        destination: '/docs/api-reference/workflow-runtime/world/:path*',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/api-reference/workflow-api/world/:path*',
+        destination: '/v5/docs/api-reference/workflow-runtime/world/:path*',
+        permanent: true,
+      },
     ];
   },
 };

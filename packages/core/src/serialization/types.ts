@@ -37,6 +37,18 @@ export const SerializationFormat = {
 // ---- Serializable Types ----
 
 /**
+ * Wire-framing format identifier carried in the serialized
+ * `ReadableStream` ref's `framing` field.
+ *
+ * - absent / `'raw'`: chunks are written to the transport verbatim
+ *   (legacy format — no auto-reconnect support).
+ * - `'framed-v1'`: each chunk is wrapped in a 4-byte big-endian length
+ *   prefix, allowing the reader to identify chunk boundaries and
+ *   transparently reconnect on transient stream errors.
+ */
+export type ByteStreamFraming = 'raw' | 'framed-v1';
+
+/**
  * Types that need specialized handling when serialized/deserialized.
  * If a type is added here, it MUST also be added to the `Serializable`
  * type in `schemas.ts`.
@@ -73,7 +85,21 @@ export interface SerializableSpecial {
   Map: [any, any][];
   RangeError: { message: string; stack?: string; cause?: unknown };
   ReadableStream:
-    | { name: string; type?: 'bytes'; startIndex?: number }
+    | {
+        name: string;
+        type?: 'bytes';
+        startIndex?: number;
+        /**
+         * Wire-framing format for byte streams. See {@link ByteStreamFraming}
+         * and `getByteFramingStream` / `getByteUnframingStream`.
+         *
+         * Only meaningful when `type === 'bytes'`. Absent on object streams
+         * (which always use length-prefixed devalue framing) and on legacy
+         * byte streams written by SDKs that predate framing support — those
+         * are interpreted as `'raw'` by the consumer.
+         */
+        framing?: ByteStreamFraming;
+      }
     | { bodyInit: any };
   ReferenceError: { message: string; stack?: string; cause?: unknown };
   RegExp: { source: string; flags: string };

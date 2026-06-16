@@ -1,37 +1,34 @@
 import { FatalError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WORKFLOW_USE_STEP } from '../symbols.js';
+import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
 import { experimental_setAttributes } from './set-attributes.js';
 
 describe('workflow.experimental_setAttributes', () => {
   const dispatchCalls: Array<{
-    stepName: string;
     changes: Array<{ key: string; value: string | null }>;
     options: { allowReservedAttributes?: boolean } | undefined;
   }> = [];
 
   beforeEach(() => {
     dispatchCalls.length = 0;
-    (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP] = vi.fn(
-      (stepName: string) =>
-        async (
-          changes: Array<{ key: string; value: string | null }>,
-          options?: { allowReservedAttributes?: boolean }
-        ) => {
-          dispatchCalls.push({ stepName, changes, options });
-        }
+    (globalThis as Record<symbol, unknown>)[WORKFLOW_SET_ATTRIBUTES] = vi.fn(
+      async (
+        changes: Array<{ key: string; value: string | null }>,
+        options?: { allowReservedAttributes?: boolean }
+      ) => {
+        dispatchCalls.push({ changes, options });
+      }
     );
   });
 
   afterEach(() => {
-    delete (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP];
+    delete (globalThis as Record<symbol, unknown>)[WORKFLOW_SET_ATTRIBUTES];
   });
 
-  it('dispatches normalized changes through __builtin_set_attributes', async () => {
+  it('dispatches normalized changes through the native attribute primitive', async () => {
     await experimental_setAttributes({ phase: 'init', orderId: 'ord_1' });
     expect(dispatchCalls).toEqual([
       {
-        stepName: '__builtin_set_attributes',
         changes: [
           { key: 'phase', value: 'init' },
           { key: 'orderId', value: 'ord_1' },
@@ -45,7 +42,6 @@ describe('workflow.experimental_setAttributes', () => {
     await experimental_setAttributes({ phase: 'done', stale: undefined });
     expect(dispatchCalls).toEqual([
       {
-        stepName: '__builtin_set_attributes',
         changes: [
           { key: 'phase', value: 'done' },
           { key: 'stale', value: null },
@@ -60,8 +56,8 @@ describe('workflow.experimental_setAttributes', () => {
     expect(dispatchCalls).toHaveLength(0);
   });
 
-  it('throws FatalError when the workflow runtime has not initialized useStep', async () => {
-    delete (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP];
+  it('throws FatalError when the workflow runtime has not initialized attribute dispatch', async () => {
+    delete (globalThis as Record<symbol, unknown>)[WORKFLOW_SET_ATTRIBUTES];
     await expect(
       experimental_setAttributes({ phase: 'init' })
     ).rejects.toBeInstanceOf(FatalError);
@@ -74,14 +70,13 @@ describe('workflow.experimental_setAttributes', () => {
     expect(dispatchCalls).toHaveLength(0);
   });
 
-  it('dispatches reserved-prefix keys when allowReservedAttributes opt-in is set, and forwards the flag to the step', async () => {
+  it('dispatches reserved-prefix keys when allowReservedAttributes opt-in is set, and forwards the flag', async () => {
     await experimental_setAttributes(
       { '$framework.kind': 'agent' },
       { allowReservedAttributes: true }
     );
     expect(dispatchCalls).toEqual([
       {
-        stepName: '__builtin_set_attributes',
         changes: [{ key: '$framework.kind', value: 'agent' }],
         options: { allowReservedAttributes: true },
       },

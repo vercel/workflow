@@ -31,8 +31,8 @@ export default withWorkflow(nextConfig, workflowConfig); // [!code highlight]
 If a package in `serverExternalPackages` contains workflow code (`"use step"`,
 `"use workflow"`, or serialization classes), `withWorkflow()` automatically
 removes it from `serverExternalPackages` for the current build and prints a
-warning. This ensures the package still gets transformed by the Workflow
-compiler. Remove that package from `serverExternalPackages` in your
+warning. Workflow still compiles the package so its directives are transformed.
+Remove that package from `serverExternalPackages` in your
 `next.config` to silence the warning.
 </Callout>
 

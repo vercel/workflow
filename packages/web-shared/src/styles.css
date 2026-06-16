@@ -12,6 +12,9 @@
  *   import '@workflow/web-shared/styles.css';
  */
 
+@custom-variant dark-theme (&:where(.dark-theme, .dark-theme *, .dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+@custom-variant light-theme (&:where(.light-theme, .light-theme *, .light, .light *));
+
 :root {
   /* Background */
   --ds-background-100: hsl(0, 0%, 100%);
@@ -103,6 +106,9 @@
 
   /* Shadows */
   --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.04);
+  --ds-shadow-tooltip:
+    0 0 0 1px rgba(0, 0, 0, 0.08), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
 }
 
 /* Dark theme defaults */
@@ -187,6 +193,9 @@
   --ds-pink-900: hsl(336, 80%, 70%);
 
   --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.3);
+  --ds-shadow-tooltip:
+    0 0 0 1px rgba(255, 255, 255, 0.145), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
 }
 
 @theme inline {

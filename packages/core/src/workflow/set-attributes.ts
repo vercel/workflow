@@ -1,7 +1,7 @@
 import { FatalError } from '@workflow/errors';
 import type { AttributeChange } from '@workflow/world';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
-import { WORKFLOW_USE_STEP } from '../symbols.js';
+import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
 
 /**
  * Options accepted by `experimental_setAttributes`.
@@ -35,11 +35,10 @@ export interface ExperimentalSetAttributesOptions {
  * breaking rename later.
  *
  * Callable only from a workflow body (`'use workflow'`). The call is
- * dispatched through the workflow runtime as a step, so the mutation
- * is recorded in the event log and survives replay.
+ * dispatched as a native `attr_set` event and materialized on the run.
  *
- * Validation runs in the VM (cheap, deterministic) before the step
- * dispatch — violations throw `FatalError` without queuing a step. An
+ * Validation runs in the VM (cheap, deterministic) before event
+ * dispatch - violations throw `FatalError` without writing an event. An
  * empty record is a no-op. `value: undefined` removes the key from the
  * run's attribute map.
  *
@@ -83,21 +82,21 @@ export async function experimental_setAttributes(
   const changes = normalizeAttributeChanges(attrs, options);
   if (changes.length === 0) return;
   const allowReservedAttributes = options.allowReservedAttributes === true;
-  const useStep = (globalThis as Record<symbol, unknown>)[WORKFLOW_USE_STEP] as
+  const setAttributes = (globalThis as Record<symbol, unknown>)[
+    WORKFLOW_SET_ATTRIBUTES
+  ] as
     | ((
-        stepName: string
-      ) => (
         changes: AttributeChange[],
         options?: { allowReservedAttributes?: boolean }
       ) => Promise<void>)
     | undefined;
-  if (!useStep) {
+  if (!setAttributes) {
     throw new FatalError(
       'experimental_setAttributes() called outside a workflow runtime context. ' +
         'It must be called from within a workflow body (`use workflow`).'
     );
   }
-  await useStep('__builtin_set_attributes')(
+  await setAttributes(
     changes,
     allowReservedAttributes ? { allowReservedAttributes: true } : {}
   );
