@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.2.0
+
+### Minor Changes
+
+- [#2305](https://github.com/vercel/workflow/pull/2305) [`9c667e0`](https://github.com/vercel/workflow/commit/9c667e05c2aad0158698099ac84a846e10ed5700) Thanks [@willsather](https://github.com/willsather)! - Add an optional `namespace` parameter that scopes queue topic prefixes to `__{namespace}_wkf_workflow_*`. This allows configuring multiple frameworks in the same deployment without queue topic collision.
+
 ## 4.1.5
 
 ### Patch Changes

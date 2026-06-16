@@ -21,6 +21,9 @@
   "access": "public",
   "baseBranch": "stable",
   "updateInternalDependencies": "patch",
+  "___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH": {
+    "onlyUpdatePeerDependentsWhenOutOfRange": true
+  },
   "ignore": [
     "docs",
     "tarballs",

@@ -161,6 +161,10 @@ const HookCreatedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     token: z.string(),
     metadata: SerializedDataSchema.optional(),
+    // Preserved on read so crash-recovery paths can rebuild the hook
+    // entity from the persisted `hook_created` event's payload (see
+    // `repairHookEntityFromPersistedEvent` in `@workflow/world-local`).
+    isWebhook: z.boolean().optional(),
   }),
 });
 

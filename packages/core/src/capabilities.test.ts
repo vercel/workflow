@@ -61,4 +61,45 @@ describe('getRunCapabilities', () => {
       expect(supportedFormats.has(SerializationFormat.ENCRYPTED)).toBe(true);
     });
   });
+
+  describe('framedByteStreams (byte-stream wire framing)', () => {
+    it('is false when version is undefined', () => {
+      expect(getRunCapabilities(undefined).framedByteStreams).toBe(false);
+    });
+
+    it.each([
+      'not-a-version',
+      '',
+      'dev',
+    ])('is false for invalid version "%s"', (version) => {
+      expect(getRunCapabilities(version).framedByteStreams).toBe(false);
+    });
+
+    it.each([
+      // pre-cutoff: encryption introduced in 4.2.0-beta.64; framing ships
+      // in the stable 4.5.0 release, so any earlier 4.x version is too old
+      '4.2.0-beta.64',
+      '4.2.0',
+      '4.4.0',
+      // betas published before framing shipped must read as raw —
+      // a false positive here means framed writes to a consumer that
+      // cannot unframe them
+      '4.5.0-beta.14',
+    ])('is false for pre-framing version %s', (version) => {
+      expect(getRunCapabilities(version).framedByteStreams).toBe(false);
+    });
+
+    it('is true at the exact cutoff version (4.5.0)', () => {
+      expect(getRunCapabilities('4.5.0').framedByteStreams).toBe(true);
+    });
+
+    it.each([
+      '4.5.1',
+      '4.6.0',
+      '5.0.0',
+      '6.0.0',
+    ])('is true for post-framing version %s', (version) => {
+      expect(getRunCapabilities(version).framedByteStreams).toBe(true);
+    });
+  });
 });
