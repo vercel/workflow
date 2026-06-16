@@ -486,6 +486,7 @@ export function withWorkflow(
             // discover workflows from pages/app entries
             dirs: ['pages', 'app', 'src/pages', 'src/app'],
             projectRoot: nextConfig.outputFileTracingRoot,
+            moduleSpecifierRoot: process.cwd(),
             workingDir: process.cwd(),
             distDir,
             diagnosticsDir: `${distDir}/diagnostics`,
