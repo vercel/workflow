@@ -7,4 +7,4 @@
 '@workflow/web': patch
 ---
 
-Drop the dead `/v1/step` queue route plumbing left over after #1338: the `step` health-check endpoint is removed (`wf health` now only checks `workflow` and treats `--endpoint=step`/`--endpoint=both` as deprecated aliases), and the queues in `@workflow/world-local`/`@workflow/world-postgres` no longer dispatch `__wkf_step_*` messages to the non-existent `/.well-known/workflow/v1/step` URL.
+Remove unused `/v1/step` queue route plumbing and `step` health-check endpoint and message redundant message dispatch
