@@ -10,20 +10,23 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { isEncryptedMarker } from '../lib/hydration';
 import {
-  parseExactWorkflowSearchId,
-  looksLikeWorkflowIdSearchInput,
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
+  looksLikeWorkflowIdSearchInput,
+  parseExactWorkflowSearchId,
 } from '../lib/exact-event-search-id';
-import { DecryptButton } from './ui/decrypt-button';
-import { formatDuration } from '../lib/utils';
+import { isEncryptedMarker } from '../lib/hydration';
 import { useToast } from '../lib/toast';
+import { formatDuration } from '../lib/utils';
+import { AttrSetEventBlock } from './sidebar/attributes-block';
+import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
+import { DecryptButton } from './ui/decrypt-button';
 import {
   ErrorStackBlock,
-  isStructuredErrorWithStack,
+  isStructuredError,
+  type StructuredErrorRecord,
 } from './ui/error-stack-block';
 import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
@@ -94,6 +97,10 @@ function getStatusDotColor(eventType: string): string {
   // Retrying → amber
   if (eventType === 'step_retrying') {
     return 'var(--ds-amber-700)';
+  }
+  // Attribute changes → teal
+  if (eventType === 'attr_set') {
+    return 'var(--ds-teal-900)';
   }
   // Completed/succeeded → green
   if (
@@ -257,7 +264,10 @@ function isRunLevel(eventType: string): boolean {
     eventType === 'run_cancelled' ||
     eventType === 'workflow_started' ||
     eventType === 'workflow_completed' ||
-    eventType === 'workflow_failed'
+    eventType === 'workflow_failed' ||
+    // attr_set carries a dedup correlationId rather than a child entity ID,
+    // so it groups and labels with the run itself.
+    eventType === 'attr_set'
   );
 }
 
@@ -519,20 +529,20 @@ function deepParseJson(value: unknown): unknown {
 }
 
 /**
- * Extracts a structured error with a stack trace from event data, if present.
+ * Extracts a structured error from event data, if present.
  * Returns the error object to render with ErrorStackBlock, or null if not applicable.
  */
 function extractStructuredError(
   data: unknown,
   eventType?: string
-): (Record<string, unknown> & { stack: string }) | null {
+): StructuredErrorRecord | null {
   if (!eventType || !ERROR_EVENT_TYPES.has(eventType)) return null;
   if (data == null || typeof data !== 'object') return null;
   const record = data as Record<string, unknown>;
   // Check the nested `error` field first (the StructuredError)
-  if (isStructuredErrorWithStack(record.error)) return record.error;
-  // Some error formats put the stack at the top level of eventData
-  if (isStructuredErrorWithStack(record)) return record;
+  if (isStructuredError(record.error)) return record.error;
+  // Some error formats put the message/stack at the top level of eventData.
+  if (isStructuredError(record)) return record;
   return null;
 }
 
@@ -591,6 +601,12 @@ function PayloadBlock({
         <ErrorStackBlock value={structuredError} />
       </div>
     );
+  }
+
+  // Attribute changes — render the changed keys and the writer instead of
+  // the raw JSON payload.
+  if (eventType === 'attr_set') {
+    return <AttrSetEventBlock data={cleaned} />;
   }
 
   return (
@@ -1161,7 +1177,7 @@ function EventRow({
 // Main component
 // ──────────────────────────────────────────────────────────────────────────
 
-export function EventListView({
+function EventListViewInner({
   events,
   run,
   onLoadEventData,
@@ -1742,5 +1758,13 @@ export function EventListView({
         </div>
       </div>
     </DecryptClickContext.Provider>
+  );
+}
+
+export function EventListView(props: EventsListProps) {
+  return (
+    <ContextCardProvider>
+      <EventListViewInner {...props} />
+    </ContextCardProvider>
   );
 }

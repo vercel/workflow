@@ -4,16 +4,23 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
-import type { Span } from '../../trace-viewer/types';
-import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
-import type { Segment, SegmentStatus, TimeMarker } from '../utils';
+import {
+  formatDuration,
+  formatDurationPrecise,
+  getHighResInMs,
+} from '../../trace-viewer/util/timing';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
+import type { Span } from '../types';
+import type { Segment, SegmentStatus, TimeMarker } from '../utils';
 import {
   computeSpanGaps,
   computeSpanSegments,
   getResourceColor,
   getSpanDurationMs,
 } from '../utils';
+import styles from './timeline.module.css';
+import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,6 +35,7 @@ const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   retrying: 'bg-gray-400 border border-gray-500',
   waiting: 'bg-gray-400 border border-gray-500',
   running: 'bg-blue-200 border border-blue-500',
+  completed: 'bg-blue-200 border border-blue-500',
   failed: 'bg-red-200 border border-red-500',
   succeeded: 'bg-green-200 border border-green-500',
   sleeping: 'bg-gray-400 border border-gray-500',
@@ -38,6 +46,15 @@ const TIMELINE_INSET_STYLE: CSSProperties = {
   left: TIMELINE_PADDING_PX,
   right: TIMELINE_PADDING_PX,
 };
+
+const ACTIVE_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
+  'running',
+  'received',
+]);
+
+function RunningStripes(): ReactNode {
+  return <div aria-hidden className={styles.runningStripes} />;
+}
 
 // ---------------------------------------------------------------------------
 // Bar geometry
@@ -217,25 +234,57 @@ function PlainBar({
   );
 }
 
+function LeadInConnector({
+  leftPct,
+  widthPct,
+  label,
+}: {
+  leftPct: number;
+  widthPct: number;
+  label: string | null;
+}): ReactNode {
+  return (
+    <div
+      className="absolute top-1/2 h-6 -translate-y-1/2"
+      style={{
+        left: `calc(${leftPct}% + 0.5px)`,
+        width: `calc(${widthPct}% - 1px)`,
+      }}
+    >
+      <div className="absolute left-0 top-1/2 h-4 w-px -translate-y-1/2 bg-gray-500" />
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-gray-500" />
+      {label ? <DurationLabel label={label} /> : null}
+    </div>
+  );
+}
+
 function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
   return (
     <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
-        const label = formatDuration(seg.fullDurationMs);
+        if (seg.status === 'queued') {
+          const leadInLabel = formatDurationPrecise(seg.fullDurationMs);
+          const showLeadInLabel =
+            seg.pixelWidth >= Math.max(40, leadInLabel.length * 6 + 12);
+          return (
+            <LeadInConnector
+              key={i}
+              leftPct={seg.leftPct}
+              widthPct={seg.widthPct}
+              label={showLeadInLabel ? leadInLabel : null}
+            />
+          );
+        }
+
+        const label = formatDurationPrecise(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
         const showLabel = seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
-        // Beef up the queued segment when it's too narrow to read.
-        const isNarrowQueued = seg.status === 'queued' && seg.pixelWidth < 20;
-        const overrideBg = isNarrowQueued ? 'var(--ds-gray-400)' : undefined;
-        const overrideBorder = isNarrowQueued
-          ? 'var(--ds-gray-500)'
-          : undefined;
 
         return (
           <div
-            key={`${seg.status}-${i}`}
+            key={i}
             className={cn(
-              'absolute h-full rounded-[0.25rem]',
+              'absolute h-full overflow-hidden rounded-[0.25rem]',
               SEGMENT_CLASSES[seg.status]
             )}
             style={{
@@ -243,15 +292,90 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
               left: `calc(${seg.leftPct}% + 0.5px)`,
               width: `calc(${seg.widthPct}% - 1px)`,
               minWidth: 1,
-              background: overrideBg,
-              borderColor: overrideBorder,
             }}
           >
+            {ACTIVE_SEGMENT_STATUSES.has(seg.status) ? (
+              <RunningStripes />
+            ) : null}
             {showLabel ? <DurationLabel label={label} /> : null}
           </div>
         );
       })}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Event markers (attr_set)
+// ---------------------------------------------------------------------------
+
+function formatMarkerTime(ms: number): string {
+  const date = new Date(ms);
+  return (
+    date.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }) +
+    '.' +
+    date.getMilliseconds().toString().padStart(3, '0')
+  );
+}
+
+/**
+ * Diamond markers for `attr_set` events on a span's timeline row. Attribute
+ * changes are point-in-time events with no duration, so they don't get a
+ * status segment — instead they render as small teal diamonds at the moment
+ * the attributes were written.
+ */
+function AttrSetMarkers({
+  span,
+  viewStart,
+  viewDuration,
+}: {
+  span: Span;
+  viewStart: number;
+  viewDuration: number;
+}): ReactNode {
+  const markers = useMemo(
+    () => span.events.filter((e) => e.name === 'attr_set'),
+    [span.events]
+  );
+
+  if (markers.length === 0 || viewDuration <= 0) return null;
+
+  return (
+    <>
+      {markers.map((event, index) => {
+        const timeMs = getHighResInMs(event.timestamp);
+        const frac = (timeMs - viewStart) / viewDuration;
+        if (frac < 0 || frac > 1) return null;
+
+        return (
+          <Tooltip key={`attr-set-${index}`}>
+            <TooltipTrigger asChild>
+              <div
+                aria-label="Attributes set"
+                className="absolute top-1/2 z-10 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center"
+                style={{ left: `${frac * 100}%` }}
+              >
+                <div
+                  className="h-2 w-2 rotate-45 rounded-[1px] border"
+                  style={{
+                    backgroundColor: 'var(--ds-teal-400)',
+                    borderColor: 'var(--ds-teal-900)',
+                  }}
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              Attributes set · {formatMarkerTime(timeMs)}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </>
   );
 }
 
@@ -312,7 +436,7 @@ const TimelineBar = memo(function TimelineBar({
     ? (colors.errorBorder ?? 'var(--ds-red-500)')
     : colors.border;
 
-  const totalLabel = formatDuration(totalDurationMs);
+  const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =
     geometry.visiblePixelWidth >= Math.max(40, totalLabel.length * 6 + 12);
 
@@ -354,6 +478,11 @@ const TimelineBar = memo(function TimelineBar({
             />
           )}
         </div>
+        <AttrSetMarkers
+          span={span}
+          viewStart={viewStart}
+          viewDuration={viewDuration}
+        />
       </div>
     </div>
   );
@@ -365,10 +494,6 @@ export { TimelineBar };
 // DeltaIndicator (Alt-key gap overlay)
 // ---------------------------------------------------------------------------
 
-// Row and indicator sizes are local to DeltaIndicator since it's the only
-// place that needs to compute Y positions from a row index. ROW_HEIGHT must
-// match the `h-10` (40px) row used in TimelineBar.
-const DELTA_ROW_HEIGHT_PX = 40;
 const DELTA_CAP_HEIGHT_PX = 8;
 // Vertical offset to sit the indicator inside the gap between row N and N+1,
 // aligned with where the bar starts in the next row (rows center a 24px bar
@@ -386,7 +511,7 @@ const DeltaIndicator = memo(function DeltaIndicator({
   label: string;
   rowIndex: number;
 }) {
-  const centerY = DELTA_ROW_OFFSET_PX + (rowIndex + 1) * DELTA_ROW_HEIGHT_PX;
+  const centerY = DELTA_ROW_OFFSET_PX + (rowIndex + 1) * ROW_HEIGHT_PX;
 
   return (
     <div
@@ -424,7 +549,7 @@ export function TimelineHeader({
       <div className="relative h-full flex-1">
         {markers.map((m) => (
           <span
-            key={`${m.position}-${m.label}`}
+            key={String(m.value)}
             className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
@@ -473,6 +598,11 @@ export function Timeline({
   const [containerWidth, setContainerWidth] = useState(0);
   const viewDuration = viewEnd - viewStart;
   const timelineWidth = Math.max(0, containerWidth - TIMELINE_PADDING_PX * 2);
+  const { start, end } = useRowWindow(
+    containerRef,
+    spans.length,
+    ROW_HEIGHT_PX
+  );
 
   useEffect(() => {
     const el = containerRef.current;
@@ -490,7 +620,11 @@ export function Timeline({
   );
 
   return (
-    <div ref={containerRef} className="relative h-full overflow-hidden">
+    <div
+      ref={containerRef}
+      className="relative h-full overflow-hidden"
+      style={{ minHeight: spans.length * ROW_HEIGHT_PX }}
+    >
       <div
         aria-hidden
         className="absolute inset-y-0 pointer-events-none"
@@ -500,7 +634,7 @@ export function Timeline({
           // Skip the "0s" origin marker since the left edge already implies it.
           Math.abs(marker.value) > 0.000001 ? (
             <div
-              key={`${marker.position}-${marker.label}`}
+              key={String(marker.value)}
               className="absolute top-0 bottom-0 w-px bg-gray-alpha-300"
               style={{ left: `${marker.position * 100}%` }}
             />
@@ -518,18 +652,20 @@ export function Timeline({
           />
         </div>
       )}
-      {spans.map((span) => (
-        <TimelineBar
-          key={span.spanId}
-          span={span}
-          viewStart={viewStart}
-          viewDuration={viewDuration}
-          containerWidth={timelineWidth}
-          isSelected={selectedId === span.spanId}
-          isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
-          onSelect={onSelect}
-        />
-      ))}
+      <div style={{ transform: `translateY(${start * ROW_HEIGHT_PX}px)` }}>
+        {spans.slice(start, end).map((span) => (
+          <TimelineBar
+            key={span.spanId}
+            span={span}
+            viewStart={viewStart}
+            viewDuration={viewDuration}
+            containerWidth={timelineWidth}
+            isSelected={selectedId === span.spanId}
+            isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
       {altHeld && (
         <div
           aria-hidden

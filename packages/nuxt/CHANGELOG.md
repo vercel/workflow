@@ -1,5 +1,63 @@
 # @workflow/nuxt
 
+## 5.0.0-beta.17
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.17
+
+## 5.0.0-beta.16
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.16
+
+## 5.0.0-beta.15
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.15
+
+## 5.0.0-beta.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.14
+
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2301](https://github.com/vercel/workflow/pull/2301) [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.13
+
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- Updated dependencies [[`a651052`](https://github.com/vercel/workflow/commit/a65105235cb0987157357a1aa4949c43bc77ed73)]:
+  - @workflow/nitro@5.0.0-beta.12
+
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.11
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.10
+
 ## 5.0.0-beta.9
 
 ### Patch Changes

@@ -345,6 +345,9 @@ export function RunDetailView({
     error,
     update,
     hasEncryptedData,
+    loadMoreTraceData,
+    hasMoreTraceData,
+    isLoadingMoreTraceData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
@@ -785,7 +788,11 @@ export function RunDetailView({
                   <NewTraceViewer
                     run={run}
                     events={allEvents ?? []}
+                    loading={loading}
                     sidebarData={sidebarData}
+                    onLoadMore={loadMoreTraceData}
+                    hasMore={hasMoreTraceData}
+                    isLoadingMore={isLoadingMoreTraceData}
                   />
                 </div>
               </ErrorBoundary>

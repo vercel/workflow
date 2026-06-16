@@ -11,12 +11,14 @@ function makeMockWorld(
   return { processExitTriggersQueueRedelivery } as unknown as World;
 }
 
-function makeError(): RuntimeDecryptionError {
+function makeError(
+  operation: 'encrypt' | 'decrypt' = 'decrypt'
+): RuntimeDecryptionError {
   return new RuntimeDecryptionError(
     'AES-256-GCM decryption failed: The operation failed for an operation-specific reason',
     {
       cause: Object.assign(new Error('boom'), { name: 'OperationError' }),
-      context: { operation: 'decrypt', byteLength: 1234, formatPrefix: 'encr' },
+      context: { operation, byteLength: 1234, formatPrefix: 'encr' },
     }
   );
 }
@@ -91,6 +93,21 @@ describe('shouldRedriveOnDecryptionFailure', () => {
         runId: 'wrun_test',
         workflowName: 'wf',
         attempt: DECRYPTION_FAILURE_MAX_RETRIES + 1,
+      })
+    ).toBe(false);
+  });
+
+  it('returns false for encrypt-side failures even on early attempts (redelivery cannot help)', () => {
+    // Re-fetching persisted bytes only helps a *decrypt* failure. An encrypt
+    // failure happens while serializing a brand-new payload, so redelivery
+    // would just re-run workflow code to hit the same failure.
+    expect(
+      shouldRedriveOnDecryptionFailure({
+        world: makeMockWorld(true),
+        error: makeError('encrypt'),
+        runId: 'wrun_test',
+        workflowName: 'wf',
+        attempt: 1,
       })
     ).toBe(false);
   });

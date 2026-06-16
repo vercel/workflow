@@ -1,4 +1,4 @@
-import { CorruptedEventLogError } from '@workflow/errors';
+import { ReplayDivergenceError } from '@workflow/errors';
 import { EventConsumerResult } from '../events-consumer.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
@@ -147,8 +147,9 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         ) {
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
             ctx.onWorkflowError(
-              new CorruptedEventLogError(
-                `Corrupted event log: abort hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current abort hook expects "${this[ABORT_HOOK_TOKEN]}"`
+              new ReplayDivergenceError(
+                `Replay divergence: abort hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current abort hook expects "${this[ABORT_HOOK_TOKEN]}"`,
+                { eventId: event.eventId }
               )
             );
           });

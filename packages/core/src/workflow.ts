@@ -1,7 +1,7 @@
 import { runInContext } from 'node:vm';
 import {
-  CorruptedEventLogError,
   ERROR_SLUGS,
+  ReplayDivergenceError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -29,6 +29,7 @@ import {
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
 } from './symbols.js';
@@ -44,6 +45,7 @@ import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
+import { createSetAttributes } from './workflow/attribute-dispatcher.js';
 
 /**
  * Drain pending queue items at workflow completion (success or failure).
@@ -60,14 +62,15 @@ import { createSleep } from './workflow/sleep.js';
  * the abort hook is created but never resumed and the cancellation never
  * reaches the running step.
  *
- * NOTE: drain only commits the `*_created` events; it does NOT enqueue step
+ * NOTE: drain commits native attribute events and the `*_created` events; it
+ * does NOT enqueue step
  * bodies for execution. The platform's step worker rejects `step_started`
  * for runs that have already transitioned to terminal (`RunExpiredError`),
  * so a step queued here would be skipped anyway. Fire-and-forget step calls
  * with side effects therefore work only when followed by some later `await`
  * on a runtime primitive that triggers a real suspension (the normal
- * runtime loop in `runtime.ts` queues the step there). A `void` placed
- * immediately before `return` is not reliably executed.
+ * runtime loop in `runtime.ts` queues the step there). Native attribute writes
+ * do not have this limitation because their event is the durable write.
  *
  * Drain failures are swallowed: the workflow's own outcome (the user's return
  * value or thrown error) is the source of truth; secondary cleanup that fails
@@ -168,10 +171,14 @@ export async function runWorkflow(
     const promiseQueueHolder = { current: Promise.resolve() };
 
     const eventsConsumer = new EventsConsumer(events, {
+      onConsumedEvent: (event) => {
+        updateTimestamp(+event.createdAt);
+      },
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
-          new CorruptedEventLogError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          new ReplayDivergenceError(
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            { eventId: event.eventId }
           )
         );
       },
@@ -196,17 +203,8 @@ export async function runWorkflow(
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      pendingDeliveryBarriers: new Map(),
     };
-
-    // Subscribe to the events log to update the timestamp in the vm context
-    workflowContext.eventsConsumer.subscribe((event) => {
-      const createdAt = event?.createdAt;
-      if (createdAt) {
-        updateTimestamp(+createdAt);
-      }
-      // Never consume events - this is only a passive subscriber
-      return EventConsumerResult.NotConsumed;
-    });
 
     // Consume run lifecycle events - these are structural events that don't
     // need special handling in the workflow, but must be consumed to advance
@@ -226,15 +224,28 @@ export async function runWorkflow(
         return EventConsumerResult.Consumed;
       }
 
+      // Attribute writes performed from a step have no workflow-body call to
+      // consume them during replay; they are already reflected in the run
+      // snapshot and remain structural until a read API is introduced.
+      if (
+        event.eventType === 'attr_set' &&
+        event.eventData.writer.type === 'step'
+      ) {
+        return EventConsumerResult.Consumed;
+      }
+
       return EventConsumerResult.NotConsumed;
     });
 
     const useStep = createUseStep(workflowContext);
     const createHook = createCreateHook(workflowContext);
     const sleep = createSleep(workflowContext);
+    const setAttributes = createSetAttributes(workflowContext);
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_USE_STEP] = useStep;
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[WORKFLOW_SET_ATTRIBUTES] = setAttributes;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
@@ -816,8 +827,9 @@ export async function runWorkflow(
 
       return dehydrated;
     } catch (err) {
-      // Let WorkflowSuspension propagate — handled separately by the runtime
-      if (WorkflowSuspension.is(err)) {
+      // Control-flow signals are handled by the runtime and do not mean the
+      // workflow has terminally failed.
+      if (WorkflowSuspension.is(err) || ReplayDivergenceError.is(err)) {
         throw err;
       }
 

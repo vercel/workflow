@@ -85,6 +85,7 @@ export const ERROR_SLUGS = {
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
+  REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
   RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
@@ -321,6 +322,33 @@ export class CorruptedEventLogError extends WorkflowRuntimeError {
 
   static is(value: unknown): value is CorruptedEventLogError {
     return isError(value) && value.name === 'CorruptedEventLogError';
+  }
+}
+
+/**
+ * Thrown when the current workflow replay cannot follow the path described by
+ * the recorded event log. A single divergence does not prove that the
+ * persisted history is invalid: a subsequent replay may observe or schedule
+ * work correctly, so the runtime may redeliver before declaring corruption.
+ */
+export class ReplayDivergenceError extends WorkflowRuntimeError {
+  readonly eventId: string;
+
+  constructor(message: string, options: ErrorOptions & { eventId: string }) {
+    super(message, {
+      ...options,
+      slug: ERROR_SLUGS.REPLAY_DIVERGENCE,
+    });
+    this.name = 'ReplayDivergenceError';
+    this.eventId = options.eventId;
+  }
+
+  static is(value: unknown): value is ReplayDivergenceError {
+    return (
+      isError(value) &&
+      value.name === 'ReplayDivergenceError' &&
+      typeof (value as { eventId?: unknown }).eventId === 'string'
+    );
   }
 }
 

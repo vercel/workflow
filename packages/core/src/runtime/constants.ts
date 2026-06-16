@@ -130,3 +130,8 @@ export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
 // handler exits (on Worlds that support process-exit redelivery) so the queue
 // re-delivers; once exceeded, the run is failed with RUN_ERROR_CODES.RUNTIME_ERROR.
 export const DECRYPTION_FAILURE_MAX_RETRIES = 3;
+
+// A replay-consumer mismatch can be caused by a transient divergent replay
+// rather than an invalid persisted history. Queue bounded recovery replays
+// before recording terminal corruption for a run that cannot replay.
+export const REPLAY_DIVERGENCE_MAX_RETRIES = 3;

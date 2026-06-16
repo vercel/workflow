@@ -9,7 +9,11 @@ import {
   getSerializeStream,
   WorkflowServerWritableStream,
 } from '../serialization.js';
-import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
+import {
+  STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
+} from '../symbols.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { type CachedWritable, contextStorage } from './context-storage.js';
 
@@ -69,8 +73,12 @@ export function getWritable<W = any>(
     return cached.writable as WritableStream<W>;
   }
 
+  // Create a transform stream that serializes chunks and pipes to the workflow server.
+  // The target run is the workflow run that owns this step, which (per
+  // version skew protection) is on this same SDK version, so byte-stream
+  // framing is always safe here.
   const serialize = getSerializeStream(
-    getExternalReducers(globalThis, ctx.ops, runId, ctx.encryptionKey),
+    getExternalReducers(globalThis, ctx.ops, runId, ctx.encryptionKey, true),
     ctx.encryptionKey
   );
 
@@ -103,6 +111,16 @@ export function getWritable<W = any>(
     value: runId,
     writable: false,
   });
+  if (ctx.workflowDeploymentId) {
+    Object.defineProperty(
+      serialize.writable,
+      STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+      {
+        value: ctx.workflowDeploymentId,
+        writable: false,
+      }
+    );
+  }
 
   cache.set(name, { writable: serialize.writable, state });
 

@@ -349,10 +349,11 @@ export interface World extends Queue, Streamer, Storage {
    *   the run entity already exists. The World reads any context it needs
    *   (e.g., `deploymentId`) directly from the run.
    *
-   * - `getEncryptionKeyForRun(runId, context?)` — Used only by `start()`
-   *   when the run entity has not yet been created. The `context` parameter
-   *   carries opaque world-specific data (e.g., `{ deploymentId }` for
-   *   world-vercel) that the World needs to resolve the correct key.
+   * - `getEncryptionKeyForRun(runId, context?)` — Used when the run entity
+   *   is not locally available, such as `start()` before run creation or a
+   *   forwarded writable stream carrying its owning deployment context. The
+   *   `context` parameter carries opaque world-specific data (e.g.,
+   *   `{ deploymentId }` for world-vercel) needed to resolve the correct key.
    *   When `context` is omitted, the World assumes the current deployment.
    *
    * When not implemented, encryption is disabled — data is stored unencrypted.

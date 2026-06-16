@@ -19,16 +19,25 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
+import { filterSpanRawEvents } from '../../lib/trace-builder';
 import { ErrorBoundary } from '../error-boundary';
 import {
   EntityDetailPanel,
   type SelectedSpanInfo,
 } from '../sidebar/entity-detail-panel';
-import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
-import type { Trace } from '../trace-viewer/types';
+import { useSidebarData } from '../sidebar/sidebar-data-context';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
+import { Kbd } from '../ui/kbd';
+import { Spinner } from '../ui/spinner';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '../ui/tooltip';
 import EventList from './components/event-list';
 import { SplitPane } from './components/split-pane';
 import {
@@ -37,12 +46,15 @@ import {
   TimelineHeader,
 } from './components/timeline';
 import { ActiveSpanProvider, useActiveSpan } from './context';
-import { DetailPanel } from './detail-panel';
 import { searchSpans } from './search';
+import type { TraceWithMeta } from './types';
 import { computeRootBounds, computeTimeMarkers } from './utils';
 
 interface NewTraceViewerProps {
-  trace: Trace;
+  trace: TraceWithMeta;
+  onLoadMore?: () => void | Promise<void>;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
 }
 
 const MIN_VIEWPORT_MS = 0.001;
@@ -129,19 +141,21 @@ function useAnimatedViewport(initial: Viewport) {
 
 function useSelectedSpanInfo(): SelectedSpanInfo | null {
   const { activeSpan } = useActiveSpan();
-  const sidebar = useSidebarDataOptional();
+  const sidebar = useSidebarData();
 
   return useMemo(() => {
-    if (!activeSpan || !sidebar) return null;
+    if (!activeSpan) return null;
 
-    const correlationId = activeSpan.spanId;
-    const rawEvents = correlationId
-      ? sidebar.events.filter((e) => e.correlationId === correlationId)
-      : [];
+    const resource = activeSpan.attributes?.resource as string | undefined;
+    const rawEvents = filterSpanRawEvents(
+      sidebar.events,
+      resource,
+      activeSpan.spanId
+    );
 
     return {
       data: activeSpan.attributes?.data,
-      resource: activeSpan.attributes?.resource as string | undefined,
+      resource,
       spanId: activeSpan.spanId,
       rawEvents,
     };
@@ -152,19 +166,36 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
 // Root component
 // ---------------------------------------------------------------------------
 
-export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
+export function NewTraceViewer({
+  trace,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: NewTraceViewerProps): ReactNode {
   return (
-    <ActiveSpanProvider spans={trace.spans}>
-      <NewTraceViewerContent trace={trace} />
-    </ActiveSpanProvider>
+    <TooltipProvider delayDuration={300}>
+      <ActiveSpanProvider spans={trace.spans}>
+        <NewTraceViewerContent
+          trace={trace}
+          onLoadMore={onLoadMore}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
+        />
+      </ActiveSpanProvider>
+    </TooltipProvider>
   );
 }
 
-function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
+function NewTraceViewerContent({
+  trace,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: NewTraceViewerProps): ReactNode {
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
 
-  const sidebar = useSidebarDataOptional();
+  const sidebar = useSidebarData();
   const selectedSpan = useSelectedSpanInfo();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -176,6 +207,16 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   );
 
   const root = useMemo(() => computeRootBounds(trace.spans), [trace.spans]);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const loadMore = useCallback(() => {
+    void onLoadMore?.();
+  }, [onLoadMore]);
+  const loadMoreSentinelRef = useLoadMoreOnScroll(loadMore, {
+    hasMore: Boolean(onLoadMore && hasMore),
+    isLoadingMore: Boolean(isLoadingMore),
+    rootRef: scrollContainerRef,
+  });
 
   const { viewport, setViewport, animateTo } = useAnimatedViewport({
     start: root.startTime,
@@ -421,7 +462,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           )
         );
         const isMouseWheel = e.deltaMode === 1 || Math.abs(e.deltaY) >= 50;
-        const scaleFactor = Math.pow(2, dy / (isMouseWheel ? 200 : 60));
+        const scaleFactor = 2 ** (dy / (isMouseWheel ? 200 : 60));
 
         setViewport((prev) => {
           const prevDuration = prev.end - prev.start;
@@ -523,13 +564,14 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     <div
       data-pane="pane-root"
       data-has-detail={activeSpan ? '' : undefined}
-      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,420px,100%)]"
+      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,360px,100%)]"
     >
       <div
         id="trace-parent"
         className="grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
         <SplitPane
+          scrollContainerRef={scrollContainerRef}
           startHeader={
             <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
               <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
@@ -575,6 +617,14 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               searchResult={searchResult}
               onSelectSpan={handleSelectSpan}
             />
+            <div ref={loadMoreSentinelRef} className="flex justify-center">
+              {isLoadingMore ? (
+                <div className="flex items-center justify-center gap-2 py-3 text-sm text-gray-800">
+                  <Spinner size={14} />
+                  <span>Loading spans…</span>
+                </div>
+              ) : null}
+            </div>
           </div>
           {/* biome-ignore lint/a11y/noStaticElementInteractions: timeline hover and wheel gestures are pointer-only annotations */}
           <div
@@ -626,7 +676,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       </div>
 
       {/* Detail panel */}
-      {activeSpan && sidebar ? (
+      {activeSpan ? (
         <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
           {/* Panel header */}
           <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
@@ -634,22 +684,42 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               {selectedSpanName}
             </span>
             <div className="flex items-center gap-0.5 shrink-0">
-              <IconButton
-                aria-label="Navigate to previous span"
-                aria-keyshortcuts="K"
-                onClick={handleSelectPrevSpan}
-                disabled={!prevSpanId}
-              >
-                <ChevronUp className="w-4 h-4" />
-              </IconButton>
-              <IconButton
-                aria-label="Navigate to next span"
-                aria-keyshortcuts="J"
-                onClick={handleSelectNextSpan}
-                disabled={!nextSpanId}
-              >
-                <ChevronDown className="w-4 h-4" />
-              </IconButton>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <IconButton
+                    aria-label="Navigate up"
+                    aria-keyshortcuts="K"
+                    onClick={handleSelectPrevSpan}
+                    disabled={!prevSpanId}
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </IconButton>
+                </TooltipTrigger>
+                {prevSpanId ? (
+                  <TooltipContent>
+                    Navigate up
+                    <Kbd>K</Kbd>
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <IconButton
+                    aria-label="Navigate down"
+                    aria-keyshortcuts="J"
+                    onClick={handleSelectNextSpan}
+                    disabled={!nextSpanId}
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </IconButton>
+                </TooltipTrigger>
+                {nextSpanId ? (
+                  <TooltipContent>
+                    Navigate down
+                    <Kbd>J</Kbd>
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
               <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
               <IconButton
                 aria-label="Close span details"
@@ -682,12 +752,6 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             </ErrorBoundary>
           </div>
         </aside>
-      ) : activeSpan ? (
-        <DetailPanel
-          span={activeSpan}
-          rootStart={root.startTime}
-          onClose={clearActiveSpan}
-        />
       ) : null}
     </div>
   );

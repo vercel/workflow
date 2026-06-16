@@ -1,3 +1,4 @@
+import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
 import type {
   Event,
   HealthCheckPayload,
@@ -6,7 +7,9 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
 } from '@workflow/world';
@@ -34,13 +37,20 @@ const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
  * Ensures the workflow name only contains safe characters before
  * interpolating it into the queue name string.
  */
-export function getWorkflowQueueName(workflowName: string): ValidQueueName {
+export function getWorkflowQueueName(
+  workflowName: string,
+  namespace?: string
+): ValidQueueName {
   if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
     throw new Error(
       `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
     );
   }
-  return `__wkf_workflow_${workflowName}` as ValidQueueName;
+  const prefix = getQueueTopicPrefix(
+    'workflow',
+    resolveQueueNamespace(namespace)
+  );
+  return `${prefix}${workflowName}` as ValidQueueName;
 }
 
 const generateId = monotonicFactory();
@@ -63,6 +73,14 @@ export interface HealthCheckResult {
   latencyMs?: number;
   /** Spec version of the responding deployment */
   specVersion?: number;
+  /**
+   * `@workflow/core` version of the responding deployment, used for
+   * capability detection (see `getRunCapabilities`). Omitted when the
+   * responding deployment did not provide the field as a string —
+   * for example, an older `@workflow/core` that predates this field,
+   * or a non-JSON plain-text health response.
+   */
+  workflowCoreVersion?: string;
 }
 
 /**
@@ -179,9 +197,11 @@ async function readStreamWithTimeout(
  * Parse and validate a health check response from stream chunks.
  * Returns the parsed response or null if invalid.
  */
-function parseHealthCheckResponse(
-  chunks: Uint8Array[]
-): { healthy: boolean } | null {
+function parseHealthCheckResponse(chunks: Uint8Array[]): {
+  healthy: boolean;
+  specVersion?: number;
+  workflowCoreVersion?: string;
+} | null {
   if (chunks.length === 0) return null;
 
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -216,11 +236,18 @@ function parseHealthCheckResponse(
   }
 
   const r = response as Record<string, unknown>;
-  const parsed: { healthy: boolean; specVersion?: number } = {
+  const parsed: {
+    healthy: boolean;
+    specVersion?: number;
+    workflowCoreVersion?: string;
+  } = {
     healthy: r.healthy as boolean,
   };
   if (typeof r.specVersion === 'number') {
     parsed.specVersion = r.specVersion;
+  }
+  if (typeof r.workflowCoreVersion === 'string') {
+    parsed.workflowCoreVersion = r.workflowCoreVersion;
   }
   return parsed;
 }
@@ -228,16 +255,14 @@ function parseHealthCheckResponse(
 export async function healthCheck(
   world: World,
   endpoint: HealthCheckEndpoint,
-  options?: HealthCheckOptions
+  options?: HealthCheckOptions & { namespace?: string }
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
   const correlationId = generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
-  const queueName: ValidQueueName =
-    endpoint === 'workflow'
-      ? '__wkf_workflow_health_check'
-      : '__wkf_step_health_check';
+  const queueName =
+    `${getQueueTopicPrefix(endpoint, resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
 
   const startTime = Date.now();
 
@@ -306,6 +331,76 @@ export async function healthCheck(
   }
 }
 
+function eventPaginationContractError(
+  runId: string,
+  message: string
+): WorkflowWorldError {
+  return new WorkflowWorldError(
+    `Event pagination ${message} for workflow run "${runId}".`,
+    { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+  );
+}
+
+function recordRequestedEventCursor(
+  runId: string,
+  cursor: string | null,
+  requestedCursors: Set<string>
+): void {
+  if (!cursor) {
+    return;
+  }
+  if (requestedCursors.has(cursor)) {
+    throw eventPaginationContractError(runId, 'did not advance');
+  }
+  requestedCursors.add(cursor);
+}
+
+function appendUniqueEvents(
+  target: Event[],
+  targetIds: Set<string>,
+  events: Event[]
+): void {
+  for (const event of events) {
+    if (!targetIds.has(event.eventId)) {
+      targetIds.add(event.eventId);
+      target.push(event);
+    }
+  }
+}
+
+function assertEventPaginationProgress(
+  runId: string,
+  hasMore: boolean,
+  cursor: string | null,
+  requestedCursors: Set<string>
+): void {
+  if (!hasMore) {
+    return;
+  }
+  if (cursor === null) {
+    throw eventPaginationContractError(
+      runId,
+      'returned more pages without a cursor'
+    );
+  }
+  if (requestedCursors.has(cursor)) {
+    throw eventPaginationContractError(runId, 'repeated a cursor');
+  }
+}
+
+function shouldRetryWithoutEventCursor(
+  error: unknown,
+  cursor: string | null,
+  alreadyRetried: boolean
+): boolean {
+  return (
+    cursor !== null &&
+    !alreadyRetried &&
+    WorkflowWorldError.is(error) &&
+    error.status === 400
+  );
+}
+
 /**
  * Loads workflow run events by iterating through all pages of paginated
  * results. Events are returned in chronological (ascending) order for
@@ -330,9 +425,12 @@ export async function loadWorkflowRunEvents(
       });
 
       const loadedEvents: Event[] = [];
+      const loadedEventIds = new Set<string>();
+      const requestedCursors = new Set<string>();
       let cursor: string | null = afterCursor ?? null;
       let hasMore = true;
       let pagesLoaded = 0;
+      let retriedWithoutCursor = false;
 
       const world = await getWorldLazy();
       const loadStart = Date.now();
@@ -341,16 +439,48 @@ export async function loadWorkflowRunEvents(
         // to lazyload the data from the world instead so that we can optimize and make the event log loading
         // much faster and memory efficient
         const pageStart = Date.now();
-        const response = await world.events.list({
-          runId,
-          pagination: {
-            sortOrder: 'asc',
-            cursor: cursor ?? undefined,
-          },
-        });
+        const requestedCursor = cursor;
+        recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
 
-        loadedEvents.push(...response.data);
+        let response: Awaited<ReturnType<typeof world.events.list>>;
+        try {
+          response = await world.events.list({
+            runId,
+            pagination: {
+              sortOrder: 'asc',
+              cursor: requestedCursor ?? undefined,
+            },
+          });
+        } catch (error) {
+          if (
+            shouldRetryWithoutEventCursor(
+              error,
+              requestedCursor,
+              retriedWithoutCursor
+            )
+          ) {
+            runtimeLogger.warn(
+              'Event cursor was rejected; retrying with a full event reload.',
+              { workflowRunId: runId }
+            );
+            loadedEvents.length = 0;
+            loadedEventIds.clear();
+            requestedCursors.clear();
+            cursor = null;
+            retriedWithoutCursor = true;
+            continue;
+          }
+          throw error;
+        }
+
+        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
         hasMore = response.hasMore;
+        assertEventPaginationProgress(
+          runId,
+          hasMore,
+          response.cursor,
+          requestedCursors
+        );
         // Preserve the last non-null cursor across pages. A World may
         // legitimately return `{ data: [], cursor: null, hasMore: false }`
         // on a trailing empty page — for example when the previous page's

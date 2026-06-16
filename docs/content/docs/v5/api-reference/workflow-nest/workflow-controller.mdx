@@ -1,0 +1,40 @@
+---
+title: WorkflowController
+description: NestJS controller that serves the workflow runtime routes.
+type: reference
+summary: WorkflowController handles the well-known workflow endpoints in a NestJS app.
+prerequisites:
+  - /docs/getting-started/nestjs
+---
+
+NestJS controller that handles the well-known workflow endpoints under `.well-known/workflow/v1`. It dynamically imports the generated workflow bundles and converts between Express/Fastify requests and the Web API `Request`/`Response` objects the workflow runtime expects. Both the Express and Fastify HTTP adapters are supported.
+
+[`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) registers this controller automatically — you only register it yourself if you are not using `WorkflowModule`.
+
+## Usage
+
+When registering the controller manually, call [`configureWorkflowController`](/docs/api-reference/workflow-nest/configure-workflow-controller) first so it can locate the generated bundles; its route handlers throw otherwise.
+
+```typescript title="src/app.module.ts" lineNumbers
+import { join } from "node:path";
+import { Module } from "@nestjs/common";
+import {
+  configureWorkflowController, // [!code highlight]
+  WorkflowController, // [!code highlight]
+} from "workflow/nest";
+
+configureWorkflowController(join(process.cwd(), ".nestjs/workflow")); // [!code highlight]
+
+@Module({
+  controllers: [WorkflowController], // [!code highlight]
+})
+export class AppModule {}
+```
+
+## Routes
+
+| Route | Method | Description |
+| --- | --- | --- |
+| `/.well-known/workflow/v1/flow` | `POST` | Executes workflow and step work items via the combined handler in `workflows.mjs` (step registrations are imported from `steps.mjs` first). |
+| `/.well-known/workflow/v1/webhook/:token` | Any | Forwards webhook requests to the handler in `webhook.mjs`. |
+| `/.well-known/workflow/v1/manifest.json` | `GET` | Serves the workflow manifest. Responds with `404` unless the `WORKFLOW_PUBLIC_MANIFEST=1` environment variable is set. |

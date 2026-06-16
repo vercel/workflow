@@ -1,5 +1,5 @@
 import { cva, type VariantProps } from 'class-variance-authority';
-import type * as React from 'react';
+import * as React from 'react';
 import { cn } from '../../lib/utils';
 
 const iconButtonVariants = cva(
@@ -38,20 +38,16 @@ export type IconButtonProps = Omit<
     type?: 'button' | 'submit' | 'reset';
   };
 
-export function IconButton({
-  className,
-  variant,
-  size,
-  type = 'button',
-  ...props
-}: IconButtonProps) {
-  return (
+export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
+  ({ className, variant, size, type = 'button', ...props }, ref) => (
     <button
+      ref={ref}
       type={type}
       className={cn(iconButtonVariants({ variant, size, className }))}
       {...props}
     />
-  );
-}
+  )
+);
+IconButton.displayName = 'IconButton';
 
 export { iconButtonVariants };

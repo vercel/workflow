@@ -1,15 +1,20 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useState } from 'react';
+import {
+  ContextCardProvider,
+  ContextCardTrigger,
+  type ContextCardTriggerProps,
+  useHasContextCardProvider,
+} from './context-card';
 
 // ---------------------------------------------------------------------------
 // Time formatting helpers
 // ---------------------------------------------------------------------------
 
 interface TimeUnit {
-  unit: string;
+  unit: Intl.RelativeTimeFormatUnit;
   ms: number;
 }
 
@@ -38,25 +43,69 @@ function formatTimeDifference(diff: number): string {
   return result.join(', ');
 }
 
-function useTimeAgo(date: number): string {
+/**
+ * Detailed relative time string that auto-updates every second
+ * (e.g. "2 hours, 15 minutes, 30 seconds ago"). Used inside the hover card.
+ */
+export function useTimeAgo(date: number): string {
   const [timeAgo, setTimeAgo] = useState<string>('');
 
   useEffect(() => {
-    const update = (): void => {
+    const updateTimeAgo = (): void => {
       const diff = Date.now() - date;
-      const formatted = formatTimeDifference(diff);
-      setTimeAgo(formatted ? `${formatted} ago` : 'Just now');
+      const formattedDiff = formatTimeDifference(diff);
+      setTimeAgo(formattedDiff ? `${formattedDiff} ago` : 'Just now');
     };
-    update();
-    const timer = setInterval(update, 1000);
+
+    updateTimeAgo();
+    const timer = setInterval(updateTimeAgo, 1000);
     return () => clearInterval(timer);
   }, [date]);
 
   return timeAgo;
 }
 
+/**
+ * Short relative time string that auto-updates every minute
+ * (e.g. "3 days ago", "5 hours ago"). Returns an empty string if `date` is
+ * nullish.
+ */
+export function useShortTimeAgo(date: number | null | undefined): string {
+  const [shortTimeAgo, setShortTimeAgo] = useState<string>('');
+
+  useEffect(() => {
+    if (!date) {
+      setShortTimeAgo('');
+      return;
+    }
+
+    const updateShortTimeAgo = (): void => {
+      const diff = Date.now() - date;
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const minutes = Math.floor(diff / (1000 * 60));
+
+      if (days > 0) {
+        setShortTimeAgo(`${days} day${days > 1 ? 's' : ''} ago`);
+      } else if (hours > 0) {
+        setShortTimeAgo(`${hours} hour${hours > 1 ? 's' : ''} ago`);
+      } else if (minutes > 0) {
+        setShortTimeAgo(`${minutes} minute${minutes > 1 ? 's' : ''} ago`);
+      } else {
+        setShortTimeAgo('Just now');
+      }
+    };
+
+    updateShortTimeAgo();
+    const timer = setInterval(updateShortTimeAgo, 60000);
+    return () => clearInterval(timer);
+  }, [date]);
+
+  return shortTimeAgo;
+}
+
 // ---------------------------------------------------------------------------
-// Timezone row
+// Hover card content
 // ---------------------------------------------------------------------------
 
 function ZoneDateTimeRow({
@@ -91,86 +140,34 @@ function ZoneDateTimeRow({
   });
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <div
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: 16,
-            padding: '0 6px',
-            backgroundColor: 'var(--ds-gray-200)',
-            borderRadius: 3,
-            fontSize: 11,
-            fontFamily: 'var(--font-mono, monospace)',
-            fontWeight: 500,
-            color: 'var(--ds-gray-900)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {formattedZone}
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-1.5">
+        <div className="flex items-center justify-center h-4 px-1.5 bg-gray-200 rounded-xs">
+          <span className="text-[12px] font-mono text-gray-900">
+            {formattedZone}
+          </span>
         </div>
-        <span
-          style={{
-            fontSize: 13,
-            color: 'var(--ds-gray-1000)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {formattedDate}
-        </span>
+        <span className="text-[13px] text-gray-1000">{formattedDate}</span>
       </div>
-      <span
-        style={{
-          fontSize: 11,
-          fontFamily: 'var(--font-mono, monospace)',
-          fontVariantNumeric: 'tabular-nums',
-          color: 'var(--ds-gray-900)',
-          whiteSpace: 'nowrap',
-        }}
-      >
+      <span className="tabular-nums text-[12px] font-mono text-gray-900">
         {formattedTime}
       </span>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Tooltip card content
-// ---------------------------------------------------------------------------
-
-function TimestampTooltipContent({ date }: { date: number }): ReactNode {
+function RelativeTimeContextCardContent({ date }: { date: number }): ReactNode {
   const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const timeAgo = useTimeAgo(date);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 12,
-        minWidth: 300,
-        padding: '12px 14px',
-      }}
-    >
-      <span
-        style={{
-          fontSize: 13,
-          fontVariantNumeric: 'tabular-nums',
-          color: 'var(--ds-gray-900)',
-        }}
-      >
-        {timeAgo}
-      </span>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="flex flex-col gap-3 min-w-[300px]">
+      <div className="flex flex-col gap-3">
+        <span className="tabular-nums text-[13px] text-gray-900">
+          {timeAgo}
+        </span>
+      </div>
+      <div className="flex flex-col gap-2">
         <ZoneDateTimeRow date={date} zone="UTC" />
         <ZoneDateTimeRow date={date} zone={localTimezone} />
       </div>
@@ -178,102 +175,75 @@ function TimestampTooltipContent({ date }: { date: number }): ReactNode {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Hover tooltip wrapper
-// ---------------------------------------------------------------------------
-
-const TOOLTIP_WIDTH = 330;
-const VIEWPORT_PAD = 8;
-
-function TooltipPortal({
-  triggerRect,
-  onMouseEnter,
-  onMouseLeave,
+function DefaultTimeText({
   date,
 }: {
-  triggerRect: DOMRect;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
-  date: number;
+  date: number | null | undefined;
 }): ReactNode {
-  const tooltipRef = useRef<HTMLDivElement>(null);
-  const [style, setStyle] = useState<React.CSSProperties>({
-    position: 'fixed',
-    zIndex: 9999,
-    visibility: 'hidden',
-  });
+  const shortTimeAgo = useShortTimeAgo(date);
+  return <span className="text-label-14 text-gray-900">{shortTimeAgo}</span>;
+}
 
-  useEffect(() => {
-    const placement = triggerRect.top > 240 ? 'above' : 'below';
-    const centerX = triggerRect.left + triggerRect.width / 2;
+// ---------------------------------------------------------------------------
+// RelativeTimeCard
+// ---------------------------------------------------------------------------
 
-    const el = tooltipRef.current;
-    const w = el ? el.offsetWidth : TOOLTIP_WIDTH;
-    const h = el ? el.offsetHeight : 100;
+type RelativeTimeCardProps = Omit<
+  ContextCardTriggerProps,
+  'content' | 'children'
+> & {
+  /** Timestamp in milliseconds to display as a relative time. */
+  date?: number | null;
+  /** Custom content to render instead of the default relative time text. */
+  children?: ReactNode;
+};
 
-    let left = centerX - w / 2;
-    left = Math.max(
-      VIEWPORT_PAD,
-      Math.min(left, window.innerWidth - w - VIEWPORT_PAD)
-    );
+/**
+ * Relative time label that reveals a context card with detailed UTC and local
+ * timestamps on hover. Renders a default short relative time label (e.g.
+ * "3 days ago") when `children` is omitted; renders just the children without
+ * the hover card when `date` is nullish.
+ */
+export function RelativeTimeCard({
+  date,
+  children: _children,
+  ...props
+}: RelativeTimeCardProps): ReactNode {
+  const children =
+    _children === undefined ? <DefaultTimeText date={date} /> : _children;
 
-    let top: number;
-    if (placement === 'above') {
-      top = triggerRect.top - h - 6;
-      if (top < VIEWPORT_PAD) {
-        top = triggerRect.bottom + 6;
-      }
-    } else {
-      top = triggerRect.bottom + 6;
-      if (top + h > window.innerHeight - VIEWPORT_PAD) {
-        top = triggerRect.top - h - 6;
-      }
-    }
+  if (!date) return children;
 
-    setStyle({
-      position: 'fixed',
-      left,
-      top,
-      zIndex: 9999,
-      borderRadius: 10,
-      border: '1px solid var(--ds-gray-alpha-200)',
-      backgroundColor: 'var(--ds-background-100)',
-      boxShadow: '0 4px 12px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.06)',
-      visibility: 'visible',
-    });
-  }, [triggerRect]);
-
-  return createPortal(
-    // biome-ignore lint/a11y/noStaticElementInteractions: tooltip hover zone
-    <div
-      ref={tooltipRef}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      style={style}
+  return (
+    <ContextCardTrigger
+      content={<RelativeTimeContextCardContent date={date} />}
+      {...props}
     >
-      <TimestampTooltipContent date={date} />
-    </div>,
-    document.body
+      {children}
+    </ContextCardTrigger>
   );
 }
 
+// ---------------------------------------------------------------------------
+// TimestampTooltip — convenience wrapper used across the observability UI
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps an already-formatted timestamp display with a relative-time hover
+ * card. Self-mounts a {@link ContextCardProvider} when one isn't already
+ * present so it works anywhere, but shares a provider (enabling the animated
+ * card morph between adjacent timestamps) when rendered inside one.
+ */
 export function TimestampTooltip({
   date,
   children,
+  side = 'top',
 }: {
   date: number | Date | string | null | undefined;
   children: ReactNode;
+  side?: ContextCardTriggerProps['side'];
 }): ReactNode {
-  const [open, setOpen] = useState(false);
-  const [triggerRect, setTriggerRect] = useState<DOMRect | null>(null);
-  const triggerRef = useRef<HTMLSpanElement>(null);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (closeTimer.current) clearTimeout(closeTimer.current);
-    };
-  }, []);
+  const hasProvider = useHasContextCardProvider();
 
   const ts =
     date == null
@@ -284,43 +254,11 @@ export function TimestampTooltip({
 
   if (ts == null || Number.isNaN(ts)) return <>{children}</>;
 
-  const cancelClose = () => {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-  };
-
-  const scheduleClose = () => {
-    cancelClose();
-    closeTimer.current = setTimeout(() => setOpen(false), 120);
-  };
-
-  const handleOpen = () => {
-    cancelClose();
-    if (triggerRef.current) {
-      setTriggerRect(triggerRef.current.getBoundingClientRect());
-    }
-    setOpen(true);
-  };
-
-  return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: tooltip trigger
-    <span
-      ref={triggerRef}
-      onMouseEnter={handleOpen}
-      onMouseLeave={scheduleClose}
-      style={{ display: 'inline-flex' }}
-    >
+  const card = (
+    <RelativeTimeCard date={ts} side={side} asChild>
       {children}
-      {open && triggerRect && (
-        <TooltipPortal
-          triggerRect={triggerRect}
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
-          date={ts}
-        />
-      )}
-    </span>
+    </RelativeTimeCard>
   );
+
+  return hasProvider ? card : <ContextCardProvider>{card}</ContextCardProvider>;
 }

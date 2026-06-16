@@ -1,7 +1,8 @@
 import { Circle } from 'lucide-react';
+import { useRef } from 'react';
 import { cn } from '../../../lib/utils';
-import type { Span } from '../../trace-viewer/types';
-import { formatDuration } from '../../trace-viewer/util/timing';
+import type { Span } from '../types';
+import { formatDurationPrecise } from '../../trace-viewer/util/timing';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -11,6 +12,7 @@ import {
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import { getSpanDurationMs } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
+import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
 interface EventStyle {
   icon: React.ComponentType<{ className?: string }>;
@@ -51,8 +53,9 @@ const EventRow = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getSpanDurationMs(span);
-  const isErrored =
-    (span.attributes.data as Record<string, unknown>).status === 'failed';
+  const workflowStatus = (span.attributes.data as Record<string, unknown>)
+    ?.status as string | undefined;
+  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
   const { icon: Icon, className: tagClassName } = getEventStyle(
     span.resource,
     isErrored
@@ -83,7 +86,7 @@ const EventRow = ({
           </div>
           <div className="ml-2 shrink-0">
             <span className="text-label-14 text-gray-900 tabular-nums">
-              {formatDuration(durationMs)}
+              {formatDurationPrecise(durationMs)}
             </span>
           </div>
         </div>
@@ -103,23 +106,29 @@ const EventList = ({
   searchResult: SpanSearchResult;
   onSelectSpan: (spanId: string) => void;
 }) => {
+  const listRef = useRef<HTMLUListElement>(null);
+  const { start, end } = useRowWindow(listRef, spans.length, ROW_HEIGHT_PX);
+
   return (
     <ul
+      ref={listRef}
       id="event-list"
       role="tree"
       className="block min-h-0 overflow-visible divide-y divide-gray-alpha-400 border-b border-gray-alpha-400"
+      style={{
+        paddingTop: start * ROW_HEIGHT_PX,
+        paddingBottom: (spans.length - end) * ROW_HEIGHT_PX,
+      }}
     >
-      {spans.map((span) => {
-        return (
-          <EventRow
-            key={span.spanId}
-            span={span}
-            isSelected={span.spanId === activeSpanId}
-            isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
-            onSelectSpan={onSelectSpan}
-          />
-        );
-      })}
+      {spans.slice(start, end).map((span) => (
+        <EventRow
+          key={span.spanId}
+          span={span}
+          isSelected={span.spanId === activeSpanId}
+          isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
+          onSelectSpan={onSelectSpan}
+        />
+      ))}
     </ul>
   );
 };

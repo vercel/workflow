@@ -1,0 +1,5 @@
+# Disable Nuxt telemetry for all Nuxt invocations in this workspace
+# (packages/nuxt's nuxt-module-build and workbench/nuxt's nuxt build/dev).
+# Without this, a fresh environment with no ~/.nuxtrc hits an interactive
+# consent prompt that hangs local builds/tests.
+telemetry.enabled=false

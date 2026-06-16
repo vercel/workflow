@@ -48,6 +48,16 @@ export function shouldRedriveOnDecryptionFailure(args: {
   const { world, error, runId, workflowName, attempt } = args;
   const runLogger = runtimeLogger.forRun(runId, workflowName);
 
+  // Redelivery only helps when we failed to *decrypt* persisted bytes — a
+  // fresh delivery re-fetches the event log / refs and can succeed against an
+  // un-truncated read. An *encrypt*-side AES-GCM failure happens while
+  // serializing a brand-new payload; re-fetching nothing changes the input, so
+  // redelivery would just re-run workflow code to hit the same failure. Fail
+  // those immediately.
+  if (error.context?.operation !== 'decrypt') {
+    return false;
+  }
+
   const canExitForRedelivery =
     world.processExitTriggersQueueRedelivery === true;
 
