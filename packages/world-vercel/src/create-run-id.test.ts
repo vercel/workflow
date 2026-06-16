@@ -79,34 +79,47 @@ describe('createRunId', () => {
   });
 
   describe('when VERCEL_REGION is missing or unrecognised', () => {
-    it('falls back to the "unknown" region (id 0) when unset', () => {
+    it('falls back to the default region (iad1) when unset', () => {
       delete process.env.VERCEL_REGION;
       const decoded = decode(createRunId());
       expect(decoded.tagged).toBe(true);
-      expect(decoded.regionId).toBe(0);
-      expect(decoded.region).toBeNull();
+      expect(decoded.regionId).toBe(REGION_IDS.iad1);
+      expect(decoded.region).toBe('iad1');
     });
 
-    it('falls back to "unknown" when the env var is empty', () => {
+    it('falls back to the default region (iad1) when the env var is empty', () => {
       process.env.VERCEL_REGION = '';
       const decoded = decode(createRunId());
-      expect(decoded.regionId).toBe(0);
+      expect(decoded.regionId).toBe(REGION_IDS.iad1);
+      expect(decoded.region).toBe('iad1');
     });
 
-    it('falls back to "unknown" for an unrecognised region code', () => {
+    it('falls back to the default region (iad1) for an unrecognised region code', () => {
       process.env.VERCEL_REGION = 'xyz9';
       const decoded = decode(createRunId());
-      expect(decoded.regionId).toBe(0);
+      expect(decoded.regionId).toBe(REGION_IDS.iad1);
+      expect(decoded.region).toBe('iad1');
     });
 
     it('does not treat the literal string "unknown" as a region', () => {
       // Defensive: the REGION_IDS table contains an `unknown` key but it is
       // a sentinel, not an actual region name. The env var should not be
-      // matched against it.
+      // matched against it — it falls back to the default region instead.
       process.env.VERCEL_REGION = 'unknown';
       const decoded = decode(createRunId());
-      expect(decoded.regionId).toBe(0);
-      expect(decoded.region).toBeNull();
+      expect(decoded.regionId).toBe(REGION_IDS.iad1);
+      expect(decoded.region).toBe('iad1');
+    });
+
+    it('never mints the "unknown" (0) region tag', () => {
+      delete process.env.VERCEL_REGION;
+      for (const region of [undefined, '', 'xyz9', 'unknown']) {
+        if (region === undefined) delete process.env.VERCEL_REGION;
+        else process.env.VERCEL_REGION = region;
+        const decoded = decode(createRunId());
+        expect(decoded.regionId).not.toBe(REGION_IDS.unknown);
+        expect(decoded.region).not.toBeNull();
+      }
     });
   });
 

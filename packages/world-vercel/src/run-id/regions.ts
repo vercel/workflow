@@ -54,6 +54,16 @@ export type RegionKey = keyof typeof REGION_IDS;
  */
 export type RegionCode = Exclude<RegionKey, 'unknown'>;
 
+/**
+ * Default region for run IDs minted without an explicit or environment-derived
+ * region. Mirrors the server's `DEFAULT_VERCEL_REGION` (iad1): untagged/legacy
+ * data and unknown-region runs both resolve to iad1 server-side, so minting a
+ * concrete `iad1` tag — rather than the `unknown`/0 sentinel — keeps every run
+ * ID self-describing and routable, and avoids the `tagged: true, region: null`
+ * state entirely.
+ */
+export const DEFAULT_REGION_CODE: RegionCode = 'iad1';
+
 export type RegionId = (typeof REGION_IDS)[RegionKey];
 
 /**

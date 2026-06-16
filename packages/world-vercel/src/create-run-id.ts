@@ -1,7 +1,11 @@
 import { monotonicFactory } from 'ulid';
 import { bytesToUlid, ulidToBytes } from './run-id/codec.js';
 import { encode } from './run-id/index.js';
-import { REGION_IDS, type RegionCode } from './run-id/regions.js';
+import {
+  DEFAULT_REGION_CODE,
+  REGION_IDS,
+  type RegionCode,
+} from './run-id/regions.js';
 
 /**
  * Underlying monotonic ULID factory. {@link encode} overwrites only the
@@ -64,15 +68,18 @@ function coerceRegion(value: unknown): RegionCode | null {
 /**
  * Resolve the effective region for a run, preferring an explicit value
  * supplied via the `start()` options bag over the `VERCEL_REGION`
- * environment variable. Returns `null` when neither source yields a
- * recognised region, in which case the run ID falls back to the `unknown`
- * (0) region tag.
+ * environment variable. Falls back to {@link DEFAULT_REGION_CODE} (iad1)
+ * when neither source yields a recognised region, so a run ID is always
+ * tagged with a concrete, routable region rather than the `unknown` (0)
+ * sentinel — matching the server's default-region resolution.
  */
 function resolveRegion(
   options: Readonly<Record<string, unknown>> | undefined
-): RegionCode | null {
+): RegionCode {
   return (
-    coerceRegion(options?.region) ?? coerceRegion(process.env.VERCEL_REGION)
+    coerceRegion(options?.region) ??
+    coerceRegion(process.env.VERCEL_REGION) ??
+    DEFAULT_REGION_CODE
   );
 }
 
@@ -84,8 +91,9 @@ function resolveRegion(
  *      `start({ region })`.
  *   2. `process.env.VERCEL_REGION` — the region the current Vercel function
  *      is executing in.
- *   3. Region ID 0 (`unknown`) — the resulting ULID is still tagged but
- *      does not claim a specific region.
+ *   3. {@link DEFAULT_REGION_CODE} (iad1) — the server-side default region.
+ *      A run ID is therefore always tagged with a concrete, routable region;
+ *      the `unknown` (0) sentinel is never minted here.
  *
  * Monotonicity: `encode` writes the region/version metadata into the top
  * 11 bits of the randomness section, leaving the low 69 bits intact, so
@@ -100,7 +108,7 @@ export function createRunId(
   options?: Readonly<Record<string, unknown>>
 ): string {
   const region = resolveRegion(options);
-  const regionId = region == null ? REGION_IDS.unknown : REGION_IDS[region];
+  const regionId = REGION_IDS[region];
   let candidate = encode(ulid(), regionId);
   if (lastRunId !== undefined) {
     while (candidate <= lastRunId) {
