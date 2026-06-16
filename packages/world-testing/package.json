@@ -28,7 +28,7 @@
     "workflow": "workspace:*",
     "@workflow/world": "workspace:*",
     "chalk": "5.6.2",
-    "hono": "4.12.21",
+    "hono": "4.12.25",
     "jsonlines": "0.1.1",
     "zod": "catalog:"
   },
