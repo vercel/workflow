@@ -4,6 +4,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
@@ -165,7 +166,8 @@ export async function start<TArgs extends unknown[], TResult>(
       );
     }
 
-    return trace(`workflow.start ${workflowName}`, async (span) => {
+    const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
+    return trace(spanName, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),

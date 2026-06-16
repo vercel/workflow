@@ -41,6 +41,10 @@ export function createDevTests(config?: DevTestConfig) {
     // Each prewarm/trigger fetch is hard-bounded by this so cleanup never hangs
     // on a wedged dev server.
     const PREWARM_FETCH_TIMEOUT_MS = 5_000;
+    // Workflow requests can include Next's first compile of the API route and
+    // the deferred flow route. CI routinely exceeds 5s there even when the
+    // workflow itself is healthy, so keep those requests bounded separately.
+    const WORKFLOW_FETCH_TIMEOUT_MS = 30_000;
     // The afterEach cleanup can issue two *sequential* prewarms (before and
     // after deleting an added file) while the dev server is mid-rebuild — the
     // teardown of a test that added a workflow file and edited an import is
@@ -65,6 +69,10 @@ export function createDevTests(config?: DevTestConfig) {
       isNextLazyDiscoveryEnabledForTest() && usesNextFlowRoute;
     const usesNextEagerBuilder =
       !isNextLazyDiscoveryEnabledForTest() && usesNextFlowRoute;
+    const deferredWorkflowCodePath = path.join(
+      path.dirname(generatedWorkflow),
+      '__workflow_code.txt'
+    );
     const workflowManifestPath = path.join(
       appPath,
       'app/.well-known/workflow/v1/manifest.json'
@@ -94,6 +102,20 @@ export function createDevTests(config?: DevTestConfig) {
         }
         throw error;
       }
+    };
+    const readGeneratedWorkflowOutput = async (): Promise<string> => {
+      const outputs = [
+        await readFileIfExists(generatedWorkflow),
+        usesDeferredBuilder
+          ? await readFileIfExists(deferredWorkflowCodePath)
+          : null,
+      ].filter((output): output is string => output !== null);
+
+      if (outputs.length === 0) {
+        throw new Error('Generated workflow outputs were not found');
+      }
+
+      return outputs.join('\n');
     };
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
@@ -126,7 +148,7 @@ export function createDevTests(config?: DevTestConfig) {
             workflowName,
             args,
           }),
-          signal: AbortSignal.timeout(PREWARM_FETCH_TIMEOUT_MS),
+          signal: AbortSignal.timeout(WORKFLOW_FETCH_TIMEOUT_MS),
         }
       );
 
@@ -135,6 +157,71 @@ export function createDevTests(config?: DevTestConfig) {
           `Failed to trigger workflow "${workflowName}": ${response.status}`
         );
       }
+    };
+
+    const triggerPagesWorkflowRun = async ({
+      workflowFile,
+      workflowFn,
+      args = [],
+    }: {
+      workflowFile: string;
+      workflowFn: string;
+      args?: unknown[];
+    }): Promise<string> => {
+      if (!deploymentUrl) {
+        throw new Error('DEPLOYMENT_URL is required to start a workflow');
+      }
+
+      const url = new URL('/api/trigger-pages', deploymentUrl);
+      url.searchParams.set('workflowFile', workflowFile);
+      url.searchParams.set('workflowFn', workflowFn);
+      if (args.length > 0) {
+        url.searchParams.set('args', args.map(String).join(','));
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        signal: AbortSignal.timeout(WORKFLOW_FETCH_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Failed to trigger workflow "${workflowFn}" from "${workflowFile}": ${
+            response.status
+          } ${await response.text()}`
+        );
+      }
+
+      const result = (await response.json()) as { runId?: unknown };
+      if (typeof result.runId !== 'string') {
+        throw new Error(
+          `Workflow trigger response did not include a runId: ${JSON.stringify(
+            result
+          )}`
+        );
+      }
+      return result.runId;
+    };
+
+    const awaitPagesWorkflowRun = async (runId: string): Promise<unknown> => {
+      if (!deploymentUrl) {
+        throw new Error('DEPLOYMENT_URL is required to await a workflow');
+      }
+
+      const url = new URL('/api/trigger-pages', deploymentUrl);
+      url.searchParams.set('runId', runId);
+
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(WORKFLOW_FETCH_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Failed to await workflow run "${runId}": ${
+            response.status
+          } ${await response.text()}`
+        );
+      }
+
+      return await response.json();
     };
 
     const prewarm = async () => {
@@ -223,7 +310,7 @@ export async function myNewWorkflow() {
       await pollUntil({
         description: 'generated workflow to include myNewWorkflow',
         check: async () => {
-          const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
+          const workflowContent = await readGeneratedWorkflowOutput();
           expect(workflowContent).toContain('myNewWorkflow');
         },
       });
@@ -267,6 +354,55 @@ export async function myNewStep() {
         },
       });
     });
+
+    test.skipIf(!usesDeferredBuilder)(
+      'should execute updated workflow logic after HMR without restart',
+      { timeout: 120_000 },
+      async () => {
+        const workflowFileName = '98_duplicate_case.ts';
+        const workflowFile = path.join(appPath, workflowsDir, workflowFileName);
+        const workflowFileKey = `workflows/${workflowFileName}`;
+        const workflowFn = 'addTenWorkflow';
+        const content = await fs.readFile(workflowFile, 'utf8');
+        const originalLine = '  const b = await add(a, 3);';
+        const updatedLine = '  const b = await add(a, 30);';
+
+        if (!content.includes(originalLine)) {
+          throw new Error(
+            `Expected ${workflowFile} to contain ${JSON.stringify(
+              originalLine
+            )}`
+          );
+        }
+
+        const baselineRunId = await triggerPagesWorkflowRun({
+          workflowFile: workflowFileKey,
+          workflowFn,
+          args: [100],
+        });
+        await expect(awaitPagesWorkflowRun(baselineRunId)).resolves.toBe(110);
+
+        await fs.writeFile(
+          workflowFile,
+          content.replace(originalLine, updatedLine)
+        );
+        restoreFiles.push({ path: workflowFile, content });
+
+        await pollUntil({
+          description:
+            'updated workflow logic to be used by the deferred flow route',
+          timeoutMs: 75_000,
+          check: async () => {
+            const runId = await triggerPagesWorkflowRun({
+              workflowFile: workflowFileKey,
+              workflowFn,
+              args: [100],
+            });
+            await expect(awaitPagesWorkflowRun(runId)).resolves.toBe(137);
+          },
+        });
+      }
+    );
 
     test.skipIf(!usesDeferredBuilder)(
       'should rebuild on imported step dependency change',
@@ -371,10 +507,7 @@ ${apiFileContent}`
             }
 
             await fetchWithTimeout('/api/chat');
-            const workflowContent = await fs.readFile(
-              generatedWorkflow,
-              'utf8'
-            );
+            const workflowContent = await readGeneratedWorkflowOutput();
             expect(workflowContent).toContain('newWorkflowFile');
           },
         });
@@ -444,24 +577,13 @@ ${apiFileContent}`
 
         // Tear down in-test (rather than relying on afterEach) so we can wait
         // for the deferred builder to drop the discovered step from the
-        // manifest before the next test file runs. The generated flow route
-        // holds a literal `import '../workflows/discovered-via-workflow-step.ts'`
-        // that is only pruned when the deferred builder rebuilds and
-        // `filterExistingFiles` excludes the now-missing source. On Windows
-        // the rebuild can lag behind the deletion, leaving the bundle
-        // unable to compile and breaking every step request in subsequent
-        // tests (which all share the same dev server).
+        // manifest before the next test file runs. Rewrite the temporary
+        // sources to inert modules before deleting them; otherwise the rebuild
+        // can race with deletion and get stuck on an ENOENT from the SWC
+        // transform while the generated route still imports the old files.
         await fs.writeFile(apiFile, apiFileContent);
-        await fs.unlink(workflowFile);
-        await fs.unlink(stepFile);
-        for (const trackedPath of [apiFile, workflowFile, stepFile]) {
-          const idx = restoreFiles.findIndex(
-            (item) => item.path === trackedPath
-          );
-          if (idx !== -1) {
-            restoreFiles.splice(idx, 1);
-          }
-        }
+        await fs.writeFile(workflowFile, 'export const removed = true;\n');
+        await fs.writeFile(stepFile, 'export const removed = true;\n');
         await pollUntil({
           description:
             'manifest.json to drop discoveredViaWorkflowStep after cleanup',
@@ -474,6 +596,16 @@ ${apiFileContent}`
             );
           },
         });
+        await fs.unlink(workflowFile);
+        await fs.unlink(stepFile);
+        for (const trackedPath of [apiFile, workflowFile, stepFile]) {
+          const idx = restoreFiles.findIndex(
+            (item) => item.path === trackedPath
+          );
+          if (idx !== -1) {
+            restoreFiles.splice(idx, 1);
+          }
+        }
       }
     );
 
