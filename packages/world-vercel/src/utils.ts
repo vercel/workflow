@@ -63,9 +63,11 @@ function getResponseDiagnosticHeaders(response: Response): string[] {
   // `x-vercel-mitigated` (`challenge` | `deny`) is set by the Vercel firewall
   // when it intercepts a request in front of workflow-server — surfacing it
   // (alongside the `x-vercel-id` trace identifier) makes a firewall block
-  // diagnosable from the error message and DEBUG logs. Note a `challenge`
-  // arrives as a 429 that the RetryAgent retries, so it is only seen here when
-  // it reaches our response handling (e.g. a 403 `deny`).
+  // diagnosable from the error message and DEBUG logs. Both a 429 `challenge`
+  // and a 403 `deny` reach this response handling because the RetryAgent no
+  // longer retries 429 in-process (see http-client.ts), so the mitigation type
+  // and trace id are preserved for the SDK / queue instead of being lost inside
+  // undici's retry loop.
   return ['x-vercel-id', 'x-vercel-error', 'x-vercel-mitigated'].flatMap(
     (header) => {
       const value = response.headers.get(header);

@@ -116,7 +116,14 @@ export function classifyRunError(err: unknown): RunErrorCode {
     return RUN_ERROR_CODES.CORRUPTED_EVENT_LOG;
   }
 
-  if (isWorldContractError(err)) {
+  // World-layer faults — both a malformed response (contract violation) and a
+  // transient infrastructure failure (throttle / 5xx / transport / timeout,
+  // e.g. a firewall challenge) — are the backend's fault, not the user's.
+  // Bucket them under WORLD_CONTRACT_ERROR rather than USER_ERROR so dashboards
+  // attribute an outage correctly. Note the retryable variants are normally
+  // redelivered via the queue (see `isRetryableWorldError`) and only reach this
+  // terminal classification if the run ultimately gives up.
+  if (isWorldContractError(err) || isRetryableWorldError(err)) {
     return RUN_ERROR_CODES.WORLD_CONTRACT_ERROR;
   }
 

@@ -54,12 +54,16 @@ describe('classifyRunError', () => {
     );
   });
 
-  it('classifies WorkflowWorldError as USER_ERROR (from user code fetch)', () => {
+  it('classifies a 5xx WorkflowWorldError as WORLD_CONTRACT_ERROR (backend fault, retryable)', () => {
+    // A WorkflowWorldError only originates from the world adapter talking to
+    // workflow-server, so a 5xx is the backend's fault, not the user's. These
+    // are normally redelivered (isRetryableWorldError); if one reaches terminal
+    // classification it must be a world error, not USER_ERROR.
     expect(
       classifyRunError(
         new WorkflowWorldError('Internal Server Error', { status: 500 })
       )
-    ).toBe(RUN_ERROR_CODES.USER_ERROR);
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
   });
 
   it('classifies world schema validation failures as WORLD_CONTRACT_ERROR', () => {
@@ -119,10 +123,10 @@ describe('classifyRunError', () => {
     expect(classifyRunError(native)).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 
-  it('does NOT classify a TRANSPORT error as a contract error', () => {
-    // A transport blip is retryable (handled by isRetryableWorldError before
-    // it can reach the run_failed path), not a malformed-response contract
-    // error. If it ever did reach classifyRunError it must not be mislabeled.
+  it('classifies a TRANSPORT error as WORLD_CONTRACT_ERROR (backend fault, not USER_ERROR)', () => {
+    // Transport blips are normally redelivered via the queue (see
+    // isRetryableWorldError); if one ever reaches terminal classification it is
+    // the backend/firewall's fault, not the user's — track it as a world error.
     expect(
       classifyRunError(
         new WorkflowWorldError(
@@ -132,7 +136,13 @@ describe('classifyRunError', () => {
           }
         )
       )
-    ).not.toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  });
+
+  it('classifies a ThrottleError (firewall challenge / 429) as WORLD_CONTRACT_ERROR', () => {
+    expect(classifyRunError(new ThrottleError('rate limited'))).toBe(
+      RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
+    );
   });
 });
 
