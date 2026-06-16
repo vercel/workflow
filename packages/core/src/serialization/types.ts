@@ -34,6 +34,8 @@ export const SerializationFormat = {
   ENCRYPTED: 'encr' as FormatPrefix,
   /** Gzip-compressed payload (inner payload has its own format prefix) */
   GZIP: 'gzip' as FormatPrefix,
+  /** Zstandard-compressed payload (inner payload has its own format prefix) */
+  ZSTD: 'zstd' as FormatPrefix,
 } as const;
 
 // ---- Serializable Types ----

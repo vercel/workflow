@@ -19,6 +19,8 @@ export const SerializationFormat = {
   ENCRYPTED: 'encr',
   /** Gzip-compressed payload (inner payload has its own format prefix after decompression) */
   GZIP: 'gzip',
+  /** Zstandard-compressed payload (inner payload has its own format prefix after decompression) */
+  ZSTD: 'zstd',
 } as const;
 
 export type SerializationFormatType =
@@ -149,7 +151,7 @@ export function isEncryptedData(data: unknown): boolean {
 }
 
 /**
- * Check if a binary value has the 'gzip' format prefix indicating compression.
+ * Check if a binary value has a compression format prefix ('gzip' or 'zstd').
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isCompressedData(data: unknown): boolean {
@@ -157,32 +159,51 @@ export function isCompressedData(data: unknown): boolean {
     return false;
   }
   const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
-  return prefix === SerializationFormat.GZIP;
+  return (
+    prefix === SerializationFormat.GZIP || prefix === SerializationFormat.ZSTD
+  );
+}
+
+interface NodeZlibDecode {
+  gunzipSync?: (data: Uint8Array) => Uint8Array;
+  zstdDecompressSync?: (data: Uint8Array) => Uint8Array;
 }
 
 /**
- * Synchronously gunzip a payload when running on Node.js.
- *
- * This module is browser-safe, so `node:zlib` is resolved dynamically via
- * `process.getBuiltinModule` (no static Node dependency, invisible to
- * browser bundlers). Returns `undefined` when sync decompression isn't
- * available in the current runtime — callers fall back to leaving the
- * data un-hydrated (the async `hydrateDataWithKey` path handles
- * decompression in browsers via `DecompressionStream`).
+ * Resolve `node:zlib` via `process.getBuiltinModule` — no static Node
+ * dependency, invisible to browser bundlers. Returns undefined off Node.
  */
-function gunzipSyncIfAvailable(payload: Uint8Array): Uint8Array | undefined {
+function getNodeZlib(): NodeZlibDecode | undefined {
   try {
-    const zlib = (
+    return (
       globalThis as {
-        process?: {
-          getBuiltinModule?: (id: string) => {
-            gunzipSync?: (data: Uint8Array) => Uint8Array;
-          };
-        };
+        process?: { getBuiltinModule?: (id: string) => NodeZlibDecode };
       }
     ).process?.getBuiltinModule?.('node:zlib');
-    if (zlib?.gunzipSync) {
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Synchronously decompress a `gzip`/`zstd` payload when running on Node.js.
+ *
+ * Returns `undefined` when sync decompression isn't available (e.g. in the
+ * browser, or zstd on Node < 22.15) — callers fall back to leaving the data
+ * un-hydrated (the async `hydrateDataWithKey` path handles decompression in
+ * browsers via `DecompressionStream` / a registered zstd decoder).
+ */
+function decompressSyncIfAvailable(
+  format: string,
+  payload: Uint8Array
+): Uint8Array | undefined {
+  try {
+    const zlib = getNodeZlib();
+    if (format === SerializationFormat.GZIP && zlib?.gunzipSync) {
       return new Uint8Array(zlib.gunzipSync(payload));
+    }
+    if (format === SerializationFormat.ZSTD && zlib?.zstdDecompressSync) {
+      return new Uint8Array(zlib.zstdDecompressSync(payload));
     }
   } catch {
     // Fall through — treat as unavailable
@@ -191,10 +212,45 @@ function gunzipSyncIfAvailable(payload: Uint8Array): Uint8Array | undefined {
 }
 
 /**
- * Asynchronously gunzip a payload using the web-standard
- * DecompressionStream (Node 18+, browsers, edge runtimes).
+ * Browser zstd decoder, registered by the o11y host (web-shared) since the
+ * Web `DecompressionStream` has no zstd support. Node decodes via `node:zlib`
+ * and never needs this. See `registerZstdDecoder`.
  */
-async function gunzipAsync(payload: Uint8Array): Promise<Uint8Array> {
+let zstdBrowserDecoder:
+  | ((payload: Uint8Array) => Promise<Uint8Array>)
+  | undefined;
+
+/**
+ * Register a browser zstd decoder (e.g. a WASM-backed one). The web o11y UI
+ * calls this at init so `hydrateDataWithKey` can inflate zstd payloads after
+ * client-side decryption. Node readers use `node:zlib` and ignore this.
+ */
+export function registerZstdDecoder(
+  decoder: (payload: Uint8Array) => Promise<Uint8Array>
+): void {
+  zstdBrowserDecoder = decoder;
+}
+
+/**
+ * Asynchronously decompress a `gzip`/`zstd` payload.
+ * - gzip: web-standard `DecompressionStream` (Node 18+, browsers, edge).
+ * - zstd: `node:zlib` when on Node, else the registered browser decoder.
+ */
+async function decompressAsync(
+  format: string,
+  payload: Uint8Array
+): Promise<Uint8Array> {
+  if (format === SerializationFormat.ZSTD) {
+    const sync = decompressSyncIfAvailable(format, payload);
+    if (sync) return sync;
+    if (zstdBrowserDecoder) return zstdBrowserDecoder(payload);
+    throw new Error(
+      'zstd-compressed workflow data encountered but no zstd decoder is ' +
+        'available. Node.js 22.15+ decodes natively; in the browser register ' +
+        'one via registerZstdDecoder (the web o11y package does this).'
+    );
+  }
+
   const transform = new DecompressionStream('gzip');
   const writer = transform.writable.getWriter();
   const writePromise = writer.write(payload).then(() => writer.close());
@@ -261,13 +317,16 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
       const str = new TextDecoder().decode(payload);
       return parse(str, revivers);
     }
-    if (format === SerializationFormat.GZIP) {
+    if (
+      format === SerializationFormat.GZIP ||
+      format === SerializationFormat.ZSTD
+    ) {
       // Compressed payload — decompress synchronously when running on
-      // Node.js (CLI, server o11y). In browsers there is no sync gunzip;
+      // Node.js (CLI, server o11y). In browsers there is no sync codec;
       // pass the data through untouched (like encrypted data) so async
       // consumers can route it through `hydrateDataWithKey`, which
-      // decompresses via DecompressionStream.
-      const inflated = gunzipSyncIfAvailable(payload);
+      // decompresses via DecompressionStream / a registered zstd decoder.
+      const inflated = decompressSyncIfAvailable(format, payload);
       if (inflated === undefined) {
         return value;
       }
@@ -309,12 +368,12 @@ export async function hydrateDataWithKey(
     data = await decrypt(key, payload);
   }
   if (data instanceof Uint8Array && isCompressedData(data)) {
-    // Decompress: strip 'gzip' prefix and inflate via the web-standard
-    // DecompressionStream (works in browsers, unlike the sync Node path
-    // inside hydrateData). The inflated bytes carry their own format
-    // prefix (e.g. 'devl').
-    const { payload } = decodeFormatPrefix(data);
-    data = await gunzipAsync(payload);
+    // Decompress: strip the codec prefix and inflate. gzip uses the
+    // web-standard DecompressionStream (works in browsers); zstd uses
+    // node:zlib on Node or the registered WASM decoder in the browser.
+    // The inflated bytes carry their own format prefix (e.g. 'devl').
+    const { format, payload } = decodeFormatPrefix(data);
+    data = await decompressAsync(format, payload);
   }
   // Delegate the (decrypted/decompressed) result to sync hydrateData
   return hydrateData(data, revivers);

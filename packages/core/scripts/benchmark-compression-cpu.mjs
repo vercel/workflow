@@ -1,4 +1,4 @@
-// Benchmark: CPU cost of gzip compression in the serialization layer.
+// Benchmark: CPU cost of payload compression in the serialization layer.
 //
 // Compression is a pure client-side CPU cost added to the serialize
 // (write) and deserialize (read) paths — it is WORLD-INDEPENDENT. The
@@ -12,12 +12,13 @@
 //   node scripts/benchmark-compression-cpu.mjs
 //
 // Three sections:
-//   1. Per-payload serialize + deserialize cost (the real shipping path,
-//      Web CompressionStream('gzip')), off vs on.
+//   1. Per-payload serialize + deserialize cost via the real shipping
+//      path (the SDK's preferred codec — zstd when node:zlib has it,
+//      else gzip), off vs on. Force gzip with WORKFLOW_COMPRESSION_CODEC=gzip.
 //   2. Stress: total CPU to (de)serialize thousands of event payloads,
 //      modelling a long workflow + replay.
 //   3. Algorithm comparison (node:zlib sync APIs) — informational, to
-//      compare gzip levels / brotli / deflate for future codecs.
+//      compare gzip levels / zstd levels / brotli / deflate.
 
 import zlib from 'node:zlib';
 import * as step from '../dist/serialization/step.js';
@@ -68,7 +69,10 @@ const pct = (a, b) => `${(((a - b) / b) * 100).toFixed(1)}%`;
 // 1. Per-payload serialize + deserialize cost (real shipping path)
 // ---------------------------------------------------------------------------
 
-console.log('## Serialize + deserialize CPU cost (Web CompressionStream gzip)');
+const writeCodec = process.env.WORKFLOW_COMPRESSION_CODEC || 'zstd (default)';
+console.log(
+  `## Serialize + deserialize CPU cost (real shipping path, codec: ${writeCodec})`
+);
 console.log('');
 console.log(
   '| Workload | ser off | ser on | ser Δ | deser off | deser on | deser Δ | compress MB/s |'
@@ -161,10 +165,27 @@ console.log('');
 console.log('## Algorithm comparison (node:zlib sync, informational)');
 console.log('');
 
+// zstd entries are gated on availability (node:zlib >= 22.15). The
+// production gzip path ships via the Web CompressionStream (≈ gzip -6); the
+// node:zlib gzip rows here isolate pure codec speed from that stream
+// overhead, and are the apples-to-apples comparison against zstd.
+const hasZstd = typeof zlib.zstdCompressSync === 'function';
+const zstdAt = (level) => (b) =>
+  zlib.zstdCompressSync(b, {
+    params: { [zlib.constants.ZSTD_c_compressionLevel]: level },
+  });
+
 const ALGOS = [
   ['gzip -1', (b) => zlib.gzipSync(b, { level: 1 }), zlib.gunzipSync],
   ['gzip -6 (default)', (b) => zlib.gzipSync(b, { level: 6 }), zlib.gunzipSync],
   ['gzip -9', (b) => zlib.gzipSync(b, { level: 9 }), zlib.gunzipSync],
+  ...(hasZstd
+    ? [
+        ['zstd -3 (default)', zstdAt(3), zlib.zstdDecompressSync],
+        ['zstd -9', zstdAt(9), zlib.zstdDecompressSync],
+        ['zstd -19', zstdAt(19), zlib.zstdDecompressSync],
+      ]
+    : []),
   [
     'brotli -q5',
     (b) =>

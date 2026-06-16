@@ -11,6 +11,7 @@ export { devalueCodec } from './codec-devalue.js';
 // Re-export composable compression
 export {
   COMPRESSION_MIN_BYTES,
+  type CompressionCodec,
   type CompressionStats,
   compress,
   decompress,

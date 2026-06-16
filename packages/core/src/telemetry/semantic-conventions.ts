@@ -316,9 +316,14 @@ export const SerializationOperation = SemanticConvention<
   'serialize' | 'deserialize'
 >('workflow.serialization.operation');
 
-/** Whether the gzip codec was applied (write) / present (read). */
+/** Whether a compression codec was applied (write) / present (read). */
 export const SerializationCompressed = SemanticConvention<boolean>(
   'workflow.serialization.compressed'
+);
+
+/** Which compression codec applied / was present (`zstd`, `gzip`, or `none`). */
+export const SerializationCodec = SemanticConvention<'zstd' | 'gzip' | 'none'>(
+  'workflow.serialization.codec'
 );
 
 /** Logical (uncompressed, devalue-prefixed) payload size in bytes. */

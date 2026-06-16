@@ -253,7 +253,8 @@ describe('mode serializers with compression', () => {
     const compressed = await stepModule.serialize(value, undefined, {
       compression: true,
     });
-    expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
+    // zstd is the preferred codec when available (node:zlib >= 22.15).
+    expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.ZSTD);
 
     const uncompressed = await stepModule.serialize(value, undefined, {});
     expect(peekFormatPrefix(uncompressed)).toBe(SerializationFormat.DEVALUE_V1);
@@ -270,12 +271,12 @@ describe('mode serializers with compression', () => {
     const data = await clientModule.serialize(value, undefined, {
       compression: true,
     });
-    expect(peekFormatPrefix(data)).toBe(SerializationFormat.GZIP);
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
     const result = await clientModule.deserialize(data, undefined, {});
     expect(result).toEqual(value);
   });
 
-  it('nests compression inside encryption: encr(gzip(devl))', async () => {
+  it('nests compression inside encryption: encr(zstd(devl))', async () => {
     const key = await makeKey();
     const value = makeCompressibleValue();
 
@@ -285,9 +286,9 @@ describe('mode serializers with compression', () => {
     // Outer layer must be encryption (encrypted bytes don't compress)
     expect(peekFormatPrefix(data)).toBe(SerializationFormat.ENCRYPTED);
 
-    // White-box: the decrypted inner payload carries the gzip prefix
+    // White-box: the decrypted inner payload carries the codec prefix
     const inner = await decrypt(data, key);
-    expect(peekFormatPrefix(inner)).toBe(SerializationFormat.GZIP);
+    expect(peekFormatPrefix(inner)).toBe(SerializationFormat.ZSTD);
     const { payload: deflated } = decodeFormatPrefix(inner);
     expect(deflated.length).toBeGreaterThan(0);
 
@@ -321,6 +322,61 @@ describe('mode serializers with compression', () => {
   });
 });
 
+describe('codec selection (zstd preferred, gzip fallback)', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_COMPRESSION_CODEC;
+  });
+
+  it('prefers zstd by default and reports it in stats', async () => {
+    const original = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+    ) as Uint8Array;
+    const stats: CompressionStats = {};
+    const compressed = await compress(original, true, stats);
+    expect(isCompressed(compressed)).toBe(true);
+    expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.ZSTD);
+    expect(stats.codec).toBe('zstd');
+  });
+
+  it('WORKFLOW_COMPRESSION_CODEC=gzip forces the portable codec', async () => {
+    process.env.WORKFLOW_COMPRESSION_CODEC = 'gzip';
+    const original = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+    ) as Uint8Array;
+    const stats: CompressionStats = {};
+    const compressed = await compress(original, true, stats);
+    expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
+    expect(stats.codec).toBe('gzip');
+
+    // Read path still inflates gzip and reports the codec.
+    const readStats: CompressionStats = {};
+    const inflated = (await decompress(compressed, readStats)) as Uint8Array;
+    expect(inflated).toEqual(original);
+    expect(readStats.codec).toBe('gzip');
+  });
+
+  it('decompress handles both zstd and gzip prefixes (mixed log)', async () => {
+    const original = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+    ) as Uint8Array;
+
+    const zstd = (await compress(original, true)) as Uint8Array;
+    expect(peekFormatPrefix(zstd)).toBe(SerializationFormat.ZSTD);
+
+    process.env.WORKFLOW_COMPRESSION_CODEC = 'gzip';
+    const gzip = (await compress(original, true)) as Uint8Array;
+    expect(peekFormatPrefix(gzip)).toBe(SerializationFormat.GZIP);
+    delete process.env.WORKFLOW_COMPRESSION_CODEC;
+
+    // Both decode regardless of the current write-side codec setting.
+    expect(await decompress(zstd)).toEqual(original);
+    expect(await decompress(gzip)).toEqual(original);
+  });
+});
+
 describe('dehydrateStepError with compression', () => {
   it('compresses large errors and round-trips through hydrateStepError', async () => {
     const error = new Error('boom');
@@ -335,7 +391,7 @@ describe('dehydrateStepError with compression', () => {
       globalThis,
       true
     );
-    expect(peekFormatPrefix(data)).toBe(SerializationFormat.GZIP);
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
 
     const hydrated = (await hydrateStepError(
       data,
@@ -379,30 +435,30 @@ describe('o11y hydration of compressed payloads', () => {
   });
 });
 
-describe('run capabilities for gzip', () => {
-  it('supports gzip for core versions >= 5.0.0-beta.16', () => {
-    expect(
-      getRunCapabilities('5.0.0-beta.16').supportedFormats.has(
-        SerializationFormat.GZIP
-      )
-    ).toBe(true);
-  });
-
-  it('does not support gzip for older core versions', () => {
-    for (const version of ['5.0.0-beta.15', '4.2.1', '4.0.0']) {
+describe('run capabilities for compression codecs', () => {
+  // gzip and zstd co-ship, so both are gated on the same min version.
+  for (const fmt of [
+    SerializationFormat.GZIP,
+    SerializationFormat.ZSTD,
+  ] as const) {
+    it(`supports ${fmt} for core versions >= 5.0.0-beta.16`, () => {
       expect(
-        getRunCapabilities(version).supportedFormats.has(
-          SerializationFormat.GZIP
-        )
-      ).toBe(false);
-    }
-  });
+        getRunCapabilities('5.0.0-beta.16').supportedFormats.has(fmt)
+      ).toBe(true);
+    });
 
-  it('assumes no gzip support when the version is unknown', () => {
-    expect(
-      getRunCapabilities(undefined).supportedFormats.has(
-        SerializationFormat.GZIP
-      )
-    ).toBe(false);
-  });
+    it(`does not support ${fmt} for older core versions`, () => {
+      for (const version of ['5.0.0-beta.15', '4.2.1', '4.0.0']) {
+        expect(getRunCapabilities(version).supportedFormats.has(fmt)).toBe(
+          false
+        );
+      }
+    });
+
+    it(`assumes no ${fmt} support when the version is unknown`, () => {
+      expect(getRunCapabilities(undefined).supportedFormats.has(fmt)).toBe(
+        false
+      );
+    });
+  }
 });

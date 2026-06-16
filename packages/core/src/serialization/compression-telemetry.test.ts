@@ -59,6 +59,8 @@ describe('compression telemetry attributes', () => {
     const attrs = lastAttrs();
     expect(attrs['workflow.serialization.operation']).toBe('serialize');
     expect(attrs['workflow.serialization.compressed']).toBe(true);
+    // zstd is the preferred codec when node:zlib has it (Node >= 22.15).
+    expect(attrs['workflow.serialization.codec']).toBe('zstd');
     expect(attrs['workflow.serialization.uncompressed_bytes']).toBeGreaterThan(
       attrs['workflow.serialization.stored_bytes'] as number
     );
@@ -94,6 +96,7 @@ describe('compression telemetry attributes', () => {
     const attrs = lastAttrs();
     expect(attrs['workflow.serialization.operation']).toBe('serialize');
     expect(attrs['workflow.serialization.compressed']).toBe(false);
+    expect(attrs['workflow.serialization.codec']).toBe('none');
     expect(attrs['workflow.serialization.compression_ratio']).toBeUndefined();
     expect(attrs['workflow.serialization.stored_bytes']).toBe(
       attrs['workflow.serialization.uncompressed_bytes']

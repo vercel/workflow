@@ -192,6 +192,7 @@ async function recordCompression(
     span.setAttributes({
       ...Attr.SerializationOperation(operation),
       ...Attr.SerializationCompressed(stats.compressed ?? false),
+      ...Attr.SerializationCodec(stats.codec ?? 'none'),
       ...Attr.SerializationUncompressedBytes(uncompressedBytes),
       ...Attr.SerializationStoredBytes(storedBytes),
       ...(stats.compressed && uncompressedBytes > 0
