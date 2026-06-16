@@ -2,21 +2,6 @@ import { decodeTime } from 'ulid';
 import { z } from 'zod';
 
 const UlidSchema = z.string().ulid();
-const CROCKFORD_BASE32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-
-function clearRegionTagTimestampBit(ulid: string): string {
-  const first = ulid[0];
-  const value = CROCKFORD_BASE32.indexOf(first.toUpperCase());
-
-  // The region-tagged run ID format sets byte[0] bit 7, which maps to
-  // bit 2 of the first Crockford Base32 character. Clear that bit before
-  // calling `decodeTime`; otherwise a current tagged run ID appears ~8900
-  // years in the future. Untagged current IDs have this bit clear, so this
-  // is a no-op for the normal path.
-  if (value < 0) return ulid;
-  const untaggedFirst = CROCKFORD_BASE32[value & ~0b100];
-  return `${untaggedFirst}${ulid.slice(1)}`;
-}
 
 /**
  * Default threshold for ULID timestamps in the past (24 hours).
@@ -48,7 +33,7 @@ export function ulidToDate(maybeUlid: string): Date | null {
     return null;
   }
 
-  return new Date(decodeTime(clearRegionTagTimestampBit(ulid.data)));
+  return new Date(decodeTime(ulid.data));
 }
 
 /**

@@ -1,8 +1,10 @@
 import type { AnyEventRequest } from '@workflow/world';
 import { encode } from 'cbor-x';
+import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
 import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
+import { encode as encodeRunId, REGION_IDS } from './run-id/index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -162,6 +164,59 @@ describe('splitEventDataForV4 attribute fields', () => {
 });
 
 describe('createWorkflowRunEvent response coercion', () => {
+  it('accepts a current region-tagged run_created runId', async () => {
+    const taggedRunId = `wrun_${encodeRunId(ulid(), REGION_IDS.sfo1)}`;
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${taggedRunId}/events/run_created`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          run: {
+            runId: taggedRunId,
+            status: 'running',
+            startedAt: new Date('2026-06-10T00:00:01.000Z'),
+          },
+          event: {
+            eventId: 'evnt_1',
+            runId: taggedRunId,
+            eventType: 'run_created',
+            createdAt: '2026-06-10T00:00:01.000Z',
+            eventData: {},
+          },
+        }),
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': taggedRunId,
+            'x-wf-created-at': '2026-06-10T00:00:01.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      taggedRunId,
+      {
+        eventType: 'run_created',
+        specVersion: 4,
+        eventData: {
+          deploymentId: 'dpl_1',
+          workflowName: 'wf',
+          input: new TextEncoder().encode('[]'),
+        },
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.runId).toBe(taggedRunId);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('coerces ISO-string dates in the returned event and preloaded events', async () => {
     // Persisted events store nested eventData dates as ISO strings
     // (the backend's entity layer converts Date → toISOString on write with
