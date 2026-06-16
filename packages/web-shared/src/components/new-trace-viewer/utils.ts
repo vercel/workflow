@@ -243,7 +243,7 @@ function computeStepSegmentsFromSpan(
   ]);
 
   if (marks.length === 0) {
-    segments.push({ startFraction: 0, endFraction: 1, status: 'running' });
+    segments.push({ startFraction: 0, endFraction: 1, status: 'queued' });
     return segments;
   }
 
