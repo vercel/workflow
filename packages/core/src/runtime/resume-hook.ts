@@ -21,7 +21,7 @@ import {
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
+import { linkToTraceCarrier, trace } from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -185,13 +185,13 @@ export async function resumeHook<T = any>(
           ...Attribute.WorkflowName(workflowRun.workflowName),
         });
 
-        const traceCarrier = workflowRun.executionContext?.traceCarrier;
-
-        if (traceCarrier) {
-          const context = await getSpanContextForTraceCarrier(traceCarrier);
-          if (context) {
-            span?.addLink?.({ context });
-          }
+        // Link to the run-origin context from the workflow run's stored
+        // trace carrier (skipped when absent or invalid).
+        const originLink = await linkToTraceCarrier(
+          workflowRun.executionContext?.traceCarrier
+        );
+        if (originLink) {
+          span?.addLink?.(originLink);
         }
 
         // Re-trigger the workflow against the deployment ID associated
