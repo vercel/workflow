@@ -2,7 +2,15 @@
 
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { cn } from '../../../lib/utils';
 import {
   formatDuration,
@@ -266,13 +274,23 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
           const leadInLabel = formatDurationPrecise(seg.fullDurationMs);
           const showLeadInLabel =
             seg.pixelWidth >= Math.max(40, leadInLabel.length * 6 + 12);
+          const isFullWidthQueued = segments.length === 1;
           return (
-            <LeadInConnector
-              key={i}
-              leftPct={seg.leftPct}
-              widthPct={seg.widthPct}
-              label={showLeadInLabel ? leadInLabel : null}
-            />
+            <Fragment key={i}>
+              <LeadInConnector
+                leftPct={seg.leftPct}
+                widthPct={seg.widthPct}
+                label={showLeadInLabel ? leadInLabel : null}
+              />
+              {isFullWidthQueued ? (
+                <div
+                  className="absolute top-1/2 h-4 w-px -translate-y-1/2 bg-gray-500"
+                  style={{
+                    left: `calc(${seg.leftPct + seg.widthPct}% - 1.5px)`,
+                  }}
+                />
+              ) : null}
+            </Fragment>
           );
         }
 
