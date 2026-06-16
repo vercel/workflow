@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.0-beta.10
+
+### Minor Changes
+
+- [#2385](https://github.com/vercel/workflow/pull/2385) [`628795a`](https://github.com/vercel/workflow/commit/628795aa8729bef442c7a1583cf2f3d986e9e4fc) Thanks [@pranaygp](https://github.com/pranaygp)! - Add an `allowReservedAttributes` option to `start()` so framework-level callers can seed reserved `$`-prefixed run attributes at creation, matching the existing `experimental_setAttributes` option. The flag is carried through the resilient-start queue input so lazy run creation validates identically.
+
 ## 5.0.0-beta.9
 
 ### Minor Changes
