@@ -60,6 +60,8 @@ interface NewTraceViewerProps {
 
 const MIN_VIEWPORT_MS = 0.001;
 
+const ZOOM_DEBOUNCE_MS = 150;
+
 interface Viewport {
   start: number;
   end: number;
@@ -296,14 +298,8 @@ function NewTraceViewerContent({
   const zoomIn = useCallback(() => zoomBy(ZOOM_FACTOR), [zoomBy]);
   const zoomOut = useCallback(() => zoomBy(1 / ZOOM_FACTOR), [zoomBy]);
 
-  const handleSelectSpan = useCallback(
+  const focusViewportOnSpan = useCallback(
     (spanId: string) => {
-      if (spanId === activeSpanId) {
-        clearActiveSpan();
-        return;
-      }
-      setActiveSpan(spanId);
-
       const span = trace.spans.find((s) => s.spanId === spanId);
       if (!span) return;
 
@@ -343,15 +339,7 @@ function NewTraceViewerContent({
 
       animateTo({ start: newStart, end: newEnd });
     },
-    [
-      animateTo,
-      setActiveSpan,
-      clearActiveSpan,
-      activeSpanId,
-      trace.spans,
-      root.startTime,
-      root.duration,
-    ]
+    [animateTo, trace.spans, root.startTime, root.duration]
   );
 
   // Bring a row into view when keyboard/button navigation lands on a span that
@@ -373,6 +361,52 @@ function NewTraceViewerContent({
     [trace.spans, reducedMotion]
   );
 
+  const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPendingZoom = useCallback(() => {
+    if (zoomTimerRef.current !== null) {
+      clearTimeout(zoomTimerRef.current);
+      zoomTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => cancelPendingZoom, [cancelPendingZoom]);
+
+  const handleClearActiveSpan = useCallback(() => {
+    cancelPendingZoom();
+    clearActiveSpan();
+  }, [cancelPendingZoom, clearActiveSpan]);
+
+  const handleSelectSpan = useCallback(
+    (spanId: string) => {
+      cancelPendingZoom();
+      if (spanId === activeSpanId) {
+        clearActiveSpan();
+        return;
+      }
+      setActiveSpan(spanId);
+      focusViewportOnSpan(spanId);
+    },
+    [
+      cancelPendingZoom,
+      activeSpanId,
+      clearActiveSpan,
+      setActiveSpan,
+      focusViewportOnSpan,
+    ]
+  );
+
+  const navigateToSpan = useCallback(
+    (spanId: string) => {
+      setActiveSpan(spanId);
+      scrollSpanIntoView(spanId);
+      cancelPendingZoom();
+      zoomTimerRef.current = setTimeout(() => {
+        zoomTimerRef.current = null;
+        focusViewportOnSpan(spanId);
+      }, ZOOM_DEBOUNCE_MS);
+    },
+    [setActiveSpan, scrollSpanIntoView, cancelPendingZoom, focusViewportOnSpan]
+  );
+
   const [altHeld, setAltHeld] = useState(false);
 
   useEffect(() => {
@@ -389,14 +423,13 @@ function NewTraceViewerContent({
         e.key === 'k' ? prevSpanIdRef.current : nextSpanIdRef.current;
       if (targetId) {
         e.preventDefault();
-        handleSelectSpanRef.current(targetId);
-        scrollSpanIntoViewRef.current(targetId);
+        navigateToSpanRef.current(targetId);
       }
     };
 
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
-        clearActiveSpan();
+        handleClearActiveSpan();
       } else if (e.key === 'Alt') {
         e.preventDefault();
         setAltHeld(true);
@@ -417,7 +450,7 @@ function NewTraceViewerContent({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [clearActiveSpan]);
+  }, [handleClearActiveSpan]);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const [hoverFraction, setHoverFraction] = useState<number | null>(null);
@@ -568,27 +601,19 @@ function NewTraceViewerContent({
   }, [activeSpanId, trace.spans]);
 
   const handleSelectPrevSpan = useCallback(() => {
-    if (prevSpanId) {
-      handleSelectSpan(prevSpanId);
-      scrollSpanIntoView(prevSpanId);
-    }
-  }, [prevSpanId, handleSelectSpan, scrollSpanIntoView]);
+    if (prevSpanId) navigateToSpan(prevSpanId);
+  }, [prevSpanId, navigateToSpan]);
 
   const handleSelectNextSpan = useCallback(() => {
-    if (nextSpanId) {
-      handleSelectSpan(nextSpanId);
-      scrollSpanIntoView(nextSpanId);
-    }
-  }, [nextSpanId, handleSelectSpan, scrollSpanIntoView]);
+    if (nextSpanId) navigateToSpan(nextSpanId);
+  }, [nextSpanId, navigateToSpan]);
 
   const prevSpanIdRef = useRef(prevSpanId);
   const nextSpanIdRef = useRef(nextSpanId);
-  const handleSelectSpanRef = useRef(handleSelectSpan);
-  const scrollSpanIntoViewRef = useRef(scrollSpanIntoView);
+  const navigateToSpanRef = useRef(navigateToSpan);
   prevSpanIdRef.current = prevSpanId;
   nextSpanIdRef.current = nextSpanId;
-  handleSelectSpanRef.current = handleSelectSpan;
-  scrollSpanIntoViewRef.current = scrollSpanIntoView;
+  navigateToSpanRef.current = navigateToSpan;
 
   return (
     <div
@@ -754,7 +779,7 @@ function NewTraceViewerContent({
               <IconButton
                 aria-label="Close span details"
                 aria-keyshortcuts="Escape"
-                onClick={clearActiveSpan}
+                onClick={handleClearActiveSpan}
               >
                 <X className="w-4 h-4" />
               </IconButton>
