@@ -127,7 +127,6 @@ export function OffscreenMarkerIndicator({
 }: {
   direction: 'left' | 'right';
   count: number;
-  /** Timestamp of the nearest off-screen marker to scroll into view. */
   targetMs: number;
   onReveal?: (timeMs: number) => void;
 }): ReactNode {
@@ -135,9 +134,6 @@ export function OffscreenMarkerIndicator({
   const label = `${count} marker${count === 1 ? '' : 's'} ${
     direction === 'right' ? 'ahead' : 'behind'
   } — click to scroll to ${count === 1 ? 'it' : 'the nearest'}`;
-  // The chevron lives in a 24px-wide centered box identical to BoundaryArrow's
-  // and the whole pill is pinned flush to the bar edge, so off-screen pills line
-  // up exactly with the bare boundary arrows on adjacent rows.
   const chevron = (
     <span className="flex h-6 w-6 shrink-0 items-center justify-center">
       <Chevron className="size-3 text-gray-900" />
