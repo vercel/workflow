@@ -300,6 +300,10 @@ export async function sandboxSessionWorkflow() {
 
 Two endpoints. `/start` accepts an optional `{ runId }` — if the run still exists, it replays the event log from index 0 so a returning client fully rehydrates. `/command` resumes the hook and returns immediately; command output lands on the `/start` stream.
 
+<Callout type="info">
+This example starts a fresh sandbox session when no `runId` is provided. If your product needs one sandbox session per user, project, or task, use a deterministic hook token derived from that session key and route retries through the active hook. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
 ```typescript title="app/api/sandbox/start/route.ts" lineNumbers
 import { start, getRun } from "workflow/api";
 import { sandboxSessionWorkflow } from "@/workflows/sandbox-session";
@@ -505,6 +509,10 @@ Stream closure must happen inside a `"use step"` function. Calling `writable.clo
 
 Clients can hold `runId`s from long-gone workflow runs (localStorage, back button, server restart). Gate the reconnect path on `run.exists` and fall through to starting fresh. On `hook.resume`, catch `not found` / `expired` and return 410 so the client clears its state.
 
+### Decide whether `/start` should be idempotent
+
+The sample treats a missing or stale `runId` as a request for a new session. For one-session-per-resource behavior, use a durable resource key, such as `projectId` or `taskId`, to claim or retrieve the run before starting a new one.
+
 ### Keep the hook outside the loop
 
 Each iteration's `hook.then(...)` attaches a listener to the same hook instance. Creating a new hook per iteration with the same token throws `HookConflictError`. One hook, one token (`workflowRunId`), reused every iteration.
@@ -518,3 +526,4 @@ Each iteration's `hook.then(...)` attaches a listener to the same hook instance.
 - [`sleep()`](/docs/api-reference/workflow/sleep) — durable timer that powers both idle hibernation and proactive refresh
 - [`getRun()`](/docs/api-reference/workflow-api/get-run) — look up a run and replay its event log for reconnection
 - [`getWritable()`](/docs/api-reference/workflow/get-writable) — resumable NDJSON event stream
+- [Idempotency](/docs/foundations/idempotency) — choose when `/start` should reuse an existing run

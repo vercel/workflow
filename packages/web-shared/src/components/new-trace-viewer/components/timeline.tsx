@@ -4,13 +4,14 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
-import type { Span } from '../types';
 import {
   formatDuration,
   formatDurationPrecise,
   getHighResInMs,
 } from '../../trace-viewer/util/timing';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
+import type { Span } from '../types';
 import type { Segment, SegmentStatus, TimeMarker } from '../utils';
 import {
   computeSpanGaps,
@@ -18,8 +19,8 @@ import {
   getResourceColor,
   getSpanDurationMs,
 } from '../utils';
-import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 import styles from './timeline.module.css';
+import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -305,6 +306,80 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
+// Event markers (attr_set)
+// ---------------------------------------------------------------------------
+
+function formatMarkerTime(ms: number): string {
+  const date = new Date(ms);
+  return (
+    date.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }) +
+    '.' +
+    date.getMilliseconds().toString().padStart(3, '0')
+  );
+}
+
+/**
+ * Diamond markers for `attr_set` events on a span's timeline row. Attribute
+ * changes are point-in-time events with no duration, so they don't get a
+ * status segment — instead they render as small teal diamonds at the moment
+ * the attributes were written.
+ */
+function AttrSetMarkers({
+  span,
+  viewStart,
+  viewDuration,
+}: {
+  span: Span;
+  viewStart: number;
+  viewDuration: number;
+}): ReactNode {
+  const markers = useMemo(
+    () => span.events.filter((e) => e.name === 'attr_set'),
+    [span.events]
+  );
+
+  if (markers.length === 0 || viewDuration <= 0) return null;
+
+  return (
+    <>
+      {markers.map((event, index) => {
+        const timeMs = getHighResInMs(event.timestamp);
+        const frac = (timeMs - viewStart) / viewDuration;
+        if (frac < 0 || frac > 1) return null;
+
+        return (
+          <Tooltip key={`attr-set-${index}`}>
+            <TooltipTrigger asChild>
+              <div
+                aria-label="Attributes set"
+                className="absolute top-1/2 z-10 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center"
+                style={{ left: `${frac * 100}%` }}
+              >
+                <div
+                  className="h-2 w-2 rotate-45 rounded-[1px] border"
+                  style={{
+                    backgroundColor: 'var(--ds-teal-400)',
+                    borderColor: 'var(--ds-teal-900)',
+                  }}
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              Attributes set · {formatMarkerTime(timeMs)}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // TimelineBar
 // ---------------------------------------------------------------------------
 
@@ -403,6 +478,11 @@ const TimelineBar = memo(function TimelineBar({
             />
           )}
         </div>
+        <AttrSetMarkers
+          span={span}
+          viewStart={viewStart}
+          viewDuration={viewDuration}
+        />
       </div>
     </div>
   );

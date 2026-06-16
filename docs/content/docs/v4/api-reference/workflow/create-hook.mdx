@@ -8,6 +8,7 @@ prerequisites:
 related:
   - /docs/api-reference/workflow/define-hook
   - /docs/api-reference/workflow/create-webhook
+  - /docs/foundations/idempotency
 ---
 
 Creates a low-level hook primitive that can be used to resume a workflow run with arbitrary payloads.
@@ -142,7 +143,11 @@ async function processOrder(orderId: string) {
 
 Because `createHook()` alone does not suspend the workflow, awaiting `hook.getConflict()` is what actually suspends the run and commits the hook registration. It only waits for registration — to receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
 
-On a conflict, the resolved value is `{ runId }` identifying the run that currently owns the token. To act on the owner — inspect its status, wait for its result, or cancel it — pass `conflict.runId` to [`getRun()`](/docs/api-reference/workflow-api/get-run) inside a step. See [Idempotency](/docs/foundations/idempotency) for these strategies in context.
+On a conflict, the resolved value is `{ runId }` identifying the run that currently owns the token. To act on the owner — inspect its status, wait for its result, or cancel it — pass `conflict.runId` to [`getRun()`](/docs/api-reference/workflow-api/get-run) inside a step. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies in context.
+
+<Callout type="info">
+Custom hook tokens are the recommended way to coordinate active workflow runs. Use a deterministic token from your domain, such as an order ID or conversation ID, create the hook near the beginning of the workflow, and check `await hook.getConflict()` before work that depends on owning the token. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
 
 ### Waiting for Multiple Payloads
 
@@ -227,3 +232,4 @@ This is equivalent to manually calling `dispose()` but ensures the hook is alway
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with a payload
 - [`createWebhook()`](/docs/api-reference/workflow/create-webhook) - Higher-level HTTP webhook abstraction
+- [Idempotency](/docs/foundations/idempotency) - Deduplicate step side effects and workflow starts

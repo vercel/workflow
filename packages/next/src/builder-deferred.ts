@@ -32,6 +32,7 @@ import {
 
 const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
 const ROUTE_STUB_MARKER_SCAN_BYTES = 4 * 1024;
+const DEV_WORKFLOW_CODE_FILENAME = '__workflow_code.txt';
 
 let CachedNextBuilderDeferred: any;
 
@@ -651,7 +652,41 @@ export async function getNextBuilderDeferred() {
       const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
       const workflowEntrypointOptionsCode =
         createWorkflowEntrypointOptionsCode();
-      const routeCode = `// biome-ignore-all lint: generated file
+      let routeCode: string;
+
+      if (this.config.watch) {
+        const workflowCodePath = join(
+          dirname(flowOutfile),
+          DEV_WORKFLOW_CODE_FILENAME
+        );
+        await this.writeFileIfChanged(workflowCodePath, workflowVMCode);
+        routeCode = `// biome-ignore-all lint: generated file
+/* eslint-disable */
+import 'workflow/internal/builtins';
+${stepImports}
+import { readFile, stat } from 'node:fs/promises';
+import { workflowEntrypoint } from 'workflow/runtime';
+
+const workflowCodePath = ${JSON.stringify(workflowCodePath)};
+let cachedWorkflowHandler;
+let cachedWorkflowCodeSignature;
+
+async function getWorkflowHandler() {
+  const workflowCodeStats = await stat(workflowCodePath);
+  const workflowCodeSignature = \`\${workflowCodeStats.size}:\${workflowCodeStats.mtimeMs}\`;
+  if (!cachedWorkflowHandler || cachedWorkflowCodeSignature !== workflowCodeSignature) {
+    const workflowCode = await readFile(workflowCodePath, 'utf8');
+    cachedWorkflowHandler = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});
+    cachedWorkflowCodeSignature = workflowCodeSignature;
+  }
+  return cachedWorkflowHandler;
+}
+
+export async function POST(req) {
+  return (await getWorkflowHandler())(req);
+}`;
+      } else {
+        routeCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import 'workflow/internal/builtins';
 ${stepImports}
@@ -660,6 +695,7 @@ import { workflowEntrypoint } from 'workflow/runtime';
 const workflowCode = \`${escapedVMCode}\`;
 
 export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+      }
 
       await this.writeFileIfChanged(flowOutfile, routeCode);
 
@@ -857,6 +893,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         join(flowRouteDir, 'route.js.temp'),
         join(flowRouteDir, 'route.js.temp.debug.json'),
         join(flowRouteDir, 'route.js.debug.json'),
+        join(flowRouteDir, DEV_WORKFLOW_CODE_FILENAME),
         join(flowRouteDir, '__step_registrations.route.js.temp'),
         join(flowRouteDir, '__step_registrations.route.js.temp.debug.json'),
         // V2: clean up stale V1 step route directory

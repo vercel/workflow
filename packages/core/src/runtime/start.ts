@@ -4,6 +4,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
@@ -58,6 +59,20 @@ export interface StartOptionsBase {
    * Available for native-attributes runs (spec version 4 and later).
    */
   attributes?: Record<string, string>;
+
+  /**
+   * Permit reserved `$`-prefixed keys in `attributes`. The `$` namespace
+   * is reserved for framework/library code built on top of the workflow
+   * SDK (telemetry, agent metadata, platform-emitted tags, etc.); user
+   * code MUST NOT write keys in it, and validation rejects them so
+   * accidental collisions with tooling-owned keys can't slip through.
+   *
+   * Only flip this to `true` if your caller is itself a framework or
+   * library that owns a `$`-prefixed sub-namespace and knows the
+   * conventions of any other tools writing into it. Same semantics as
+   * the `experimental_setAttributes` option of the same name.
+   */
+  allowReservedAttributes?: boolean;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -151,7 +166,8 @@ export async function start<TArgs extends unknown[], TResult>(
       );
     }
 
-    return trace(`workflow.start ${workflowName}`, async (span) => {
+    const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
+    return trace(spanName, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -229,6 +245,7 @@ export async function start<TArgs extends unknown[], TResult>(
         world.specVersion ??
         SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
       const v1Compat = isLegacySpecVersion(specVersion);
+      const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;
       if (opts.attributes && Object.keys(opts.attributes).length > 0) {
         if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
@@ -247,11 +264,24 @@ export async function start<TArgs extends unknown[], TResult>(
             );
           }
         }
-        const changes = normalizeAttributeChanges(opts.attributes);
+        const changes = normalizeAttributeChanges(opts.attributes, {
+          allowReservedAttributes,
+        });
         attributes = Object.fromEntries(
           changes.map(({ key, value }) => [key, value as string])
         );
       }
+      // Seed payload shared by run_created and the resilient-start queue
+      // input. The flag rides along so server-side validation matches the
+      // client-side check above on both paths.
+      const attributeSeed = attributes
+        ? {
+            attributes,
+            ...(allowReservedAttributes
+              ? { allowReservedAttributes: true as const }
+              : {}),
+          }
+        : {};
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
@@ -298,7 +328,7 @@ export async function start<TArgs extends unknown[], TResult>(
               workflowName: workflowName,
               input: workflowArguments,
               executionContext,
-              ...(attributes ? { attributes } : {}),
+              ...attributeSeed,
             },
           },
           { v1Compat }
@@ -316,7 +346,7 @@ export async function start<TArgs extends unknown[], TResult>(
                     workflowName,
                     specVersion,
                     executionContext,
-                    ...(attributes ? { attributes } : {}),
+                    ...attributeSeed,
                   },
                 }
               : {}),

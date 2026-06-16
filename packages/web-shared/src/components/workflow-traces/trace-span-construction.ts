@@ -26,6 +26,7 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'run_failed',
   'wait_created',
   'wait_completed',
+  'attr_set',
 ]);
 
 /**
