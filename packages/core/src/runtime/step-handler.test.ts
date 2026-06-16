@@ -1,4 +1,8 @@
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  FatalError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   afterEach,
   beforeAll,
@@ -91,7 +95,15 @@ vi.mock('../telemetry.js', () => ({
   }),
   withTraceContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
   getSpanKind: vi.fn().mockResolvedValue(undefined),
+  getWorkflowTraceMode: vi.fn(() => 'linked'),
+  isUsableTraceCarrier: vi.fn(
+    (carrier?: Record<string, string>) =>
+      carrier !== undefined && Object.keys(carrier).length > 0
+  ),
+  getNextTraceCarrier: vi.fn().mockResolvedValue({}),
+  buildInvocationSpanLinks: vi.fn().mockResolvedValue([]),
   linkToCurrentContext: vi.fn().mockResolvedValue([]),
+  linkToTraceCarrier: vi.fn().mockResolvedValue(undefined),
   withWorkflowBaggage: vi.fn((_attrs: unknown, fn: () => unknown) => fn()),
 }));
 
@@ -137,6 +149,18 @@ vi.mock('../step/context-storage.js', () => ({
 
 // Mock types
 vi.mock('../types.js', () => ({
+  promoteAbortErrorToFatal: vi
+    .fn()
+    .mockImplementation((err: unknown) =>
+      typeof err === 'object' &&
+      err !== null &&
+      'name' in err &&
+      err.name === 'AbortError' &&
+      'message' in err &&
+      typeof err.message === 'string'
+        ? new FatalError(`Aborted: ${err.message}`)
+        : err
+    ),
   normalizeUnknownError: vi.fn().mockImplementation(async (err: unknown) => ({
     message: err instanceof Error ? err.message : String(err),
     name: err instanceof Error ? err.name : 'Error',
@@ -157,6 +181,7 @@ vi.mock('@workflow/utils/get-port', () => ({
 }));
 
 import { getStepFunction } from '../private.js';
+import { dehydrateStepError } from '../serialization.js';
 import {
   getErrorName,
   getErrorStack,
@@ -851,6 +876,26 @@ describe('step-handler fatal vs retryable behavior', () => {
       ([, event]) => event.eventType === 'step_retrying'
     );
     expect(stepRetryingCalls).toHaveLength(0);
+  });
+
+  it('promotes an AbortError-shaped rejection to FatalError without retrying', async () => {
+    mockStepFn.mockReset().mockRejectedValue({
+      name: 'AbortError',
+      message: 'This operation was aborted',
+    });
+    mockStepFn.maxRetries = 3;
+
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    const stepRetryingCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_retrying'
+    );
+    expect(stepRetryingCalls).toHaveLength(0);
+    expect(dehydrateStepError).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'FatalError', fatal: true }),
+      'wrun_test123',
+      undefined
+    );
   });
 
   it('schedules a retry (and does not fail the step) on the first attempt of a non-fatal Error', async () => {

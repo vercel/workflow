@@ -1,6 +1,12 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
+import {
+  MessageId,
+  parseQueueName,
+  type Queue,
+  type QueuePrefix,
+  ValidQueueName,
+} from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
@@ -60,10 +66,7 @@ export type LocalQueue = Queue & {
   /** Close the HTTP agent and release resources. */
   close(): Promise<void>;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
-  registerHandler(
-    prefix: '__wkf_step_' | '__wkf_workflow_',
-    handler: DirectHandler
-  ): void;
+  registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
 };
 
 const DETACHED_ARRAYBUFFER_ERROR =
@@ -92,23 +95,23 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
 
 function getQueueRoute(queueName: ValidQueueName): {
   pathname: 'flow';
-  prefix: '__wkf_workflow_';
+  prefix: QueuePrefix;
 } {
-  if (queueName.startsWith('__wkf_workflow_')) {
-    return { pathname: 'flow', prefix: '__wkf_workflow_' };
-  }
+  const { kind, prefix } = parseQueueName(queueName);
+
   // `__wkf_step_*` queue messages were used by the legacy two-route
   // architecture (separate /flow and /step bundles). Since PR #1338 the
   // combined workflow route executes steps inline, so no `__wkf_step_*`
   // messages are produced by the runtime and no `/step` route is served by
   // the framework builders. Surface a clear error if something still tries
   // to dispatch one (e.g. a stale code path) rather than silently 404'ing.
-  if (queueName.startsWith('__wkf_step_')) {
+  if (kind === 'step') {
     throw new Error(
       `Refusing to dispatch legacy step-queue message "${queueName}": the /.well-known/workflow/v1/step route was removed in PR #1338. Steps are now executed inline by the combined workflow handler.`
     );
   }
-  throw new Error('Unknown queue name prefix');
+
+  return { pathname: 'flow', prefix };
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {
@@ -125,6 +128,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
+
+  // Aborted by close(): cancels every pending sleep (delayed deliveries,
+  // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
+  // hostage by a timer and no delivery is attempted against the closed
+  // agent. The resulting AbortError is silently dropped by the
+  // isAbortError check in the delivery catch handler.
+  const closeController = new AbortController();
+  const closeSignal = closeController.signal;
 
   /**
    * holds inflight messages by idempotency key to ensure
@@ -165,6 +176,17 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     (async () => {
+      // Honor the caller's requested delivery delay before acquiring a queue
+      // slot. Sleeping outside the semaphore so a delayed message doesn't
+      // hold a worker hostage for its delay window — the worker should be
+      // free to process other (immediate) messages until this one is ready.
+      // VQS-side queues honor delaySeconds at the broker, so this brings
+      // world-local in line with production behavior.
+      if (opts?.delaySeconds && opts.delaySeconds > 0) {
+        const delayMs = Math.min(opts.delaySeconds * 1000, MAX_SAFE_TIMEOUT_MS);
+        await setTimeout(delayMs, undefined, { signal: closeSignal });
+      }
+
       const token = semaphore.tryAcquire();
       if (!token) {
         console.warn(
@@ -227,7 +249,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     timeoutSeconds * 1000,
                     MAX_SAFE_TIMEOUT_MS
                   );
-                  await setTimeout(timeoutMs);
+                  await setTimeout(timeoutMs, undefined, {
+                    signal: closeSignal,
+                  });
                 }
                 continue;
               }
@@ -250,7 +274,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           // VQS uses 5s linear for attempts 1–32, then exponential, but for
           // local dev linear 5s is sufficient — the handler enforces the real
           // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000);
+          await setTimeout(5000, undefined, { signal: closeSignal });
         }
 
         console.error(
@@ -361,13 +385,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     queue,
     createQueueHandler,
     getDeploymentId,
-    registerHandler(
-      prefix: '__wkf_step_' | '__wkf_workflow_',
-      handler: DirectHandler
-    ) {
+    registerHandler(prefix: QueuePrefix, handler: DirectHandler) {
       directHandlers.set(prefix, handler);
     },
     async close() {
+      // Idempotent: shutdown paths (CLI signal handlers, test teardown)
+      // may close the queue more than once.
+      if (closeSignal.aborted) return;
+      closeController.abort();
       await httpAgent.close();
     },
   };

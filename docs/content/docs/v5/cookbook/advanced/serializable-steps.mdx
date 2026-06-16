@@ -6,7 +6,7 @@ summary: Return a callback from a step to defer construction of a non-owned clas
 related:
   - /docs/foundations/serialization
   - /docs/foundations/serialization#custom-class-serialization
-  - /docs/api-reference/workflow/use-step
+  - /docs/foundations/workflows-and-steps#step-functions
 ---
 
 <Callout>
@@ -141,7 +141,7 @@ async function uploadFile(
 
 ## Key APIs
 
-- [`"use step"`](/docs/api-reference/workflow/use-step) — marks a function for extraction and serialization
-- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) — declares the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) — marks a function for extraction and serialization
+- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) — declares the orchestrator function
 - [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — accepts a model factory for durable AI agent streaming
 - [Custom class serialization](/docs/foundations/serialization#custom-class-serialization) — the companion pattern for classes you own (`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`)

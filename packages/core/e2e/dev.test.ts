@@ -38,6 +38,17 @@ export function createDevTests(config?: DevTestConfig) {
     );
   }
   describe('dev e2e', () => {
+    // Each prewarm/trigger fetch is hard-bounded by this so cleanup never hangs
+    // on a wedged dev server.
+    const PREWARM_FETCH_TIMEOUT_MS = 5_000;
+    // The afterEach cleanup can issue two *sequential* prewarms (before and
+    // after deleting an added file) while the dev server is mid-rebuild — the
+    // teardown of a test that added a workflow file and edited an import is
+    // exactly when both rebuild and respond slowly. Its budget must therefore
+    // exceed 2× PREWARM_FETCH_TIMEOUT_MS (plus file IO) with headroom, or it
+    // trips vitest's 10s default hook timeout. The bounded fetches mean this
+    // can't hang indefinitely, so a generous budget is safe.
+    const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
     const appPath = getWorkbenchAppPath();
     const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
@@ -47,11 +58,13 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
-    const usesDeferredBuilder = generatedStep.includes(
-      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+    const usesNextFlowRoute = generatedWorkflow.includes(
+      path.join('app', '.well-known', 'workflow', 'v1', 'flow', 'route.js')
     );
+    const usesDeferredBuilder =
+      isNextLazyDiscoveryEnabledForTest() && usesNextFlowRoute;
     const usesNextEagerBuilder =
-      !isNextLazyDiscoveryEnabledForTest() && usesDeferredBuilder;
+      !isNextLazyDiscoveryEnabledForTest() && usesNextFlowRoute;
     const workflowManifestPath = path.join(
       appPath,
       'app/.well-known/workflow/v1/manifest.json'
@@ -65,6 +78,23 @@ export function createDevTests(config?: DevTestConfig) {
         Object.keys(entry)
       );
     };
+    const readFileIfExists = async (
+      filePath: string
+    ): Promise<string | null> => {
+      try {
+        return await fs.readFile(filePath, 'utf8');
+      } catch (error) {
+        if (
+          error &&
+          typeof error === 'object' &&
+          'code' in error &&
+          error.code === 'ENOENT'
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    };
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const fetchWithTimeout = (pathname: string) => {
@@ -73,7 +103,7 @@ export function createDevTests(config?: DevTestConfig) {
       }
 
       return fetch(new URL(pathname, deploymentUrl), {
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(PREWARM_FETCH_TIMEOUT_MS),
       });
     };
 
@@ -96,7 +126,7 @@ export function createDevTests(config?: DevTestConfig) {
             workflowName,
             args,
           }),
-          signal: AbortSignal.timeout(5_000),
+          signal: AbortSignal.timeout(PREWARM_FETCH_TIMEOUT_MS),
         }
       );
 
@@ -152,14 +182,14 @@ export function createDevTests(config?: DevTestConfig) {
 
     beforeAll(async () => {
       await prewarm();
-    });
+    }, CLEANUP_HOOK_TIMEOUT_MS);
 
     afterEach(async () => {
       // Restore file contents before deleting any files. If a deletion races
       // ahead of an api-file restore, the dev server briefly sees an import
       // pointing at a missing module and fails compilation. On Windows that
-      // failure can stick — Turbopack leaves stale imports in the generated
-      // step route bundle — and every subsequent step request returns 500.
+      // failure can stick in Turbopack's generated workflow outputs, and every
+      // subsequent step request returns 500.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
       const toDelete = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
@@ -171,7 +201,7 @@ export function createDevTests(config?: DevTestConfig) {
       await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
       await prewarm();
       restoreFiles.length = 0;
-    });
+    }, CLEANUP_HOOK_TIMEOUT_MS);
 
     test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
@@ -218,14 +248,16 @@ export async function myNewStep() {
       await pollUntil({
         description: 'generated step outputs to include myNewStep',
         check: async () => {
-          const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
-          if (stepRouteContent.includes('myNewStep')) {
+          const stepRouteContent = await readFileIfExists(generatedStep);
+          if (stepRouteContent?.includes('myNewStep')) {
             return;
           }
 
-          // The deferred builder regenerates manifest.json on every rebuild.
-          // Check the manifest for the new step function name.
-          if (usesDeferredBuilder) {
+          // Next flow-route builders regenerate manifest.json on every
+          // rebuild. In lazy mode there is no standalone step registration
+          // file; in eager mode the bundled file may not preserve function
+          // names as plain text.
+          if (usesNextFlowRoute) {
             const manifestFunctionNames = await readManifestStepFunctionNames();
             expect(manifestFunctionNames).toContain('myNewStep');
             return;
@@ -412,8 +444,8 @@ ${apiFileContent}`
 
         // Tear down in-test (rather than relying on afterEach) so we can wait
         // for the deferred builder to drop the discovered step from the
-        // manifest before the next test file runs. The generated step route
-        // bundle holds a literal `import '../workflows/discovered-via-workflow-step.ts'`
+        // manifest before the next test file runs. The generated flow route
+        // holds a literal `import '../workflows/discovered-via-workflow-step.ts'`
         // that is only pruned when the deferred builder rebuilds and
         // `filterExistingFiles` excludes the now-missing source. On Windows
         // the rebuild can lag behind the deletion, leaving the bundle
@@ -451,7 +483,7 @@ ${apiFileContent}`
       async () => {
         await pollUntil({
           description:
-            'generated step route to reference @workflow/ai package steps',
+            'generated workflow outputs to reference @workflow/ai package steps',
           timeoutMs: 25_000,
           check: async () => {
             await fetchWithTimeout('/api/chat');
@@ -465,17 +497,22 @@ ${apiFileContent}`
             const manifestStepFiles = Object.keys(manifest.steps || {});
             expect(
               manifestStepFiles.some((filePath) =>
-                filePath.includes('ai/dist/agent/durable-agent.js')
+                /ai\/(src|dist)\/agent\/durable-agent\.(ts|js)$/.test(filePath)
               )
             ).toBe(true);
 
             // Package step sources are imported directly (not copied). Verify
-            // the generated step route imports the @workflow/ai package or
+            // the generated route imports the @workflow/ai package or
             // otherwise references `durable-agent` via its resolved path.
-            const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
+            const generatedRouteContent =
+              (await readFileIfExists(generatedStep)) ??
+              (await readFileIfExists(generatedWorkflow));
+            if (!generatedRouteContent) {
+              throw new Error('generated workflow outputs were not found');
+            }
             expect(
-              stepRouteContent.includes('@workflow/ai') ||
-                stepRouteContent.includes('durable-agent')
+              generatedRouteContent.includes('@workflow/ai') ||
+                generatedRouteContent.includes('durable-agent')
             ).toBe(true);
           },
         });

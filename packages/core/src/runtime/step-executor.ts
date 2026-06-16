@@ -1,5 +1,4 @@
 import { types } from 'node:util';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -9,7 +8,7 @@ import {
   TooEarlyError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
+import { pluralize, stepDisplayName } from '@workflow/utils';
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { CryptoKey } from '../encryption.js';
@@ -28,15 +27,20 @@ import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
+  promoteAbortErrorToFatal,
 } from '../types.js';
+
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
+import { safeWaitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
 export interface StepExecutorParams {
   world: World;
   workflowRunId: string;
+  /** Deployment that owns the workflow run, for forwarded writable streams. */
+  workflowDeploymentId?: string;
   workflowName: string;
   workflowStartedAt: number;
   stepId: string;
@@ -76,7 +80,8 @@ export async function executeStep(
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
 
-  return trace(`STEP ${stepName}`, {}, async (span) => {
+  const spanName = `step.execute ${stepDisplayName(stepName)}`;
+  return trace(spanName, {}, async (span) => {
     span?.setAttributes({
       ...Attribute.StepName(stepName),
       ...Attribute.WorkflowName(workflowName),
@@ -293,7 +298,10 @@ export async function executeStep(
             step.input,
             workflowRunId,
             encryptionKey,
-            ops
+            ops,
+            globalThis,
+            {},
+            params.workflowDeploymentId
           );
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
@@ -327,6 +335,7 @@ export async function executeStep(
                 : `http://localhost:${port ?? 3000}`,
               features: { encryption: !!encryptionKey },
             },
+            workflowDeploymentId: params.workflowDeploymentId,
             ops,
             closureVars: hydratedInput.closureVars,
             encryptionKey,
@@ -365,14 +374,31 @@ export async function executeStep(
       // across steps), waitUntil handles the rest.
       let opsSettled = true;
       if (ops.length > 0) {
-        const opsPromise = Promise.all(ops).catch((err) => {
-          const isAbortError =
-            err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-          if (!isAbortError) throw err;
+        const opsPromise = Promise.all(ops);
+        // The race below surfaces failures inline when ops settle quickly;
+        // if the 500ms timeout wins, the failure is only observed here. The
+        // promise handed to waitUntil must never reject (an unconsumed
+        // waitUntil rejection crashes the process as unhandledRejection),
+        // so unexpected failures are logged instead.
+        safeWaitUntil(opsPromise, (err) => {
+          runtimeLogger.warn('Background flush of step stream ops failed', {
+            workflowRunId,
+            stepId,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
-        waitUntil(opsPromise);
         opsSettled = await Promise.race([
-          opsPromise.then(() => true as const),
+          opsPromise.then(
+            () => true as const,
+            (err) => {
+              // Ignore expected client disconnect errors (e.g., browser
+              // refresh during streaming)
+              const isAbortError =
+                err?.name === 'AbortError' || err?.name === 'ResponseAborted';
+              if (isAbortError) return true as const;
+              throw err;
+            }
+          ),
           new Promise<false>((r) => setTimeout(() => r(false), 500)),
         ]);
       }
@@ -426,21 +452,28 @@ export async function executeStep(
       // and queue a continuation so waitUntil can flush them.
       return { type: 'completed', hasPendingOps: !opsSettled };
     } catch (err: unknown) {
-      const normalizedError = await normalizeUnknownError(err);
-      const normalizedStack = normalizedError.stack || getErrorStack(err) || '';
+      const effectiveErr = promoteAbortErrorToFatal(err);
 
-      if (err instanceof Error) {
-        span?.recordException?.(err);
+      const normalizedError = await normalizeUnknownError(effectiveErr);
+      const normalizedStack =
+        normalizedError.stack || getErrorStack(effectiveErr) || '';
+
+      if (effectiveErr instanceof Error) {
+        span?.recordException?.(effectiveErr);
       }
 
-      const isFatal = FatalError.is(err);
+      const isFatal = FatalError.is(effectiveErr);
 
       span?.setAttributes({
-        ...Attribute.StepErrorName(getErrorName(err)),
+        ...Attribute.StepErrorName(getErrorName(effectiveErr)),
         ...Attribute.StepErrorMessage(normalizedError.message),
-        ...Attribute.ErrorType(getErrorName(err)),
+        ...Attribute.ErrorType(getErrorName(effectiveErr)),
         ...Attribute.ErrorCategory(
-          isFatal ? 'fatal' : RetryableError.is(err) ? 'retryable' : 'transient'
+          isFatal
+            ? 'fatal'
+            : RetryableError.is(effectiveErr)
+              ? 'retryable'
+              : 'transient'
         ),
         ...Attribute.ErrorRetryable(!isFatal),
       });
@@ -463,8 +496,8 @@ export async function executeStep(
         // error preserves it for consumers. `types.isNativeError()` works
         // across VM realms (a workflow-thrown error is an instance of the
         // VM's Error class, not the host's).
-        if (types.isNativeError(err) && normalizedStack) {
-          (err as Error).stack = normalizedStack;
+        if (types.isNativeError(effectiveErr) && normalizedStack) {
+          (effectiveErr as Error).stack = normalizedStack;
         }
         try {
           await world.events.create(workflowRunId, {
@@ -474,7 +507,7 @@ export async function executeStep(
             eventData: {
               stepName,
               error: await dehydrateStepError(
-                err,
+                effectiveErr,
                 workflowRunId,
                 await getEncryptionKey()
               ),

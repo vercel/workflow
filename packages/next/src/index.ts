@@ -185,8 +185,8 @@ function warnAboutAutoRemovedServerExternalPackages(
     .join(', ');
 
   console.warn(
-    `\n⚠ Workflow removed ${packageDescriptions} from serverExternalPackages for this build.` +
-      `\n  These packages contain workflow code and must be transformed by the workflow compiler.` +
+    `\n⚠ Workflow found workflow code in serverExternalPackages: ${packageDescriptions}.` +
+      `\n  Workflow removed the affected entries from serverExternalPackages for this build and is compiling the packages anyway.` +
       `\n  Remove ${packageNames} from serverExternalPackages in next.config to silence this warning.\n`
   );
 }
@@ -341,11 +341,17 @@ export function withWorkflow(
     };
   } = {}
 ) {
+  // lazyDiscovery defaults to true; pass `lazyDiscovery: false` to force eager
+  // discovery (scanning the project at startup) instead of deferring workflow
+  // discovery until files are requested. The `WORKFLOW_NEXT_LAZY_DISCOVERY`
+  // environment variable, if set, takes precedence over the option.
   const lazyDiscoveryOverride = parseEnvironmentFlag(
     process.env.WORKFLOW_NEXT_LAZY_DISCOVERY
   );
   if (lazyDiscoveryOverride === undefined) {
-    if (workflows?.lazyDiscovery) {
+    if (workflows?.lazyDiscovery === false) {
+      delete process.env.WORKFLOW_NEXT_LAZY_DISCOVERY;
+    } else {
       process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
     }
   } else {
@@ -456,10 +462,6 @@ export function withWorkflow(
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
     const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
 
-    // Deferred builder discovers files via loader socket notifications, so
-    // turbopack content conditions are only needed with the eager builder.
-    const shouldApplyTurboCondition =
-      supportsTurboCondition && !useDeferredBuilder;
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;
     const distDir = nextConfig.distDir || '.next';
@@ -567,7 +569,7 @@ export function withWorkflow(
       '*.cts',
     ]) {
       nextConfig.turbopack.rules[key] = {
-        ...(shouldApplyTurboCondition
+        ...(supportsTurboCondition
           ? {
               condition: {
                 // Use 'all' to combine: must match content AND must NOT be in generated path

@@ -261,4 +261,20 @@ declare global {
   const myWorkflow: (...args: any[]) => Promise<any>;
   const childWorkflow: (...args: any[]) => Promise<any>;
   const orderId: string;
+
+  // Nitro server-side auto-imports. These are globally available inside a
+  // Nitro runtime (and therefore inside `"use step"` functions when running
+  // under the native Nitro v3 bundling), so they appear unimported in docs
+  // samples. Liberal types keep the type-checker happy without pulling in
+  // Nitro's full type surface.
+  function useStorage(base?: string): {
+    getItem(key: string): Promise<any>;
+    setItem(key: string, value: any): Promise<void>;
+    removeItem(key: string): Promise<void>;
+    getKeys(base?: string): Promise<string[]>;
+    clear(base?: string): Promise<void>;
+    [key: string]: any;
+  };
+  function useDatabase(name?: string): any;
+  function useRuntimeConfig(event?: any): any;
 }

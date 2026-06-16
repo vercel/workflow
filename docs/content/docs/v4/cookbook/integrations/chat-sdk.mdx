@@ -176,6 +176,10 @@ export type ChatTurnPayload = {
 
 Handlers live outside the workflow file so adapter dependencies don't leak in. They decide whether to start a new workflow or resume an existing one, then store the `runId` in thread state:
 
+<Callout type="info">
+If the platform can deliver the same first message concurrently, use a deterministic hook token derived from the thread ID so duplicate handlers route to the active chat session hook. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
 ```typescript title="lib/chat-session-handlers.ts" lineNumbers
 import type { Message, Thread } from "chat";
 import { getRun, resumeHook, start } from "workflow/api";
@@ -289,6 +293,10 @@ Adapter packages (`@chat-adapter/slack`, `@chat-adapter/telegram`, etc.) depend 
 
 A workflow run ends but its `runId` is still cached in thread state. The next message calls `resumeHook` on a dead run and throws `not found` / `expired`. Gate on `getRun(runId).exists` before resuming, or catch the error and fall through to `startSession`. Either way the user's message must not be dropped.
 
+### Make first-message routing atomic
+
+Thread state is also the idempotency boundary for starting sessions. Back it with a state adapter or database operation that can atomically claim the thread before `startSession()` runs when duplicate sessions would be harmful.
+
 ### Keep the hook outside the loop
 
 One `chatTurnHook.create({ token: workflowRunId })` per workflow run, reused every iteration. Creating a new hook with the same token throws `HookConflictError`. This is the same rule as the [AI SDK](/docs/cookbook/integrations/ai-sdk) and [Sandbox](/docs/cookbook/integrations/sandbox) session patterns.
@@ -305,3 +313,4 @@ Slack wants a 200 within 3 seconds. The webhook handler returns immediately afte
 - [`getRun()`](/docs/api-reference/workflow-api/get-run) — `run.exists` before resuming, to detect stale `runId`s.
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) — per-turn suspension point inside the workflow.
 - [`registerSingleton()`](https://chat-sdk.dev/docs/api/chat) — makes the bot resolvable from inside step functions.
+- [Idempotency](/docs/foundations/idempotency) — protect duplicate-sensitive first messages and side effects.

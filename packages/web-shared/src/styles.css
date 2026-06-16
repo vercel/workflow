@@ -12,6 +12,9 @@
  *   import '@workflow/web-shared/styles.css';
  */
 
+@custom-variant dark-theme (&:where(.dark-theme, .dark-theme *, .dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+@custom-variant light-theme (&:where(.light-theme, .light-theme *, .light, .light *));
+
 :root {
   /* Background */
   --ds-background-100: hsl(0, 0%, 100%);
@@ -35,6 +38,9 @@
   --ds-gray-alpha-400: hsla(0, 0%, 0%, 0.08);
   --ds-gray-alpha-700: hsla(0, 0%, 0%, 0.44);
   --ds-gray-alpha-1000: hsla(0, 0%, 0%, 0.91);
+
+  /* Focus */
+  --ds-focus-color: var(--ds-blue-700);
 
   /* Blue */
   --ds-blue-100: hsl(212, 100%, 97%);
@@ -100,6 +106,9 @@
 
   /* Shadows */
   --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.04);
+  --ds-shadow-tooltip:
+    0 0 0 1px rgba(0, 0, 0, 0.08), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
 }
 
 /* Dark theme defaults */
@@ -125,6 +134,8 @@
   --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
   --ds-gray-alpha-700: rgba(255, 255, 255, 0.45);
   --ds-gray-alpha-1000: rgba(255, 255, 255, 0.92);
+
+  --ds-focus-color: var(--ds-blue-900);
 
   --ds-blue-100: hsl(216, 50%, 12%);
   --ds-blue-200: hsl(214, 59%, 15%);
@@ -182,6 +193,9 @@
   --ds-pink-900: hsl(336, 80%, 70%);
 
   --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.3);
+  --ds-shadow-tooltip:
+    0 0 0 1px rgba(255, 255, 255, 0.145), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
 }
 
 @theme inline {

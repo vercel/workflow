@@ -21,7 +21,7 @@ A curated collection of workflow patterns with clean, copy-paste code examples f
 - [**Rate Limiting**](/cookbook/common-patterns/rate-limiting) — Handle 429 responses and transient failures with RetryableError and backoff
 - [**Scheduling**](/cookbook/common-patterns/scheduling) — Use durable sleep to schedule actions minutes, hours, or weeks ahead
 - [**Timeouts**](/cookbook/common-patterns/timeouts) — Add deadlines to slow steps, hooks, and webhooks by racing them against a durable sleep
-- [**Idempotency**](/cookbook/common-patterns/idempotency) — Ensure side effects happen exactly once, even when steps retry
+- [**Idempotency**](/cookbook/common-patterns/idempotency) — Ensure side effects and duplicate starts are safe to retry
 - [**Webhooks**](/cookbook/common-patterns/webhooks) — Receive HTTP callbacks from external services and process them durably
 
 ## Integrations
@@ -34,5 +34,6 @@ A curated collection of workflow patterns with clean, copy-paste code examples f
 
 - [**Child Workflows**](/cookbook/advanced/child-workflows) — Spawn and orchestrate child workflows from a parent
 - [**Distributed Abort Controller**](/cookbook/advanced/distributed-abort-controller) — Build a cross-process abort controller using workflow streams and hooks
+- [**Upgrading Workflows**](/cookbook/advanced/upgrading-workflows) — Identify a clean upgrade point in a long-running workflow and spawn a fresh run on the latest deployment carrying state forward
 - [**Serializable Steps**](/cookbook/advanced/serializable-steps) — Wrap non-serializable third-party objects so they cross the workflow boundary
 - [**Publishing Libraries**](/cookbook/advanced/publishing-libraries) — Ship npm packages that export reusable workflow functions

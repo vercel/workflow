@@ -6,22 +6,25 @@
  * (for real-time step propagation).
  */
 
-import { CorruptedEventLogError } from '@workflow/errors';
+import { ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import { EventsConsumer } from './events-consumer.js';
+import { DEFERRED_CHECK_DELAY_MS, EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createContext } from './vm/index.js';
 import {
-  createCreateAbortController,
   createAbortSignalStatics,
+  createCreateAbortController,
 } from './workflow/abort-controller.js';
 
-function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
+function setupWorkflowContext(
+  events: Event[],
+  onUnconsumedEvent: (event: Event) => void = () => {}
+): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test-abort',
     fixedTimestamp: 1714857600000,
@@ -33,7 +36,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     encryptionKey: undefined,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
-      onUnconsumedEvent: () => {},
+      onUnconsumedEvent,
       getPromiseQueue: () => ctx.promiseQueue,
     }),
     invocationsQueue: new Map(),
@@ -118,7 +121,7 @@ describe('AbortController in workflow VM', () => {
       expect(controller.signal.aborted).toBe(true);
     });
 
-    it('reports a CorruptedEventLogError when abort hook_received token mismatches the controller', async () => {
+    it('reports a ReplayDivergenceError when abort hook_received token mismatches the controller', async () => {
       ctx = setupWorkflowContext([]);
       const ProbeAbortController = createCreateAbortController(ctx);
       new ProbeAbortController();
@@ -157,10 +160,63 @@ describe('AbortController in workflow VM', () => {
       new AbortController();
 
       const workflowError = await errorReceived.promise;
-      expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+      expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
+      expect((workflowError as ReplayDivergenceError).eventId).toBe('evnt_0');
       expect(workflowError?.message).toContain('hook_received');
       expect(workflowError?.message).toContain('wrong-token');
       expect(workflowError?.message).toContain(probeHookItem.token);
+    });
+
+    it('consumes duplicate matching abort hook receipts as idempotent aborts', async () => {
+      ctx = setupWorkflowContext([]);
+      const ProbeAbortController = createCreateAbortController(ctx);
+      new ProbeAbortController();
+      const probeHookItem = [...ctx.invocationsQueue.values()].find(
+        (item) => item.type === 'hook'
+      );
+      expect(probeHookItem).toBeDefined();
+      if (!probeHookItem || probeHookItem.type !== 'hook') {
+        throw new Error('Expected abort hook item');
+      }
+
+      const ops: Promise<any>[] = [];
+      const payload = await dehydrateStepReturnValue(
+        { reason: 'aborted' },
+        'wrun_test',
+        undefined,
+        ops
+      );
+      const makeReceipt = (eventId: string): Event => ({
+        eventId,
+        runId: 'wrun_test',
+        eventType: 'hook_received',
+        correlationId: probeHookItem.correlationId,
+        eventData: {
+          token: probeHookItem.token,
+          payload,
+        },
+        createdAt: new Date(),
+      });
+      const onUnconsumedEvent = vi.fn();
+      ctx = setupWorkflowContext(
+        [makeReceipt('evnt_0'), makeReceipt('evnt_1')],
+        onUnconsumedEvent
+      );
+
+      const AbortController = createCreateAbortController(ctx);
+      const controller = new AbortController();
+      const listener = vi.fn();
+      controller.signal.addEventListener('abort', listener);
+
+      await ctx.promiseQueue;
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS + 10)
+      );
+
+      expect(controller.signal.aborted).toBe(true);
+      expect(listener).toHaveBeenCalledOnce();
+      expect(ctx.eventsConsumer.eventIndex).toBe(2);
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
 
     it('signal.aborted is false initially', () => {
