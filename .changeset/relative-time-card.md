@@ -3,4 +3,4 @@
 '@workflow/web-shared': patch
 ---
 
-Add RelativeTimeCard.
+Show relative time display card on date hover
