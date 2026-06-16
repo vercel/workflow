@@ -11,6 +11,7 @@ import {
 import { pluralize, stepDisplayName } from '@workflow/utils';
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { isRetryableWorldError } from '../classify-error.js';
 import type { CryptoKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -193,6 +194,19 @@ export async function executeStep(
           timeoutSeconds,
         });
         return { type: 'retry', timeoutSeconds };
+      }
+      // Transient world failure (5xx or a transport error such as an
+      // exhausted RetryAgent / dropped socket) on step_started. ThrottleError
+      // (429) is already handled above; this covers the remaining retryable
+      // cases. Defer and let the queue redeliver rather than throwing into the
+      // replay loop and failing the run.
+      if (isRetryableWorldError(err)) {
+        runtimeLogger.info('Transient world error on step_started, deferring', {
+          stepName,
+          stepId,
+          errorMessage: err instanceof Error ? err.message : String(err),
+        });
+        return { type: 'throttled', timeoutSeconds: 1 };
       }
       throw err;
     }

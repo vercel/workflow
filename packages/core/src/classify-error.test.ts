@@ -4,12 +4,14 @@ import {
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
+  ThrottleError,
+  TooEarlyError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
-import { classifyRunError } from './classify-error.js';
+import { classifyRunError, isRetryableWorldError } from './classify-error.js';
 
 describe('classifyRunError', () => {
   it('classifies CorruptedEventLogError as CORRUPTED_EVENT_LOG', () => {
@@ -115,5 +117,97 @@ describe('classifyRunError', () => {
     );
     native.name = 'OperationError';
     expect(classifyRunError(native)).toBe(RUN_ERROR_CODES.USER_ERROR);
+  });
+
+  it('does NOT classify a TRANSPORT error as a contract error', () => {
+    // A transport blip is retryable (handled by isRetryableWorldError before
+    // it can reach the run_failed path), not a malformed-response contract
+    // error. If it ever did reach classifyRunError it must not be mislabeled.
+    expect(
+      classifyRunError(
+        new WorkflowWorldError(
+          'GET /events transport failure (UND_ERR_REQ_RETRY)',
+          {
+            code: 'TRANSPORT',
+          }
+        )
+      )
+    ).not.toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  });
+});
+
+describe('isRetryableWorldError', () => {
+  it('treats ThrottleError (429) as retryable', () => {
+    expect(isRetryableWorldError(new ThrottleError('rate limited'))).toBe(true);
+  });
+
+  it('treats 5xx WorkflowWorldError as retryable', () => {
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('Bad Gateway', { status: 502 })
+      )
+    ).toBe(true);
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('Service Unavailable', { status: 503 })
+      )
+    ).toBe(true);
+  });
+
+  it('treats TRANSPORT and TIMEOUT codes as retryable', () => {
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('transport failure (UND_ERR_REQ_RETRY)', {
+          code: 'TRANSPORT',
+        })
+      )
+    ).toBe(true);
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('timed out after 60000ms', { code: 'TIMEOUT' })
+      )
+    ).toBe(true);
+  });
+
+  it('does NOT treat 4xx (other than 429) as retryable', () => {
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('Bad Request', { status: 400 })
+      )
+    ).toBe(false);
+  });
+
+  it('does NOT treat contract errors (parse/schema) as retryable', () => {
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError(
+          'Failed to parse response body for GET /events',
+          {
+            code: 'PARSE_ERROR',
+          }
+        )
+      )
+    ).toBe(false);
+    expect(
+      isRetryableWorldError(
+        new WorkflowWorldError('Schema validation failed for POST /events', {
+          code: 'SCHEMA_VALIDATION',
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('does NOT treat TooEarlyError (425 step pacing) as retryable here', () => {
+    expect(isRetryableWorldError(new TooEarlyError('too early'))).toBe(false);
+  });
+
+  it('does NOT treat plain errors or non-errors as retryable', () => {
+    expect(isRetryableWorldError(new Error('boom'))).toBe(false);
+    expect(
+      isRetryableWorldError(new WorkflowWorldError('no status or code'))
+    ).toBe(false);
+    expect(isRetryableWorldError('string')).toBe(false);
+    expect(isRetryableWorldError(null)).toBe(false);
+    expect(isRetryableWorldError(undefined)).toBe(false);
   });
 });

@@ -60,10 +60,18 @@ function httpLog(
 }
 
 function getResponseDiagnosticHeaders(response: Response): string[] {
-  return ['x-vercel-id', 'x-vercel-error'].flatMap((header) => {
-    const value = response.headers.get(header);
-    return value ? [`${header}=${value}`] : [];
-  });
+  // `x-vercel-mitigated` (`challenge` | `deny`) is set by the Vercel firewall
+  // when it intercepts a request in front of workflow-server — surfacing it
+  // (alongside the `x-vercel-id` trace identifier) makes a firewall block
+  // diagnosable from the error message and DEBUG logs. Note a `challenge`
+  // arrives as a 429 that the RetryAgent retries, so it is only seen here when
+  // it reaches our response handling (e.g. a 403 `deny`).
+  return ['x-vercel-id', 'x-vercel-error', 'x-vercel-mitigated'].flatMap(
+    (header) => {
+      const value = response.headers.get(header);
+      return value ? [`${header}=${value}`] : [];
+    }
+  );
 }
 
 function formatResponseDiagnostics(response: Response): string {
@@ -108,6 +116,57 @@ export const MAX_BODY_PARSE_RETRIES = 2;
 
 /** Base delay for the exponential backoff between body-parse retries. */
 const BODY_PARSE_RETRY_BASE_MS = 100;
+
+/**
+ * Transient transport failure codes. When a request to workflow-server cannot
+ * complete, `fetch()` throws rather than returning a response: the shared
+ * `RetryAgent` exhausted its retries (`UND_ERR_REQ_RETRY` — e.g. the firewall
+ * in front of workflow-server shedding load with sustained 429/503, which the
+ * RetryAgent retries internally and never surfaces to us), the socket dropped,
+ * or connect/DNS failed. These are retryable infrastructure failures, not
+ * contract or user errors, so we map them to a typed `WorkflowWorldError`
+ * (`code: 'TRANSPORT'`) that the runtime recognizes as retryable and bubbles
+ * to the queue for a fast redrive — instead of crashing the invocation or
+ * failing the run.
+ */
+const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
+  'UND_ERR_REQ_RETRY',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CLOSED',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+]);
+
+/**
+ * Walks the `cause` chain of a thrown value looking for a transient transport
+ * error code. `fetch()` wraps the underlying undici error in a
+ * `TypeError: fetch failed` whose `cause` carries the real `.code`, so the
+ * code we care about is usually one level down (sometimes two). Bounded depth
+ * guards against pathological or cyclic `cause` chains.
+ */
+function getTransientTransportCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; current != null && depth < 5; depth++) {
+    if (typeof current === 'object' && 'code' in current) {
+      const code = (current as { code?: unknown }).code;
+      if (
+        typeof code === 'string' &&
+        TRANSIENT_TRANSPORT_ERROR_CODES.has(code)
+      ) {
+        return code;
+      }
+    }
+    current = (current as { cause?: unknown })?.cause;
+  }
+  return undefined;
+}
 
 /**
  * Effective workflow-server URL override. The inline constant wins when
@@ -393,11 +452,25 @@ export async function makeRequest<T>({
           ) {
             const timeoutError = new WorkflowWorldError(
               `${method} ${endpoint} timed out after ${elapsed}ms`,
-              { url, cause: error }
+              { url, code: 'TIMEOUT', cause: error }
             );
             span?.setAttributes({ ...ErrorType('TIMEOUT') });
             span?.recordException?.(timeoutError);
             throw timeoutError;
+          }
+          // Transient transport failure (RetryAgent retries exhausted, socket
+          // reset, connect/DNS failure). Surface as a retryable
+          // WorkflowWorldError so the runtime redrives via the queue instead
+          // of failing the run. See TRANSIENT_TRANSPORT_ERROR_CODES.
+          const transportCode = getTransientTransportCode(error);
+          if (transportCode) {
+            const transportError = new WorkflowWorldError(
+              `${method} ${endpoint} transport failure after ${elapsed}ms (${transportCode})`,
+              { url, code: 'TRANSPORT', cause: error }
+            );
+            span?.setAttributes({ ...ErrorType('TRANSPORT') });
+            span?.recordException?.(transportError);
+            throw transportError;
           }
           throw error;
         }
