@@ -1,29 +1,30 @@
 'use client';
 
 /**
- * Reusable data inspector component built on react-inspector.
+ * Reusable data inspector for the o11y UI.
  *
- * All data rendering in the o11y UI should use this component to ensure
- * consistent theming, custom type handling (StreamRef, ClassInstanceRef),
- * and expand behavior.
+ * Renders JSON with a small in-house tree renderer whose DOM and behavior
+ * mirror `react-json-view-lite` so the output matches the Vercel dashboard
+ * (vercel/front) 1:1 — bracket notation (`{ … }` / `[ … ]`), pink keys, typed
+ * value colors, `▸`/`▾` disclosure icons, and a `...` collapsed indicator.
+ *
+ * On top of plain JSON it keeps the workflow-specific value handling that the
+ * dashboard needs: StreamRef / RunRef badges, encrypted markers, decoded byte
+ * streams, Dates, and named class instances.
  */
 
 import { Lock } from 'lucide-react';
 import {
   createContext,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type RefObject,
   useContext,
-  useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import {
-  ObjectInspector,
-  ObjectLabel,
-  ObjectName,
-  ObjectRootLabel,
-  ObjectValue,
-} from 'react-inspector';
 import { useDarkMode } from '../../hooks/use-dark-mode';
 import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
 import {
@@ -31,13 +32,6 @@ import {
   type FormattedStreamChunkDisplay,
   formatArrayBufferViewForDisplay,
 } from '../../lib/stream-display';
-import {
-  type InspectorThemeExtended,
-  inspectorThemeDark,
-  inspectorThemeExtendedDark,
-  inspectorThemeExtendedLight,
-  inspectorThemeLight,
-} from './inspector-theme';
 import { Button } from './button';
 import { Spinner } from './spinner';
 
@@ -65,6 +59,13 @@ interface BytesDisplay {
   __type: typeof BYTES_DISPLAY_TYPE;
   text: string;
   decodedFrom?: DecodedStreamChunkSource;
+}
+
+interface ClassInstanceRef {
+  __type: typeof CLASS_INSTANCE_REF_TYPE;
+  className: string;
+  classId: string;
+  data: unknown;
 }
 
 function deserializeChunkText(text: string): string {
@@ -106,17 +107,21 @@ export function isBytesDisplay(value: unknown): value is BytesDisplay {
   return desc?.value === BYTES_DISPLAY_TYPE;
 }
 
-function isClassInstanceRef(value: unknown): value is {
-  __type: string;
-  className: string;
-  classId: string;
-  data: unknown;
-} {
+function isClassInstanceRef(value: unknown): value is ClassInstanceRef {
   return (
     value !== null &&
     typeof value === 'object' &&
     '__type' in value &&
     (value as Record<string, unknown>).__type === CLASS_INSTANCE_REF_TYPE
+  );
+}
+
+function isEncryptedMarker(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    (value as { constructor?: { name?: string } }).constructor?.name ===
+      ENCRYPTED_DISPLAY_NAME
   );
 }
 
@@ -149,6 +154,128 @@ export const DecryptClickContext = createContext<
 export const RunClickContext = createContext<
   ((runId: string) => void) | undefined
 >(undefined);
+
+// ---------------------------------------------------------------------------
+// Styling
+//
+// Class names and rules mirror vercel/front's json-message.module.css so the
+// rendered tree is visually identical. Shipped as a React 19 hoistable <style>
+// (deduped by href) instead of a CSS module so the package stays bundler-
+// agnostic for every consumer. Dark mode keys off `data-theme` on the
+// container, set from `useDarkMode()`.
+// ---------------------------------------------------------------------------
+
+const CLS = {
+  container: 'wf-json-view',
+  child: 'wf-json-child',
+  childFields: 'wf-json-child-fields',
+  label: 'wf-json-label',
+  clickableLabel: 'wf-json-clickable-label',
+  punctuation: 'wf-json-punctuation',
+  className: 'wf-json-classname',
+  expandIcon: 'wf-json-expand-icon',
+  collapseIcon: 'wf-json-collapse-icon',
+  collapsedContent: 'wf-json-collapsed-content',
+  string: 'wf-json-string',
+  number: 'wf-json-number',
+  boolean: 'wf-json-boolean',
+  null: 'wf-json-null',
+  undefined: 'wf-json-undefined',
+  date: 'wf-json-date',
+} as const;
+
+const JSON_VIEW_STYLES = `
+.${CLS.container} {
+  display: inline;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 20px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ds-gray-1000);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.${CLS.container} > .${CLS.child} > ul { padding-left: 0ch; }
+.${CLS.container} > .${CLS.child} { padding-left: 1.5ch; }
+.${CLS.child} { display: block; margin: 0; padding: 0 0 0 2ch; }
+.${CLS.child}:hover:not(:has(.${CLS.child}:hover)):not(:has(.${CLS.child} ~ .${CLS.child})) {
+  background-color: var(--ds-gray-alpha-100);
+  border-radius: 4px;
+}
+.${CLS.childFields} { margin: 0; padding: 0; list-style: none; }
+.${CLS.label}, .${CLS.clickableLabel} {
+  color: var(--ds-pink-900);
+  font-weight: 400;
+  margin-right: 1ch;
+}
+.${CLS.clickableLabel} { cursor: pointer; }
+.${CLS.punctuation} { color: var(--ds-gray-1000); }
+.${CLS.className} { font-style: italic; color: var(--ds-gray-900); margin-right: 1ch; }
+.${CLS.string} { color: var(--ds-green-900); }
+.${CLS.number} { color: var(--ds-blue-900); }
+.${CLS.boolean} { color: var(--ds-amber-900); }
+.${CLS.null}, .${CLS.undefined} { color: var(--ds-gray-900); }
+.${CLS.date} { color: var(--ds-pink-900); }
+.${CLS.container} > .${CLS.child} > .${CLS.expandIcon},
+.${CLS.container} > .${CLS.child} > .${CLS.collapseIcon} { margin-left: -1.5ch; }
+.${CLS.expandIcon}, .${CLS.collapseIcon} {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  vertical-align: baseline;
+  cursor: pointer;
+  display: inline-block;
+  margin-right: 0ch;
+  margin-left: -1.5ch;
+  color: var(--ds-gray-500);
+  user-select: none;
+  outline: none;
+}
+.${CLS.expandIcon}::after {
+  content: '\\25B8';
+  margin-right: 0.5ch;
+  transform: translateY(-0.5px);
+  display: block;
+}
+.${CLS.collapseIcon}::after { content: '\\25BE'; margin-right: 0.5ch; }
+.${CLS.expandIcon}:hover, .${CLS.collapseIcon}:hover,
+.${CLS.child}:has(> .${CLS.clickableLabel}:hover) > .${CLS.expandIcon},
+.${CLS.child}:has(> .${CLS.clickableLabel}:hover) > .${CLS.collapseIcon} {
+  color: var(--ds-gray-1000);
+}
+.${CLS.collapsedContent} { color: var(--ds-gray-900); }
+.${CLS.collapsedContent}::after { content: '...'; }
+
+.${CLS.container}[data-theme='dark'] .${CLS.label},
+.${CLS.container}[data-theme='dark'] .${CLS.clickableLabel} {
+  color: var(--ds-pink-700, var(--ds-pink-900));
+}
+.${CLS.container}[data-theme='dark'] .${CLS.string},
+.${CLS.container}[data-theme='dark'] .${CLS.number} { color: var(--ds-blue-700); }
+.${CLS.container}[data-theme='dark'] .${CLS.boolean} { color: var(--ds-amber-700); }
+.${CLS.container}[data-theme='dark'] .${CLS.null},
+.${CLS.container}[data-theme='dark'] .${CLS.undefined} { color: var(--ds-gray-700); }
+.${CLS.container}[data-theme='dark'] .${CLS.date} {
+  color: var(--ds-pink-700, var(--ds-pink-900));
+}
+.${CLS.container}[data-theme='dark'] .${CLS.expandIcon},
+.${CLS.container}[data-theme='dark'] .${CLS.collapseIcon} { color: var(--ds-gray-700); }
+.${CLS.container}[data-theme='dark'] .${CLS.expandIcon}:hover,
+.${CLS.container}[data-theme='dark'] .${CLS.collapseIcon}:hover,
+.${CLS.container}[data-theme='dark'] .${CLS.child}:has(> .${CLS.clickableLabel}:hover) > .${CLS.expandIcon},
+.${CLS.container}[data-theme='dark'] .${CLS.child}:has(> .${CLS.clickableLabel}:hover) > .${CLS.collapseIcon} {
+  color: var(--ds-gray-500);
+}
+.${CLS.container}[data-theme='dark'] .${CLS.collapsedContent} { color: var(--ds-gray-700); }
+`;
+
+// ---------------------------------------------------------------------------
+// Workflow-specific value renderers (badges, encrypted markers, byte streams)
+// ---------------------------------------------------------------------------
 
 function EncryptedInlineLabel() {
   const ctx = useContext(DecryptClickContext);
@@ -187,6 +314,7 @@ function EncryptedInlineLabel() {
     </span>
   );
 }
+
 function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   const onStreamClick = useContext(StreamClickContext);
   const [hovered, setHovered] = useState(false);
@@ -239,14 +367,6 @@ function RunRefInline({ runRef }: { runRef: RunRef }) {
     </button>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Extended theme context (for colors react-inspector doesn't support natively)
-// ---------------------------------------------------------------------------
-
-const ExtendedThemeContext = createContext<InspectorThemeExtended>(
-  inspectorThemeExtendedLight
-);
 
 function DecodedBytesChunk({
   decodedText,
@@ -361,217 +481,463 @@ function DecodedBytesInspector({
   );
 }
 
-function BytesDisplayLabel({
-  name,
-  display,
-}: {
-  name?: string;
-  display: BytesDisplay;
-}) {
-  return (
-    <div className="inline-block min-w-0 align-top">
-      {name != null && <ObjectName name={name} />}
-      {name != null && <span>: </span>}
-      {display.decodedFrom ? (
-        <DecodedBytesChunk
-          decodedText={display.text}
-          source={display.decodedFrom}
-        />
-      ) : (
-        <span
-          className="whitespace-pre-wrap break-words"
-          style={{ color: 'var(--ds-gray-1000)' }}
-        >
-          {display.text}
-        </span>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Custom nodeRenderer
-// ---------------------------------------------------------------------------
-
-/**
- * Extends the default react-inspector nodeRenderer with special handling
- * for ClassInstanceRef, StreamRef, and Date types.
- *
- * react-inspector renders Date instances as unstyled plain text (no theme
- * key exists for them), so we intercept here and apply the magenta color
- * from our extended theme — matching Node.js util.inspect()'s date style.
- *
- * Default nodeRenderer reference:
- * https://github.com/storybookjs/react-inspector/blob/main/README.md#noderenderer
- */
-function NodeRenderer({
-  depth,
-  name,
-  data,
-  isNonenumerable,
-  expanded,
-}: {
-  depth: number;
-  name?: string;
-  data: unknown;
-  isNonenumerable?: boolean;
-  expanded?: boolean;
-}) {
-  const extendedTheme = useContext(ExtendedThemeContext);
-
-  if (isBytesDisplay(data)) {
-    return <BytesDisplayLabel name={name} display={data} />;
-  }
-
-  // Encrypted marker → flat label with Lock icon, clickable when onDecrypt is available
-  if (
-    data !== null &&
-    typeof data === 'object' &&
-    data.constructor?.name === ENCRYPTED_DISPLAY_NAME
-  ) {
-    const label = <EncryptedInlineLabel />;
-    if (depth === 0) {
-      return label;
-    }
+function BytesDisplayValue({ display }: { display: BytesDisplay }) {
+  if (display.decodedFrom) {
     return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        {label}
-      </span>
-    );
-  }
-
-  // StreamRef → inline clickable badge
-  if (isStreamRef(data)) {
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        <StreamRefInline streamRef={data} />
-      </span>
-    );
-  }
-
-  // RunRef → inline clickable badge linking to the target run
-  if (isRunRef(data)) {
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        <RunRefInline runRef={data} />
-      </span>
-    );
-  }
-
-  // ClassInstanceRef → show className as type, data as the inspectable value
-  if (isClassInstanceRef(data)) {
-    if (depth === 0) {
-      return <ObjectRootLabel name={data.className} data={data.data} />;
-    }
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        <span style={{ fontStyle: 'italic' }}>{data.className} </span>
-        <ObjectValue object={data.data} />
-      </span>
-    );
-  }
-
-  // Date → magenta color (Node.js: 'date' → 'magenta')
-  // react-inspector has no OBJECT_VALUE_DATE_COLOR theme key, so we handle it here.
-  if (data instanceof Date) {
-    const dateStr = data.toISOString();
-    if (depth === 0) {
-      return (
-        <span style={{ color: extendedTheme.OBJECT_VALUE_DATE_COLOR }}>
-          {dateStr}
-        </span>
-      );
-    }
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        <span style={{ color: extendedTheme.OBJECT_VALUE_DATE_COLOR }}>
-          {dateStr}
-        </span>
-      </span>
-    );
-  }
-
-  // Expanded plain object / array → show just the opening bracket instead of
-  // the inline preview. react-inspector renders the children below regardless,
-  // so showing the preview here duplicates the same data on the label row.
-  if (expanded && isPlainContainer(data)) {
-    return (
-      <OpenBracketLabel
-        name={name}
-        isArray={Array.isArray(data)}
-        isNonenumerable={isNonenumerable}
+      <DecodedBytesChunk
+        decodedText={display.text}
+        source={display.decodedFrom}
       />
     );
   }
-
-  // Default rendering (same as react-inspector's built-in)
-  if (depth === 0) {
-    return <ObjectRootLabel name={name} data={data} />;
-  }
-  return (
-    <ObjectLabel name={name} data={data} isNonenumerable={isNonenumerable} />
-  );
-}
-
-/**
- * True for values react-inspector renders as an expandable bracketed container
- * that we want to show as `{ … }` / `[ … ]`: arrays and plain objects. Class
- * instances (Date, Map, Set, Error, …) keep their descriptive labels.
- */
-function isPlainContainer(data: unknown): boolean {
-  if (Array.isArray(data)) return true;
-  if (data === null || typeof data !== 'object') return false;
-  const proto = Object.getPrototypeOf(data);
-  return proto === Object.prototype || proto === null;
-}
-
-/**
- * Label for an expanded object/array: `[name: ]{` or `[name: ][`. The marker
- * classes drive the CSS that renders the matching closing bracket on its own
- * line below the children (see BRACKET_STYLES).
- */
-function OpenBracketLabel({
-  name,
-  isArray,
-  isNonenumerable,
-}: {
-  name?: string;
-  isArray: boolean;
-  isNonenumerable?: boolean;
-}) {
   return (
     <span
-      className={`wf-di-bracket ${isArray ? 'wf-di-square' : 'wf-di-curly'}`}
+      className="whitespace-pre-wrap break-words"
+      style={{ color: 'var(--ds-gray-1000)' }}
     >
-      {typeof name === 'string' && (
-        <>
-          <ObjectName name={name} dimmed={isNonenumerable} />
-          <span>: </span>
-        </>
-      )}
-      <span>{isArray ? '[' : '{'}</span>
+      {display.text}
     </span>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Public component
+// Tree renderer (mirrors react-json-view-lite's DOM + keyboard behavior)
+// ---------------------------------------------------------------------------
+
+type Entry = [field: string | undefined, value: unknown];
+
+interface NodeContext {
+  level: number;
+  shouldExpand: (level: number) => boolean;
+  outerRef: RefObject<HTMLDivElement | null>;
+}
+
+/** Field names are rendered unquoted (empty string shows as `""`). */
+function formatField(field: string): string {
+  return field === '' ? '""' : field;
+}
+
+/**
+ * Describe an object/array/map/set as an expandable container. Returns null for
+ * values that should render as a primitive. `prefix` carries a class name shown
+ * before the opening bracket (Map/Set and named class instances).
+ */
+function describeContainer(
+  value: unknown
+): { entries: Entry[]; open: string; close: string; prefix?: string } | null {
+  if (Array.isArray(value)) {
+    return {
+      entries: value.map((item) => [undefined, item] as Entry),
+      open: '[',
+      close: ']',
+    };
+  }
+  if (value instanceof Map) {
+    return {
+      entries: Array.from(value.entries(), ([key, val]) => [
+        String(key),
+        val,
+      ]) as Entry[],
+      open: '{',
+      close: '}',
+      prefix: 'Map',
+    };
+  }
+  if (value instanceof Set) {
+    return {
+      entries: Array.from(value.values(), (item) => [undefined, item] as Entry),
+      open: '[',
+      close: ']',
+      prefix: 'Set',
+    };
+  }
+  if (value !== null && typeof value === 'object') {
+    const name = (value as { constructor?: { name?: string } }).constructor
+      ?.name;
+    return {
+      entries: Object.entries(value) as Entry[],
+      open: '{',
+      close: '}',
+      prefix: name && name !== 'Object' ? name : undefined,
+    };
+  }
+  return null;
+}
+
+function describePrimitive(value: unknown): { text: string; cls: string } {
+  if (value === null) return { text: 'null', cls: CLS.null };
+  if (value === undefined) return { text: 'undefined', cls: CLS.undefined };
+  if (typeof value === 'string' || value instanceof String) {
+    return { text: `"${String(value)}"`, cls: CLS.string };
+  }
+  if (typeof value === 'boolean' || value instanceof Boolean) {
+    return { text: String(value), cls: CLS.boolean };
+  }
+  if (typeof value === 'number' || value instanceof Number) {
+    return { text: String(value), cls: CLS.number };
+  }
+  if (typeof value === 'bigint') {
+    return { text: `${value.toString()}n`, cls: CLS.number };
+  }
+  return { text: String(value), cls: CLS.punctuation };
+}
+
+function Label({ field, clickable }: { field?: string; clickable?: boolean }) {
+  if (field === undefined) return null;
+  return (
+    <span className={clickable ? CLS.clickableLabel : CLS.label}>
+      {`${formatField(field)}:`}
+    </span>
+  );
+}
+
+function Comma({ isLast }: { isLast: boolean }) {
+  if (isLast) return null;
+  return <span className={CLS.punctuation}>,</span>;
+}
+
+/** A non-expandable row: `field: <value>`. */
+function LeafRow({
+  field,
+  isLast,
+  children,
+}: {
+  field?: string;
+  isLast: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className={CLS.child}>
+      <Label field={field} />
+      {children}
+      <Comma isLast={isLast} />
+    </div>
+  );
+}
+
+function PrimitiveValue({ field, value, isLast }: NodeProps) {
+  const { text, cls } = describePrimitive(value);
+  return (
+    <LeafRow field={field} isLast={isLast}>
+      <span className={cls}>{text}</span>
+    </LeafRow>
+  );
+}
+
+function EmptyContainer({
+  field,
+  prefix,
+  open,
+  close,
+  isLast,
+}: {
+  field?: string;
+  prefix?: string;
+  open: string;
+  close: string;
+  isLast: boolean;
+}) {
+  return (
+    <div className={CLS.child}>
+      <Label field={field} />
+      {prefix ? <span className={CLS.className}>{prefix}</span> : null}
+      <span className={CLS.punctuation}>{open}</span>
+      <span className={CLS.punctuation}>{close}</span>
+      <Comma isLast={isLast} />
+    </div>
+  );
+}
+
+function focusExpander(
+  button: HTMLElement,
+  outerRef: RefObject<HTMLDivElement | null>
+) {
+  const previous = outerRef.current?.querySelector<HTMLElement>(
+    '[data-json-expander][tabindex="0"]'
+  );
+  if (previous) previous.tabIndex = -1;
+  button.tabIndex = 0;
+  button.focus();
+}
+
+function moveExpanderFocus(
+  outerRef: RefObject<HTMLDivElement | null>,
+  direction: 1 | -1
+) {
+  const root = outerRef.current;
+  if (!root) return;
+  const buttons = root.querySelectorAll<HTMLElement>('[data-json-expander]');
+  let current = -1;
+  for (let i = 0; i < buttons.length; i += 1) {
+    if (buttons[i].tabIndex === 0) {
+      current = i;
+      break;
+    }
+  }
+  if (current < 0) return;
+  const next = (current + direction + buttons.length) % buttons.length;
+  buttons[current].tabIndex = -1;
+  buttons[next].tabIndex = 0;
+  buttons[next].focus();
+}
+
+function ExpandableContainer({
+  field,
+  entries,
+  open,
+  close,
+  prefix,
+  ctx,
+  isLast,
+}: {
+  field?: string;
+  entries: Entry[];
+  open: string;
+  close: string;
+  prefix?: string;
+  ctx: NodeContext;
+  isLast: boolean;
+}) {
+  const { level, shouldExpand, outerRef } = ctx;
+  const [expanded, setExpanded] = useState(() => shouldExpand(level));
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const contentsId = useId();
+
+  if (entries.length === 0) {
+    return (
+      <EmptyContainer
+        field={field}
+        prefix={prefix}
+        open={open}
+        close={close}
+        isLast={isLast}
+      />
+    );
+  }
+
+  const toggle = () => {
+    setExpanded((value) => !value);
+    if (buttonRef.current) focusExpander(buttonRef.current, outerRef);
+  };
+
+  const onKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setExpanded(true);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setExpanded(false);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveExpanderFocus(outerRef, -1);
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveExpanderFocus(outerRef, 1);
+    }
+  };
+
+  const lastIndex = entries.length - 1;
+
+  return (
+    <div className={CLS.child}>
+      <button
+        type="button"
+        data-json-expander
+        className={expanded ? CLS.collapseIcon : CLS.expandIcon}
+        aria-label={expanded ? 'collapse JSON' : 'expand JSON'}
+        aria-expanded={expanded}
+        aria-controls={expanded ? contentsId : undefined}
+        ref={buttonRef}
+        tabIndex={level === 0 ? 0 : -1}
+        onClick={toggle}
+        onKeyDown={onKeyDown}
+      />
+      {field !== undefined && (
+        // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only convenience target; the adjacent expander <button> is the focusable, keyboard-operable control.
+        <span
+          className={CLS.clickableLabel}
+          onClick={toggle}
+          onKeyDown={onKeyDown}
+        >
+          {`${formatField(field)}:`}
+        </span>
+      )}
+      {prefix ? <span className={CLS.className}>{prefix}</span> : null}
+      <span className={CLS.punctuation}>{open}</span>
+      {expanded ? (
+        <ul id={contentsId} className={CLS.childFields}>
+          {entries.map(([childField, childValue], index) => (
+            <DataRender
+              key={childField ?? index}
+              field={childField}
+              value={childValue}
+              isLast={index === lastIndex}
+              ctx={{ ...ctx, level: level + 1 }}
+            />
+          ))}
+        </ul>
+      ) : (
+        // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only convenience target (the "..." indicator); the expander <button> is the focusable, keyboard-operable control.
+        <span
+          className={CLS.collapsedContent}
+          onClick={toggle}
+          onKeyDown={onKeyDown}
+        />
+      )}
+      <span className={CLS.punctuation}>{close}</span>
+      <Comma isLast={isLast} />
+    </div>
+  );
+}
+
+interface NodeProps {
+  field?: string;
+  value: unknown;
+  isLast: boolean;
+  ctx: NodeContext;
+}
+
+function DataRender({ field, value, isLast, ctx }: NodeProps) {
+  if (isBytesDisplay(value)) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <BytesDisplayValue display={value} />
+      </LeafRow>
+    );
+  }
+  if (isEncryptedMarker(value)) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <EncryptedInlineLabel />
+      </LeafRow>
+    );
+  }
+  if (isStreamRef(value)) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <StreamRefInline streamRef={value} />
+      </LeafRow>
+    );
+  }
+  if (isRunRef(value)) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <RunRefInline runRef={value} />
+      </LeafRow>
+    );
+  }
+  if (value instanceof Date) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <span className={CLS.date}>{value.toISOString()}</span>
+      </LeafRow>
+    );
+  }
+  if (isClassInstanceRef(value)) {
+    return (
+      <ClassInstanceNode
+        field={field}
+        instance={value}
+        isLast={isLast}
+        ctx={ctx}
+      />
+    );
+  }
+
+  const container = describeContainer(value);
+  if (container) {
+    return (
+      <ExpandableContainer
+        field={field}
+        entries={container.entries}
+        open={container.open}
+        close={container.close}
+        prefix={container.prefix}
+        ctx={ctx}
+        isLast={isLast}
+      />
+    );
+  }
+
+  return (
+    <PrimitiveValue field={field} value={value} isLast={isLast} ctx={ctx} />
+  );
+}
+
+function ClassInstanceNode({
+  field,
+  instance,
+  isLast,
+  ctx,
+}: {
+  field?: string;
+  instance: ClassInstanceRef;
+  isLast: boolean;
+  ctx: NodeContext;
+}) {
+  const container = describeContainer(instance.data);
+  if (container) {
+    return (
+      <ExpandableContainer
+        field={field}
+        entries={container.entries}
+        open={container.open}
+        close={container.close}
+        prefix={instance.className}
+        ctx={ctx}
+        isLast={isLast}
+      />
+    );
+  }
+  const { text, cls } = describePrimitive(instance.data);
+  return (
+    <LeafRow field={field} isLast={isLast}>
+      <span className={CLS.className}>{instance.className}</span>
+      <span className={cls}>{text}</span>
+    </LeafRow>
+  );
+}
+
+function JsonTree({
+  data,
+  name,
+  expandLevel,
+  isDark,
+}: {
+  data: unknown;
+  name?: string;
+  expandLevel: number;
+  isDark: boolean;
+}) {
+  const outerRef = useRef<HTMLDivElement>(null);
+  const shouldExpand = useMemo(
+    () => (level: number) => level < expandLevel,
+    [expandLevel]
+  );
+  return (
+    <div
+      ref={outerRef}
+      className={CLS.container}
+      data-theme={isDark ? 'dark' : 'light'}
+    >
+      <DataRender
+        field={name}
+        value={data}
+        isLast
+        ctx={{ level: 0, shouldExpand, outerRef }}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ref / typed-array collapsing (preprocessing before render)
 // ---------------------------------------------------------------------------
 
 /**
  * Create a non-expandable wrapper that carries ref data as non-enumerable
- * properties. ObjectInspector won't render children for objects with no
- * enumerable keys, but our NodeRenderer can still detect them.
+ * properties so the renderer can detect StreamRef/RunRef without exposing
+ * their internals as object fields.
  */
 function makeOpaqueRef(ref: Record<string, unknown>): unknown {
   const opaque = Object.create(null);
@@ -600,11 +966,11 @@ function makeBytesDisplay(display: FormattedStreamChunkDisplay): unknown {
 
 /**
  * Recursively walk data and replace RunRef/StreamRef/typed array objects with
- * non-expandable versions so ObjectInspector doesn't show their internals.
+ * non-expandable versions so the renderer doesn't show their internals.
  * Only recurses into plain objects and arrays to avoid stripping class
- * instances (Date, Error, URL, Headers, etc.) that have their own rendering in
- * NodeRenderer. Map and Set containers are preserved while their contents are
- * prepared for display.
+ * instances (Date, Error, URL, Headers, etc.) that have their own rendering.
+ * Map and Set containers are preserved while their contents are prepared for
+ * display.
  *
  * Exported for testing the typed-array detection path used by hydrated
  * AI agent stream chunks (e.g. `{ delta: new Uint8Array(...) }`).
@@ -638,37 +1004,14 @@ export function collapseRefs(data: unknown): unknown {
   return result;
 }
 
-/**
- * Renders the closing bracket for expanded objects/arrays on its own line.
- *
- * react-inspector's TreeNode markup is `<li><div>label</div><ol>children</ol></li>`
- * and has no concept of a closing bracket, so we synthesize it with a `::after`
- * pseudo-element on the expanded node. The bracket character is picked via
- * `:has()` so arrays close with `]` and objects with `}`. The opening bracket
- * (and these marker classes) are emitted by NodeRenderer only when the node is
- * expanded, so the rule never matches collapsed nodes.
- */
-const BRACKET_STYLES = `
-.wf-di-tree li[role="treeitem"]:has(> div > .wf-di-bracket)::after {
-  display: block;
-  /* Aligns the closing bracket with the opening bracket's line. 12px matches
-     react-inspector's TREENODE_PADDING_LEFT (the child indent), which is a
-     fixed value independent of the disclosure-arrow glyph width. */
-  padding-left: 12px;
-  white-space: pre;
-}
-.wf-di-tree li[role="treeitem"]:has(> div > .wf-di-curly)::after {
-  content: "}";
-}
-.wf-di-tree li[role="treeitem"]:has(> div > .wf-di-square)::after {
-  content: "]";
-}
-`;
+// ---------------------------------------------------------------------------
+// Public component
+// ---------------------------------------------------------------------------
 
 export interface DataInspectorProps {
   /** The data to inspect */
   data: unknown;
-  /** Initial expand depth (default: 2) */
+  /** Levels strictly below this number auto-expand (default: 2) */
   expandLevel?: number;
   /** Optional name for the root node */
   name?: string;
@@ -693,65 +1036,52 @@ export function DataInspector({
 }: DataInspectorProps) {
   const collapsedData = useMemo(() => collapseRefs(data), [data]);
   const stableData = useStableInspectorData(collapsedData);
-  const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
   const isDark = useDarkMode();
-  const extendedTheme = isDark
-    ? inspectorThemeExtendedDark
-    : inspectorThemeExtendedLight;
 
-  useEffect(() => {
-    // react-inspector reapplies expandLevel on every data change, which can
-    // reopen paths the user manually collapsed. Apply it only on mount.
-    setInitialExpandLevel(0);
-  }, []);
-
-  const content = (
-    <ExtendedThemeContext.Provider value={extendedTheme}>
+  let content: ReactNode = (
+    <>
       {/* React 19 hoists & dedupes this <style> by href, so it is emitted once
           regardless of how many inspectors are mounted. */}
-      <style href="wf-di-brackets" precedence="default">
-        {BRACKET_STYLES}
+      <style href="wf-json-view" precedence="default">
+        {JSON_VIEW_STYLES}
       </style>
-      <div className="wf-di-tree">
-        <ObjectInspector
-          data={stableData}
-          name={name}
-          // @ts-expect-error react-inspector accepts theme objects at runtime despite
-          // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
-          theme={isDark ? inspectorThemeDark : inspectorThemeLight}
-          expandLevel={initialExpandLevel}
-          nodeRenderer={NodeRenderer}
-        />
-      </div>
-    </ExtendedThemeContext.Provider>
+      <JsonTree
+        data={stableData}
+        name={name}
+        expandLevel={expandLevel}
+        isDark={isDark}
+      />
+    </>
   );
 
-  let wrapped = content;
-
   if (onStreamClick) {
-    wrapped = (
+    content = (
       <StreamClickContext.Provider value={onStreamClick}>
-        {wrapped}
+        {content}
       </StreamClickContext.Provider>
     );
   }
   if (onRunClick) {
-    wrapped = (
+    content = (
       <RunClickContext.Provider value={onRunClick}>
-        {wrapped}
+        {content}
       </RunClickContext.Provider>
     );
   }
   if (onDecrypt) {
-    wrapped = (
+    content = (
       <DecryptClickContext.Provider value={{ onDecrypt, isDecrypting }}>
-        {wrapped}
+        {content}
       </DecryptClickContext.Provider>
     );
   }
 
-  return wrapped;
+  return content;
 }
+
+// ---------------------------------------------------------------------------
+// Render stabilization (avoid re-renders when data is deeply equal)
+// ---------------------------------------------------------------------------
 
 function useStableInspectorData<T>(next: T): T {
   const previousRef = useRef<T>(next);
