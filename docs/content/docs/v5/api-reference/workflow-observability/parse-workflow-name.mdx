@@ -1,0 +1,55 @@
+---
+title: parseWorkflowName
+description: Parse a machine-readable workflow name into display-friendly components.
+type: reference
+summary: Use parseWorkflowName to extract a display-friendly short name from a run's workflowName identifier.
+related:
+  - /docs/api-reference/workflow-observability/parse-step-name
+  - /docs/api-reference/workflow-observability/parse-class-name
+---
+
+Workflow names are stored as machine-readable identifiers like `workflow//./src/workflows/order//processOrder`. This function parses them into components suitable for display in a UI — for example when listing runs from the [World SDK](/docs/api-reference/workflow-runtime/world/storage), where `run.workflowName` holds the machine-readable form.
+
+```typescript lineNumbers
+import { parseWorkflowName } from "workflow/observability"; // [!code highlight]
+
+const parsed = parseWorkflowName("workflow//./src/workflows/order//processOrder"); // [!code highlight]
+// parsed?.shortName → "processOrder"
+// parsed?.moduleSpecifier → "./src/workflows/order"
+// parsed?.functionName → "processOrder"
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The machine-readable workflow name (e.g. from `run.workflowName`) |
+
+### Returns
+
+`{ shortName: string; moduleSpecifier: string; functionName: string } | null`
+
+| Property | Description |
+|----------|-------------|
+| `shortName` | The display name. For default exports, falls back to the module's short name (e.g. `"order"` for `./src/workflows/order`). |
+| `moduleSpecifier` | The module the workflow is defined in — a relative path (`./src/workflows/order`) or a package specifier (`@myorg/flows@1.0.0`). |
+| `functionName` | The full exported function name. |
+
+Returns `null` when the input is not a valid workflow name.
+
+## Example: List Runs with Display Names
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { parseWorkflowName } from "workflow/observability"; // [!code highlight]
+
+const world = await getWorld();
+const runs = await world.runs.list({ resolveData: "none" });
+
+for (const run of runs.data) {
+  const parsed = parseWorkflowName(run.workflowName); // [!code highlight]
+  console.log(`${parsed?.shortName ?? run.workflowName}: ${run.status}`);
+}
+```

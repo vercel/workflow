@@ -444,7 +444,7 @@ export function EntityDetailPanel({
             resource={resource}
           />
 
-          {resource !== 'run' && rawEvents && (
+          {rawEvents && (
             <EventsList
               events={rawEvents}
               onLoadEventData={onLoadEventData}

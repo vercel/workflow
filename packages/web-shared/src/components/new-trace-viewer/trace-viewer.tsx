@@ -21,17 +21,23 @@ import {
 } from 'react';
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
+import { filterSpanRawEvents } from '../../lib/trace-builder';
 import { ErrorBoundary } from '../error-boundary';
 import {
   EntityDetailPanel,
   type SelectedSpanInfo,
 } from '../sidebar/entity-detail-panel';
 import { useSidebarData } from '../sidebar/sidebar-data-context';
-import type { TraceWithMeta } from './types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
-import { Spinner } from '../ui/spinner';
 import { Kbd } from '../ui/kbd';
+import { Spinner } from '../ui/spinner';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '../ui/tooltip';
 import EventList from './components/event-list';
 import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { SplitPane } from './components/split-pane';
@@ -40,14 +46,9 @@ import {
   Timeline,
   TimelineHeader,
 } from './components/timeline';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '../ui/tooltip';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
+import type { TraceWithMeta } from './types';
 import { computeRootBounds, computeTimeMarkers } from './utils';
 
 interface NewTraceViewerProps {
@@ -146,14 +147,16 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
   return useMemo(() => {
     if (!activeSpan) return null;
 
-    const correlationId = activeSpan.spanId;
-    const rawEvents = correlationId
-      ? sidebar.events.filter((e) => e.correlationId === correlationId)
-      : [];
+    const resource = activeSpan.attributes?.resource as string | undefined;
+    const rawEvents = filterSpanRawEvents(
+      sidebar.events,
+      resource,
+      activeSpan.spanId
+    );
 
     return {
       data: activeSpan.attributes?.data,
-      resource: activeSpan.attributes?.resource as string | undefined,
+      resource,
       spanId: activeSpan.spanId,
       rawEvents,
     };
@@ -481,7 +484,7 @@ function NewTraceViewerContent({
           )
         );
         const isMouseWheel = e.deltaMode === 1 || Math.abs(e.deltaY) >= 50;
-        const scaleFactor = Math.pow(2, dy / (isMouseWheel ? 200 : 60));
+        const scaleFactor = 2 ** (dy / (isMouseWheel ? 200 : 60));
 
         setViewport((prev) => {
           const prevDuration = prev.end - prev.start;

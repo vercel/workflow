@@ -17,7 +17,11 @@ import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useToast } from '../lib/toast';
-import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
+import {
+  buildTrace,
+  filterSpanRawEvents,
+  type TraceWithMeta,
+} from '../lib/trace-builder';
 import { ErrorBoundary } from './error-boundary';
 import {
   EntityDetailPanel,
@@ -862,12 +866,14 @@ export const WorkflowTraceViewer = ({
   const handleSelectionChange = useCallback(
     (info: SelectedSpanInfo | null) => {
       if (info) {
-        // Filter raw events by the selected span's correlationId (stepId/hookId)
-        // This bypasses the trace worker pipeline entirely.
-        const correlationId = info.spanId;
-        const rawEvents = correlationId
-          ? events.filter((e) => e.correlationId === correlationId)
-          : [];
+        // Filter raw events for the selected span: child spans match on
+        // correlationId (stepId/hookId), the run root span gets run-level
+        // events. This bypasses the trace worker pipeline entirely.
+        const rawEvents = filterSpanRawEvents(
+          events,
+          info.resource,
+          info.spanId
+        );
         setSelectedSpan({ ...info, rawEvents });
       } else {
         setSelectedSpan(null);
@@ -881,8 +887,10 @@ export const WorkflowTraceViewer = ({
     const correlationId = selectedSpan?.spanId;
     if (!correlationId) return;
 
-    const nextRawEvents = events.filter(
-      (e) => e.correlationId === correlationId
+    const nextRawEvents = filterSpanRawEvents(
+      events,
+      selectedSpan?.resource,
+      correlationId
     );
     setSelectedSpan((prev) => {
       if (!prev || prev.spanId !== correlationId) {
@@ -904,7 +912,7 @@ export const WorkflowTraceViewer = ({
         rawEvents: nextRawEvents,
       };
     });
-  }, [events, selectedSpan?.spanId]);
+  }, [events, selectedSpan?.spanId, selectedSpan?.resource]);
 
   // Reset selected span when navigating to a different run
   useEffect(() => {

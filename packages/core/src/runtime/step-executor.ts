@@ -8,7 +8,7 @@ import {
   TooEarlyError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
+import { pluralize, stepDisplayName } from '@workflow/utils';
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { CryptoKey } from '../encryption.js';
@@ -80,7 +80,8 @@ export async function executeStep(
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
 
-  return trace(`STEP ${stepName}`, {}, async (span) => {
+  const spanName = `step.execute ${stepDisplayName(stepName)}`;
+  return trace(spanName, {}, async (span) => {
     span?.setAttributes({
       ...Attribute.StepName(stepName),
       ...Attribute.WorkflowName(workflowName),

@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.8'
+  version: '1.9'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -24,7 +24,8 @@ Documentation structure in `node_modules/workflow/docs/`:
 - `foundations/` - Core concepts (workflows-and-steps.mdx, hooks.mdx, streaming.mdx, etc.)
 - `api-reference/workflow/` - API docs (sleep.mdx, create-hook.mdx, fatal-error.mdx, etc.)
 - `api-reference/workflow-api/` - Client API (start.mdx, get-run.mdx, resume-hook.mdx, etc.)
-- `api-reference/workflow-api/world/` - World SDK (runs.mdx, steps.mdx, hooks.mdx, events.mdx, streams.mdx, queue.mdx, observability.mdx)
+- `api-reference/workflow-runtime/` - Runtime API (get-world.mdx) and `world/` World SDK (storage.mdx, streams.mdx, queue.mdx)
+- `api-reference/workflow-observability/` - Hydration and name parsing utilities (hydrate-resource-io.mdx, parse-workflow-name.mdx, etc.)
 - `ai/` - AI SDK integration docs
 - `errors/` - Error code documentation
 
@@ -626,8 +627,8 @@ import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowN
 ```
 
 **Key docs** (grep `node_modules/workflow/docs/` for full details):
-- `api-reference/workflow-api/world/storage.mdx` — events, runs, steps, hooks (events are source of truth; others are materialized views)
-- `api-reference/workflow-api/world/observability.mdx` — hydration, parsing, encryption
+- `api-reference/workflow-runtime/world/storage.mdx` — events, runs, steps, hooks (events are source of truth; others are materialized views)
+- `api-reference/workflow-observability/` — hydration and name parsing
 
 ### World SDK Method Signatures
 

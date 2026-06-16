@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AttributeChangesSchema } from './attributes.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
@@ -60,6 +61,8 @@ export const EventTypeSchema = z.enum([
   'run_completed',
   'run_failed',
   'run_cancelled',
+  // Run attribute events
+  'attr_set',
   // Step lifecycle events
   'step_created',
   'step_completed',
@@ -224,6 +227,31 @@ const WaitCompletedEventSchema = BaseEventSchema.extend({
     .optional(),
 });
 
+const AttributeWriterSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('workflow'),
+  }),
+  z.object({
+    type: z.literal('step'),
+    stepId: z.string(),
+    attempt: z.number(),
+  }),
+]);
+
+/**
+ * Event created when workflow or step code changes the run's plaintext
+ * attributes. The World materializes changes into `run.attributes`.
+ */
+const AttrSetEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('attr_set'),
+  correlationId: z.string().optional(),
+  eventData: z.object({
+    changes: AttributeChangesSchema,
+    writer: AttributeWriterSchema,
+    allowReservedAttributes: z.literal(true).optional(),
+  }),
+});
+
 // =============================================================================
 // Run lifecycle events
 // =============================================================================
@@ -239,6 +267,8 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
     workflowName: z.string(),
     input: SerializedDataSchema,
     executionContext: z.record(z.string(), z.any()).optional(),
+    attributes: z.record(z.string(), z.string()).optional(),
+    allowReservedAttributes: z.literal(true).optional(),
   }),
 });
 
@@ -259,6 +289,8 @@ const RunStartedEventSchema = BaseEventSchema.extend({
       deploymentId: z.string().optional(),
       workflowName: z.string().optional(),
       executionContext: z.record(z.string(), z.any()).optional(),
+      attributes: z.record(z.string(), z.string()).optional(),
+      allowReservedAttributes: z.literal(true).optional(),
     })
     .optional(),
 });
@@ -309,6 +341,7 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   RunCompletedEventSchema,
   RunFailedEventSchema,
   RunCancelledEventSchema,
+  AttrSetEventSchema,
   // Step lifecycle events
   StepCreatedEventSchema,
   StepCompletedEventSchema,
@@ -333,6 +366,7 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   RunCompletedEventSchema,
   RunFailedEventSchema,
   RunCancelledEventSchema,
+  AttrSetEventSchema,
   // Step lifecycle events
   StepCreatedEventSchema,
   StepCompletedEventSchema,

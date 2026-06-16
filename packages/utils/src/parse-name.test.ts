@@ -5,6 +5,8 @@ import {
   parseClassName,
   parseStepName,
   parseWorkflowName,
+  stepDisplayName,
+  workflowDisplayName,
 } from './parse-name';
 
 describe('parseWorkflowName', () => {
@@ -257,6 +259,71 @@ describe('formatStepName / formatWorkflowName', () => {
     expect(formatStepName('something-weird')).toBe('something-weird');
     expect(formatWorkflowName('step//wrong-tag//fn')).toBe(
       'step//wrong-tag//fn'
+    );
+  });
+});
+
+describe('workflowDisplayName / stepDisplayName', () => {
+  test('returns the short name for raw machine names', () => {
+    expect(
+      workflowDisplayName('workflow//./src/jobs/order//processOrder')
+    ).toBe('processOrder');
+    expect(stepDisplayName('step//./src/jobs/order//chargeCard')).toBe(
+      'chargeCard'
+    );
+  });
+
+  test('returns the short name for module-specifier names', () => {
+    expect(workflowDisplayName('workflow//@myorg/shared@1.2.3//sync')).toBe(
+      'sync'
+    );
+  });
+
+  test('recovers the function name from queue-sanitized names', () => {
+    // `workflow//./src/jobs/order//processOrder` after the queue's
+    // `replace(/[^A-Za-z0-9-_]/g, '-')` sanitization:
+    expect(
+      workflowDisplayName('workflow----src-jobs-order--processOrder')
+    ).toBe('processOrder');
+    expect(stepDisplayName('step----src-jobs-order--chargeCard')).toBe(
+      'chargeCard'
+    );
+  });
+
+  test('sanitized nested functions use the leaf name', () => {
+    expect(
+      stepDisplayName('step----src-jobs-order--processOrder-innerStep')
+    ).toBe('innerStep');
+  });
+
+  test('sanitized default exports map to the module short name', () => {
+    // `workflow//./src/jobs/order//default` after sanitization — mirror
+    // parseName's default-export handling so the same workflow doesn't
+    // display as `order` in workflow.start but `default` in
+    // workflow.execute.
+    expect(workflowDisplayName('workflow----src-jobs-order--default')).toBe(
+      'order'
+    );
+    expect(stepDisplayName('step----src-jobs-order--default')).toBe('order');
+    // `__default` survives sanitization (underscores are preserved).
+    expect(workflowDisplayName('workflow----src-jobs-order--__default')).toBe(
+      'order'
+    );
+  });
+
+  test('sanitized names with `$` degrade to the trailing segment (best effort)', () => {
+    // `$` is a valid JS identifier character but sanitizes to `-`, so
+    // `process$Order` is indistinguishable from a nested function — the
+    // best-effort recovery returns just `Order`. Accepted limitation.
+    expect(stepDisplayName('step----src-jobs-order--process-Order')).toBe(
+      'Order'
+    );
+  });
+
+  test('falls back to the input when unrecognized', () => {
+    expect(workflowDisplayName('my-plain-name')).toBe('my-plain-name');
+    expect(stepDisplayName('workflow--wrong-tag--fn')).toBe(
+      'workflow--wrong-tag--fn'
     );
   });
 });
