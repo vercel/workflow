@@ -857,7 +857,8 @@ export const AttributePanel = ({
                         >
                           <MiddleTruncate
                             value={displayValue}
-                            className="text-left"
+                            className="text-right"
+                            style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
                           />
                           <CopyButton
                             copyText={displayValue}
