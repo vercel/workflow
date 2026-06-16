@@ -1,5 +1,5 @@
-import type { Span, SpanEvent } from './types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import type { Span, SpanEvent } from './types';
 
 // ---------------------------------------------------------------------------
 // Root bounds
@@ -313,44 +313,17 @@ function computeHookSegmentsFromSpan(
   const segments: Segment[] = [];
   if (duration <= 0) return segments;
 
-  const sorted = [...events]
-    .map((e) => ({ name: e.name, time: getHighResInMs(e.timestamp) }))
-    .sort((a, b) => a.time - b.time);
-
-  const received = sorted.find((e) => e.name === 'hook_received');
-  const disposed = sorted.find((e) => e.name === 'hook_disposed');
-
-  if (!received && !disposed) {
-    segments.push({ startFraction: 0, endFraction: 1, status: 'waiting' });
-    return segments;
-  }
-
-  const receivedFrac = received
-    ? timeToFraction(received.time, startMs, duration)
-    : null;
+  const disposed = sortedEventMarks(events, ['hook_disposed'])[0];
   const disposedFrac = disposed
     ? timeToFraction(disposed.time, startMs, duration)
     : null;
 
-  if (receivedFrac !== null && receivedFrac > 0.001) {
+  const waitingEnd = disposedFrac ?? 1;
+  if (waitingEnd > 0.001) {
     segments.push({
       startFraction: 0,
-      endFraction: receivedFrac,
+      endFraction: waitingEnd,
       status: 'waiting',
-    });
-  } else if (receivedFrac === null && disposedFrac !== null) {
-    segments.push({
-      startFraction: 0,
-      endFraction: disposedFrac,
-      status: 'waiting',
-    });
-  }
-
-  if (receivedFrac !== null) {
-    segments.push({
-      startFraction: receivedFrac,
-      endFraction: disposedFrac ?? 1,
-      status: 'received',
     });
   }
 
@@ -487,4 +460,58 @@ export function computeSpanSegments(span: Span): Segment[] {
     default:
       return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Span markers — point-in-time events rendered as ticks on top of a bar
+// ---------------------------------------------------------------------------
+
+export interface SpanMarker {
+  timeMs: number;
+}
+
+// `hook_received` = a resumption; `attr_set` = attributes written mid-span.
+const MARKER_EVENT_NAMES = ['hook_received', 'attr_set'];
+
+export function computeSpanMarkers(span: Span): SpanMarker[] {
+  return sortedEventMarks(span.events, MARKER_EVENT_NAMES).map((mark) => ({
+    timeMs: mark.time,
+  }));
+}
+
+export interface OffscreenSide {
+  count: number;
+  /** Nearest off-screen marker — the one a reveal jumps to. */
+  nearestMs: number;
+}
+
+export interface OffscreenMarkers {
+  left: OffscreenSide | null;
+  right: OffscreenSide | null;
+}
+
+/** Partition markers outside `[visibleStartMs, visibleEndMs]` by side. */
+export function computeOffscreenMarkers(
+  markers: SpanMarker[],
+  visibleStartMs: number,
+  visibleEndMs: number
+): OffscreenMarkers {
+  let leftCount = 0;
+  let rightCount = 0;
+  let nearestLeft = Number.NEGATIVE_INFINITY;
+  let nearestRight = Number.POSITIVE_INFINITY;
+  for (const { timeMs } of markers) {
+    if (timeMs < visibleStartMs) {
+      leftCount++;
+      if (timeMs > nearestLeft) nearestLeft = timeMs;
+    } else if (timeMs > visibleEndMs) {
+      rightCount++;
+      if (timeMs < nearestRight) nearestRight = timeMs;
+    }
+  }
+  return {
+    left: leftCount > 0 ? { count: leftCount, nearestMs: nearestLeft } : null,
+    right:
+      rightCount > 0 ? { count: rightCount, nearestMs: nearestRight } : null,
+  };
 }

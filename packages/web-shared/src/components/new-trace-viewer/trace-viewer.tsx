@@ -249,6 +249,12 @@ function NewTraceViewerContent({
 
   const viewDuration = viewport.end - viewport.start;
 
+  // Keep a ref to the live viewport so the reveal callback can read the current
+  // zoom without being recreated on every pan (which would bust TimelineBar's
+  // memo and re-render every row each animation frame).
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
+
   const timeMarkers = useMemo(
     () => computeTimeMarkers(viewDuration, viewport.start - root.startTime),
     [viewDuration, viewport.start, root.startTime]
@@ -257,6 +263,29 @@ function NewTraceViewerContent({
   const resetZoom = useCallback(() => {
     animateTo({ start: root.startTime, end: root.startTime + root.duration });
   }, [animateTo, root.startTime, root.duration]);
+
+  // Pan (keeping the current zoom) so `timeMs` is centered in view — used by the
+  // off-screen marker indicators to scroll their marker into view.
+  const handleRevealTime = useCallback(
+    (timeMs: number) => {
+      const rootS = root.startTime;
+      const rootE = root.startTime + root.duration;
+      const { start, end } = viewportRef.current;
+      const duration = end - start;
+      let newStart = timeMs - duration / 2;
+      let newEnd = timeMs + duration / 2;
+      if (newStart < rootS) {
+        newStart = rootS;
+        newEnd = rootS + duration;
+      }
+      if (newEnd > rootE) {
+        newEnd = rootE;
+        newStart = Math.max(rootS, rootE - duration);
+      }
+      animateTo({ start: newStart, end: newEnd });
+    },
+    [animateTo, root.startTime, root.duration]
+  );
 
   const ZOOM_FACTOR = 0.5;
 
@@ -642,6 +671,7 @@ function NewTraceViewerContent({
               selectedId={activeSpanId}
               searchResult={searchResult}
               onSelect={handleSelectSpan}
+              onRevealTime={handleRevealTime}
               hoverFraction={hoverFraction}
               altHeld={altHeld}
             />
