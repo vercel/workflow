@@ -2492,7 +2492,8 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false
+  compression = false,
+  compressionPortableOnly = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -2510,6 +2511,7 @@ export async function dehydrateWorkflowArguments(
       ),
       compression,
       compressionStats,
+      compressionPortableOnly,
     });
     await recordCompression(compressionStats, 'serialize');
     return result;
@@ -2697,7 +2699,8 @@ export async function dehydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false
+  compression = false,
+  compressionPortableOnly = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -2715,6 +2718,7 @@ export async function dehydrateStepReturnValue(
       ),
       compression,
       compressionStats,
+      compressionPortableOnly,
     });
     await recordCompression(compressionStats, 'serialize');
     return result;

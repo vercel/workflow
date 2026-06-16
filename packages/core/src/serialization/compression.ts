@@ -122,13 +122,20 @@ function isZstdAvailable(): boolean {
 }
 
 /**
- * gzip via the web-standard `CompressionStream` (Node 18+, browsers, edge).
+ * Whether gzip *compression* is available — the write path needs
+ * `CompressionStream` (Node 18+, browsers, edge).
  */
-function isGzipAvailable(): boolean {
-  return (
-    typeof CompressionStream === 'function' &&
-    typeof DecompressionStream === 'function'
-  );
+function isGzipCompressAvailable(): boolean {
+  return typeof CompressionStream === 'function';
+}
+
+/**
+ * Whether gzip *decompression* is available — the read path needs only
+ * `DecompressionStream`. Kept separate from compression so reads work in
+ * runtimes that can decompress but not compress.
+ */
+function isGzipDecompressAvailable(): boolean {
+  return typeof DecompressionStream === 'function';
 }
 
 /**
@@ -244,12 +251,18 @@ function recordStats(
  * Choose the write-side codec given runtime availability and the optional
  * env override. zstd is preferred; gzip is the portable fallback.
  */
-function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
+function selectWriteCodec(portableOnly: boolean): 'zstd' | 'gzip' | 'none' {
   const override = codecOverrideFromEnv();
-  if (override === 'gzip') return isGzipAvailable() ? 'gzip' : 'none';
+  // gzip is the portable codec: decodable on every supported runtime
+  // (Node 18+ `gunzip`/`DecompressionStream`, browsers). It is forced when
+  // the reader's runtime can't be guaranteed to have zstd — see the
+  // `portableOnly` doc on `compress()`.
+  if (portableOnly || override === 'gzip') {
+    return isGzipCompressAvailable() ? 'gzip' : 'none';
+  }
   // Default and explicit 'zstd' both prefer zstd, then fall back to gzip.
   if (isZstdAvailable()) return 'zstd';
-  if (isGzipAvailable()) return 'gzip';
+  if (isGzipCompressAvailable()) return 'gzip';
   return 'none';
 }
 
@@ -264,13 +277,22 @@ function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
  *   see `getRunCapabilities` in capabilities.ts). zstd and gzip read
  *   support co-ship, so a single boolean is sufficient.
  * @param stats - Optional telemetry sink; populated when `data` is binary.
+ * @param portableOnly - When true, only the portable gzip codec is used
+ *   (never zstd). zstd decode requires `node:zlib` >= 22.15, which is a
+ *   property of the *reader's* runtime that the writer can't verify for
+ *   cross-deployment writes (the SDK supports Node 18/20, which lack zstd).
+ *   Same-deployment writes leave this `false` — there the reader is the same
+ *   runtime as the writer, so a zstd-capable writer implies a zstd-capable
+ *   reader. Set `true` for cross-deployment writes (`start({deploymentId})`,
+ *   `resumeHook`).
  * @returns The compressed data with a codec prefix, or the original data
  *   when compression is disabled, unavailable, or not worthwhile.
  */
 export async function compress(
   data: Uint8Array | unknown,
   enabled: boolean,
-  stats?: CompressionStats
+  stats?: CompressionStats,
+  portableOnly = false
 ): Promise<Uint8Array | unknown> {
   if (!(data instanceof Uint8Array)) return data;
   // From here `data` is binary, so every return path records stats.
@@ -283,7 +305,7 @@ export async function compress(
     return data;
   }
 
-  const codec = selectWriteCodec();
+  const codec = selectWriteCodec(portableOnly);
   if (codec === 'none') {
     recordStats(stats, 'none', data.length, data.length);
     return data;
@@ -324,7 +346,7 @@ export async function decompress(
   }
 
   if (prefix === SerializationFormat.GZIP) {
-    if (!isGzipAvailable()) {
+    if (!isGzipDecompressAvailable()) {
       throw new Error(
         'Compressed (gzip) workflow data encountered but DecompressionStream ' +
           'is not available in this runtime. Node.js 18+, browsers, and edge ' +

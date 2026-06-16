@@ -339,6 +339,20 @@ describe('codec selection (zstd preferred, gzip fallback)', () => {
     expect(stats.codec).toBe('zstd');
   });
 
+  it('portableOnly forces gzip even when zstd is available (cross-deployment)', async () => {
+    const original = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+    ) as Uint8Array;
+    const stats: CompressionStats = {};
+    // 4th arg = portableOnly: cross-deployment writes can't assume the
+    // reader's runtime has node:zlib zstd (Node 22.15+), so use gzip.
+    const compressed = await compress(original, true, stats, true);
+    expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
+    expect(stats.codec).toBe('gzip');
+    expect(await decompress(compressed)).toEqual(original);
+  });
+
   it('WORKFLOW_COMPRESSION_CODEC=gzip forces the portable codec', async () => {
     process.env.WORKFLOW_COMPRESSION_CODEC = 'gzip';
     const original = encodeWithFormatPrefix(

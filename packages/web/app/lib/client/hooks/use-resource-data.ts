@@ -81,12 +81,13 @@ export function useWorkflowResourceData(
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<Error | null>(null);
 
-  // Hydrate a resource, decrypting if an encryption key is available
+  // Hydrate a resource via the async path: it decrypts when a key is present
+  // and inflates compressed (gzip/zstd) payloads either way. The sync
+  // hydrateResourceIO can't decode zstd in the browser, so even unencrypted
+  // spec-5 payloads (e.g. local world) must go through here.
   const hydrate = useCallback(
     async <T>(resource: T): Promise<T> =>
-      encryptionKey
-        ? hydrateResourceIOWithKey(resource, encryptionKey)
-        : hydrateResourceIO(resource),
+      hydrateResourceIOWithKey(resource, encryptionKey ?? undefined),
     [encryptionKey]
   );
 

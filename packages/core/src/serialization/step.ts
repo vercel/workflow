@@ -36,7 +36,8 @@ export async function serialize(
     const compressed = await compress(
       prefixed,
       options?.compression === true,
-      options?.compressionStats
+      options?.compressionStats,
+      options?.compressionPortableOnly === true
     );
     return encryptData(compressed, encryptionKey);
   } catch (error) {

@@ -72,6 +72,14 @@ export interface CodecOptions {
    * Used by the dehydrate/hydrate wrappers to emit OTel span attributes.
    */
   compressionStats?: CompressionStats;
+
+  /**
+   * Restrict compression to the portable codec (gzip), never zstd. Set for
+   * cross-deployment writes where the reader's runtime can't be guaranteed
+   * to support zstd (`node:zlib` >= 22.15). See `compress()` in
+   * `compression.ts`. Defaults to `false`.
+   */
+  compressionPortableOnly?: boolean;
 }
 
 export interface Codec {

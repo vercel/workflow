@@ -147,6 +147,11 @@ export async function resumeHook<T = any>(
           (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION &&
           capabilities.supportedFormats.has(SerializationFormat.GZIP);
 
+        // The hook payload is read by the *target* run's deployment, whose
+        // Node version (and thus zstd availability) we can't verify here, so
+        // restrict to the portable gzip codec.
+        const compressionPortableOnly = true;
+
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
         const v1Compat = isLegacySpecVersion(hook.specVersion);
@@ -158,7 +163,8 @@ export async function resumeHook<T = any>(
           globalThis,
           v1Compat,
           capabilities.framedByteStreams,
-          compression
+          compression,
+          compressionPortableOnly
         );
         // These payload-stream ops are flushed in the background; the
         // promise handed to waitUntil must never reject (an unconsumed

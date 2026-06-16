@@ -170,8 +170,10 @@ interface NodeZlibDecode {
 }
 
 /**
- * Resolve `node:zlib` via `process.getBuiltinModule` — no static Node
- * dependency, invisible to browser bundlers. Returns undefined off Node.
+ * Resolve `node:zlib` via `process.getBuiltinModule`, with no static Node
+ * dependency so the module stays browser-safe. Returns `undefined` whenever
+ * `process.getBuiltinModule` is absent — i.e. browsers/edge, and Node
+ * versions predating `getBuiltinModule` (added in Node 22.3 / 20.16).
  */
 function getNodeZlib(): NodeZlibDecode | undefined {
   try {
@@ -186,12 +188,16 @@ function getNodeZlib(): NodeZlibDecode | undefined {
 }
 
 /**
- * Synchronously decompress a `gzip`/`zstd` payload when running on Node.js.
+ * Try to synchronously decompress a `gzip`/`zstd` payload.
  *
- * Returns `undefined` when sync decompression isn't available (e.g. in the
- * browser, or zstd on Node < 22.15) — callers fall back to leaving the data
- * un-hydrated (the async `hydrateDataWithKey` path handles decompression in
- * browsers via `DecompressionStream` / a registered zstd decoder).
+ * This is **best-effort, not "always on Node"**: it inflates only when
+ * `process.getBuiltinModule('node:zlib')` resolves *and* exposes the needed
+ * function (`gunzipSync` for gzip; `zstdDecompressSync`, Node ≥ 22.15, for
+ * zstd). It returns `undefined` otherwise — in browsers/edge, on Node
+ * without `getBuiltinModule`, or for zstd on Node < 22.15. Callers then fall
+ * back to leaving the data un-hydrated; the async `hydrateDataWithKey` path
+ * handles browser decompression via `DecompressionStream` (gzip) or a
+ * registered zstd decoder.
  */
 function decompressSyncIfAvailable(
   format: string,

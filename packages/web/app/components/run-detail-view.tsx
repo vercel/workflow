@@ -4,7 +4,6 @@ import {
   DecryptButton,
   ErrorBoundary,
   EventListView,
-  hydrateResourceIO,
   hydrateResourceIOWithKey,
   NewTraceViewer,
   type SidebarDataContextValue,
@@ -301,9 +300,13 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      // Always use the async path: it decrypts when a key is present and
+      // inflates compressed (gzip/zstd) payloads either way — the sync
+      // hydrateResourceIO can't decode zstd in the browser.
+      const fullEvent = await hydrateResourceIOWithKey(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
@@ -321,9 +324,13 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      // Always use the async path: it decrypts when a key is present and
+      // inflates compressed (gzip/zstd) payloads either way — the sync
+      // hydrateResourceIO can't decode zstd in the browser.
+      const fullEvent = await hydrateResourceIOWithKey(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }

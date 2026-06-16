@@ -6,10 +6,14 @@
  * `registerZstdDecoder`. This module supplies that decoder, backed by the
  * `@tootallnate/zstd-wasm` single-file WASM decoder.
  *
- * The package leaves WASM sourcing to the caller; we resolve the shipped
- * `zstd.wasm` as a bundler asset (`new URL(..., import.meta.url)`, the same
- * pattern the trace-viewer Worker uses) and compile it once, lazily — the
- * WASM is fetched only the first time a zstd payload is actually decoded.
+ * The package leaves WASM sourcing to the caller. We **vendor** its
+ * `zstd.wasm` next to this module in `dist/lib/` (copied by the build
+ * script) and reference it with a **relative** `new URL('./zstd.wasm',
+ * import.meta.url)` — the same pattern the trace-viewer Worker uses. A
+ * relative asset URL is what every bundler (Vite, webpack, Turbopack)
+ * reliably rewrites; a bare package specifier is left untouched by Vite and
+ * 404s in the browser. The WASM is fetched + compiled once, lazily — only
+ * the first time a zstd payload is actually decoded.
  */
 import { registerZstdDecoder } from '@workflow/core/serialization-format';
 
@@ -18,7 +22,9 @@ let modulePromise: Promise<WebAssembly.Module> | undefined;
 
 function loadWasmModule(): Promise<WebAssembly.Module> {
   if (!modulePromise) {
-    const url = new URL('@tootallnate/zstd-wasm/zstd.wasm', import.meta.url);
+    // Relative to the built module (dist/lib/zstd-browser-decoder.js); the
+    // build vendors zstd.wasm alongside it as dist/lib/zstd.wasm.
+    const url = new URL('./zstd.wasm', import.meta.url);
     modulePromise = fetch(url)
       .then((res) => res.arrayBuffer())
       .then((bytes) => WebAssembly.compile(bytes));

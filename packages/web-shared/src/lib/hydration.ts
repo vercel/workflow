@@ -460,17 +460,22 @@ function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
 }
 
 /**
- * Hydrate resource data with decryption support.
+ * Async resource hydration that handles decryption **and** compression.
  *
- * When a key is provided, encrypted fields are decrypted before hydration.
- * This is the async version used when the user clicks "Decrypt" in the web UI.
+ * Use this whenever payloads may be encrypted or compressed:
+ * - With a `key`, encrypted fields are decrypted (the "Decrypt" flow).
+ * - Compressed fields (gzip/zstd) are inflated regardless of `key` — the
+ *   browser has no sync codec, and zstd has no `DecompressionStream`, so
+ *   `hydrateResourceIO` (sync) leaves them as raw bytes. Compression is
+ *   applied before optional encryption and stays present on unencrypted
+ *   worlds (e.g. local), so an unencrypted spec-5 run still needs this path.
  *
  * Handles both top-level fields (input, output, metadata) and nested
  * eventData subfields per `EVENT_DATA_REF_FIELDS` from `@workflow/world` for that event type.
  */
 export async function hydrateResourceIOWithKey<T>(
   resource: T,
-  key: Uint8Array
+  key?: Uint8Array
 ): Promise<T> {
   const { hydrateDataWithKey } = await import(
     '@workflow/core/serialization-format'
@@ -483,14 +488,14 @@ export async function hydrateResourceIOWithKey<T>(
     './zstd-browser-decoder.js'
   );
   ensureZstdDecoderRegistered();
-  const cryptoKey = await importKey(key);
+  const cryptoKey = key ? await importKey(key) : undefined;
   const revivers = getRevivers();
 
-  /** Extract original encrypted bytes from a marker or raw Uint8Array, then decrypt + hydrate */
+  /** Decrypt (if keyed) + decompress + hydrate a marker or raw Uint8Array. */
   async function decryptField(
     value: unknown,
     rev: Revivers,
-    k: Awaited<ReturnType<typeof importKey>>
+    k: Awaited<ReturnType<typeof importKey>> | undefined
   ): Promise<unknown> {
     // Already-hydrated: encrypted marker with stored bytes
     if (isEncryptedMarker(value)) {

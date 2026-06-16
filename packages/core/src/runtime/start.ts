@@ -314,6 +314,12 @@ export async function start<TArgs extends unknown[], TResult>(
       const compression =
         targetSupportsCompression &&
         specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+      // zstd decode requires the *reader's* runtime to have node:zlib >= 22.15
+      // (the SDK supports Node 18/20, which lack it). For a same-deployment
+      // start the reader is this same runtime, so zstd is safe; for a
+      // cross-deployment start we can't verify the target's Node version, so
+      // restrict to the portable gzip codec.
+      const compressionPortableOnly = deploymentId !== currentDeploymentId;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -322,7 +328,8 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        compression
+        compression,
+        compressionPortableOnly
       );
 
       const executionContext = {
