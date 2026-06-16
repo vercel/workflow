@@ -37,6 +37,18 @@ const discoveredPatternStateByFilePath = new Map<
   DiscoveredPatternState
 >();
 
+export function shouldNotifySocketForDiscoveredPattern(
+  patternStateChanged: boolean,
+  patternState: DiscoveredPatternState
+): boolean {
+  return (
+    patternStateChanged ||
+    patternState.hasWorkflow ||
+    patternState.hasStep ||
+    patternState.hasSerde
+  );
+}
+
 // Cache socket connection to avoid reconnecting on every file.
 let socketClientPromise: Promise<Socket | null> | null = null;
 let socketClient: Socket | null = null;
@@ -704,7 +716,9 @@ export default function workflowLoader(
       filename,
       nextPatternState
     );
-    if (shouldNotify) {
+    if (
+      shouldNotifySocketForDiscoveredPattern(shouldNotify, nextPatternState)
+    ) {
       await notifySocketServer(
         filename,
         nextPatternState.hasWorkflow,

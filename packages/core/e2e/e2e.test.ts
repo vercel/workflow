@@ -1920,6 +1920,246 @@ describe('e2e', () => {
   );
 
   test(
+    'hookClaimOnlyMutexWorkflow - hook works as a pure run mutex without payload data',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      // Owner claims the token and holds it during unrelated work,
+      // never awaiting payload data.
+      const run1 = await start(await e2e('hookClaimOnlyMutexWorkflow'), [
+        token,
+        15_000,
+      ]);
+      await waitForHook(token, { runId: run1.runId });
+
+      // A duplicate started while the owner holds the token observes the
+      // conflict and identifies the owner.
+      const run2 = await start(await e2e('hookClaimOnlyMutexWorkflow'), [
+        token,
+        15_000,
+      ]);
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toEqual({
+        role: 'duplicate',
+        conflictRunId: run1.runId,
+      });
+
+      // The owner completes without ever receiving a payload.
+      const run1Result = await run1.returnValue;
+      expect(run1Result).toMatchObject({ role: 'owner' });
+
+      const world = await getWorld();
+      const { data: events } = await world.events.list({ runId: run1.runId });
+      expect(
+        events.some((e) => e.eventType === 'hook_received'),
+        'claim-only owner should never receive hook payload data'
+      ).toBe(false);
+
+      // Completion releases the token: a later run claims it cleanly.
+      const waitForTokenRelease = async () => {
+        const timeoutAt = Date.now() + 20_000;
+        while (Date.now() < timeoutAt) {
+          try {
+            await getHookByToken(token);
+          } catch (error) {
+            if (HookNotFoundError.is(error)) {
+              return;
+            }
+            throw error;
+          }
+          await sleep(1_000);
+        }
+        throw new Error(`Timed out waiting for token ${token} to be released`);
+      };
+      await waitForTokenRelease();
+
+      const run3 = await start(await e2e('hookClaimOnlyMutexWorkflow'), [
+        token,
+        100,
+      ]);
+      const run3Result = await run3.returnValue;
+      expect(run3Result).toMatchObject({ role: 'owner' });
+    }
+  );
+
+  test(
+    'hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue',
+    { timeout: 120_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      const run1 = await start(await e2e('hookAdoptOwnerResultWorkflow'), [
+        token,
+        'owner-marker',
+      ]);
+      await waitForHook(token, { runId: run1.runId });
+
+      // The duplicate suspends on the owner's returnValue.
+      const run2 = await start(await e2e('hookAdoptOwnerResultWorkflow'), [
+        token,
+        'duplicate-marker',
+      ]);
+
+      // Wait until run2 has actually observed the conflict before letting
+      // the owner complete. On slow runtimes run2's first invocation can
+      // otherwise land after the owner finished and released the token,
+      // turning run2 into a fresh owner that waits forever for a payload.
+      const world = await getWorld();
+      const conflictDeadline = Date.now() + 60_000;
+      let sawConflict = false;
+      while (Date.now() < conflictDeadline) {
+        const { data: run2Events } = await world.events.list({
+          runId: run2.runId,
+        });
+        if (run2Events.some((e) => e.eventType === 'hook_conflict')) {
+          sawConflict = true;
+          break;
+        }
+        await sleep(500);
+      }
+      expect(
+        sawConflict,
+        'run2 should observe the hook conflict while the owner is active'
+      ).toBe(true);
+
+      // Complete the owner.
+      await resumeHook(token, { value: 'adopted-value' });
+
+      const run1Result = await run1.returnValue;
+      expect(run1Result).toEqual({
+        role: 'owner',
+        marker: 'owner-marker',
+        value: 'adopted-value',
+      });
+
+      // The duplicate returns the owner's exact result, so callers cannot
+      // tell which run did the work.
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toEqual({
+        role: 'duplicate',
+        conflictRunId: run1.runId,
+        adopted: run1Result,
+      });
+    }
+  );
+
+  test(
+    'hookSignalOwnerWorkflow - duplicate forwards its payload to the owner via resumeHook',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      const run1 = await start(await e2e('hookSignalOwnerWorkflow'), [
+        token,
+        'owner-input',
+      ]);
+      await waitForHook(token, { runId: run1.runId });
+
+      // The duplicate forwards its own input into the owner's hook
+      // instead of doing the work itself.
+      const run2 = await start(await e2e('hookSignalOwnerWorkflow'), [
+        token,
+        'forwarded-from-duplicate',
+      ]);
+
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toEqual({
+        role: 'duplicate',
+        forwardedTo: run1.runId,
+      });
+
+      // The owner receives the duplicate's payload and completes with it.
+      const run1Result = await run1.returnValue;
+      expect(run1Result).toEqual({
+        role: 'owner',
+        received: 'forwarded-from-duplicate',
+      });
+    }
+  );
+
+  test(
+    'hookSupersedeOwnerWorkflow - duplicate cancels the owner and claims the released token',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      // The first run claims the token and waits for a payload.
+      const run1 = await start(await e2e('hookSupersedeOwnerWorkflow'), [
+        token,
+      ]);
+      await waitForHook(token, { runId: run1.runId });
+
+      // Newest-wins: the second run cancels the owner and claims the token.
+      const run2 = await start(await e2e('hookSupersedeOwnerWorkflow'), [
+        token,
+      ]);
+      await waitForHook(token, { runId: run2.runId, timeoutMs: 60_000 });
+
+      // The superseded owner ends up cancelled — assert via both the
+      // rejected returnValue (also prevents an unhandled rejection from
+      // leaking out of this test) and the inspected run status.
+      const run1Error = await run1.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunCancelledError.is(run1Error)).toBe(true);
+      const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
+      expect(run1Data.status).toBe('cancelled');
+
+      // The new owner receives payloads on the reclaimed token.
+      await resumeHook(token, { message: 'post-supersede' });
+      const run2Result = await run2.returnValue;
+      expect(run2Result).toMatchObject({
+        role: 'owner',
+        received: 'post-supersede',
+      });
+    }
+  );
+
+  test(
+    'resume-or-start route pattern - resumeHook retried after start() reaches the new run',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+
+      // No active run yet: the resume half fails with HookNotFoundError.
+      await expect(
+        resumeHook(token, { message: 'too-early' })
+      ).rejects.toSatisfy((e: unknown) => HookNotFoundError.is(e));
+
+      // Start the workflow, then retry the resume until the run registers
+      // its deterministic hook — the documented route-side pattern.
+      const run = await start(await e2e('hookSignalOwnerWorkflow'), [
+        token,
+        'unused-owner-input',
+      ]);
+
+      const deadline = Date.now() + 30_000;
+      let resumed: Awaited<ReturnType<typeof resumeHook>> | undefined;
+      while (Date.now() < deadline) {
+        try {
+          resumed = await resumeHook(token, { message: 'delivered' });
+          break;
+        } catch (error) {
+          if (!HookNotFoundError.is(error)) throw error;
+          await sleep(250);
+        }
+      }
+      expect(
+        resumed,
+        'resume retry should reach the started run'
+      ).toBeDefined();
+
+      // The resume reached the run this request started (no concurrent
+      // racer in this test), and the payload was not dropped.
+      expect(resumed?.runId).toBe(run.runId);
+      const result = await run.returnValue;
+      expect(result).toEqual({
+        role: 'owner',
+        received: 'delivered',
+      });
+    }
+  );
+
+  test(
     'hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running',
     { timeout: 90_000 },
     async () => {

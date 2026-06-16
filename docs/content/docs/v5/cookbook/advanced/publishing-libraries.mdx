@@ -270,14 +270,14 @@ Declare `workflow` as an **optional** peer so consumers without the runtime aren
 
 ### Runtime detection
 
-Wrap a dynamic `import("workflow")` in try/catch. If either the module isn't installed *or* `getWorkflowMetadata()` throws (call site isn't inside a workflow run), fall through to the standalone path.
+Wrap a dynamic `import("workflow")` in try/catch. If either the module isn't installed *or* `getStepMetadata()` throws (call site isn't inside a workflow step), fall through to the standalone path.
 
 ```typescript lineNumbers
-async function getWorkflowRunId(): Promise<string | null> { // [!code highlight]
+async function getWorkflowStepId(): Promise<string | null> { // [!code highlight]
   try {
     const wf = await import("workflow");
-    const { workflowRunId } = wf.getWorkflowMetadata();
-    return workflowRunId;
+    const { stepId } = wf.getStepMetadata();
+    return stepId;
   } catch {
     return null;
   }
@@ -286,13 +286,14 @@ async function getWorkflowRunId(): Promise<string | null> { // [!code highlight]
 
 ### A concrete use case: replay-safe idempotency keys
 
-A payments utility that uses the workflow run ID as a Stripe idempotency key when available, and a fresh UUID otherwise:
+A payments utility that uses the current workflow step ID as a Stripe idempotency key when available, and a fresh UUID otherwise:
 
-{/* @skip-typecheck - depends on getWorkflowRunId defined in the previous block */}
 ```typescript lineNumbers
+declare function getWorkflowStepId(): Promise<string | null>; // @setup (defined in the previous block)
+
 export async function processPayment(amount: number, currency: string) {
-  const runId = await getWorkflowRunId();
-  const idempotencyKey = runId ?? crypto.randomUUID(); // [!code highlight]
+  const stepId = await getWorkflowStepId();
+  const idempotencyKey = stepId ? `payment:${stepId}` : crypto.randomUUID(); // [!code highlight]
 
   const res = await fetch("https://api.stripe.com/v1/charges", {
     method: "POST",
@@ -306,7 +307,7 @@ export async function processPayment(amount: number, currency: string) {
 }
 ```
 
-When called from inside a workflow run, the step wrapping this utility gets a stable idempotency key across replays — Stripe dedupes retries for free. When called from a plain Node.js process, it behaves like any other function and a fresh UUID is generated.
+When called from inside a workflow step, the utility gets a stable idempotency key for that step across retries — Stripe dedupes retries for free. When called from a plain Node.js process, it behaves like any other function and a fresh UUID is generated. For more patterns, see [Idempotency](/docs/foundations/idempotency).
 
 ### In production
 

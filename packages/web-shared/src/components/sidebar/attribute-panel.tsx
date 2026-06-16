@@ -7,7 +7,6 @@ import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
-import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { CopyButton } from '../new-trace-viewer/components/copy-button';
 import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
@@ -21,6 +20,7 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import { RunAttributesCard } from './attributes-block';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -409,12 +409,12 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // Attributes MVP — string-string metadata attached to the run.
-  // Rendered in its own collapsible DetailCard; if empty/missing, hidden
-  // by the hasDisplayContent gate.
+  // Attributes — string-string metadata attached to the run.
+  // Rendered as key-value rows in its own collapsible DetailCard;
+  // if empty/missing, hidden by the hasDisplayContent gate.
   attributes: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    return <DetailCard summary="Attributes">{JsonBlock(value)}</DetailCard>;
+    return <RunAttributesCard attributes={value as Record<string, string>} />;
   },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
   createdAt: timestampWithTooltipOrNull,
@@ -615,6 +615,7 @@ const copyableBasicAttributes = new Set<AttributeKey>([
   'hookId',
   'eventId',
   'deploymentId',
+  'moduleSpecifier',
 ]);
 
 export const AttributeBlock = ({
@@ -732,7 +733,6 @@ export const AttributePanel = ({
   /** Resource type of the selected span — used to show targeted loading skeletons. */
   resource?: string;
 }) => {
-  const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };
@@ -818,17 +818,6 @@ export const AttributePanel = ({
     }),
     [displayData.stepName]
   );
-  const handleCopyModuleSpecifier = useCallback((value: string) => {
-    navigator.clipboard
-      .writeText(value)
-      .then(() => {
-        toast.success('moduleSpecifier copied');
-      })
-      .catch(() => {
-        toast.error('Failed to copy moduleSpecifier');
-      });
-  }, []);
-
   const outerDecryptCtx = useContext(DecryptClickContext);
   const decryptValue = onDecrypt
     ? {
@@ -849,16 +838,9 @@ export const AttributePanel = ({
                   const displayValue = attributeToDisplayFn[
                     attribute as keyof typeof attributeToDisplayFn
                   ]?.(displayData[attribute as keyof typeof displayData]);
-                  const isModuleSpecifier = attribute === 'moduleSpecifier';
                   const isCopyableBasicAttribute =
                     copyableBasicAttributes.has(attribute as AttributeKey) &&
                     typeof displayValue === 'string';
-                  const moduleSpecifierValue =
-                    typeof displayValue === 'string'
-                      ? displayValue
-                      : String(
-                          displayValue ?? displayData.moduleSpecifier ?? ''
-                        );
 
                   return (
                     <div
@@ -868,34 +850,15 @@ export const AttributePanel = ({
                       <span className="text-label-14 text-gray-900">
                         {getAttributeDisplayName(attribute)}
                       </span>
-                      {isModuleSpecifier ? (
-                        <button
-                          type="button"
-                          className="min-w-0 max-w-[70%] truncate text-right text-label-13 font-mono"
-                          style={{
-                            color: 'var(--ds-gray-1000)',
-                            background: 'transparent',
-                            border: 'none',
-                            padding: 0,
-                          }}
-                          title={moduleSpecifierValue}
-                          onClick={() =>
-                            handleCopyModuleSpecifier(moduleSpecifierValue)
-                          }
-                        >
-                          {moduleSpecifierValue}
-                        </button>
-                      ) : isCopyableBasicAttribute ? (
+                      {isCopyableBasicAttribute ? (
                         <div
-                          className="flex min-w-0 max-w-[70%] items-center justify-end gap-1 text-right text-[13px] font-mono"
-                          style={{
-                            color: 'var(--ds-gray-1000)',
-                          }}
+                          className="flex min-w-0 max-w-[70%] items-center justify-end gap-1 text-[13px] font-mono text-gray-1000"
                           title={displayValue}
                         >
                           <MiddleTruncate
                             value={displayValue}
-                            className="flex-1"
+                            className="text-right"
+                            style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
                           />
                           <CopyButton
                             copyText={displayValue}

@@ -18,10 +18,10 @@ import { formatDuration, getHighResInMs } from '../util/timing';
 import { SpanContent } from './span-content';
 import { computeSegments } from './span-segments';
 import {
-  type ResourceType,
-  type SpanLayout,
   getResourceType,
   getSpanLayout,
+  type ResourceType,
+  type SpanLayout,
 } from './span-strategies';
 
 export const getSpanColorClassName = (node: SpanNode): string => {
@@ -362,6 +362,7 @@ const BOUNDARY_LABELS: Record<string, string> = {
   run_completed: 'Completed',
   run_failed: 'Run failed',
   step_completed: 'Completed',
+  attr_set: 'Attributes set',
 };
 
 export const SpanEventComponent = memo(function SpanEventComponent({

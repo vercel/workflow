@@ -1,5 +1,26 @@
 # @workflow/builders
 
+## 5.0.0-beta.17
+
+### Patch Changes
+
+- [#2427](https://github.com/vercel/workflow/pull/2427) [`c48d27b`](https://github.com/vercel/workflow/commit/c48d27b4f83996e68d1a48eeeeebe4a58a045a61) Thanks [@ijjk](https://github.com/ijjk)! - Add `.swc` to the builder's default gitignore handling.
+
+- Updated dependencies [[`926a5e7`](https://github.com/vercel/workflow/commit/926a5e7c6a50c1e74f2e2cc37324caa0f6442d85)]:
+  - @workflow/core@5.0.0-beta.17
+  - @workflow/utils@5.0.0-beta.4
+  - @workflow/errors@5.0.0-beta.8
+
+## 5.0.0-beta.16
+
+### Patch Changes
+
+- [#2395](https://github.com/vercel/workflow/pull/2395) [`011d482`](https://github.com/vercel/workflow/commit/011d482808793e8deb0e8523a9c16af129490ee6) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade esbuild to ^0.28.1 to resolve GHSA-gv7w-rqvm-qjhr (missing binary integrity verification before executing downloaded binaries).
+
+- Updated dependencies [[`628795a`](https://github.com/vercel/workflow/commit/628795aa8729bef442c7a1583cf2f3d986e9e4fc)]:
+  - @workflow/core@5.0.0-beta.16
+  - @workflow/errors@5.0.0-beta.7
+
 ## 5.0.0-beta.15
 
 ### Patch Changes

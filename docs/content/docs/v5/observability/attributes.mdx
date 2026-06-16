@@ -62,6 +62,20 @@ export async function cleanupAttributes() {
 
 Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code.
 
+## Viewing attributes
+
+The run details panel in the observability UI shows the run's current attributes as key-value rows. Reserved `$`-prefixed keys are marked with a badge and sorted after user keys:
+
+![Run details panel showing the Attributes card with reserved keys badged](/screenshots/attributes/run-details-attributes.png)
+
+Each `experimental_setAttributes` call appears on the trace timeline as a diamond marker at the moment the attributes were written:
+
+![Trace timeline with attr_set diamond markers on the run row](/screenshots/attributes/trace-timeline.png)
+
+Expanding an `attr_set` event — in the run sidebar or the Events tab — shows the changed keys, removed keys, and whether the write came from the workflow body or a step (with the attempt number):
+
+![Expanded attr_set events showing changes and the writer](/screenshots/attributes/run-details-attr-set-events.png)
+
 ## Experimental Behavior
 
 While attributes are experimental:

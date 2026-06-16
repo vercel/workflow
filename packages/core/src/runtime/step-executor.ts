@@ -8,7 +8,7 @@ import {
   TooEarlyError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
+import { pluralize, stepDisplayName } from '@workflow/utils';
 import type { World } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
@@ -93,7 +93,8 @@ export async function executeStep(
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
-  return trace(`STEP ${stepName}`, {}, async (span) => {
+  const spanName = `step.execute ${stepDisplayName(stepName)}`;
+  return trace(spanName, {}, async (span) => {
     span?.setAttributes({
       ...Attribute.StepName(stepName),
       ...Attribute.WorkflowName(workflowName),

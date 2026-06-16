@@ -9,7 +9,10 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { parseWorkflowName } from '@workflow/utils/parse-name';
+import {
+  parseWorkflowName,
+  workflowDisplayName,
+} from '@workflow/utils/parse-name';
 import {
   type Event,
   getQueueTopicPrefix,
@@ -54,8 +57,11 @@ import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
-  linkToCurrentContext,
-  serializeTraceCarrier,
+  buildInvocationSpanLinks,
+  getNextTraceCarrier,
+  getSpanKind,
+  getWorkflowTraceMode,
+  isUsableTraceCarrier,
   trace,
   withTraceContext,
   withWorkflowBaggage,
@@ -253,13 +259,21 @@ export function workflowEntrypoint(
 
         const {
           runId,
-          traceCarrier: traceContext,
+          traceCarrier: incomingTraceCarrier,
           requestedAt,
           stepId: incomingStepId,
           stepName: incomingStepName,
           replayDivergence,
           runInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
+        // `start()` always attaches a trace carrier, but
+        // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
+        // or no span is active — treat an empty carrier the same as an
+        // absent one so linked mode falls back to a fresh origin instead of
+        // forwarding a useless `{}` forever.
+        const traceContext = isUsableTraceCarrier(incomingTraceCarrier)
+          ? incomingTraceCarrier
+          : undefined;
         const { requestId } = metadata;
         const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
@@ -327,7 +341,27 @@ export function workflowEntrypoint(
           return;
         }
 
-        const spanLinks = await linkToCurrentContext();
+        // --- Trace correlation mode ---
+        // 'linked' (default): the WORKFLOW_V2 span below starts a NEW root
+        // trace, with span links to (a) the incoming delivery context and
+        // (b) the run-origin context from the message's trace carrier. This
+        // bounds each trace to a single invocation instead of stitching an
+        // entire (potentially hours-long) run into one giant trace.
+        // 'continuous': legacy behavior — the restored run-origin context
+        // becomes the parent of this invocation's spans.
+        const traceMode = getWorkflowTraceMode();
+
+        // Trace carrier to attach to messages this invocation enqueues —
+        // see getNextTraceCarrier for the linked/continuous semantics.
+        const nextTraceCarrier = (): Promise<Record<string, string>> =>
+          getNextTraceCarrier(traceMode, traceContext);
+
+        // Span links to the incoming delivery context and (in linked mode)
+        // the run-origin context from the trace carrier.
+        const spanLinks = await buildInvocationSpanLinks(
+          traceMode,
+          traceContext
+        );
 
         // --- Replay budget bookkeeping ---
         // The replay budget bounds the *non-step* portion of a single
@@ -355,14 +389,25 @@ export function workflowEntrypoint(
         // single step longer than the budget.
         const replayBudget = new ReplayBudget();
 
-        return await withTraceContext(traceContext, async () => {
+        // In linked mode the run-origin context is NOT restored as the
+        // active (parent) context — passing `undefined` makes
+        // withTraceContext a passthrough, and the WORKFLOW_V2 span below
+        // becomes a new trace root carrying span links instead.
+        const parentTraceCarrier =
+          traceMode === 'continuous' ? traceContext : undefined;
+        // Queue-delivered invocation: CONSUMER kind, matching the
+        // queue-delivered step.execute span.
+        const spanKind = await getSpanKind('CONSUMER');
+        return await withTraceContext(parentTraceCarrier, async () => {
           return await withWorkflowBaggage(
             { workflowRunId: runId, workflowName },
             async () => {
               const world = await getWorld();
               return trace(
-                `WORKFLOW_V2 ${workflowName}`,
-                { links: spanLinks },
+                `workflow.execute ${workflowDisplayName(workflowName)}`,
+                traceMode === 'linked'
+                  ? { kind: spanKind, links: spanLinks, root: true }
+                  : { kind: spanKind, links: spanLinks },
                 async (span) => {
                   span?.setAttributes({
                     ...Attribute.WorkflowName(workflowName),
@@ -374,6 +419,7 @@ export function workflowEntrypoint(
                     ...getQueueOverhead({ requestedAt }),
                     ...Attribute.WorkflowRunId(runId),
                     ...Attribute.WorkflowTracePropagated(!!traceContext),
+                    ...Attribute.WorkflowTraceMode(traceMode),
                   });
 
                   const invocationStartTime = Date.now();
@@ -448,7 +494,7 @@ export function workflowEntrypoint(
                           getWorkflowQueueName(workflowName, namespace),
                           {
                             runId,
-                            traceCarrier: await serializeTraceCarrier(),
+                            traceCarrier: await nextTraceCarrier(),
                             requestedAt: new Date(),
                           }
                         );
@@ -710,7 +756,7 @@ export function workflowEntrypoint(
                         getWorkflowQueueName(workflowName, namespace),
                         {
                           runId,
-                          traceCarrier: await serializeTraceCarrier(),
+                          traceCarrier: await nextTraceCarrier(),
                           requestedAt: new Date(),
                         }
                       );
@@ -1160,7 +1206,7 @@ export function workflowEntrypoint(
                         // suspension passes — see
                         // runtime/wait-continuation.ts for the full
                         // delay/key selection rationale.
-                        const traceCarrier = await serializeTraceCarrier();
+                        const traceCarrier = await nextTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
                         for (const step of pendingSteps) {
                           if (
@@ -1250,8 +1296,7 @@ export function workflowEntrypoint(
                           // Any pending wait timer was already enqueued as part
                           // of the unified dispatch above, so we can return
                           // unconditionally here.
-                          const retryTraceCarrier =
-                            await serializeTraceCarrier();
+                          const retryTraceCarrier = await nextTraceCarrier();
                           await queueMessage(
                             world,
                             getWorkflowQueueName(workflowName, namespace),
@@ -1302,7 +1347,7 @@ export function workflowEntrypoint(
                             getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
-                              traceCarrier: await serializeTraceCarrier(),
+                              traceCarrier: await nextTraceCarrier(),
                               requestedAt: new Date(),
                             }
                           );
@@ -1336,7 +1381,7 @@ export function workflowEntrypoint(
                               getWorkflowQueueName(workflowName, namespace),
                               {
                                 runId,
-                                traceCarrier: await serializeTraceCarrier(),
+                                traceCarrier: await nextTraceCarrier(),
                                 requestedAt: new Date(),
                                 replayDivergence: {
                                   eventId: err.eventId,

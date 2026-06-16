@@ -92,6 +92,11 @@ export const WorkflowTracePropagated = SemanticConvention<boolean>(
   'workflow.trace.propagated'
 );
 
+/** Active trace-correlation mode for this invocation (linked or continuous) */
+export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
+  'workflow.trace.mode'
+);
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'

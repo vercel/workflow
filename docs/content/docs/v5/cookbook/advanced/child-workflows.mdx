@@ -3,6 +3,8 @@ title: Child Workflows
 description: Spawn child workflows from a parent and wait for completion via hook resume.
 type: guide
 summary: Orchestrate independent child workflows from a parent using start(), defineHook(), and startAndWait() — the child resumes the parent's hook when done instead of polling getRun().status.
+related:
+  - /docs/api-reference/workflow-api/start
 ---
 
 Use child workflows when a single workflow needs to orchestrate many independent units of work. Each child runs as its own workflow with a separate event log, retry boundary, and failure scope -- if one child fails, it doesn't take down the parent or siblings.

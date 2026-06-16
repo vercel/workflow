@@ -5,12 +5,18 @@ type: reference
 summary: Use getHookByToken to look up a hook's metadata and associated workflow run before resuming it.
 prerequisites:
   - /docs/foundations/hooks
+related:
+  - /docs/foundations/idempotency
 ---
 
 Retrieves a hook by its unique token, returning the associated workflow run information and any metadata that was set when the hook was created. This function is useful for inspecting hook details before deciding whether to resume a workflow.
 
 <Callout type="warn">
 `getHookByToken` is a runtime function that must be called from outside a workflow function.
+</Callout>
+
+<Callout type="info">
+Looking up a deterministic hook token is useful in hook-based idempotency flows, but it is only an advisory check. If no hook exists yet, another request can still start the same workflow before your `start()` call registers its hook. Use the lookup to avoid obvious duplicate starts, and handle the race inside the workflow by checking `await hook.getConflict()` before duplicate-sensitive work — on a conflict it resolves with the run that owns the token, so the duplicate can route the caller to the active owner. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
 </Callout>
 
 ```typescript lineNumbers
@@ -178,3 +184,4 @@ export async function POST(request: Request) {
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with a payload.
 - [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper.
+- [Idempotency](/docs/foundations/idempotency) - Deduplicate step side effects and workflow starts.
