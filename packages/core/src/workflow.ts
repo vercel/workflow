@@ -1,4 +1,3 @@
-import { runInContext } from 'node:vm';
 import {
   ERROR_SLUGS,
   ReplayDivergenceError,
@@ -38,6 +37,7 @@ import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
+import { runCachedWorkflowScript } from './vm/script-cache.js';
 import {
   createAbortSignalStatics,
   createCreateAbortController,
@@ -769,10 +769,23 @@ export async function runWorkflow(
     const parsedName = parseWorkflowName(workflowRun.workflowName);
     const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
-    const workflowFn = runInContext(
-      `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-      context,
-      { filename }
+    // Evaluate the workflow bundle against the fresh context using a
+    // process-wide cache of the compiled `vm.Script`. The bundle is the same
+    // string for every replay and every invocation in this process, and
+    // compilation is a pure function of `(code, filename)`, so reusing the
+    // compiled Script across replays is determinism-safe: it produces a
+    // byte-identical result to re-parsing the bundle every time, but skips the
+    // (expensive) re-parse. Evaluating the bundle registers every workflow on
+    // `globalThis.__private_workflows`; the trailing lookup expression then
+    // retrieves the requested workflow function. The lookup is evaluated as a
+    // separate cached Script under the same `filename` so its source
+    // attribution (and thus stack traces) match the previous combined-string
+    // behaviour.
+    runCachedWorkflowScript(workflowCode, filename, context);
+    const workflowFn = runCachedWorkflowScript(
+      `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
+      filename,
+      context
     );
 
     if (typeof workflowFn !== 'function') {
