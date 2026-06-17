@@ -295,6 +295,18 @@ export function registerDeliveryBarrier(
  * if > 0, wait for promiseQueue → repeat. This handles the multi-round
  * delivery pattern where each hook payload delivery cycle appends new
  * async work to the promiseQueue.
+ *
+ * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
+ * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
+ * `pendingDeliveries` only guards the host-side hydration window; between a
+ * delivery's `resolve()` and the workflow VM body running its continuation to
+ * register the next subscriber, `pendingDeliveries` is already 0 even though
+ * the VM is mid-reaction. Node does not guarantee a microtask scheduled in
+ * the host context settles after the cross-VM promise chain (resolve in host
+ * → workflow code in VM → subscribe back in host); the macrotask boundary
+ * gives that chain time to run, so the suspension does not preempt a sibling
+ * delivery still in flight. Empirically, replacing it with `queueMicrotask`
+ * breaks hook/sleep `Promise.race` ordering (CorruptedEventLogError).
  */
 export function scheduleWhenIdle(
   ctx: WorkflowOrchestratorContext,
