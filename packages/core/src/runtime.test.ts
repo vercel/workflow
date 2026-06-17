@@ -1,14 +1,11 @@
-import {
-  EntityConflictError,
-  RUN_ERROR_CODES,
-  WorkflowWorldError,
-} from '@workflow/errors';
+import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { registerStepFunction } from './private.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
@@ -629,7 +626,13 @@ describe('workflowEntrypoint replay guards', () => {
     expect(firstAttemptEvents).toContainEqual(
       expect.objectContaining({ eventType: 'attr_set' })
     );
-    expect(firstAttemptEvents).toContainEqual(
+    // Under lazy inline start the step that loses the attribute race is NOT
+    // eagerly created: its step_created is deferred for a lazy step_started
+    // that never fires, because the attr_set event triggers an immediate
+    // re-invocation before any step executes. So no step_created is written on
+    // this attempt — strictly less event-log garbage than the eager model,
+    // and correct because the step loses the race and is abandoned on replay.
+    expect(firstAttemptEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'step_created' })
     );
     expect(firstAttemptMessages).toEqual([]);
@@ -774,7 +777,7 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
-  it('propagates transient step_created failures to the queue handler without an unhandled rejection', async () => {
+  it('propagates transient step-creation failures (lazy step_started) to the queue handler without an unhandled rejection', async () => {
     const createdEvents: unknown[] = [];
     const workflowRun: WorkflowRun = {
       runId: 'wrun_step_created_parse',
@@ -792,7 +795,10 @@ describe('workflowEntrypoint replay guards', () => {
       deploymentId: 'test-deployment',
     };
     // Simulates a transient network failure on POST /runs/{id}/events
-    // (e.g. the connection terminated mid-response-body).
+    // (e.g. the connection terminated mid-response-body). Under lazy inline
+    // start the step is created on the fly by its step_started, so the
+    // transient failure surfaces there (the standalone step_created round-trip
+    // no longer exists on this path).
     const parseError = new WorkflowWorldError(
       'Failed to parse response body for POST /v3/runs/wrun_step_created_parse/events (Content-Type: application/cbor):\n\nTypeError: terminated',
       { code: 'PARSE_ERROR' }
@@ -801,7 +807,7 @@ describe('workflowEntrypoint replay guards', () => {
       if (data.eventType === 'run_started') {
         return { run: workflowRun, events: [] };
       }
-      if (data.eventType === 'step_created') {
+      if (data.eventType === 'step_started') {
         throw parseError;
       }
       createdEvents.push(data);
@@ -893,20 +899,27 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     `;globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
 
-  // A workflow that suspends on a step AND a sleep. The harness's
-  // events.create answers step_created with EntityConflictError (see
-  // driveHandler), so this handler observes the pending step without owning
-  // it — the crash-recovery shape where a prior handler wrote step_created
-  // but died before queueing. That forces the unified dispatch to QUEUE the
-  // step (inline execution is ownership-gated), exercising the
-  // progress-critical step-dispatch queue() send that must complete before
-  // the orchestrator message is acked.
+  // A workflow that suspends on TWO parallel steps and a sleep. Under the
+  // lazy-inline-start model exactly one pending step is run inline (its
+  // step_created is deferred and folded into a lazy step_started); every other
+  // pending step keeps its eager step_created and is QUEUED via the unified
+  // dispatch. So the second step here is always queued, exercising the
+  // progress-critical step-dispatch queue() send that must complete before the
+  // orchestrator message is acked — independent of which step the runtime
+  // happens to pick for inline execution.
   const stepWithSleepWorkflow = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+    const addB = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("addB");
     const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
     async function workflow() {
-      const [a] = await Promise.all([add(1, 2), sleep('1h')]);
+      const [a] = await Promise.all([add(1, 2), addB(3, 4), sleep('1h')]);
       return a;
     }${getWorkflowTransformCode('workflow')}`;
+
+  // Register the two steps so the one chosen for inline execution actually
+  // runs (and completes) instead of failing as unregistered; the other is
+  // queued. Both are no-ops — these tests only assert dispatch/ack ordering.
+  registerStepFunction('add', async () => undefined);
+  registerStepFunction('addB', async () => undefined);
 
   async function makeRunningRun(runId: string): Promise<WorkflowRun> {
     return {
@@ -946,25 +959,68 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // `.only`, not just the afterEach reset between this suite's tests.
     waitUntilPromises.length = 0;
 
+    // Stateful event log so replay converges instead of re-suspending forever:
+    // the inline step's events and the queued step's eager step_created are
+    // recorded here and returned by `list`, so a later loop iteration observes
+    // the inline step as done and the queued step as already-created (and thus
+    // not re-run/re-inlined).
+    let eventSeq = 0;
+    const durableEvents: Event[] = [];
+    const recordEvent = (data: any): Event => {
+      eventSeq += 1;
+      const created = {
+        eventId: `event-${eventSeq}`,
+        runId: workflowRun.runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durableEvents.push(created);
+      return created;
+    };
+
     const eventsCreate = vi.fn(async (_runId: string, data: any) => {
       if (data.eventType === 'run_started') {
         return { run: workflowRun, events: [] as Event[] };
       }
       if (data.eventType === 'step_created') {
+        // Eager step_created for the QUEUED step (the one not run inline).
+        // It must be durably created before its dispatch send — the ordering
+        // assertion below checks step_created precedes queue_dispatch_start.
         order.push('step_created');
-        // Concurrent-handler simulation: the step_created event already
-        // exists, so this handler doesn't own the step and must queue it
-        // rather than execute it inline.
-        throw new EntityConflictError('step already exists');
+        return { event: recordEvent(data) };
       }
-      return {
-        event: {
-          eventId: `event-${order.length}`,
-          runId: workflowRun.runId,
-          createdAt: new Date(),
-          ...data,
-        },
-      };
+      if (data.eventType === 'step_started') {
+        // The inline step's lazy step_started creates the step on the fly:
+        // record a synthetic step_created so replay observes it, then the
+        // step_started, and return a running step so executeStep can run the
+        // (registered, no-op) body to completion.
+        const lazy = data.eventData as { stepName?: string; input?: unknown };
+        if (lazy?.input !== undefined) {
+          recordEvent({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: { stepName: lazy.stepName, input: lazy.input },
+          });
+        }
+        const created = recordEvent(data);
+        return {
+          event: created,
+          step: {
+            runId: workflowRun.runId,
+            stepId: data.correlationId,
+            stepName: lazy?.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: lazy?.input,
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(lazy?.input !== undefined ? { stepCreated: true } : {}),
+        };
+      }
+      return { event: recordEvent(data) };
     });
 
     const queue = vi.fn(async (queueName: string, message: any) => {
@@ -1004,8 +1060,12 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       ),
       events: {
         create: eventsCreate,
+        // Return the accumulated event log so replay converges: a later loop
+        // iteration sees the inline step completed and the queued step already
+        // created (so neither is re-run), and the handler returns instead of
+        // re-suspending forever.
         list: vi.fn(async () => ({
-          data: [] as Event[],
+          data: [...durableEvents],
           hasMore: false,
           cursor: 'cursor_test',
         })),

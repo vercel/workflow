@@ -132,6 +132,19 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
   }),
 });
 
+/**
+ * Event created when a step begins executing.
+ * Transitions the step entity to status 'running' and increments its attempt.
+ *
+ * The optional `stepName` + `input` carry step creation data for the lazy-start
+ * path: when a handler owns a step it is about to run inline (the owned-inline
+ * path in the runtime), it can skip the separate `step_created` round-trip and
+ * send only `step_started` carrying the step input. The World implementation
+ * then atomically creates the step (materializing the step entity and writing a
+ * synthetic `step_created` event so replay still observes it) before starting
+ * it. This mirrors the resilient `run_started` start path above. When `input`
+ * is absent the World requires a prior `step_created` (the legacy contract).
+ */
 const StepStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_started'),
   correlationId: z.string(),
@@ -139,6 +152,9 @@ const StepStartedEventSchema = BaseEventSchema.extend({
     .object({
       stepName: z.string().optional(),
       attempt: z.number().optional(),
+      // Lazy-start: the dehydrated step input, present only when this
+      // step_started is also responsible for creating the step.
+      input: SerializedDataSchema.optional(),
     })
     .optional(),
 });
@@ -454,6 +470,18 @@ export interface EventResult {
   cursor?: string | null;
   /** Whether additional event pages are available for `events`. */
   hasMore?: boolean;
+  /**
+   * Lazy step start: set to `true` only when a `step_started` event with
+   * step-creation data atomically *created* the step on this call (the
+   * caller won the create-claim), as opposed to transitioning a step that
+   * already existed. The owned-inline runtime path uses this as the
+   * exactly-once ownership signal — it runs the step body inline only when
+   * it created the step, so a concurrent handler that lost the create race
+   * (and gets `EntityConflictError`/skipped) never double-executes. Absent
+   * (undefined) on the legacy path and from older servers/worlds, which is
+   * the safe default (treated as "not the lazy creator").
+   */
+  stepCreated?: boolean;
 }
 
 export interface GetEventParams {

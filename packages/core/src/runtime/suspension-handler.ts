@@ -53,6 +53,23 @@ export interface SuspensionHandlerResult {
    */
   createdStepCorrelationIds: Set<string>;
   /**
+   * The single step whose `step_created` write was intentionally deferred so
+   * the caller can run it inline via a lazy `step_started` (which creates the
+   * step on the fly), saving one world round-trip per inline step. Undefined
+   * when no step was deferred (nothing pending, or a `hook.getConflict()`
+   * awaiter is present so nothing is executed inline). The caller passes
+   * `dehydratedInput` straight to `executeStep`, which sends it as the
+   * `step_started` payload. The atomic create-claim inside that `step_started`
+   * is the exactly-one-owner gate that the standalone `step_created` provided
+   * before: the loser of the race gets `EntityConflictError` → `skipped` and
+   * does not run the body.
+   */
+  lazyInlineStep?: {
+    correlationId: string;
+    stepName: string;
+    dehydratedInput: SerializedData;
+  };
+  /**
    * The soonest pending wait, if any: seconds until it elapses and the
    * correlationId of the wait that produced that timeout. The
    * correlationId seeds the idempotency key for the wait-continuation
@@ -370,6 +387,22 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  // Lazy inline start: defer the step_created write for ONE step the caller
+  // will run inline. Its step is created on the fly by the lazy `step_started`
+  // executeStep sends (saving a round-trip). We never defer when a
+  // `hook.getConflict()` awaiter is present, because in that case the caller
+  // executes nothing inline (it re-invokes immediately to resolve the
+  // awaiter), so deferring would leave the step uncreated and unqueued. We
+  // pick the first uncreated step — matching the caller's `ownedPendingSteps[0]`
+  // inline-candidate selection — and dehydrate its input here so executeStep
+  // can ship it as the step_started payload.
+  const lazyInlineCorrelationId =
+    hasAwaitedHookCreation === false
+      ? stepItems.find((item) => stepsNeedingCreation.has(item.correlationId))
+          ?.correlationId
+      : undefined;
+  let lazyInlineStep: SuspensionHandlerResult['lazyInlineStep'];
+
   const ops: Promise<void>[] = [];
 
   // Steps: create step_created events (no queuing — V2 returns pending steps to caller)
@@ -389,6 +422,20 @@ export async function handleSuspension({
             false,
             compression
           );
+          // Deferred (lazy) inline step: skip the step_created write — the
+          // caller's inline executeStep will send a lazy step_started carrying
+          // this input, and the world creates the step (entity + synthetic
+          // step_created event) atomically. We do NOT add it to
+          // createdStepCorrelationIds; ownership is decided by that lazy
+          // step_started's atomic create-claim instead.
+          if (queueItem.correlationId === lazyInlineCorrelationId) {
+            lazyInlineStep = {
+              correlationId: queueItem.correlationId,
+              stepName: queueItem.stepName,
+              dehydratedInput: dehydratedInput as SerializedData,
+            };
+            return;
+          }
           const stepEvent: CreateEventRequest = {
             eventType: 'step_created' as const,
             specVersion: SPEC_VERSION_CURRENT,
@@ -536,6 +583,7 @@ export async function handleSuspension({
   return {
     pendingSteps: stepItems,
     createdStepCorrelationIds,
+    lazyInlineStep,
     // On hook conflict the caller re-invokes immediately and never reads
     // the wait timeout, so don't report one.
     waitTimeout: hasHookConflict ? undefined : soonestWait,

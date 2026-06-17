@@ -109,6 +109,12 @@ export interface CreateEventV4Result {
     events?: unknown[];
     cursor?: string | null;
     hasMore?: boolean;
+    /**
+     * Lazy step start: true when the server's step_started created the step
+     * on this call. Absent from older servers (safe default: not the lazy
+     * creator). Threaded into EventResult.stepCreated by the events adapter.
+     */
+    stepCreated?: boolean;
   };
 }
 

@@ -1138,41 +1138,42 @@ export function workflowEntrypoint(
 
                         const pendingSteps = suspensionResult.pendingSteps;
 
-                        // Inline execution is gated on ownership: only the
-                        // handler that actually wrote the step_created event
-                        // may run the step body inline. The world-level
-                        // step_created is atomic per-correlationId, so
-                        // exactly one handler owns each step — concurrent
-                        // handlers can't race on step execution.
-                        const ownedPendingSteps = pendingSteps.filter((s) =>
-                          suspensionResult.createdStepCorrelationIds.has(
-                            s.correlationId
-                          )
-                        );
-
-                        // Pick one owned step to execute inline (if any).
-                        // The rest of the pending steps, plus any wait
-                        // timer, are queued below in a single parallel
-                        // batch.
+                        // Inline execution is gated on ownership. The
+                        // suspension handler deferred the step_created write for
+                        // exactly one step (`lazyInlineStep`) so we can run it
+                        // inline via a lazy `step_started` that creates the step
+                        // on the fly — saving one world round-trip. Ownership is
+                        // still atomic and exactly-one: the world's
+                        // create-claim inside that step_started returns
+                        // `EntityConflictError` (→ executeStep `skipped`) to any
+                        // concurrent loser, so only one handler ever runs the
+                        // body. Every other pending step keeps its eager
+                        // step_created (in `createdStepCorrelationIds`) and is
+                        // queued below.
                         //
-                        // Skip inline execution when a created hook has a
-                        // `hook.getConflict()` awaiter: an inline `await
-                        // executeStep(...)` blocks this handler for the
-                        // full step duration, so the awaiter's continuation
-                        // (which only advances on the next replay) would be
-                        // serialized behind the step — defeating work the
-                        // workflow expressed as parallel (e.g.
-                        // `hook.getConflict().then(() => stepB())` racing
-                        // `await stepA()`). Queue every step and re-invoke
-                        // immediately instead: the re-invocation replays
-                        // over the just-committed hook_created and resolves
-                        // the awaiter while the queued steps execute in
+                        // The suspension handler only designates a
+                        // `lazyInlineStep` when no `hook.getConflict()` awaiter
+                        // is present. That awaiter case must execute nothing
+                        // inline: an inline `await executeStep(...)` blocks this
+                        // handler for the full step duration, so the awaiter's
+                        // continuation (which only advances on the next replay)
+                        // would be serialized behind the step — defeating work
+                        // the workflow expressed as parallel (e.g.
+                        // `hook.getConflict().then(() => stepB())` racing `await
+                        // stepA()`). In that case `lazyInlineStep` is undefined
+                        // and every step is queued for re-invocation, which
+                        // replays over the just-committed hook_created and
+                        // resolves the awaiter while queued steps run in
                         // parallel invocations.
+                        const lazyInline = suspensionResult.lazyInlineStep;
                         const inlineStep:
                           | (typeof pendingSteps)[number]
-                          | undefined = suspensionResult.hasAwaitedHookCreation
-                          ? undefined
-                          : ownedPendingSteps[0];
+                          | undefined = lazyInline
+                          ? pendingSteps.find(
+                              (s) =>
+                                s.correlationId === lazyInline.correlationId
+                            )
+                          : undefined;
 
                         // Unified queue dispatch for everything we are NOT
                         // inline-executing. Steps are queued with stepId so
@@ -1286,6 +1287,11 @@ export function workflowEntrypoint(
                             stepId: inlineStep.correlationId,
                             stepName: inlineStep.stepName,
                             runSpecVersion: workflowRun.specVersion,
+                            // Lazy inline start: send the deferred step's input
+                            // on step_started so the world creates the step on
+                            // the fly. lazyInline is defined whenever inlineStep
+                            // is (both derive from suspensionResult.lazyInlineStep).
+                            lazyStepInput: lazyInline?.dehydratedInput,
                           });
                         } finally {
                           replayBudget.resume();

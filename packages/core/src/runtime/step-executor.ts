@@ -9,7 +9,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { pluralize, stepDisplayName } from '@workflow/utils';
-import type { World } from '@workflow/world';
+import type { SerializedData, World } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -55,6 +55,18 @@ export interface StepExecutorParams {
    * as possibly containing compressed payloads (specVersion >= 5).
    */
   runSpecVersion?: number;
+  /**
+   * Lazy step start: the already-dehydrated step input. When provided, the
+   * `step_started` event carries this input so the world creates the step on
+   * the fly (no separate `step_created` round-trip). Set by the owned-inline
+   * path for the step whose `step_created` the suspension handler deferred.
+   * The world's atomic create-claim is the exactly-one-owner gate: losing it
+   * surfaces as `EntityConflictError` → `{ type: 'skipped' }`, so a handler
+   * that did not win the create never runs the body. Omitted on every other
+   * path, where the step already has a `step_created` and `step_started`
+   * carries no payload (the legacy contract).
+   */
+  lazyStepInput?: SerializedData;
 }
 
 /**
@@ -155,14 +167,23 @@ export async function executeStep(
       ...Attribute.StepMaxRetries(maxRetries),
     });
 
-    // step_started validates state and returns the step entity
+    // step_started validates state and returns the step entity. On the lazy
+    // inline path we also carry the step `input` so the world creates the step
+    // on the fly (no separate step_created round-trip). The world's atomic
+    // create-claim makes this exactly-one-owner: a concurrent loser gets
+    // EntityConflictError, mapped to `{ type: 'skipped' }` below, so it never
+    // runs the body. When `lazyStepInput` is absent this is the legacy
+    // step_started (step already created, no payload).
     let step;
     try {
       const startResult = await world.events.create(workflowRunId, {
         eventType: 'step_started',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: stepId,
-        eventData: { stepName },
+        eventData:
+          params.lazyStepInput !== undefined
+            ? { stepName, input: params.lazyStepInput }
+            : { stepName },
       });
 
       if (!startResult.step) {
