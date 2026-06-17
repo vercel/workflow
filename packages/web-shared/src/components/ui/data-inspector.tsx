@@ -25,7 +25,6 @@ import {
   useRef,
   useState,
 } from 'react';
-import { useDarkMode } from '../../hooks/use-dark-mode';
 import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
 import {
   type DecodedStreamChunkSource,
@@ -161,8 +160,8 @@ export const RunClickContext = createContext<
 // Class names and rules mirror vercel/front's json-message.module.css so the
 // rendered tree is visually identical. Shipped as a React 19 hoistable <style>
 // (deduped by href) instead of a CSS module so the package stays bundler-
-// agnostic for every consumer. Dark mode keys off `data-theme` on the
-// container, set from `useDarkMode()`.
+// agnostic for every consumer. Colors use theme-aware `--ds-*` tokens that
+// adapt to light/dark automatically, so no per-theme overrides are needed.
 // ---------------------------------------------------------------------------
 
 const CLS = {
@@ -249,28 +248,6 @@ const JSON_VIEW_STYLES = `
 }
 .${CLS.collapsedContent} { color: var(--ds-gray-900); }
 .${CLS.collapsedContent}::after { content: '...'; }
-
-.${CLS.container}[data-theme='dark'] .${CLS.label},
-.${CLS.container}[data-theme='dark'] .${CLS.clickableLabel} {
-  color: var(--ds-pink-700, var(--ds-pink-900));
-}
-.${CLS.container}[data-theme='dark'] .${CLS.string},
-.${CLS.container}[data-theme='dark'] .${CLS.number} { color: var(--ds-blue-700); }
-.${CLS.container}[data-theme='dark'] .${CLS.boolean} { color: var(--ds-amber-700); }
-.${CLS.container}[data-theme='dark'] .${CLS.null},
-.${CLS.container}[data-theme='dark'] .${CLS.undefined} { color: var(--ds-gray-700); }
-.${CLS.container}[data-theme='dark'] .${CLS.date} {
-  color: var(--ds-pink-700, var(--ds-pink-900));
-}
-.${CLS.container}[data-theme='dark'] .${CLS.expandIcon},
-.${CLS.container}[data-theme='dark'] .${CLS.collapseIcon} { color: var(--ds-gray-700); }
-.${CLS.container}[data-theme='dark'] .${CLS.expandIcon}:hover,
-.${CLS.container}[data-theme='dark'] .${CLS.collapseIcon}:hover,
-.${CLS.container}[data-theme='dark'] .${CLS.child}:has(> .${CLS.clickableLabel}:hover) > .${CLS.expandIcon},
-.${CLS.container}[data-theme='dark'] .${CLS.child}:has(> .${CLS.clickableLabel}:hover) > .${CLS.collapseIcon} {
-  color: var(--ds-gray-500);
-}
-.${CLS.container}[data-theme='dark'] .${CLS.collapsedContent} { color: var(--ds-gray-700); }
 `;
 
 // ---------------------------------------------------------------------------
@@ -902,12 +879,10 @@ function JsonTree({
   data,
   name,
   expandLevel,
-  isDark,
 }: {
   data: unknown;
   name?: string;
   expandLevel: number;
-  isDark: boolean;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const shouldExpand = useMemo(
@@ -915,11 +890,7 @@ function JsonTree({
     [expandLevel]
   );
   return (
-    <div
-      ref={outerRef}
-      className={CLS.container}
-      data-theme={isDark ? 'dark' : 'light'}
-    >
+    <div ref={outerRef} className={CLS.container}>
       <DataRender
         field={name}
         value={data}
@@ -1036,7 +1007,6 @@ export function DataInspector({
 }: DataInspectorProps) {
   const collapsedData = useMemo(() => collapseRefs(data), [data]);
   const stableData = useStableInspectorData(collapsedData);
-  const isDark = useDarkMode();
 
   let content: ReactNode = (
     <>
@@ -1045,12 +1015,7 @@ export function DataInspector({
       <style href="wf-json-view" precedence="default">
         {JSON_VIEW_STYLES}
       </style>
-      <JsonTree
-        data={stableData}
-        name={name}
-        expandLevel={expandLevel}
-        isDark={isDark}
-      />
+      <JsonTree data={stableData} name={name} expandLevel={expandLevel} />
     </>
   );
 
