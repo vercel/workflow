@@ -219,6 +219,57 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
 }
 
 /**
+ * Whether the run has any hook or wait that an out-of-band writer could
+ * append an event for between an inline step's `step_completed` write and
+ * the next replay — namely an open hook (a `hook_created` not yet
+ * `hook_disposed`, which a webhook receiver can resolve with
+ * `hook_received`) or an open wait (a `wait_created` not yet
+ * `wait_completed`, which the wait timer can resolve with
+ * `wait_completed`).
+ *
+ * This gates the inline-delta fast path. The delta returned by the
+ * step-terminal write is the event log as of that write; it is consumed
+ * on the NEXT loop iteration, so any event a concurrent writer appends in
+ * that window would be present in a real `events.list` fetch but absent
+ * from the stale delta. Missing such an event for one replay can durably
+ * commit a scheduling decision (e.g. inline-executing the loser of a
+ * `Promise.race([hook, step])`) that the eventual full replay cannot
+ * consume — a `ReplayDivergenceError`. When no hook or wait is open, the
+ * only out-of-band writer is cancellation, which is benign to observe one
+ * iteration late (the next entity write is rejected against the terminal
+ * run and the run is already terminal), so the fast path is safe.
+ *
+ * Step-body `attr_set` writes are NOT a concern: they land before the
+ * step's terminal write and are therefore already inside the returned
+ * delta.
+ */
+function hasOpenHookOrWait(events: Event[]): boolean {
+  const disposedHookIds = new Set<string | undefined>();
+  const completedWaitIds = new Set<string | undefined>();
+  for (const e of events) {
+    if (e.eventType === 'hook_disposed') disposedHookIds.add(e.correlationId);
+    else if (e.eventType === 'wait_completed') {
+      completedWaitIds.add(e.correlationId);
+    }
+  }
+  for (const e of events) {
+    if (
+      e.eventType === 'hook_created' &&
+      !disposedHookIds.has(e.correlationId)
+    ) {
+      return true;
+    }
+    if (
+      e.eventType === 'wait_created' &&
+      !completedWaitIds.has(e.correlationId)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -430,6 +481,19 @@ export function workflowEntrypoint(
                   // we fetch only events created after the last known cursor.
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
+
+                  // Inline-delta optimization: when an inline step's terminal
+                  // write returns the event-log delta since the pre-write
+                  // cursor (a supporting World only), we stash it here so the
+                  // next loop iteration consumes it in place of the incremental
+                  // events.list round-trip. Each value is consumed exactly once
+                  // and then cleared. Null means "no delta pending — fetch
+                  // normally". See the consume site at the top of the loop and
+                  // the produce site after inline executeStep.
+                  let pendingInlineDelta: {
+                    events: Event[];
+                    cursor: string | null;
+                  } | null = null;
 
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
@@ -764,12 +828,44 @@ export function workflowEntrypoint(
                     }
 
                     let replayStart = 0;
+                    // Cursor of this iteration's event log before any inline
+                    // writes advance it — declared at try scope so the
+                    // suspension catch (which runs the inline step) can read it
+                    // as the `sinceCursor` for the inline-delta optimization.
+                    let preInlineWriteCursor: string | null = null;
                     try {
                       // Load events — use cached events with incremental fetch on subsequent iterations.
                       // The server always returns a cursor when there are events (even on the
                       // final page), so we can reliably use it for incremental loading.
                       let events: Event[];
-                      if (cachedEvents === null) {
+                      if (pendingInlineDelta && cachedEvents) {
+                        // Fast path: the previous iteration's inline step
+                        // terminal write returned the authoritative event-log
+                        // delta since the pre-write cursor, so we consume it
+                        // here instead of issuing an incremental events.list.
+                        // The delta is byte-for-byte what events.list(cursor)
+                        // would have returned at write time — it includes this
+                        // handler's own step events, any attr_set the step body
+                        // wrote, and any in-band events (e.g. hook_received,
+                        // wait_completed) another writer appended since the
+                        // cursor — so skipping the fetch cannot drop events or
+                        // skew the prefix from the server's log.
+                        const delta = pendingInlineDelta;
+                        pendingInlineDelta = null;
+                        if (delta.events.length > 0) {
+                          const existingIds = new Set(
+                            cachedEvents.map((e) => e.eventId)
+                          );
+                          for (const e of delta.events) {
+                            if (!existingIds.has(e.eventId)) {
+                              existingIds.add(e.eventId);
+                              cachedEvents.push(e);
+                            }
+                          }
+                        }
+                        eventsCursor = delta.cursor ?? eventsCursor;
+                        events = cachedEvents;
+                      } else if (cachedEvents === null) {
                         // First iteration: use preloaded events if available,
                         // otherwise do a full load with cursor.
                         if (preloadedEvents) {
@@ -955,6 +1051,17 @@ export function workflowEntrypoint(
 
                       // Update cache reference (may have been set for first time)
                       cachedEvents = events;
+
+                      // Snapshot the cursor as it stands for this iteration's
+                      // event log, before any inline writes (step_created via
+                      // handleSuspension, step_started/step_completed via
+                      // executeStep) advance it. This is the `sinceCursor`
+                      // handed to a supporting World on the inline step's
+                      // terminal write so it can return the event-log delta —
+                      // letting the next iteration skip the incremental
+                      // events.list. Captured here because nothing between this
+                      // point and the inline executeStep mutates eventsCursor.
+                      preInlineWriteCursor = eventsCursor;
 
                       // Replay workflow
                       runtimeLogger.debug('Starting workflow replay', {
@@ -1274,6 +1381,42 @@ export function workflowEntrypoint(
                         // this the replay-budget check at the top of the
                         // next loop iteration would (incorrectly) charge
                         // the step body against the budget.
+                        // Inline-delta fast path gate. We request the delta —
+                        // and on the next iteration consume it in place of the
+                        // events.list — only when ALL hold:
+                        //
+                        //  - We have a real prior cursor to diff against
+                        //    (`preInlineWriteCursor`; a World may return none on
+                        //    the initial load).
+                        //  - This is the clean single-step sequential case:
+                        //    this suspension created exactly one step and no
+                        //    hooks or waits (`err.{step,hook,wait}Count`), and
+                        //    that one pending step is owned by us (no parallel
+                        //    siblings queued to background handlers, which would
+                        //    write their own events out of band).
+                        //  - No pending wait timer from THIS suspension.
+                        //  - The run has NO pre-existing open hook or wait. This
+                        //    plus the per-suspension counts above is the
+                        //    load-bearing safety check: the delta snapshots the
+                        //    log at the step_completed write but is consumed on
+                        //    the next replay, so an out-of-band hook_received /
+                        //    wait_completed landing in that window would be in a
+                        //    real fetch yet absent from the stale delta —
+                        //    risking a divergent replay. With no hook/wait open
+                        //    (neither carried over nor created this suspension),
+                        //    the only out-of-band writer is cancellation, which
+                        //    is safe to observe one iteration late. See
+                        //    hasOpenHookOrWait.
+                        const requestInlineDelta =
+                          typeof preInlineWriteCursor === 'string' &&
+                          err.stepCount === 1 &&
+                          err.hookCount === 0 &&
+                          err.waitCount === 0 &&
+                          pendingSteps.length === 1 &&
+                          ownedPendingSteps.length === 1 &&
+                          !suspensionResult.waitTimeout &&
+                          !hasOpenHookOrWait(cachedEvents ?? []);
+
                         replayBudget.pause();
                         let stepResult: Awaited<ReturnType<typeof executeStep>>;
                         try {
@@ -1286,6 +1429,9 @@ export function workflowEntrypoint(
                             stepId: inlineStep.correlationId,
                             stepName: inlineStep.stepName,
                             runSpecVersion: workflowRun.specVersion,
+                            ...(requestInlineDelta && preInlineWriteCursor
+                              ? { inlineDeltaSinceCursor: preInlineWriteCursor }
+                              : {}),
                           });
                         } finally {
                           replayBudget.resume();
@@ -1352,6 +1498,24 @@ export function workflowEntrypoint(
                             }
                           );
                           return;
+                        }
+
+                        // Looping back to replay. If this step's terminal write
+                        // returned an inline delta (supporting World + the
+                        // single-step gate above), stash it so the next
+                        // iteration's load consumes it instead of issuing an
+                        // incremental events.list. Only the completed path
+                        // carries a delta; on any other terminal type the next
+                        // iteration falls back to the normal fetch.
+                        if (
+                          stepResult.type === 'completed' &&
+                          stepResult.inlineDelta &&
+                          !stepResult.inlineDelta.hasMore
+                        ) {
+                          pendingInlineDelta = {
+                            events: stepResult.inlineDelta.events,
+                            cursor: stepResult.inlineDelta.cursor,
+                          };
                         }
                       } else {
                         let terminalError = err;
