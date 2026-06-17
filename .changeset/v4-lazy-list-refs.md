@@ -2,4 +2,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Skip transferring event payload bytes for `resolveData: 'none'` listings on the v4 wire.
+Skip transferring event payload bytes when listing events with `resolveData: 'none'` using the v4 API.
