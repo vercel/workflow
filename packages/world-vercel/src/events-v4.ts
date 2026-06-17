@@ -379,8 +379,18 @@ export interface ListedEventV4 {
 
 export interface ListEventsV4Result {
   events: ListedEventV4[];
-  /** Pagination cursor — present when more pages remain. */
+  /**
+   * Trailing cursor. Present even on the final page — it doubles as the
+   * resume point for incremental loads — so it is NOT a reliable "more
+   * pages" signal on its own. Use `hasMore` for that.
+   */
   next?: string;
+  /**
+   * Explicit "another page of results exists" flag from the sentinel.
+   * `undefined` against older servers that don't emit it, in which case
+   * the caller falls back to `Boolean(next)`.
+   */
+  hasMore?: boolean;
 }
 
 /**
@@ -431,10 +441,12 @@ async function consumeListFrameStream(
 
   const events: ListedEventV4[] = [];
   let next: string | undefined;
+  let hasMore: boolean | undefined;
   let sawEndSentinel = false;
   for await (const frame of decodeFrames(chunks)) {
     if (frame.meta._end === 1) {
       if (typeof frame.meta.next === 'string') next = frame.meta.next;
+      if (typeof frame.meta.hasMore === 'boolean') hasMore = frame.meta.hasMore;
       sawEndSentinel = true;
       break;
     }
@@ -457,7 +469,11 @@ async function consumeListFrameStream(
     );
   }
 
-  return { events, ...(next ? { next } : {}) };
+  return {
+    events,
+    ...(next ? { next } : {}),
+    ...(hasMore !== undefined ? { hasMore } : {}),
+  };
 }
 
 function paginationToQuery(params: ListEventsV4Params): string {

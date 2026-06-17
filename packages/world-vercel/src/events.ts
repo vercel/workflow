@@ -476,8 +476,15 @@ export async function getWorkflowRunEvents(
 
   return {
     data: events,
+    // `next` is present even on the final page (it's the incremental-load
+    // resume cursor), so prefer the server's explicit `hasMore`. The
+    // `Boolean(next)` fallback covers older servers that don't emit it —
+    // at the cost of one extra empty-page request per load.
     cursor: result.next ?? null,
-    hasMore: Boolean(result.next),
+    hasMore:
+      typeof result.hasMore === 'boolean'
+        ? result.hasMore
+        : Boolean(result.next),
   } as PaginatedResponse<Event>;
 }
 
