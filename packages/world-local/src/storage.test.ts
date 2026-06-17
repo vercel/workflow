@@ -832,6 +832,38 @@ describe('Storage', () => {
         expect(rerun.status).toBe('running');
         expect(rerun.attempt).toBe(2);
       });
+
+      it('a lazy step_started followed by step_failed marks the step failed', async () => {
+        // Regression guard for the unregistered-step path on the lazy inline
+        // route. When a step's function isn't registered, executeStep must
+        // first send the lazy step_started (to materialize the step the
+        // suspension handler deferred) and only THEN write step_failed.
+        // Writing step_failed against a never-created step would hit the
+        // "step must exist" ordering guard and wedge the run. This asserts the
+        // create-then-fail sequence the runtime relies on.
+        await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_fail',
+          eventData: {
+            stepName: 'ghost-step',
+            input: new Uint8Array([1]),
+          },
+        });
+
+        const failed = await updateStep(
+          storage,
+          testRunId,
+          'lazy_step_fail',
+          'step_failed',
+          { error: new Uint8Array([2, 3]) }
+        );
+        expect(failed.status).toBe('failed');
+        expect(failed.attempt).toBe(1);
+
+        const persisted = await storage.steps.get(testRunId, 'lazy_step_fail');
+        expect(persisted.status).toBe('failed');
+      });
     });
 
     describe('list', () => {

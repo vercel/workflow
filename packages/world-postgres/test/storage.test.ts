@@ -857,6 +857,28 @@ describe('Storage (Postgres integration)', () => {
           })
         ).rejects.toThrow('terminal state');
       });
+
+      it('a lazy step_started followed by step_failed marks the step failed', async () => {
+        // Regression guard for the unregistered-step path on the lazy inline
+        // route: executeStep sends the lazy step_started to materialize the
+        // deferred step, then writes step_failed. Failing a never-created step
+        // would hit the "step must exist" ordering guard and wedge the run.
+        await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-fail',
+          eventData: { stepName: 'ghost-step', input: new Uint8Array([1]) },
+        });
+
+        const failed = await updateStep(
+          events,
+          testRunId,
+          'lazy-step-fail',
+          'step_failed',
+          { error: new Uint8Array([2, 3]) }
+        );
+        expect(failed.status).toBe('failed');
+        expect(failed.attempt).toBe(1);
+      });
     });
 
     describe('list', () => {

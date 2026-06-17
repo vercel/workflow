@@ -9,7 +9,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { pluralize, stepDisplayName } from '@workflow/utils';
-import type { SerializedData, World } from '@workflow/world';
+import type { SerializedData, Step, World } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -131,6 +131,35 @@ export async function executeStep(
         stepName,
         stepId,
       });
+      // On the lazy inline path the suspension handler deferred this step's
+      // `step_created`, expecting executeStep to materialize the step via a
+      // lazy `step_started` carrying its input. We never get that far for an
+      // unregistered step, so the step entity does not exist yet — writing
+      // `step_failed` straight away would hit the world's "step must exist"
+      // ordering guard and wedge the run. Send the lazy `step_started` first
+      // (it creates the step + synthetic `step_created` atomically and keeps
+      // replay correct), then fail it below. This also preserves the
+      // exactly-one-owner guarantee: a concurrent handler that won the create
+      // makes our lazy `step_started` reject with EntityConflictError → we
+      // return `skipped` and never write the failure twice.
+      if (params.lazyStepInput !== undefined) {
+        try {
+          await world.events.create(workflowRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: { stepName, input: params.lazyStepInput },
+          });
+        } catch (startErr) {
+          if (EntityConflictError.is(startErr)) {
+            return { type: 'skipped' };
+          }
+          if (RunExpiredError.is(startErr)) {
+            return { type: 'gone' };
+          }
+          throw startErr;
+        }
+      }
       try {
         await world.events.create(workflowRunId, {
           eventType: 'step_failed',
@@ -174,7 +203,7 @@ export async function executeStep(
     // EntityConflictError, mapped to `{ type: 'skipped' }` below, so it never
     // runs the body. When `lazyStepInput` is absent this is the legacy
     // step_started (step already created, no payload).
-    let step;
+    let step: Step;
     try {
       const startResult = await world.events.create(workflowRunId, {
         eventType: 'step_started',
