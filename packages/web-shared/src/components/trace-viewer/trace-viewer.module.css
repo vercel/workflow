@@ -1314,10 +1314,10 @@
 .segQueued {
   background: repeating-linear-gradient(
     45deg,
-    var(--ds-gray-alpha-200),
-    var(--ds-gray-alpha-200) 6px,
-    var(--ds-gray-alpha-100) 6px,
-    var(--ds-gray-alpha-100) 12px
+    var(--ds-gray-200),
+    var(--ds-gray-200) 6px,
+    var(--ds-gray-100) 6px,
+    var(--ds-gray-100) 12px
   );
 }
 
