@@ -460,10 +460,20 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
+  // `resolveData: 'none'` means the caller only wants metadata — it discards
+  // payloads in buildEventFromV4 below. Tell the backend not to stream them
+  // in the first place (lazy → empty frame bodies). On `'all'` we resolve
+  // (the default). A backend that predates this flag ignores it and streams
+  // full bodies regardless; buildEventFromV4 still strips them when
+  // resolveData is 'none', so this is purely a bandwidth optimization and is
+  // safe against an older backend.
   const wirePagination = {
     cursor: pagination?.cursor ?? undefined,
     limit: pagination?.limit,
     sortOrder: pagination?.sortOrder,
+    remoteRefBehavior: (resolveData === 'none' ? 'lazy' : 'resolve') as
+      | 'lazy'
+      | 'resolve',
   };
 
   const result = await ('correlationId' in params
