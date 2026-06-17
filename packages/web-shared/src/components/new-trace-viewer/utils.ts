@@ -278,7 +278,7 @@ function computeStepSegmentsFromSpan(
             ? 'failed'
             : nextType === 'step_completed'
               ? 'succeeded'
-              : 'running';
+              : 'retrying';
         segments.push({
           startFraction: markFrac,
           endFraction: nextFrac,
