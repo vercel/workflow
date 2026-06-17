@@ -8,6 +8,7 @@ import {
 import { withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import type { CryptoKey } from './encryption.js';
@@ -810,7 +811,12 @@ export async function runWorkflow(
         result,
         workflowRun.runId,
         encryptionKey,
-        vmGlobalThis
+        vmGlobalThis,
+        false,
+        // Gate payload compression on the run's specVersion: only runs
+        // marked as possibly containing compressed payloads (spec >= 5)
+        // get gzip data.
+        (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
       );
 
       span?.setAttributes({

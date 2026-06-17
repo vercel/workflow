@@ -245,6 +245,35 @@ describe('e2e', () => {
     );
   });
 
+  // `deploymentId: 'latest'` only resolves to a different deployment in
+  // worlds with atomic, immutable deployments (Vercel). In local dev and
+  // Postgres worlds there is nothing to resolve between, so it has no effect:
+  // the SDK logs a warning and targets the current deployment instead of
+  // failing. This guards that no-op, so a workflow that opts into
+  // `deploymentId: 'latest'` on Vercel still runs in local/Postgres dev. The
+  // warning itself is asserted in start.test.ts. Skipped on Vercel, where
+  // 'latest' actually hits the resolve API.
+  test.skipIf(!!process.env.WORKFLOW_VERCEL_ENV)(
+    "deploymentId: 'latest' is a no-op in non-Vercel worlds",
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('addTenWorkflow'), [123], {
+        deploymentId: 'latest',
+      });
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe(133);
+
+      const { json } = await cliInspectJson(`runs ${run.runId} --withData`);
+      expect(json).toMatchObject({
+        runId: run.runId,
+        status: 'completed',
+        input: [123],
+        output: 133,
+      });
+    }
+  );
+
   // Test that "use step" / "use workflow" functions inside dot-prefixed
   // directories like `.well-known/agent/` are discovered and executed correctly.
   // Only runs on Next.js workbenches where the test file is placed.

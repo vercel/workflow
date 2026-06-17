@@ -92,6 +92,60 @@ describe('NextDeferredBuilder', () => {
     expect(routeCode).not.toContain('__step_registrations');
   });
 
+  it('loads workflow code from disk for dev deferred flow routes', async () => {
+    const workingDir = await mkdtemp(join(tmpdir(), 'workflow-next-deferred-'));
+    tempDirs.push(workingDir);
+    vi.stubGlobal('eval', (source: string) => {
+      if (source === 'import("@workflow/builders")') {
+        return import('@workflow/builders');
+      }
+      return originalEval(source);
+    });
+
+    const NextDeferredBuilder = await getNextBuilderDeferred();
+    const builder = new NextDeferredBuilder({
+      dirs: [],
+      workingDir,
+      buildTarget: 'next',
+      workflowsBundlePath: '',
+      stepsBundlePath: '',
+      webhookBundlePath: '',
+      watch: true,
+    }) as any;
+
+    const workflowCode = 'globalThis.__private_workflows = new Map();';
+    const workflowFile = join(workingDir, 'workflows/example.ts');
+    const routeDir = join(workingDir, 'app/.well-known/workflow/v1/flow');
+    const flowOutfile = join(routeDir, 'route.js.temp');
+
+    builder.createWorkflowsBundle = vi.fn(async () => ({
+      interimBundleText: workflowCode,
+      manifest: { workflows: {}, classes: {} },
+    }));
+    builder.createDeferredStepManifest = vi.fn(async () => ({}));
+
+    await builder.createDeferredFlowRoute({
+      inputFiles: [workflowFile],
+      flowOutfile,
+      discoveredEntries: {
+        discoveredSteps: new Set(),
+        discoveredWorkflows: new Set([workflowFile]),
+        discoveredSerdeFiles: new Set(),
+      },
+    });
+
+    const routeCode = await readFile(flowOutfile, 'utf8');
+    expect(routeCode).toContain(
+      "import { readFile, stat } from 'node:fs/promises';"
+    );
+    expect(routeCode).toContain('async function getWorkflowHandler()');
+    expect(routeCode).toContain('export async function POST(req)');
+    expect(routeCode).not.toContain('const workflowCode = `');
+    await expect(
+      readFile(join(routeDir, '__workflow_code.txt'), 'utf8')
+    ).resolves.toBe(workflowCode);
+  });
+
   it('imports workspace package step sources from dist output outside packages directories', async () => {
     const workingDir = await mkdtemp(join(tmpdir(), 'workflow-next-deferred-'));
     tempDirs.push(workingDir);
