@@ -11,7 +11,7 @@
  *   the server stores without ever decoding it.
  * - **GET single event**: response body is one frame.
  * - **LIST events**: response body is a stream of frames terminated by a
- *   sentinel frame (meta = `{_end: 1, next?: cursor}`).
+ *   sentinel frame (meta = `{_end: 1, next?: cursor, hasMore?: boolean}`).
  *
  * Requests carry special HTTP response headers (eventId / runId / createdAt)
  * for client convenience, to allow metadata access without decoding the body.

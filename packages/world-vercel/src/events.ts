@@ -22,7 +22,8 @@
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
- *     frame whose meta carries `{_end: 1, next?: cursor}`. The old
+ *     frame whose meta carries `{_end: 1, next?: cursor, hasMore?: boolean}`.
+ *     The old
  *     per-event `/refs` round-trip is eliminated.
  *
  * Public function signatures are unchanged: storage.ts continues to
