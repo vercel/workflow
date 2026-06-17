@@ -145,3 +145,19 @@ export const cliFlags = {
     helpLabel: '-i, --interactive',
   }),
 };
+
+/**
+ * Flag for printing a shareable deep-link URL instead of opening the web UI.
+ * Only relevant to commands that can open a dashboard (`inspect`, `web`), so it
+ * is exported separately rather than bundled into `cliFlags`.
+ */
+export const urlFlag = {
+  url: Flags.boolean({
+    description:
+      'Print the deep-link URL to the run/dashboard and exit (no browser, no server)',
+    required: false,
+    default: false,
+    helpGroup: 'Output',
+    helpLabel: '--url',
+  }),
+};
