@@ -111,7 +111,7 @@ describe('withWorkflow builder config', () => {
     }
   });
 
-  it('uses outputFileTracingRoot as the builder projectRoot when configured', async () => {
+  it('uses outputFileTracingRoot for tracing without changing module specifier root', async () => {
     const config = withWorkflow({
       outputFileTracingRoot: '/repo',
     });
@@ -125,6 +125,7 @@ describe('withWorkflow builder config', () => {
     expect(builderConfigs).toHaveLength(1);
     expect(builderConfigs[0]).toMatchObject({
       projectRoot: '/repo',
+      moduleSpecifierRoot: process.cwd(),
       workingDir: process.cwd(),
     });
   });
