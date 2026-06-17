@@ -50,6 +50,7 @@
     "@radix-ui/react-slot": "1.1.1",
     "@radix-ui/react-tooltip": "1.2.8",
     "@tailwindcss/postcss": "4",
+    "@tootallnate/zstd-wasm": "0.0.2",
     "@workflow/core": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",

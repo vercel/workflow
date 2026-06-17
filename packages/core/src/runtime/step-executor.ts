@@ -10,7 +10,10 @@ import {
 } from '@workflow/errors';
 import { pluralize, stepDisplayName } from '@workflow/utils';
 import type { World } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
+} from '@workflow/world';
 import type { CryptoKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -46,6 +49,12 @@ export interface StepExecutorParams {
   stepId: string;
   stepName: string;
   encryptionKey?: CryptoKey;
+  /**
+   * The workflow run's specVersion, used to gate payload compression.
+   * Step outputs/errors are only gzip-compressed when the run is marked
+   * as possibly containing compressed payloads (specVersion >= 5).
+   */
+  runSpecVersion?: number;
 }
 
 /**
@@ -79,6 +88,10 @@ export async function executeStep(
     stepName,
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
+  // Gate payload compression on the run's specVersion: only runs marked
+  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  const compression =
+    (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
   const spanName = `step.execute ${stepDisplayName(stepName)}`;
   return trace(spanName, {}, async (span) => {
@@ -116,7 +129,10 @@ export async function executeStep(
             error: await dehydrateStepError(
               new FatalError(errorMessage),
               workflowRunId,
-              await getEncryptionKey()
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
             ),
           },
         });
@@ -250,7 +266,10 @@ export async function executeStep(
             error: await dehydrateStepError(
               wrappedError,
               workflowRunId,
-              await getEncryptionKey()
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
             ),
           },
         });
@@ -355,7 +374,11 @@ export async function executeStep(
           result,
           workflowRunId,
           encryptionKey,
-          ops
+          ops,
+          globalThis,
+          false,
+          false,
+          compression
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({
@@ -509,7 +532,10 @@ export async function executeStep(
               error: await dehydrateStepError(
                 effectiveErr,
                 workflowRunId,
-                await getEncryptionKey()
+                await getEncryptionKey(),
+                [],
+                globalThis,
+                compression
               ),
             },
           });
@@ -574,7 +600,10 @@ export async function executeStep(
               error: await dehydrateStepError(
                 wrappedError,
                 workflowRunId,
-                await getEncryptionKey()
+                await getEncryptionKey(),
+                [],
+                globalThis,
+                compression
               ),
             },
           });
@@ -633,7 +662,10 @@ export async function executeStep(
             error: await dehydrateStepError(
               err,
               workflowRunId,
-              await getEncryptionKey()
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
             ),
             ...(RetryableError.is(err) && { retryAfter: err.retryAfter }),
           },

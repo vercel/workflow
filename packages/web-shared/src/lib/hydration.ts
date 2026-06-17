@@ -476,6 +476,13 @@ export async function hydrateResourceIOWithKey<T>(
     '@workflow/core/serialization-format'
   );
   const { importKey } = await import('@workflow/core/encryption');
+  // Payloads may be zstd-compressed (the Web DecompressionStream has no zstd);
+  // register the WASM-backed browser decoder before hydrating. Idempotent and
+  // lazy — the WASM is only compiled when a zstd payload is actually decoded.
+  const { ensureZstdDecoderRegistered } = await import(
+    './zstd-browser-decoder.js'
+  );
+  ensureZstdDecoderRegistered();
   const cryptoKey = await importKey(key);
   const revivers = getRevivers();
 

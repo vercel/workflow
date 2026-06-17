@@ -105,6 +105,7 @@ vi.mock('../telemetry.js', () => ({
   linkToCurrentContext: vi.fn().mockResolvedValue([]),
   linkToTraceCarrier: vi.fn().mockResolvedValue(undefined),
   withWorkflowBaggage: vi.fn((_attrs: unknown, fn: () => unknown) => fn()),
+  getActiveSpan: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock logger
@@ -894,7 +895,10 @@ describe('step-handler fatal vs retryable behavior', () => {
     expect(dehydrateStepError).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'FatalError', fatal: true }),
       'wrun_test123',
-      undefined
+      undefined,
+      [],
+      globalThis,
+      expect.any(Boolean)
     );
   });
 

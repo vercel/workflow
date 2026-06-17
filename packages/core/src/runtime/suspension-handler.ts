@@ -11,6 +11,7 @@ import {
   type CreateEventRequest,
   type SerializedData,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -170,6 +171,11 @@ export async function handleSuspension({
   const rawKey = await world.getEncryptionKeyForRun?.(run);
   const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
+  // Gate payload compression on the run's specVersion: only runs marked
+  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  const compression =
+    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+
   // Build and process hook_created events (same as V1)
   const hookEvents = await Promise.all(
     hooksNeedingCreation.map(async (queueItem) => {
@@ -180,7 +186,9 @@ export async function handleSuspension({
               queueItem.metadata,
               runId,
               encryptionKey,
-              suspension.globalThis
+              suspension.globalThis,
+              false,
+              compression
             )) as SerializedData);
       return {
         queueItem,
@@ -287,7 +295,9 @@ export async function handleSuspension({
             { aborted: true, reason: queueItem.abortReason },
             runId,
             encryptionKey,
-            suspension.globalThis
+            suspension.globalThis,
+            false,
+            compression
           );
 
           // Create hook_received event with abort payload
@@ -375,7 +385,9 @@ export async function handleSuspension({
             },
             runId,
             encryptionKey,
-            suspension.globalThis
+            suspension.globalThis,
+            false,
+            compression
           );
           const stepEvent: CreateEventRequest = {
             eventType: 'step_created' as const,

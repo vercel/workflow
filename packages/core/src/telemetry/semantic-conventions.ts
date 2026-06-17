@@ -309,6 +309,43 @@ export const QueueSerializeTimeMs = SemanticConvention<number>(
   'workflow.queue.serialize_time_ms'
 );
 
+// Payload compression attributes (gzip codec, specVersion >= 5)
+//
+// Sizes are measured at the compression boundary: before encryption on the
+// write path and after decryption on the read path. They therefore reflect
+// compression's effect, not the at-rest size (which also includes the
+// ~28-byte `encr` envelope and, on some backends, base64 expansion).
+
+/** Whether this serialize/deserialize was a write or read. */
+export const SerializationOperation = SemanticConvention<
+  'serialize' | 'deserialize'
+>('workflow.serialization.operation');
+
+/** Whether a compression codec was applied (write) / present (read). */
+export const SerializationCompressed = SemanticConvention<boolean>(
+  'workflow.serialization.compressed'
+);
+
+/** Which compression codec applied / was present (`zstd`, `gzip`, or `none`). */
+export const SerializationCodec = SemanticConvention<'zstd' | 'gzip' | 'none'>(
+  'workflow.serialization.codec'
+);
+
+/** Logical (uncompressed, devalue-prefixed) payload size in bytes. */
+export const SerializationUncompressedBytes = SemanticConvention<number>(
+  'workflow.serialization.uncompressed_bytes'
+);
+
+/** Stored (post-compression, pre-encryption) payload size in bytes. */
+export const SerializationStoredBytes = SemanticConvention<number>(
+  'workflow.serialization.stored_bytes'
+);
+
+/** Fraction of bytes saved by compression (0..1); set only when compressed. */
+export const SerializationCompressionRatio = SemanticConvention<number>(
+  'workflow.serialization.compression_ratio'
+);
+
 // RPC/Peer Service attributes - For service maps and dependency tracking
 // See: https://opentelemetry.io/docs/specs/semconv/rpc/rpc-spans/
 

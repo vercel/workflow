@@ -584,7 +584,7 @@ function getObservabilityDashboardUrl(runId: string): string | null {
   if (!projectSlug || !env) return null;
 
   const environment = env === 'production' ? 'production' : 'preview';
-  return `https://vercel.com/${teamSlug}/${projectSlug}/observability/workflows/runs/${runId}?environment=${environment}`;
+  return `https://vercel.com/${teamSlug}/${projectSlug}/workflows/runs/${runId}?environment=${environment}`;
 }
 
 /**

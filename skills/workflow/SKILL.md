@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.9'
+  version: '1.10'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -524,9 +524,39 @@ npx workflow cancel <run_id> --backend vercel --project <project-name> --team <t
 # --env defaults to "production"; use --env preview for preview deployments
 ```
 
+### Deep-linking to a run (share a URL, no browser)
+
+Use `--url` to **print** the dashboard deep link and exit — no browser opens and
+no local server starts. This is the right tool when you need to hand a user a
+clickable link (PR comment, Slack message, debugging summary) rather than open a
+UI. (`--web` opens the dashboard; `--url` only prints the link.)
+
+```bash
+# Vercel run — prints the Vercel dashboard URL for the run
+npx workflow inspect run <run_id> --backend vercel --project <project> --team <team> --url
+npx workflow web <run_id> --backend vercel --project <project> --team <team> --env preview --url
+
+# Local run — prints the local web UI deep link
+npx workflow inspect run <run_id> --url
+
+# Machine-readable: --url --json prints { "url": "..." } to stdout
+npx workflow inspect run <run_id> --backend vercel --url --json
+```
+
+URL formats produced:
+
+- **Vercel:** `https://vercel.com/<team-slug>/<project-slug>/workflows/runs/<run_id>?environment=<production|preview>`
+  (`--env` selects the environment; defaults to `production`. Resolving the team
+  slug requires being logged in via `vercel login` with the project linked.)
+- **Local:** `http://localhost:<port>?resource=run&id=<run_id>` (port defaults
+  to `3456`; the link works while the `npx workflow web` server is running).
+
+stdout contains **only** the URL (or the JSON object) — all other output goes to
+stderr — so you can capture it directly, e.g. `URL=$(npx workflow web <run_id> --backend vercel --url)`.
+
 **Debugging tips:**
 - Use `--json` (`-j`) on any command for machine-readable output
-- Use `--web` to open the Vercel Observability dashboard in your browser
+- Use `--web` to open the Vercel Observability dashboard in your browser, or `--url` to just print the deep link
 - Use `--help` on any command for full usage details
 - Only import workflow APIs you actually use. Unused imports can cause 500 errors.
 

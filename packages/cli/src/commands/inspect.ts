@@ -3,7 +3,7 @@ import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import type { InspectCLIOptions } from '../lib/config/types.js';
-import { cliFlags } from '../lib/inspect/flags.js';
+import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
 import {
   listEvents,
   listHooks,
@@ -17,7 +17,7 @@ import {
   showStream,
 } from '../lib/inspect/output.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
-import { launchWebUI } from '../lib/inspect/web.js';
+import { launchWebUI, printDeepLink } from '../lib/inspect/web.js';
 
 export default class Inspect extends BaseCommand {
   static description = 'Inspect runs, steps, streams, or events';
@@ -140,6 +140,7 @@ export default class Inspect extends BaseCommand {
       helpLabel: '--decrypt',
     }),
     ...cliFlags,
+    ...urlFlag,
   } as const;
 
   public async run(): Promise<void> {
@@ -156,6 +157,13 @@ export default class Inspect extends BaseCommand {
       }
 
       const id = args.id;
+
+      // Print-only deep link: resolve config and emit the URL, no browser/server.
+      if (flags.url) {
+        const actualResource = resource === 'web' ? 'run' : resource;
+        await printDeepLink(actualResource, id, flags, this.config.version);
+        return;
+      }
 
       // For web mode, allow config errors so we can open the web UI for configuration
       const isWebMode = flags.web || resource === 'web';
