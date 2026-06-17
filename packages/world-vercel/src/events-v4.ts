@@ -362,6 +362,15 @@ export interface ListEventsV4Params {
   cursor?: string;
   limit?: number;
   sortOrder?: 'asc' | 'desc';
+  /**
+   * Whether the backend resolves payload bytes into each frame body.
+   * `resolve` (default) streams the bytes; `lazy` emits empty-body frames
+   * (the ref descriptor stays in the frame meta) — for metadata-only
+   * listings that would otherwise download every payload just to discard
+   * it. A backend that predates this flag ignores it and streams full
+   * bodies, so callers must still tolerate bodies being present.
+   */
+  remoteRefBehavior?: 'resolve' | 'lazy';
 }
 
 /**
@@ -460,11 +469,23 @@ async function consumeListFrameStream(
   return { events, ...(next ? { next } : {}) };
 }
 
-function paginationToQuery(params: ListEventsV4Params): string {
-  const sp = new URLSearchParams();
+/**
+ * Append the shared list params (pagination + ref behavior) to `sp`.
+ * Shared by the runId and correlationId list query builders so both send
+ * `remoteRefBehavior` identically.
+ */
+function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
   if (params.cursor) sp.set('cursor', params.cursor);
   if (params.limit !== undefined) sp.set('limit', String(params.limit));
   if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
+  if (params.remoteRefBehavior) {
+    sp.set('remoteRefBehavior', params.remoteRefBehavior);
+  }
+}
+
+function paginationToQuery(params: ListEventsV4Params): string {
+  const sp = new URLSearchParams();
+  appendListParams(sp, params);
   const qs = sp.toString();
   return qs ? `?${qs}` : '';
 }
@@ -511,9 +532,7 @@ export async function getEventsByCorrelationIdV4(
   const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
   sp.set('correlationId', correlationId);
-  if (params.cursor) sp.set('cursor', params.cursor);
-  if (params.limit !== undefined) sp.set('limit', String(params.limit));
-  if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
+  appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   return consumeListFrameStream(
     url,

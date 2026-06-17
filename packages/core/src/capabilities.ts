@@ -28,8 +28,8 @@
  *   Commit: 7618ac36 "Wire AES-GCM encryption into serialization layer (#1251)"
  *   https://github.com/vercel/workflow/commit/7618ac36
  * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.15`
- * - `gzip` (gzip payload compression): added in `5.0.0-beta.16`
- * - `zstd` (zstd payload compression, preferred codec): added in `5.0.0-beta.16`
+ * - `gzip` (gzip payload compression): added in `5.0.0-beta.18`
+ * - `zstd` (zstd payload compression, preferred codec): added in `5.0.0-beta.18`
  *   alongside gzip — they co-ship, so any run that can read one can read both.
  */
 
@@ -77,8 +77,8 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
   // compressed payloads to consumers that cannot decompress them; too-high
   // merely delays the optimization (safe). gzip and zstd ship together, so
   // they share a min version — a run that can read one can read both.
-  { format: SerializationFormat.GZIP, minVersion: '5.0.0-beta.16' },
-  { format: SerializationFormat.ZSTD, minVersion: '5.0.0-beta.16' },
+  { format: SerializationFormat.GZIP, minVersion: '5.0.0-beta.18' },
+  { format: SerializationFormat.ZSTD, minVersion: '5.0.0-beta.18' },
   // Future entries:
   // { format: SerializationFormat.CBOR, minVersion: '5.x.y' },
   // { format: SerializationFormat.ENCRYPTED_V2, minVersion: '5.x.y' },

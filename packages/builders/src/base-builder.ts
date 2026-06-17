@@ -110,8 +110,8 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
  * (e.g. if it shows up in both `stepFiles` and `serdeOnlyFiles`) without
  * conflating unrelated files.
  */
-function moduleIdentityKey(file: string, projectRoot: string): string {
-  const { moduleSpecifier } = resolveModuleSpecifier(file, projectRoot);
+function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
+  const { moduleSpecifier } = resolveModuleSpecifier(file, moduleSpecifierRoot);
   if (moduleSpecifier) {
     // Strip the "@<version>" suffix so source and dist copies of the same
     // export collapse to the same key.
@@ -147,6 +147,10 @@ export abstract class BaseBuilder {
 
   protected get transformProjectRoot(): string {
     return this.config.projectRoot || this.config.workingDir;
+  }
+
+  protected get moduleSpecifierRoot(): string {
+    return this.config.moduleSpecifierRoot || this.transformProjectRoot;
   }
 
   /**
@@ -738,7 +742,7 @@ export abstract class BaseBuilder {
     const buildImports = (files: string[]): string =>
       files
         .filter((file) => {
-          const identity = moduleIdentityKey(file, this.transformProjectRoot);
+          const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
           if (emittedImportIdentities.has(identity)) return false;
           emittedImportIdentities.add(identity);
           return true;
@@ -837,6 +841,7 @@ export abstract class BaseBuilder {
           entriesToBundle: normalizedEntriesToBundle,
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
           bundleTransitiveLocalStepDependencies,
           rewriteTsExtensions,
@@ -872,7 +877,8 @@ export abstract class BaseBuilder {
             source,
             'workflow',
             workflowFile,
-            this.transformProjectRoot
+            this.transformProjectRoot,
+            this.moduleSpecifierRoot
           );
           if (fileManifest.workflows) {
             workflowManifest.workflows = Object.assign(
@@ -991,7 +997,7 @@ export abstract class BaseBuilder {
     const buildImports = (files: string[]): string =>
       files
         .filter((file) => {
-          const identity = moduleIdentityKey(file, this.transformProjectRoot);
+          const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
           if (emittedImportIdentities.has(identity)) return false;
           emittedImportIdentities.add(identity);
           return true;
@@ -1069,6 +1075,7 @@ export abstract class BaseBuilder {
         createSwcPlugin({
           mode: 'workflow',
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
           sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
@@ -1587,6 +1594,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         createSwcPlugin({
           mode: 'step',
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           sideEffectEntries: normalizedClientSideEffectEntries,
         }),
       ],
