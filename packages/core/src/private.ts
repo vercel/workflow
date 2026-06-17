@@ -7,6 +7,7 @@ import type { CryptoKey } from './encryption.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { Serializable } from './schemas.js';
+import type { StepHydrationCache } from './step-hydration-cache.js';
 
 export type StepFunction<
   Args extends Serializable[] = any[],
@@ -186,6 +187,24 @@ export interface WorkflowOrchestratorContext {
    * that do not initialize it degrade gracefully to the previous behavior.
    */
   pendingDeliveryBarriers?: Map<number, DeliveryBarrierEntry>;
+  /**
+   * Per-run memoization cache for hydrated step return values, keyed by the
+   * `step_completed` event id. Owned by the inline replay loop in `runtime.ts`
+   * and threaded through each `runWorkflow` call so it survives across replay
+   * iterations of the SAME run (a fresh context is created each iteration) but
+   * never leaks across unrelated runs.
+   *
+   * On replay K of a sequential N-step workflow, the step consumer would
+   * otherwise re-decrypt and re-parse the results of all K already-completed
+   * steps — O(N²) across an invocation. This cache makes a completed step's
+   * result available in O(1) on subsequent replays. Only primitive results are
+   * memoized, so a shared reference can never let one replay's mutation leak
+   * into the next; see `step-hydration-cache.ts` for the full rationale.
+   *
+   * Optional so contexts that do not initialize it (test harnesses) degrade
+   * gracefully to re-hydrating every replay — identical to previous behavior.
+   */
+  stepHydrationCache?: StepHydrationCache;
 }
 
 /** The kind of branch-deciding delivery a barrier represents. */

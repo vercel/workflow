@@ -55,6 +55,10 @@ import {
 } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
+import {
+  createStepHydrationCache,
+  type StepHydrationCache,
+} from './step-hydration-cache.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
   buildInvocationSpanLinks,
@@ -430,6 +434,16 @@ export function workflowEntrypoint(
                   // we fetch only events created after the last known cursor.
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
+
+                  // Per-run cache of hydrated step return values, shared across
+                  // every replay iteration of THIS invocation. Each iteration
+                  // builds a fresh workflow context, so the cache is owned here
+                  // (outside that context) and threaded into runWorkflow. It
+                  // turns the otherwise O(N²) re-decrypt + re-parse of completed
+                  // step results across N replays into O(N). Scoped to this run
+                  // only — never reused across runs. See step-hydration-cache.ts.
+                  const stepHydrationCache: StepHydrationCache =
+                    createStepHydrationCache();
 
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
@@ -967,7 +981,8 @@ export function workflowEntrypoint(
                         workflowCode,
                         workflowRun,
                         events,
-                        encryptionKey
+                        encryptionKey,
+                        stepHydrationCache
                       );
                       runtimeLogger.debug('Workflow replay completed', {
                         workflowRunId: runId,
