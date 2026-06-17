@@ -572,6 +572,13 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      // Opt-in inline-delta: forward the cursor the runtime held before
+      // this write so the server can return the authoritative event-log
+      // delta on the response (events/cursor/hasMore), letting the inline
+      // loop skip a follow-up events.list. The server only acts on it for
+      // step_completed/step_failed; older servers ignore it and the runtime
+      // falls back to events.list.
+      ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
       remoteRefBehavior,
       payload,
       ...meta,

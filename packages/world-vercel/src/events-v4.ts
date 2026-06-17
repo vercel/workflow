@@ -87,6 +87,14 @@ export interface CreateEventV4Input {
   /** Opt-in for framework-level callers to write `$`-prefixed reserved
    *  attribute keys (attr_set / run_created / run_started). */
   allowReservedAttributes?: boolean;
+  /** Opt-in inline-delta request. On a step-terminal write
+   *  (step_completed / step_failed) the inline loop passes the cursor it
+   *  held before the write so the server can return the authoritative
+   *  event-log delta on the response `events`/`cursor`/`hasMore`, letting
+   *  the runtime skip a follow-up events.list. Ignored by the server for
+   *  other event types; older servers ignore it entirely (the runtime then
+   *  falls back to events.list). */
+  sinceCursor?: string;
 }
 
 export interface CreateEventV4Result {
@@ -147,6 +155,7 @@ function buildPostFrameMeta(
   if (input.allowReservedAttributes !== undefined) {
     meta.allowReservedAttributes = input.allowReservedAttributes;
   }
+  if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
   return meta;
 }
 
