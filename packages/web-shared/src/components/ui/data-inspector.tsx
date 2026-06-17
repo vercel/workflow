@@ -3,14 +3,13 @@
 /**
  * Reusable data inspector for the o11y UI.
  *
- * Renders JSON with a small in-house tree renderer whose DOM and behavior
- * mirror `react-json-view-lite` so the output matches the Vercel dashboard
- * (vercel/front) 1:1 — bracket notation (`{ … }` / `[ … ]`), pink keys, typed
- * value colors, `▸`/`▾` disclosure icons, and a `...` collapsed indicator.
+ * Renders JSON as a collapsible tree: bracket notation (`{ … }` / `[ … ]`),
+ * colored keys, typed value colors, `▸`/`▾` disclosure icons, and a `...`
+ * collapsed indicator.
  *
- * On top of plain JSON it keeps the workflow-specific value handling that the
- * dashboard needs: StreamRef / RunRef badges, encrypted markers, decoded byte
- * streams, Dates, and named class instances.
+ * On top of plain JSON it handles the workflow-specific value types: StreamRef /
+ * RunRef badges, encrypted markers, decoded byte streams, Dates, and named
+ * class instances.
  */
 
 import { Lock } from 'lucide-react';
@@ -157,11 +156,10 @@ export const RunClickContext = createContext<
 // ---------------------------------------------------------------------------
 // Styling
 //
-// Class names and rules mirror vercel/front's json-message.module.css so the
-// rendered tree is visually identical. Shipped as a React 19 hoistable <style>
-// (deduped by href) instead of a CSS module so the package stays bundler-
-// agnostic for every consumer. Colors use theme-aware `--ds-*` tokens that
-// adapt to light/dark automatically, so no per-theme overrides are needed.
+// Shipped as a React 19 hoistable <style> (deduped by href) instead of a CSS
+// module so the package stays bundler-agnostic for every consumer. Colors use
+// theme-aware `--ds-*` tokens that adapt to light/dark automatically, so no
+// per-theme overrides are needed.
 // ---------------------------------------------------------------------------
 
 const CLS = {
@@ -478,7 +476,7 @@ function BytesDisplayValue({ display }: { display: BytesDisplay }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tree renderer (mirrors react-json-view-lite's DOM + keyboard behavior)
+// Tree renderer
 // ---------------------------------------------------------------------------
 
 type Entry = [field: string | undefined, value: unknown];
