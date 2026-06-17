@@ -11,7 +11,9 @@ related:
 
 This error occurs when the Workflow SDK's built-in AES-GCM encryption layer fails while encrypting or decrypting a workflow payload. The SDK encrypts step inputs, step outputs, hook payloads, and other event-log data with a per-run AES-256 key whenever encryption is configured for the deployment.
 
-This is an **internal SDK failure** — your workflow code never invokes the encryption primitives directly. When this surfaces, it means the ciphertext, nonce, or auth tag the SDK tried to verify is not the bytes that were originally produced. The run is failed with the `RUNTIME_ERROR` classification.
+This is an **internal SDK failure** — your workflow code never invokes the encryption primitives directly. When this surfaces, it means the ciphertext, nonce, or auth tag the SDK tried to verify is not the bytes that were originally produced.
+
+A failure to *decrypt* persisted data is often transient: if the ciphertext arrived from a truncated or corrupted read, a fresh delivery re-fetches the event log and ref payloads from scratch and can succeed. On managed platforms (`world-vercel`), the SDK therefore re-attempts the run via queue redelivery a bounded number of times before giving up. Once that retry budget is exhausted — or immediately for *encrypt*-side failures, and for in-process worlds where there is nothing to re-fetch — the run is failed with the `RUNTIME_ERROR` classification.
 
 ## Error Message
 
@@ -31,7 +33,7 @@ The thrown `RuntimeDecryptionError` carries a small `context` object with diagno
 
 Common causes, in rough order of likelihood:
 
-1. **Ciphertext mutation or truncation in transit.** The encrypted payload reached the SDK with bytes that differ from what storage holds. Possible sources include a truncated HTTP response from a workflow-server ref endpoint, an edge-cache miss returning a partial 200, or a proxy drop during streaming. A truncated body whose first 4 bytes happen to still spell `encr` produces the exact "auth tag mismatch" symptom.
+1. **Ciphertext mutation or truncation in transit.** The encrypted payload reached the SDK with bytes that differ from what storage holds. Possible sources include a truncated HTTP response from a persisted-data ref endpoint, an edge-cache miss returning a partial 200, or a proxy drop during streaming. A truncated body whose first 4 bytes happen to still spell `encr` produces the exact "auth tag mismatch" symptom. This is the recoverable case that queue redelivery retries before failing the run.
 2. **Key resolution mismatch.** The key used to decrypt is not the key that was used to encrypt — e.g. the run's `deploymentId` was not threaded through key resolution and the SDK fell back to the wrong deployment's key material.
 3. **Malformed encrypted envelope.** The envelope is too short to contain the GCM nonce (12 bytes) and auth tag (16 bytes), so decryption is rejected before it begins.
 
@@ -49,7 +51,7 @@ npm install workflow@latest
 
 ### 2. Retry the failed run
 
-Since this is a fatal error, the run is automatically marked as `failed`. You can re-run it using the **Re-run** button in the Workflow Dashboard.
+On managed platforms the SDK already retries a decrypt failure via queue redelivery before giving up, so a run that reaches `failed` has exhausted those automatic attempts. You can still re-run it manually using the **Re-run** button in the Workflow Dashboard.
 
 ### 3. Report the issue
 
@@ -62,7 +64,7 @@ If the error persists after upgrading, please [open an issue on GitHub](https://
 
 ## This Error Cannot Be Caught
 
-Like other `WorkflowRuntimeError` subclasses, a runtime decryption failure is **not catchable** inside your workflow function. The runtime cannot safely continue executing user code when an event-log payload can't be verified, so the entire run fails immediately and is marked as `failed`.
+Like other `WorkflowRuntimeError` subclasses, a runtime decryption failure is **not catchable** inside your workflow function. The runtime cannot safely continue executing user code when an event-log payload can't be verified. After any bounded queue-redelivery attempts are exhausted, the entire run is marked as `failed`.
 
 To handle this programmatically from outside the workflow, check the run status:
 

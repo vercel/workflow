@@ -9,7 +9,12 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
+import { importKey } from './encryption.js';
+import {
+  DECRYPTION_FAILURE_MAX_RETRIES,
+  MAX_QUEUE_DELIVERIES,
+  REPLAY_DIVERGENCE_MAX_RETRIES,
+} from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import {
@@ -1120,5 +1125,201 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // promise (queue re-drive), never through an unconsumed `waitUntil`
     // promise (which would become an unhandled rejection / process exit 128).
     expect(await anyWaitUntilPromiseRejected()).toBe(false);
+  });
+});
+
+describe('workflowEntrypoint decryption-failure redelivery', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.restoreAllMocks();
+  });
+
+  const getWorkflowTransformCode = (workflowName: string) =>
+    `;globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
+
+  const RAW_KEY_A = new Uint8Array(32).fill(0xaa);
+  const RAW_KEY_B = new Uint8Array(32).fill(0xbb);
+
+  /**
+   * Drive a single workflow handler invocation whose input was encrypted
+   * with `writerRawKey` but whose run-key resolves to `readerRawKey`. When
+   * the two differ, input hydration during replay throws a
+   * RuntimeDecryptionError (AES-GCM auth-tag mismatch).
+   */
+  async function runWithKeyMismatch(opts: {
+    processExitTriggersQueueRedelivery: boolean | undefined;
+    attempt: number;
+    writerRawKey: Uint8Array;
+    readerRawKey: Uint8Array;
+  }) {
+    const runId = 'wrun_decrypt_redelivery';
+    const writerKey = await importKey(opts.writerRawKey);
+
+    // Encrypt the workflow arguments with the writer key.
+    const input = await dehydrateWorkflowArguments([], runId, writerKey, []);
+
+    const workflowRun: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input,
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const createdEvents: any[] = [];
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        return { run: workflowRun, events: [] };
+      }
+      createdEvents.push(data);
+      return {
+        event: {
+          eventId: `event-${createdEvents.length}`,
+          runId,
+          createdAt: new Date(),
+          ...data,
+        },
+      };
+    });
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      processExitTriggersQueueRedelivery:
+        opts.processExitTriggersQueueRedelivery,
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) => {
+          return async () => {
+            await handler(
+              {
+                runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              },
+              {
+                requestId: 'req_test',
+                attempt: opts.attempt,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_test',
+              }
+            );
+            return new Response(null, { status: 204 });
+          };
+        }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [],
+          hasMore: false,
+          cursor: 'cursor_test',
+        })),
+      },
+      runs: {
+        get: vi.fn(async () => workflowRun),
+      },
+      queue: vi.fn(),
+      // Reader key — differs from the writer key in the mismatch tests.
+      getEncryptionKeyForRun: vi.fn(async () => opts.readerRawKey),
+    } as any);
+
+    const handler = workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    );
+
+    return {
+      createdEvents,
+      runHandler: () => handler(new Request('https://example.test')),
+    };
+  }
+
+  it('redrives (process.exit) on early attempts for managed Worlds instead of failing the run', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((
+      code?: number
+    ) => {
+      throw new Error(`__test_process_exit__:${code}`);
+    }) as never);
+
+    const { createdEvents, runHandler } = await runWithKeyMismatch({
+      processExitTriggersQueueRedelivery: true,
+      attempt: 1,
+      writerRawKey: RAW_KEY_A,
+      readerRawKey: RAW_KEY_B,
+    });
+
+    await expect(runHandler()).rejects.toThrow('__test_process_exit__:1');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // No run_failed should be written while we still have retry budget.
+    expect(
+      createdEvents.find((e) => e.eventType === 'run_failed')
+    ).toBeUndefined();
+  });
+
+  it('fails the run with RUNTIME_ERROR once the retry budget is exhausted (managed World)', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((
+      code?: number
+    ) => {
+      throw new Error(`__test_process_exit__:${code}`);
+    }) as never);
+
+    // First attempt past the decryption-failure budget. Guard that it still
+    // sits under the queue's max-deliveries cap so this exercises the
+    // decryption-failure budget, not the queue max-deliveries guard.
+    const attempt = DECRYPTION_FAILURE_MAX_RETRIES + 1;
+    expect(attempt).toBeLessThan(MAX_QUEUE_DELIVERIES);
+
+    const { createdEvents, runHandler } = await runWithKeyMismatch({
+      processExitTriggersQueueRedelivery: true,
+      attempt,
+      writerRawKey: RAW_KEY_A,
+      readerRawKey: RAW_KEY_B,
+    });
+
+    const response = await runHandler();
+    expect(response.status).toBe(204);
+    // Past the budget, the run is failed via event rather than redelivered.
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+        }),
+      })
+    );
+  });
+
+  it('fails the run immediately (no redelivery) for in-process Worlds', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((
+      code?: number
+    ) => {
+      throw new Error(`__test_process_exit__:${code}`);
+    }) as never);
+
+    const { createdEvents, runHandler } = await runWithKeyMismatch({
+      processExitTriggersQueueRedelivery: undefined,
+      attempt: 1,
+      writerRawKey: RAW_KEY_A,
+      readerRawKey: RAW_KEY_B,
+    });
+
+    const response = await runHandler();
+    expect(response.status).toBe(204);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+        }),
+      })
+    );
   });
 });
