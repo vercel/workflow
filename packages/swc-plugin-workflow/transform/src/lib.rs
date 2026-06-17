@@ -4998,14 +4998,77 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
             }
         }
 
-        // Only visit the initializer, not the variable name pattern
-        // This prevents marking the variable name itself as "used"
+        // Only visit the initializer, not the variable name pattern, to avoid
+        // marking the binding name itself as "used". However, destructuring
+        // patterns can embed default-value initializer expressions (e.g. the
+        // `TTL` in `const { ttl = TTL } = options;`) that reference other
+        // declarations. Those references live inside the name pattern, so they
+        // must be counted as uses or DCE will strip the still-referenced
+        // declaration and produce a runtime ReferenceError (issue #2396).
+        self.visit_pat_default_initializers(&mut var_decl.name);
         if let Some(init) = &mut var_decl.init {
             init.visit_mut_with(self);
         }
     }
 
     noop_visit_mut_type!();
+}
+
+impl<'a> ComprehensiveUsageCollector<'a> {
+    /// Visit only the default-value initializer expressions (and computed keys)
+    /// embedded in a binding pattern, without marking the pattern's binding
+    /// names as "used". Destructuring defaults such as the `TTL` in
+    /// `const { ttl = TTL } = options;` would otherwise be invisible to the
+    /// usage collector, causing DCE to strip the referenced declaration.
+    fn visit_pat_default_initializers(&mut self, pat: &mut Pat) {
+        match pat {
+            // A plain binding name has no embedded initializer to visit, and we
+            // deliberately do not mark the binding name itself as used.
+            Pat::Ident(_) => {}
+            Pat::Array(array) => {
+                for elem in array.elems.iter_mut().flatten() {
+                    self.visit_pat_default_initializers(elem);
+                }
+            }
+            Pat::Object(obj) => {
+                for prop in &mut obj.props {
+                    match prop {
+                        ObjectPatProp::KeyValue(kv) => {
+                            // A computed key (e.g. `{ [k]: v }`) references identifiers.
+                            if let PropName::Computed(computed) = &mut kv.key {
+                                computed.expr.visit_mut_with(self);
+                            }
+                            self.visit_pat_default_initializers(&mut kv.value);
+                        }
+                        // `{ ttl = TTL }` — `key` is the binding name (skip),
+                        // `value` is the default initializer expression.
+                        ObjectPatProp::Assign(assign) => {
+                            if let Some(value) = &mut assign.value {
+                                value.visit_mut_with(self);
+                            }
+                        }
+                        ObjectPatProp::Rest(rest) => {
+                            self.visit_pat_default_initializers(&mut rest.arg);
+                        }
+                    }
+                }
+            }
+            // `[a = TTL]` / `{ x: y = TTL }` — `left` is the binding pattern
+            // (which may itself contain defaults), `right` is the default value.
+            Pat::Assign(assign) => {
+                self.visit_pat_default_initializers(&mut assign.left);
+                assign.right.visit_mut_with(self);
+            }
+            Pat::Rest(rest) => {
+                self.visit_pat_default_initializers(&mut rest.arg);
+            }
+            // Expression patterns (e.g. `[obj.prop] = ...`) reference identifiers.
+            Pat::Expr(expr) => {
+                expr.visit_mut_with(self);
+            }
+            Pat::Invalid(_) => {}
+        }
+    }
 }
 
 impl VisitMut for StepTransform {

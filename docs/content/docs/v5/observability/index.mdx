@@ -42,6 +42,19 @@ npx workflow inspect runs --web
 
 ![Workflow SDK Web UI](/o11y-ui.png)
 
+To share a link to a specific run without opening a browser, use the `--url`
+flag. It prints the dashboard deep link to stdout and exits (no browser, no
+local server) — useful for scripts, PR comments, or automation. Add `--json` to
+get `{ "url": "..." }`.
+
+```bash
+# Print the deep-link URL for a run (no browser, no server)
+npx workflow inspect run <run_id> --url
+
+# Vercel runs: add the backend (and --env preview for preview deployments)
+npx workflow inspect run <run_id> --backend vercel --url
+```
+
 ## Backends
 
 The Workflow SDK CLI can inspect data from any [World](/docs/deploying). By default, it inspects data in your local development environment. For example, if you are using Next.js to develop workflows locally, the
