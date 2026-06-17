@@ -1,5 +1,18 @@
 # @workflow/next
 
+## 5.0.0-beta.18
+
+### Patch Changes
+
+- [#2455](https://github.com/vercel/workflow/pull/2455) [`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix Next.js lazy discovery workflow IDs for monorepo workspace packages by resolving module specifiers relative to the app package instead of the tracing root.
+
+- [#2438](https://github.com/vercel/workflow/pull/2438) [`d4dd6f9`](https://github.com/vercel/workflow/commit/d4dd6f9c015af17344f49635d62c00d78f25a911) Thanks [@ijjk](https://github.com/ijjk)! - Rebuild deferred Next.js workflow entries when workflow modules recompile during dev.
+
+- Updated dependencies [[`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`4b7a720`](https://github.com/vercel/workflow/commit/4b7a7203bf7093a435a9c4fc33a3af1060f010f7), [`3c79c56`](https://github.com/vercel/workflow/commit/3c79c56af257b4c327e4363c0cdb482149b55c73), [`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`da37349`](https://github.com/vercel/workflow/commit/da373493d211c09056f745332b18f55ef801da2b), [`53ede30`](https://github.com/vercel/workflow/commit/53ede3079c19494c53e181917f26c2499a19e012)]:
+  - @workflow/core@5.0.0-beta.18
+  - @workflow/builders@5.0.0-beta.18
+  - @workflow/swc-plugin@5.0.0-beta.5
+
 ## 5.0.0-beta.17
 
 ### Patch Changes

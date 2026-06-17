@@ -1,5 +1,19 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.17
+
+### Minor Changes
+
+- [#2394](https://github.com/vercel/workflow/pull/2394) [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97) Thanks [@pranaygp](https://github.com/pranaygp)! - Advertise specVersion 5 so new Vercel runs are eligible for gzip payload compression. The workflow-server declared spec-5 support in vercel/workflow-server#520; payloads remain opaque to the server (compression is client-side). Spec 5 is a superset of spec 4, so initial run attributes still work.
+
+### Patch Changes
+
+- [#2415](https://github.com/vercel/workflow/pull/2415) [`6aa1ce0`](https://github.com/vercel/workflow/commit/6aa1ce0054d0af80c25bb47b7d6d726320f0e5b4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Skip transferring event payload bytes when listing events with `resolveData: 'none'` using the v4 API.
+
+- Updated dependencies [[`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97)]:
+  - @workflow/world@5.0.0-beta.11
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.16
 
 ### Minor Changes

@@ -1,5 +1,25 @@
 # @workflow/core
 
+## 5.0.0-beta.18
+
+### Minor Changes
+
+- [#2394](https://github.com/vercel/workflow/pull/2394) [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97) Thanks [@pranaygp](https://github.com/pranaygp)! - Compress serialized payloads (step inputs/outputs, workflow arguments/return values, errors, hook payloads) before storage using composable codec format prefixes. zstd is the preferred codec (markedly faster than gzip at an equal-or-better ratio, via `node:zlib`); gzip (`CompressionStream`) is the portable fallback when zstd is unavailable. Reads dispatch on the prefix, so both codecs are always decodable. Compression is applied before encryption, gated on run specVersion 5, and skipped for small or incompressible payloads. `WORKFLOW_DISABLE_COMPRESSION=1` disables writes; `WORKFLOW_COMPRESSION_CODEC=gzip` forces the portable codec.
+
+### Patch Changes
+
+- [#2394](https://github.com/vercel/workflow/pull/2394) [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97) Thanks [@pranaygp](https://github.com/pranaygp)! - Emit OpenTelemetry span attributes for payload compression on the serialize (write) and deserialize (read) paths: `workflow.serialization.{operation,compressed,uncompressed_bytes,stored_bytes,compression_ratio}`. Sizes are measured at the compression boundary (pre-encryption). Telemetry failures never affect serialization.
+
+- [#2397](https://github.com/vercel/workflow/pull/2397) [`4b7a720`](https://github.com/vercel/workflow/commit/4b7a7203bf7093a435a9c4fc33a3af1060f010f7) Thanks [@pranaygp](https://github.com/pranaygp)! - `start({ deploymentId: 'latest' })` is now a no-op in Worlds that don't support atomic deployments (local dev, Postgres) instead of throwing — it logs a warning and targets the current deployment, so workflows that use `'latest'` on Vercel still run locally.
+
+- [#2470](https://github.com/vercel/workflow/pull/2470) [`3c79c56`](https://github.com/vercel/workflow/commit/3c79c56af257b4c327e4363c0cdb482149b55c73) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix the payload-compression capability cutoff: gzip/zstd are gated on `5.0.0-beta.18` (the first published version containing the compression read path) instead of `5.0.0-beta.16`. The previous cutoff would let a producer write compressed payloads to a beta.16/beta.17 target that cannot decode them.
+
+- Updated dependencies [[`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`6aa1ce0`](https://github.com/vercel/workflow/commit/6aa1ce0054d0af80c25bb47b7d6d726320f0e5b4)]:
+  - @workflow/world-vercel@5.0.0-beta.17
+  - @workflow/world@5.0.0-beta.11
+  - @workflow/errors@5.0.0-beta.8
+  - @workflow/world-local@5.0.0-beta.19
+
 ## 5.0.0-beta.17
 
 ### Minor Changes

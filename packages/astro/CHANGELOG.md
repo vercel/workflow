@@ -1,5 +1,17 @@
 # @workflow/astro
 
+## 5.0.0-beta.18
+
+### Patch Changes
+
+- [#2457](https://github.com/vercel/workflow/pull/2457) [`b92dfbb`](https://github.com/vercel/workflow/commit/b92dfbb94dabdeefd53bd9499a78174ac6bb2156) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump the `astro` dev dependency to 6.4.6 to resolve CVE-2026-54299 (GHSA-2pvr-wf23-7pc7, host header SSRF in prerendered error page fetch).
+
+- Updated dependencies [[`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998), [`da37349`](https://github.com/vercel/workflow/commit/da373493d211c09056f745332b18f55ef801da2b), [`53ede30`](https://github.com/vercel/workflow/commit/53ede3079c19494c53e181917f26c2499a19e012)]:
+  - @workflow/builders@5.0.0-beta.18
+  - @workflow/swc-plugin@5.0.0-beta.5
+  - @workflow/rollup@5.0.0-beta.18
+  - @workflow/vite@5.0.0-beta.18
+
 ## 5.0.0-beta.17
 
 ### Patch Changes

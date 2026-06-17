@@ -1,5 +1,23 @@
 # @workflow/cli
 
+## 5.0.0-beta.18
+
+### Minor Changes
+
+- [#2467](https://github.com/vercel/workflow/pull/2467) [`cb18139`](https://github.com/vercel/workflow/commit/cb181392b9d6282438c20a4fb6868bc3fd7bc886) Thanks [@pranaygp](https://github.com/pranaygp)! - Add a `--url` flag to `inspect`/`web` that prints the run's dashboard deep link to stdout and exits (no browser, no server), and fix the Vercel dashboard URL to use the current `…/workflows/runs/<id>?environment=<env>` route (respecting `--env`).
+
+### Patch Changes
+
+- Updated dependencies [[`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`4b7a720`](https://github.com/vercel/workflow/commit/4b7a7203bf7093a435a9c4fc33a3af1060f010f7), [`3c79c56`](https://github.com/vercel/workflow/commit/3c79c56af257b4c327e4363c0cdb482149b55c73), [`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`da37349`](https://github.com/vercel/workflow/commit/da373493d211c09056f745332b18f55ef801da2b), [`53ede30`](https://github.com/vercel/workflow/commit/53ede3079c19494c53e181917f26c2499a19e012), [`6aa1ce0`](https://github.com/vercel/workflow/commit/6aa1ce0054d0af80c25bb47b7d6d726320f0e5b4)]:
+  - @workflow/core@5.0.0-beta.18
+  - @workflow/builders@5.0.0-beta.18
+  - @workflow/world-vercel@5.0.0-beta.17
+  - @workflow/world@5.0.0-beta.11
+  - @workflow/swc-plugin@5.0.0-beta.5
+  - @workflow/web@5.0.0-beta.18
+  - @workflow/errors@5.0.0-beta.8
+  - @workflow/world-local@5.0.0-beta.19
+
 ## 5.0.0-beta.17
 
 ### Patch Changes
