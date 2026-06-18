@@ -1,4 +1,3 @@
-import { runInContext } from 'node:vm';
 import {
   ERROR_SLUGS,
   ReplayDivergenceError,
@@ -34,6 +33,7 @@ import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
+import { runCachedWorkflowScript } from './vm/script-cache.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
@@ -696,10 +696,29 @@ export async function runWorkflow(
     const parsedName = parseWorkflowName(workflowRun.workflowName);
     const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
-    const workflowFn = runInContext(
-      `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-      context,
-      { filename }
+    // Evaluate the workflow bundle against the fresh context using a
+    // process-wide cache of the compiled `vm.Script`. The bundle is the same
+    // string for every replay and every invocation in this process, and
+    // compilation is a pure function of `(code, filename)`, so reusing the
+    // compiled Script across replays is determinism-safe: it produces the same
+    // workflow function and the same `filename` source attribution as
+    // re-parsing the bundle every time, but skips the (expensive) re-parse.
+    // Evaluating the bundle registers every workflow on
+    // `globalThis.__private_workflows`; the trailing lookup expression then
+    // retrieves the requested workflow function. The lookup is evaluated as a
+    // separate cached Script under the same `filename`, so error stack frames
+    // still attribute to the workflow's source file (`remapErrorStack` keys on
+    // `filename`). The one behavioural difference from the previous
+    // single-combined-string approach is the *line number* of an error thrown
+    // by the lookup expression itself: it now reports line 1 of the lookup
+    // Script rather than the line just past the end of the bundle. That path
+    // is rare (it requires the lookup `?.get(...)` expression to throw) and
+    // does not affect the workflow function or replay determinism.
+    runCachedWorkflowScript(workflowCode, filename, context);
+    const workflowFn = runCachedWorkflowScript(
+      `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
+      filename,
+      context
     );
 
     if (typeof workflowFn !== 'function') {
