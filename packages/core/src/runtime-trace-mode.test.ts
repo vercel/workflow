@@ -221,7 +221,7 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
-  it('linked (default): creates the WORKFLOW_V2 span as a new root with links to delivery and run-origin contexts', async () => {
+  it('linked (default): nests under the delivery context with a link to the run-origin context', async () => {
     const { workflowSpan, deliverySpan } = await driveHandler({
       runId: 'wrun_trace_linked',
       workflowCode: simpleWorkflow,
@@ -229,20 +229,21 @@ describe('workflowEntrypoint trace modes', () => {
     });
 
     expect(workflowSpan).toBeDefined();
-    // New root: no parent, and a fresh trace distinct from both the
-    // delivery trace and the run-origin trace.
-    expect(workflowSpan?.parentSpanId).toBeUndefined();
-    expect(workflowSpan?.spanContext().traceId).not.toBe(ORIGIN_TRACE_ID);
-    expect(workflowSpan?.spanContext().traceId).not.toBe(
+    // Child of the local delivery (flow-route) span — same trace, so one
+    // invocation is a single bounded trace rather than a new root.
+    expect(workflowSpan?.parentSpanId).toBe(deliverySpan.spanContext().spanId);
+    expect(workflowSpan?.spanContext().traceId).toBe(
       deliverySpan.spanContext().traceId
     );
 
-    // Links to BOTH the delivery context and the run-origin context.
-    expect(workflowSpan?.links).toHaveLength(2);
-    expect(linkTraceIds(workflowSpan)).toContain(
+    // Single link to the run-origin context (NOT a parent) — connecting this
+    // bounded invocation trace back to where the run was started.
+    expect(workflowSpan?.links).toHaveLength(1);
+    expect(linkTraceIds(workflowSpan)).toContain(ORIGIN_TRACE_ID);
+    // The delivery context is the parent now, so it is not also a link.
+    expect(linkTraceIds(workflowSpan)).not.toContain(
       deliverySpan.spanContext().traceId
     );
-    expect(linkTraceIds(workflowSpan)).toContain(ORIGIN_TRACE_ID);
 
     expect(workflowSpan?.attributes['workflow.trace.mode']).toBe('linked');
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(true);
@@ -260,17 +261,15 @@ describe('workflowEntrypoint trace modes', () => {
     });
 
     expect(workflowSpan).toBeDefined();
-    expect(workflowSpan?.parentSpanId).toBeUndefined();
-    // Only the delivery link — no origin link is derived from `{}`.
-    expect(workflowSpan?.links).toHaveLength(1);
-    expect(linkTraceIds(workflowSpan)).toContain(
-      deliverySpan.spanContext().traceId
-    );
+    // Still nested under the delivery context...
+    expect(workflowSpan?.parentSpanId).toBe(deliverySpan.spanContext().spanId);
+    // ...but no run-origin link is derived from `{}`.
+    expect(workflowSpan?.links ?? []).toHaveLength(0);
     // An empty carrier does not count as propagated trace context.
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(false);
   });
 
-  it('linked: without an incoming carrier, still creates a root span with only the delivery link', async () => {
+  it('linked: without an incoming carrier, nests under the delivery context with no links', async () => {
     const { workflowSpan, deliverySpan } = await driveHandler({
       runId: 'wrun_trace_linked_no_carrier',
       workflowCode: simpleWorkflow,
@@ -278,11 +277,8 @@ describe('workflowEntrypoint trace modes', () => {
     });
 
     expect(workflowSpan).toBeDefined();
-    expect(workflowSpan?.parentSpanId).toBeUndefined();
-    expect(workflowSpan?.links).toHaveLength(1);
-    expect(linkTraceIds(workflowSpan)).toContain(
-      deliverySpan.spanContext().traceId
-    );
+    expect(workflowSpan?.parentSpanId).toBe(deliverySpan.spanContext().spanId);
+    expect(workflowSpan?.links ?? []).toHaveLength(0);
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(false);
   });
 
