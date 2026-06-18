@@ -53,12 +53,56 @@
  * through to a full re-hydrate every replay, preserving current behavior
  * exactly. This trades some of the optimization away in the object-returning
  * case in exchange for keeping deterministic replay airtight.
+ *
+ * ## Memory characteristic
+ *
+ * Cached entries hold the decrypted/devalue-parsed *plaintext* of a step
+ * result, which is retained for the rest of the invocation on top of the
+ * serialized bytes already held in `cachedEvents`. So the residual cost is:
+ *
+ * - **Scoped to one workflow-run invocation.** A fresh `Map` is created per
+ *   invocation (in `runtime.ts`) and is unreachable / GC'd when the invocation
+ *   returns. Nothing accumulates across runs or across process-level
+ *   invocations.
+ * - **Bounded by the number of primitive-returning completed steps in that
+ *   run** — at most one small entry per such step.
+ * - **Primitives only, and additionally byte-bounded.** Most primitives
+ *   (numbers, booleans, null/undefined, symbols, short ids/strings) are tiny
+ *   and fixed-size. The only primitive that can be large is a string (or a
+ *   pathologically long bigint), so to keep the doubled-residency worst case
+ *   bounded we *do not* memoize string/bigint results whose character length
+ *   exceeds {@link MAX_MEMOIZED_PRIMITIVE_LENGTH}. A large string is cheap to
+ *   re-hydrate relative to its footprint, so letting it fall through to the
+ *   existing per-replay re-hydrate path costs little and caps peak retained
+ *   memory.
+ *
+ * (This is a much weaker concern than a *process-wide* cache: the dominant
+ * residency — the full event log in `cachedEvents` — already exists for the
+ * same lifetime, and everything here is freed together with it when the
+ * invocation ends.)
  */
+
+/**
+ * Upper bound, in characters, on a string/bigint primitive that may be
+ * memoized. Beyond this, the value falls through to a fresh re-hydrate on every
+ * replay so the cache never holds a large plaintext payload for the lifetime of
+ * the invocation. 4 KiB comfortably covers ids, counts, flags, and typical
+ * short string results while excluding the large-payload case the bound exists
+ * to guard. Other primitive types (number, boolean, symbol, null, undefined)
+ * are inherently small and are never length-checked.
+ */
+export const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
 
 /**
  * Returns true for values that are safe to memoize and return by reference
  * across replays: JS primitives. Objects and functions are excluded because
  * sharing a mutable reference across replays could change observable behavior.
+ *
+ * Strings and bigints are additionally bounded by length: a value longer than
+ * {@link MAX_MEMOIZED_PRIMITIVE_LENGTH} characters is treated as non-memoizable
+ * so the cache never retains a large plaintext payload for the whole invocation
+ * (see the module-level "Memory characteristic" docs). It re-hydrates fresh on
+ * every replay instead — cheap relative to its footprint.
  *
  * Note: `typeof null === 'object'`, so it is handled explicitly. `undefined`,
  * `string`, `number`, `boolean`, `bigint`, and `symbol` are all primitives.
@@ -66,7 +110,15 @@
 export function isMemoizablePrimitive(value: unknown): boolean {
   if (value === null) return true;
   const t = typeof value;
-  return t !== 'object' && t !== 'function';
+  if (t === 'object' || t === 'function') return false;
+  // Bound the only primitive types that can carry a large payload.
+  if (t === 'string') {
+    return (value as string).length <= MAX_MEMOIZED_PRIMITIVE_LENGTH;
+  }
+  if (t === 'bigint') {
+    return (value as bigint).toString().length <= MAX_MEMOIZED_PRIMITIVE_LENGTH;
+  }
+  return true;
 }
 
 /**
@@ -90,8 +142,8 @@ export function createStepHydrationCache(): StepHydrationCache {
  * Return the hydrated step result for `eventId`, using `cache` as a per-run
  * memo. On a hit, the cached primitive is returned without re-running the
  * expensive decrypt + devalue-parse. On a miss, `hydrate()` runs and its
- * result is memoized only when it is a primitive (see the module docs for the
- * identity-safety rationale).
+ * result is memoized only when it is a small primitive (see the module docs for
+ * the identity-safety rationale and the length bound on string/bigint results).
  *
  * This always returns a `Promise` and `await`s `hydrate()` even on the miss
  * path, so the caller's `await` inside its serial `promiseQueue` slot keeps the
@@ -125,8 +177,10 @@ export async function getOrHydrateStepReturnValue(
   }
 
   const value = await hydrate();
-  // Only memoize values that are safe to return by reference across replays.
-  // Non-primitives fall through and are re-hydrated fresh on every replay.
+  // Only memoize values that are safe to return by reference across replays
+  // AND small enough to retain for the invocation. Non-primitives and
+  // oversized string/bigint values fall through and are re-hydrated fresh on
+  // every replay (see isMemoizablePrimitive / MAX_MEMOIZED_PRIMITIVE_LENGTH).
   if (isMemoizablePrimitive(value)) {
     cache.set(eventId, value);
   }

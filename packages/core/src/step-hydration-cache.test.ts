@@ -3,6 +3,7 @@ import {
   createStepHydrationCache,
   getOrHydrateStepReturnValue,
   isMemoizablePrimitive,
+  MAX_MEMOIZED_PRIMITIVE_LENGTH,
 } from './step-hydration-cache.js';
 
 describe('isMemoizablePrimitive', () => {
@@ -26,6 +27,20 @@ describe('isMemoizablePrimitive', () => {
     expect(isMemoizablePrimitive(() => {})).toBe(false);
     expect(isMemoizablePrimitive(new Date())).toBe(false);
     expect(isMemoizablePrimitive(new Map())).toBe(false);
+  });
+
+  it('memoizes a string at the length bound but not beyond it', () => {
+    const atBound = 'x'.repeat(MAX_MEMOIZED_PRIMITIVE_LENGTH);
+    const overBound = 'x'.repeat(MAX_MEMOIZED_PRIMITIVE_LENGTH + 1);
+    expect(isMemoizablePrimitive(atBound)).toBe(true);
+    expect(isMemoizablePrimitive(overBound)).toBe(false);
+  });
+
+  it('bounds oversized bigints by their decimal length', () => {
+    const overBound = BigInt('9'.repeat(MAX_MEMOIZED_PRIMITIVE_LENGTH + 1));
+    expect(isMemoizablePrimitive(overBound)).toBe(false);
+    // A small bigint is always memoizable.
+    expect(isMemoizablePrimitive(123n)).toBe(true);
   });
 });
 
@@ -87,6 +102,36 @@ describe('getOrHydrateStepReturnValue', () => {
     expect(hydrate).toHaveBeenCalledTimes(2);
     expect(second).not.toBe(first);
     expect(second.count).toBe(0);
+  });
+
+  it('memoizes a string at the length bound (cache hit on replay)', async () => {
+    const cache = createStepHydrationCache();
+    const atBound = 'x'.repeat(MAX_MEMOIZED_PRIMITIVE_LENGTH);
+    const hydrate = vi.fn().mockResolvedValue(atBound);
+
+    const first = await getOrHydrateStepReturnValue(cache, 'evnt_0', hydrate);
+    const second = await getOrHydrateStepReturnValue(cache, 'evnt_0', hydrate);
+
+    expect(first).toBe(atBound);
+    expect(second).toBe(atBound);
+    expect(hydrate).toHaveBeenCalledTimes(1);
+    expect(cache.size).toBe(1);
+  });
+
+  it('does NOT memoize an oversized string: re-hydrates every replay and stays unbounded-free', async () => {
+    const cache = createStepHydrationCache();
+    const big = 'x'.repeat(MAX_MEMOIZED_PRIMITIVE_LENGTH + 1);
+    const hydrate = vi.fn().mockResolvedValue(big);
+
+    const first = await getOrHydrateStepReturnValue(cache, 'evnt_0', hydrate);
+    const second = await getOrHydrateStepReturnValue(cache, 'evnt_0', hydrate);
+
+    // Correct value still returned, but the large payload is never retained:
+    // it falls through to a fresh re-hydrate on every replay.
+    expect(first).toBe(big);
+    expect(second).toBe(big);
+    expect(hydrate).toHaveBeenCalledTimes(2);
+    expect(cache.size).toBe(0);
   });
 
   it('keys by eventId: different events hydrate independently', async () => {
