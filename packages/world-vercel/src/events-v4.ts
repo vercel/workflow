@@ -69,29 +69,6 @@ function headersToRecord(headers: Headers): Record<string, string> {
 }
 
 /**
- * Adapt a fetch `Response.body` (web `ReadableStream`) into an async iterable
- * of byte chunks for decodeFrames. Uses the web-standard reader directly and
- * never touches `node:stream`: a dynamic `import('node:stream')` resolves to
- * an empty module namespace in Next.js webpack server bundles and crashes
- * (the original reason this module reached for undici's body iterable).
- */
-async function* streamChunks(
-  body: ReadableStream<Uint8Array> | null
-): AsyncIterable<Uint8Array> {
-  if (!body) return;
-  const reader = body.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (value) yield value;
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-/**
  * POST surfaces these so callers can read the created eventId without
  * decoding the CBOR response body
  */
@@ -405,7 +382,13 @@ export async function getEventV4(
     );
   }
 
-  const chunks = streamChunks(response.body);
+  // fetch's `Response.body` is a web ReadableStream, which is async-iterable
+  // on Node (readableStream async iteration, since v16.5.0) — feed it straight
+  // to decodeFrames. The cast is only because TS's lib `ReadableStream` type
+  // omits the async iterator. Do NOT round-trip through `node:stream`
+  // Readable.toWeb: a dynamic `import('node:stream')` resolves to an empty
+  // module namespace in Next.js webpack server bundles and crashes.
+  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
@@ -492,7 +475,9 @@ async function consumeListFrameStream(
     );
   }
 
-  const chunks = streamChunks(response.body);
+  // See getEventV4: fetch's web ReadableStream is async-iterable on Node; the
+  // cast only works around TS's lib type omitting the async iterator.
+  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
   const events: ListedEventV4[] = [];
   let next: string | undefined;
