@@ -24,6 +24,7 @@ export const CLS = {
   null: 'wf-json-null',
   undefined: 'wf-json-undefined',
   date: 'wf-json-date',
+  regexp: 'wf-json-regexp',
 } as const;
 
 export const JSON_VIEW_STYLES = `
@@ -60,6 +61,7 @@ export const JSON_VIEW_STYLES = `
 .${CLS.boolean} { color: var(--ds-amber-900); }
 .${CLS.null}, .${CLS.undefined} { color: var(--ds-gray-900); }
 .${CLS.date} { color: var(--ds-pink-900); }
+.${CLS.regexp} { color: var(--ds-purple-900); }
 .${CLS.container} > .${CLS.child} > .${CLS.expandIcon},
 .${CLS.container} > .${CLS.child} > .${CLS.collapseIcon} { margin-left: -1.5ch; }
 .${CLS.expandIcon}, .${CLS.collapseIcon} {

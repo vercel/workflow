@@ -720,6 +720,13 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
       </LeafRow>
     );
   }
+  if (value instanceof RegExp) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <span className={CLS.regexp}>{value.toString()}</span>
+      </LeafRow>
+    );
+  }
   if (isClassInstanceRef(value)) {
     return (
       <ClassInstanceNode
