@@ -156,3 +156,9 @@ export const RpcService = SemanticConvention<string>('rpc.service');
 
 /** RPC method name (standard OTEL: rpc.method) */
 export const RpcMethod = SemanticConvention<string>('rpc.method');
+
+/** Unique identifier for a specific workflow run instance */
+export const WorkflowRunId = SemanticConvention<string>('workflow.run.id');
+
+/** Unique identifier for the step instance */
+export const StepId = SemanticConvention<string>('step.id');
