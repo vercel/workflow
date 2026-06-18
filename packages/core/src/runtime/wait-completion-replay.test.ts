@@ -264,13 +264,48 @@ async function runStaleWaitReplayScenario(options: {
         }
       }
 
-      const created = event(request);
+      // Lazy step start: a step_started carrying input creates the step on the
+      // fly. Model the real world by synthesizing the step_created event (so
+      // buildStepEntity below — and any replay — observes it) before the
+      // step_started is recorded. Strip the input off the persisted
+      // step_started row, matching the world's wire contract.
+      const lazyStepStart =
+        request.eventType === 'step_started' &&
+        !!request.eventData &&
+        (request.eventData as { input?: unknown }).input !== undefined;
+      let effectiveRequest = request;
+      if (lazyStepStart) {
+        const lazyData = request.eventData as {
+          stepName?: string;
+          input?: unknown;
+        };
+        const syntheticStepCreated = event({
+          eventType: 'step_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: request.correlationId,
+          eventData: { stepName: lazyData.stepName, input: lazyData.input },
+        } as CreateEventRequest);
+        durableEvents.push(syntheticStepCreated);
+        createdEvents.push(syntheticStepCreated);
+        const { input: _strippedInput, ...startEventData } = lazyData;
+        effectiveRequest = {
+          ...request,
+          eventData: startEventData,
+        } as CreateEventRequest;
+      }
+
+      const created = event(effectiveRequest);
       durableEvents.push(created);
       createdEvents.push(created);
-      if (request.eventType === 'step_started') {
+      if (effectiveRequest.eventType === 'step_started') {
         return {
           event: created,
-          step: buildStepEntity(durableEvents, runId, request.correlationId),
+          step: buildStepEntity(
+            durableEvents,
+            runId,
+            effectiveRequest.correlationId
+          ),
+          ...(lazyStepStart ? { stepCreated: true } : {}),
         };
       }
       if (

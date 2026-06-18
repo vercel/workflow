@@ -9,7 +9,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { pluralize, stepDisplayName } from '@workflow/utils';
-import type { World } from '@workflow/world';
+import type { Event, SerializedData, Step, World } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -39,6 +39,27 @@ import { safeWaitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
+/**
+ * Extract the inline delta from a step-terminal `events.create` result,
+ * if the World populated one. A delta is only meaningful when the caller
+ * requested it (`sinceCursor` was passed) and the World returned both
+ * `events` and a `cursor`; otherwise we return undefined and the caller
+ * falls back to the normal incremental `events.list`. `hasMore` defaults
+ * to false (single page) when the World omits it.
+ */
+function extractInlineDelta(
+  result: { events?: Event[]; cursor?: string | null; hasMore?: boolean },
+  requested: boolean
+): InlineEventDelta | undefined {
+  if (!requested) return undefined;
+  if (!result.events || result.cursor === undefined) return undefined;
+  return {
+    events: result.events,
+    cursor: result.cursor,
+    hasMore: result.hasMore ?? false,
+  };
+}
+
 export interface StepExecutorParams {
   world: World;
   workflowRunId: string;
@@ -55,14 +76,61 @@ export interface StepExecutorParams {
    * as possibly containing compressed payloads (specVersion >= 5).
    */
   runSpecVersion?: number;
+  /**
+   * Lazy step start: the already-dehydrated step input. When provided, the
+   * `step_started` event carries this input so the world creates the step on
+   * the fly (no separate `step_created` round-trip). Set by the owned-inline
+   * path for the step whose `step_created` the suspension handler deferred.
+   * The world's atomic create-claim is the exactly-one-owner gate: losing it
+   * surfaces as `EntityConflictError` → `{ type: 'skipped' }`, so a handler
+   * that did not win the create never runs the body. Omitted on every other
+   * path, where the step already has a `step_created` and `step_started`
+   * carries no payload (the legacy contract).
+   */
+  lazyStepInput?: SerializedData;
+  /**
+   * Inline-delta optimization (opt-in). When provided, the cursor of the
+   * event log as observed by the caller *before* this step's events were
+   * written. It is threaded into the step-terminal `events.create` so a
+   * supporting World can return the delta of events written since (see
+   * {@link import('@workflow/world').CreateEventParams.sinceCursor}).
+   * Only set this when `correlationId`-based ownership guarantees this
+   * handler is the sole inline writer for the run on this iteration.
+   */
+  inlineDeltaSinceCursor?: string;
+}
+
+/**
+ * Inline-delta returned by a step-terminal write when the caller passed
+ * {@link StepExecutorParams.inlineDeltaSinceCursor} and the World supports
+ * the optimization. `events` are the events written strictly after that
+ * cursor (this step's events plus anything interleaved in-band), `cursor`
+ * is the position past the last one, and `hasMore` signals a further page
+ * (the caller then falls back to a full incremental fetch). Absent when
+ * the World did not return a delta.
+ */
+export interface InlineEventDelta {
+  events: Event[];
+  cursor: string | null;
+  hasMore: boolean;
 }
 
 /**
  * Result of a step execution attempt. The caller decides what to do
  * based on the result type (e.g., queue workflow continuation, replay inline, etc.).
+ *
+ * `inlineDelta` is attached to a `completed` result when the caller
+ * requested it via {@link StepExecutorParams.inlineDeltaSinceCursor} and
+ * the World returned one. Step failures are rare and not the inline
+ * optimization's target, so the `failed` path leaves it to the normal
+ * incremental fetch.
  */
 export type StepExecutionResult =
-  | { type: 'completed'; hasPendingOps?: boolean }
+  | {
+      type: 'completed';
+      hasPendingOps?: boolean;
+      inlineDelta?: InlineEventDelta;
+    }
   | { type: 'failed' }
   | { type: 'retry'; timeoutSeconds: number }
   | { type: 'skipped' }
@@ -119,6 +187,35 @@ export async function executeStep(
         stepName,
         stepId,
       });
+      // On the lazy inline path the suspension handler deferred this step's
+      // `step_created`, expecting executeStep to materialize the step via a
+      // lazy `step_started` carrying its input. We never get that far for an
+      // unregistered step, so the step entity does not exist yet — writing
+      // `step_failed` straight away would hit the world's "step must exist"
+      // ordering guard and wedge the run. Send the lazy `step_started` first
+      // (it creates the step + synthetic `step_created` atomically and keeps
+      // replay correct), then fail it below. This also preserves the
+      // exactly-one-owner guarantee: a concurrent handler that won the create
+      // makes our lazy `step_started` reject with EntityConflictError → we
+      // return `skipped` and never write the failure twice.
+      if (params.lazyStepInput !== undefined) {
+        try {
+          await world.events.create(workflowRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: { stepName, input: params.lazyStepInput },
+          });
+        } catch (startErr) {
+          if (EntityConflictError.is(startErr)) {
+            return { type: 'skipped' };
+          }
+          if (RunExpiredError.is(startErr)) {
+            return { type: 'gone' };
+          }
+          throw startErr;
+        }
+      }
       try {
         await world.events.create(workflowRunId, {
           eventType: 'step_failed',
@@ -155,14 +252,23 @@ export async function executeStep(
       ...Attribute.StepMaxRetries(maxRetries),
     });
 
-    // step_started validates state and returns the step entity
-    let step;
+    // step_started validates state and returns the step entity. On the lazy
+    // inline path we also carry the step `input` so the world creates the step
+    // on the fly (no separate step_created round-trip). The world's atomic
+    // create-claim makes this exactly-one-owner: a concurrent loser gets
+    // EntityConflictError, mapped to `{ type: 'skipped' }` below, so it never
+    // runs the body. When `lazyStepInput` is absent this is the legacy
+    // step_started (step already created, no payload).
+    let step: Step;
     try {
       const startResult = await world.events.create(workflowRunId, {
         eventType: 'step_started',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: stepId,
-        eventData: { stepName },
+        eventData:
+          params.lazyStepInput !== undefined
+            ? { stepName, input: params.lazyStepInput }
+            : { stepName },
       });
 
       if (!startResult.step) {
@@ -426,18 +532,27 @@ export async function executeStep(
         ]);
       }
 
-      // Create step_completed event
+      // Create step_completed event. When the caller supplied a
+      // sinceCursor (inline sequential execution), thread it through so a
+      // supporting World returns the event-log delta on the result,
+      // letting the inline loop skip the next events.list round-trip.
       let stepCompleted409 = false;
-      await world.events
-        .create(workflowRunId, {
-          eventType: 'step_completed',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: stepId,
-          eventData: {
-            stepName,
-            result: result as Uint8Array,
+      const completedResult = await world.events
+        .create(
+          workflowRunId,
+          {
+            eventType: 'step_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: {
+              stepName,
+              result: result as Uint8Array,
+            },
           },
-        })
+          params.inlineDeltaSinceCursor !== undefined
+            ? { sinceCursor: params.inlineDeltaSinceCursor }
+            : undefined
+        )
         .catch((err) => {
           if (EntityConflictError.is(err)) {
             runtimeLogger.info(
@@ -450,7 +565,7 @@ export async function executeStep(
               }
             );
             stepCompleted409 = true;
-            return;
+            return undefined;
           }
           throw err;
         });
@@ -458,6 +573,13 @@ export async function executeStep(
       if (stepCompleted409) {
         return { type: 'skipped' };
       }
+
+      const inlineDelta = completedResult
+        ? extractInlineDelta(
+            completedResult,
+            params.inlineDeltaSinceCursor !== undefined
+          )
+        : undefined;
 
       span?.setAttributes({
         ...Attribute.StepStatus('completed'),
@@ -473,7 +595,7 @@ export async function executeStep(
       }
       // hasPendingOps signals the V2 handler to break the loop
       // and queue a continuation so waitUntil can flush them.
-      return { type: 'completed', hasPendingOps: !opsSettled };
+      return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
     } catch (err: unknown) {
       const effectiveErr = promoteAbortErrorToFatal(err);
 

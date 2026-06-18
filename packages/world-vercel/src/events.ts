@@ -22,7 +22,8 @@
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
- *     frame whose meta carries `{_end: 1, next?: cursor}`. The old
+ *     frame whose meta carries `{_end: 1, next?: cursor, hasMore?: boolean}`.
+ *     The old
  *     per-event `/refs` round-trip is eliminated.
  *
  * Public function signatures are unchanged: storage.ts continues to
@@ -93,6 +94,12 @@ const PAYLOAD_FIELD_BY_EVENT_TYPE = {
   run_completed: 'output',
   run_failed: 'error',
   step_created: 'input',
+  // step_started normally has no payload, but on the lazy-start path the
+  // runtime piggybacks the step input here so the server can synthesize the
+  // missing step_created (mirrors run_started above). Without this entry the
+  // v4 split would silently drop those bytes and the backend's "step_started
+  // arrived before step_created" fallback would have nothing to create from.
+  step_started: 'input',
   step_completed: 'result',
   step_failed: 'error',
   step_retrying: 'error',
@@ -109,8 +116,10 @@ type PayloadField =
 
 /**
  * Look up the payload field for an event type, or undefined for the event
- * types that carry no user payload (run_cancelled, attr_set, step_started,
- * wait_*, hook_disposed). The map is `as const` so it can drive
+ * types that carry no user payload (run_cancelled, attr_set, wait_*,
+ * hook_disposed). Note `step_started` carries a payload only on the
+ * lazy-start path; legacy starts send an empty body. The map is `as const`
+ * so it can drive
  * `PayloadField`; the cast keeps the lookup callable with any event-type
  * string.
  */
@@ -460,10 +469,20 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
+  // `resolveData: 'none'` means the caller only wants metadata — it discards
+  // payloads in buildEventFromV4 below. Tell the backend not to stream them
+  // in the first place (lazy → empty frame bodies). On `'all'` we resolve
+  // (the default). A backend that predates this flag ignores it and streams
+  // full bodies regardless; buildEventFromV4 still strips them when
+  // resolveData is 'none', so this is purely a bandwidth optimization and is
+  // safe against an older backend.
   const wirePagination = {
     cursor: pagination?.cursor ?? undefined,
     limit: pagination?.limit,
     sortOrder: pagination?.sortOrder,
+    remoteRefBehavior: (resolveData === 'none' ? 'lazy' : 'resolve') as
+      | 'lazy'
+      | 'resolve',
   };
 
   const result = await ('correlationId' in params
@@ -476,8 +495,15 @@ export async function getWorkflowRunEvents(
 
   return {
     data: events,
+    // `next` is present even on the final page (it's the incremental-load
+    // resume cursor), so prefer the server's explicit `hasMore`. The
+    // `Boolean(next)` fallback covers older servers that don't emit it —
+    // at the cost of one extra empty-page request per load.
     cursor: result.next ?? null,
-    hasMore: Boolean(result.next),
+    hasMore:
+      typeof result.hasMore === 'boolean'
+        ? result.hasMore
+        : Boolean(result.next),
   } as PaginatedResponse<Event>;
 }
 
@@ -572,6 +598,13 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      // Opt-in inline-delta: forward the cursor the runtime held before
+      // this write so the server can return the authoritative event-log
+      // delta on the response (events/cursor/hasMore), letting the inline
+      // loop skip a follow-up events.list. The server only acts on it for
+      // step_completed/step_failed; older servers ignore it and the runtime
+      // falls back to events.list.
+      ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
       remoteRefBehavior,
       payload,
       ...meta,
@@ -614,5 +647,9 @@ async function createWorkflowRunEventInner(
       : undefined,
     cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,
+    // Lazy step start: thread the server's "I created the step on this call"
+    // signal through so the owned-inline runtime path can gate body execution
+    // on it. Absent from older servers → undefined → safe default.
+    ...(body.stepCreated ? { stepCreated: true } : {}),
   };
 }
