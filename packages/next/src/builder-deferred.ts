@@ -846,7 +846,8 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
           source,
           'step',
           file,
-          this.transformProjectRoot
+          this.transformProjectRoot,
+          this.moduleSpecifierRoot
         );
         this.mergeWorkflowManifest(manifest, workflowManifest);
       }
@@ -2026,7 +2027,8 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
               source,
               'detect',
               filePath,
-              projectRoot
+              projectRoot,
+              this.moduleSpecifierRoot
             );
             // Only include files that actually define serde classes
             const hasClasses =

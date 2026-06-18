@@ -2156,6 +2156,27 @@ impl StepTransform {
         naming::format_name(prefix, &self.get_module_path(), &fn_name)
     }
 
+    fn record_object_property_step_metadata(&mut self, parent_var_name: &str, prop_key: &str) {
+        let step_id = self.create_object_property_id(
+            parent_var_name,
+            prop_key,
+            false,
+            self.current_workflow_function_name.as_deref(),
+        );
+        if self.object_property_workflow_conversions.iter().any(
+            |(parent, prop, existing_step_id)| {
+                parent == parent_var_name && prop == prop_key && existing_step_id == &step_id
+            },
+        ) {
+            return;
+        }
+        self.object_property_workflow_conversions.push((
+            parent_var_name.to_string(),
+            prop_key.to_string(),
+            step_id,
+        ));
+    }
+
     // Process object properties for step functions
     fn process_object_properties_for_step_functions(
         &mut self,
@@ -2185,6 +2206,14 @@ impl StepTransform {
                         };
 
                         if should_transform {
+                            if matches!(self.mode, TransformMode::Detect) {
+                                self.record_object_property_step_metadata(
+                                    parent_var_name,
+                                    &prop_key,
+                                );
+                                continue;
+                            }
+
                             // Process the transformation
                             match &mut *kv_prop.value {
                                 Expr::Arrow(arrow_expr) => {
@@ -2316,6 +2345,14 @@ impl StepTransform {
                         };
 
                         if self.has_use_step_directive(&method_prop.function.body) {
+                            if matches!(self.mode, TransformMode::Detect) {
+                                self.record_object_property_step_metadata(
+                                    parent_var_name,
+                                    &prop_key,
+                                );
+                                continue;
+                            }
+
                             // Remove the directive first
                             self.remove_use_step_directive(&mut method_prop.function.body);
 
@@ -2423,6 +2460,14 @@ impl StepTransform {
                                     .emit()
                             });
                         } else if has_step {
+                            if matches!(self.mode, TransformMode::Detect) {
+                                self.record_object_property_step_metadata(
+                                    parent_var_name,
+                                    &prop_key,
+                                );
+                                continue;
+                            }
+
                             // Getters don't need async validation (they can't be async syntactically)
 
                             // Remove the directive from the getter body
@@ -2551,13 +2596,6 @@ impl StepTransform {
         prop_key: &str,
         _span: swc_core::common::Span,
     ) {
-        let step_id = self.create_object_property_id(
-            parent_var_name,
-            prop_key,
-            false,
-            self.current_workflow_function_name.as_deref(),
-        );
-
         match self.mode {
             TransformMode::Step => {
                 // Replace with reference to hoisted variable so the stepId
@@ -2575,22 +2613,22 @@ impl StepTransform {
                     SyntaxContext::empty(),
                 ));
                 // Track for metadata generation
-                self.object_property_workflow_conversions.push((
-                    parent_var_name.to_string(),
-                    prop_key.to_string(),
-                    step_id,
-                ));
+                self.record_object_property_step_metadata(parent_var_name, prop_key);
             }
             TransformMode::Workflow => {
+                let step_id = self.create_object_property_id(
+                    parent_var_name,
+                    prop_key,
+                    false,
+                    self.current_workflow_function_name.as_deref(),
+                );
                 // Replace with initializer call
                 *kv_prop.value = self.create_step_initializer(&step_id);
-                self.object_property_workflow_conversions.push((
-                    parent_var_name.to_string(),
-                    prop_key.to_string(),
-                    step_id,
-                ));
+                self.record_object_property_step_metadata(parent_var_name, prop_key);
             }
-            TransformMode::Detect => {}
+            TransformMode::Detect => {
+                self.record_object_property_step_metadata(parent_var_name, prop_key);
+            }
         }
     }
 

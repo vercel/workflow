@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.0-beta.11
+
+### Minor Changes
+
+- [#2394](https://github.com/vercel/workflow/pull/2394) [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump `SPEC_VERSION_CURRENT` to 5 (`SPEC_VERSION_SUPPORTS_COMPRESSION`): runs at spec 5+ may contain gzip-compressed payloads, and older SDKs reject them via `requiresNewerWorld()` instead of failing on individual payloads.
+
 ## 5.0.0-beta.10
 
 ### Minor Changes

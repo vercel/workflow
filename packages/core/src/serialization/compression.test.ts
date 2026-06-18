@@ -441,14 +441,29 @@ describe('run capabilities for compression codecs', () => {
     SerializationFormat.GZIP,
     SerializationFormat.ZSTD,
   ] as const) {
-    it(`supports ${fmt} for core versions >= 5.0.0-beta.16`, () => {
-      expect(
-        getRunCapabilities('5.0.0-beta.16').supportedFormats.has(fmt)
-      ).toBe(true);
+    it(`supports ${fmt} for core versions >= 5.0.0-beta.18`, () => {
+      for (const version of [
+        '5.0.0-beta.18',
+        '5.0.0-beta.19',
+        '5.0.0',
+        '6.0.0',
+      ])
+        expect(getRunCapabilities(version).supportedFormats.has(fmt)).toBe(
+          true
+        );
     });
 
     it(`does not support ${fmt} for older core versions`, () => {
-      for (const version of ['5.0.0-beta.15', '4.2.1', '4.0.0']) {
+      // beta.16 and beta.17 were published before compression shipped, so a
+      // producer must treat those targets as compression-incapable — writing
+      // a codec they cannot decode is the silent-corruption failure mode.
+      for (const version of [
+        '5.0.0-beta.17',
+        '5.0.0-beta.16',
+        '5.0.0-beta.15',
+        '4.2.1',
+        '4.0.0',
+      ]) {
         expect(getRunCapabilities(version).supportedFormats.has(fmt)).toBe(
           false
         );

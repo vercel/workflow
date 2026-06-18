@@ -1,9 +1,12 @@
 /**
- * Returns headers needed to bypass Vercel Deployment Protection via OIDC
- * Trusted Sources.
+ * Returns headers needed to bypass Vercel Deployment Protection.
  *
  * Source preference, in order:
- *   1. **GitHub Actions runner** — when running inside a job with
+ *   1. **`VERCEL_PROTECTION_BYPASS` env var** — an explicit Protection
+ *      Bypass for Automation secret. Useful for local e2e runs against a
+ *      protected preview deployment where no GitHub Actions OIDC token is
+ *      available.
+ *   2. **GitHub Actions runner** — when running inside a job with
  *      `permissions: id-token: write`, the runner exposes
  *      `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`,
  *      and we mint short-lived OIDC tokens on demand. The runner-issued
@@ -11,7 +14,7 @@
  *      and re-mint shortly before expiry so a long-running test suite
  *      keeps working past the 5-minute mark (otherwise tests that run
  *      late in the suite would 401 against trusted-sources rules).
- *   2. **`VERCEL_OIDC_TOKEN` env var** — used inside Vercel functions
+ *   3. **`VERCEL_OIDC_TOKEN` env var** — used inside Vercel functions
  *      (the runtime injects the per-request token) and as a manual
  *      override for local development.
  *
@@ -25,6 +28,12 @@
  * @returns {Promise<Record<string, string>>}
  */
 export async function getTrustedSourcesHeaders() {
+  if (process.env.VERCEL_PROTECTION_BYPASS) {
+    return {
+      'x-vercel-protection-bypass': process.env.VERCEL_PROTECTION_BYPASS,
+    };
+  }
+
   const token = await getOidcToken();
   if (token) {
     return { 'x-vercel-trusted-oidc-idp-token': token };

@@ -132,6 +132,74 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('captures an explicit hasMore from the sentinel, independent of next', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    // The regression shape: a final page still carries a trailing `next`
+    // cursor (incremental-load resume point) but hasMore is false.
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        new Uint8Array(0)
+      ),
+      encodeFrame(
+        { _end: 1, next: 'eid:last', hasMore: false },
+        new Uint8Array(0)
+      ),
+    ]);
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.next).toBe('eid:last');
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('leaves hasMore undefined for a legacy sentinel without the flag', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    const frames = encodeFrame(
+      { _end: 1, next: 'cursor-2' },
+      new Uint8Array(0)
+    );
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.next).toBe('cursor-2');
+    expect(result.hasMore).toBeUndefined();
+  });
+
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
     const origin = 'https://vercel-workflow.com';
     const agent = new MockAgent();

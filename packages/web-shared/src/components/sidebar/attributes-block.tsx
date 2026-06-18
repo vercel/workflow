@@ -41,26 +41,21 @@ function AttributeRow({
 }) {
   const reserved = isReservedAttributeKey(attributeKey);
   return (
-    <div className="flex items-center justify-between gap-3 py-1.5">
+    <div className="flex items-center justify-between gap-3 py-0.5">
       <span
-        className="flex min-w-0 items-center gap-1.5 text-label-12 font-mono"
-        style={{
-          color: reserved ? 'var(--ds-gray-700)' : 'var(--ds-gray-900)',
-        }}
+        className="flex min-w-0 items-center gap-1.5 text-label-13 text-gray-900"
+        style={reserved ? { color: 'var(--ds-gray-700)' } : undefined}
       >
         <span className="truncate">{attributeKey}</span>
         {reserved && <ReservedBadge />}
       </span>
       {removed ? (
-        <span
-          className="shrink-0 text-label-12 italic"
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+        <span className="shrink-0 text-copy-13 italic text-gray-700">
           removed
         </span>
       ) : (
         <span
-          className="max-w-[60%] truncate text-right text-label-12 font-mono text-gray-1000"
+          className="max-w-[60%] truncate text-copy-13 text-gray-1000"
           title={value}
         >
           {value}
@@ -85,7 +80,7 @@ export function sortAttributeKeys(keys: string[]): string[] {
 }
 
 /**
- * Collapsible card showing a run's materialized attributes as key-value
+ * Collapsible section showing a run's materialized attributes as key-value
  * rows. Reserved (`$`-prefixed) keys are visually de-emphasized with a
  * badge and sorted after user keys.
  */
@@ -98,12 +93,8 @@ export function RunAttributesCard({
   if (keys.length === 0) return null;
 
   return (
-    <DetailCard
-      summary={`Attributes (${keys.length})`}
-      defaultOpen
-      contentClassName="mb-0"
-    >
-      <div className="flex flex-col divide-y divide-gray-alpha-400">
+    <DetailCard summary="Attributes" defaultOpen contentClassName="mb-4">
+      <div className="flex flex-col">
         {keys.map((key) => (
           <AttributeRow attributeKey={key} key={key} value={attributes[key]} />
         ))}
@@ -156,7 +147,7 @@ export function AttrSetEventBlock({ data }: { data: unknown }) {
 
   return (
     <div className="flex flex-col px-3 py-1">
-      <div className="flex flex-col divide-y divide-gray-alpha-400">
+      <div className="flex flex-col">
         {data.changes.map((change, index) => (
           <AttributeRow
             attributeKey={change.key}
