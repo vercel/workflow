@@ -1,5 +1,10 @@
 {
   "title": "Changelog",
-  "pages": ["index", "eager-processing", "resilient-start"],
+  "pages": [
+    "index",
+    "eager-processing",
+    "resilient-start",
+    "lazy-event-creation"
+  ],
   "defaultOpen": false
 }

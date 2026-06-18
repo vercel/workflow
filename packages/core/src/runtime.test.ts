@@ -4,7 +4,7 @@ import {
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
 } from '@workflow/world';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
@@ -889,7 +889,15 @@ describe('workflowEntrypoint replay guards', () => {
 });
 
 describe('workflowEntrypoint step-dispatch ack ordering', () => {
+  // Pin to a single inline step so exactly one of the two parallel steps is
+  // queued — these tests assert the dispatch→ack ordering for that QUEUED step,
+  // which is independent of how many steps run inline. (With the default of
+  // `getMaxInlineSteps()` both would run inline and nothing would be queued.)
+  beforeEach(() => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
+  });
   afterEach(() => {
+    delete process.env.WORKFLOW_MAX_INLINE_STEPS;
     setWorld(undefined);
     vi.clearAllMocks();
     waitUntilPromises.length = 0;
@@ -1180,5 +1188,25 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // promise (queue re-drive), never through an unconsumed `waitUntil`
     // promise (which would become an unhandled rejection / process exit 128).
     expect(await anyWaitUntilPromiseRejected()).toBe(false);
+  });
+
+  it('runs BOTH parallel steps inline (none queued) when the inline cap allows it', async () => {
+    // Override the per-suite cap of 1: with a cap of 3 both `add` and `addB`
+    // are deferred and run inline via lazy step_started, so neither is eagerly
+    // created or dispatched to a background handler. Only the sleep's wait
+    // continuation is queued (it carries no stepId).
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '3';
+
+    const { handlerPromise, order } = await driveHandler({
+      runId: 'wrun_multi_inline',
+      queueImpl: async () => ({ messageId: null }),
+    });
+
+    const res = (await handlerPromise) as Response;
+    expect(res.status).toBe(204);
+
+    // No eager step_created and no step-dispatch send: both steps went inline.
+    expect(order).not.toContain('step_created');
+    expect(order).not.toContain('queue_dispatch_start');
   });
 });

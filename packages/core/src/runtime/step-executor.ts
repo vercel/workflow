@@ -33,6 +33,7 @@ import {
   promoteAbortErrorToFatal,
 } from '../types.js';
 
+import { isOptimisticInlineStartEnabled } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import { safeWaitUntil } from './wait-until.js';
@@ -252,32 +253,12 @@ export async function executeStep(
       ...Attribute.StepMaxRetries(maxRetries),
     });
 
-    // step_started validates state and returns the step entity. On the lazy
-    // inline path we also carry the step `input` so the world creates the step
-    // on the fly (no separate step_created round-trip). The world's atomic
-    // create-claim makes this exactly-one-owner: a concurrent loser gets
-    // EntityConflictError, mapped to `{ type: 'skipped' }` below, so it never
-    // runs the body. When `lazyStepInput` is absent this is the legacy
-    // step_started (step already created, no payload).
-    let step: Step;
-    try {
-      const startResult = await world.events.create(workflowRunId, {
-        eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: stepId,
-        eventData:
-          params.lazyStepInput !== undefined
-            ? { stepName, input: params.lazyStepInput }
-            : { stepName },
-      });
-
-      if (!startResult.step) {
-        throw new WorkflowRuntimeError(
-          `step_started event for "${stepId}" did not return step entity`
-        );
-      }
-      step = startResult.step;
-    } catch (err) {
+    // Maps a `step_started` rejection to a terminal StepExecutionResult,
+    // shared by the await path (below) and the optimistic-start reconciliation.
+    // Returns undefined when the error is not one we translate (caller rethrows).
+    const startErrorToResult = (
+      err: unknown
+    ): StepExecutionResult | undefined => {
       if (ThrottleError.is(err)) {
         const retryAfter = Math.max(
           1,
@@ -299,7 +280,7 @@ export async function executeStep(
           stepName,
           stepId,
           workflowRunId,
-          error: err.message,
+          error: err instanceof Error ? err.message : String(err),
         });
         span?.setAttributes({
           ...Attribute.StepSkipped(true),
@@ -316,7 +297,99 @@ export async function executeStep(
         });
         return { type: 'retry', timeoutSeconds };
       }
-      throw err;
+      return undefined;
+    };
+
+    // Optimistic inline start: when we hold the step input locally (lazy inline
+    // path) and the optimization is enabled, fire `step_started` WITHOUT
+    // awaiting and run the body against locally-synthesized state. A lazy step
+    // is always brand-new ⇒ attempt 1, no prior error, started now — so we
+    // don't need the server round-trip to begin. We reconcile the in-flight
+    // `step_started` before any terminal write (`reconcileOptimisticStart`): if
+    // it lost the atomic create-claim (409) or the run is gone/throttled, we
+    // discard the body result. Running the body before confirming ownership can
+    // execute a step more than once when handlers race — inline step bodies
+    // must be idempotent; disable via WORKFLOW_OPTIMISTIC_INLINE_START=0.
+    const optimisticStart =
+      params.lazyStepInput !== undefined && isOptimisticInlineStartEnabled();
+
+    let step: Step;
+    // Settled outcome of the in-flight optimistic `step_started`. Handlers are
+    // attached synchronously (`.then(ok, err)`) so a fast rejection never
+    // surfaces as an unhandledRejection while the body runs.
+    let optimisticStartSettled:
+      | Promise<{ ok: true } | { ok: false; err: unknown }>
+      | undefined;
+    // Await the optimistic `step_started` outcome and translate a lost race /
+    // terminal run / throttle into a result that short-circuits the body
+    // output. Returns undefined when we own the step and may write its terminal
+    // event. A non-translatable rejection is rethrown (so a transient
+    // step_started failure propagates to the queue handler for redelivery,
+    // exactly as on the await path). Idempotent — safe to call more than once.
+    const reconcileOptimisticStart = async (): Promise<
+      StepExecutionResult | undefined
+    > => {
+      if (!optimisticStartSettled) return undefined;
+      const settled = await optimisticStartSettled;
+      if (settled.ok) return undefined;
+      const mapped = startErrorToResult(settled.err);
+      if (!mapped) throw settled.err;
+      return mapped;
+    };
+
+    if (optimisticStart) {
+      const startedPromise = world.events.create(workflowRunId, {
+        eventType: 'step_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: stepId,
+        eventData: { stepName, input: params.lazyStepInput },
+      });
+      optimisticStartSettled = startedPromise.then(
+        () => ({ ok: true as const }),
+        (err) => ({ ok: false as const, err })
+      );
+      const now = new Date();
+      step = {
+        runId: workflowRunId,
+        stepId,
+        stepName,
+        status: 'running',
+        input: params.lazyStepInput,
+        attempt: 1,
+        startedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+    } else {
+      // step_started validates state and returns the step entity. On the lazy
+      // inline path we also carry the step `input` so the world creates the
+      // step on the fly (no separate step_created round-trip). The world's
+      // atomic create-claim makes this exactly-one-owner: a concurrent loser
+      // gets EntityConflictError, mapped to `{ type: 'skipped' }`, so it never
+      // runs the body. When `lazyStepInput` is absent this is the legacy
+      // step_started (step already created, no payload).
+      try {
+        const startResult = await world.events.create(workflowRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData:
+            params.lazyStepInput !== undefined
+              ? { stepName, input: params.lazyStepInput }
+              : { stepName },
+        });
+
+        if (!startResult.step) {
+          throw new WorkflowRuntimeError(
+            `step_started event for "${stepId}" did not return step entity`
+          );
+        }
+        step = startResult.step;
+      } catch (err) {
+        const mapped = startErrorToResult(err);
+        if (mapped) return mapped;
+        throw err;
+      }
     }
 
     runtimeLogger.debug('Step execution details', {
@@ -532,6 +605,14 @@ export async function executeStep(
         ]);
       }
 
+      // Optimistic start: the body ran before `step_started` was confirmed.
+      // Reconcile it now — if we lost the create-claim (or the run is
+      // gone/throttled) discard this result and don't write step_completed.
+      if (optimisticStart) {
+        const reconcile = await reconcileOptimisticStart();
+        if (reconcile) return reconcile;
+      }
+
       // Create step_completed event. When the caller supplied a
       // sinceCursor (inline sequential execution), thread it through so a
       // supporting World returns the event-log delta on the result,
@@ -597,6 +678,15 @@ export async function executeStep(
       // and queue a continuation so waitUntil can flush them.
       return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
     } catch (err: unknown) {
+      // Optimistic start: the body threw before `step_started` was confirmed.
+      // Reconcile first — if we lost the create-claim (or the run is
+      // gone/throttled) the body error is moot; discard it and don't write a
+      // terminal event (the winning handler owns the outcome).
+      if (optimisticStart) {
+        const reconcile = await reconcileOptimisticStart();
+        if (reconcile) return reconcile;
+      }
+
       const effectiveErr = promoteAbortErrorToFatal(err);
 
       const normalizedError = await normalizeUnknownError(effectiveErr);
