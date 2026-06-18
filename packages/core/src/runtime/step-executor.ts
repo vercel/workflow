@@ -204,7 +204,9 @@ export async function executeStep(
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
-            eventData: { stepName, input: params.lazyStepInput },
+            // workflowName lets the backend key the lazy-start input ref
+            // without re-reading the run.
+            eventData: { stepName, workflowName, input: params.lazyStepInput },
           });
         } catch (startErr) {
           if (EntityConflictError.is(startErr)) {
@@ -546,6 +548,9 @@ export async function executeStep(
             correlationId: stepId,
             eventData: {
               stepName,
+              // Lets the backend build the payload ref key without re-reading
+              // the run on this per-step write (it's keyed by workflow name).
+              workflowName,
               result: result as Uint8Array,
             },
           },

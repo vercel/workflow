@@ -442,6 +442,9 @@ export async function handleSuspension({
             correlationId: queueItem.correlationId,
             eventData: {
               stepName: queueItem.stepName,
+              // Lets the backend build the payload ref key without re-reading
+              // the run on this per-step write (it's keyed by workflow name).
+              workflowName: run.workflowName,
               input: dehydratedInput as SerializedData,
             },
           };

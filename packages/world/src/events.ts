@@ -100,6 +100,10 @@ const StepCompletedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     stepName: z.string().optional(),
+    // Carried so a backend that keys payload refs by workflow name can build
+    // the key without an extra run lookup on this hot per-step write.
+    // Optional: older runtimes omit it and the backend falls back to a read.
+    workflowName: z.string().optional(),
     result: SerializedDataSchema,
   }),
 });
@@ -152,6 +156,9 @@ const StepStartedEventSchema = BaseEventSchema.extend({
     .object({
       stepName: z.string().optional(),
       attempt: z.number().optional(),
+      // Carried on the lazy-start path (where `input` is present) so the
+      // backend can build the payload ref key without re-reading the run.
+      workflowName: z.string().optional(),
       // Lazy-start: the dehydrated step input, present only when this
       // step_started is also responsible for creating the step.
       input: SerializedDataSchema.optional(),
@@ -168,6 +175,7 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     stepName: z.string(),
+    workflowName: z.string().optional(),
     input: SerializedDataSchema,
   }),
 });
