@@ -427,9 +427,9 @@ export interface CreateEventParams {
   requestId?: string;
   /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
-   * on the resulting {@link EventResult}, the events written strictly
-   * after this cursor (via `events`/`cursor`/`hasMore`) — exactly the
-   * delta an `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
+   * on the resulting {@link EventResult}, the first page of events written
+   * strictly after this cursor (via `events`/`cursor`/`hasMore`) — the
+   * same page an `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
    * call would return immediately after this write. The inline runtime
    * loop uses this to skip a redundant `events.list` round-trip between
    * sequential steps: instead of re-reading its own just-written events
@@ -439,12 +439,16 @@ export interface CreateEventParams {
    * The cursor MUST share `events.list` semantics: the returned `events`
    * are everything sorted strictly after `sinceCursor`, `cursor` is the
    * position past the last returned event, and `hasMore` indicates a
-   * further page exists (in which case the runtime falls back to a full
-   * incremental fetch). Returning these fields is OPTIONAL — a World that
-   * omits them is fully supported; the runtime falls back to
-   * `events.list`. This preserves the same divergence guarantees as the
-   * fetch path because the delta is computed atomically against the same
-   * log the fetch would read.
+   * further page exists. A World MAY return a single page and set
+   * `hasMore: true` rather than paginating to exhaustion — the runtime
+   * does not consume a truncated delta, it falls back to a full
+   * incremental fetch whenever `hasMore` is true. (For that reason a step
+   * body emitting more in-band events than one page silently bypasses this
+   * fast path, which is correct but forgoes the saved round-trip.)
+   * Returning these fields at all is OPTIONAL — a World that omits them is
+   * fully supported; the runtime falls back to `events.list`. This
+   * preserves the same divergence guarantees as the fetch path because the
+   * delta is computed atomically against the same log the fetch would read.
    */
   sinceCursor?: string;
 }
