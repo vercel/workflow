@@ -124,7 +124,11 @@ export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined
+  encryptionKey: CryptoKey | undefined,
+  // Optional V8 code cache for `workflowCode`, produced at build time. Lets the
+  // first compile in a fresh process skip parsing the bundle (see
+  // `getCachedWorkflowScript`). Omitted in dev / when no cache was emitted.
+  workflowCodeCachedData?: Buffer
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -787,7 +791,12 @@ export async function runWorkflow(
     // Script rather than the line just past the end of the bundle. That path
     // is rare (it requires the lookup `?.get(...)` expression to throw) and
     // does not affect the workflow function or replay determinism.
-    runCachedWorkflowScript(workflowCode, filename, context);
+    runCachedWorkflowScript(
+      workflowCode,
+      filename,
+      context,
+      workflowCodeCachedData
+    );
     const workflowFn = runCachedWorkflowScript(
       `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
       filename,

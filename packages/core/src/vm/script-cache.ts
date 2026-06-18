@@ -1,4 +1,5 @@
 import { type Context, Script } from 'node:vm';
+import { runtimeLogger as scriptCacheLogger } from '../logger.js';
 
 /**
  * Module-level cache of compiled workflow-bundle `vm.Script` objects.
@@ -100,7 +101,8 @@ function touchBundle(code: string): Map<string, Script> | undefined {
  */
 export function getCachedWorkflowScript(
   code: string,
-  filename: string
+  filename: string,
+  cachedData?: Buffer
 ): Script {
   let byFilename = touchBundle(code);
   if (byFilename === undefined) {
@@ -118,7 +120,26 @@ export function getCachedWorkflowScript(
   }
   let script = byFilename.get(filename);
   if (script === undefined) {
-    script = new Script(code, { filename });
+    // `cachedData` (a V8 code cache produced at build time via
+    // `Script.createCachedData()`) lets V8 skip parsing the bundle on the first
+    // compile in this process — the dominant cost on a cold serverless instance
+    // for large bundles. The in-process cache above only helps subsequent
+    // replays in the *same* process; the code cache helps the very first one.
+    // V8 validates the blob against its version/flags and the source; on any
+    // mismatch it sets `cachedDataRejected` and transparently falls back to a
+    // full parse, so a stale or wrong-Node-version blob is never a correctness
+    // risk — only a missed optimization. `cachedData` is independent of
+    // `filename`, so a single build-time blob is valid for every per-workflow
+    // filename the bundle is compiled under.
+    script = cachedData
+      ? new Script(code, { filename, cachedData })
+      : new Script(code, { filename });
+    if (cachedData && script.cachedDataRejected) {
+      scriptCacheLogger.debug(
+        'Workflow bundle code cache rejected; falling back to full parse',
+        { filename }
+      );
+    }
     byFilename.set(filename, script);
   }
   return script;
@@ -126,14 +147,18 @@ export function getCachedWorkflowScript(
 
 /**
  * Runs the cached workflow-bundle `Script` against `context`. Compiles and
- * caches the `Script` on first use for the given `(code, filename)`.
+ * caches the `Script` on first use for the given `(code, filename)`. When
+ * `cachedData` is provided, it is used to skip parsing on the first compile.
  */
 export function runCachedWorkflowScript(
   code: string,
   filename: string,
-  context: Context
+  context: Context,
+  cachedData?: Buffer
 ): unknown {
-  return getCachedWorkflowScript(code, filename).runInContext(context);
+  return getCachedWorkflowScript(code, filename, cachedData).runInContext(
+    context
+  );
 }
 
 /**
