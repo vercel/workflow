@@ -406,7 +406,14 @@ export async function handleSuspension({
           .map((item) => item.correlationId)
       : []
   );
-  const lazyInlineSteps: SuspensionHandlerResult['lazyInlineSteps'] = [];
+  // Collected by correlationId because the per-step ops below run concurrently
+  // and settle out of order. We rebuild the array in deterministic
+  // `lazyInlineCorrelationIds` order (the ordered slice above) after the ops
+  // settle, so the inline batch order is stable regardless of dehydration timing.
+  const lazyInlineByCorrelationId = new Map<
+    string,
+    SuspensionHandlerResult['lazyInlineSteps'][number]
+  >();
 
   const ops: Promise<void>[] = [];
 
@@ -434,7 +441,7 @@ export async function handleSuspension({
           // createdStepCorrelationIds; ownership is decided by that lazy
           // step_started's atomic create-claim instead.
           if (lazyInlineCorrelationIds.has(queueItem.correlationId)) {
-            lazyInlineSteps.push({
+            lazyInlineByCorrelationId.set(queueItem.correlationId, {
               correlationId: queueItem.correlationId,
               stepName: queueItem.stepName,
               dehydratedInput: dehydratedInput as SerializedData,
@@ -563,6 +570,15 @@ export async function handleSuspension({
   // message is not acked and VQS redelivers, re-creates the (idempotent)
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
+
+  // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
+  // is a Set seeded from the ordered first-N slice, so iterating it preserves
+  // stepItems order; every id in it was set by the lazy branch above.
+  const lazyInlineSteps: SuspensionHandlerResult['lazyInlineSteps'] = [];
+  for (const correlationId of lazyInlineCorrelationIds) {
+    const lazyStep = lazyInlineByCorrelationId.get(correlationId);
+    if (lazyStep) lazyInlineSteps.push(lazyStep);
+  }
 
   // Find the soonest pending wait (minimum timeout)
   const now = Date.now();

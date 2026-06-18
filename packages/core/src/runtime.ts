@@ -1522,11 +1522,19 @@ export function workflowEntrypoint(
                           // any `retry` steps in this batch are queued as
                           // background steps with their own retryAfter honored.
                           // Terminal steps (completed/failed/skipped/gone) are
-                          // observed from their events and not re-run; pending
-                          // background ops are flushed via waitUntil before the
-                          // replay reads them. Because the replay drives all
-                          // remaining work, we must NOT also re-queue `toRetry`
-                          // here — that would double-dispatch those steps.
+                          // observed from their events and not re-run. Because
+                          // the replay drives all remaining work, we must NOT
+                          // also re-queue `toRetry` here — that would
+                          // double-dispatch those steps.
+                          //
+                          // This returns BEFORE the `anyPendingOps` branch
+                          // below, so a batch that mixes a throttle with a
+                          // completed step that left unflushed ops does not
+                          // queue the explicit flush continuation. That is safe
+                          // because the throttle backoff (>= 1s) always exceeds
+                          // the in-invocation flush window (<= 500ms + waitUntil),
+                          // so ops settle before the post-backoff redelivery
+                          // replays and reads them.
                           return { timeoutSeconds: throttleTimeout };
                         }
 
