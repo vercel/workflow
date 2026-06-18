@@ -55,7 +55,17 @@ jobs:
           build-packages: 'true'
 
       - name: Build workbench
-        run: pnpm turbo run build --filter=nextjs-turbopack
+        # `next build --turbopack` can intermittently crash on CI runners with a
+        # SIGBUS / Go deadlock (exit 135). Retry a couple of times — turbo only
+        # caches successful tasks, so a crashed build is re-run cleanly.
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm turbo run build --filter=nextjs-turbopack; then exit 0; fi
+            echo "::warning::workbench build failed (attempt $attempt/3), retrying..."
+            sleep 5
+          done
+          echo "::error::workbench build failed after 3 attempts"
+          exit 1
 
       - name: Run QuickJS unit + integration tests
         run: pnpm vitest run packages/core/src/runtime/runtime-mode.test.ts packages/core/src/runtime/quickjs-runtime.test.ts
