@@ -73,6 +73,10 @@ export function createDevTests(config?: DevTestConfig) {
       path.dirname(generatedWorkflow),
       '__workflow_code.txt'
     );
+    const deferredStepBundlePath = path.join(
+      path.dirname(generatedWorkflow),
+      '__workflow_steps.js'
+    );
     const workflowManifestPath = path.join(
       appPath,
       'app/.well-known/workflow/v1/manifest.json'
@@ -636,12 +640,17 @@ ${apiFileContent}`
             // Package step sources are imported directly (not copied). Verify
             // the generated route imports the @workflow/ai package or
             // otherwise references `durable-agent` via its resolved path.
-            const generatedRouteContent =
-              (await readFileIfExists(generatedStep)) ??
-              (await readFileIfExists(generatedWorkflow));
-            if (!generatedRouteContent) {
+            const generatedRouteOutputs = [
+              await readFileIfExists(generatedStep),
+              await readFileIfExists(generatedWorkflow),
+              usesDeferredBuilder
+                ? await readFileIfExists(deferredStepBundlePath)
+                : null,
+            ].filter((output): output is string => output !== null);
+            if (generatedRouteOutputs.length === 0) {
               throw new Error('generated workflow outputs were not found');
             }
+            const generatedRouteContent = generatedRouteOutputs.join('\n');
             expect(
               generatedRouteContent.includes('@workflow/ai') ||
                 generatedRouteContent.includes('durable-agent')

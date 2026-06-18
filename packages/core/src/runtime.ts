@@ -282,7 +282,10 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string }
+  options?: {
+    namespace?: string;
+    preloadStepBundle?: () => Promise<void> | void;
+  }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
@@ -327,6 +330,22 @@ export function workflowEntrypoint(
           : undefined;
         const { requestId } = metadata;
         const workflowName = metadata.queueName.slice(workflowPrefix.length);
+        let stepBundlePreload: Promise<void> | undefined;
+        const startStepBundlePreload = () => {
+          if (!options?.preloadStepBundle) {
+            return Promise.resolve();
+          }
+
+          stepBundlePreload ??= Promise.resolve()
+            .then(() => options.preloadStepBundle?.())
+            .then(() => undefined);
+          // The preload is speculative. Surface failures only if this request
+          // actually reaches a step execution path and awaits the promise.
+          stepBundlePreload.catch(() => {});
+          return stepBundlePreload;
+        };
+        const ensureStepBundleLoaded = () =>
+          stepBundlePreload ?? startStepBundlePreload();
 
         // --- Max delivery check ---
         // Enforce max delivery limit before any infrastructure calls.
@@ -390,6 +409,10 @@ export function workflowEntrypoint(
             );
           }
           return;
+        }
+
+        if (incomingStepId && incomingStepName) {
+          startStepBundlePreload();
         }
 
         // --- Trace correlation mode ---
@@ -527,6 +550,7 @@ export function workflowEntrypoint(
                       replayBudget.pause();
                       let stepResult: Awaited<ReturnType<typeof executeStep>>;
                       try {
+                        await ensureStepBundleLoaded();
                         stepResult = await executeStep({
                           world,
                           workflowRunId: runId,
@@ -704,6 +728,7 @@ export function workflowEntrypoint(
                           `Workflow run "${runId}" has no "startedAt" timestamp`
                         );
                       }
+                      startStepBundlePreload();
                     } catch (err) {
                       // Run was concurrently completed/failed/cancelled
                       if (
@@ -1423,6 +1448,7 @@ export function workflowEntrypoint(
                         replayBudget.pause();
                         let stepResult: Awaited<ReturnType<typeof executeStep>>;
                         try {
+                          await ensureStepBundleLoaded();
                           stepResult = await executeStep({
                             world,
                             workflowRunId: runId,

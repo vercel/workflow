@@ -80,16 +80,25 @@ describe('NextDeferredBuilder', () => {
     });
 
     const routeCode = await readFile(flowOutfile, 'utf8');
+    const stepBundleCode = await readFile(
+      join(routeDir, '__workflow_steps.js'),
+      'utf8'
+    );
     const expectedStepImport = relative(routeDir, workflowFile).replace(
       /\\/g,
       '/'
     );
-    expect(routeCode).toContain("import 'workflow/internal/builtins';");
-    expect(routeCode).toContain(`import "${expectedStepImport}";`);
+    expect(routeCode).not.toContain("import 'workflow/internal/builtins';");
+    expect(routeCode).not.toContain(`import "${expectedStepImport}";`);
     expect(routeCode).toContain(
       "import { workflowEntrypoint } from 'workflow/runtime';"
     );
-    expect(routeCode).not.toContain('__step_registrations');
+    expect(routeCode).toContain('function preloadStepBundle()');
+    expect(routeCode).toContain('import("./__workflow_steps.js")');
+    expect(routeCode).toContain('preloadStepBundle,');
+    expect(stepBundleCode).toContain("import 'workflow/internal/builtins';");
+    expect(stepBundleCode).toContain(`import "${expectedStepImport}";`);
+    expect(stepBundleCode).toContain('export const __steps_registered = true;');
   });
 
   it('loads workflow code from disk for dev deferred flow routes', async () => {
@@ -135,10 +144,15 @@ describe('NextDeferredBuilder', () => {
     });
 
     const routeCode = await readFile(flowOutfile, 'utf8');
+    await expect(
+      readFile(join(routeDir, '__workflow_steps.js'), 'utf8')
+    ).resolves.toContain("import 'workflow/internal/builtins';");
     expect(routeCode).toContain(
       "import { readFile, stat } from 'node:fs/promises';"
     );
     expect(routeCode).toContain('async function getWorkflowHandler()');
+    expect(routeCode).toContain('function preloadStepBundle()');
+    expect(routeCode).toContain('import("./__workflow_steps.js")');
     expect(routeCode).toContain('export async function POST(req)');
     expect(routeCode).not.toContain('const workflowCode = `');
     await expect(

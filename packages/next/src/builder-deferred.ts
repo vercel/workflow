@@ -33,6 +33,7 @@ import {
 const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
 const ROUTE_STUB_MARKER_SCAN_BYTES = 4 * 1024;
 const DEV_WORKFLOW_CODE_FILENAME = '__workflow_code.txt';
+const DEFERRED_STEP_BUNDLE_FILENAME = '__workflow_steps.js';
 
 let CachedNextBuilderDeferred: any;
 
@@ -647,11 +648,28 @@ export async function getNextBuilderDeferred() {
         stepAndSerdeFiles,
         dirname(flowOutfile)
       );
+      const stepBundlePath = join(
+        dirname(flowOutfile),
+        DEFERRED_STEP_BUNDLE_FILENAME
+      );
+      await this.writeFileIfChanged(
+        stepBundlePath,
+        `// biome-ignore-all lint: generated file
+/* eslint-disable */
+import 'workflow/internal/builtins';
+${stepImports}
+
+export const __steps_registered = true;`
+      );
       const stepManifest =
         await this.createDeferredStepManifest(stepAndSerdeFiles);
       const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
       const workflowEntrypointOptionsCode =
         createWorkflowEntrypointOptionsCode();
+      const workflowEntrypointOptionsObjectCode = workflowEntrypointOptionsCode
+        ? workflowEntrypointOptionsCode.replace(/^,\s*/, '')
+        : '{}';
+      const stepBundleImportPath = `./${DEFERRED_STEP_BUNDLE_FILENAME}`;
       let routeCode: string;
 
       if (this.config.watch) {
@@ -662,21 +680,28 @@ export async function getNextBuilderDeferred() {
         await this.writeFileIfChanged(workflowCodePath, workflowVMCode);
         routeCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
-import 'workflow/internal/builtins';
-${stepImports}
 import { readFile, stat } from 'node:fs/promises';
 import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCodePath = ${JSON.stringify(workflowCodePath)};
 let cachedWorkflowHandler;
 let cachedWorkflowCodeSignature;
+let stepBundlePromise;
+
+function preloadStepBundle() {
+  stepBundlePromise ??= import(${JSON.stringify(stepBundleImportPath)}).then(() => undefined);
+  return stepBundlePromise;
+}
 
 async function getWorkflowHandler() {
   const workflowCodeStats = await stat(workflowCodePath);
   const workflowCodeSignature = \`\${workflowCodeStats.size}:\${workflowCodeStats.mtimeMs}\`;
   if (!cachedWorkflowHandler || cachedWorkflowCodeSignature !== workflowCodeSignature) {
     const workflowCode = await readFile(workflowCodePath, 'utf8');
-    cachedWorkflowHandler = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});
+    cachedWorkflowHandler = workflowEntrypoint(workflowCode, {
+      ...${workflowEntrypointOptionsObjectCode},
+      preloadStepBundle,
+    });
     cachedWorkflowCodeSignature = workflowCodeSignature;
   }
   return cachedWorkflowHandler;
@@ -688,13 +713,20 @@ export async function POST(req) {
       } else {
         routeCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
-import 'workflow/internal/builtins';
-${stepImports}
 import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${escapedVMCode}\`;
+let stepBundlePromise;
 
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+function preloadStepBundle() {
+  stepBundlePromise ??= import(${JSON.stringify(stepBundleImportPath)}).then(() => undefined);
+  return stepBundlePromise;
+}
+
+export const POST = workflowEntrypoint(workflowCode, {
+  ...${workflowEntrypointOptionsObjectCode},
+  preloadStepBundle,
+});`;
       }
 
       await this.writeFileIfChanged(flowOutfile, routeCode);
