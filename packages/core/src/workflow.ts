@@ -17,6 +17,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -98,6 +99,24 @@ export async function runWorkflow(
       );
     }
 
+    // The deterministic RNG seed is derived from identifiers that are all
+    // known the instant the queue message arrives — `runId`, `workflowName`,
+    // and `deploymentId` — with no timestamp component. `runId` alone already
+    // makes the seed unique-per-run and replay-stable; `workflowName` and
+    // `deploymentId` are included for extra entropy. Dropping the timestamp
+    // means the seed no longer depends on `startedAt`/`createdAt`, so it (and
+    // the VM context) can be computed before any server round-trip.
+    //
+    // The VM's initial fixed clock is derived from the run's creation time,
+    // recovered from the ULID embedded in `runId` (also available immediately),
+    // falling back to the run snapshot's `createdAt` for non-ULID ids. This
+    // initial `fixedTimestamp` only governs `Date.now()` / `new Date()` in the
+    // window before the first event is consumed; thereafter `updateTimestamp`
+    // advances the VM clock to each consumed event's `createdAt` (see the
+    // EventsConsumer below), starting with `run_created`.
+    const fixedTimestamp =
+      runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
+
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
@@ -108,8 +127,8 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${+startedAt}`,
-      fixedTimestamp: +startedAt,
+      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
+      fixedTimestamp,
     });
 
     const workflowDiscontinuation = withResolvers<void>();
