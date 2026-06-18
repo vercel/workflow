@@ -16,6 +16,7 @@ import { Lock } from 'lucide-react';
 import {
   createContext,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
   useContext,
@@ -488,7 +489,7 @@ function LeafRow({
   children: ReactNode;
 }) {
   return (
-    <div className={CLS.child}>
+    <div className={CLS.child} role="treeitem" tabIndex={-1}>
       <Label field={field} />
       {children}
       <Comma isLast={isLast} />
@@ -519,7 +520,7 @@ function EmptyContainer({
   isLast: boolean;
 }) {
   return (
-    <div className={CLS.child}>
+    <div className={CLS.child} role="treeitem" tabIndex={-1}>
       <Label field={field} />
       {prefix ? <span className={CLS.className}>{prefix}</span> : null}
       <span className={CLS.punctuation}>{open}</span>
@@ -581,7 +582,7 @@ function ExpandableContainer({
 }) {
   const { level, shouldExpand, outerRef } = ctx;
   const [expanded, setExpanded] = useState(() => shouldExpand(level));
-  const buttonRef = useRef<HTMLButtonElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
   const contentsId = useId();
 
   if (entries.length === 0) {
@@ -598,7 +599,19 @@ function ExpandableContainer({
 
   const toggle = () => {
     setExpanded((value) => !value);
-    if (buttonRef.current) focusExpander(buttonRef.current, outerRef);
+    if (rowRef.current) focusExpander(rowRef.current, outerRef);
+  };
+
+  // Toggle only for clicks that land on this row itself; clicks bubbling up out
+  // of a nested treeitem are handled by that descendant's own row.
+  const onClick = (event: ReactMouseEvent) => {
+    if (
+      (event.target as HTMLElement).closest('[role="treeitem"]') !==
+      event.currentTarget
+    ) {
+      return;
+    }
+    toggle();
   };
 
   const onKeyDown = (event: ReactKeyboardEvent) => {
@@ -620,33 +633,31 @@ function ExpandableContainer({
   const lastIndex = entries.length - 1;
 
   return (
-    <div className={CLS.child}>
-      <button
-        type="button"
-        data-json-expander
+    // The treeitem row is the focusable, keyboard-operable control (roving
+    // tabindex + arrow keys); the disclosure marker below is purely decorative.
+    <div
+      className={CLS.child}
+      role="treeitem"
+      aria-expanded={expanded}
+      aria-controls={expanded ? contentsId : undefined}
+      data-json-expander
+      ref={rowRef}
+      tabIndex={level === 0 ? 0 : -1}
+      onClick={onClick}
+      onKeyDown={onKeyDown}
+    >
+      <span
         className={expanded ? CLS.collapseIcon : CLS.expandIcon}
-        aria-label={expanded ? 'collapse JSON' : 'expand JSON'}
-        aria-expanded={expanded}
-        aria-controls={expanded ? contentsId : undefined}
-        ref={buttonRef}
-        tabIndex={level === 0 ? 0 : -1}
-        onClick={toggle}
-        onKeyDown={onKeyDown}
+        aria-hidden="true"
       />
       {field !== undefined && (
-        // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only convenience target; the adjacent expander <button> is the focusable, keyboard-operable control.
-        <span
-          className={CLS.clickableLabel}
-          onClick={toggle}
-          onKeyDown={onKeyDown}
-        >
-          {`${formatField(field)}:`}
-        </span>
+        <span className={CLS.clickableLabel}>{`${formatField(field)}:`}</span>
       )}
       {prefix ? <span className={CLS.className}>{prefix}</span> : null}
       <span className={CLS.punctuation}>{open}</span>
       {expanded ? (
-        <ul id={contentsId} className={CLS.childFields}>
+        // biome-ignore lint/a11y/useSemanticElements: ARIA tree group is the correct role here
+        <ul id={contentsId} className={CLS.childFields} role="group">
           {entries.map(([childField, childValue], index) => (
             <DataRender
               key={childField ?? index}
@@ -658,12 +669,7 @@ function ExpandableContainer({
           ))}
         </ul>
       ) : (
-        // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only convenience target (the "..." indicator); the expander <button> is the focusable, keyboard-operable control.
-        <span
-          className={CLS.collapsedContent}
-          onClick={toggle}
-          onKeyDown={onKeyDown}
-        />
+        <span className={CLS.collapsedContent} aria-hidden="true" />
       )}
       <span className={CLS.punctuation}>{close}</span>
       <Comma isLast={isLast} />
@@ -794,7 +800,12 @@ function JsonTree({
     [expandLevel]
   );
   return (
-    <div ref={outerRef} className={CLS.container}>
+    <div
+      ref={outerRef}
+      className={CLS.container}
+      role="tree"
+      aria-label="JSON view"
+    >
       <DataRender
         field={name}
         value={data}
