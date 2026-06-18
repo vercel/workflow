@@ -184,17 +184,22 @@ export function getMaxInlineSteps(): number {
  * Whether optimistic inline step start is enabled. When on, the owned-inline
  * path begins running a brand-new step's body *before* its lazy `step_started`
  * network call resolves (the input is already known locally), awaiting the
- * `step_started` only before the terminal write. This can run a step body more
- * than once when handlers race — inline step bodies must be idempotent.
+ * `step_started` only before the terminal write.
  *
- * Reads `process.env.WORKFLOW_OPTIMISTIC_INLINE_START` lazily. Default ON;
- * disabled only by an explicit `'0'` / `'false'`, which restores the
- * await-`step_started`-then-run behavior.
+ * This can run a step body more than once when handlers race for the same
+ * step's create-claim — both run the body before one wins. That is unsafe for
+ * steps with non-idempotent side effects; in particular, two concurrent runs
+ * of a step that writes to the workflow stream (e.g. an AI agent streaming
+ * tokens) can interleave and corrupt the stream data. So the optimization is
+ * **off by default** and must be explicitly opted into per deployment.
+ *
+ * Reads `process.env.WORKFLOW_OPTIMISTIC_INLINE_START` lazily. Default OFF;
+ * enabled only by an explicit `'1'` / `'true'`.
  */
 export function isOptimisticInlineStartEnabled(): boolean {
   const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
-  if (raw === undefined || raw === '') return true;
-  return raw !== '0' && raw.toLowerCase() !== 'false';
+  if (raw === undefined || raw === '') return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
 }
 
 // A replay-consumer mismatch can be caused by a transient divergent replay

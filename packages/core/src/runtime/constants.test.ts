@@ -184,23 +184,23 @@ describe('isOptimisticInlineStartEnabled', () => {
     }
   });
 
-  it('defaults to enabled when unset', () => {
+  it('defaults to disabled when unset', () => {
     delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
-    expect(isOptimisticInlineStartEnabled()).toBe(true);
-  });
-
-  it('is disabled by "0"', () => {
-    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
     expect(isOptimisticInlineStartEnabled()).toBe(false);
   });
 
-  it('is disabled by "false" (case-insensitive)', () => {
-    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = 'FALSE';
-    expect(isOptimisticInlineStartEnabled()).toBe(false);
-  });
-
-  it('stays enabled for any other value', () => {
+  it('is enabled by an explicit "1"', () => {
     process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
     expect(isOptimisticInlineStartEnabled()).toBe(true);
+  });
+
+  it('is enabled by "true" (case-insensitive)', () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = 'TRUE';
+    expect(isOptimisticInlineStartEnabled()).toBe(true);
+  });
+
+  it('stays disabled for any other value', () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = 'yes';
+    expect(isOptimisticInlineStartEnabled()).toBe(false);
   });
 });

@@ -1190,7 +1190,9 @@ describe('executeStep optimistic inline start', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    // Optimistic start is OFF by default — explicitly enable it so these tests
+    // exercise the optimistic path. (The disabled-path test overrides to '0'.)
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
     vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
     vi.mocked(normalizeUnknownError).mockImplementation(
       async (err: unknown) => ({
@@ -1208,7 +1210,7 @@ describe('executeStep optimistic inline start', () => {
     vi.restoreAllMocks();
   });
 
-  it('sends step_started carrying the input and completes (default on)', async () => {
+  it('sends step_started carrying the input and completes (when enabled)', async () => {
     mockEventsCreate
       .mockReset()
       .mockImplementation((_runId: string, event: { eventType: string }) =>

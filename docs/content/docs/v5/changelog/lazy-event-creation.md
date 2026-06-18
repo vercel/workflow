@@ -96,11 +96,11 @@ The suspension handler now defers `step_created` for up to **`WORKFLOW_MAX_INLIN
 - **Inline-delta fast path:** still used only for the single-step sequential case (`lazyInlineSteps.length === 1`). With more than one inline step each writes its own events, so a per-write delta would be partial; multi-step batches fall back to a normal incremental `events.list`.
 - **Config:** `WORKFLOW_MAX_INLINE_STEPS` is clamped to 1..16. Setting it to `1` reproduces the previous single-inline-step behavior exactly (a useful kill-switch). Inline bodies run in parallel within one function invocation, so the cap also bounds per-handler memory/CPU fan-out.
 
-## Optimistic inline start
+## Optimistic inline start (opt-in, off by default)
 
 Normally `executeStep` awaits `step_started` (the lazy create-claim round-trip) before running the body. Because the inline path already holds the step input locally, it doesn't actually need that round-trip to begin.
 
-When `WORKFLOW_OPTIMISTIC_INLINE_START` is enabled (**default on**), an inline step fires `step_started` **without awaiting it** and starts running the body immediately against locally-synthesized state. A lazy step is always brand-new, so attempt is 1, there is no prior error, and `startedAt` is now — all known without the server. The in-flight `step_started` is reconciled just before the terminal write:
+When `WORKFLOW_OPTIMISTIC_INLINE_START` is enabled (set it to `1`/`true` — it is **off by default**), an inline step fires `step_started` **without awaiting it** and starts running the body immediately against locally-synthesized state. A lazy step is always brand-new, so attempt is 1, there is no prior error, and `startedAt` is now — all known without the server. The in-flight `step_started` is reconciled just before the terminal write:
 
 - **Lost the create-claim (409 / `EntityConflictError`)** → discard the body result and return `skipped`; the winning handler owns the terminal write.
 - **Run gone / throttled / too-early** → discard the body result and surface `gone` / `throttled` / `retry`.
@@ -111,7 +111,7 @@ When `WORKFLOW_OPTIMISTIC_INLINE_START` is enabled (**default on**), an inline s
 
 - **Exactly-one terminal write is preserved.** Optimistic start changes only *when the body runs*, never who writes the terminal event — that is still gated by the lazy `step_started` create-claim, which is awaited before the terminal write. Losers return `skipped`.
 - **Bounded to attempt 1.** Only brand-new (`!hasCreatedEvent`) steps are lazy; a retried step already has a `step_created`, so it takes the normal await-then-run path with the real attempt counter. Synthesizing `attempt = 1` locally is therefore always correct.
-- **Wider double-execution.** Running the body before confirming ownership means two handlers racing into the same batch boundary can *both* run the side effects before either wins (previously the loser 409'd on `step_created` and skipped before running anything). This is an explicit, accepted tradeoff: **inline step bodies must be idempotent.** Set `WORKFLOW_OPTIMISTIC_INLINE_START=0` (or `false`) to restore the await-`step_started`-then-run behavior.
+- **Wider double-execution — why it's off by default.** Running the body before confirming ownership means two handlers racing for the same step's create-claim can *both* run the side effects before either wins (previously the loser 409'd on `step_created` and skipped before running anything). This is unsafe for non-idempotent steps: in particular, two concurrent runs of a step that writes to the **workflow stream** (e.g. an AI agent streaming tokens) can interleave and **corrupt the stream data**. So the optimization ships **disabled**; enable it (`WORKFLOW_OPTIMISTIC_INLINE_START=1`) only for deployments whose inline step bodies are idempotent and stream-safe.
 
 ## Queue messages: inline steps don't pay a round-trip
 
