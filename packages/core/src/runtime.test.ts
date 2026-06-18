@@ -454,7 +454,7 @@ describe('workflowEntrypoint replay guards', () => {
         eventId: 'event-0',
         runId: workflowRun.runId,
         eventType: 'wait_created',
-        correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+        correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:05.000Z'),
         },
@@ -464,7 +464,7 @@ describe('workflowEntrypoint replay guards', () => {
         eventId: 'event-1',
         runId: workflowRun.runId,
         eventType: 'wait_completed',
-        correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+        correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:06.000Z'),
         },
@@ -549,7 +549,7 @@ describe('workflowEntrypoint replay guards', () => {
         eventId: 'event-0',
         runId: workflowRun.runId,
         eventType: 'hook_received',
-        correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+        correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
         eventData: {
           token: 'wrong-token',
           payload: await dehydrateStepReturnValue(

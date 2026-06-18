@@ -86,7 +86,7 @@ async function runStaleWaitReplayScenario(options: {
   );
 
   const { globalThis: vmGlobalThis } = createContext({
-    seed: `${runId}:${workflowName}:${+startedAt}`,
+    seed: `${runId}:${workflowName}:${deploymentId}`,
     fixedTimestamp: +startedAt,
   });
   const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
