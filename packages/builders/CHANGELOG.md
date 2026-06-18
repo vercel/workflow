@@ -1,5 +1,12 @@
 # @workflow/builders
 
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@5.0.0-beta.19
+
 ## 5.0.0-beta.18
 
 ### Patch Changes

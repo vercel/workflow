@@ -276,6 +276,7 @@
     "v2-combined-bundle",
     "v4-events-client",
     "v4-lazy-list-refs",
+    "v4-list-explicit-hasmore",
     "validate-step-id-duplicates",
     "vast-oranges-fail",
     "vercel-world-custom-dispatcher",

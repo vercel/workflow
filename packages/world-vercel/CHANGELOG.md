@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.18
+
+### Patch Changes
+
+- [#2486](https://github.com/vercel/workflow/pull/2486) [`26fd184`](https://github.com/vercel/workflow/commit/26fd18427855070baa792cad746fcda7955cc73e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Honor the server's explicit pagination flag when listing run events, avoiding one extra empty-page request per event-log load on replay.
+
 ## 5.0.0-beta.17
 
 ### Minor Changes
