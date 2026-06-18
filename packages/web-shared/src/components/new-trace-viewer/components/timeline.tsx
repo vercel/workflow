@@ -52,6 +52,7 @@ export const TIMELINE_PADDING_PX = 16;
 
 const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   queued: 'bg-gray-400 border border-gray-500',
+  pending: 'bg-gray-200 border border-gray-500',
   retrying: 'bg-gray-400 border border-gray-500',
   waiting: 'bg-gray-200 border border-gray-500',
   running: 'bg-blue-200 border border-blue-500',
@@ -67,13 +68,21 @@ const TIMELINE_INSET_STYLE: CSSProperties = {
   right: TIMELINE_PADDING_PX,
 };
 
-const ACTIVE_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
+const STRIPED_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
+  'pending',
   'running',
   'received',
 ]);
 
-function RunningStripes(): ReactNode {
-  return <div aria-hidden className={styles.runningStripes} />;
+function AnimatedStripes({ status }: { status: SegmentStatus }): ReactNode {
+  return (
+    <div
+      aria-hidden
+      className={
+        status === 'pending' ? styles.pendingStripes : styles.runningStripes
+      }
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -348,8 +357,8 @@ function SegmentBar({
               minWidth: 1,
             }}
           >
-            {ACTIVE_SEGMENT_STATUSES.has(seg.status) ? (
-              <RunningStripes />
+            {STRIPED_SEGMENT_STATUSES.has(seg.status) ? (
+              <AnimatedStripes status={seg.status} />
             ) : null}
             {showLabel ? <DurationLabel label={label} /> : null}
           </div>
