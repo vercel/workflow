@@ -1,4 +1,8 @@
-import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
+import {
+  RUN_ERROR_CODES,
+  ThrottleError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -1208,5 +1212,121 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // No eager step_created and no step-dispatch send: both steps went inline.
     expect(order).not.toContain('step_created');
     expect(order).not.toContain('queue_dispatch_start');
+  });
+
+  it('does not re-queue a throttled inline step as an input-less background step', async () => {
+    // Regression: a `throttled` result means the lazy step_started lost on the
+    // atomic create-claim, so the step was never created and has no input to
+    // recover. Re-queuing it as a background step would send a bare
+    // step_started that the world rejects with "Step not found", redelivering
+    // until MAX_QUEUE_DELIVERIES fails the run. The runtime must instead defer
+    // the orchestrator (return a timeout) so the step re-runs inline WITH its
+    // input on replay — never enqueue a stepId message for the throttled step.
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '3';
+    registerStepFunction('tA', async () => undefined);
+    registerStepFunction('tB', async () => undefined);
+    const wf = `const tA = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("tA");
+      const tB = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("tB");
+      async function workflow() {
+        const r = await Promise.all([tA(), tB()]);
+        return r;
+      }${getWorkflowTransformCode('workflow')}`;
+
+    const workflowRun = await makeRunningRun('wrun_throttle_inline');
+    const durableEvents: Event[] = [];
+    let seq = 0;
+    const rec = (data: any): Event => {
+      seq += 1;
+      const e = {
+        eventId: `e-${seq}`,
+        runId: workflowRun.runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durableEvents.push(e);
+      return e;
+    };
+    // The SECOND lazy step_started to arrive is throttled (rejected on the
+    // create-claim); the first completes normally. Keyed by arrival order so we
+    // don't depend on which correlationId the runtime starts first.
+    let startedSeen = 0;
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started')
+        return { run: workflowRun, events: [] as Event[] };
+      if (data.eventType === 'step_started') {
+        const d = data.eventData as { stepName?: string; input?: unknown };
+        startedSeen += 1;
+        if (startedSeen === 2) {
+          throw new ThrottleError('rate limited', { retryAfter: 5 });
+        }
+        if (d?.input !== undefined)
+          rec({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: { stepName: d.stepName, input: d.input },
+          });
+        return {
+          event: rec(data),
+          step: {
+            runId: workflowRun.runId,
+            stepId: data.correlationId,
+            stepName: d?.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: d?.input,
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(d?.input !== undefined ? { stepCreated: true } : {}),
+        };
+      }
+      return { event: rec(data) };
+    });
+    const stepIdMessages: unknown[] = [];
+    const queue = vi.fn(async (_queueName: string, message: any) => {
+      if (message && typeof message === 'object' && 'stepId' in message) {
+        stepIdMessages.push(message.stepId);
+      }
+      return { messageId: null };
+    });
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
+          async () => {
+            await handler(
+              { runId: workflowRun.runId, requestedAt: new Date() },
+              {
+                requestId: 'req',
+                attempt: 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg',
+              }
+            );
+            return new Response(null, { status: 204 });
+          }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durableEvents],
+          hasMore: false,
+          cursor: 'c',
+        })),
+      },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue,
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const res = (await workflowEntrypoint(wf)(
+      new Request('https://example.test')
+    )) as Response;
+    expect(res.status).toBe(204);
+    // The throttled step is NOT re-queued as a background (stepId) message —
+    // the orchestrator is deferred instead so it re-runs inline with input.
+    expect(stepIdMessages).toHaveLength(0);
   });
 });
