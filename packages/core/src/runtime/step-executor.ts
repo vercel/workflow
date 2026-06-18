@@ -205,7 +205,7 @@ export async function executeStep(
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
-            eventData: { stepName, input: params.lazyStepInput },
+            eventData: { stepName, workflowName, input: params.lazyStepInput },
           });
         } catch (startErr) {
           if (EntityConflictError.is(startErr)) {
@@ -342,7 +342,7 @@ export async function executeStep(
         eventType: 'step_started',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: stepId,
-        eventData: { stepName, input: params.lazyStepInput },
+        eventData: { stepName, workflowName, input: params.lazyStepInput },
       });
       optimisticStartSettled = startedPromise.then(
         () => ({ ok: true as const }),
@@ -375,7 +375,7 @@ export async function executeStep(
           correlationId: stepId,
           eventData:
             params.lazyStepInput !== undefined
-              ? { stepName, input: params.lazyStepInput }
+              ? { stepName, workflowName, input: params.lazyStepInput }
               : { stepName },
         });
 
@@ -627,6 +627,7 @@ export async function executeStep(
             correlationId: stepId,
             eventData: {
               stepName,
+              workflowName,
               result: result as Uint8Array,
             },
           },

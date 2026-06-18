@@ -7,7 +7,7 @@ import {
 } from '@workflow/errors';
 import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEventV4,
   getWorkflowRunEventsV4,
@@ -233,6 +233,53 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow(/end-of-stream sentinel/);
+  });
+});
+
+/**
+ * Regression: v4 requests must go through the global `fetch`, not undici's
+ * `request()`. Vercel's observability log viewer instruments the global
+ * `fetch`; calling `undici.request()` directly bypassed it, so outgoing v4
+ * event traffic stopped appearing in the log viewer (queue traffic, on
+ * `fetch`, kept showing). See the beta.16 regression. This test fails if the
+ * transport ever reverts to `undici.request()`.
+ */
+describe('v4 transport uses global fetch (observability)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('routes a v4 LIST through globalThis.fetch', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, encodeFrame({ _end: 1 }, new Uint8Array(0)), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    // Spy passes through to the real fetch (which MockAgent intercepts at
+    // the dispatcher layer) so we only assert the entry point was used.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = fetchSpy.mock.calls[0];
+    expect(String(calledUrl)).toContain('/api/v4/runs/wrun_1/events');
+    agent.assertNoPendingInterceptors();
+
+    // Cache-busting header must be set so Next.js fetch memoization / Data
+    // Cache can't serve a stale/truncated event page (replay correctness).
+    // See https://github.com/vercel/workflow/issues/618.
+    const sentHeaders = new Headers(calledInit?.headers as HeadersInit);
+    expect(sentHeaders.get('x-request-time')).toBeTruthy();
   });
 });
 

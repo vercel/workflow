@@ -29,10 +29,51 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { decode } from 'cbor-x';
-import { type Dispatcher, request } from 'undici';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
+
+/**
+ * Issue a v4 request through the global `fetch` — NOT undici's `request`.
+ *
+ * Vercel's observability "outgoing requests" view instruments the global
+ * `fetch`. Calling `undici.request()` directly bypasses that instrumentation,
+ * so v4 event traffic disappeared from the log viewer while queue traffic
+ * (which uses `fetch`) kept showing. Routing through `fetch` with the same
+ * custom undici dispatcher restores visibility. The dispatcher itself does
+ * not affect instrumentation — the v3 `makeRequest` path has always passed
+ * one (see utils.ts) and stayed visible.
+ */
+async function fetchV4(
+  url: string,
+  init: { method: string; headers: Headers; body?: Uint8Array },
+  config: APIConfig | undefined
+): Promise<Response> {
+  // Set a unique header per request to bypass Next.js fetch memoization /
+  // Data Cache. Routing through the global `fetch` (above) re-exposes these
+  // reads to that caching — without busting it, an identical event read could
+  // be served a stale or truncated cached page and silently drop events,
+  // breaking replay correctness. The v3 `makeRequest` path does the same.
+  // See: https://github.com/vercel/workflow/issues/618
+  init.headers.set('X-Request-Time', Date.now().toString());
+  return fetch(url, {
+    method: init.method,
+    headers: init.headers,
+    body: init.body,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+    dispatcher: getDispatcher(config),
+  } as any);
+}
+
+/** Flatten a fetch `Headers` into the record shape throwForErrorResponse
+ *  expects (it mirrors the v3 `makeRequest` error contract). */
+function headersToRecord(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key] = value;
+  });
+  return out;
+}
 
 /**
  * POST surfaces these so callers can read the created eventId without
@@ -247,29 +288,25 @@ export async function createWorkflowRunEventV4(
   );
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
-  const response = await request(url, {
-    method: 'POST',
-    headers: Object.fromEntries(headers.entries()),
-    body: frame,
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
+  const response = await fetchV4(
+    url,
+    { method: 'POST', headers, body: frame },
+    config
+  );
+  if (!response.ok) {
+    const errorBody = await response.text();
     throwForErrorResponse(
-      response.statusCode,
-      response.headers,
+      response.status,
+      headersToRecord(response.headers),
       errorBody,
       'createEvent',
       url
     );
   }
 
-  const eventId = response.headers[V4_RESPONSE_HEADERS.eventId];
-  const runId = response.headers[V4_RESPONSE_HEADERS.runId];
-  const createdAt = response.headers[V4_RESPONSE_HEADERS.createdAt];
+  const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
+  const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
+  const createdAt = response.headers.get(V4_RESPONSE_HEADERS.createdAt);
   if (
     typeof eventId !== 'string' ||
     typeof runId !== 'string' ||
@@ -279,7 +316,7 @@ export async function createWorkflowRunEventV4(
   }
 
   // Decode the materialized-entity bag from the CBOR response body.
-  const bodyBytes = new Uint8Array(await response.body.arrayBuffer());
+  const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const body =
     bodyBytes.byteLength > 0
       ? (decode(bodyBytes) as CreateEventV4Result['body'])
@@ -334,34 +371,29 @@ export async function getEventV4(
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
-  const response = await request(url, {
-    method: 'GET',
-    headers: Object.fromEntries(headers.entries()),
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
+  const response = await fetchV4(url, { method: 'GET', headers }, config);
+  if (!response.ok) {
+    const errorBody = await response.text();
     throwForErrorResponse(
-      response.statusCode,
-      response.headers,
+      response.status,
+      headersToRecord(response.headers),
       errorBody,
       'getEvent',
       url
     );
   }
-  const contentType = readHeader(response.headers, 'content-type');
+  const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
       `v4 getEvent: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
 
-  // undici's response body is an AsyncIterable of byte chunks — feed it
-  // to decodeFrames directly. Do NOT convert via node:stream
-  // Readable.toWeb: dynamic `import('node:stream')` resolves to an empty
+  // fetch's `Response.body` is a web ReadableStream, which is async-iterable
+  // on Node (readableStream async iteration, since v16.5.0) — feed it straight
+  // to decodeFrames. The cast is only because TS's lib `ReadableStream` type
+  // omits the async iterator. Do NOT round-trip through `node:stream`
+  // Readable.toWeb: a dynamic `import('node:stream')` resolves to an empty
   // module namespace in Next.js webpack server bundles and crashes.
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
@@ -432,35 +464,26 @@ async function consumeListFrameStream(
   config: APIConfig | undefined,
   opName: string
 ): Promise<ListEventsV4Result> {
-  const response = await request(url, {
-    method: 'GET',
-    headers: Object.fromEntries(headers.entries()),
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
+  const response = await fetchV4(url, { method: 'GET', headers }, config);
+  if (!response.ok) {
+    const errorBody = await response.text();
     throwForErrorResponse(
-      response.statusCode,
-      response.headers,
+      response.status,
+      headersToRecord(response.headers),
       errorBody,
       opName,
       url
     );
   }
-  const contentType = readHeader(response.headers, 'content-type');
+  const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
       `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
 
-  // undici's response body is an AsyncIterable of byte chunks — feed it
-  // to decodeFrames directly. Do NOT convert via node:stream
-  // Readable.toWeb: dynamic `import('node:stream')` resolves to an empty
-  // module namespace in Next.js webpack server bundles and crashes.
+  // See getEventV4: fetch's web ReadableStream is async-iterable on Node; the
+  // cast only works around TS's lib type omitting the async iterator.
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
   const events: ListedEventV4[] = [];

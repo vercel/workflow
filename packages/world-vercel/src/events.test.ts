@@ -163,6 +163,55 @@ describe('splitEventDataForV4 attribute fields', () => {
 
     expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
   });
+
+  it('lifts workflowName into the frame meta on outcome events (step_completed/step_created), keeping the payload in the body', () => {
+    // The backend keys payload refs by workflow name; carrying it in the
+    // frame meta lets the v4 POST handler skip the per-step run lookup.
+    const completed = splitEventDataForV4({
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        result: new TextEncoder().encode('"ok"'),
+      },
+    } as AnyEventRequest);
+    expect(completed.meta.workflowName).toBe('wf');
+    // The result still travels as the opaque body, not in meta.
+    expect(completed.payload).toBeInstanceOf(Uint8Array);
+    expect(completed.meta.result).toBeUndefined();
+
+    const created = splitEventDataForV4({
+      eventType: 'step_created',
+      correlationId: 'step_2',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+      },
+    } as AnyEventRequest);
+    expect(created.meta.workflowName).toBe('wf');
+    expect(created.payload).toBeInstanceOf(Uint8Array);
+
+    // The lazy inline start is the motivating hot-path event: it writes the
+    // step `input` payload ref on the sequential path, so it must carry
+    // workflowName to spare the backend the per-step run lookup.
+    const started = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_3',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+      },
+    } as AnyEventRequest);
+    expect(started.meta.workflowName).toBe('wf');
+    expect(started.payload).toBeInstanceOf(Uint8Array);
+    expect(started.meta.input).toBeUndefined();
+  });
 });
 
 describe('createWorkflowRunEvent response coercion', () => {

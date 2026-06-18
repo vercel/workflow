@@ -447,6 +447,7 @@ export async function handleSuspension({
             correlationId: queueItem.correlationId,
             eventData: {
               stepName: queueItem.stepName,
+              workflowName: run.workflowName,
               input: dehydratedInput as SerializedData,
             },
           };
