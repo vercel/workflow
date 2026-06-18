@@ -3,7 +3,12 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist", "src/version.ts"]
+      "outputs": [
+        "dist",
+        "src/version.ts",
+        "src/runtime/vm-serde-bundle.generated.ts",
+        "src/runtime/quickjs-assets.generated.ts"
+      ]
     }
   }
 }

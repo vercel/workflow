@@ -1,2 +1,9 @@
 # Auto-generated version file
 src/version.ts
+
+# Auto-generated quickjs-wasi binary assets (base64-encoded WASM + .so files)
+src/runtime/quickjs-assets.generated.ts
+
+# Auto-generated VM serde bundle (devalue + format-prefix + reducers,
+# packaged as a string for evaluation inside the QuickJS VM)
+src/runtime/vm-serde-bundle.generated.ts

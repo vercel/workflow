@@ -45,6 +45,10 @@ import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
+import {
+  getWorkflowRuntimeFromEnv,
+  WORKFLOW_RUNTIMES,
+} from './runtime/runtime-mode.js';
 import { executeStep } from './runtime/step-executor.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
@@ -265,6 +269,33 @@ function hasOpenHookOrWait(events: Event[]): boolean {
     ) {
       return true;
     }
+  }
+  return false;
+}
+
+/**
+ * Whether to execute a given run with the QuickJS WASM runtime instead of the
+ * default `node:vm` runtime.
+ *
+ * The node:vm runtime is the default. QuickJS is opt-in, either globally via
+ * the `WORKFLOW_RUNTIME=quickjs` env var, or per-run via
+ * `executionContext.workflowRuntime = 'quickjs'` (set by the SDK at start()).
+ * The per-run setting lets one deployment serve both runtimes.
+ *
+ * Throws if `WORKFLOW_RUNTIME` or the run's `executionContext.workflowRuntime`
+ * is set to an unknown value.
+ */
+function useQuickJSRuntime(workflowRun: WorkflowRun): boolean {
+  if (getWorkflowRuntimeFromEnv() === 'quickjs') return true;
+  const runtimeFromRun = workflowRun.executionContext?.workflowRuntime;
+  if (runtimeFromRun !== undefined) {
+    if (!(WORKFLOW_RUNTIMES as readonly string[]).includes(runtimeFromRun)) {
+      throw new WorkflowRuntimeError(
+        `Invalid executionContext.workflowRuntime value: "${runtimeFromRun}". ` +
+          `Expected one of: ${WORKFLOW_RUNTIMES.join(', ')}.`
+      );
+    }
+    if (runtimeFromRun === 'quickjs') return true;
   }
   return false;
 }
@@ -764,6 +795,34 @@ export function workflowEntrypoint(
                       return;
                     }
                   } // end if (!workflowRun)
+
+                  // --- QuickJS runtime dispatch ---
+                  // When this run opts into the QuickJS runtime, execute it in
+                  // a QuickJS WASM VM instead of the node:vm inline-replay loop
+                  // below. The QuickJS entrypoint manages its own run
+                  // lifecycle (events, step queueing, run_completed/failed) and
+                  // queues steps through the same combined route — so step
+                  // messages (incomingStepId) still hit executeStep above on
+                  // re-entry. Return immediately after dispatch.
+                  if (useQuickJSRuntime(workflowRun)) {
+                    // Dynamically import so the QuickJS entrypoint (and its
+                    // multi-MB embedded WASM assets + quickjs-wasi) is only
+                    // loaded when the QuickJS runtime is actually selected —
+                    // node:vm runs never pay that cost.
+                    const { runWorkflowWithQuickJS } = await import(
+                      './runtime/quickjs-entrypoint.js'
+                    );
+                    const quickjsResult = await runWorkflowWithQuickJS({
+                      workflowCode,
+                      workflowName,
+                      workflowRun,
+                      runInput,
+                    });
+                    if (quickjsResult?.timeoutSeconds !== undefined) {
+                      return { timeoutSeconds: quickjsResult.timeoutSeconds };
+                    }
+                    return;
+                  }
 
                   // Resolve the encryption key for this run's deployment.
                   // Used eagerly here since both runWorkflow (input

@@ -29,6 +29,7 @@ import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
+import { getWorkflowRuntimeFromEnv } from './runtime-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /**
@@ -360,10 +361,16 @@ export async function start<TArgs extends unknown[], TResult>(
         compression
       );
 
+      // If WORKFLOW_RUNTIME is set on the client starting the run, propagate
+      // that choice to the runtime so the same deployment can serve both
+      // runtimes. Unknown values throw — see getWorkflowRuntimeFromEnv().
+      const workflowRuntime = getWorkflowRuntimeFromEnv();
+
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        ...(workflowRuntime ? { workflowRuntime } : {}),
       };
 
       // Call events.create (run_created) and queue in parallel.
