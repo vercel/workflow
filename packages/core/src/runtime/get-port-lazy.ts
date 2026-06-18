@@ -19,6 +19,12 @@ let _getPort: (() => Promise<number | undefined>) | undefined;
 // workflow replay (the non-Vercel branch of `runWorkflow`). Since the port does
 // not change within a process, resolve it once and reuse it. `_inFlight`
 // dedupes concurrent first calls so discovery never runs more than once.
+//
+// The first concrete port is pinned for the lifetime of the process — there is
+// no per-call re-resolution. This is safe because the runtime only runs inside
+// the already-listening dev-server process, and `getPort()` -> `getAllPorts()`
+// returns a deterministic order, so repeated calls would resolve the same port
+// anyway.
 let _cachedPort: number | undefined;
 let _inFlight: Promise<number | undefined> | undefined;
 
@@ -70,7 +76,10 @@ export async function getPortLazy(): Promise<number | undefined> {
 
 /**
  * Resets the per-process port cache. Intended for tests; not used on the hot
- * path.
+ * path. Callers must let any in-flight lookup settle (await the pending
+ * `getPortLazy()` call) before resetting: clearing `_inFlight` here does not
+ * cancel an already-scheduled resolution, so a late `.then` could otherwise
+ * repopulate `_cachedPort` after the reset and bleed into the next test.
  */
 export function resetPortCacheForTesting(): void {
   _getPort = undefined;
