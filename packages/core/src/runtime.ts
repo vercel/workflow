@@ -1552,7 +1552,33 @@ export function workflowEntrypoint(
                                   traceCarrier: retryTraceCarrier,
                                   requestedAt: new Date(),
                                 },
-                                { delaySeconds }
+                                {
+                                  delaySeconds,
+                                  // Key the delayed retry on the step's
+                                  // correlationId so it dedupes against the
+                                  // keyed re-dispatch the suspension handler
+                                  // performs on replay (it also uses
+                                  // `idempotencyKey: step.correlationId`).
+                                  //
+                                  // Without this, a mixed batch where one step
+                                  // `completed` with unflushed background ops
+                                  // (`anyPendingOps`) and another step is
+                                  // retrying would double-dispatch the retry:
+                                  // the `anyPendingOps` branch below queues an
+                                  // immediate plain continuation, whose replay
+                                  // sees the still-`retrying` step as pending
+                                  // and re-dispatches it *immediately* and
+                                  // *with* a key. Since this delayed retry had
+                                  // no key, the two messages wouldn't dedupe —
+                                  // the step would run twice, the configured
+                                  // retry backoff would be ignored (plain
+                                  // `Error` retries persist no `retryAfter`, so
+                                  // the world has no `TooEarly` guard), and the
+                                  // retry body could run early/concurrently.
+                                  // Sharing the key lets the earlier delayed
+                                  // message win, honoring the backoff.
+                                  idempotencyKey: step.correlationId,
+                                }
                               )
                             )
                           );
