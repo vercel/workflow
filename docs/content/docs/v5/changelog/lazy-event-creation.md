@@ -92,7 +92,7 @@ Previously the owned-inline path ran **exactly one** step inline per suspension 
 The suspension handler now defers `step_created` for up to **`WORKFLOW_MAX_INLINE_STEPS` (default 3)** steps and returns them as `lazyInlineSteps`. The runtime runs that batch inline **in parallel** (`Promise.all`), each via its own lazy `step_started`, and queues only the steps beyond the cap.
 
 - **Selection:** the first N uncreated steps, matching the previous single-step inline candidate. Steps beyond N keep their eager `step_created` and are queued exactly as before.
-- **Result aggregation:** steps that need to run again (`retry`/`throttled`) are re-queued per-step with their own delay; the runtime only loops back to replay once every inline step has reached a terminal state. A lone throttled inline step still delays redelivery of the orchestrator message (preserving the single-step backpressure contract).
+- **Result aggregation:** `retry` steps (whose `step_started` succeeded, so the step exists) are re-queued per-step as background steps with their own delay. `throttled` steps are different: a throttle rejects the lazy `step_started` on the create-claim, so the step was *never created* and has no recoverable input — re-queuing it as an input-less background step would make the world reject the bare `step_started` with "Step not found" and redeliver until it fails. So any throttle instead **defers redelivery of the orchestrator** (by the longest throttle backoff in the batch), which re-runs the throttled step inline *with its input* on replay. The runtime only loops back to replay in-process once every inline step has reached a terminal state.
 - **Inline-delta fast path:** still used only for the single-step sequential case (`lazyInlineSteps.length === 1`). With more than one inline step each writes its own events, so a per-write delta would be partial; multi-step batches fall back to a normal incremental `events.list`.
 - **Config:** `WORKFLOW_MAX_INLINE_STEPS` is clamped to 1..16. Setting it to `1` reproduces the previous single-inline-step behavior exactly (a useful kill-switch). Inline bodies run in parallel within one function invocation, so the cap also bounds per-handler memory/CPU fan-out.
 
@@ -112,3 +112,16 @@ When `WORKFLOW_OPTIMISTIC_INLINE_START` is enabled (**default on**), an inline s
 - **Exactly-one terminal write is preserved.** Optimistic start changes only *when the body runs*, never who writes the terminal event — that is still gated by the lazy `step_started` create-claim, which is awaited before the terminal write. Losers return `skipped`.
 - **Bounded to attempt 1.** Only brand-new (`!hasCreatedEvent`) steps are lazy; a retried step already has a `step_created`, so it takes the normal await-then-run path with the real attempt counter. Synthesizing `attempt = 1` locally is therefore always correct.
 - **Wider double-execution.** Running the body before confirming ownership means two handlers racing into the same batch boundary can *both* run the side effects before either wins (previously the loser 409'd on `step_created` and skipped before running anything). This is an explicit, accepted tradeoff: **inline step bodies must be idempotent.** Set `WORKFLOW_OPTIMISTIC_INLINE_START=0` (or `false`) to restore the await-`step_started`-then-run behavior.
+
+## Queue messages: inline steps don't pay a round-trip
+
+Inline steps that **complete** never enqueue a per-step flow-route message. When every step in an inline batch reaches a terminal state with no pending background ops, the runtime simply continues its in-process loop and replays — so a sequential chain (or a clean parallel fan-out) of inline steps runs entirely within one invocation with **zero** queue messages. Verified: a workflow whose only work is three parallel inline steps issues no `queue()` calls.
+
+The only flow-route messages produced around an inline batch are:
+
+- **Pre-batch dispatch** — the steps *beyond* the inline cap (and any pending wait/sleep continuation). Inline steps are explicitly excluded from this dispatch.
+- **`retry` results** — one delayed message per retried step. A retry *is* the step becoming its own background invocation, so this is expected.
+- **`throttled` results** — a single deferral of the orchestrator message (see above).
+- **Pending background ops** — if any inline step left unflushed stream writes (e.g. output streams to blob storage), the loop breaks and enqueues **one** continuation (aggregated across the batch, not per-step) so `waitUntil` can flush before the next replay reads them.
+
+In other words: completed inline steps cost no queue round-trips; only steps that genuinely run as their own background invocations create new flow-route messages.
