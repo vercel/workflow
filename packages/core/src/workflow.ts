@@ -6,7 +6,6 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -17,6 +16,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { getPortLazy } from './runtime/get-port-lazy.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -101,7 +101,10 @@ export async function runWorkflow(
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
-    const port = isVercel ? undefined : await getPort();
+    // The resolved port is cached per process (see get-port-lazy.ts), so this
+    // is cheap on replays after the first — `getPort()` otherwise re-runs OS
+    // port discovery (spawning `lsof` on macOS, ~60ms) on every replay.
+    const port = isVercel ? undefined : await getPortLazy();
 
     const {
       context,
