@@ -82,4 +82,26 @@ describe('hasStepSourceMaps', () => {
 
     expect(hasStepSourceMaps()).toBe(false);
   });
+
+  test('expects source filenames for a framework in local dev', () => {
+    setStepSourceMapEnv({ appName: 'express', dev: true });
+
+    expect(hasStepSourceMaps()).toBe(true);
+  });
+
+  test('does not expect source filenames for a framework in local production', () => {
+    setStepSourceMapEnv({ appName: 'express', dev: false });
+
+    expect(hasStepSourceMaps()).toBe(false);
+  });
+
+  test('does not expect source filenames for nest, even in local dev', () => {
+    // The Nest integration does not signal a dev build, so source maps default
+    // to off (dev-on/prod-off) in both dev and prod.
+    setStepSourceMapEnv({ appName: 'nest', dev: true });
+    expect(hasStepSourceMaps()).toBe(false);
+
+    setStepSourceMapEnv({ appName: 'nest', dev: false });
+    expect(hasStepSourceMaps()).toBe(false);
+  });
 });
