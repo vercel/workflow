@@ -817,6 +817,7 @@ export function workflowEntrypoint(
                       workflowName,
                       workflowRun,
                       runInput,
+                      namespace,
                     });
                     if (quickjsResult?.timeoutSeconds !== undefined) {
                       return { timeoutSeconds: quickjsResult.timeoutSeconds };

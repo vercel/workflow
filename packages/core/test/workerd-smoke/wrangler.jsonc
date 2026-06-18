@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "workflow-quickjs-workerd-smoke",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // quickjs-wasi ships its native extensions as `.so` WASM shared libraries.
+  // Map them to CompiledWasm so wrangler compiles them at bundle time and the
+  // worker imports pre-compiled WebAssembly.Modules (workerd bans runtime
+  // WASM compilation from bytes).
+  // fallthrough so wrangler's built-in `.wasm` CompiledWasm rule still applies.
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.so"], "fallthrough": true }]
+}

@@ -2,9 +2,9 @@
  * VM-compatible common reducers and revivers.
  *
  * Identical to common.ts but without Node.js dependencies:
- * - Uses native `btoa` / `atob` (provided by quickjs-wasi's base64
- *   extension, see `quickjs-assets.generated.ts`) instead of Buffer
- *   or pure-JS base64.
+ * - Uses the native TC39 `proposal-arraybuffer-base64` API
+ *   (`Uint8Array.prototype.toBase64` / `Uint8Array.fromBase64`), which
+ *   quickjs-wasi implements natively, instead of Buffer or a btoa/atob dance.
  * - Uses `instanceof Error` instead of `types.isNativeError()`.
  *
  * This module is safe to bundle into the QuickJS WASM VM.
@@ -12,7 +12,15 @@
 
 import type { Reducers, Revivers, SerializableSpecial } from '../types.js';
 
-// ---- Base64 helpers (native btoa/atob from the quickjs-wasi base64 extension) ----
+// Minimal typing for the TC39 Uint8Array base64 methods (not in lib.d.ts yet).
+type Base64Capable = {
+  toBase64(): string;
+};
+type Base64Static = {
+  fromBase64(s: string): Uint8Array;
+};
+
+// ---- Base64 helpers (native proposal-arraybuffer-base64 in quickjs-wasi) ----
 
 function arrayBufferToBase64(
   value: ArrayBufferLike,
@@ -20,13 +28,9 @@ function arrayBufferToBase64(
   length: number
 ): string {
   if (length === 0) return '.';
-  // btoa requires a binary string. Build it from the byte view.
-  const uint8 = new Uint8Array(value, offset, length);
-  let binary = '';
-  for (let i = 0; i < uint8.length; i++) {
-    binary += String.fromCharCode(uint8[i]!);
-  }
-  return btoa(binary);
+  return (
+    new Uint8Array(value, offset, length) as unknown as Base64Capable
+  ).toBase64();
 }
 
 function viewToBase64(value: ArrayBufferView): string {
@@ -35,12 +39,8 @@ function viewToBase64(value: ArrayBufferView): string {
 
 function reviveArrayBuffer(value: string): ArrayBuffer {
   if (value === '.') return new ArrayBuffer(0);
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer as ArrayBuffer;
+  return (Uint8Array as unknown as Base64Static).fromBase64(value)
+    .buffer as ArrayBuffer;
 }
 
 // ---- Error subclass helper ----

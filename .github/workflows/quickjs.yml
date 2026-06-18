@@ -1,0 +1,137 @@
+name: QuickJS Runtime
+
+# Exercises the opt-in QuickJS WASM workflow runtime (WORKFLOW_RUNTIME=quickjs)
+# two ways:
+#   - node:    the runtime running under Node.js (the regular host), via the
+#              nextjs-turbopack workbench + a curated e2e subset.
+#   - workerd: the QuickJS VM execution layer (quickjs-wasi + native extensions
+#              + core's VM serde bundle) running inside Cloudflare's workerd,
+#              where node:vm is unavailable. This is the foundation for running
+#              workflows on Cloudflare Workers.
+
+on:
+  push:
+    branches: [main, stable]
+  pull_request:
+    paths:
+      - 'packages/core/src/runtime/quickjs-runtime.ts'
+      - 'packages/core/src/runtime/quickjs-entrypoint.ts'
+      - 'packages/core/src/runtime/runtime-mode.ts'
+      - 'packages/core/src/serialization/**'
+      - 'packages/core/scripts/build-quickjs-assets.js'
+      - 'packages/core/scripts/build-vm-serde-bundle.js'
+      - 'packages/core/test/workerd-smoke/**'
+      - '.github/workflows/quickjs.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # ---- QuickJS runtime under Node.js -------------------------------------
+  # Builds the nextjs-turbopack workbench and runs a curated subset of the e2e
+  # suite with WORKFLOW_RUNTIME=quickjs so the workflow orchestrator executes
+  # inside the QuickJS VM instead of node:vm. The subset is the set of features
+  # verified to work end-to-end under QuickJS today; widen it as remaining gaps
+  # (streams, AbortController, advanced hook-conflict, attributes) are closed.
+  node:
+    name: QuickJS Runtime (Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+      APP_NAME: nextjs-turbopack
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment and build packages
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Build workbench
+        run: pnpm turbo run build --filter=nextjs-turbopack
+
+      - name: Run QuickJS unit + integration tests
+        run: pnpm vitest run packages/core/src/runtime/runtime-mode.test.ts packages/core/src/runtime/quickjs-runtime.test.ts
+
+      - name: Run curated e2e subset (WORKFLOW_RUNTIME=quickjs)
+        env:
+          WORKFLOW_RUNTIME: quickjs
+          WORKFLOW_NO_UPDATE_CHECK: '1'
+          NODE_OPTIONS: '--enable-source-maps'
+          DEPLOYMENT_URL: 'http://localhost:3000'
+        run: |
+          (cd "workbench/$APP_NAME" && WORKFLOW_RUNTIME=quickjs pnpm start &)
+          echo "Waiting for workbench to start..." && sleep 12
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://localhost:3000/; then echo "ready"; break; fi
+            sleep 2
+          done
+          pnpm vitest run packages/core/e2e/e2e.test.ts \
+            -t "addTenWorkflow|promiseAllWorkflow|promiseRaceWorkflow|promiseAnyWorkflow|hookWorkflow|sleepingWorkflow|nullByteWorkflow|workflowAndStepMetadataWorkflow|customSerializationWorkflow|errorSubclassRoundTripWorkflow|resilient start"
+
+  # ---- QuickJS VM under workerd ------------------------------------------
+  # Runs the committed smoke worker (packages/core/test/workerd-smoke) under a
+  # local workerd via `wrangler dev`, then fetches it. The worker instantiates
+  # quickjs-wasi + the native extensions (imported as pre-compiled
+  # WebAssembly.Modules — workerd bans runtime WASM compilation from bytes) and
+  # evaluates core's real VM serde bundle, proving the QuickJS VM executes on
+  # Workers. Returns HTTP 200 only if every in-VM check passes.
+  workerd:
+    name: QuickJS Runtime (workerd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build @workflow/core (generates VM serde bundle + assets)
+        run: pnpm turbo run build --filter=@workflow/core
+
+      - name: Run workerd smoke test
+        working-directory: packages/core/test/workerd-smoke
+        run: |
+          npx --yes wrangler@4.100.0 dev --port 8788 > /tmp/workerd-smoke.log 2>&1 &
+          WRANGLER_PID=$!
+          trap 'kill $WRANGLER_PID 2>/dev/null || true' EXIT
+
+          echo "Waiting for workerd to be ready..."
+          ready=false
+          for i in $(seq 1 60); do
+            if grep -qiE "Ready on|localhost:8788" /tmp/workerd-smoke.log 2>/dev/null; then ready=true; break; fi
+            if grep -qiE "\[ERROR\]|Build failed" /tmp/workerd-smoke.log 2>/dev/null; then break; fi
+            sleep 2
+          done
+          if [ "$ready" != "true" ]; then
+            echo "::error::workerd did not become ready"; cat /tmp/workerd-smoke.log; exit 1
+          fi
+
+          # Retry the fetch a few times while the isolate warms up.
+          code=0
+          for i in $(seq 1 10); do
+            code=$(curl -s -m 30 -o /tmp/workerd-smoke-resp.json -w "%{http_code}" http://localhost:8788/ || echo 000)
+            if [ "$code" = "200" ]; then break; fi
+            sleep 3
+          done
+
+          echo "=== response ==="; cat /tmp/workerd-smoke-resp.json || true; echo
+          if [ "$code" != "200" ]; then
+            echo "::error::workerd smoke test failed (HTTP $code)"; cat /tmp/workerd-smoke.log; exit 1
+          fi
+          echo "workerd smoke test passed"

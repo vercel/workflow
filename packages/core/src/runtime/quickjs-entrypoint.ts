@@ -73,8 +73,16 @@ export async function runWorkflowWithQuickJS(params: {
    * is incomplete (eventual consistency right after `start()`).
    */
   runInput?: RunInput;
+  /**
+   * Builder-configured queue namespace. Must be threaded into every
+   * `getWorkflowQueueName()` call so queued steps and hook-conflict re-queues
+   * land on the same namespaced queue the handler consumes — otherwise a
+   * namespaced deployment never picks them up and the run hangs.
+   */
+  namespace?: string;
 }): Promise<{ timeoutSeconds?: number } | void> {
-  const { workflowCode, workflowName, workflowRun, runInput } = params;
+  const { workflowCode, workflowName, workflowRun, runInput, namespace } =
+    params;
   const world = await getWorld();
   const runId = workflowRun.runId;
 
@@ -245,7 +253,7 @@ export async function runWorkflowWithQuickJS(params: {
             const traceCarrier = await serializeTraceCarrier();
             await queueMessage(
               world,
-              getWorkflowQueueName(workflowRun.workflowName),
+              getWorkflowQueueName(workflowRun.workflowName, namespace),
               {
                 runId,
                 stepId: step.correlationId,
@@ -288,7 +296,7 @@ export async function runWorkflowWithQuickJS(params: {
               if (result.event?.eventType === 'hook_conflict') {
                 await queueMessage(
                   world,
-                  getWorkflowQueueName(workflowRun.workflowName),
+                  getWorkflowQueueName(workflowRun.workflowName, namespace),
                   { runId },
                   { idempotencyKey: `hook_conflict_${hook.correlationId}` }
                 );
