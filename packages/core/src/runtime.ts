@@ -1456,23 +1456,42 @@ export function workflowEntrypoint(
                           replayBudget.resume();
                         }
 
-                        // Aggregate the batch results. Steps that need to run
-                        // again (`retry`/`throttled`) are re-queued per-step with
-                        // their own delay; completed/failed steps already wrote
-                        // their terminal events. We only loop back to replay when
-                        // every inline step reached a terminal state — otherwise
-                        // the still-pending steps will be re-run by their queued
-                        // retry messages and the background-step handler replays
-                        // once all steps are done.
+                        // Aggregate the batch results. `retry` steps (which
+                        // already exist — their `step_started` succeeded) are
+                        // re-queued per-step as background steps with their own
+                        // delay; `throttled` steps (rejected on the create-claim,
+                        // so never created) instead defer redelivery of this
+                        // orchestrator message so they re-run inline with input
+                        // on replay; completed/failed steps already wrote their
+                        // terminal events. We only loop back to replay when every
+                        // inline step reached a terminal state — otherwise the
+                        // still-pending steps will be re-run by their queued retry
+                        // messages and the background-step handler replays once
+                        // all steps are done.
                         const toRetry: {
                           step: (typeof lazyInlineSteps)[number];
                           delaySeconds: number;
                         }[] = [];
                         let anyPendingOps = false;
-                        // Preserve the single-step backpressure contract: a lone
-                        // throttled inline step delays redelivery of THIS
-                        // orchestrator message (rather than re-queuing per-step).
-                        let soleThrottleTimeout: number | undefined;
+                        // A throttled inline step delays redelivery of THIS
+                        // orchestrator message rather than being re-queued as a
+                        // background step. Crucially, a `throttled` result means
+                        // the lazy `step_started` was rejected on the atomic
+                        // create-claim — so the step was NEVER created (no
+                        // `step_created`, no step entity). Re-queuing it as a
+                        // background step would send a bare `step_started` (no
+                        // input), which the world rejects with `Step "<id>" not
+                        // found` because it cannot lazily create the step without
+                        // its input; that error isn't translatable, so the
+                        // message redelivers until MAX_QUEUE_DELIVERIES and the
+                        // step (and run) fail. Deferring redelivery of the
+                        // orchestrator instead re-attempts the throttled step
+                        // inline WITH its input on replay. We track the longest
+                        // backoff so a batch with multiple throttles waits the
+                        // max. Note: `retry` results are safe to re-queue as
+                        // background steps because a retry implies `step_started`
+                        // already succeeded and the step exists.
+                        let throttleTimeout: number | undefined;
                         for (let i = 0; i < lazyInlineSteps.length; i++) {
                           const r = stepResults[i];
                           const s = lazyInlineSteps[i];
@@ -1482,14 +1501,10 @@ export function workflowEntrypoint(
                               delaySeconds: r.timeoutSeconds,
                             });
                           } else if (r.type === 'throttled') {
-                            if (lazyInlineSteps.length === 1) {
-                              soleThrottleTimeout = r.timeoutSeconds;
-                            } else {
-                              toRetry.push({
-                                step: s,
-                                delaySeconds: r.timeoutSeconds,
-                              });
-                            }
+                            throttleTimeout = Math.max(
+                              throttleTimeout ?? 0,
+                              r.timeoutSeconds
+                            );
                           } else if (
                             r.type === 'completed' &&
                             r.hasPendingOps
@@ -1498,8 +1513,21 @@ export function workflowEntrypoint(
                           }
                         }
 
-                        if (soleThrottleTimeout !== undefined) {
-                          return { timeoutSeconds: soleThrottleTimeout };
+                        if (throttleTimeout !== undefined) {
+                          // Defer redelivery of the orchestrator after the
+                          // throttle backoff. On replay every non-terminal step
+                          // is re-dispatched by the suspension handler: the
+                          // still-throttled steps run inline again WITH their
+                          // input (their `step_created` is deferred anew), and
+                          // any `retry` steps in this batch are queued as
+                          // background steps with their own retryAfter honored.
+                          // Terminal steps (completed/failed/skipped/gone) are
+                          // observed from their events and not re-run; pending
+                          // background ops are flushed via waitUntil before the
+                          // replay reads them. Because the replay drives all
+                          // remaining work, we must NOT also re-queue `toRetry`
+                          // here — that would double-dispatch those steps.
+                          return { timeoutSeconds: throttleTimeout };
                         }
 
                         if (toRetry.length > 0) {
