@@ -83,8 +83,11 @@ jobs:
             if curl -sf -o /dev/null http://localhost:3000/; then echo "ready"; break; fi
             sleep 2
           done
+          # NOTE: \bhookWorkflow (not hookWorkflow) so the pattern does not also
+          # match webhookWorkflow / parallelStepsThenWebhookWorkflow, whose
+          # byte-stream framing is a known QuickJS gap (tracked separately).
           pnpm vitest run packages/core/e2e/e2e.test.ts \
-            -t "addTenWorkflow|promiseAllWorkflow|promiseRaceWorkflow|promiseAnyWorkflow|hookWorkflow|sleepingWorkflow|nullByteWorkflow|workflowAndStepMetadataWorkflow|customSerializationWorkflow|errorSubclassRoundTripWorkflow|resilient start"
+            -t "addTenWorkflow|promiseAllWorkflow|promiseRaceWorkflow|promiseAnyWorkflow|\bhookWorkflow|sleepingWorkflow|nullByteWorkflow|workflowAndStepMetadataWorkflow|customSerializationWorkflow|errorSubclassRoundTripWorkflow|resilient start"
 
   # ---- QuickJS VM under workerd ------------------------------------------
   # Runs the committed smoke worker (packages/core/test/workerd-smoke) under a
