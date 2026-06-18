@@ -267,7 +267,7 @@ export async function executeStep(
         correlationId: stepId,
         eventData:
           params.lazyStepInput !== undefined
-            ? { stepName, input: params.lazyStepInput }
+            ? { stepName, workflowName, input: params.lazyStepInput }
             : { stepName },
       });
 

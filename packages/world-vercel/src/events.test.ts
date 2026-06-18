@@ -194,6 +194,23 @@ describe('splitEventDataForV4 attribute fields', () => {
     } as AnyEventRequest);
     expect(created.meta.workflowName).toBe('wf');
     expect(created.payload).toBeInstanceOf(Uint8Array);
+
+    // The lazy inline start is the motivating hot-path event: it writes the
+    // step `input` payload ref on the sequential path, so it must carry
+    // workflowName to spare the backend the per-step run lookup.
+    const started = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_3',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+      },
+    } as AnyEventRequest);
+    expect(started.meta.workflowName).toBe('wf');
+    expect(started.payload).toBeInstanceOf(Uint8Array);
+    expect(started.meta.input).toBeUndefined();
   });
 });
 
