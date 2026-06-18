@@ -190,13 +190,15 @@ function createStepHandler(namespace?: string) {
         return;
       }
 
-      // Span links to the incoming delivery context and (in linked mode)
-      // the run-origin context from the trace carrier.
+      // In linked mode the only span link is to the run-origin context; the
+      // step.execute span stays a child of the local delivery (flow-route)
+      // context. In continuous mode the link points at the delivery context.
       const spanLinks = await buildInvocationSpanLinks(traceMode, traceContext);
 
       // Execute step within the propagated trace context (continuous mode
-      // only — in linked mode the STEP span below becomes a new trace root
-      // carrying span links instead, so withTraceContext is a passthrough).
+      // only — in linked mode the run-origin is NOT restored as the parent,
+      // so withTraceContext is a passthrough and the step.execute span stays
+      // a child of the local delivery context, linked to the run origin).
       const parentTraceCarrier =
         traceMode === 'continuous' ? traceContext : undefined;
       return await withTraceContext(parentTraceCarrier, async () => {
@@ -222,9 +224,7 @@ function createStepHandler(namespace?: string) {
 
         return trace(
           `step.execute ${stepDisplayName(stepName)}`,
-          traceMode === 'linked'
-            ? { kind: spanKind, links: spanLinks, root: true }
-            : { kind: spanKind, links: spanLinks },
+          { kind: spanKind, links: spanLinks },
           async (span) => {
             span?.setAttributes({
               ...Attribute.StepName(stepName),

@@ -393,11 +393,13 @@ export function workflowEntrypoint(
         }
 
         // --- Trace correlation mode ---
-        // 'linked' (default): the WORKFLOW_V2 span below starts a NEW root
-        // trace, with span links to (a) the incoming delivery context and
-        // (b) the run-origin context from the message's trace carrier. This
-        // bounds each trace to a single invocation instead of stitching an
-        // entire (potentially hours-long) run into one giant trace.
+        // 'linked' (default): the workflow.execute span below stays a CHILD
+        // of the local delivery (flow-route) context, so one invocation —
+        // route handler, workflow replay, inline steps, event writes — is a
+        // single bounded trace. The run-origin context travels as a span
+        // LINK (not a parent), and re-enqueues forward the original carrier
+        // unchanged, so a (potentially hours-long) run is never stitched
+        // into one giant trace across invocations.
         // 'continuous': legacy behavior — the restored run-origin context
         // becomes the parent of this invocation's spans.
         const traceMode = getWorkflowTraceMode();
@@ -442,8 +444,9 @@ export function workflowEntrypoint(
 
         // In linked mode the run-origin context is NOT restored as the
         // active (parent) context — passing `undefined` makes
-        // withTraceContext a passthrough, and the WORKFLOW_V2 span below
-        // becomes a new trace root carrying span links instead.
+        // withTraceContext a passthrough, so the workflow.execute span below
+        // stays a child of the local delivery (flow-route) context and the
+        // run-origin travels as a span link instead.
         const parentTraceCarrier =
           traceMode === 'continuous' ? traceContext : undefined;
         // Queue-delivered invocation: CONSUMER kind, matching the
@@ -456,9 +459,7 @@ export function workflowEntrypoint(
               const world = await getWorld();
               return trace(
                 `workflow.execute ${workflowDisplayName(workflowName)}`,
-                traceMode === 'linked'
-                  ? { kind: spanKind, links: spanLinks, root: true }
-                  : { kind: spanKind, links: spanLinks },
+                { kind: spanKind, links: spanLinks },
                 async (span) => {
                   span?.setAttributes({
                     ...Attribute.WorkflowName(workflowName),
