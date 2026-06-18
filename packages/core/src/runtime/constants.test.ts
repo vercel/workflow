@@ -5,6 +5,7 @@ import {
   getMaxInlineSteps,
   getReplayTimeoutMs,
   isOptimisticInlineStartEnabled,
+  isTurboEnabled,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
   MAX_REPLAY_TIMEOUT_MS,
@@ -202,5 +203,44 @@ describe('isOptimisticInlineStartEnabled', () => {
   it('stays disabled for any other value', () => {
     process.env.WORKFLOW_OPTIMISTIC_INLINE_START = 'yes';
     expect(isOptimisticInlineStartEnabled()).toBe(false);
+  });
+});
+
+describe('isTurboEnabled', () => {
+  const originalEnv = process.env.WORKFLOW_TURBO;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.WORKFLOW_TURBO;
+    } else {
+      process.env.WORKFLOW_TURBO = originalEnv;
+    }
+  });
+
+  it('defaults to enabled when unset', () => {
+    delete process.env.WORKFLOW_TURBO;
+    expect(isTurboEnabled()).toBe(true);
+  });
+
+  it('defaults to enabled when empty', () => {
+    process.env.WORKFLOW_TURBO = '';
+    expect(isTurboEnabled()).toBe(true);
+  });
+
+  it('is disabled by an explicit "0"', () => {
+    process.env.WORKFLOW_TURBO = '0';
+    expect(isTurboEnabled()).toBe(false);
+  });
+
+  it('is disabled by "false" (case-insensitive)', () => {
+    process.env.WORKFLOW_TURBO = 'FALSE';
+    expect(isTurboEnabled()).toBe(false);
+  });
+
+  it('stays enabled for "1" and other truthy values', () => {
+    process.env.WORKFLOW_TURBO = '1';
+    expect(isTurboEnabled()).toBe(true);
+    process.env.WORKFLOW_TURBO = 'yes';
+    expect(isTurboEnabled()).toBe(true);
   });
 });

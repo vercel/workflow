@@ -1294,4 +1294,67 @@ describe('executeStep optimistic inline start', () => {
     expect(result.type).toBe('skipped');
     expect(mockStepFn).not.toHaveBeenCalled();
   });
+
+  it('forces optimistic start via forceOptimisticStart even when the flag is off', async () => {
+    // Turbo passes forceOptimisticStart independent of the env var.
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('lost create race'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+    });
+
+    // Forced optimistic: the body ran before the (lost) create-claim resolved —
+    // unlike the env-disabled case above, where the body never runs.
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    expect(result.type).toBe('skipped');
+  });
+
+  it('holds the optimistic step_started until runReadyBarrier resolves, but runs the body immediately', async () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    let release!: () => void;
+    const barrier = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls: string[] = [];
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        calls.push(event.eventType);
+        return Promise.resolve({ event: {} });
+      });
+    mockStepFn.mockReset().mockImplementation(async () => {
+      calls.push('body');
+      return 'step-result';
+    });
+
+    const world = await getWorld();
+    const resultPromise = executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+      runReadyBarrier: barrier,
+    });
+
+    // The body runs immediately against synthesized state; step_started is NOT
+    // issued until the run-ready barrier resolves.
+    await vi.waitFor(() => expect(calls).toContain('body'));
+    expect(calls).not.toContain('step_started');
+
+    release();
+    const result = await resultPromise;
+    expect(result.type).toBe('completed');
+    expect(calls).toContain('step_started');
+    expect(calls.indexOf('body')).toBeLessThan(calls.indexOf('step_started'));
+  });
 });
