@@ -203,6 +203,21 @@ export function isOptimisticInlineStartEnabled(): boolean {
 }
 
 /**
+ * Whether an operator has **explicitly disabled** optimistic inline start via
+ * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Distinct from "unset": unset
+ * leaves the optimization off by default but lets turbo force it on; an explicit
+ * `0`/`false` is an operator opt-out that turbo must honor (turbo's forced
+ * optimistic start still runs a step body before `step_started`/`run_started` is
+ * confirmed, the property such an operator is opting out of), so
+ * `forceOptimisticStart` defers to this. Reads the env var lazily.
+ */
+export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
+  const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+  if (raw === undefined || raw === '') return false;
+  return raw === '0' || raw.toLowerCase() === 'false';
+}
+
+/**
  * Whether "turbo mode" is enabled. Turbo mode fast-paths the *first delivery of
  * the first invocation* of a run (detected by the entrypoint via `runInput`
  * presence + `metadata.attempt === 1`): it backgrounds the `run_started` event

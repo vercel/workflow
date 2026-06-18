@@ -49,9 +49,17 @@ Because `run_started` is backgrounded, every event write is gated on a run-ready
 
 The event log therefore still reads `run_created → run_started → step_created → step_started → step_completed`. If the backgrounded `run_started` genuinely fails (e.g. the run was cancelled in the meantime), the chained writes surface the real error (`gone` / run-not-found) and the message redelivers as a normal, non-turbo attempt.
 
+The barrier orders **event** writes. The forced-optimistic first step **body** runs immediately, so any side effects it performs *before* the terminal write — stream writes via `getWritable()` and the per-step ops flush — are **not** gated on the barrier and can reach the world before the backgrounded `run_started` lands (and are orphaned if it ultimately fails). This is the same exposure as optimistic inline start and is covered by the stream-safety caveat below; deployments whose first step writes to the workflow stream and require strict `run_created → run_started` ordering of stream data should set `WORKFLOW_TURBO=0`.
+
+### A run cancelled before its first delivery still runs the first step body
+
+The non-turbo path awaits `run_started` up front and, if the run was cancelled or expired between `start()` and this delivery, returns before any workflow/step code runs. Turbo synthesizes `status: 'running'` and runs the first step body optimistically, so such a cancellation is only observed when the backgrounded `run_started` (and the barrier-chained `step_started`) rejects — *after* the body's side effects have executed (they are then discarded via reconciliation). For non-idempotent first steps this is the same "body runs before ownership is confirmed" tradeoff as optimistic inline start; `WORKFLOW_TURBO=0` restores the up-front skip.
+
 ## Configuration
 
 Turbo mode is **on by default**. Set `WORKFLOW_TURBO=0` (or `false`) to disable it — every invocation then takes the existing awaited path. This is a useful kill-switch for deployments whose first-step bodies are not idempotent and stream-safe (the same caveat as optimistic inline start), or for isolating behavior while debugging.
+
+Turbo forces optimistic inline start on the first invocation regardless of `WORKFLOW_OPTIMISTIC_INLINE_START` (its single-handler guarantee removes the double-execution race that flag guards against). It does, however, **honor an explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0`**: because forced optimistic start still runs the body before `step_started`/`run_started` is confirmed, an operator who has explicitly disabled optimistic start keeps the await-then-run path even under turbo (the rest of turbo — backgrounded `run_started`, skipped initial load — still applies). With the flag unset (the default), turbo forces it on.
 
 Turbo mode is purely client-side and builds on the lazy/optimistic inline start support already shipped — it requires no world or backend changes.
 

@@ -33,7 +33,10 @@ import {
   promoteAbortErrorToFatal,
 } from '../types.js';
 
-import { isOptimisticInlineStartEnabled } from './constants.js';
+import {
+  isOptimisticInlineStartEnabled,
+  isOptimisticInlineStartExplicitlyDisabled,
+} from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import { safeWaitUntil } from './wait-until.js';
@@ -218,6 +221,13 @@ export async function executeStep(
       // return `skipped` and never write the failure twice.
       if (params.lazyStepInput !== undefined) {
         try {
+          // Turbo: this lazy `step_started` must not precede the backgrounded
+          // `run_started`. Order it after the run-ready barrier (best-effort —
+          // a barrier rejection means the run doesn't exist, and the create
+          // below surfaces the real error). No-op outside turbo.
+          if (params.runReadyBarrier) {
+            await params.runReadyBarrier.catch(() => {});
+          }
           await world.events.create(workflowRunId, {
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
@@ -327,10 +337,18 @@ export async function executeStep(
     // discard the body result. Running the body before confirming ownership can
     // execute a step more than once when handlers race — inline step bodies
     // must be idempotent; disable via WORKFLOW_OPTIMISTIC_INLINE_START=0.
+    //
+    // Turbo mode passes `forceOptimisticStart` to enable this regardless of the
+    // env flag (its single-handler guarantee removes the race). But it still
+    // defers to an *explicit* `WORKFLOW_OPTIMISTIC_INLINE_START=0`: forced
+    // optimistic start runs the body before `step_started`/`run_started` is
+    // confirmed, which is exactly the property an operator opts out of with that
+    // flag, so an explicit opt-out wins over turbo's force.
     const optimisticStart =
       params.lazyStepInput !== undefined &&
-      (params.forceOptimisticStart === true ||
-        isOptimisticInlineStartEnabled());
+      (isOptimisticInlineStartEnabled() ||
+        (params.forceOptimisticStart === true &&
+          !isOptimisticInlineStartExplicitlyDisabled()));
 
     let step: Step;
     // Settled outcome of the in-flight optimistic `step_started`. Handlers are

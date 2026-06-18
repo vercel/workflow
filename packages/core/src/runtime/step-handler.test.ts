@@ -1295,9 +1295,10 @@ describe('executeStep optimistic inline start', () => {
     expect(mockStepFn).not.toHaveBeenCalled();
   });
 
-  it('forces optimistic start via forceOptimisticStart even when the flag is off', async () => {
-    // Turbo passes forceOptimisticStart independent of the env var.
-    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+  it('forces optimistic start via forceOptimisticStart when the flag is unset', async () => {
+    // Turbo passes forceOptimisticStart; with the env var UNSET (off by default
+    // but not an explicit opt-out), turbo forces optimistic start on.
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     mockEventsCreate
       .mockReset()
       .mockImplementation((_runId: string, event: { eventType: string }) => {
@@ -1320,8 +1321,33 @@ describe('executeStep optimistic inline start', () => {
     expect(result.type).toBe('skipped');
   });
 
-  it('holds the optimistic step_started until runReadyBarrier resolves, but runs the body immediately', async () => {
+  it('forceOptimisticStart defers to an EXPLICIT WORKFLOW_OPTIMISTIC_INLINE_START=0', async () => {
+    // An operator who explicitly set the flag to 0 has opted out of "body runs
+    // before start is confirmed"; that opt-out wins over turbo's force, so the
+    // step takes the await-then-run path and the body never runs on a 409.
     process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('already running'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+    });
+
+    expect(result.type).toBe('skipped');
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('holds the optimistic step_started until runReadyBarrier resolves, but runs the body immediately', async () => {
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     let release!: () => void;
     const barrier = new Promise<void>((r) => {
       release = r;
