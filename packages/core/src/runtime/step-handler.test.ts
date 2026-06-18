@@ -1048,6 +1048,59 @@ describe('executeStep inline-delta threading', () => {
     });
   });
 
+  it('surfaces hasMore=true verbatim when the World returns a truncated delta', async () => {
+    // The World truncates a delta larger than one page and reports
+    // hasMore=true. executeStep must forward that flag unchanged so the
+    // runtime's consume gate (which only stashes a delta when !hasMore) falls
+    // back to the exhaustive events.list loop instead of consuming a partial
+    // page as the complete delta.
+    const truncatedEvents = [
+      { eventId: 'evnt_1', eventType: 'hook_received' },
+      { eventId: 'evnt_2', eventType: 'hook_received' },
+    ];
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+          return Promise.resolve({
+            event: {},
+            events: truncatedEvents,
+            cursor: 'cursor_mid',
+            hasMore: true,
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toEqual({
+      events: truncatedEvents,
+      cursor: 'cursor_mid',
+      hasMore: true,
+    });
+  });
+
   it('does not pass sinceCursor or surface a delta when it is omitted', async () => {
     let completedParams: unknown = 'unset';
     mockEventsCreate.mockImplementation(

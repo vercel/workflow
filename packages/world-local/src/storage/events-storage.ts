@@ -1804,6 +1804,16 @@ export function createEventsStorage(
             data.eventType === 'step_failed') &&
           typeof params?.sinceCursor === 'string'
         ) {
+          // Intentionally no `limit`: this returns a single default-size page,
+          // unlike the `events.list` path which loops `while (hasMore)` to
+          // exhaustion. That is safe — and must NOT be "fixed" by paginating
+          // here — because the contract is single-page-or-fallback, not
+          // complete-delta. When the delta overflows one page,
+          // paginatedFileSystemQuery sets `hasMore: true` and slices `data` to
+          // the page (see fs.ts), which we forward verbatim below. The SDK
+          // consume side (runtime.ts) only stashes the delta when `!hasMore`
+          // and otherwise falls back to the exhaustive `events.list` loop, so a
+          // truncated page is never consumed as if it were the full delta.
           const delta = await paginatedFileSystemQuery({
             directory: path.join(basedir, 'events'),
             schema: EventSchema,

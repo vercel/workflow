@@ -1110,6 +1110,70 @@ describe('Storage', () => {
         expect(result.cursor).toBe(fetched.cursor);
       });
 
+      it('truncates the delta and surfaces hasMore=true when it exceeds one page, matching events.list', async () => {
+        // Safety property the runtime relies on (see the limit/hasMore/fallback
+        // contract at events-storage.ts and the consume gate in runtime.ts):
+        // the inline-delta query uses paginatedFileSystemQuery's default page
+        // size, so a delta larger than one page is truncated and MUST report
+        // hasMore=true. The runtime refuses to consume a truncated delta and
+        // falls back to the exhaustive events.list loop, so a partial page can
+        // never be mistaken for the complete delta.
+        await updateRun(storage, testRunId, 'run_started');
+
+        // Open many hooks BEFORE the cursor so they are not part of the delta;
+        // their in-band deliveries (below) are.
+        const HOOK_COUNT = 25; // > paginatedFileSystemQuery default limit (20)
+        for (let i = 0; i < HOOK_COUNT; i++) {
+          await createHook(storage, testRunId, {
+            hookId: `corr_hook_${i}`,
+            token: `tok_${i}`,
+          });
+        }
+        const sinceCursor = await currentCursor();
+
+        // A burst of in-band hook deliveries lands while the step runs, then
+        // the sequential step itself — together far more than one page.
+        for (let i = 0; i < HOOK_COUNT; i++) {
+          await storage.events.create(testRunId, {
+            eventType: 'hook_received' as const,
+            correlationId: `corr_hook_${i}`,
+            eventData: { token: `tok_${i}`, payload: new Uint8Array([i]) },
+          });
+        }
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq_big',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq_big', 'step_started', {
+          stepName: 'seq-step',
+        });
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_completed' as const,
+            correlationId: 'corr_seq_big',
+            eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+          },
+          { sinceCursor }
+        );
+
+        // The delta is truncated: it carries exactly the first page and signals
+        // that more remains — byte-identical to events.list(sinceCursor).
+        const firstPage = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+
+        expect(result.hasMore).toBe(true);
+        expect(firstPage.hasMore).toBe(true);
+        expect(result.events?.length).toBeLessThan(HOOK_COUNT + 3);
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          firstPage.data.map((e) => e.eventId)
+        );
+        expect(result.cursor).toBe(firstPage.cursor);
+      });
+
       it('does not return a delta when sinceCursor is omitted', async () => {
         await updateRun(storage, testRunId, 'run_started');
         await createStep(storage, testRunId, {
