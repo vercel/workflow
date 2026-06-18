@@ -1931,6 +1931,58 @@ export function createEventsStorage(
           hasMore = allEvents.hasMore;
         }
 
+        // Inline-delta optimization: on a step-terminal write the inline
+        // runtime loop can pass `sinceCursor` (the cursor from before it
+        // began writing this step's events). We return the delta of
+        // events written strictly after that cursor — exactly what an
+        // `events.list({ cursor: sinceCursor, sortOrder: 'asc' })` would
+        // return right now — so the loop can skip a redundant round-trip.
+        //
+        // This is computed against the same on-disk log the list path
+        // reads, so it captures everything the fetch would: this step's
+        // step_created/step_started/step_completed, any attr_set the step
+        // body wrote, and any in-band events (e.g. hook_received,
+        // wait_completed) another writer appended since the cursor. That
+        // equivalence is what makes skipping the fetch safe — a missed
+        // in-band event cannot diverge replay because the delta is the
+        // fetch.
+        //
+        // Only step-terminal events qualify: step_created/step_started are
+        // not loop boundaries (the loop fetches after step_completed /
+        // step_failed), and run-terminal events end the loop. `resolveData`
+        // matches the list path so eventData refs are handled identically.
+        if (
+          (data.eventType === 'step_completed' ||
+            data.eventType === 'step_failed') &&
+          typeof params?.sinceCursor === 'string'
+        ) {
+          // Intentionally no `limit`: this returns a single default-size page,
+          // unlike the `events.list` path which loops `while (hasMore)` to
+          // exhaustion. That is safe — and must NOT be "fixed" by paginating
+          // here — because the contract is single-page-or-fallback, not
+          // complete-delta. When the delta overflows one page,
+          // paginatedFileSystemQuery sets `hasMore: true` and slices `data` to
+          // the page (see fs.ts), which we forward verbatim below. The SDK
+          // consume side (runtime.ts) only stashes the delta when `!hasMore`
+          // and otherwise falls back to the exhaustive `events.list` loop, so a
+          // truncated page is never consumed as if it were the full delta.
+          const delta = await paginatedFileSystemQuery({
+            directory: path.join(basedir, 'events'),
+            schema: EventSchema,
+            filePrefix: `${effectiveRunId}-`,
+            sortOrder: 'asc',
+            cursor: params.sinceCursor,
+            getCreatedAt: getObjectCreatedAt('evnt'),
+            getId: (e) => e.eventId,
+          });
+          events =
+            resolveData === 'none'
+              ? delta.data.map((e) => stripEventDataRefs(e, resolveData))
+              : delta.data;
+          cursor = delta.cursor;
+          hasMore = delta.hasMore;
+        }
+
         // Return EventResult with event and any created/updated entity
         return {
           event: filteredEvent,

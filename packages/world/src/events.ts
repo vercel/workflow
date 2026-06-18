@@ -441,6 +441,32 @@ export interface CreateEventParams {
   resolveData?: ResolveData;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
+  /**
+   * Inline-delta optimization (opt-in). When set, the World MAY return,
+   * on the resulting {@link EventResult}, the first page of events written
+   * strictly after this cursor (via `events`/`cursor`/`hasMore`) — the
+   * same page an `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
+   * call would return immediately after this write. The inline runtime
+   * loop uses this to skip a redundant `events.list` round-trip between
+   * sequential steps: instead of re-reading its own just-written events
+   * (and any events interleaved in-band, such as `hook_received`), it
+   * consumes the authoritative delta the write already had to compute.
+   *
+   * The cursor MUST share `events.list` semantics: the returned `events`
+   * are everything sorted strictly after `sinceCursor`, `cursor` is the
+   * position past the last returned event, and `hasMore` indicates a
+   * further page exists. A World MAY return a single page and set
+   * `hasMore: true` rather than paginating to exhaustion — the runtime
+   * does not consume a truncated delta, it falls back to a full
+   * incremental fetch whenever `hasMore` is true. (For that reason a step
+   * body emitting more in-band events than one page silently bypasses this
+   * fast path, which is correct but forgoes the saved round-trip.)
+   * Returning these fields at all is OPTIONAL — a World that omits them is
+   * fully supported; the runtime falls back to `events.list`. This
+   * preserves the same divergence guarantees as the fetch path because the
+   * delta is computed atomically against the same log the fetch would read.
+   */
+  sinceCursor?: string;
 }
 
 /**
@@ -461,9 +487,14 @@ export interface EventResult {
   /** The wait entity (for wait_created/wait_completed events) */
   wait?: import('./waits.js').Wait;
   /**
-   * All events up to this point, with data resolved. When populated
-   * on a run_started response, the runtime uses these to skip the
-   * initial events.list call and reduce TTFB.
+   * Events with data resolved. Two producers populate this:
+   *
+   * - On a `run_started` response: all events up to this point, so the
+   *   runtime can skip the initial `events.list` call and reduce TTFB.
+   * - On a step-terminal write (`step_completed` / `step_failed`) when
+   *   the caller passed {@link CreateEventParams.sinceCursor}: the delta
+   *   of events written strictly after that cursor, so the inline loop
+   *   can skip the per-step incremental `events.list` round-trip.
    */
   events?: Event[];
   /** Pagination cursor for `events`, matching events.list semantics. */

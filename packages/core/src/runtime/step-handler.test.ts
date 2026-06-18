@@ -193,6 +193,7 @@ import { MAX_QUEUE_DELIVERIES } from './constants.js';
 // Since getWorldHandlers is now async, we need to call stepEntrypoint
 // to trigger createQueueHandler and populate capturedHandlerRef
 import { stepEntrypoint } from './step-handler.js';
+import { executeStep } from './step-executor.js';
 import { getWorld } from './world.js';
 
 function capturedHandler(
@@ -950,5 +951,227 @@ describe('step-handler fatal vs retryable behavior', () => {
       ([, event]) => event.eventType === 'step_failed'
     );
     expect(stepFailedCalls).toHaveLength(1);
+  });
+});
+
+describe('executeStep inline-delta threading', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        return Promise.resolve({ event: {} });
+      });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const baseParams = {
+    workflowRunId: 'wrun_test123',
+    workflowName: 'test-workflow',
+    workflowStartedAt: Date.now(),
+    stepId: 'step_abc',
+    stepName: 'myStep',
+  };
+
+  it('passes sinceCursor to the step_completed write and surfaces the returned delta', async () => {
+    const deltaEvents = [
+      { eventId: 'evnt_1', eventType: 'step_created' },
+      { eventId: 'evnt_2', eventType: 'step_started' },
+      { eventId: 'evnt_3', eventType: 'step_completed' },
+    ];
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          // The World returns the delta only because sinceCursor was passed.
+          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+          return Promise.resolve({
+            event: {},
+            events: deltaEvents,
+            cursor: 'cursor_post',
+            hasMore: false,
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toEqual({
+      events: deltaEvents,
+      cursor: 'cursor_post',
+      hasMore: false,
+    });
+  });
+
+  it('surfaces hasMore=true verbatim when the World returns a truncated delta', async () => {
+    // The World truncates a delta larger than one page and reports
+    // hasMore=true. executeStep must forward that flag unchanged so the
+    // runtime's consume gate (which only stashes a delta when !hasMore) falls
+    // back to the exhaustive events.list loop instead of consuming a partial
+    // page as the complete delta.
+    const truncatedEvents = [
+      { eventId: 'evnt_1', eventType: 'hook_received' },
+      { eventId: 'evnt_2', eventType: 'hook_received' },
+    ];
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+          return Promise.resolve({
+            event: {},
+            events: truncatedEvents,
+            cursor: 'cursor_mid',
+            hasMore: true,
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toEqual({
+      events: truncatedEvents,
+      cursor: 'cursor_mid',
+      hasMore: true,
+    });
+  });
+
+  it('does not pass sinceCursor or surface a delta when it is omitted', async () => {
+    let completedParams: unknown = 'unset';
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          completedParams = params;
+          // Even if a World returned events here, the runtime must ignore them
+          // when it never requested a delta.
+          return Promise.resolve({
+            event: {},
+            events: [{ eventId: 'evnt_x', eventType: 'step_completed' }],
+            cursor: 'cursor_post',
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(completedParams).toBeUndefined();
+    expect(result.inlineDelta).toBeUndefined();
+  });
+
+  it('surfaces no delta when a supporting cursor is requested but the World omits one', async () => {
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        // World ignores sinceCursor (returns no events/cursor) — backward compat.
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toBeUndefined();
   });
 });

@@ -1185,6 +1185,220 @@ describe('Storage', () => {
       });
     });
 
+    // Inline-delta optimization: a step-terminal write carrying
+    // `sinceCursor` returns the event-log delta since that cursor so the
+    // inline runtime loop can skip an incremental events.list round-trip.
+    describe('inline delta (sinceCursor)', () => {
+      // Capture the cursor as of the latest event in the run — what the
+      // runtime would hold before it begins writing the next step's events.
+      async function currentCursor(): Promise<string> {
+        const listed = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+        const cursor = listed.cursor;
+        if (!cursor) throw new Error('expected a cursor');
+        return cursor;
+      }
+
+      it('returns the events written since the cursor on step_completed, matching events.list', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        const sinceCursor = await currentCursor();
+
+        // A sequential step: create -> started -> completed. The terminal
+        // write carries sinceCursor and should return all three.
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq', 'step_started', {
+          stepName: 'seq-step',
+        });
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_completed' as const,
+            correlationId: 'corr_seq',
+            eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+          },
+          { sinceCursor }
+        );
+
+        // The delta is exactly what a fresh events.list(sinceCursor) returns.
+        const fetched = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+
+        expect(result.events).toBeDefined();
+        expect(result.events?.map((e) => e.eventType)).toEqual([
+          'step_created',
+          'step_started',
+          'step_completed',
+        ]);
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          fetched.data.map((e) => e.eventId)
+        );
+        expect(result.cursor).toBe(fetched.cursor);
+        expect(result.hasMore).toBe(fetched.hasMore);
+      });
+
+      it('captures in-band events (hook_received) interleaved before the terminal write', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        // An open hook exists; an external party delivers a payload while the
+        // step is running. The delta MUST include the hook_received so the
+        // inline loop does not drop it and skew from the server log.
+        await createHook(storage, testRunId, {
+          hookId: 'corr_hook',
+          token: 'tok_inband',
+        });
+        const sinceCursor = await currentCursor();
+
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq2',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq2', 'step_started', {
+          stepName: 'seq-step',
+        });
+        // In-band hook delivery lands between step_started and step_completed.
+        await storage.events.create(testRunId, {
+          eventType: 'hook_received' as const,
+          correlationId: 'corr_hook',
+          eventData: { token: 'tok_inband', payload: new Uint8Array([9]) },
+        });
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_completed' as const,
+            correlationId: 'corr_seq2',
+            eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+          },
+          { sinceCursor }
+        );
+
+        const fetched = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+
+        expect(result.events?.map((e) => e.eventType)).toContain(
+          'hook_received'
+        );
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          fetched.data.map((e) => e.eventId)
+        );
+        expect(result.cursor).toBe(fetched.cursor);
+      });
+
+      it('truncates the delta and surfaces hasMore=true when it exceeds one page, matching events.list', async () => {
+        // Safety property the runtime relies on (see the limit/hasMore/fallback
+        // contract at events-storage.ts and the consume gate in runtime.ts):
+        // the inline-delta query uses paginatedFileSystemQuery's default page
+        // size, so a delta larger than one page is truncated and MUST report
+        // hasMore=true. The runtime refuses to consume a truncated delta and
+        // falls back to the exhaustive events.list loop, so a partial page can
+        // never be mistaken for the complete delta.
+        await updateRun(storage, testRunId, 'run_started');
+
+        // Open many hooks BEFORE the cursor so they are not part of the delta;
+        // their in-band deliveries (below) are.
+        const HOOK_COUNT = 25; // > paginatedFileSystemQuery default limit (20)
+        for (let i = 0; i < HOOK_COUNT; i++) {
+          await createHook(storage, testRunId, {
+            hookId: `corr_hook_${i}`,
+            token: `tok_${i}`,
+          });
+        }
+        const sinceCursor = await currentCursor();
+
+        // A burst of in-band hook deliveries lands while the step runs, then
+        // the sequential step itself — together far more than one page.
+        for (let i = 0; i < HOOK_COUNT; i++) {
+          await storage.events.create(testRunId, {
+            eventType: 'hook_received' as const,
+            correlationId: `corr_hook_${i}`,
+            eventData: { token: `tok_${i}`, payload: new Uint8Array([i]) },
+          });
+        }
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq_big',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq_big', 'step_started', {
+          stepName: 'seq-step',
+        });
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_completed' as const,
+            correlationId: 'corr_seq_big',
+            eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+          },
+          { sinceCursor }
+        );
+
+        // The delta is truncated: it carries exactly the first page and signals
+        // that more remains — byte-identical to events.list(sinceCursor).
+        const firstPage = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+
+        expect(result.hasMore).toBe(true);
+        expect(firstPage.hasMore).toBe(true);
+        expect(result.events?.length).toBeLessThan(HOOK_COUNT + 3);
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          firstPage.data.map((e) => e.eventId)
+        );
+        expect(result.cursor).toBe(firstPage.cursor);
+      });
+
+      it('does not return a delta when sinceCursor is omitted', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq3',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq3', 'step_started', {
+          stepName: 'seq-step',
+        });
+        const result = await storage.events.create(testRunId, {
+          eventType: 'step_completed' as const,
+          correlationId: 'corr_seq3',
+          eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+        });
+        expect(result.events).toBeUndefined();
+        expect(result.cursor).toBeUndefined();
+      });
+
+      it('does not return a delta for non-terminal step events', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        const sinceCursor = await currentCursor();
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq4',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        // step_started carries sinceCursor but is not a loop boundary, so the
+        // World should not compute a delta for it.
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_started' as const,
+            correlationId: 'corr_seq4',
+            eventData: { stepName: 'seq-step' },
+          },
+          { sinceCursor }
+        );
+        expect(result.events).toBeUndefined();
+      });
+    });
+
     describe('list', () => {
       it('should list all events for a run', async () => {
         // Note: testRunId was created via createRun which creates a run_created event
