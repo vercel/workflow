@@ -3,4 +3,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Stamp run IDs on world storage telemetry spans.
+Add run IDs on world storage telemetry spans.
