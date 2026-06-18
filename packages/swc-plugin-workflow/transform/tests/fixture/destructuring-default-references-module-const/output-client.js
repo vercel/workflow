@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"s":{"stepId":"step//./input//s"}}}}*/;
 // Regression test for issue #2396: dead-code elimination must not strip a
 // module-scope declaration that is referenced only by a destructuring-default
@@ -14,12 +13,10 @@ const TTL = 1000;
 // Referenced from a destructuring default inside a plain top-level function,
 // to prove the bug is class-independent.
 const RETRIES = 3;
-// Truly unused module-scope const — this one SHOULD be stripped by DCE, to
-// confirm the fix only preserves declarations that are actually referenced.
-const UNUSED = 'dead';
 async function s(x) {
     return x;
 }
+s.stepId = "step//./input//s";
 export class C {
     static make(options = {}) {
         const { ttl = TTL } = options;
@@ -30,4 +27,3 @@ export function plain(options = {}) {
     const { retries = RETRIES } = options;
     return retries;
 }
-registerStepFunction("step//./input//s", s);

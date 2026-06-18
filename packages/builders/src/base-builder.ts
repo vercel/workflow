@@ -80,6 +80,10 @@ export abstract class BaseBuilder {
     return this.config.projectRoot || this.config.workingDir;
   }
 
+  protected get moduleSpecifierRoot(): string {
+    return this.config.moduleSpecifierRoot || this.transformProjectRoot;
+  }
+
   /**
    * Whether informational BaseBuilder logs should be printed.
    * Subclasses can override this to silence progress logs while keeping warnings/errors.
@@ -675,6 +679,7 @@ export abstract class BaseBuilder {
           entriesToBundle: normalizedEntriesToBundle,
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
           bundleTransitiveLocalStepDependencies,
           rewriteTsExtensions,
@@ -710,7 +715,8 @@ export abstract class BaseBuilder {
             source,
             'workflow',
             workflowFile,
-            this.transformProjectRoot
+            this.transformProjectRoot,
+            this.moduleSpecifierRoot
           );
           if (fileManifest.workflows) {
             workflowManifest.workflows = Object.assign(
@@ -890,6 +896,7 @@ export abstract class BaseBuilder {
         createSwcPlugin({
           mode: 'workflow',
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
           sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
@@ -1214,6 +1221,7 @@ export const POST = handler;`;
         createSwcPlugin({
           mode: 'client',
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           sideEffectEntries: normalizedClientSideEffectEntries,
         }),
       ],
