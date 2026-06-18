@@ -145,9 +145,9 @@ export async function runWorkflow(
     // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
     // Load getPort lazily to prevent Turbopack from tracing get-port's
-    // fs ops (readdir, readFile) into the flow route bundle.
-    // Uses globalThis.__wkf_getPort as a lazy-initialized cache to avoid
-    // bundler static analysis while staying compatible with CJS/ESM/VM.
+    // fs ops (readdir, readFile) into the flow route bundle. The resolved
+    // port is cached per process (see get-port-lazy.ts), so this is cheap
+    // on replays after the first.
     const port = isVercel ? undefined : await getPortLazy();
 
     const {
