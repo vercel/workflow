@@ -1,14 +1,14 @@
 {
-  "lastUpdated": "2026-06-18T06:22:19.868Z",
-  "commit": "e7ef9d823bd6c962d9c0c62e50e4883848c270f9",
+  "lastUpdated": "2026-06-18T06:44:25.434Z",
+  "commit": "16b36703e2b1102df33bb301e8b19d7031dbb70f",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
-      "status": "passing",
+      "status": "partial",
       "total": 5016,
-      "passed": 4478,
-      "failed": 0,
+      "passed": 4477,
+      "failed": 1,
       "skipped": 538,
       "frameworks": {
         "astro": {
@@ -23,8 +23,8 @@
         },
         "fastify": {
           "total": 304,
-          "passed": 254,
-          "failed": 0
+          "passed": 253,
+          "failed": 1
         },
         "hono": {
           "total": 304,
@@ -126,20 +126,30 @@
     },
     "vercel": {
       "status": "partial",
-      "total": 1520,
-      "passed": 1315,
+      "total": 1824,
+      "passed": 1565,
       "failed": 2,
-      "skipped": 203,
+      "skipped": 257,
       "frameworks": {
+        "astro": {
+          "total": 152,
+          "passed": 125,
+          "failed": 0
+        },
         "express": {
           "total": 152,
           "passed": 125,
           "failed": 0
         },
+        "fastify": {
+          "total": 152,
+          "passed": 124,
+          "failed": 1
+        },
         "hono": {
           "total": 152,
-          "passed": 125,
-          "failed": 0
+          "passed": 124,
+          "failed": 1
         },
         "nextjs-turbopack": {
           "total": 152,
@@ -148,13 +158,13 @@
         },
         "nextjs-webpack": {
           "total": 152,
-          "passed": 148,
-          "failed": 1
+          "passed": 149,
+          "failed": 0
         },
         "nitro": {
           "total": 152,
-          "passed": 124,
-          "failed": 1
+          "passed": 125,
+          "failed": 0
         },
         "nuxt": {
           "total": 152,
@@ -172,7 +182,7 @@
           "failed": 0
         }
       },
-      "progress": 87
+      "progress": 86
     }
   }
 }
