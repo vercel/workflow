@@ -670,6 +670,20 @@ export function createEventsStorage(
         // VALIDATION: Terminal state and event ordering checks
         // ============================================================
 
+        // Lazy step start: a step_started carrying step-creation data
+        // (stepName + input) is allowed to arrive with no prior step_created
+        // — it creates the step on the fly (see the materialization block
+        // below). This mirrors the resilient run_started path. Detect it here
+        // so the entity-creation terminal-run guard treats it like a creation
+        // and the "step must exist" ordering guard doesn't reject it.
+        const lazyStepStart =
+          data.eventType === 'step_started' &&
+          'eventData' in data &&
+          !!data.eventData &&
+          typeof (data.eventData as { stepName?: unknown }).stepName ===
+            'string' &&
+          (data.eventData as { input?: unknown }).input !== undefined;
+
         // Run terminal state validation
         if (currentRun && isRunTerminal(currentRun.status)) {
           const runTerminalEvents = [
@@ -722,11 +736,15 @@ export function createEventsStorage(
             );
           }
 
-          // Creating new entities on terminal runs is not allowed
+          // Creating new entities on terminal runs is not allowed. A lazy
+          // step_started creates a step, so it is rejected here too — a bare
+          // (non-lazy) step_started falls through to the step-validation
+          // block below, which uses RunExpiredError for terminal runs.
           if (
             data.eventType === 'step_created' ||
             data.eventType === 'hook_created' ||
-            data.eventType === 'wait_created'
+            data.eventType === 'wait_created' ||
+            lazyStepStart
           ) {
             throw new EntityConflictError(
               `Cannot create new entities on run in terminal state "${currentRun.status}"`
@@ -759,26 +777,46 @@ export function createEventsStorage(
             tag
           );
 
-          // Event ordering: step must exist before these events
-          if (!validatedStep) {
+          // Event ordering: step must exist before these events — except on
+          // the lazy-start path, where step_started creates the step itself.
+          if (!validatedStep && !lazyStepStart) {
             throw new WorkflowWorldError(
               `Step "${data.correlationId}" not found`
             );
           }
 
-          // Step terminal state validation
-          if (isStepTerminal(validatedStep.status)) {
+          // Lazy start exactly-once gate: a lazy step_started always CREATES
+          // the step (the owned-inline path only sends one for a step whose
+          // step_created it deferred). If the step already exists, a concurrent
+          // handler won the create — this caller is a loser and must not start
+          // or run the step. Throw EntityConflictError so the runtime's
+          // executeStep maps it to `skipped`. This is critical: the plain start
+          // transition below permits re-starting a non-terminal step (retries
+          // rely on that), so without this gate a loser would re-start a
+          // running step and run the body a second time.
+          if (lazyStepStart && validatedStep) {
             throw new EntityConflictError(
-              `Cannot modify step in terminal state "${validatedStep.status}"`
+              `Step "${data.correlationId}" already created`
             );
           }
 
-          // On terminal runs: only allow completing/failing in-progress steps
-          if (currentRun && isRunTerminal(currentRun.status)) {
-            if (validatedStep.status !== 'running') {
-              throw new RunExpiredError(
-                `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
+          // Step terminal state validation. validatedStep can be null only on
+          // the lazy-start path (no step yet) — there is nothing terminal to
+          // guard against in that case, so these checks are skipped.
+          if (validatedStep) {
+            if (isStepTerminal(validatedStep.status)) {
+              throw new EntityConflictError(
+                `Cannot modify step in terminal state "${validatedStep.status}"`
               );
+            }
+
+            // On terminal runs: only allow completing/failing in-progress steps
+            if (currentRun && isRunTerminal(currentRun.status)) {
+              if (validatedStep.status !== 'running') {
+                throw new RunExpiredError(
+                  `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
+                );
+              }
             }
           }
         }
@@ -817,12 +855,30 @@ export function createEventsStorage(
         if (data.eventType === 'run_started' && 'eventData' in event) {
           delete (event as any).eventData;
         }
+        // Strip only the step `input` from the lazy step_started event row —
+        // it belongs on the synthetic step_created written above. stepName is
+        // preserved for the client replay consumer's step-name divergence
+        // check (packages/core/src/step.ts).
+        if (
+          lazyStepStart &&
+          'eventData' in event &&
+          (event as { eventData?: Record<string, unknown> }).eventData
+        ) {
+          const { input: _strippedInput, ...rest } = (
+            event as { eventData: Record<string, unknown> }
+          ).eventData;
+          (event as { eventData: Record<string, unknown> }).eventData = rest;
+        }
 
         // Track entity created/updated for EventResult
         let run: WorkflowRun | undefined;
         let step: Step | undefined;
         let hook: Hook | undefined;
         let wait: Wait | undefined;
+        // Lazy step start: set true when this step_started atomically created
+        // the step (the caller won the create-claim). Surfaced on EventResult
+        // as the runtime's exactly-once ownership signal.
+        let stepCreatedLazily = false;
         // For `hook_created`, the hook entity write is deferred until
         // AFTER the outer event publish succeeds, so a retry that
         // collides with an already-published `hook_created` does not
@@ -1136,6 +1192,102 @@ export function createEventsStorage(
           // step_started: Increments attempt, sets status to 'running'
           // Sets startedAt only on the first start (not updated on retries)
           // Reuse validatedStep from validation (already read above)
+
+          // Lazy step start: no prior step_created — create the step entity
+          // and a synthetic step_created event now, then fall through to the
+          // start transition below. Mirrors the resilient run_started path:
+          // the step entity is claimed atomically (first writer wins) and the
+          // synthetic step_created event keeps replay correct (the client step
+          // consumer marks hasCreatedEvent only when it observes that event).
+          if (!validatedStep && lazyStepStart) {
+            const lazyData = data.eventData as {
+              stepName: string;
+              input: any;
+            };
+            const stepCreatedLockName = tag
+              ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
+              : `${effectiveRunId}-${data.correlationId}.created`;
+            const stepCreatedLockPath = resolveWithinBase(
+              basedir,
+              '.locks',
+              'steps',
+              stepCreatedLockName
+            );
+            const stepCreatedClaimed = await writeExclusive(
+              stepCreatedLockPath,
+              ''
+            );
+            if (!stepCreatedClaimed) {
+              // A concurrent handler already claimed the create for this
+              // step. The atomic claim is the exactly-once ownership gate:
+              // only the winner runs the step body inline. Throw
+              // EntityConflictError — the runtime's executeStep maps this to
+              // `skipped`, so the loser does not start or run the step. This
+              // preserves the same "exactly one handler owns each step"
+              // guarantee the separate step_created claim provides today.
+              throw new EntityConflictError(
+                `Step "${data.correlationId}" already created`
+              );
+            } else {
+              const createdStep: Step = {
+                runId: effectiveRunId,
+                stepId: data.correlationId,
+                stepName: lazyData.stepName,
+                status: 'pending',
+                input: lazyData.input,
+                output: undefined,
+                error: undefined,
+                attempt: 0,
+                startedAt: undefined,
+                completedAt: undefined,
+                createdAt: now,
+                updatedAt: now,
+                specVersion: effectiveSpecVersion,
+              };
+              await writeJSON(
+                taggedPath(
+                  basedir,
+                  'steps',
+                  `${effectiveRunId}-${data.correlationId}`,
+                  tag
+                ),
+                createdStep
+              );
+              // Write the synthetic step_created event so replay observes it
+              // (the client step consumer sets hasCreatedEvent only on a
+              // step_created event). Its eventId is a fresh monotonic ULID.
+              // Ordering vs. the step_started event row does not affect
+              // correctness: the step_started consumer is a no-op and only
+              // step_created flips hasCreatedEvent, so the end state is the
+              // same whichever sorts first — this matches the resilient
+              // run_started → run_created precedent in this file.
+              const stepCreatedEventId = `evnt_${monotonicUlid()}`;
+              const stepCreatedEvent: Event = {
+                eventType: 'step_created',
+                runId: effectiveRunId,
+                eventId: stepCreatedEventId,
+                createdAt: now,
+                specVersion: effectiveSpecVersion,
+                correlationId: data.correlationId,
+                eventData: {
+                  stepName: lazyData.stepName,
+                  input: lazyData.input,
+                },
+              };
+              await writeJSON(
+                taggedPath(
+                  basedir,
+                  'events',
+                  `${effectiveRunId}-${stepCreatedEventId}`,
+                  tag
+                ),
+                stepCreatedEvent
+              );
+              validatedStep = createdStep;
+              stepCreatedLazily = true;
+            }
+          }
+
           if (validatedStep) {
             // Check if retryAfter timestamp hasn't been reached yet
             if (
@@ -1841,6 +1993,7 @@ export function createEventsStorage(
           events,
           cursor,
           hasMore,
+          ...(stepCreatedLazily ? { stepCreated: true } : {}),
         };
       } // end createImpl
     },

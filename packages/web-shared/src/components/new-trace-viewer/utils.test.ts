@@ -58,6 +58,38 @@ function hookSpan(opts: {
   };
 }
 
+describe('computeSpanSegments (run)', () => {
+  function runSpan(status: string): Span {
+    return {
+      name: 'run',
+      kind: 0,
+      resource: 'run',
+      library: { name: 'workflow' },
+      spanId: 'run-1',
+      status: { code: 1 },
+      traceFlags: 0,
+      attributes: { data: { status } },
+      links: [],
+      events: [{ name: 'run_created', timestamp: ts(0), attributes: {} }],
+      startTime: ts(0),
+      endTime: ts(100_000),
+      duration: ts(100_000),
+    };
+  }
+
+  it('maps pending runs to a pending segment (not running)', () => {
+    expect(computeSpanSegments(runSpan('pending'))).toEqual([
+      { startFraction: 0, endFraction: 1, status: 'pending' },
+    ]);
+  });
+
+  it('maps running runs to a running segment', () => {
+    expect(computeSpanSegments(runSpan('running'))).toEqual([
+      { startFraction: 0, endFraction: 1, status: 'running' },
+    ]);
+  });
+});
+
 describe('computeSpanSegments (hook)', () => {
   it('renders a single waiting segment for a hook resumed many times but not disposed', () => {
     const span = hookSpan({

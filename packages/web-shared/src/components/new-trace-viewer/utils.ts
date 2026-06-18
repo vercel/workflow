@@ -184,6 +184,7 @@ export function getResourceColor(resource: string): {
 
 export type SegmentStatus =
   | 'queued'
+  | 'pending'
   | 'running'
   | 'completed'
   | 'failed'
@@ -349,7 +350,8 @@ function computeSleepSegmentsFromSpan(
 
 function runSegmentStatus(runStatus: string | undefined): SegmentStatus {
   if (runStatus === 'failed') return 'failed';
-  if (runStatus === 'running' || runStatus === 'pending') return 'running';
+  if (runStatus === 'pending') return 'pending';
+  if (runStatus === 'running') return 'running';
   return 'completed';
 }
 

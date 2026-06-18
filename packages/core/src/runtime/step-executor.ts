@@ -9,7 +9,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { pluralize, stepDisplayName } from '@workflow/utils';
-import type { Event, World } from '@workflow/world';
+import type { Event, SerializedData, Step, World } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -76,6 +76,18 @@ export interface StepExecutorParams {
    * as possibly containing compressed payloads (specVersion >= 5).
    */
   runSpecVersion?: number;
+  /**
+   * Lazy step start: the already-dehydrated step input. When provided, the
+   * `step_started` event carries this input so the world creates the step on
+   * the fly (no separate `step_created` round-trip). Set by the owned-inline
+   * path for the step whose `step_created` the suspension handler deferred.
+   * The world's atomic create-claim is the exactly-one-owner gate: losing it
+   * surfaces as `EntityConflictError` → `{ type: 'skipped' }`, so a handler
+   * that did not win the create never runs the body. Omitted on every other
+   * path, where the step already has a `step_created` and `step_started`
+   * carries no payload (the legacy contract).
+   */
+  lazyStepInput?: SerializedData;
   /**
    * Inline-delta optimization (opt-in). When provided, the cursor of the
    * event log as observed by the caller *before* this step's events were
@@ -175,6 +187,35 @@ export async function executeStep(
         stepName,
         stepId,
       });
+      // On the lazy inline path the suspension handler deferred this step's
+      // `step_created`, expecting executeStep to materialize the step via a
+      // lazy `step_started` carrying its input. We never get that far for an
+      // unregistered step, so the step entity does not exist yet — writing
+      // `step_failed` straight away would hit the world's "step must exist"
+      // ordering guard and wedge the run. Send the lazy `step_started` first
+      // (it creates the step + synthetic `step_created` atomically and keeps
+      // replay correct), then fail it below. This also preserves the
+      // exactly-one-owner guarantee: a concurrent handler that won the create
+      // makes our lazy `step_started` reject with EntityConflictError → we
+      // return `skipped` and never write the failure twice.
+      if (params.lazyStepInput !== undefined) {
+        try {
+          await world.events.create(workflowRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: { stepName, workflowName, input: params.lazyStepInput },
+          });
+        } catch (startErr) {
+          if (EntityConflictError.is(startErr)) {
+            return { type: 'skipped' };
+          }
+          if (RunExpiredError.is(startErr)) {
+            return { type: 'gone' };
+          }
+          throw startErr;
+        }
+      }
       try {
         await world.events.create(workflowRunId, {
           eventType: 'step_failed',
@@ -211,14 +252,23 @@ export async function executeStep(
       ...Attribute.StepMaxRetries(maxRetries),
     });
 
-    // step_started validates state and returns the step entity
-    let step;
+    // step_started validates state and returns the step entity. On the lazy
+    // inline path we also carry the step `input` so the world creates the step
+    // on the fly (no separate step_created round-trip). The world's atomic
+    // create-claim makes this exactly-one-owner: a concurrent loser gets
+    // EntityConflictError, mapped to `{ type: 'skipped' }` below, so it never
+    // runs the body. When `lazyStepInput` is absent this is the legacy
+    // step_started (step already created, no payload).
+    let step: Step;
     try {
       const startResult = await world.events.create(workflowRunId, {
         eventType: 'step_started',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: stepId,
-        eventData: { stepName },
+        eventData:
+          params.lazyStepInput !== undefined
+            ? { stepName, workflowName, input: params.lazyStepInput }
+            : { stepName },
       });
 
       if (!startResult.step) {
@@ -496,6 +546,7 @@ export async function executeStep(
             correlationId: stepId,
             eventData: {
               stepName,
+              workflowName,
               result: result as Uint8Array,
             },
           },

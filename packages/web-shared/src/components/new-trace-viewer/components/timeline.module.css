@@ -1,9 +1,15 @@
-.runningStripes {
+.runningStripes,
+.pendingStripes {
   position: absolute;
   inset: 0;
   pointer-events: none;
   border-radius: 0.25rem;
   opacity: 0.5;
+  background-size: 11.314px 11.314px;
+  animation: running-stripes 0.6s linear infinite;
+}
+
+.runningStripes {
   background-image: repeating-linear-gradient(
     45deg,
     var(--ds-blue-500) 0,
@@ -11,8 +17,16 @@
     transparent 1.5px,
     transparent 8px
   );
-  background-size: 11.314px 11.314px;
-  animation: running-stripes 0.6s linear infinite;
+}
+
+.pendingStripes {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--ds-gray-500) 0,
+    var(--ds-gray-500) 1.5px,
+    transparent 1.5px,
+    transparent 8px
+  );
 }
 
 @keyframes running-stripes {
@@ -25,7 +39,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .runningStripes {
+  .runningStripes,
+  .pendingStripes {
     animation: none;
   }
 }

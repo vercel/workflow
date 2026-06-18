@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
-import { stripEventDataRefs } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
@@ -680,6 +680,189 @@ describe('Storage', () => {
         expect(updated.status).toBe('failed');
         expect(updated.error).toEqual(serializedError);
         expect(updated.completedAt).toBeInstanceOf(Date);
+      });
+    });
+
+    describe('lazy step start', () => {
+      it('creates the step on the fly when step_started carries input', async () => {
+        const result = await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_1',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([7, 8, 9]),
+          },
+        });
+
+        // Returns a running step at attempt 1, just as a normal
+        // step_created → step_started pair would.
+        expect(result.step?.stepId).toBe('lazy_step_1');
+        expect(result.step?.stepName).toBe('lazy-step');
+        expect(result.step?.status).toBe('running');
+        expect(result.step?.attempt).toBe(1);
+        expect(result.step?.input).toEqual(new Uint8Array([7, 8, 9]));
+        // The world reports that THIS call created the step (ownership signal).
+        expect(result.stepCreated).toBe(true);
+
+        // The step entity is persisted and readable.
+        const persisted = await storage.steps.get(testRunId, 'lazy_step_1');
+        expect(persisted.status).toBe('running');
+        expect(persisted.input).toEqual(new Uint8Array([7, 8, 9]));
+      });
+
+      it('writes a synthetic step_created event so replay observes it', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_2',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+          },
+        });
+
+        const events = await storage.events.listByCorrelationId({
+          correlationId: 'lazy_step_2',
+        });
+        const types = events.data.map((e) => e.eventType);
+        // Both a step_created (synthetic) and a step_started must be present:
+        // the client replay consumer flips hasCreatedEvent only on step_created.
+        expect(types).toContain('step_created');
+        expect(types).toContain('step_started');
+
+        // The synthetic step_created carries the input; the step_started row
+        // carries stepName but not input (it lives on step_created).
+        const created = events.data.find((e) => e.eventType === 'step_created');
+        expect(
+          (created?.eventData as { input?: unknown } | undefined)?.input
+        ).toBeDefined();
+        const started = events.data.find((e) => e.eventType === 'step_started');
+        expect(
+          (started?.eventData as { input?: unknown } | undefined)?.input
+        ).toBeUndefined();
+      });
+
+      it('still rejects a bare step_started (no input) on a missing step', async () => {
+        await expect(
+          storage.events.create(testRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: 'never_created',
+            eventData: { stepName: 'legacy-step' },
+          })
+        ).rejects.toThrow('not found');
+      });
+
+      it('rejects a lazy step_started on a terminal run', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
+
+        await expect(
+          storage.events.create(testRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: 'lazy_on_terminal',
+            eventData: {
+              stepName: 'lazy-step',
+              input: new Uint8Array([1]),
+            },
+          })
+        ).rejects.toThrow('terminal state');
+      });
+
+      it('rejects a second lazy step_started for an existing step (concurrent loser)', async () => {
+        // First lazy call creates + starts (attempt 1) and reports ownership.
+        const first = await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_3',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+          },
+        });
+        expect(first.step?.attempt).toBe(1);
+        expect(first.stepCreated).toBe(true);
+
+        // A lazy step_started is only ever sent for a brand-new step (the
+        // owned-inline path defers step_created only for steps with no prior
+        // step_created event). So if the step already exists when a lazy
+        // step_started arrives, this caller LOST the create race and must not
+        // run the body. The world surfaces EntityConflictError, which
+        // executeStep maps to `skipped`. This is the exactly-one-owner gate.
+        await expect(
+          storage.events.create(testRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: 'lazy_step_3',
+            eventData: {
+              stepName: 'lazy-step',
+              input: new Uint8Array([1]),
+            },
+          })
+        ).rejects.toThrow('already created');
+      });
+
+      it('crash recovery re-starts via a non-lazy step_started on the existing step', async () => {
+        // Owner creates + starts the step lazily (attempt 1), then "crashes"
+        // before completing. On recovery the step already exists with its
+        // step_created event, so the step is re-queued and re-run via a
+        // NON-lazy step_started (no input). That path re-starts the running
+        // step, bumping the attempt counter — at-least-once execution.
+        await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_4',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+          },
+        });
+
+        const rerun = await updateStep(
+          storage,
+          testRunId,
+          'lazy_step_4',
+          'step_started',
+          {}
+        );
+        expect(rerun.status).toBe('running');
+        expect(rerun.attempt).toBe(2);
+      });
+
+      it('a lazy step_started followed by step_failed marks the step failed', async () => {
+        // Regression guard for the unregistered-step path on the lazy inline
+        // route. When a step's function isn't registered, executeStep must
+        // first send the lazy step_started (to materialize the step the
+        // suspension handler deferred) and only THEN write step_failed.
+        // Writing step_failed against a never-created step would hit the
+        // "step must exist" ordering guard and wedge the run. This asserts the
+        // create-then-fail sequence the runtime relies on.
+        await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_fail',
+          eventData: {
+            stepName: 'ghost-step',
+            input: new Uint8Array([1]),
+          },
+        });
+
+        const failed = await updateStep(
+          storage,
+          testRunId,
+          'lazy_step_fail',
+          'step_failed',
+          { error: new Uint8Array([2, 3]) }
+        );
+        expect(failed.status).toBe('failed');
+        expect(failed.attempt).toBe(1);
+
+        const persisted = await storage.steps.get(testRunId, 'lazy_step_fail');
+        expect(persisted.status).toBe('failed');
       });
     });
 

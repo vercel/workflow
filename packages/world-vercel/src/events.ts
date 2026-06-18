@@ -94,6 +94,12 @@ const PAYLOAD_FIELD_BY_EVENT_TYPE = {
   run_completed: 'output',
   run_failed: 'error',
   step_created: 'input',
+  // step_started normally has no payload, but on the lazy-start path the
+  // runtime piggybacks the step input here so the server can synthesize the
+  // missing step_created (mirrors run_started above). Without this entry the
+  // v4 split would silently drop those bytes and the backend's "step_started
+  // arrived before step_created" fallback would have nothing to create from.
+  step_started: 'input',
   step_completed: 'result',
   step_failed: 'error',
   step_retrying: 'error',
@@ -110,8 +116,10 @@ type PayloadField =
 
 /**
  * Look up the payload field for an event type, or undefined for the event
- * types that carry no user payload (run_cancelled, attr_set, step_started,
- * wait_*, hook_disposed). The map is `as const` so it can drive
+ * types that carry no user payload (run_cancelled, attr_set, wait_*,
+ * hook_disposed). Note `step_started` carries a payload only on the
+ * lazy-start path; legacy starts send an empty body. The map is `as const`
+ * so it can drive
  * `PayloadField`; the cast keeps the lookup callable with any event-type
  * string.
  */
@@ -639,5 +647,9 @@ async function createWorkflowRunEventInner(
       : undefined,
     cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,
+    // Lazy step start: thread the server's "I created the step on this call"
+    // signal through so the owned-inline runtime path can gate body execution
+    // on it. Absent from older servers → undefined → safe default.
+    ...(body.stepCreated ? { stepCreated: true } : {}),
   };
 }
