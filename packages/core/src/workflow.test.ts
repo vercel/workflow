@@ -978,7 +978,7 @@ describe('runWorkflow', () => {
       const events: Event[] = [
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7M',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7M',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K755385N02MMWXYHFCQSP9P0',
           eventData: {
@@ -988,7 +988,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7N',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7N',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K755386GHGAFYYDC58V17E3T',
           eventData: {
@@ -998,7 +998,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7P',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7P',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K75538D4Q4X8PJ1ZNDZD5R0W',
           eventData: {
@@ -1008,7 +1008,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7Q',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7Q',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K75538Y9GEHXJQXT3JB89M4C',
           eventData: {
@@ -1018,7 +1018,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7R',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7R',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K75539CD2PAH419SKJ2X5V5T',
           eventData: {
@@ -1028,7 +1028,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7R',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7R',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -1044,7 +1044,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7Q',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7Q',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -1060,7 +1060,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7P',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7P',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -1076,7 +1076,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7N',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7N',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -1092,7 +1092,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00WAVWBK9YGJQC6R7M',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7M',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
