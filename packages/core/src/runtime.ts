@@ -1532,12 +1532,24 @@ export function workflowEntrypoint(
                         // await-then-run path. The hook-conflict / attr cases
                         // already returned early above and the awaited-hook case
                         // emptied lazyInlineSteps; the checks below are defensive.
+                        //
+                        // The `suspensionResult.*` flags only reflect what THIS
+                        // batch created, so they do not catch a hook/wait opened
+                        // in an earlier iteration of the same delivery (e.g. a
+                        // fire-and-forget `createHook(...)` that doesn't block the
+                        // workflow, letting the replay loop continue to later pure
+                        // step suspensions). Once any hook or wait is open in the
+                        // cumulative log, resume/parallel invocations are possible
+                        // for the rest of the run, so turbo must latch off
+                        // permanently — checked here via `hasOpenHookOrWait` over
+                        // the cumulative `cachedEvents`.
                         const forceOptimisticStart =
                           turbo &&
                           !suspensionResult.waitTimeout &&
                           !suspensionResult.hasHookEvents &&
                           !suspensionResult.hasAttributeEvents &&
-                          !suspensionResult.hasAwaitedHookCreation;
+                          !suspensionResult.hasAwaitedHookCreation &&
+                          !hasOpenHookOrWait(cachedEvents ?? []);
 
                         // Execute the inline steps in parallel. The replay
                         // budget is paused for the whole batch — step duration is
