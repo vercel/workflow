@@ -49,6 +49,13 @@ async function fetchV4(
   init: { method: string; headers: Headers; body?: Uint8Array },
   config: APIConfig | undefined
 ): Promise<Response> {
+  // Set a unique header per request to bypass Next.js fetch memoization /
+  // Data Cache. Routing through the global `fetch` (above) re-exposes these
+  // reads to that caching — without busting it, an identical event read could
+  // be served a stale or truncated cached page and silently drop events,
+  // breaking replay correctness. The v3 `makeRequest` path does the same.
+  // See: https://github.com/vercel/workflow/issues/618
+  init.headers.set('X-Request-Time', Date.now().toString());
   return fetch(url, {
     method: init.method,
     headers: init.headers,

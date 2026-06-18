@@ -271,9 +271,15 @@ describe('v4 transport uses global fetch (observability)', () => {
     );
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [calledUrl] = fetchSpy.mock.calls[0];
+    const [calledUrl, calledInit] = fetchSpy.mock.calls[0];
     expect(String(calledUrl)).toContain('/api/v4/runs/wrun_1/events');
     agent.assertNoPendingInterceptors();
+
+    // Cache-busting header must be set so Next.js fetch memoization / Data
+    // Cache can't serve a stale/truncated event page (replay correctness).
+    // See https://github.com/vercel/workflow/issues/618.
+    const sentHeaders = new Headers(calledInit?.headers as HeadersInit);
+    expect(sentHeaders.get('x-request-time')).toBeTruthy();
   });
 });
 
