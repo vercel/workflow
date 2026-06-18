@@ -875,6 +875,7 @@ const stepHandler = createQueueHandler(
                   correlationId: stepId,
                   eventData: {
                     stepName,
+                    workflowName,
                     result: result as Uint8Array,
                   },
                 },
