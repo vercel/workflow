@@ -48,4 +48,27 @@ describe('createWorkflowEntrypointOptionsCode', () => {
       ', { namespace: "custom" }'
     );
   });
+
+  it('inlines workflowFilenames, deduplicated and sorted', () => {
+    expect(
+      createWorkflowEntrypointOptionsCode({
+        workflowFilenames: ['./b.ts', './a.ts', './b.ts'],
+      })
+    ).toBe(', { workflowFilenames: ["./a.ts","./b.ts"] }');
+  });
+
+  it('omits workflowFilenames when the list is empty', () => {
+    expect(createWorkflowEntrypointOptionsCode({ workflowFilenames: [] })).toBe(
+      ''
+    );
+  });
+
+  it('combines namespace and workflowFilenames', () => {
+    expect(
+      createWorkflowEntrypointOptionsCode({
+        namespace: 'custom',
+        workflowFilenames: ['./a.ts'],
+      })
+    ).toBe(', { namespace: "custom", workflowFilenames: ["./a.ts"] }');
+  });
 });

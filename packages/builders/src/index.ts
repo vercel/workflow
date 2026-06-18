@@ -1,5 +1,8 @@
 export type { WorkflowManifest } from './apply-swc-transform.js';
-export { applySwcTransform } from './apply-swc-transform.js';
+export {
+  applySwcTransform,
+  getWorkflowFilenamesFromManifest,
+} from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';
 export { createBuildQueue } from './build-queue.js';
 export {

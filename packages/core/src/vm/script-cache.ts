@@ -137,6 +137,41 @@ export function runCachedWorkflowScript(
 }
 
 /**
+ * Eagerly compiles and caches the workflow-bundle `Script` for `code` under
+ * each of the given `filenames`, so the (expensive) parse/compile is paid once
+ * at module-init time rather than on the first queue delivery's replay.
+ *
+ * Compilation is a pure function of `(code, filename)` and a `vm.Script`
+ * carries no context/realm state (it is only bound to a context at
+ * `runInContext` time), so warming the cache here is determinism-safe: the
+ * first replay finds the already-compiled `Script` and skips the recompile.
+ *
+ * `filenames` should be the per-workflow source filenames that `runWorkflow`
+ * derives from each workflow name (`parseWorkflowName(...).moduleSpecifier`),
+ * because the cache is keyed by `filename` for stack-trace attribution. When
+ * the exact filenames are unknown, passing a single representative filename
+ * still pays the top-level bundle parse; the remaining per-filename cost is
+ * only a cheap re-parse (V8 lazily compiles function bodies).
+ *
+ * Errors are swallowed: a precompile failure must never break module init —
+ * the lazy path will surface any genuine compile error at replay time with
+ * full context.
+ */
+export function precompileWorkflowScripts(
+  code: string,
+  filenames: Iterable<string>
+): void {
+  for (const filename of filenames) {
+    try {
+      getCachedWorkflowScript(code, filename);
+    } catch {
+      // Ignore — see doc comment. The lazy replay path will recompile and
+      // report any real error there.
+    }
+  }
+}
+
+/**
  * Clears the compiled-script cache. Intended for tests that want to assert
  * compile-vs-cache behaviour in isolation; not used on the hot path.
  */
@@ -150,4 +185,16 @@ export function clearWorkflowScriptCache(): void {
  */
 export function workflowScriptCacheSize(): number {
   return scriptCache.size;
+}
+
+/**
+ * Reports whether a compiled `Script` is already cached for `(code, filename)`
+ * WITHOUT compiling one as a side effect. Intended for tests that assert the
+ * cache was warmed (e.g. module-init precompile); not used on the hot path.
+ */
+export function isWorkflowScriptCached(
+  code: string,
+  filename: string
+): boolean {
+  return scriptCache.get(code)?.has(filename) ?? false;
 }

@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transform } from '@swc/core';
+import { parseWorkflowName } from '@workflow/utils/parse-name';
 import { getDecoratorOptionsForDirectory } from './config-helpers.js';
 import { resolveModuleSpecifier } from './module-specifier.js';
 
@@ -46,6 +47,30 @@ export type WorkflowManifest = {
     };
   };
 };
+
+/**
+ * Derives the deduplicated, sorted set of workflow source filenames from a
+ * manifest, suitable for `workflowEntrypoint`'s `workflowFilenames` option.
+ *
+ * The runtime compiles each workflow bundle `vm.Script` under the filename
+ * `parseWorkflowName(workflowId)?.moduleSpecifier || workflowId`, so the
+ * filenames are derived from the `workflowId`s (not the manifest's relative
+ * filename keys, which may differ from the embedded module specifier) and
+ * deduplicated — the filename is per source file, not per workflow function.
+ */
+export function getWorkflowFilenamesFromManifest(
+  manifest: WorkflowManifest
+): string[] {
+  const filenames = new Set<string>();
+  for (const fnEntries of Object.values(manifest.workflows ?? {})) {
+    for (const { workflowId } of Object.values(fnEntries)) {
+      filenames.add(
+        parseWorkflowName(workflowId)?.moduleSpecifier || workflowId
+      );
+    }
+  }
+  return [...filenames].sort();
+}
 
 export async function applySwcTransform(
   filename: string,

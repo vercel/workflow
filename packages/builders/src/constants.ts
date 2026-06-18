@@ -51,20 +51,38 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
  * Creates the optional second argument for generated `workflowEntrypoint()`
  * calls. The namespace is resolved while building so generated route files do
  * not need `WORKFLOW_QUEUE_NAMESPACE` at runtime.
+ *
+ * When `workflowFilenames` is provided, the deduplicated, sorted list is
+ * inlined so the runtime can precompile the bundle's `vm.Script` for each
+ * source filename at module-init time (warming the cache before the first
+ * queue delivery's replay). Sorting keeps the generated route file stable
+ * across builds.
  */
 export function createWorkflowEntrypointOptionsCode(options?: {
   namespace?: string;
+  workflowFilenames?: string[];
 }) {
   const namespace = resolveQueueNamespace(options?.namespace);
 
-  if (!namespace) {
+  const optionParts: string[] = [];
+
+  if (namespace) {
+    // Reuse prefix construction for namespace validation.
+    getQueueTopicPrefix('workflow', namespace);
+    optionParts.push(`namespace: ${JSON.stringify(namespace)}`);
+  }
+
+  const workflowFilenames = options?.workflowFilenames;
+  if (workflowFilenames && workflowFilenames.length > 0) {
+    const sorted = [...new Set(workflowFilenames)].sort();
+    optionParts.push(`workflowFilenames: ${JSON.stringify(sorted)}`);
+  }
+
+  if (optionParts.length === 0) {
     return '';
   }
 
-  // Reuse prefix construction for namespace validation.
-  getQueueTopicPrefix('workflow', namespace);
-
-  return `, { namespace: ${JSON.stringify(namespace)} }`;
+  return `, { ${optionParts.join(', ')} }`;
 }
 
 /**

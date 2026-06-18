@@ -54,6 +54,7 @@ export async function getNextBuilderDeferred() {
     BaseBuilder: BaseBuilderClass,
     WORKFLOW_QUEUE_TRIGGER,
     createWorkflowEntrypointOptionsCode,
+    getWorkflowFilenamesFromManifest,
     detectWorkflowPatterns,
     applySwcTransform,
     getImportPath,
@@ -650,8 +651,13 @@ export async function getNextBuilderDeferred() {
       const stepManifest =
         await this.createDeferredStepManifest(stepAndSerdeFiles);
       const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
-      const workflowEntrypointOptionsCode =
-        createWorkflowEntrypointOptionsCode();
+      const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
+        {
+          workflowFilenames: getWorkflowFilenamesFromManifest(
+            workflowResult.manifest
+          ),
+        }
+      );
       let routeCode: string;
 
       if (this.config.watch) {
