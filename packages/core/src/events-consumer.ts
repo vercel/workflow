@@ -1,5 +1,6 @@
 import type { Event } from '@workflow/world';
 import { eventsLogger } from './logger.js';
+// revalidation-baseline: behavior-neutral marker to force unit job (no logic change)
 
 /**
  * Delay before firing the deferred unconsumed-event check after the promise
