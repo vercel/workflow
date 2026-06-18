@@ -22,7 +22,8 @@
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
- *     frame whose meta carries `{_end: 1, next?: cursor}`. The old
+ *     frame whose meta carries `{_end: 1, next?: cursor, hasMore?: boolean}`.
+ *     The old
  *     per-event `/refs` round-trip is eliminated.
  *
  * Public function signatures are unchanged: storage.ts continues to
@@ -460,10 +461,20 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
+  // `resolveData: 'none'` means the caller only wants metadata — it discards
+  // payloads in buildEventFromV4 below. Tell the backend not to stream them
+  // in the first place (lazy → empty frame bodies). On `'all'` we resolve
+  // (the default). A backend that predates this flag ignores it and streams
+  // full bodies regardless; buildEventFromV4 still strips them when
+  // resolveData is 'none', so this is purely a bandwidth optimization and is
+  // safe against an older backend.
   const wirePagination = {
     cursor: pagination?.cursor ?? undefined,
     limit: pagination?.limit,
     sortOrder: pagination?.sortOrder,
+    remoteRefBehavior: (resolveData === 'none' ? 'lazy' : 'resolve') as
+      | 'lazy'
+      | 'resolve',
   };
 
   const result = await ('correlationId' in params
@@ -476,8 +487,15 @@ export async function getWorkflowRunEvents(
 
   return {
     data: events,
+    // `next` is present even on the final page (it's the incremental-load
+    // resume cursor), so prefer the server's explicit `hasMore`. The
+    // `Boolean(next)` fallback covers older servers that don't emit it —
+    // at the cost of one extra empty-page request per load.
     cursor: result.next ?? null,
-    hasMore: Boolean(result.next),
+    hasMore:
+      typeof result.hasMore === 'boolean'
+        ? result.hasMore
+        : Boolean(result.next),
   } as PaginatedResponse<Event>;
 }
 
