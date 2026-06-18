@@ -49,6 +49,7 @@ async function runWorkflowHandlerWithEvents(
     createdEvents?: unknown[];
     queuedMessages?: unknown[];
     replayDivergence?: { eventId: string; count: number };
+    entrypointOptions?: Parameters<typeof workflowEntrypoint>[1];
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
@@ -115,7 +116,7 @@ async function runWorkflowHandlerWithEvents(
     getEncryptionKeyForRun: vi.fn(async () => undefined),
   } as any);
 
-  const handler = workflowEntrypoint(workflowCode);
+  const handler = workflowEntrypoint(workflowCode, options.entrypointOptions);
   await handler(new Request('https://example.test'));
 
   return createdEvents;
@@ -426,6 +427,43 @@ describe('workflowEntrypoint replay guards', () => {
       events
     );
 
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_completed' })
+    );
+  });
+
+  it('does not fail a no-step replay when speculative step bundle preload rejects', async () => {
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_preload_no_step',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_preload_no_step',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const preloadStepBundle = vi.fn(async () => {
+      throw new Error('step bundle failed to load');
+    });
+
+    const createdEvents = await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      [],
+      {
+        entrypointOptions: { preloadStepBundle },
+      }
+    );
+
+    expect(preloadStepBundle).toHaveBeenCalledTimes(1);
     expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'run_completed' })
     );
@@ -950,6 +988,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       queueName: string,
       message: any
     ) => Promise<{ messageId: null }>;
+    preloadStepBundle?: (order: string[]) => Promise<void> | void;
   }) {
     const workflowRun = await makeRunningRun(opts.runId);
     const order: string[] = [];
@@ -990,6 +1029,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
         return { event: recordEvent(data) };
       }
       if (data.eventType === 'step_started') {
+        order.push('step_started');
         // The inline step's lazy step_started creates the step on the fly:
         // record a synthetic step_created so replay observes it, then the
         // step_started, and return a running step so executeStep can run the
@@ -1077,7 +1117,11 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       getEncryptionKeyForRun: vi.fn(async () => undefined),
     } as any);
 
-    const handler = workflowEntrypoint(stepWithSleepWorkflow);
+    const handler = workflowEntrypoint(stepWithSleepWorkflow, {
+      preloadStepBundle: opts.preloadStepBundle
+        ? () => opts.preloadStepBundle?.(order)
+        : undefined,
+    });
     // Push the ack sentinel the moment the handler resolves — i.e. right
     // before @vercel/queue would delete (ack) the orchestrator message.
     const handlerPromise = handler(new Request('https://example.test')).then(
@@ -1157,6 +1201,46 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     await handlerPromise;
     expect(order.indexOf('queue_dispatch_done')).toBeLessThan(
       order.indexOf('ack')
+    );
+  });
+
+  it('preloads the step bundle in parallel and waits before inline step execution', async () => {
+    let releasePreload!: () => void;
+    const preloadGate = new Promise<void>((resolve) => {
+      releasePreload = resolve;
+    });
+
+    const { handlerPromise, order } = await driveHandler({
+      runId: 'wrun_preload_before_inline_step',
+      queueImpl: async () => ({ messageId: null }),
+      preloadStepBundle: async (order) => {
+        order.push('preload_start');
+        await preloadGate;
+        order.push('preload_done');
+      },
+    });
+
+    await vi.waitFor(
+      () => {
+        expect(order).toContain('preload_start');
+      },
+      { timeout: 15_000 }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).not.toContain('step_started');
+
+    releasePreload();
+    const res = (await handlerPromise) as Response;
+    expect(res.status).toBe(204);
+
+    expect(order).toContain('preload_done');
+    expect(order).toContain('step_started');
+    expect(order.indexOf('preload_start')).toBeLessThan(
+      order.indexOf('preload_done')
+    );
+    expect(order.indexOf('preload_done')).toBeLessThan(
+      order.indexOf('step_started')
     );
   });
 
