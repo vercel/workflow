@@ -1,5 +1,39 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- [#2534](https://github.com/vercel/workflow/pull/2534) [`b563126`](https://github.com/vercel/workflow/commit/b563126aa1b7e4ea0a7119e78e39b98a8efee95f) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Update `undici` to 7.28.0.
+
+- [#2475](https://github.com/vercel/workflow/pull/2475) [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip the per-step incremental `events.list` round-trip in the inline sequential loop by consuming an event-log delta returned from the step's terminal write (gated to the single-step case with no open hooks or waits).
+
+  Add the opt-in `CreateEventParams.sinceCursor` contract so a step-terminal `events.create` can return the event-log delta since that cursor (via `EventResult.events`/`cursor`/`hasMore`).
+
+  Return the inline delta from a step-terminal write when `sinceCursor` is supplied, computed identically to `events.list` so the consumed prefix cannot skew from the server log.
+
+  Forward `sinceCursor` over the v4 wire in `@workflow/world-vercel` so the server can return the delta on a step-terminal response; older servers ignore it and the runtime falls back to `events.list`.
+
+- [#2478](https://github.com/vercel/workflow/pull/2478) [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9) Thanks [@pranaygp](https://github.com/pranaygp)! - Lazy inline step start: the owned-inline runtime path now sends a single `step_started` carrying the step input, letting the world create the step on the fly and saving one round-trip per inline step.
+
+  `@workflow/world`: `step_started` event data accepts an optional `input`, and `EventResult` gains a `stepCreated` ownership signal.
+
+  `@workflow/world-local`: `step_started` with input atomically creates the step plus a synthetic `step_created` event; a lazy `step_started` for an already-existing step throws `EntityConflictError` so concurrent losers skip (exactly-once).
+
+  `@workflow/world-postgres`: same lazy-create + exactly-once create-claim for the Postgres backend.
+
+  `@workflow/world-vercel`: sends the step input on `step_started` over the v4 wire and threads the server's `stepCreated` signal into `EventResult`.
+
+- [#2508](https://github.com/vercel/workflow/pull/2508) [`1332da3`](https://github.com/vercel/workflow/commit/1332da3df901b133aebb4c16e661984e147ca72f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add run IDs on world storage telemetry spans.
+
+- [#2514](https://github.com/vercel/workflow/pull/2514) [`fb5abbb`](https://github.com/vercel/workflow/commit/fb5abbbaf289c0c8974b98e302fe7f8868656dbc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Route v4 event requests through the global `fetch` so they appear in the Vercel observability log viewer's outgoing-requests view again.
+
+- [#2533](https://github.com/vercel/workflow/pull/2533) [`90efb96`](https://github.com/vercel/workflow/commit/90efb9653c0f289c3207a8a2f192f2b5ca8c2d61) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Inject W3C trace context (`traceparent`/`tracestate`/`baggage`) on v4 event requests, which previously bypassed it via `fetchV4` — restoring workflow-server span correlation for traffic from the flow route. No-op when no OpenTelemetry SDK is registered.
+
+- Updated dependencies [[`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca), [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9), [`ab2e9b8`](https://github.com/vercel/workflow/commit/ab2e9b8d0740c457f80e05f05c1fd907bcf4f027)]:
+  - @workflow/world@5.0.0-beta.12
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.18
 
 ### Patch Changes
