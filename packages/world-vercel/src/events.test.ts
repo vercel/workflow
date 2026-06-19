@@ -431,7 +431,12 @@ describe('getWorkflowRunEvents structured-error decode', () => {
 
     agent
       .get(ORIGIN)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        // resolveData 'all' maps to remoteRefBehavior=resolve on the wire.
+        query: { remoteRefBehavior: 'resolve' },
+      })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
