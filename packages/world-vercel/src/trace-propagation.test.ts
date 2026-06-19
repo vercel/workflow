@@ -16,7 +16,10 @@ import {
   it,
   vi,
 } from 'vitest';
+import { MockAgent } from 'undici';
 import { z } from 'zod';
+import { getWorkflowRunEventsV4 } from './events-v4.js';
+import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { makeRequest } from './utils.js';
 
@@ -111,5 +114,46 @@ describe('makeRequest trace propagation', () => {
     expect(traceparent).toBe(
       `00-${clientSpan?.spanContext().traceId}-${clientSpan?.spanContext().spanId}-01`
     );
+  });
+});
+
+describe('v4 event requests (fetchV4) trace propagation', () => {
+  it('sends traceparent on the outgoing v4 request, propagating the active context to workflow-server', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, encodeFrame({ _end: 1 }, new Uint8Array(0)), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    // Spy passes through to the real fetch (MockAgent intercepts at the
+    // dispatcher layer) so we can read the headers fetchV4 actually sent.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    let spanId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      spanId = span.spanContext().spanId;
+      await getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: agent }
+      );
+      span.end();
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const calledInit = fetchSpy.mock.calls[0][1];
+    const sent = new Headers(calledInit?.headers as HeadersInit);
+    // Without the fetchV4 injection this header is absent and workflow-server
+    // cannot parent its spans to the flow-route invocation.
+    expect(sent.get('traceparent')).toBe(`00-${traceId}-${spanId}-01`);
+    agent.assertNoPendingInterceptors();
+    fetchSpy.mockRestore();
   });
 });
