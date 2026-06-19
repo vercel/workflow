@@ -289,3 +289,8 @@ The `executionContext` field on workflow runs is a flexible JSONB/CBOR object th
 
 ### Observability Data Hydration
 `packages/core/src/observability.ts` contains `hydrateResourceIO` which strips certain fields (like `executionContext`) before UI display. If you need to display data from stripped fields, extract it before the stripping occurs.
+
+### Trace context propagation (world-vercel HTTP requests)
+Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists — `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
+
+Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step — workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
