@@ -1373,8 +1373,11 @@ describe('executeStep optimistic inline start', () => {
     });
 
     // The body runs immediately against synthesized state; step_started is NOT
-    // issued until the run-ready barrier resolves.
-    await vi.waitFor(() => expect(calls).toContain('body'));
+    // issued until the run-ready barrier resolves. Widen the default 1s
+    // vi.waitFor timeout — reaching the body can be slow on cold CI (Windows).
+    await vi.waitFor(() => expect(calls).toContain('body'), {
+      timeout: 15_000,
+    });
     expect(calls).not.toContain('step_started');
 
     release();

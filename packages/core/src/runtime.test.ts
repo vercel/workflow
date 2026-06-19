@@ -1521,7 +1521,11 @@ describe('workflowEntrypoint turbo mode', () => {
 
     // The body runs while run_started is still in flight — proving run_started
     // was backgrounded AND optimistic start was forced (the env flag is off).
-    await vi.waitFor(() => expect(order).toContain('body'));
+    // The full VM replay leading up to the body can exceed vi.waitFor's default
+    // 1s timeout on slow CI runners (notably Windows), so widen it.
+    await vi.waitFor(() => expect(order).toContain('body'), {
+      timeout: 15_000,
+    });
     expect(order).not.toContain('run_started_resolved');
     // The lazy step_started is chained on the run-ready barrier, so it is not
     // even issued until run_started lands.
