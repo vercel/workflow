@@ -1,5 +1,4 @@
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -14,6 +13,7 @@ const {
   buildMock,
   builderConfigs,
   getNextBuilderMock,
+  prewarmWorkflowSwcPluginCacheMock,
   shouldUseDeferredBuilderMock,
 } = vi.hoisted(() => {
   const buildMock = vi.fn(async () => {});
@@ -28,11 +28,13 @@ const {
     };
   });
   const shouldUseDeferredBuilderMock = vi.fn(() => false);
+  const prewarmWorkflowSwcPluginCacheMock = vi.fn();
 
   return {
     buildMock,
     builderConfigs,
     getNextBuilderMock,
+    prewarmWorkflowSwcPluginCacheMock,
     shouldUseDeferredBuilderMock,
   };
 });
@@ -47,16 +49,12 @@ vi.mock('./builder.js', () => ({
   ],
 }));
 
+vi.mock('./swc-plugin-cache.js', () => ({
+  prewarmWorkflowSwcPluginCache: prewarmWorkflowSwcPluginCacheMock,
+}));
+
 import { withWorkflow } from './index.js';
 
-const loaderStubPath = join(
-  process.cwd(),
-  'packages',
-  'next',
-  'src',
-  'loader.js'
-);
-const hadLoaderStub = existsSync(loaderStubPath);
 const realTmpDir = realpathSync(tmpdir());
 
 function writeFile(path: string, contents: string): void {
@@ -79,11 +77,8 @@ describe('withWorkflow builder config', () => {
     buildMock.mockClear();
     builderConfigs.length = 0;
     getNextBuilderMock.mockClear();
+    prewarmWorkflowSwcPluginCacheMock.mockClear();
     shouldUseDeferredBuilderMock.mockClear();
-
-    if (!hadLoaderStub) {
-      writeFileSync(loaderStubPath, 'module.exports = {};\n', 'utf-8');
-    }
 
     delete process.env.PORT;
     delete process.env.VERCEL_DEPLOYMENT_ID;
@@ -94,10 +89,6 @@ describe('withWorkflow builder config', () => {
   });
 
   afterEach(() => {
-    if (!hadLoaderStub && existsSync(loaderStubPath)) {
-      rmSync(loaderStubPath);
-    }
-
     if (process.cwd() !== originalCwd) {
       process.chdir(originalCwd);
     }
@@ -128,6 +119,28 @@ describe('withWorkflow builder config', () => {
       moduleSpecifierRoot: process.cwd(),
       workingDir: process.cwd(),
     });
+  });
+
+  it.each([
+    'phase-production-build',
+    'phase-development-server',
+  ])('prewarms the SWC plugin cache during %s', async (phase) => {
+    const config = withWorkflow({});
+
+    await config(phase, { defaultConfig: {} });
+
+    expect(prewarmWorkflowSwcPluginCacheMock).toHaveBeenCalledOnce();
+    expect(prewarmWorkflowSwcPluginCacheMock).toHaveBeenCalledWith(
+      process.cwd()
+    );
+  });
+
+  it('does not prewarm the SWC plugin cache for the production server', async () => {
+    const config = withWorkflow({});
+
+    await config('phase-production-server', { defaultConfig: {} });
+
+    expect(prewarmWorkflowSwcPluginCacheMock).not.toHaveBeenCalled();
   });
 
   it('enables lazyDiscovery by default', async () => {

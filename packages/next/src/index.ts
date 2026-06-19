@@ -379,7 +379,17 @@ export function withWorkflow(
     phase: string,
     ctx: { defaultConfig: NextConfig }
   ) {
-    const loaderPath = require.resolve('./loader');
+    if (
+      phase === 'phase-development-server' ||
+      phase === 'phase-production-build'
+    ) {
+      const { prewarmWorkflowSwcPluginCache } = await import(
+        './swc-plugin-cache.js'
+      );
+      prewarmWorkflowSwcPluginCache(process.cwd());
+    }
+
+    const loaderPath = join(__dirname, 'loader.js');
     let runDeferredBuildFromCallback: (() => Promise<void>) | undefined;
 
     let nextConfig: NextConfig;
