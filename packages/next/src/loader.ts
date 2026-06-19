@@ -412,6 +412,48 @@ function isWorkflowRouteStubSource(source: string): boolean {
   return source.includes(ROUTE_STUB_FILE_MARKER);
 }
 
+function createDeferredRouteStubBuildError(
+  filename: string,
+  cause: unknown
+): Error {
+  const error = new Error(
+    [
+      `[workflow] Failed to generate deferred workflow route for ${filename}.`,
+      'Refusing to compile the route stub because it does not export POST and would return 405 to workflow callbacks.',
+      'Retry the build, or disable lazy discovery with WORKFLOW_NEXT_LAZY_DISCOVERY=0 or withWorkflow(..., { workflows: { lazyDiscovery: false } }).',
+    ].join('\n')
+  );
+  if (cause !== undefined) {
+    (error as { cause?: unknown }).cause = cause;
+  }
+  return error;
+}
+
+export async function resolveDeferredWorkflowRouteStubSource({
+  filename,
+  sourceMap,
+  waitForDeferredBuild,
+  readGeneratedRoute,
+}: {
+  filename: string;
+  sourceMap: any;
+  waitForDeferredBuild: () => Promise<void>;
+  readGeneratedRoute: () => Promise<string>;
+}): Promise<{ code: string; map: any }> {
+  try {
+    await waitForDeferredBuild();
+    const refreshedSource = await readGeneratedRoute();
+    if (!isWorkflowRouteStubSource(refreshedSource)) {
+      return { code: refreshedSource, map: sourceMap };
+    }
+    throw new Error(
+      'Deferred route build completed, but the generated route file is still the workflow route stub.'
+    );
+  } catch (error) {
+    throw createDeferredRouteStubBuildError(filename, error);
+  }
+}
+
 async function createSocketConnection(
   socketCredentials: SocketCredentials,
   timeoutMs = 1_000
@@ -687,18 +729,12 @@ export default function workflowLoader(
         process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1' &&
         isWorkflowRouteStubSource(normalizedSource)
       ) {
-        try {
-          await ensureDeferredRouteStubBuildAndWait();
-          const refreshedSource = await readFile(filename, 'utf8');
-          if (!isWorkflowRouteStubSource(refreshedSource)) {
-            return { code: refreshedSource, map: sourceMap };
-          }
-        } catch (error) {
-          console.warn(
-            `[workflow] Failed waiting for deferred route build for ${filename}, using stub output`,
-            error
-          );
-        }
+        return resolveDeferredWorkflowRouteStubSource({
+          filename,
+          sourceMap,
+          waitForDeferredBuild: ensureDeferredRouteStubBuildAndWait,
+          readGeneratedRoute: () => readFile(filename, 'utf8'),
+        });
       }
       return { code: normalizedSource, map: sourceMap };
     }
