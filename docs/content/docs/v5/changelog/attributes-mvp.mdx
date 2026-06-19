@@ -9,6 +9,18 @@ This is a minimal, **experimental** subset of the [planned Workflow Attributes f
 
 The MVP lets workflow code attach plaintext `string → string` metadata to a run, viewable in any observability surface that reads the `WorkflowRun` entity. It is deliberately narrow: write-only, no reads from inside a run, no list/filter endpoints, no event-log representation. The wire format and SDK surface are chosen so the full 5.0.0 implementation replaces this without source-level breaking changes for end users.
 
+## Native v4 follow-up
+
+The v4 implementation now completes the planned dispatch migration while preserving the experimental SDK name:
+
+- `experimental_setAttributes()` appends a native `attr_set` event from workflow and step bodies instead of mutating through the internal step bridge.
+- Native events carry writer attribution and are materialized immediately onto `run.attributes`.
+- `start(workflow, args, { attributes })` seeds attributes on the initial `run_created` event, including the resilient-start creation path.
+- The World spec is bumped to v4; attributes are supported for v4 runs rather than being backported into older run specifications.
+- The direct server attributes endpoint remains available only as a deprecated compatibility path for clients that shipped with the MVP.
+
+The remainder of this page documents the original MVP motivation and implementation.
+
 ## What MVP supports
 
 - `experimental_setAttributes(record)` callable from a **workflow body** (`"use workflow"` function), dispatched via an internal `__builtin_set_attributes` step bridge so the mutation gets a `step_created → step_completed` event pair
@@ -296,13 +308,13 @@ End-to-end in `workbench/nextjs-turbopack` (exercises the full SWC plugin + work
 - `Promise.all` of disjoint-key writes — every key persists
 - Workflow throws after an awaited `experimental_setAttributes` — the attribute persists on the now-`failed` run (the per-run file lock on `run_failed` re-reads inside the critical section so the attribute snapshot survives the lifecycle write)
 
-## Migration to 5.0.0
+## Migration to native v4
 
-When the full attributes feature ships:
+The native attributes follow-up applies this migration:
 
 - `experimental_setAttributes` (SDK) — unchanged signature, new dispatch path
 - `runs.experimentalSetAttributes` (world interface) — deprecated, then removed; replaced by `events.create(runId, { eventType: 'attr_set', eventData: { changes, writer } })`
-- Wire endpoint — `POST /v2/runs/:runId/attributes` removed; the same `changes` shape posts to `POST /v2/runs/:id/events`
+- Wire endpoint — `POST /v2/runs/:runId/attributes` is deprecated but temporarily retained for older clients; new calls post the same `changes` shape to events as `attr_set`
 - Pre-existing attribute values on MVP-era runs remain on the run entity but are not represented in the event log
 
 Skew protection means workflows started under the MVP will continue to run with the MVP dispatch path on their original deployment. New deployments use the new path. No in-place data migration is needed.

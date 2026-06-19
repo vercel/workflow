@@ -185,8 +185,8 @@ function warnAboutAutoRemovedServerExternalPackages(
     .join(', ');
 
   console.warn(
-    `\n⚠ Workflow removed ${packageDescriptions} from serverExternalPackages for this build.` +
-      `\n  These packages contain workflow code and must be transformed by the workflow compiler.` +
+    `\n⚠ Workflow found workflow code in serverExternalPackages: ${packageDescriptions}.` +
+      `\n  Workflow removed the affected entries from serverExternalPackages for this build and is compiling the packages anyway.` +
       `\n  Remove ${packageNames} from serverExternalPackages in next.config to silence this warning.\n`
   );
 }
@@ -486,6 +486,7 @@ export function withWorkflow(
             // discover workflows from pages/app entries
             dirs: ['pages', 'app', 'src/pages', 'src/app'],
             projectRoot: nextConfig.outputFileTracingRoot,
+            moduleSpecifierRoot: process.cwd(),
             workingDir: process.cwd(),
             distDir,
             diagnosticsDir: `${distDir}/diagnostics`,

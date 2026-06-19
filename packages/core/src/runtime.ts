@@ -9,10 +9,16 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { parseWorkflowName } from '@workflow/utils/parse-name';
+import {
+  parseWorkflowName,
+  workflowDisplayName,
+} from '@workflow/utils/parse-name';
 import {
   type Event,
+  getQueueTopicPrefix,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -41,6 +47,7 @@ import {
 } from './runtime/replay-budget.js';
 import { executeStep } from './runtime/step-executor.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
+import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
   getWorld,
   getWorldHandlers,
@@ -50,8 +57,11 @@ import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
-  linkToCurrentContext,
-  serializeTraceCarrier,
+  buildInvocationSpanLinks,
+  getNextTraceCarrier,
+  getSpanKind,
+  getWorkflowTraceMode,
+  isUsableTraceCarrier,
   trace,
   withTraceContext,
   withWorkflowBaggage,
@@ -152,7 +162,13 @@ async function recordFatalRunError({
         eventType: 'run_failed',
         specVersion: SPEC_VERSION_CURRENT,
         eventData: {
-          error: await dehydrateRunError(err, runId, await getEncryptionKey()),
+          error: await dehydrateRunError(
+            err,
+            runId,
+            await getEncryptionKey(),
+            globalThis,
+            (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+          ),
           errorCode,
         },
       },
@@ -203,6 +219,57 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
 }
 
 /**
+ * Whether the run has any hook or wait that an out-of-band writer could
+ * append an event for between an inline step's `step_completed` write and
+ * the next replay — namely an open hook (a `hook_created` not yet
+ * `hook_disposed`, which a webhook receiver can resolve with
+ * `hook_received`) or an open wait (a `wait_created` not yet
+ * `wait_completed`, which the wait timer can resolve with
+ * `wait_completed`).
+ *
+ * This gates the inline-delta fast path. The delta returned by the
+ * step-terminal write is the event log as of that write; it is consumed
+ * on the NEXT loop iteration, so any event a concurrent writer appends in
+ * that window would be present in a real `events.list` fetch but absent
+ * from the stale delta. Missing such an event for one replay can durably
+ * commit a scheduling decision (e.g. inline-executing the loser of a
+ * `Promise.race([hook, step])`) that the eventual full replay cannot
+ * consume — a `ReplayDivergenceError`. When no hook or wait is open, the
+ * only out-of-band writer is cancellation, which is benign to observe one
+ * iteration late (the next entity write is rejected against the terminal
+ * run and the run is already terminal), so the fast path is safe.
+ *
+ * Step-body `attr_set` writes are NOT a concern: they land before the
+ * step's terminal write and are therefore already inside the returned
+ * delta.
+ */
+function hasOpenHookOrWait(events: Event[]): boolean {
+  const disposedHookIds = new Set<string | undefined>();
+  const completedWaitIds = new Set<string | undefined>();
+  for (const e of events) {
+    if (e.eventType === 'hook_disposed') disposedHookIds.add(e.correlationId);
+    else if (e.eventType === 'wait_completed') {
+      completedWaitIds.add(e.correlationId);
+    }
+  }
+  for (const e of events) {
+    if (
+      e.eventType === 'hook_created' &&
+      !disposedHookIds.has(e.correlationId)
+    ) {
+      return true;
+    }
+    if (
+      e.eventType === 'wait_created' &&
+      !completedWaitIds.has(e.correlationId)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -214,14 +281,18 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
  * @returns A function that can be used as a Vercel API route
  */
 export function workflowEntrypoint(
-  workflowCode: string
+  workflowCode: string,
+  options?: { namespace?: string }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
+  const namespace = resolveQueueNamespace(options?.namespace);
+  const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+
   const handler = (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(
-      '__wkf_workflow_',
+      workflowPrefix,
       async (message_, metadata) => {
         // Check if this is a health check message
         // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
@@ -239,15 +310,23 @@ export function workflowEntrypoint(
 
         const {
           runId,
-          traceCarrier: traceContext,
+          traceCarrier: incomingTraceCarrier,
           requestedAt,
           stepId: incomingStepId,
           stepName: incomingStepName,
           replayDivergence,
           runInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
+        // `start()` always attaches a trace carrier, but
+        // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
+        // or no span is active — treat an empty carrier the same as an
+        // absent one so linked mode falls back to a fresh origin instead of
+        // forwarding a useless `{}` forever.
+        const traceContext = isUsableTraceCarrier(incomingTraceCarrier)
+          ? incomingTraceCarrier
+          : undefined;
         const { requestId } = metadata;
-        const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
+        const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
         // --- Max delivery check ---
         // Enforce max delivery limit before any infrastructure calls.
@@ -313,7 +392,29 @@ export function workflowEntrypoint(
           return;
         }
 
-        const spanLinks = await linkToCurrentContext();
+        // --- Trace correlation mode ---
+        // 'linked' (default): the workflow.execute span below stays a CHILD
+        // of the local delivery (flow-route) context, so one invocation —
+        // route handler, workflow replay, inline steps, event writes — is a
+        // single bounded trace. The run-origin context travels as a span
+        // LINK (not a parent), and re-enqueues forward the original carrier
+        // unchanged, so a (potentially hours-long) run is never stitched
+        // into one giant trace across invocations.
+        // 'continuous': legacy behavior — the restored run-origin context
+        // becomes the parent of this invocation's spans.
+        const traceMode = getWorkflowTraceMode();
+
+        // Trace carrier to attach to messages this invocation enqueues —
+        // see getNextTraceCarrier for the linked/continuous semantics.
+        const nextTraceCarrier = (): Promise<Record<string, string>> =>
+          getNextTraceCarrier(traceMode, traceContext);
+
+        // Span links to the incoming delivery context and (in linked mode)
+        // the run-origin context from the trace carrier.
+        const spanLinks = await buildInvocationSpanLinks(
+          traceMode,
+          traceContext
+        );
 
         // --- Replay budget bookkeeping ---
         // The replay budget bounds the *non-step* portion of a single
@@ -341,14 +442,24 @@ export function workflowEntrypoint(
         // single step longer than the budget.
         const replayBudget = new ReplayBudget();
 
-        return await withTraceContext(traceContext, async () => {
+        // In linked mode the run-origin context is NOT restored as the
+        // active (parent) context — passing `undefined` makes
+        // withTraceContext a passthrough, so the workflow.execute span below
+        // stays a child of the local delivery (flow-route) context and the
+        // run-origin travels as a span link instead.
+        const parentTraceCarrier =
+          traceMode === 'continuous' ? traceContext : undefined;
+        // Queue-delivered invocation: CONSUMER kind, matching the
+        // queue-delivered step.execute span.
+        const spanKind = await getSpanKind('CONSUMER');
+        return await withTraceContext(parentTraceCarrier, async () => {
           return await withWorkflowBaggage(
             { workflowRunId: runId, workflowName },
             async () => {
               const world = await getWorld();
               return trace(
-                `WORKFLOW_V2 ${workflowName}`,
-                { links: spanLinks },
+                `workflow.execute ${workflowDisplayName(workflowName)}`,
+                { kind: spanKind, links: spanLinks },
                 async (span) => {
                   span?.setAttributes({
                     ...Attribute.WorkflowName(workflowName),
@@ -360,6 +471,7 @@ export function workflowEntrypoint(
                     ...getQueueOverhead({ requestedAt }),
                     ...Attribute.WorkflowRunId(runId),
                     ...Attribute.WorkflowTracePropagated(!!traceContext),
+                    ...Attribute.WorkflowTraceMode(traceMode),
                   });
 
                   const invocationStartTime = Date.now();
@@ -370,6 +482,19 @@ export function workflowEntrypoint(
                   // we fetch only events created after the last known cursor.
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
+
+                  // Inline-delta optimization: when an inline step's terminal
+                  // write returns the event-log delta since the pre-write
+                  // cursor (a supporting World only), we stash it here so the
+                  // next loop iteration consumes it in place of the incremental
+                  // events.list round-trip. Each value is consumed exactly once
+                  // and then cleared. Null means "no delta pending — fetch
+                  // normally". See the consume site at the top of the loop and
+                  // the produce site after inline executeStep.
+                  let pendingInlineDelta: {
+                    events: Event[];
+                    cursor: string | null;
+                  } | null = null;
 
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
@@ -411,6 +536,7 @@ export function workflowEntrypoint(
                           workflowStartedAt: bgStartedAt,
                           stepId: incomingStepId,
                           stepName: incomingStepName,
+                          runSpecVersion: bgRun.specVersion,
                         });
                       } finally {
                         replayBudget.resume();
@@ -430,10 +556,10 @@ export function workflowEntrypoint(
                       ) {
                         await queueMessage(
                           world,
-                          getWorkflowQueueName(workflowName),
+                          getWorkflowQueueName(workflowName, namespace),
                           {
                             runId,
-                            traceCarrier: await serializeTraceCarrier(),
+                            traceCarrier: await nextTraceCarrier(),
                             requestedAt: new Date(),
                           }
                         );
@@ -547,6 +673,9 @@ export function workflowEntrypoint(
                                   deploymentId: runInput.deploymentId,
                                   workflowName: runInput.workflowName,
                                   executionContext: runInput.executionContext,
+                                  attributes: runInput.attributes,
+                                  allowReservedAttributes:
+                                    runInput.allowReservedAttributes,
                                 },
                               }
                             : {}),
@@ -689,10 +818,10 @@ export function workflowEntrypoint(
                       );
                       await queueMessage(
                         world,
-                        getWorkflowQueueName(workflowName),
+                        getWorkflowQueueName(workflowName, namespace),
                         {
                           runId,
-                          traceCarrier: await serializeTraceCarrier(),
+                          traceCarrier: await nextTraceCarrier(),
                           requestedAt: new Date(),
                         }
                       );
@@ -700,12 +829,44 @@ export function workflowEntrypoint(
                     }
 
                     let replayStart = 0;
+                    // Cursor of this iteration's event log before any inline
+                    // writes advance it — declared at try scope so the
+                    // suspension catch (which runs the inline step) can read it
+                    // as the `sinceCursor` for the inline-delta optimization.
+                    let preInlineWriteCursor: string | null = null;
                     try {
                       // Load events — use cached events with incremental fetch on subsequent iterations.
                       // The server always returns a cursor when there are events (even on the
                       // final page), so we can reliably use it for incremental loading.
                       let events: Event[];
-                      if (cachedEvents === null) {
+                      if (pendingInlineDelta && cachedEvents) {
+                        // Fast path: the previous iteration's inline step
+                        // terminal write returned the authoritative event-log
+                        // delta since the pre-write cursor, so we consume it
+                        // here instead of issuing an incremental events.list.
+                        // The delta is byte-for-byte what events.list(cursor)
+                        // would have returned at write time — it includes this
+                        // handler's own step events, any attr_set the step body
+                        // wrote, and any in-band events (e.g. hook_received,
+                        // wait_completed) another writer appended since the
+                        // cursor — so skipping the fetch cannot drop events or
+                        // skew the prefix from the server's log.
+                        const delta = pendingInlineDelta;
+                        pendingInlineDelta = null;
+                        if (delta.events.length > 0) {
+                          const existingIds = new Set(
+                            cachedEvents.map((e) => e.eventId)
+                          );
+                          for (const e of delta.events) {
+                            if (!existingIds.has(e.eventId)) {
+                              existingIds.add(e.eventId);
+                              cachedEvents.push(e);
+                            }
+                          }
+                        }
+                        eventsCursor = delta.cursor ?? eventsCursor;
+                        events = cachedEvents;
+                      } else if (cachedEvents === null) {
                         // First iteration: use preloaded events if available,
                         // otherwise do a full load with cursor.
                         if (preloadedEvents) {
@@ -892,6 +1053,17 @@ export function workflowEntrypoint(
                       // Update cache reference (may have been set for first time)
                       cachedEvents = events;
 
+                      // Snapshot the cursor as it stands for this iteration's
+                      // event log, before any inline writes (step_created via
+                      // handleSuspension, step_started/step_completed via
+                      // executeStep) advance it. This is the `sinceCursor`
+                      // handed to a supporting World on the inline step's
+                      // terminal write so it can return the event-log delta —
+                      // letting the next iteration skip the incremental
+                      // events.list. Captured here because nothing between this
+                      // point and the inline executeStep mutates eventsCursor.
+                      preInlineWriteCursor = eventsCursor;
+
                       // Replay workflow
                       runtimeLogger.debug('Starting workflow replay', {
                         workflowRunId: runId,
@@ -962,19 +1134,100 @@ export function workflowEntrypoint(
 
                         // V2: handle suspension without queuing steps
                         const suspensionStart = Date.now();
-                        const suspensionResult = await handleSuspension({
-                          suspension: err,
-                          world,
-                          run: workflowRun,
-                          span,
-                          requestId,
-                        });
+                        let suspensionResult: Awaited<
+                          ReturnType<typeof handleSuspension>
+                        >;
+                        try {
+                          suspensionResult = await handleSuspension({
+                            suspension: err,
+                            world,
+                            run: workflowRun,
+                            span,
+                            requestId,
+                          });
+                        } catch (suspensionError) {
+                          if (!FatalError.is(suspensionError)) {
+                            // Transient failures propagate to the queue
+                            // handler so the message is redelivered.
+                            throw suspensionError;
+                          }
+                          // Non-retryable failure while committing the
+                          // suspension's events — e.g. an attribute write
+                          // the World rejected as invalid (the cumulative
+                          // per-run cap can only be checked World-side).
+                          // Redelivery would replay the workflow into the
+                          // same write and the same rejection, so fail the
+                          // run with the error instead of wedging the
+                          // message in redelivery.
+                          const errorCode = classifyRunError(suspensionError);
+                          runtimeLogger.error(
+                            'Non-retryable error while committing workflow suspension; failing run',
+                            {
+                              workflowRunId: runId,
+                              errorCode,
+                              errorName: suspensionError.name,
+                              errorMessage: suspensionError.message,
+                            }
+                          );
+                          try {
+                            await world.events.create(
+                              runId,
+                              {
+                                eventType: 'run_failed',
+                                specVersion: SPEC_VERSION_CURRENT,
+                                eventData: {
+                                  error: await dehydrateRunError(
+                                    suspensionError,
+                                    runId,
+                                    encryptionKey,
+                                    globalThis,
+                                    (workflowRun?.specVersion ?? 0) >=
+                                      SPEC_VERSION_SUPPORTS_COMPRESSION
+                                  ),
+                                  errorCode,
+                                },
+                              },
+                              { requestId }
+                            );
+                          } catch (failErr) {
+                            if (
+                              EntityConflictError.is(failErr) ||
+                              RunExpiredError.is(failErr)
+                            ) {
+                              runtimeLogger.info(
+                                'Tried failing workflow run, but run has already finished.',
+                                {
+                                  workflowRunId: runId,
+                                  message: failErr.message,
+                                }
+                              );
+                              return;
+                            }
+                            throw failErr;
+                          }
+                          span?.setAttributes({
+                            ...Attribute.WorkflowRunStatus('failed'),
+                            ...Attribute.WorkflowErrorCode(errorCode),
+                            ...Attribute.WorkflowErrorName(
+                              suspensionError.name
+                            ),
+                            ...Attribute.WorkflowErrorMessage(
+                              suspensionError.message
+                            ),
+                            ...Attribute.ErrorType(suspensionError.name),
+                          });
+                          return;
+                        }
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
                           pendingSteps: suspensionResult.pendingSteps.length,
-                          timeoutSeconds: suspensionResult.timeoutSeconds,
+                          timeoutSeconds: suspensionResult.waitTimeout?.seconds,
                           hasHookConflict: suspensionResult.hasHookConflict,
+                          hasAwaitedHookCreation:
+                            suspensionResult.hasAwaitedHookCreation,
+                          hasAttributeEvents:
+                            suspensionResult.hasAttributeEvents,
                         });
 
                         // Hook conflict: break loop, re-invoke via queue
@@ -982,96 +1235,136 @@ export function workflowEntrypoint(
                           return { timeoutSeconds: 0 };
                         }
 
+                        // Native workflow attribute events are resolved through
+                        // replay. Re-invoke before processing pending steps:
+                        // in Promise.race([setAttributes(), step()]), the
+                        // durable attribute event can win without executing
+                        // the losing step.
+                        if (suspensionResult.hasAttributeEvents) {
+                          return { timeoutSeconds: 0 };
+                        }
+
                         const pendingSteps = suspensionResult.pendingSteps;
 
-                        if (pendingSteps.length === 0) {
-                          // No steps — only waits/hooks
-                          if (suspensionResult.timeoutSeconds !== undefined) {
-                            return {
-                              timeoutSeconds: suspensionResult.timeoutSeconds,
-                            };
-                          }
-                          return;
-                        }
-
-                        // Inline execution is gated on ownership: only the
-                        // handler that actually wrote the step_created event
-                        // may run the step body inline. The world-level
-                        // step_created is atomic per-correlationId, so
-                        // exactly one handler owns each step — concurrent
-                        // handlers can't race on step execution.
-                        const ownedPendingSteps = pendingSteps.filter((s) =>
-                          suspensionResult.createdStepCorrelationIds.has(
-                            s.correlationId
-                          )
+                        // Inline execution is gated on ownership. The
+                        // suspension handler deferred the step_created write for
+                        // up to `getMaxInlineSteps()` steps (`lazyInlineSteps`)
+                        // so we can run them inline — in parallel — via lazy
+                        // `step_started` events that create each step on the fly,
+                        // saving one world round-trip per inline step. Ownership
+                        // is still atomic and exactly-one per step: the world's
+                        // create-claim inside each step_started returns
+                        // `EntityConflictError` (→ executeStep `skipped`) to any
+                        // concurrent loser, so only one handler ever runs a given
+                        // body. Every other pending step keeps its eager
+                        // step_created (in `createdStepCorrelationIds`) and is
+                        // queued below.
+                        //
+                        // The suspension handler only designates
+                        // `lazyInlineSteps` when no `hook.getConflict()` awaiter
+                        // is present. That awaiter case must execute nothing
+                        // inline: an inline `await executeStep(...)` blocks this
+                        // handler for the full step duration, so the awaiter's
+                        // continuation (which only advances on the next replay)
+                        // would be serialized behind the step — defeating work
+                        // the workflow expressed as parallel (e.g.
+                        // `hook.getConflict().then(() => stepB())` racing `await
+                        // stepA()`). In that case `lazyInlineSteps` is empty and
+                        // every step is queued for re-invocation, which replays
+                        // over the just-committed hook_created and resolves the
+                        // awaiter while queued steps run in parallel invocations.
+                        const lazyInlineSteps =
+                          suspensionResult.lazyInlineSteps;
+                        const inlineCorrelationIds = new Set(
+                          lazyInlineSteps.map((s) => s.correlationId)
                         );
 
-                        // Pick one owned step to execute inline (if any).
-                        // The rest of the pending steps are queued below.
+                        // Unified queue dispatch for everything we are NOT
+                        // inline-executing. Steps are queued with stepId so
+                        // the receiver runs them; the wait timer is queued
+                        // as a generic continuation that fires after the
+                        // wait elapses and lets the next replay observe the
+                        // elapsed wait via the "complete elapsed waits"
+                        // pass.
                         //
-                        // Skip inline execution entirely when the suspension
-                        // also has a pending wait (sleep): an inline `await
-                        // executeStep(...)` blocks the handler for the full
-                        // step duration, so the wait timer never has a chance
-                        // to fire on time. That defeats `Promise.race(step,
-                        // sleep)` semantics — if the sleep is shorter than
-                        // the step, replay still picks the step because
-                        // wait_completed is only created on the *next* loop
-                        // iteration, which doesn't run until the step
-                        // finishes. Queueing every step in this case lets
-                        // the wait timeout drive a continuation in parallel,
-                        // matching V1's behavior where each step ran in a
-                        // separate function invocation.
-                        const inlineStep:
-                          | (typeof pendingSteps)[number]
-                          | undefined =
-                          suspensionResult.timeoutSeconds === undefined
-                            ? ownedPendingSteps[0]
-                            : undefined;
-
-                        // Queue every pending step except the one we're
-                        // executing inline. This mirrors V1's unconditional
-                        // enqueue-with-idempotency pattern and is what makes
-                        // crash recovery work: if a prior handler wrote
-                        // step_created events but crashed before enqueuing,
-                        // a later handler (e.g., from flow-message
-                        // redelivery or reenqueueActiveRuns) will enqueue
-                        // the orphaned steps. In the happy path with a
-                        // single owner, concurrent handlers' queue attempts
-                        // dedupe on correlationId. Skipping the inline step
-                        // avoids a queue handler racing against our own
-                        // inline executor.
+                        // Step queueing is unconditional (covers crash
+                        // recovery: if a prior handler wrote step_created
+                        // but crashed before queueing, a later handler will
+                        // queue them; idempotencyKey on correlationId
+                        // dedupes redundant queues across concurrent
+                        // handlers).
+                        //
+                        // The wait continuation is what makes
+                        // `Promise.race(step, sleep)` behave correctly with
+                        // inline step execution: even if the inline step
+                        // blocks this handler for the full step duration,
+                        // the wait timer fires in a separate function
+                        // invocation. If the sleep wins, that parallel
+                        // invocation completes the run; if the step wins,
+                        // the wait continuation fires later and no-ops on
+                        // the terminal run.
+                        //
+                        // The continuation's delay is clamped to the
+                        // maximum queue delay (long waits chain across
+                        // multiple hops) and its idempotency key dedupes
+                        // re-observations of the same pending wait across
+                        // suspension passes — see
+                        // runtime/wait-continuation.ts for the full
+                        // delay/key selection rationale.
+                        const traceCarrier = await nextTraceCarrier();
+                        const dispatches: Promise<unknown>[] = [];
                         for (const step of pendingSteps) {
-                          if (
-                            inlineStep &&
-                            step.correlationId === inlineStep.correlationId
-                          ) {
+                          if (inlineCorrelationIds.has(step.correlationId)) {
                             continue;
                           }
-                          const traceCarrier = await serializeTraceCarrier();
-                          await queueMessage(
-                            world,
-                            getWorkflowQueueName(workflowName),
-                            {
-                              runId,
-                              stepId: step.correlationId,
-                              stepName: step.stepName,
-                              traceCarrier,
-                              requestedAt: new Date(),
-                            },
-                            {
-                              idempotencyKey: step.correlationId,
-                            }
+                          dispatches.push(
+                            queueMessage(
+                              world,
+                              getWorkflowQueueName(workflowName, namespace),
+                              {
+                                runId,
+                                stepId: step.correlationId,
+                                stepName: step.stepName,
+                                traceCarrier,
+                                requestedAt: new Date(),
+                              },
+                              {
+                                idempotencyKey: step.correlationId,
+                              }
+                            )
                           );
                         }
+                        if (suspensionResult.waitTimeout) {
+                          dispatches.push(
+                            queueMessage(
+                              world,
+                              getWorkflowQueueName(workflowName, namespace),
+                              {
+                                runId,
+                                traceCarrier,
+                                requestedAt: new Date(),
+                              },
+                              getWaitContinuationDispatch(
+                                suspensionResult.waitTimeout.seconds,
+                                suspensionResult.waitTimeout.correlationId
+                              )
+                            )
+                          );
+                        }
+                        await Promise.all(dispatches);
 
-                        // Nothing to execute inline — we already queued all
-                        // pending steps above, exit and let the queue drive.
-                        if (!inlineStep) {
-                          if (suspensionResult.timeoutSeconds !== undefined) {
-                            return {
-                              timeoutSeconds: suspensionResult.timeoutSeconds,
-                            };
+                        // Nothing to execute inline — everything has been
+                        // queued (or no work needs scheduling). Exit and let
+                        // the queue drive subsequent replays.
+                        if (lazyInlineSteps.length === 0) {
+                          // A `hook.getConflict()` awaiter needs an immediate
+                          // re-invocation: the replay consumes the
+                          // just-committed hook_created and resolves the
+                          // awaiter. Without it (no inline step, all work
+                          // queued or none pending) the run would sit idle
+                          // until some unrelated message woke it.
+                          if (suspensionResult.hasAwaitedHookCreation) {
+                            return { timeoutSeconds: 0 };
                           }
                           return;
                         }
@@ -1083,95 +1376,267 @@ export function workflowEntrypoint(
                         // this the replay-budget check at the top of the
                         // next loop iteration would (incorrectly) charge
                         // the step body against the budget.
+                        // Inline-delta fast path gate. We request the delta —
+                        // and on the next iteration consume it in place of the
+                        // events.list — only when ALL hold:
+                        //
+                        //  - We have a real prior cursor to diff against
+                        //    (`preInlineWriteCursor`; a World may return none on
+                        //    the initial load).
+                        //  - This is the clean single-step sequential case:
+                        //    this suspension produced exactly one step and no
+                        //    hooks or waits (`err.{step,hook,wait}Count`), that
+                        //    one step is the lone pending step
+                        //    (`pendingSteps.length === 1`) and the lone inline
+                        //    step (`lazyInlineSteps.length === 1` — no parallel
+                        //    siblings queued to background handlers, and no other
+                        //    inline step writing its own events out of band).
+                        //  - No pending wait timer from THIS suspension.
+                        //  - The run has NO pre-existing open hook or wait. This
+                        //    plus the per-suspension counts above is the
+                        //    load-bearing safety check: the delta snapshots the
+                        //    log at the step_completed write but is consumed on
+                        //    the next replay, so an out-of-band hook_received /
+                        //    wait_completed landing in that window would be in a
+                        //    real fetch yet absent from the stale delta —
+                        //    risking a divergent replay. With no hook/wait open
+                        //    (neither carried over nor created this suspension),
+                        //    the only out-of-band writer is cancellation, which
+                        //    is safe to observe one iteration late. See
+                        //    hasOpenHookOrWait.
+                        //
+                        // When more than one step runs inline, each writes its
+                        // own events and the per-write delta would be partial, so
+                        // the delta is not requested (the gate below is false for
+                        // multi-step) and the next iteration does a normal fetch.
+                        const requestInlineDelta =
+                          typeof preInlineWriteCursor === 'string' &&
+                          err.stepCount === 1 &&
+                          err.hookCount === 0 &&
+                          err.waitCount === 0 &&
+                          pendingSteps.length === 1 &&
+                          lazyInlineSteps.length === 1 &&
+                          !suspensionResult.waitTimeout &&
+                          !hasOpenHookOrWait(cachedEvents ?? []);
+
+                        // Execute the inline steps in parallel. The replay
+                        // budget is paused for the whole batch — step duration is
+                        // bounded by the platform's function maxDuration, not the
+                        // replay timeout — so the budget check at the top of the
+                        // next loop iteration doesn't charge the step bodies.
                         replayBudget.pause();
-                        let stepResult: Awaited<ReturnType<typeof executeStep>>;
+                        let stepResults: Awaited<
+                          ReturnType<typeof executeStep>
+                        >[];
                         try {
-                          stepResult = await executeStep({
-                            world,
-                            workflowRunId: runId,
-                            workflowDeploymentId: workflowRun.deploymentId,
-                            workflowName,
-                            workflowStartedAt,
-                            stepId: inlineStep.correlationId,
-                            stepName: inlineStep.stepName,
-                          });
+                          stepResults = await Promise.all(
+                            lazyInlineSteps.map((s) =>
+                              executeStep({
+                                world,
+                                workflowRunId: runId,
+                                workflowDeploymentId: workflowRun.deploymentId,
+                                workflowName,
+                                workflowStartedAt,
+                                stepId: s.correlationId,
+                                stepName: s.stepName,
+                                runSpecVersion: workflowRun.specVersion,
+                                // Lazy inline start: send the deferred step's
+                                // input on step_started so the world creates the
+                                // step on the fly.
+                                lazyStepInput: s.dehydratedInput,
+                                ...(requestInlineDelta && preInlineWriteCursor
+                                  ? {
+                                      inlineDeltaSinceCursor:
+                                        preInlineWriteCursor,
+                                    }
+                                  : {}),
+                              })
+                            )
+                          );
                         } finally {
                           replayBudget.resume();
                         }
 
-                        if (stepResult.type === 'retry') {
-                          // Step needs retry — queue self with stepId for retry
-                          const traceCarrier = await serializeTraceCarrier();
+                        // Aggregate the batch results. `retry` steps (which
+                        // already exist — their `step_started` succeeded) are
+                        // re-queued per-step as background steps with their own
+                        // delay; `throttled` steps (rejected on the create-claim,
+                        // so never created) instead defer redelivery of this
+                        // orchestrator message so they re-run inline with input
+                        // on replay; completed/failed steps already wrote their
+                        // terminal events. We only loop back to replay when every
+                        // inline step reached a terminal state — otherwise the
+                        // still-pending steps will be re-run by their queued retry
+                        // messages and the background-step handler replays once
+                        // all steps are done.
+                        const toRetry: {
+                          step: (typeof lazyInlineSteps)[number];
+                          delaySeconds: number;
+                        }[] = [];
+                        let anyPendingOps = false;
+                        // A throttled inline step delays redelivery of THIS
+                        // orchestrator message rather than being re-queued as a
+                        // background step. Crucially, a `throttled` result means
+                        // the lazy `step_started` was rejected on the atomic
+                        // create-claim — so the step was NEVER created (no
+                        // `step_created`, no step entity). Re-queuing it as a
+                        // background step would send a bare `step_started` (no
+                        // input), which the world rejects with `Step "<id>" not
+                        // found` because it cannot lazily create the step without
+                        // its input; that error isn't translatable, so the
+                        // message redelivers until MAX_QUEUE_DELIVERIES and the
+                        // step (and run) fail. Deferring redelivery of the
+                        // orchestrator instead re-attempts the throttled step
+                        // inline WITH its input on replay. We track the longest
+                        // backoff so a batch with multiple throttles waits the
+                        // max. Note: `retry` results are safe to re-queue as
+                        // background steps because a retry implies `step_started`
+                        // already succeeded and the step exists.
+                        let throttleTimeout: number | undefined;
+                        for (let i = 0; i < lazyInlineSteps.length; i++) {
+                          const r = stepResults[i];
+                          const s = lazyInlineSteps[i];
+                          if (r.type === 'retry') {
+                            toRetry.push({
+                              step: s,
+                              delaySeconds: r.timeoutSeconds,
+                            });
+                          } else if (r.type === 'throttled') {
+                            throttleTimeout = Math.max(
+                              throttleTimeout ?? 0,
+                              r.timeoutSeconds
+                            );
+                          } else if (
+                            r.type === 'completed' &&
+                            r.hasPendingOps
+                          ) {
+                            anyPendingOps = true;
+                          }
+                        }
+
+                        if (throttleTimeout !== undefined) {
+                          // Defer redelivery of the orchestrator after the
+                          // throttle backoff. On replay every non-terminal step
+                          // is re-dispatched by the suspension handler: the
+                          // still-throttled steps run inline again WITH their
+                          // input (their `step_created` is deferred anew), and
+                          // any `retry` steps in this batch are queued as
+                          // background steps with their own retryAfter honored.
+                          // Terminal steps (completed/failed/skipped/gone) are
+                          // observed from their events and not re-run. Because
+                          // the replay drives all remaining work, we must NOT
+                          // also re-queue `toRetry` here — that would
+                          // double-dispatch those steps.
+                          //
+                          // This returns BEFORE the `anyPendingOps` branch
+                          // below, so a batch that mixes a throttle with a
+                          // completed step that left unflushed ops does not
+                          // queue the explicit flush continuation. That is safe
+                          // because the throttle backoff (>= 1s) always exceeds
+                          // the in-invocation flush window (<= 500ms + waitUntil),
+                          // so ops settle before the post-backoff redelivery
+                          // replays and reads them.
+                          return { timeoutSeconds: throttleTimeout };
+                        }
+
+                        if (toRetry.length > 0) {
+                          const retryTraceCarrier = await nextTraceCarrier();
+                          await Promise.all(
+                            toRetry.map(({ step, delaySeconds }) =>
+                              queueMessage(
+                                world,
+                                getWorkflowQueueName(workflowName, namespace),
+                                {
+                                  runId,
+                                  stepId: step.correlationId,
+                                  stepName: step.stepName,
+                                  traceCarrier: retryTraceCarrier,
+                                  requestedAt: new Date(),
+                                },
+                                {
+                                  delaySeconds,
+                                  // Key the delayed retry on the step's
+                                  // correlationId so it dedupes against the
+                                  // keyed re-dispatch the suspension handler
+                                  // performs on replay (it also uses
+                                  // `idempotencyKey: step.correlationId`).
+                                  //
+                                  // Without this, a mixed batch where one step
+                                  // `completed` with unflushed background ops
+                                  // (`anyPendingOps`) and another step is
+                                  // retrying would double-dispatch the retry:
+                                  // the `anyPendingOps` branch below queues an
+                                  // immediate plain continuation, whose replay
+                                  // sees the still-`retrying` step as pending
+                                  // and re-dispatches it *immediately* and
+                                  // *with* a key. Since this delayed retry had
+                                  // no key, the two messages wouldn't dedupe —
+                                  // the step would run twice, the configured
+                                  // retry backoff would be ignored (plain
+                                  // `Error` retries persist no `retryAfter`, so
+                                  // the world has no `TooEarly` guard), and the
+                                  // retry body could run early/concurrently.
+                                  // Sharing the key lets the earlier delayed
+                                  // message win, honoring the backoff.
+                                  idempotencyKey: step.correlationId,
+                                }
+                              )
+                            )
+                          );
+                        }
+
+                        // If any inline step had pending background ops (e.g.,
+                        // stream writes to S3), break the loop and queue a plain
+                        // continuation so waitUntil can flush them before the
+                        // next replay reads them. This matches V1 behavior where
+                        // each step ran in a separate function invocation.
+                        if (anyPendingOps) {
+                          runtimeLogger.debug(
+                            'Breaking loop: inline step has pending ops',
+                            { workflowRunId: runId, loopIteration }
+                          );
                           await queueMessage(
                             world,
-                            getWorkflowQueueName(workflowName),
+                            getWorkflowQueueName(workflowName, namespace),
                             {
                               runId,
-                              stepId: inlineStep.correlationId,
-                              stepName: inlineStep.stepName,
-                              traceCarrier,
+                              traceCarrier: await nextTraceCarrier(),
                               requestedAt: new Date(),
-                            },
-                            {
-                              delaySeconds: stepResult.timeoutSeconds,
                             }
                           );
-                          // If there are also waits, return their timeout
-                          if (suspensionResult.timeoutSeconds !== undefined) {
-                            return {
-                              timeoutSeconds: suspensionResult.timeoutSeconds,
+                          return;
+                        }
+
+                        if (toRetry.length > 0) {
+                          // Some inline steps will be re-run via their queued
+                          // retry messages; the background-step handler replays
+                          // once all steps are terminal. Don't loop here — the
+                          // retrying steps have no terminal event to observe yet.
+                          return;
+                        }
+
+                        // All inline steps reached a terminal state
+                        // (completed/failed/skipped/gone) — loop back to replay
+                        // (the workflow observes the terminal events on replay).
+                        //
+                        // If the single inline step's terminal write returned an
+                        // inline delta (supporting World + the single-step gate
+                        // above), stash it so the next iteration's load consumes
+                        // it instead of issuing an incremental events.list. Only
+                        // the completed path carries a delta; multi-step batches
+                        // never request one.
+                        if (lazyInlineSteps.length === 1) {
+                          const only = stepResults[0];
+                          if (
+                            only.type === 'completed' &&
+                            only.inlineDelta &&
+                            !only.inlineDelta.hasMore
+                          ) {
+                            pendingInlineDelta = {
+                              events: only.inlineDelta.events,
+                              cursor: only.inlineDelta.cursor,
                             };
                           }
-                          return;
-                        }
-
-                        if (stepResult.type === 'throttled') {
-                          return {
-                            timeoutSeconds: stepResult.timeoutSeconds,
-                          };
-                        }
-
-                        // Step completed or failed — loop back to replay
-                        // (gone/skipped also loop back since the workflow
-                        // will see the completed/failed event on replay)
-
-                        // If the step had pending background ops (e.g., stream
-                        // writes to S3), break the loop and return so waitUntil
-                        // can flush them. This matches V1 behavior where each
-                        // step ran in a separate function invocation. Without
-                        // this, the inline loop continues and the stream data
-                        // may not reach S3 before the test tries to read it.
-                        if (
-                          stepResult.type === 'completed' &&
-                          stepResult.hasPendingOps
-                        ) {
-                          runtimeLogger.debug(
-                            'Breaking loop: step has pending ops',
-                            {
-                              workflowRunId: runId,
-                              loopIteration,
-                              stepName: inlineStep.stepName,
-                            }
-                          );
-                          await queueMessage(
-                            world,
-                            getWorkflowQueueName(workflowName),
-                            {
-                              runId,
-                              traceCarrier: await serializeTraceCarrier(),
-                              requestedAt: new Date(),
-                            }
-                          );
-                          return;
-                        }
-
-                        if (
-                          suspensionResult.timeoutSeconds !== undefined &&
-                          pendingSteps.length === 1
-                        ) {
-                          // Only 1 step and there's also waits/hooks,
-                          // step is done, but we need the wait timeout
-                          // Loop back to replay which will re-evaluate
                         }
                       } else {
                         let terminalError = err;
@@ -1198,10 +1663,10 @@ export function workflowEntrypoint(
                             );
                             await queueMessage(
                               world,
-                              getWorkflowQueueName(workflowName),
+                              getWorkflowQueueName(workflowName, namespace),
                               {
                                 runId,
-                                traceCarrier: await serializeTraceCarrier(),
+                                traceCarrier: await nextTraceCarrier(),
                                 requestedAt: new Date(),
                                 replayDivergence: {
                                   eventId: err.eventId,
@@ -1280,7 +1745,10 @@ export function workflowEntrypoint(
                                 error: await dehydrateRunError(
                                   terminalError,
                                   runId,
-                                  encryptionKey
+                                  encryptionKey,
+                                  globalThis,
+                                  (workflowRun?.specVersion ?? 0) >=
+                                    SPEC_VERSION_SUPPORTS_COMPRESSION
                                 ),
                                 errorCode,
                               },

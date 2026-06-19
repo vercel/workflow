@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AttributeChangesSchema } from './attributes.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
@@ -60,6 +61,8 @@ export const EventTypeSchema = z.enum([
   'run_completed',
   'run_failed',
   'run_cancelled',
+  // Run attribute events
+  'attr_set',
   // Step lifecycle events
   'step_created',
   'step_completed',
@@ -97,6 +100,10 @@ const StepCompletedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     stepName: z.string().optional(),
+    // Carried so a backend that keys payload refs by workflow name can build
+    // the key without an extra run lookup on this hot per-step write.
+    // Optional: older runtimes omit it and the backend falls back to a read.
+    workflowName: z.string().optional(),
     result: SerializedDataSchema,
   }),
 });
@@ -129,6 +136,19 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
   }),
 });
 
+/**
+ * Event created when a step begins executing.
+ * Transitions the step entity to status 'running' and increments its attempt.
+ *
+ * The optional `stepName` + `input` carry step creation data for the lazy-start
+ * path: when a handler owns a step it is about to run inline (the owned-inline
+ * path in the runtime), it can skip the separate `step_created` round-trip and
+ * send only `step_started` carrying the step input. The World implementation
+ * then atomically creates the step (materializing the step entity and writing a
+ * synthetic `step_created` event so replay still observes it) before starting
+ * it. This mirrors the resilient `run_started` start path above. When `input`
+ * is absent the World requires a prior `step_created` (the legacy contract).
+ */
 const StepStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_started'),
   correlationId: z.string(),
@@ -136,6 +156,12 @@ const StepStartedEventSchema = BaseEventSchema.extend({
     .object({
       stepName: z.string().optional(),
       attempt: z.number().optional(),
+      // Carried on the lazy-start path (where `input` is present) so the
+      // backend can build the payload ref key without re-reading the run.
+      workflowName: z.string().optional(),
+      // Lazy-start: the dehydrated step input, present only when this
+      // step_started is also responsible for creating the step.
+      input: SerializedDataSchema.optional(),
     })
     .optional(),
 });
@@ -149,6 +175,7 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     stepName: z.string(),
+    workflowName: z.string().optional(),
     input: SerializedDataSchema,
   }),
 });
@@ -224,6 +251,31 @@ const WaitCompletedEventSchema = BaseEventSchema.extend({
     .optional(),
 });
 
+const AttributeWriterSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('workflow'),
+  }),
+  z.object({
+    type: z.literal('step'),
+    stepId: z.string(),
+    attempt: z.number(),
+  }),
+]);
+
+/**
+ * Event created when workflow or step code changes the run's plaintext
+ * attributes. The World materializes changes into `run.attributes`.
+ */
+const AttrSetEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('attr_set'),
+  correlationId: z.string().optional(),
+  eventData: z.object({
+    changes: AttributeChangesSchema,
+    writer: AttributeWriterSchema,
+    allowReservedAttributes: z.literal(true).optional(),
+  }),
+});
+
 // =============================================================================
 // Run lifecycle events
 // =============================================================================
@@ -239,6 +291,8 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
     workflowName: z.string(),
     input: SerializedDataSchema,
     executionContext: z.record(z.string(), z.any()).optional(),
+    attributes: z.record(z.string(), z.string()).optional(),
+    allowReservedAttributes: z.literal(true).optional(),
   }),
 });
 
@@ -259,6 +313,8 @@ const RunStartedEventSchema = BaseEventSchema.extend({
       deploymentId: z.string().optional(),
       workflowName: z.string().optional(),
       executionContext: z.record(z.string(), z.any()).optional(),
+      attributes: z.record(z.string(), z.string()).optional(),
+      allowReservedAttributes: z.literal(true).optional(),
     })
     .optional(),
 });
@@ -309,6 +365,7 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   RunCompletedEventSchema,
   RunFailedEventSchema,
   RunCancelledEventSchema,
+  AttrSetEventSchema,
   // Step lifecycle events
   StepCreatedEventSchema,
   StepCompletedEventSchema,
@@ -333,6 +390,7 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   RunCompletedEventSchema,
   RunFailedEventSchema,
   RunCancelledEventSchema,
+  AttrSetEventSchema,
   // Step lifecycle events
   StepCreatedEventSchema,
   StepCompletedEventSchema,
@@ -391,6 +449,32 @@ export interface CreateEventParams {
   resolveData?: ResolveData;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
+  /**
+   * Inline-delta optimization (opt-in). When set, the World MAY return,
+   * on the resulting {@link EventResult}, the first page of events written
+   * strictly after this cursor (via `events`/`cursor`/`hasMore`) — the
+   * same page an `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
+   * call would return immediately after this write. The inline runtime
+   * loop uses this to skip a redundant `events.list` round-trip between
+   * sequential steps: instead of re-reading its own just-written events
+   * (and any events interleaved in-band, such as `hook_received`), it
+   * consumes the authoritative delta the write already had to compute.
+   *
+   * The cursor MUST share `events.list` semantics: the returned `events`
+   * are everything sorted strictly after `sinceCursor`, `cursor` is the
+   * position past the last returned event, and `hasMore` indicates a
+   * further page exists. A World MAY return a single page and set
+   * `hasMore: true` rather than paginating to exhaustion — the runtime
+   * does not consume a truncated delta, it falls back to a full
+   * incremental fetch whenever `hasMore` is true. (For that reason a step
+   * body emitting more in-band events than one page silently bypasses this
+   * fast path, which is correct but forgoes the saved round-trip.)
+   * Returning these fields at all is OPTIONAL — a World that omits them is
+   * fully supported; the runtime falls back to `events.list`. This
+   * preserves the same divergence guarantees as the fetch path because the
+   * delta is computed atomically against the same log the fetch would read.
+   */
+  sinceCursor?: string;
 }
 
 /**
@@ -411,15 +495,32 @@ export interface EventResult {
   /** The wait entity (for wait_created/wait_completed events) */
   wait?: import('./waits.js').Wait;
   /**
-   * All events up to this point, with data resolved. When populated
-   * on a run_started response, the runtime uses these to skip the
-   * initial events.list call and reduce TTFB.
+   * Events with data resolved. Two producers populate this:
+   *
+   * - On a `run_started` response: all events up to this point, so the
+   *   runtime can skip the initial `events.list` call and reduce TTFB.
+   * - On a step-terminal write (`step_completed` / `step_failed`) when
+   *   the caller passed {@link CreateEventParams.sinceCursor}: the delta
+   *   of events written strictly after that cursor, so the inline loop
+   *   can skip the per-step incremental `events.list` round-trip.
    */
   events?: Event[];
   /** Pagination cursor for `events`, matching events.list semantics. */
   cursor?: string | null;
   /** Whether additional event pages are available for `events`. */
   hasMore?: boolean;
+  /**
+   * Lazy step start: set to `true` only when a `step_started` event with
+   * step-creation data atomically *created* the step on this call (the
+   * caller won the create-claim), as opposed to transitioning a step that
+   * already existed. The owned-inline runtime path uses this as the
+   * exactly-once ownership signal — it runs the step body inline only when
+   * it created the step, so a concurrent handler that lost the create race
+   * (and gets `EntityConflictError`/skipped) never double-executes. Absent
+   * (undefined) on the legacy path and from older servers/worlds, which is
+   * the safe default (treated as "not the lazy creator").
+   */
+  stepCreated?: boolean;
 }
 
 export interface GetEventParams {

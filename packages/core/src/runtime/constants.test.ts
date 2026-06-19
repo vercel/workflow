@@ -2,8 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import {
   _resetReplayTimeoutWarnCacheForTests,
+  getMaxInlineSteps,
   getReplayTimeoutMs,
+  isOptimisticInlineStartEnabled,
+  MAX_INLINE_STEPS,
+  MAX_MAX_INLINE_STEPS,
   MAX_REPLAY_TIMEOUT_MS,
+  MIN_MAX_INLINE_STEPS,
   MIN_REPLAY_TIMEOUT_MS,
   REPLAY_TIMEOUT_MS,
 } from './constants.js';
@@ -107,5 +112,95 @@ describe('getReplayTimeoutMs', () => {
     getReplayTimeoutMs();
     getReplayTimeoutMs();
     expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('getMaxInlineSteps', () => {
+  const originalEnv = process.env.WORKFLOW_MAX_INLINE_STEPS;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    delete process.env.WORKFLOW_MAX_INLINE_STEPS;
+    warnSpy = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.WORKFLOW_MAX_INLINE_STEPS;
+    } else {
+      process.env.WORKFLOW_MAX_INLINE_STEPS = originalEnv;
+    }
+    warnSpy.mockRestore();
+  });
+
+  it('returns the default when the env var is unset', () => {
+    expect(getMaxInlineSteps()).toBe(MAX_INLINE_STEPS);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns a valid in-range override', () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '5';
+    expect(getMaxInlineSteps()).toBe(5);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('clamps to the minimum (1 = single inline step)', () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
+    expect(getMaxInlineSteps()).toBe(MIN_MAX_INLINE_STEPS);
+  });
+
+  it('clamps values above the maximum and warns', () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = String(MAX_MAX_INLINE_STEPS + 100);
+    expect(getMaxInlineSteps()).toBe(MAX_MAX_INLINE_STEPS);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the default on a non-integer and warns', () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '2.5';
+    expect(getMaxInlineSteps()).toBe(MAX_INLINE_STEPS);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the default on a non-numeric value and warns', () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = 'lots';
+    expect(getMaxInlineSteps()).toBe(MAX_INLINE_STEPS);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the default on a non-positive value', () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '0';
+    expect(getMaxInlineSteps()).toBe(MAX_INLINE_STEPS);
+  });
+});
+
+describe('isOptimisticInlineStartEnabled', () => {
+  const originalEnv = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    } else {
+      process.env.WORKFLOW_OPTIMISTIC_INLINE_START = originalEnv;
+    }
+  });
+
+  it('defaults to disabled when unset', () => {
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    expect(isOptimisticInlineStartEnabled()).toBe(false);
+  });
+
+  it('is enabled by an explicit "1"', () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
+    expect(isOptimisticInlineStartEnabled()).toBe(true);
+  });
+
+  it('is enabled by "true" (case-insensitive)', () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = 'TRUE';
+    expect(isOptimisticInlineStartEnabled()).toBe(true);
+  });
+
+  it('stays disabled for any other value', () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = 'yes';
+    expect(isOptimisticInlineStartEnabled()).toBe(false);
   });
 });

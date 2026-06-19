@@ -224,5 +224,5 @@ export async function downloadWithRetry(url: string) {
 - [`"use step"`](/docs/foundations/workflows-and-steps) -- marks functions that run with full Node.js access
 - [`RetryableError`](/docs/api-reference/workflow/retryable-error) -- signals the runtime to retry after a delay
 - [`FatalError`](/docs/api-reference/workflow/fatal-error) -- signals a permanent failure, skipping retries
-- [`getStepMetadata()`](/docs/api-reference/step/get-step-metadata) -- provides the current attempt number and step ID
+- [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) -- provides the current attempt number and step ID
 - [`sleep()`](/docs/api-reference/workflow/sleep) -- durable pause for circuit breaker cooldowns

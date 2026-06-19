@@ -32,6 +32,7 @@ import {
 
 const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
 const ROUTE_STUB_MARKER_SCAN_BYTES = 4 * 1024;
+const DEV_WORKFLOW_CODE_FILENAME = '__workflow_code.txt';
 
 let CachedNextBuilderDeferred: any;
 
@@ -52,6 +53,7 @@ export async function getNextBuilderDeferred() {
   const {
     BaseBuilder: BaseBuilderClass,
     WORKFLOW_QUEUE_TRIGGER,
+    createWorkflowEntrypointOptionsCode,
     detectWorkflowPatterns,
     applySwcTransform,
     getImportPath,
@@ -648,7 +650,43 @@ export async function getNextBuilderDeferred() {
       const stepManifest =
         await this.createDeferredStepManifest(stepAndSerdeFiles);
       const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
-      const routeCode = `// biome-ignore-all lint: generated file
+      const workflowEntrypointOptionsCode =
+        createWorkflowEntrypointOptionsCode();
+      let routeCode: string;
+
+      if (this.config.watch) {
+        const workflowCodePath = join(
+          dirname(flowOutfile),
+          DEV_WORKFLOW_CODE_FILENAME
+        );
+        await this.writeFileIfChanged(workflowCodePath, workflowVMCode);
+        routeCode = `// biome-ignore-all lint: generated file
+/* eslint-disable */
+import 'workflow/internal/builtins';
+${stepImports}
+import { readFile, stat } from 'node:fs/promises';
+import { workflowEntrypoint } from 'workflow/runtime';
+
+const workflowCodePath = ${JSON.stringify(workflowCodePath)};
+let cachedWorkflowHandler;
+let cachedWorkflowCodeSignature;
+
+async function getWorkflowHandler() {
+  const workflowCodeStats = await stat(workflowCodePath);
+  const workflowCodeSignature = \`\${workflowCodeStats.size}:\${workflowCodeStats.mtimeMs}\`;
+  if (!cachedWorkflowHandler || cachedWorkflowCodeSignature !== workflowCodeSignature) {
+    const workflowCode = await readFile(workflowCodePath, 'utf8');
+    cachedWorkflowHandler = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});
+    cachedWorkflowCodeSignature = workflowCodeSignature;
+  }
+  return cachedWorkflowHandler;
+}
+
+export async function POST(req) {
+  return (await getWorkflowHandler())(req);
+}`;
+      } else {
+        routeCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import 'workflow/internal/builtins';
 ${stepImports}
@@ -656,7 +694,8 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${escapedVMCode}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+      }
 
       await this.writeFileIfChanged(flowOutfile, routeCode);
 
@@ -807,7 +846,8 @@ export const POST = workflowEntrypoint(workflowCode);`;
           source,
           'step',
           file,
-          this.transformProjectRoot
+          this.transformProjectRoot,
+          this.moduleSpecifierRoot
         );
         this.mergeWorkflowManifest(manifest, workflowManifest);
       }
@@ -854,6 +894,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         join(flowRouteDir, 'route.js.temp'),
         join(flowRouteDir, 'route.js.temp.debug.json'),
         join(flowRouteDir, 'route.js.debug.json'),
+        join(flowRouteDir, DEV_WORKFLOW_CODE_FILENAME),
         join(flowRouteDir, '__step_registrations.route.js.temp'),
         join(flowRouteDir, '__step_registrations.route.js.temp.debug.json'),
         // V2: clean up stale V1 step route directory
@@ -1055,32 +1096,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
       }
     }
 
-    private resolveSourceBackedPackagePath(filePath: string): string {
-      const normalizedPath = filePath.replace(/\\/g, '/');
-      if (!normalizedPath.includes('/dist/')) {
-        return filePath;
-      }
-
-      const sourceCandidate = normalizedPath.replace('/dist/', '/src/');
-      const resolvedSourceCandidate =
-        this.resolveCopiedStepImportTargetPath(sourceCandidate);
-      if (
-        !existsSync(resolvedSourceCandidate) ||
-        !this.shouldPreferSourceBackedPackagePath(filePath)
-      ) {
-        return filePath;
-      }
-
-      return existsSync(resolvedSourceCandidate)
-        ? resolvedSourceCandidate
-        : filePath;
-    }
-
     private normalizeDiscoveredFilePath(filePath: string): string {
-      const absolutePath = isAbsolute(filePath)
+      return isAbsolute(filePath)
         ? filePath
         : resolve(this.config.workingDir, filePath);
-      return this.resolveSourceBackedPackagePath(absolutePath);
     }
 
     private async filterExistingFiles(filePaths: string[]): Promise<string[]> {
@@ -1586,43 +1605,6 @@ export const POST = workflowEntrypoint(workflowCode);`;
       }
     }
 
-    private resolveCopiedStepImportTargetPath(targetPath: string): string {
-      if (existsSync(targetPath)) {
-        return targetPath;
-      }
-
-      const extensionMatch = targetPath.match(/(\.[^./\\]+)$/);
-      const extension = extensionMatch?.[1]?.toLowerCase();
-      if (!extension) {
-        return targetPath;
-      }
-
-      const extensionFallbacks =
-        extension === '.js'
-          ? ['.ts', '.tsx', '.mts', '.cts']
-          : extension === '.mjs'
-            ? ['.mts']
-            : extension === '.cjs'
-              ? ['.cts']
-              : extension === '.jsx'
-                ? ['.tsx']
-                : [];
-
-      if (extensionFallbacks.length === 0) {
-        return targetPath;
-      }
-
-      const targetWithoutExtension = targetPath.slice(0, -extension.length);
-      for (const fallbackExtension of extensionFallbacks) {
-        const fallbackPath = `${targetWithoutExtension}${fallbackExtension}`;
-        if (existsSync(fallbackPath)) {
-          return fallbackPath;
-        }
-      }
-
-      return targetPath;
-    }
-
     private extractRelativeImportSpecifiers(source: string): string[] {
       return this.extractImportSpecifiers(source).filter((specifier) =>
         specifier.startsWith('.')
@@ -2045,7 +2027,8 @@ export const POST = workflowEntrypoint(workflowCode);`;
               source,
               'detect',
               filePath,
-              projectRoot
+              projectRoot,
+              this.moduleSpecifierRoot
             );
             // Only include files that actually define serde classes
             const hasClasses =

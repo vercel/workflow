@@ -106,6 +106,10 @@ export async function POST(req: Request) {
 3. **Race** — `Promise.race([sleep(...), hook])` blocks until either the timer fires or the hook is resumed, whichever comes first.
 4. **Fresh hooks per window** — after a sleep completes normally, the previous hook instance is consumed. A new `.create()` call registers a fresh hook for the next sleep window, reusing the same token.
 
+<Callout type="info">
+Deterministic hook tokens can also serve as the idempotency point for scheduled runs. If duplicate schedule starts would send duplicate campaigns or reminders, create a hook with a token derived from the campaign key near the beginning of the workflow and route retries through that hook. If two scheduled starts race, the duplicate run can detect the conflict early with `await hook.getConflict()`, which resolves with the active owner so the duplicate can defer to it. See [Idempotency](/docs/foundations/idempotency).
+</Callout>
+
 ## Adapting to your use case
 
 - **Change durations** — replace `"2d"` with any duration string (`"1h"`, `"7d"`, `"30m"`) or a `Date` object for absolute times.
