@@ -547,6 +547,37 @@ export function workflowEntrypoint(
                     }
                   };
 
+                  // Re-invoke the orchestrator. Outside turbo this returns
+                  // `{ timeoutSeconds }`, which makes the queue reschedule the
+                  // CURRENT delivery's message. In turbo that is a trap: the
+                  // current message carries `runInput`, and on async queues
+                  // (e.g. graphile-worker) a reschedule comes back as delivery
+                  // attempt 1 — so turbo re-engages, skips the event-log load
+                  // again, replays against an empty log, never observes the
+                  // hook/attr event this invocation just wrote, and re-suspends
+                  // forever (the run wedges). Under turbo we instead enqueue an
+                  // explicit continuation that carries NO `runInput`, so the
+                  // next delivery is a normal (non-turbo) load-and-replay that
+                  // observes the committed events and makes progress; we then
+                  // return `undefined` so the queue treats this delivery as done
+                  // rather than also rescheduling it.
+                  const reinvoke = async (
+                    delaySeconds: number
+                  ): Promise<{ timeoutSeconds: number } | undefined> => {
+                    if (!turbo) return { timeoutSeconds: delaySeconds };
+                    await queueMessage(
+                      world,
+                      getWorkflowQueueName(workflowName, namespace),
+                      {
+                        runId,
+                        traceCarrier: await nextTraceCarrier(),
+                        requestedAt: new Date(),
+                      },
+                      delaySeconds > 0 ? { delaySeconds } : undefined
+                    );
+                    return undefined;
+                  };
+
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
                   // from the batch are done. If so, replay inline (saving a queue
@@ -1335,7 +1366,7 @@ export function workflowEntrypoint(
 
                         // Hook conflict: break loop, re-invoke via queue
                         if (suspensionResult.hasHookConflict) {
-                          return { timeoutSeconds: 0 };
+                          return await reinvoke(0);
                         }
 
                         // Native workflow attribute events are resolved through
@@ -1344,7 +1375,7 @@ export function workflowEntrypoint(
                         // durable attribute event can win without executing
                         // the losing step.
                         if (suspensionResult.hasAttributeEvents) {
-                          return { timeoutSeconds: 0 };
+                          return await reinvoke(0);
                         }
 
                         const pendingSteps = suspensionResult.pendingSteps;
@@ -1467,7 +1498,7 @@ export function workflowEntrypoint(
                           // queued or none pending) the run would sit idle
                           // until some unrelated message woke it.
                           if (suspensionResult.hasAwaitedHookCreation) {
-                            return { timeoutSeconds: 0 };
+                            return await reinvoke(0);
                           }
                           return;
                         }
@@ -1674,7 +1705,7 @@ export function workflowEntrypoint(
                           // the in-invocation flush window (<= 500ms + waitUntil),
                           // so ops settle before the post-backoff redelivery
                           // replays and reads them.
-                          return { timeoutSeconds: throttleTimeout };
+                          return await reinvoke(throttleTimeout);
                         }
 
                         if (toRetry.length > 0) {
