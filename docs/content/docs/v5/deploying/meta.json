@@ -1,4 +1,4 @@
 {
   "title": "Deploying",
-  "pages": ["...deploying", "building-a-world", "recovering-in-flight-runs"]
+  "pages": ["...deploying", "recovering-in-flight-runs", "building-a-world"]
 }

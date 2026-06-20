@@ -256,6 +256,28 @@ npx workflow inspect runs
 
 ## Deploying to production
 
+<Accordion type="single" collapsible>
+  <AccordionItem value="recover-in-flight-runs" className="[&_h3]:my-0">
+    <AccordionTrigger className="text-sm">
+      ### Recover in-flight runs after a restart (Optional)
+    </AccordionTrigger>
+    <AccordionContent className="[&_p]:my-2">
+
+On self-hosted ([local](/docs/deploying/world/local-world) / [Postgres](/docs/deploying/world/postgres-world)) worlds, start the World at server boot so runs that were in flight when the process stopped resume after a restart. **Not required for Vercel deployments** — the Vercel World redelivers in-flight work itself. See [Recovering in-flight runs](/docs/deploying/recovering-in-flight-runs).
+
+```ts title="server/plugins/workflow.ts"
+import { defineNitroPlugin } from 'nitro/~internal/runtime/plugin';
+import { ensureWorldStarted } from 'workflow/runtime';
+
+export default defineNitroPlugin(() => {
+  void ensureWorldStarted();
+});
+```
+
+    </AccordionContent>
+  </AccordionItem>
+</Accordion>
+
 Workflow SDK apps currently work best when deployed to [Vercel](https://vercel.com/home) and needs no special configuration.
 
 <FluidComputeCallout />

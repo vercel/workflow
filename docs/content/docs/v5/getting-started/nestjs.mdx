@@ -414,6 +414,28 @@ Check both of these first:
 2. Your NestJS app imports and registers the `WorkflowModule`.
 
 See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
+
+<Accordion type="single" collapsible>
+  <AccordionItem value="recover-in-flight-runs" className="[&_h3]:my-0">
+    <AccordionTrigger className="text-sm">
+      ### Recover in-flight runs after a restart (Optional)
+    </AccordionTrigger>
+    <AccordionContent className="[&_p]:my-2">
+
+On self-hosted ([local](/docs/deploying/world/local-world) / [Postgres](/docs/deploying/world/postgres-world)) worlds, start the World at server boot so runs that were in flight when the process stopped resume after a restart. **Not required for Vercel deployments** — the Vercel World redelivers in-flight work itself. See [Recovering in-flight runs](/docs/deploying/recovering-in-flight-runs).
+
+```ts title="src/main.ts"
+async function bootstrap() {
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted();
+  // ...create and listen
+}
+```
+
+    </AccordionContent>
+  </AccordionItem>
+</Accordion>
+
 ## Next Steps
 
 - Learn more about the [Foundations](/docs/foundations).
