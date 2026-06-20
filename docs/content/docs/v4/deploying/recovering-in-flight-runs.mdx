@@ -44,9 +44,17 @@ export async function register() {
 }
 ```
 
-### Nitro, Nuxt, Express, Hono, Fastify
+### Nitro, Nuxt, Express, Hono, Fastify (Nitro)
 
-No action required. The Nitro integration registers a server plugin that starts the World when the server boots.
+Add a [Nitro server plugin](https://nitro.build/guide/plugins) (Nuxt: `server/plugins/`) that starts the World at boot:
+
+```ts title="server/plugins/workflow.ts"
+import { ensureWorldStarted } from 'workflow/runtime';
+
+export default defineNitroPlugin(() => {
+  void ensureWorldStarted();
+});
+```
 
 ### SvelteKit
 
