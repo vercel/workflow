@@ -57,6 +57,12 @@ class VitestBuilder extends BaseBuilder {
       rewriteTsExtensions: true,
       format: 'esm',
       inputFiles,
+      // The generated bundles are imported directly by Node in the vitest
+      // worker (no downstream bundler), so project-local imports must be
+      // bundled inline. Externalizing them emits raw `.ts` specifiers that
+      // Node's native ESM loader can only handle with erasable-syntax-only
+      // type stripping (and not at all on older Node versions).
+      bundleTransitiveLocalStepDependencies: true,
     });
   }
 }
