@@ -46,16 +46,7 @@ export async function register() {
 
 ### Nitro, Nuxt, Express, Hono, Fastify (Nitro)
 
-Add a [Nitro server plugin](https://nitro.build/guide/plugins) (Nuxt: `server/plugins/`) that starts the World at boot:
-
-```ts title="server/plugins/workflow.ts"
-import { defineNitroPlugin } from 'nitro/~internal/runtime/plugin';
-import { ensureWorldStarted } from 'workflow/runtime';
-
-export default defineNitroPlugin(() => {
-  void ensureWorldStarted();
-});
-```
+No action required — the `@workflow/nitro` integration registers a Nitro server plugin that starts the World at boot for you. (Not on Vercel deploys, where the push-based Vercel World needs no boot recovery.)
 
 ### SvelteKit
 
