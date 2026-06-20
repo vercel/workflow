@@ -18,6 +18,18 @@ To explicitly use the local world in any environment, set the environment variab
 WORKFLOW_TARGET_WORLD=local
 ```
 
+## Starting the World
+
+The Local World keeps its queue in memory, so a run that is in flight (for example, sleeping) when the process stops only resumes if the World is started again on boot. Start it once at server startup so in-flight runs recover after a restart:
+
+```ts
+import { ensureWorldStarted } from 'workflow/runtime';
+
+await ensureWorldStarted();
+```
+
+Where to call this depends on your framework — see [Recovering in-flight runs](/docs/deploying/recovering-in-flight-runs).
+
 ## Observability
 
 The `workflow` CLI uses the local world by default. Running these commands inside your workflow project will show your local development workflows:
