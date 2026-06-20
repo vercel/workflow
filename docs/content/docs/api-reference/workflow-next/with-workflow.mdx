@@ -36,6 +36,30 @@ Remove that package from `serverExternalPackages` in your
 `next.config` to silence the warning.
 </Callout>
 
+### Workflow Discovery in Next.js
+
+`withWorkflow()` discovers workflows by scanning your Next.js entrypoints — App
+Router `route`, `page`, and `layout` files (under `app/` or `src/app/`) and any
+file under `pages/` or `src/pages/` — for `start()` calls imported from
+`workflow/api`. The workflow and step files themselves can live anywhere (for
+example `src/workflows/`); they are discovered transitively through imports, as
+long as a `start()` call in an entrypoint statically reaches them.
+
+<Callout type="info">
+Call `start()` from server-side entrypoints, including Route Handlers and Server
+Actions. Don't call workflow functions directly — that bypasses the workflow
+runtime.
+</Callout>
+
+### Next.js Server Actions and `"use server"`
+
+Don't put a top-level `"use server"` directive in modules imported by workflow
+or step functions. Workflow transformation wraps imported modules in synchronous
+initializers, and Next.js rejects a `"use server"` directive inside that wrapper
+with errors like `Server Actions must be async functions`. Keep `"use server"`
+on the files that define your Server Actions, and move shared logic into
+separate modules that don't carry the directive.
+
 ### Monorepos and Workspace Imports
 
 By default, Next.js detects the correct workspace root automatically. If your Next.js app lives in a subdirectory such as `apps/web` and workspace resolution is not working correctly, you can set `outputFileTracingRoot` as a workaround:
