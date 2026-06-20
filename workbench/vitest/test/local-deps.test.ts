@@ -6,7 +6,8 @@
  * non-erasable TypeScript syntax) instead of bundled inline.
  */
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { start } from 'workflow/api';
 import { localHelperWorkflow } from '../workflows/local-deps.js';
@@ -25,7 +26,7 @@ it('bundles local helpers into the step bundle instead of externalizing', async 
   // so this guards the fix in either environment.
   const bundle = await readFile(
     join(
-      import.meta.dirname,
+      dirname(fileURLToPath(import.meta.url)),
       '..',
       '.workflow-vitest',
       '__step_registrations.mjs'
