@@ -49,6 +49,7 @@ export async function register() {
 Add a [Nitro server plugin](https://nitro.build/guide/plugins) (Nuxt: `server/plugins/`) that starts the World at boot:
 
 ```ts title="server/plugins/workflow.ts"
+import { defineNitroPlugin } from 'nitro/~internal/runtime/plugin';
 import { ensureWorldStarted } from 'workflow/runtime';
 
 export default defineNitroPlugin(() => {
