@@ -4,15 +4,11 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
 
 async function bootstrap() {
-  // Start the Postgres World if configured
-  if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    const { getWorld } = await import('workflow/runtime');
-    const world = await getWorld();
-    if (world.start) {
-      console.log('Starting World workers...');
-      await world.start();
-    }
-  }
+  // Start the World once at server boot so in-flight runs are recovered after a
+  // restart without needing a workflow operation. No-op on the Vercel World;
+  // runs recovery for the local/postgres worlds.
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted();
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,

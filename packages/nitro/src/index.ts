@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -229,6 +229,12 @@ export default {
         'workflow/workflows.mjs'
       );
 
+      // Start the World once at server boot (Nitro server plugin) so in-flight
+      // runs are recovered after a restart without needing a workflow
+      // operation. No-op on the Vercel World; runs recovery for the
+      // local/postgres worlds. Covers express/hono/fastify/nuxt (all Nitro).
+      addStartupPlugin(nitro);
+
       // Nitro v3+ Vercel deploy: configure function rules for the combined
       // flow handler so it gets the queue triggers + max duration that the
       // workflow runtime needs. Workflow-required fields (`maxDuration`,
@@ -291,6 +297,35 @@ export default {
     }
   },
 } satisfies NitroModule;
+
+const STARTUP_PLUGIN_VIRTUAL_ID = '#workflow/startup-plugin';
+
+/**
+ * Register a Nitro server plugin that starts the World once when the Nitro app
+ * is created (server boot). Starting the World runs boot-time recovery
+ * (`reenqueueActiveRuns`) for self-hosted queue-backed worlds so in-flight runs
+ * resume after a restart without requiring a workflow operation to wake the
+ * process. The bare `@workflow/core/runtime` import is bundled by Nitro/rollup
+ * (the flow handler already pulls in the runtime), so this works in dev, prod,
+ * and Vercel builds. On the Vercel World `ensureWorldStarted()` is a no-op.
+ */
+function addStartupPlugin(nitro: Nitro) {
+  nitro.options.virtual[STARTUP_PLUGIN_VIRTUAL_ID] = /* js */ `
+    import { ensureWorldStarted } from "@workflow/core/runtime";
+    export default async () => {
+      try {
+        await ensureWorldStarted();
+      } catch (error) {
+        console.error('[workflow] Failed to start World on server startup:', error);
+      }
+    };
+  `;
+
+  nitro.options.plugins = nitro.options.plugins || [];
+  if (!nitro.options.plugins.includes(STARTUP_PLUGIN_VIRTUAL_ID)) {
+    nitro.options.plugins.push(STARTUP_PLUGIN_VIRTUAL_ID);
+  }
+}
 
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
 

@@ -26,12 +26,14 @@ const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
 const StubbedWorldCachePromise = Symbol.for(
   '@workflow/world//stubbedCachePromise'
 );
+const WorldStartPromise = Symbol.for('@workflow/world//startPromise');
 
 const globalSymbols: typeof globalThis & {
   [WorldCache]?: World;
   [StubbedWorldCache]?: World;
   [WorldCachePromise]?: Promise<World>;
   [StubbedWorldCachePromise]?: Promise<World>;
+  [WorldStartPromise]?: Promise<void>;
 } = globalThis;
 
 // Dynamic import for custom world modules. Uses a standard import()
@@ -179,6 +181,33 @@ export const getWorld = async (): Promise<World> => {
 };
 
 /**
+ * Ensure the World's background tasks are started exactly once per process,
+ * and that boot-time recovery (`reenqueueActiveRuns` for queue-backed Worlds)
+ * runs. Framework integrations call this at server startup — e.g. a Next.js
+ * `instrumentation.ts`, a Nitro server plugin, a SvelteKit `init` hook — so
+ * that in-flight runs resume after a restart WITHOUT requiring a workflow
+ * operation to wake the process.
+ *
+ * Idempotent: the start promise is cached on `globalThis` and reused, so
+ * repeated calls (e.g. Next.js invoking `register()` for multiple runtimes)
+ * start the World only once. On failure the cached promise is cleared so a
+ * later call can retry. Safe to call regardless of the target World — for
+ * push-based Worlds (Vercel) `world.start()` is a no-op.
+ */
+export const ensureWorldStarted = async (): Promise<void> => {
+  if (!globalSymbols[WorldStartPromise]) {
+    globalSymbols[WorldStartPromise] = (async () => {
+      const world = await getWorld();
+      await world.start?.();
+    })().catch((err) => {
+      globalSymbols[WorldStartPromise] = undefined;
+      throw err;
+    });
+  }
+  await globalSymbols[WorldStartPromise];
+};
+
+/**
  * Reset the cached world instance. This should be called when environment
  * variables change and you need to reinitialize the world with new config.
  */
@@ -187,6 +216,10 @@ export const setWorld = (world: World | undefined): void => {
   globalSymbols[StubbedWorldCache] = world;
   globalSymbols[WorldCachePromise] = undefined;
   globalSymbols[StubbedWorldCachePromise] = undefined;
+  // Clear the start guard too: a freshly injected world has not been started,
+  // so a subsequent ensureWorldStarted() should start it rather than no-op on
+  // the previous world's cached promise.
+  globalSymbols[WorldStartPromise] = undefined;
 };
 
 // Register getWorld on globalThis so getWorldLazy can call it directly when

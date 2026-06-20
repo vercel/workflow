@@ -114,6 +114,7 @@ export {
 // filesystem operations into the flow route bundle.
 export {
   createWorld,
+  ensureWorldStarted,
   getWorld,
   getWorldHandlers,
   setWorld,

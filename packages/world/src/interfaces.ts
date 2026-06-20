@@ -310,6 +310,22 @@ export interface World extends Queue, Streamer, Storage {
   /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.
+   *
+   * Framework integrations are expected to call this exactly once at server
+   * startup (e.g. from a Next.js `instrumentation.ts`, a Nitro server plugin,
+   * a SvelteKit `init` hook). Beyond starting background workers, this is also
+   * where a World performs **restart recovery**: re-enqueuing `pending`/`running`
+   * runs that were in flight when the process last stopped (see
+   * `reenqueueActiveRuns`). Because of this, `start()`:
+   *
+   * - MUST be idempotent. The shared `ensureWorldStarted()` helper guards
+   *   against repeated invocation per process, but implementations should also
+   *   tolerate being called more than once, and recovery re-enqueues must be
+   *   safe to duplicate (the workflow handler is idempotent via event-log replay).
+   * - MAY be a no-op. Push-based / serverless Worlds (e.g. the Vercel World)
+   *   need no boot recovery — durability comes from the queue's at-least-once
+   *   redelivery, not from a long-lived process re-scanning storage — so they
+   *   implement an empty `start()` purely for interface compliance.
    */
   start?(): Promise<void>;
 

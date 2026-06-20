@@ -1,0 +1,88 @@
+---
+title: Recovering in-flight runs
+description: Start the World at server boot so runs that were in flight when the process stopped resume after a restart.
+type: guide
+summary: Call the World's start() at server boot to recover in-flight runs after a restart.
+prerequisites:
+  - /docs/deploying
+related:
+  - /docs/deploying/world/local-world
+  - /docs/deploying/world/postgres-world
+  - /docs/deploying/world/vercel-world
+---
+
+When you self-host a workflow app on a long-lived server (the [local](/docs/deploying/world/local-world) and [Postgres](/docs/deploying/world/postgres-world) worlds), a run can be mid-flight — sleeping, waiting on a hook, or between steps — when the process stops or crashes. To resume those runs, the World's `start()` method runs **boot-time recovery**: it re-enqueues every `pending`/`running` run so execution continues.
+
+Recovery only happens if `start()` is actually called, and it must be called **once at server startup** — not in response to a request. Otherwise an idle server that restarted with in-flight runs would never pick them back up.
+
+## `ensureWorldStarted()`
+
+Call `ensureWorldStarted()` from `workflow/runtime` in your framework's server-startup hook:
+
+```ts
+import { ensureWorldStarted } from 'workflow/runtime';
+
+await ensureWorldStarted();
+```
+
+It is **idempotent** — it starts the World at most once per process, so it is safe to call from a hook that may run more than once. Re-enqueuing a run that is already progressing is harmless: the workflow handler is replay-idempotent, so duplicate enqueues converge rather than double-execute.
+
+You can call this regardless of which World you target. On the [Vercel World](/docs/deploying/world/vercel-world) it is a no-op — delivery is push-based and the queue redelivers in-flight messages on its own, so there is no long-lived process to recover.
+
+## Wiring it per framework
+
+### Next.js
+
+Add an `instrumentation.ts` at your project root. Guard on the Node.js runtime — `instrumentation.ts` also runs in the Edge runtime, which can't load the world modules:
+
+```ts title="instrumentation.ts"
+export async function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    const { ensureWorldStarted } = await import('workflow/runtime');
+    await ensureWorldStarted();
+  }
+}
+```
+
+### Nitro, Nuxt, Express, Hono, Fastify
+
+No action required. The Nitro integration registers a server plugin that starts the World when the server boots.
+
+### SvelteKit
+
+Use the [`init`](https://svelte.dev/docs/kit/hooks#Shared-hooks-init) server hook:
+
+```ts title="src/hooks.server.ts"
+import type { ServerInit } from '@sveltejs/kit';
+
+export const init: ServerInit = async () => {
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted();
+};
+```
+
+### NestJS
+
+Call it in your `bootstrap()` before listening:
+
+```ts title="src/main.ts"
+async function bootstrap() {
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted();
+  // ...create and listen
+}
+```
+
+### Astro
+
+Astro has no startup hook that works across all adapters, so start the World from middleware. `ensureWorldStarted()` is idempotent, so it only does real work on the first request:
+
+```ts title="src/middleware.ts"
+import { defineMiddleware } from 'astro:middleware';
+
+export const onRequest = defineMiddleware(async (_context, next) => {
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted();
+  return next();
+});
+```
