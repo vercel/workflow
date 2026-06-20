@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -210,8 +210,21 @@ export default {
         });
       }
 
-      if (nitro.options.dev) {
-        addDashboardHandler(nitro);
+      // Embedded observability dashboard. Defaults to on in dev / off in prod
+      // builds; when disabled nothing is registered, so prod bundles never
+      // import @workflow/web. Excluded on Vercel deploys (the on-disk build/
+      // and node_modules import don't survive a serverless bundle — users use
+      // the hosted Vercel dashboard there).
+      const dashboardOption = nitro.options.workflow?.dashboard;
+      const dashboardEnabled =
+        typeof dashboardOption === 'object'
+          ? (dashboardOption.enabled ?? nitro.options.dev)
+          : (dashboardOption ?? nitro.options.dev);
+      const dashboardPath =
+        (typeof dashboardOption === 'object' && dashboardOption.path) ||
+        '/_workflow';
+      if (dashboardEnabled && !isVercelDeploy) {
+        addDashboardHandler(nitro, dashboardPath);
       }
 
       addVirtualHandler(
@@ -294,69 +307,84 @@ export default {
 
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
 
-function addDashboardHandler(nitro: Nitro) {
-  const route = '/_workflow';
-  nitro.options.handlers.push({ route, handler: DASHBOARD_VIRTUAL_ID });
-
-  // Resolve `@workflow/web/server` relative to this module so consumers don't
-  // need a direct dependency on `@workflow/web`. The path is inlined into the
-  // virtual handler as a file:// URL so Node can `import()` it at runtime
-  // regardless of where the generated Nitro bundle ends up.
+/**
+ * Mount the observability dashboard in-process at `basename` (e.g. `/_workflow`).
+ *
+ * The entire `@workflow/web` UI (SSR + static client assets + RPC) is served by
+ * a single Web-standard fetch handler running inside this Nitro process — no
+ * second server, no separate port, no redirect. The handler is framework-
+ * neutral; this is just its first consumer.
+ */
+function addDashboardHandler(nitro: Nitro, basename: string) {
+  // Resolve `@workflow/web/handler` relative to this module so consumers don't
+  // need a direct dependency on `@workflow/web`. Inlined into the virtual
+  // handler as a file:// URL and imported with @vite-ignore/webpackIgnore so
+  // Node `import()`s it from node_modules at runtime — keeping @workflow/web's
+  // (large, React) dependency graph out of the Nitro server bundle.
   const require_ = createRequire(import.meta.url);
-  let webServerUrl: string;
+  let webHandlerUrl: string;
   try {
-    webServerUrl = pathToFileURL(require_.resolve('@workflow/web/server')).href;
+    webHandlerUrl = pathToFileURL(
+      require_.resolve('@workflow/web/handler')
+    ).href;
   } catch {
-    webServerUrl = '@workflow/web/server';
+    webHandlerUrl = '@workflow/web/handler';
   }
 
   const handlerSource = /* js */ `
-    const __workflowWebServerUrl = ${JSON.stringify(webServerUrl)};
-    let serverPromise = null;
-    async function getDashboardUrl() {
-      if (!serverPromise) {
-        serverPromise = (async () => {
-          const { startServer } = await import(/* @vite-ignore */ /* webpackIgnore: true */ __workflowWebServerUrl);
-          const server = await startServer(0);
-          const address = server.address();
-          const port = typeof address === 'object' && address ? address.port : 3456;
-          return 'http://localhost:' + port;
+    const __workflowWebHandlerUrl = ${JSON.stringify(webHandlerUrl)};
+    const __workflowDashboardBasename = ${JSON.stringify(basename)};
+    let handlerPromise = null;
+    async function getDashboardHandler() {
+      if (!handlerPromise) {
+        handlerPromise = (async () => {
+          const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ __workflowWebHandlerUrl);
+          return mod.createWorkflowWebHandler({ basename: __workflowDashboardBasename });
         })().catch((error) => {
-          serverPromise = null;
+          handlerPromise = null;
           throw error;
         });
       }
-      return serverPromise;
+      return handlerPromise;
     }
   `;
 
   if (!nitro.routing) {
+    // Nitro v2 (legacy h3)
     nitro.options.virtual[DASHBOARD_VIRTUAL_ID] = /* js */ `
       import { fromWebHandler } from "h3";
       ${handlerSource}
-      export default fromWebHandler(async () => {
+      export default fromWebHandler(async (request) => {
         try {
-          const url = await getDashboardUrl();
-          return Response.redirect(url, 302);
+          const handler = await getDashboardHandler();
+          return await handler(request);
         } catch (error) {
-          console.error('Failed to start workflow dashboard:', error);
-          return new Response('Failed to start workflow dashboard: ' + error.message, { status: 500 });
+          console.error('Failed to render workflow dashboard:', error);
+          return new Response('Failed to render workflow dashboard: ' + (error && error.message || error), { status: 500 });
         }
       });
     `;
   } else {
+    // Nitro v3+ (native web handlers)
     nitro.options.virtual[DASHBOARD_VIRTUAL_ID] = /* js */ `
       ${handlerSource}
-      export default async () => {
+      export default async ({ req }) => {
         try {
-          const url = await getDashboardUrl();
-          return Response.redirect(url, 302);
+          const handler = await getDashboardHandler();
+          return await handler(req);
         } catch (error) {
-          console.error('Failed to start workflow dashboard:', error);
-          return new Response('Failed to start workflow dashboard: ' + error.message, { status: 500 });
+          console.error('Failed to render workflow dashboard:', error);
+          return new Response('Failed to render workflow dashboard: ' + (error && error.message || error), { status: 500 });
         }
       };
     `;
+  }
+
+  // Register the exact mount path and a catch-all beneath it so the index,
+  // client routes, API routes (RPC/stream), and static assets all route to the
+  // embedded handler, which resolves them against `basename` internally.
+  for (const route of [basename, `${basename}/**`]) {
+    nitro.options.handlers.push({ route, handler: DASHBOARD_VIRTUAL_ID });
   }
 }
 
