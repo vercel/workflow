@@ -277,7 +277,9 @@ function extractWorkflowCodeFromBundle(ast: Program): string | null {
           decl.init
         ) {
           if (decl.init.type === 'TemplateLiteral') {
-            return decl.init.quasis.map((q) => q.cooked || q.raw).join('');
+            return decl.init.quasis
+              .map((q) => decodeEscapedWorkflowCode(q.raw))
+              .join('');
           }
           if (decl.init.type === 'StringLiteral') {
             return decl.init.value;
@@ -287,6 +289,10 @@ function extractWorkflowCodeFromBundle(ast: Program): string | null {
     }
   }
   return null;
+}
+
+function decodeEscapedWorkflowCode(rawTemplateElement: string): string {
+  return rawTemplateElement.replace(/\\([\\`$])/g, '$1');
 }
 
 /**
