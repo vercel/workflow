@@ -231,9 +231,12 @@ export default {
 
       // Start the World once at server boot (Nitro server plugin) so in-flight
       // runs are recovered after a restart without needing a workflow
-      // operation. No-op on the Vercel World; runs recovery for the
-      // local/postgres worlds. Covers express/hono/fastify/nuxt (all Nitro).
-      addStartupPlugin(nitro);
+      // operation. Covers self-hosted express/hono/fastify/nuxt (all Nitro).
+      // Skipped on Vercel: the Vercel World's start() is a no-op (push-based)
+      // and the plugin's build-time file:// path wouldn't resolve there.
+      if (!isVercelDeploy) {
+        addStartupPlugin(nitro);
+      }
 
       // Nitro v3+ Vercel deploy: configure function rules for the combined
       // flow handler so it gets the queue triggers + max duration that the
@@ -305,15 +308,34 @@ const STARTUP_PLUGIN_VIRTUAL_ID = '#workflow/startup-plugin';
  * is created (server boot). Starting the World runs boot-time recovery
  * (`reenqueueActiveRuns`) for self-hosted queue-backed worlds so in-flight runs
  * resume after a restart without requiring a workflow operation to wake the
- * process. The bare `@workflow/core/runtime` import is bundled by Nitro/rollup
- * (the flow handler already pulls in the runtime), so this works in dev, prod,
- * and Vercel builds. On the Vercel World `ensureWorldStarted()` is a no-op.
+ * process.
+ *
+ * Only registered for non-Vercel builds: on Vercel the World is the push-based
+ * Vercel World whose `start()` is a no-op (VQS redelivers), and the resolved
+ * `file://` path below wouldn't survive into the serverless function anyway.
+ *
+ * `@workflow/core/runtime` is resolved to a `file://` URL at build time and
+ * dynamically imported at runtime (mirrors `addDashboardHandler`). A bare
+ * static `import "@workflow/core/runtime"` cannot be resolved by Rollup/Vite
+ * in the Nitro/Vite build graph; the vite-/webpack-ignored dynamic import keeps
+ * it out of the bundle and resolves it at runtime on the (self-hosted) server.
+ * `ensureWorldStarted()`/`getWorld()` cache the World on `globalThis`, so this
+ * shares the same World instance the flow handler uses.
  */
 function addStartupPlugin(nitro: Nitro) {
+  const require_ = createRequire(import.meta.url);
+  let runtimeUrl: string;
+  try {
+    runtimeUrl = pathToFileURL(require_.resolve('@workflow/core/runtime')).href;
+  } catch {
+    runtimeUrl = '@workflow/core/runtime';
+  }
+
   nitro.options.virtual[STARTUP_PLUGIN_VIRTUAL_ID] = /* js */ `
-    import { ensureWorldStarted } from "@workflow/core/runtime";
+    const __workflowRuntimeUrl = ${JSON.stringify(runtimeUrl)};
     export default async () => {
       try {
+        const { ensureWorldStarted } = await import(/* @vite-ignore */ /* webpackIgnore: true */ __workflowRuntimeUrl);
         await ensureWorldStarted();
       } catch (error) {
         console.error('[workflow] Failed to start World on server startup:', error);
