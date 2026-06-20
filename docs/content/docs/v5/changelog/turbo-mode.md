@@ -55,6 +55,10 @@ The barrier orders **event** writes. The forced-optimistic first step **body** r
 
 The non-turbo path awaits `run_started` up front and, if the run was cancelled or expired between `start()` and this delivery, returns before any workflow/step code runs. Turbo synthesizes `status: 'running'` and runs the first step body optimistically, so such a cancellation is only observed when the backgrounded `run_started` (and the barrier-chained `step_started`) rejects — *after* the body's side effects have executed (they are then discarded via reconciliation). For non-idempotent first steps this is the same "body runs before ownership is confirmed" tradeoff as optimistic inline start; `WORKFLOW_TURBO=0` restores the up-front skip.
 
+### `workflowStartedAt` reflects the first delivery's clock
+
+Replay matching — step/wait/hook correlation IDs, the VM seed, and the in-VM `Date.now()` — is derived from a replay-stable timestamp recovered from the run ID, so it does **not** depend on `startedAt` and is identical on every delivery. The one value that still tracks `startedAt` is the user-facing `getWorkflowMetadata().workflowStartedAt`: under turbo the first delivery synthesizes it from the local clock, while a later (non-turbo) delivery loads the server-canonical `startedAt`, so the two can differ by the start→first-delivery latency. Treat `workflowStartedAt` as an approximate, human-facing timestamp — do **not** branch workflow control flow on it (e.g. `Date.now() - +workflowStartedAt > threshold`), since that can take different paths across deliveries and diverge on replay. For timing logic that must survive replay, use the in-VM `Date.now()` / `new Date()`, which is replay-stable.
+
 ## Configuration
 
 Turbo mode is **on by default**. Set `WORKFLOW_TURBO=0` (or `false`) to disable it — every invocation then takes the existing awaited path. This is a useful kill-switch for deployments whose first-step bodies are not idempotent and stream-safe (the same caveat as optimistic inline start), or for isolating behavior while debugging.

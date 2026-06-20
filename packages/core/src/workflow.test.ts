@@ -219,6 +219,85 @@ describe('runWorkflow', () => {
     ).toEqual(3);
   });
 
+  it('regenerates step correlation IDs independent of startedAt (turbo replay-stability)', async () => {
+    // Turbo's first delivery synthesizes `startedAt` from the local clock,
+    // while later (non-turbo) deliveries load the server-canonical `startedAt`.
+    // Replay matching must NOT depend on `startedAt`: correlation IDs come from
+    // `generateUlid`, keyed off the run-ID-recovered `fixedTimestamp`, not
+    // `startedAt`. Here the recorded `add` event uses the createdAt-derived
+    // correlation ID, but `startedAt` is months away — replay must still
+    // regenerate the same ID and consume the completion rather than throwing
+    // ReplayDivergenceError. Reverting `generateUlid` to `ulid(+startedAt)`
+    // fails this test.
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'wrun_123';
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_123',
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      // Diverges from createdAt by months — replay must ignore it.
+      startedAt: new Date('2024-06-01T12:34:56.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const events: Event[] = [
+      {
+        eventId: 'event-0',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
+        eventData: {
+          stepName: 'add',
+        },
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+      {
+        eventId: 'event-1',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
+        eventData: {
+          stepName: 'add',
+          result: await dehydrateStepReturnValue(
+            3,
+            'wrun_123',
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:02.000Z'),
+      },
+    ];
+
+    const result = await runWorkflow(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+          async function workflow() {
+            const a = await add(1, 2);
+            return a;
+          }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      noEncryptionKey
+    );
+
+    expect(
+      await hydrateWorkflowReturnValue(
+        result as any,
+        'wrun_123',
+        noEncryptionKey,
+        ops
+      )
+    ).toEqual(3);
+  });
+
   // Test that timestamps update correctly as events are consumed
   it('should update the timestamp in the vm context as events are replayed', async () => {
     const ops: Promise<any>[] = [];
