@@ -85,19 +85,15 @@ export async function getNextBuilderEager() {
       if (this.config.watch) {
         // TODO: implement watch mode for combined bundle
         // For now, fall back to full rebuild on file changes
-        let stepsCtx = combinedResult?.stepsContext;
-        if (!stepsCtx) {
+        if (!combinedResult?.interimBundleCtx || !combinedResult.bundleFinal) {
           throw new Error(
-            'Invariant: expected steps build context in watch mode'
-          );
-        }
-        if (!combinedResult?.interimBundleCtx || !combinedResult?.bundleFinal) {
-          throw new Error(
-            'Invariant: expected workflows bundle context in watch mode'
+            'Invariant: expected workflow build context in watch mode'
           );
         }
 
-        // Use stepsCtx for the watch rebuild (workflow interim ctx from combined)
+        // Step registrations may be emitted as source imports without an
+        // esbuild context when externalizeNonSteps is enabled.
+        let stepsCtx = combinedResult.stepsContext;
         let workflowsCtx = {
           interimBundleCtx: combinedResult.interimBundleCtx,
           bundleFinal: combinedResult.bundleFinal,
@@ -193,18 +189,14 @@ export async function getNextBuilderEager() {
         };
 
         const fullRebuild = async () => {
+          this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
 
-          await stepsCtx!.dispose();
+          await stepsCtx?.dispose();
           await workflowsCtx.interimBundleCtx.dispose();
 
           const newCombined = await this.buildCombinedFunction(options);
-          if (!newCombined?.stepsContext) {
-            throw new Error(
-              'Invariant: expected steps build context after rebuild'
-            );
-          }
           stepsCtx = newCombined.stepsContext;
 
           if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
@@ -458,6 +450,7 @@ export async function getNextBuilderEager() {
         flowOutfile: join(flowRouteDir, 'route.js'),
         bundleFinalOutput: false,
         externalizeNonSteps: true,
+        sourceStepRegistrationImports: true,
         tsconfigPath,
       });
     }

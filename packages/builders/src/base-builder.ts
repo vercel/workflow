@@ -22,8 +22,11 @@ import {
   type WorkflowManifest,
 } from './apply-swc-transform.js';
 import { createWorkflowEntrypointOptionsCode } from './constants.js';
-import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
+import {
+  fastDiscoverEntries,
+  type DiscoveredEntries,
+} from './fast-discovery.js';
 import {
   getImportPath,
   resolveModuleSpecifier,
@@ -38,6 +41,8 @@ import { extractWorkflowGraphs } from './workflows-extractor.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
+
+export type { DiscoveredEntries } from './fast-discovery.js';
 
 /**
  * Legacy opt-in for source maps on the final workflow wrapper + webhook
@@ -127,10 +132,73 @@ function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
   return file.replace(/\\/g, '/');
 }
 
-export interface DiscoveredEntries {
-  discoveredSteps: Set<string>;
-  discoveredWorkflows: Set<string>;
-  discoveredSerdeFiles: Set<string>;
+type ManifestEntryLocation = {
+  filePath: string;
+  name: string;
+};
+
+function formatIdLocation(location: ManifestEntryLocation): string {
+  return `${location.filePath}#${location.name}`;
+}
+
+function assertUniqueManifestIds<TEntry>(
+  entriesByFile: Record<string, Record<string, TEntry>> | undefined,
+  ids: Map<string, ManifestEntryLocation>,
+  getId: (entry: TEntry) => string,
+  label: 'step' | 'workflow'
+): void {
+  for (const [filePath, entries] of Object.entries(entriesByFile || {})) {
+    for (const [name, data] of Object.entries(entries)) {
+      const id = getId(data);
+      const existing = ids.get(id);
+      const current = { filePath, name };
+      if (
+        existing &&
+        (existing.filePath !== current.filePath ||
+          existing.name !== current.name)
+      ) {
+        const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
+        const functionName = `${label} function`;
+        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
+        throw new WorkflowBuildError(
+          `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
+          {
+            hint:
+              `${capitalizedLabel} IDs must be unique across a build. ` +
+              `If you own one of the colliding files, rename the ${functionName} or export ` +
+              `the package file through a unique package subpath. If the collision is in a ` +
+              `transitive dependency you don't control, file an issue with the upstream ` +
+              `package or pin to a non-colliding version.`,
+          }
+        );
+      }
+      ids.set(id, current);
+    }
+  }
+}
+
+function mergeWorkflowManifest(
+  target: WorkflowManifest,
+  incoming: WorkflowManifest,
+  stepIds: Map<string, ManifestEntryLocation>,
+  workflowIds: Map<string, ManifestEntryLocation>
+): void {
+  assertUniqueManifestIds(
+    incoming.steps,
+    stepIds,
+    (data) => data.stepId,
+    'step'
+  );
+  assertUniqueManifestIds(
+    incoming.workflows,
+    workflowIds,
+    (data) => data.workflowId,
+    'workflow'
+  );
+
+  target.workflows = Object.assign(target.workflows || {}, incoming.workflows);
+  target.steps = Object.assign(target.steps || {}, incoming.steps);
+  target.classes = Object.assign(target.classes || {}, incoming.classes);
 }
 
 /**
@@ -295,6 +363,10 @@ export abstract class BaseBuilder {
   private discoveredEntries: WeakMap<string[], DiscoveredEntries> =
     new WeakMap();
 
+  public clearDiscoveredEntriesCache(): void {
+    this.discoveredEntries = new WeakMap();
+  }
+
   /**
    * Pseudo-packages that should not be checked for workflow patterns.
    */
@@ -421,17 +493,16 @@ export abstract class BaseBuilder {
 
     const discoverStart = Date.now();
 
-    // Resolve the SDK runtime entry point so that the discovery pass
-    // traces through it and discovers serde classes (like `Run`) that
-    // live inside SDK packages. Without this, files like `run.js` are
-    // only discovered when user code happens to import them.
+    // Resolve the SDK runtime serde entry point so that the discovery pass
+    // discovers classes like `Run` that live inside SDK packages. Without this,
+    // files like `run.js` are only discovered when user code imports them.
     // This is resolved here (rather than in callers) so that the original
     // `inputs` array reference is preserved for WeakMap caching — callers
     // like createWorkflowsBundle and createStepsBundle can share the same
     // cache entry when they pass the same inputFiles array.
     const resolvedWorkflowRuntime = await enhancedResolve(
       outdir,
-      'workflow/runtime'
+      '@workflow/core/runtime/run'
     ).catch(() => undefined);
     const entryPoints = resolvedWorkflowRuntime
       ? [...inputs, resolvedWorkflowRuntime]
@@ -439,28 +510,13 @@ export abstract class BaseBuilder {
 
     const effectiveTsconfigPath =
       tsconfigPath ?? (await this.findTsConfigPath());
-    const esbuildTsconfigOptions = await getEsbuildTsconfigOptions(
-      effectiveTsconfigPath
-    );
-    try {
-      await esbuild.build({
-        treeShaking: true,
-        entryPoints,
-        plugins: [
-          createDiscoverEntriesPlugin(state, this.transformProjectRoot),
-        ],
-        platform: 'node',
-        write: false,
-        outdir,
-        bundle: true,
-        sourcemap: false,
-        absWorkingDir: this.config.workingDir,
-        logLevel: 'silent',
-        ...esbuildTsconfigOptions,
-        // External packages that should not be bundled during discovery
-        external: this.config.externalPackages || [],
-      });
-    } catch (_) {}
+
+    await fastDiscoverEntries({
+      entryPoints,
+      state,
+      defaultTsconfigPath: effectiveTsconfigPath,
+      workingDir: this.config.workingDir,
+    });
 
     this.logBaseBuilderInfo(
       `Discovering workflow directives`,
@@ -620,11 +676,139 @@ export abstract class BaseBuilder {
     return relativePath;
   }
 
+  protected createRouteImportSpecifier(file: string, routeDir: string): string {
+    const { importPath, isPackage } = getImportPath(
+      file,
+      this.config.workingDir
+    );
+    if (isPackage) {
+      return importPath;
+    }
+
+    let relativePath = relative(routeDir, file).replace(/\\/g, '/');
+    if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
+      relativePath = `./${relativePath}`;
+    }
+    return relativePath;
+  }
+
+  private async createStepSourceRegistrationFile({
+    inputFiles,
+    outfile,
+    tsconfigPath,
+    discoveredEntries,
+  }: {
+    inputFiles: string[];
+    outfile: string;
+    tsconfigPath?: string;
+    discoveredEntries?: DiscoveredEntries;
+  }): Promise<WorkflowManifest> {
+    const stepsBundleStart = Date.now();
+    const workflowManifest: WorkflowManifest = {};
+    const builtInSteps = 'workflow/internal/builtins';
+    const resolvedBuiltInSteps = (await enhancedResolve(
+      dirname(outfile),
+      builtInSteps
+    ).catch((err) => {
+      throw new WorkflowBuildError(
+        `Failed to resolve built-in steps sources.\n\nCaused by: ${String(err)}`,
+        {
+          hint: 'run `pnpm install workflow` to resolve this issue.',
+          cause: err,
+        }
+      );
+    })) as string;
+
+    const discovered =
+      discoveredEntries ??
+      (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
+    const stepFiles = [...discovered.discoveredSteps].sort();
+    const workflowFiles = [...discovered.discoveredWorkflows].sort();
+    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
+    const stepFilesSet = new Set(stepFiles);
+    const serdeOnlyFiles = serdeFiles.filter((f) => !stepFilesSet.has(f));
+
+    await this.writeDebugFile(outfile, {
+      stepFiles,
+      workflowFiles,
+      serdeOnlyFiles,
+      sourceImports: true,
+    });
+
+    const emittedImportIdentities = new Set<string>([builtInSteps]);
+    const importStatements: string[] = [];
+    const routeDir = dirname(outfile);
+    const addRegistrationImport = (specifier: string): void => {
+      importStatements.push(`import ${JSON.stringify(specifier)};`);
+    };
+    const addRegistrationFileImport = (file: string): void => {
+      const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
+      if (emittedImportIdentities.has(identity)) {
+        return;
+      }
+      emittedImportIdentities.add(identity);
+      addRegistrationImport(this.createRouteImportSpecifier(file, routeDir));
+    };
+
+    addRegistrationImport(builtInSteps);
+    for (const file of stepFiles) {
+      addRegistrationFileImport(file);
+    }
+    for (const file of serdeOnlyFiles) {
+      addRegistrationFileImport(file);
+    }
+
+    const output = `// biome-ignore-all lint: generated file
+/* eslint-disable */
+${importStatements.join('\n')}
+
+export const __steps_registered = true;
+`;
+    await mkdir(dirname(outfile), { recursive: true });
+    const tempPath = `${outfile}.${randomUUID()}.tmp`;
+    await writeFile(tempPath, output);
+    await rename(tempPath, outfile);
+
+    const manifestFiles = Array.from(
+      new Set([...stepFiles, ...serdeOnlyFiles, resolvedBuiltInSteps])
+    ).sort();
+    const stepIds = new Map<string, ManifestEntryLocation>();
+    const workflowIds = new Map<string, ManifestEntryLocation>();
+    await Promise.all(
+      manifestFiles.map(async (file) => {
+        const source = await readFile(file, 'utf8');
+        const relativeFilepath = this.getRelativeFilepath(file);
+        const { workflowManifest: fileManifest } = await applySwcTransform(
+          relativeFilepath,
+          source,
+          'step',
+          file,
+          this.transformProjectRoot,
+          this.moduleSpecifierRoot
+        );
+        mergeWorkflowManifest(
+          workflowManifest,
+          fileManifest,
+          stepIds,
+          workflowIds
+        );
+      })
+    );
+
+    await this.ensureSwcIgnored();
+    this.logBaseBuilderInfo(
+      'Created step registrations',
+      `${Date.now() - stepsBundleStart}ms`
+    );
+    return workflowManifest;
+  }
+
   /**
    * Creates a bundle for workflow step functions.
    * Steps have full Node.js runtime access and handle side effects, API calls, etc.
    *
    * @param externalizeNonSteps - If true, only bundles step entry points and externalizes other code
+   * @param sourceStepRegistrationImports - If true, emits a source import registration file instead of bundling step registrations
    * @param bundleTransitiveLocalStepDependencies - If true, also bundles project-local files imported by step entries for direct runtime loading
    * @returns Build context (for watch mode) and the collected workflow manifest
    */
@@ -634,6 +818,7 @@ export abstract class BaseBuilder {
     outfile,
     externalizeNonSteps,
     bundleTransitiveLocalStepDependencies,
+    sourceStepRegistrationImports,
     rewriteTsExtensions,
     tsconfigPath,
     discoveredEntries,
@@ -645,6 +830,7 @@ export abstract class BaseBuilder {
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
     bundleTransitiveLocalStepDependencies?: boolean;
+    sourceStepRegistrationImports?: boolean;
     rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
     /**
@@ -691,6 +877,22 @@ export abstract class BaseBuilder {
     // when receiving data from workflows and serialized when returning data to workflows.
     const stepFilesSet = new Set(stepFiles);
     const serdeOnlyFiles = serdeFiles.filter((f) => !stepFilesSet.has(f));
+
+    if (
+      sourceStepRegistrationImports &&
+      externalizeNonSteps &&
+      !bundleTransitiveLocalStepDependencies
+    ) {
+      return {
+        context: undefined,
+        manifest: await this.createStepSourceRegistrationFile({
+          inputFiles,
+          outfile,
+          tsconfigPath,
+          discoveredEntries: discovered,
+        }),
+      };
+    }
 
     // log the step files for debugging
     await this.writeDebugFile(outfile, {
@@ -1341,6 +1543,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     tsconfigPath,
     externalizeNonSteps,
     bundleTransitiveLocalStepDependencies,
+    sourceStepRegistrationImports,
     discoveredEntries,
   }: {
     inputFiles: string[];
@@ -1353,6 +1556,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     tsconfigPath?: string;
     externalizeNonSteps?: boolean;
     bundleTransitiveLocalStepDependencies?: boolean;
+    sourceStepRegistrationImports?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     manifest: WorkflowManifest;
@@ -1375,6 +1579,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         format: bundleFinalOutput ? 'esm' : format,
         externalizeNonSteps,
         bundleTransitiveLocalStepDependencies,
+        sourceStepRegistrationImports,
         tsconfigPath,
         discoveredEntries,
         // Skip the createRequire banner here — when bundleFinalOutput is true
