@@ -45,6 +45,11 @@ const port = Number(new URL(deploymentUrl).port || '3000');
 // passed (so it completes promptly on replay).
 const SLEEP_MS = 8_000;
 
+// How long the single step in `longStepWorkflow` runs. Long enough that the
+// step's queue job is reliably still locked when we detect it and kill the
+// server.
+const LONG_STEP_MS = 12_000;
+
 const SERVER_READY_TIMEOUT_MS = 90_000;
 const WAIT_CREATED_TIMEOUT_MS = 60_000;
 const RECOVERY_TIMEOUT_MS = 120_000;
@@ -146,53 +151,79 @@ async function killServer(child: ChildProcess): Promise<void> {
   );
 }
 
-/** Run ids of in-flight (pending/running) sleeping runs currently in storage. */
-async function sleepingRunIds(): Promise<Set<string>> {
+/** Run ids of in-flight (pending/running) runs whose name matches `pattern`. */
+async function inFlightRunIds(pattern: RegExp): Promise<Set<string>> {
   const world = await getWorld();
   const ids = new Set<string>();
   for (const status of ['pending', 'running'] as const) {
     const { data } = await world.runs.list({ status, resolveData: 'none' });
     for (const r of data) {
-      if (/sleepingWorkflow/.test(r.workflowName)) ids.add(r.runId);
+      if (pattern.test(r.workflowName)) ids.add(r.runId);
     }
   }
   return ids;
 }
 
 /**
- * Start the sleeping workflow on the SERVER (server-side `start()` so the SERVER
- * process owns the queue/sleep timer — essential: if the test process started
+ * Start a workflow on the SERVER (server-side `start()` so the SERVER process
+ * owns the queue/sleep timer/worker — essential: if the test process started
  * it, the test process would own the timer/worker and killing the server
  * wouldn't matter).
  *
  * The `/api/workflows/start` route streams until the workflow completes and only
  * flushes the `X-Workflow-Run-Id` header with the body, so we must NOT await it
- * (that would block for the whole sleep, defeating the "kill mid-sleep" goal).
- * Instead we fire the request and discover the new run id by diffing shared
- * storage — a read that never triggers delivery.
+ * (that would block, defeating the "kill mid-flight" goal). Instead we fire the
+ * request and discover the new run id by diffing shared storage — a read that
+ * never triggers delivery.
  */
-async function startSleepingWorkflowOnServer(): Promise<string> {
-  const before = await sleepingRunIds();
+async function startWorkflowOnServer(
+  workflowName: string,
+  args: unknown[],
+  pattern: RegExp
+): Promise<string> {
+  const before = await inFlightRunIds(pattern);
 
   // Fire-and-forget: the request reaches the server (which starts the run) but
   // we never read the streaming body. Killing the server later rejects it.
   void fetch(new URL('/api/workflows/start', deploymentUrl), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      workflowName: 'sleepingWorkflow',
-      args: [SLEEP_MS],
-    }),
+    body: JSON.stringify({ workflowName, args }),
   }).catch(() => {});
 
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    for (const id of await sleepingRunIds()) {
+    for (const id of await inFlightRunIds(pattern)) {
       if (!before.has(id)) return id;
     }
     await sleep(250);
   }
-  throw new Error('Server did not start a new sleepingWorkflow run within 30s');
+  throw new Error(`Server did not start a new ${workflowName} run within 30s`);
+}
+
+/** Wait until a step has begun executing (its queue job is held/locked). */
+async function waitForStepStarted(runId: string): Promise<void> {
+  const world = await getWorld();
+  const deadline = Date.now() + WAIT_CREATED_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const { data } = await world.events.list({ runId });
+      if (
+        data.some(
+          (e) =>
+            e.eventType === 'step_started' || e.eventType === 'step_created'
+        )
+      ) {
+        return;
+      }
+    } catch {
+      // run/events not visible yet
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `Run ${runId} did not start a step within ${WAIT_CREATED_TIMEOUT_MS}ms`
+  );
 }
 
 async function waitForWaitCreated(runId: string): Promise<void> {
@@ -265,7 +296,11 @@ describe.skipIf(!enabled)('restart recovery', () => {
       server = spawnServer();
       await waitForServerReady(server);
       log('server #1 ready');
-      const runId = await startSleepingWorkflowOnServer();
+      const runId = await startWorkflowOnServer(
+        'sleepingWorkflow',
+        [SLEEP_MS],
+        /sleepingWorkflow/
+      );
       log(`started run ${runId}`);
 
       // 2. Wait until the run is durably sleeping (server scheduled the wait).
@@ -285,6 +320,49 @@ describe.skipIf(!enabled)('restart recovery', () => {
       log('server #2 ready');
 
       // 5. The run should resume and complete purely from boot-time recovery.
+      await waitForCompleted(runId);
+      log('run completed');
+    }
+  );
+
+  test(
+    'in-flight run killed mid-step resumes after a hard restart with no workflow op',
+    {
+      timeout:
+        RECOVERY_TIMEOUT_MS +
+        WAIT_CREATED_TIMEOUT_MS +
+        SERVER_READY_TIMEOUT_MS * 2,
+    },
+    async () => {
+      // Unlike the sleeping case (a delayed, unlocked queue job), this kills the
+      // server WHILE A STEP IS EXECUTING — so the step's queue job is held/locked
+      // by the worker at crash time. For postgres this exercises whether boot
+      // recovery can re-drive a run whose step job is still locked (graphile's
+      // stale-lock), since the re-dispatched step reuses the same correlationId
+      // job key. See https://github.com/vercel/workflow/issues/679.
+      server = spawnServer();
+      await waitForServerReady(server);
+      log('server #1 ready');
+      const runId = await startWorkflowOnServer(
+        'longStepWorkflow',
+        [LONG_STEP_MS],
+        /longStepWorkflow/
+      );
+      log(`started run ${runId}`);
+
+      await waitForStepStarted(runId);
+      // Give the worker a beat to actually lock the step job and enter the step.
+      await sleep(1_000);
+      log('run is mid-step (step job locked)');
+
+      await killServer(server);
+      server = undefined;
+      log('server #1 killed (port free)');
+
+      server = spawnServer();
+      await waitForServerReady(server);
+      log('server #2 ready');
+
       await waitForCompleted(runId);
       log('run completed');
     }

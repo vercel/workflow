@@ -206,6 +206,23 @@ export async function sleepingWorkflow(durationMs = 10_000) {
   return { startTime, endTime };
 }
 
+// A workflow whose only work is one long-running STEP (not a workflow sleep).
+// While the step runs, its queue job is held/locked by the worker — used by the
+// restart-recovery e2e to simulate a crash mid-step (a locked job).
+async function longRunningStep(durationMs: number) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, durationMs));
+  return durationMs;
+}
+
+export async function longStepWorkflow(durationMs = 12_000) {
+  'use workflow';
+  const startTime = Date.now();
+  await longRunningStep(durationMs);
+  const endTime = Date.now();
+  return { startTime, endTime };
+}
+
 export async function parallelSleepWorkflow() {
   'use workflow';
   const startTime = Date.now();
