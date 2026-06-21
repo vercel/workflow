@@ -49,7 +49,7 @@ import { ensureWorldStarted } from 'workflow/runtime';
 await ensureWorldStarted();
 ```
 
-Where to call this depends on your framework (Next.js `instrumentation.ts`, SvelteKit `init`, a Nitro server plugin, etc.) — see [Recovering in-flight runs](/docs/deploying/recovering-in-flight-runs).
+Where to call this depends on your framework (Next.js `instrumentation.ts`, SvelteKit `init`, etc.; Nitro and Nuxt apps start it automatically) — see [Recovering in-flight runs](/docs/deploying/recovering-in-flight-runs).
 
 <Callout type="info">
 The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
