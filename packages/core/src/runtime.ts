@@ -790,6 +790,18 @@ export function workflowEntrypoint(
                         specVersion: runInput.specVersion,
                         executionContext: runInput.executionContext,
                         input: runInput.input,
+                        // Seed attributes from start() ride along in `runInput`
+                        // (they live in `run_created`'s eventData, not separate
+                        // `attr_set` events), so the synthesized snapshot carries
+                        // them even though we skip the initial events.list. This
+                        // is correct ONLY while attributes are write-only:
+                        // there is no in-workflow read API today (see workflow.ts
+                        // "structural until a read API is introduced"), so the
+                        // empty preloaded log can't diverge on a read. If a read
+                        // API is ever added it MUST read from this snapshot, not
+                        // by replaying run_created/attr_set events — otherwise
+                        // turbo's empty initial log would surface seed attributes
+                        // as `{}` on the first delivery only.
                         attributes: runInput.attributes ?? {},
                         startedAt: now,
                         createdAt: now,

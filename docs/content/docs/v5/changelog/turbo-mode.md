@@ -59,6 +59,14 @@ The non-turbo path awaits `run_started` up front and, if the run was cancelled o
 
 Replay matching — step/wait/hook correlation IDs, the VM seed, and the in-VM `Date.now()` — is derived from a replay-stable timestamp recovered from the run ID, so it does **not** depend on `startedAt` and is identical on every delivery. The one value that still tracks `startedAt` is the user-facing `getWorkflowMetadata().workflowStartedAt`: under turbo the first delivery synthesizes it from the local clock, while a later (non-turbo) delivery loads the server-canonical `startedAt`, so the two can differ by the start→first-delivery latency. Treat `workflowStartedAt` as an approximate, human-facing timestamp — do **not** branch workflow control flow on it (e.g. `Date.now() - +workflowStartedAt > threshold`), since that can take different paths across deliveries and diverge on replay. For timing logic that must survive replay, use the in-VM `Date.now()` / `new Date()`, which is replay-stable.
 
+### Attributes seeded at `start()` survive the skipped event load
+
+`start({ attributes })` does **not** disable turbo, and it needs no synthetic event in the empty log. Seed attributes are folded into the `run_created` event's data (not separate `attr_set` events) and ride along in the queued run input, so the locally-synthesized run snapshot carries them — turbo skipping the initial `events.list` loses nothing.
+
+This is safe specifically because **attributes are write-only inside a workflow**: there is no in-workflow read API today, and `run_created` is consumed structurally during replay without inspecting its attributes. So an empty initial event log replays identically whether or not the run was seeded with attributes.
+
+That safety is a standing invariant for any future change: if an in-workflow attribute *read* API is ever added, it MUST read from the run snapshot (which turbo populates from the run input) and **not** by replaying `run_created` / `attr_set` events. Reading from the event log would surface seed attributes as empty on the first turbo delivery only — a turbo-exclusive divergence from the non-turbo path. `start()` cannot seed hooks or waits, so there is no start-seeded suspension state for the skipped load to miss.
+
 ## Configuration
 
 Turbo mode is **on by default**. Set `WORKFLOW_TURBO=0` (or `false`) to disable it — every invocation then takes the existing awaited path. This is a useful kill-switch for deployments whose first-step bodies are not idempotent and stream-safe (the same caveat as optimistic inline start), or for isolating behavior while debugging.
