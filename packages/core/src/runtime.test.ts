@@ -1330,3 +1330,267 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     expect(stepIdMessages).toHaveLength(0);
   });
 });
+
+describe('workflowEntrypoint turbo mode', () => {
+  const ORIG_TURBO = process.env.WORKFLOW_TURBO;
+  const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+
+  // Default: turbo ON (unset) and the global optimistic flag OFF (unset). Any
+  // optimistic behavior observed in these tests therefore comes from turbo
+  // forcing it — never from WORKFLOW_OPTIMISTIC_INLINE_START.
+  beforeEach(() => {
+    delete process.env.WORKFLOW_TURBO;
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    turboOrder = [];
+  });
+  afterEach(() => {
+    if (ORIG_TURBO === undefined) delete process.env.WORKFLOW_TURBO;
+    else process.env.WORKFLOW_TURBO = ORIG_TURBO;
+    if (ORIG_OPT === undefined) {
+      delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    } else {
+      process.env.WORKFLOW_OPTIMISTIC_INLINE_START = ORIG_OPT;
+    }
+    setWorld(undefined);
+    vi.clearAllMocks();
+    waitUntilPromises.length = 0;
+  });
+
+  const xform = (name: string) =>
+    `;globalThis.__private_workflows = new Map();
+     globalThis.__private_workflows.set(${JSON.stringify(name)}, ${name});`;
+
+  // The step body records 'body' the moment it runs — its position relative to
+  // 'run_started_resolved' / 'step_started_called' is what proves (or disproves)
+  // optimistic start. Registered once; reads the current `turboOrder` binding.
+  let turboOrder: string[] = [];
+  registerStepFunction('turboStep', async () => {
+    turboOrder.push('body');
+    return undefined;
+  });
+
+  const oneStepWorkflow = `const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turboStep");
+    async function workflow() { return await s(); }${xform('workflow')}`;
+
+  // A step raced against a sleep: the suspension creates a wait, which makes
+  // turbo exit (no forced optimistic start) for the inline step.
+  const stepAndSleepWorkflow = `const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turboStep");
+    const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+    async function workflow() {
+      const [r] = await Promise.all([s(), sleep('1h')]);
+      return r;
+    }${xform('workflow')}`;
+
+  async function makeRunInput(runId: string) {
+    return {
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      deploymentId: 'test-deployment',
+      workflowName: 'workflow',
+      specVersion: SPEC_VERSION_CURRENT,
+      executionContext: {},
+    };
+  }
+
+  /**
+   * Drives the handler with a first-invocation message (runInput present) at the
+   * given delivery `attempt`. `runStartedGate`, when provided, holds the
+   * `run_started` create until released — its resolution pushes
+   * 'run_started_resolved' so tests can assert the body ran before or after it.
+   */
+  async function driveTurbo(opts: {
+    runId: string;
+    attempt: number;
+    source: string;
+    runStartedGate?: Promise<void>;
+  }) {
+    const { runId, attempt, source } = opts;
+    const order = turboOrder;
+    const durable: Event[] = [];
+    let seq = 0;
+    const rec = (data: any): Event => {
+      seq += 1;
+      const e = {
+        eventId: `e-${seq}`,
+        runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durable.push(e);
+      return e;
+    };
+    const runEntity: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        if (opts.runStartedGate) await opts.runStartedGate;
+        order.push('run_started_resolved');
+        return { run: runEntity, events: [] as Event[] };
+      }
+      if (data.eventType === 'step_started') {
+        order.push('step_started_called');
+        const d = data.eventData as { stepName?: string; input?: unknown };
+        if (d?.input !== undefined) {
+          rec({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: { stepName: d.stepName, input: d.input },
+          });
+        }
+        return {
+          event: rec(data),
+          step: {
+            runId,
+            stepId: data.correlationId,
+            stepName: d?.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: d?.input,
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(d?.input !== undefined ? { stepCreated: true } : {}),
+        };
+      }
+      if (data.eventType === 'wait_created') order.push('wait_created');
+      return { event: rec(data) };
+    });
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
+          async () => {
+            await handler(
+              {
+                runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+                runInput: await makeRunInput(runId),
+              },
+              {
+                requestId: 'req_turbo',
+                attempt,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_turbo',
+              }
+            );
+            return new Response(null, { status: 204 });
+          }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durable],
+          hasMore: false,
+          cursor: 'cursor_turbo',
+        })),
+      },
+      runs: { get: vi.fn(async () => runEntity) },
+      queue: vi.fn(async () => ({ messageId: null })),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handlerPromise = workflowEntrypoint(source)(
+      new Request('https://example.test')
+    ) as Promise<Response>;
+    return { handlerPromise, order, eventsCreate };
+  }
+
+  it('backgrounds run_started and forces optimistic start on the first delivery', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const { handlerPromise, order, eventsCreate } = await driveTurbo({
+      runId: 'wrun_turbo_first',
+      attempt: 1,
+      source: oneStepWorkflow,
+      runStartedGate: gate,
+    });
+
+    // The body runs while run_started is still in flight — proving run_started
+    // was backgrounded AND optimistic start was forced (the env flag is off).
+    // The full VM replay leading up to the body can exceed vi.waitFor's default
+    // 1s timeout on slow CI runners (notably Windows), so widen it.
+    await vi.waitFor(() => expect(order).toContain('body'), {
+      timeout: 15_000,
+    });
+    expect(order).not.toContain('run_started_resolved');
+    // The lazy step_started is chained on the run-ready barrier, so it is not
+    // even issued until run_started lands.
+    expect(order).not.toContain('step_started_called');
+
+    release();
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    // After release: step_started fires, ordered strictly after run_started.
+    expect(order).toContain('step_started_called');
+    expect(order.indexOf('run_started_resolved')).toBeLessThan(
+      order.indexOf('step_started_called')
+    );
+    // run_started was created exactly once (idempotent first write).
+    const runStartedCreates = eventsCreate.mock.calls.filter(
+      (c) => (c[1] as any).eventType === 'run_started'
+    );
+    expect(runStartedCreates).toHaveLength(1);
+  });
+
+  it('does not turbo on a redelivery (attempt > 1): run_started is awaited first', async () => {
+    const { handlerPromise, order } = await driveTurbo({
+      runId: 'wrun_turbo_redeliver',
+      attempt: 2,
+      source: oneStepWorkflow,
+    });
+
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    // Non-turbo awaits run_started up front, so the body runs strictly after it.
+    expect(order.indexOf('run_started_resolved')).toBeLessThan(
+      order.indexOf('body')
+    );
+  });
+
+  it('does not turbo when WORKFLOW_TURBO=0 (parity with the awaited path)', async () => {
+    process.env.WORKFLOW_TURBO = '0';
+    const { handlerPromise, order } = await driveTurbo({
+      runId: 'wrun_turbo_off',
+      attempt: 1,
+      source: oneStepWorkflow,
+    });
+
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    expect(order.indexOf('run_started_resolved')).toBeLessThan(
+      order.indexOf('body')
+    );
+  });
+
+  it('exits turbo (no forced optimistic) when the suspension creates a wait', async () => {
+    const { handlerPromise, order } = await driveTurbo({
+      runId: 'wrun_turbo_wait',
+      attempt: 1,
+      source: stepAndSleepWorkflow,
+    });
+
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    // A wait was created this suspension, so turbo exited: the inline step took
+    // the normal await-then-run path, i.e. step_started was awaited BEFORE the
+    // body ran (the opposite ordering from the forced-optimistic case above).
+    expect(order).toContain('wait_created');
+    expect(order.indexOf('step_started_called')).toBeLessThan(
+      order.indexOf('body')
+    );
+  });
+});
