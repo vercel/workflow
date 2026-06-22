@@ -68,7 +68,6 @@ const nextConfig: NextConfig = {};
 
 export default withWorkflow(nextConfig, {
   workflows: {
-    lazyDiscovery: true,
     local: {
       port: 4000,
     },
@@ -79,7 +78,6 @@ export default withWorkflow(nextConfig, {
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `workflows.lazyDiscovery` | `boolean` | `false` | When `true`, defers workflow discovery until files are requested instead of scanning eagerly at startup. Useful for large projects where startup time matters. |
 | `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
 | `workflows.sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. See [Source maps](#source-maps) below. |
 

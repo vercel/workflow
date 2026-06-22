@@ -353,7 +353,6 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
-      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.canary != true && (matrix.app.name == 'nextjs-turbopack' || matrix.app.name == 'nextjs-webpack') && '0' || '' }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -477,7 +476,6 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
-      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -561,7 +559,6 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
-      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -666,7 +663,6 @@ jobs:
       WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
-      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -848,7 +844,11 @@ jobs:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
-          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
+          # Use a real workflow file for the Windows HMR test. Most of this
+          # workbench's workflows are symlinks into workbench/example, and
+          # Windows/Turbopack can rebuild from the symlink path while still
+          # serving the previous module contents from the realpath cache.
+          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000,"testWorkflowFile":"96_many_steps.ts"}'
 
       - name: Print Next.js server logs
         if: always()

@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { createVercelWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
-import { parseEnvironmentFlag } from '../../next/src/environment-flag.js';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
 
@@ -95,10 +94,6 @@ function splitArgs(raw: string): string[] {
   return value.split(/\s+/);
 }
 
-export function isNextLazyDiscoveryEnabledForTest(): boolean {
-  return parseEnvironmentFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? true;
-}
-
 export function getWorkbenchAppPath(overrideAppName?: string): string {
   const explicitWorkbenchPath = process.env.WORKBENCH_APP_PATH;
   const appName = process.env.APP_NAME ?? overrideAppName;
@@ -135,10 +130,10 @@ export function hasStepSourceMaps(): boolean {
   if (appName === 'nextjs-turbopack') {
     return false;
   }
-  // Webpack's eager Next flow route executes steps from the generated
-  // __step_registrations.js bundle. Lazy discovery imports step sources through
-  // the flow route and preserves source filenames in local dev stacks.
-  if (appName === 'nextjs-webpack' && !isNextLazyDiscoveryEnabledForTest()) {
+  // Webpack's Next flow route executes steps from the generated
+  // __step_registrations.js bundle, which does not preserve source filenames
+  // in local dev stacks.
+  if (appName === 'nextjs-webpack') {
     return false;
   }
   // V2 carve-out: the V2 combined flow handler does not yet wire up inline
@@ -436,8 +431,8 @@ export function getFallbackWorkflowId(
 ): string {
   const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
   // Keep this in sync with the SWC transform ID format. This fallback is
-  // intentionally coupled so tests can continue running when deferred manifest
-  // publication lags behind discovery in staged/out-of-monorepo scenarios.
+  // intentionally coupled so tests can continue running when manifest
+  // publication lags in staged/out-of-monorepo scenarios.
   return `workflow//./${fileWithoutExt}//${workflowFn}`;
 }
 
@@ -463,8 +458,8 @@ export async function getWorkflowMetadata(
     return metadata;
   }
 
-  // Deferred discovery can grow the manifest during test execution, so poll
-  // briefly before failing to avoid races in staged/out-of-monorepo mode.
+  // Manifest publication can lag in staged/out-of-monorepo tests, so poll
+  // briefly before failing to avoid races.
   const deadline = Date.now() + manifestRetryTimeoutMs;
   while (Date.now() < deadline) {
     manifest = await fetchManifest(deploymentUrl, { forceRefresh: true });
@@ -479,9 +474,9 @@ export async function getWorkflowMetadata(
     await sleep(manifestRetryIntervalMs);
   }
 
-  // Deferred discovery can lag behind manifest publication in staged/out-of-
-  // monorepo tests. Fall back to the deterministic workflow ID format used by
-  // the transform so tests can continue exercising runtime behavior.
+  // Manifest publication can lag in staged/out-of-monorepo tests. Fall back to
+  // the deterministic workflow ID format used by the transform so tests can
+  // continue exercising runtime behavior.
   const fallbackWorkflowId = getFallbackWorkflowId(workflowFile, workflowFn);
   console.warn(
     `Workflow "${workflowFn}" not found in manifest for "${workflowFile}" after ${manifestRetryTimeoutMs}ms; ` +

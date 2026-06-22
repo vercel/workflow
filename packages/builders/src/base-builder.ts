@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -468,6 +475,37 @@ export abstract class BaseBuilder {
   }
 
   /**
+   * Writes generated files atomically where possible. On Windows, Next.js can
+   * briefly hold generated route files open while compiling them, which makes
+   * rename-over-existing fail with EPERM/EACCES. In that case, fall back to a
+   * direct overwrite so watch rebuilds can still make progress.
+   */
+  private async writeGeneratedFile(
+    targetPath: string,
+    content: string
+  ): Promise<void> {
+    const tempPath = `${targetPath}.${randomUUID()}.tmp`;
+    await writeFile(tempPath, content);
+    try {
+      await rename(tempPath, targetPath);
+    } catch (error) {
+      const errorCode =
+        error && typeof error === 'object' && 'code' in error
+          ? (error as NodeJS.ErrnoException).code
+          : undefined;
+      if (
+        process.platform === 'win32' &&
+        (errorCode === 'EPERM' || errorCode === 'EACCES')
+      ) {
+        await writeFile(targetPath, content);
+        await rm(tempPath, { force: true });
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Writes debug information to a JSON file for troubleshooting build issues.
    * Uses atomic write (temp file + rename) to prevent race conditions when
    * multiple builds run concurrently.
@@ -504,12 +542,7 @@ export abstract class BaseBuilder {
         2
       );
 
-      // Write atomically: write to temp file, then rename.
-      // rename() is atomic on POSIX systems and provides best-effort atomicity on Windows.
-      // Prevents race conditions where concurrent builds read partially-written files.
-      const tempPath = `${targetPath}.${randomUUID()}.tmp`;
-      await writeFile(tempPath, mergedData);
-      await rename(tempPath, targetPath);
+      await this.writeGeneratedFile(targetPath, mergedData);
     } catch (error: unknown) {
       console.warn('Failed to write debug file:', error);
     }
@@ -1213,11 +1246,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
           const outputDir = dirname(outfile);
           await mkdir(outputDir, { recursive: true });
 
-          // Atomic write: write to temp file then rename to prevent
-          // file watchers from reading partial file during write
-          const tempPath = `${outfile}.${randomUUID()}.tmp`;
-          await writeFile(tempPath, workflowFunctionCode);
-          await rename(tempPath, outfile);
+          await this.writeGeneratedFile(outfile, workflowFunctionCode);
           return;
         }
 
@@ -1396,10 +1425,7 @@ const workflowCode = \`${escapedVMCode}\`;
 export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
 
     if (!bundleFinalOutput) {
-      // Write directly (Next.js will bundle)
-      const tempPath = `${flowOutfile}.${randomUUID()}.tmp`;
-      await writeFile(tempPath, combinedFunctionCode);
-      await rename(tempPath, flowOutfile);
+      await this.writeGeneratedFile(flowOutfile, combinedFunctionCode);
     } else {
       // Bundle the combined code for standalone use
       const bundleStartTime = Date.now();
@@ -1469,9 +1495,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
 
       const outputDir = dirname(flowOutfile);
       await mkdir(outputDir, { recursive: true });
-      const tempPath = `${flowOutfile}.${randomUUID()}.tmp`;
-      await writeFile(tempPath, code);
-      await rename(tempPath, flowOutfile);
+      await this.writeGeneratedFile(flowOutfile, code);
     };
 
     if (this.config.watch) {
