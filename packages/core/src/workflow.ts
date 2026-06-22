@@ -211,7 +211,16 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
-      generateUlid: () => ulid(+startedAt),
+      // Correlation IDs (step_/wait_/hook_) are derived from `generateUlid`, so
+      // the time prefix fed to `ulid()` MUST be replay-stable across every
+      // delivery — otherwise a redelivery regenerates different correlation IDs
+      // and replay throws ReplayDivergenceError. `startedAt` is NOT safe here:
+      // under turbo the first delivery synthesizes `startedAt` from the local
+      // clock, but later (non-turbo) deliveries load the server-canonical
+      // `startedAt`, which differs by >=1ms. Use the same replay-stable value
+      // that already seeds the RNG and the VM clock (`fixedTimestamp`, recovered
+      // from the run ID's ULID and known the instant the message arrives).
+      generateUlid: () => ulid(fixedTimestamp),
       generateNanoid,
       invocationsQueue: new Map(),
       // Use getter/setter so the EventsConsumer's getPromiseQueue() always
