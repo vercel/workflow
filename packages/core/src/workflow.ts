@@ -21,6 +21,7 @@ import {
   hydrateWorkflowArguments,
 } from './serialization.js';
 import { createUseStep } from './step.js';
+import type { StepHydrationCache } from './step-hydration-cache.js';
 import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
@@ -81,7 +82,15 @@ export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined
+  encryptionKey: CryptoKey | undefined,
+  /**
+   * Optional per-run cache for hydrated step return values, owned by the inline
+   * replay loop so it survives across the loop's iterations (each of which
+   * creates a fresh context). Memoizes the decrypt + devalue-parse of completed
+   * step results to turn O(N²) replay hydration into O(N). Omitted by callers
+   * that replay only once (then there is nothing to reuse).
+   */
+  stepHydrationCache?: StepHydrationCache
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -161,6 +170,7 @@ export async function runWorkflow(
       },
       pendingDeliveries: 0,
       pendingDeliveryBarriers: new Map(),
+      stepHydrationCache,
     };
 
     // Consume run lifecycle events - these are structural events that don't
