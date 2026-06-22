@@ -293,6 +293,7 @@ export default function workflowLoader(
         },
         target: 'es2022',
         experimental: {
+          cacheRoot: join(workingDir, '.swc'),
           plugins: [[swcPluginPath, { mode, moduleSpecifier }]],
         },
         transform: {
