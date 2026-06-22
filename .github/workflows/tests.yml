@@ -970,6 +970,10 @@ jobs:
       WORKFLOW_PUBLIC_MANIFEST: '1'
       APP_NAME: nextjs-turbopack
       RESTART_RECOVERY_TEST: '1'
+      # Enable the multi-worker exactly-once guarantee test (postgres only: it
+      # needs a shared DB + graphile-worker pool). The local matrix entry skips
+      # it via its own world gate.
+      MULTIWORKER_RECOVERY_TEST: ${{ matrix.world == 'postgres' && '1' || '' }}
       DEPLOYMENT_URL: 'http://localhost:3000'
       # Empty for the local matrix entry -> resolveWorkflowTargetWorld() falls
       # back to the local world.
