@@ -24,8 +24,8 @@ import {
 import { createWorkflowEntrypointOptionsCode } from './constants.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
-  fastDiscoverEntries,
   type DiscoveredEntries,
+  fastDiscoverEntries,
 } from './fast-discovery.js';
 import {
   getImportPath,
@@ -86,6 +86,47 @@ function parseSourcemapEnv(
       );
       return undefined;
   }
+}
+
+function matchesDebugNamespace(
+  namespace: string,
+  patternList: string | undefined
+): boolean {
+  if (!patternList) {
+    return false;
+  }
+
+  let enabled = false;
+  for (const rawPattern of patternList.split(',')) {
+    const pattern = rawPattern.trim();
+    if (!pattern) {
+      continue;
+    }
+
+    const isNegated = pattern.startsWith('-');
+    const candidate = isNegated ? pattern.slice(1) : pattern;
+    const regex = new RegExp(
+      `^${candidate.replace(/[|\\{}()[\]^$+?.]/g, '\\$&').replace(/\*/g, '.*')}$`
+    );
+
+    if (regex.test(namespace)) {
+      enabled = !isNegated;
+    }
+  }
+
+  return enabled;
+}
+
+function isWorkflowBuildDebugEnabled(): boolean {
+  return matchesDebugNamespace('workflow:build', process.env.DEBUG);
+}
+
+function formatBuildDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
 /**
@@ -215,6 +256,7 @@ export abstract class BaseBuilder {
    * to avoid duplicate warnings across multiple discoverEntries() calls.
    */
   private warnedExternalPackages = new Set<string>();
+  private workflowBuildStartTime: number | undefined;
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -229,17 +271,29 @@ export abstract class BaseBuilder {
   }
 
   /**
-   * Whether informational BaseBuilder logs should be printed.
+   * Whether detailed BaseBuilder progress logs should be printed.
    * Subclasses can override this to silence progress logs while keeping warnings/errors.
    */
   protected get shouldLogBaseBuilderInfo(): boolean {
-    return true;
+    return isWorkflowBuildDebugEnabled();
   }
 
   protected logBaseBuilderInfo(...args: unknown[]): void {
     if (this.shouldLogBaseBuilderInfo) {
-      console.log(...args);
+      console.debug(...args);
     }
+  }
+
+  private startWorkflowBuildTimer(): void {
+    this.workflowBuildStartTime = Date.now();
+  }
+
+  private getWorkflowBuildDuration(): number {
+    return Date.now() - (this.workflowBuildStartTime ?? Date.now());
+  }
+
+  private resetWorkflowBuildTimer(): void {
+    this.workflowBuildStartTime = undefined;
   }
 
   private logCreateWorkflowsBundleInfo(...args: unknown[]): void {
@@ -1564,6 +1618,8 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
   }> {
+    this.startWorkflowBuildTimer();
+
     // 1. Build step registrations bundle (used as separate file for
     // bundleFinalOutput: false, or read back for inline content when true)
     const { context: stepsContext, manifest: stepsManifest } =
@@ -2206,12 +2262,20 @@ export const OPTIONS = handler;`;
         `${Date.now() - buildStart}ms`
       );
 
+      if (!this.config.suppressCreateManifestLogs) {
+        console.log(
+          `workflows build complete (${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, time ${formatBuildDuration(this.getWorkflowBuildDuration())})`
+        );
+      }
+      this.resetWorkflowBuildTimer();
+
       return manifestJson;
     } catch (error) {
       console.warn(
         'Failed to create manifest:',
         error instanceof Error ? error.message : String(error)
       );
+      this.resetWorkflowBuildTimer();
       return undefined;
     }
   }
