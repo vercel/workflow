@@ -11,6 +11,4 @@ const nextConfig: NextConfig = {
 };
 
 // export default nextConfig;
-export default withWorkflow(nextConfig, {
-  workflows: { lazyDiscovery: false },
-});
+export default withWorkflow(nextConfig);

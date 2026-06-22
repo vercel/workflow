@@ -1,12 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { NextConfig } from 'next';
 import semver from 'semver';
-import {
-  getNextBuilder,
-  shouldUseDeferredBuilder,
-  WORKFLOW_DEFERRED_ENTRIES,
-} from './builder.js';
-import { DEFERRED_STEP_COPY_DIR_NAME } from './step-copy-utils.js';
+import { getNextBuilder } from './builder.js';
 
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
@@ -16,9 +11,6 @@ const workflowSerdeSymbolPattern =
 const workflowSerdeComputedPropertyPattern =
   /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
 const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
-const deferredStepCopyPathPattern = new RegExp(
-  String.raw`[/\\]\.well-known[/\\]workflow[/\\]v1[/\\]step[/\\]${DEFERRED_STEP_COPY_DIR_NAME}[/\\]`
-);
 const turbopackWorkflowContentPattern =
   /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/;
 
@@ -212,17 +204,12 @@ export function withWorkflow(
     workflows,
   }: {
     workflows?: {
-      lazyDiscovery?: boolean;
       local?: {
         port?: number;
       };
     };
   } = {}
 ) {
-  if (workflows?.lazyDiscovery) {
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
-  }
-
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
       process.env.WORKFLOW_TARGET_WORLD = 'local';
@@ -243,8 +230,6 @@ export function withWorkflow(
     ctx: { defaultConfig: NextConfig }
   ) {
     const loaderPath = require.resolve('./loader');
-    let runDeferredBuildFromCallback: (() => Promise<void>) | undefined;
-
     let nextConfig: NextConfig;
 
     if (typeof nextConfigOrFn === 'function') {
@@ -305,7 +290,6 @@ export function withWorkflow(
     const existingRules = nextConfig.turbopack.rules as any;
     const nextVersion = resolveNextVersion(process.cwd());
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
-    const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
 
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;
@@ -326,10 +310,6 @@ export function withWorkflow(
             workflowsBundlePath: '', // not used in base
             stepsBundlePath: '', // not used in base
             webhookBundlePath: '', // node used in base
-            suppressCreateWorkflowsBundleLogs: useDeferredBuilder,
-            suppressCreateWorkflowsBundleWarnings: useDeferredBuilder,
-            suppressCreateWebhookBundleLogs: useDeferredBuilder,
-            suppressCreateManifestLogs: useDeferredBuilder,
             externalPackages: [
               // server-only and client-only are pseudo-packages handled by Next.js
               // during its build process. We mark them as external to prevent esbuild
@@ -345,50 +325,6 @@ export function withWorkflow(
 
       return workflowBuilderPromise;
     };
-
-    if (useDeferredBuilder) {
-      runDeferredBuildFromCallback = async () => {
-        const workflowBuilder = await getWorkflowBuilder();
-        if (typeof workflowBuilder.onBeforeDeferredEntries === 'function') {
-          await workflowBuilder.onBeforeDeferredEntries();
-        }
-      };
-
-      const existingExperimental = (nextConfig.experimental ?? {}) as Record<
-        string,
-        any
-      >;
-      const existingDeferredEntries = Array.isArray(
-        existingExperimental.deferredEntries
-      )
-        ? existingExperimental.deferredEntries
-        : [];
-      const existingOnBeforeDeferredEntries =
-        typeof existingExperimental.onBeforeDeferredEntries === 'function'
-          ? existingExperimental.onBeforeDeferredEntries
-          : undefined;
-
-      nextConfig.experimental = {
-        ...existingExperimental,
-
-        // biome-ignore lint/suspicious/noTsIgnore: expect-error is wrong as it will work on valid version
-        // @ts-ignore this is only available in canary Next.js
-        deferredEntries: [
-          ...new Set([
-            ...existingDeferredEntries,
-            ...WORKFLOW_DEFERRED_ENTRIES,
-          ]),
-        ],
-        onBeforeDeferredEntries: async (...args: unknown[]) => {
-          if (existingOnBeforeDeferredEntries) {
-            await existingOnBeforeDeferredEntries(...args);
-          }
-          if (runDeferredBuildFromCallback) {
-            await runDeferredBuildFromCallback();
-          }
-        },
-      };
-    }
 
     for (const key of [
       '*.tsx',
@@ -407,15 +343,8 @@ export function withWorkflow(
                 // Merge with any existing 'all' conditions from user config.
                 all: [
                   ...(existingRules[key]?.condition?.all || []),
-                  {
-                    // Deferred step copies are generated source files that must
-                    // still be transformed in step mode. Other generated route
-                    // files have already been transformed and remain excluded.
-                    any: [
-                      { not: { path: generatedWorkflowPathPattern } },
-                      { path: deferredStepCopyPathPattern },
-                    ],
-                  },
+                  // Exclude generated workflow route files from transformation
+                  { not: { path: generatedWorkflowPathPattern } },
                   // Match files with workflow directives or custom serialization patterns
                   // Uses backreferences (\2, \3) to ensure matching quote types
                   { content: turbopackWorkflowContentPattern },
