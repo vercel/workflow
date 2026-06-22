@@ -281,6 +281,23 @@
       "services": [],
       "requiresCredentials": true,
       "credentialsNote": "Requires Upstash Redis and QStash credentials from Upstash console (https://console.upstash.com)"
+    },
+        {
+      "id": "tencentcloud-edgeone",
+      "type": "community",
+      "package": "@workflow/edgeone",
+      "name": "EdgeOne",
+      "description": " EdgeOne Serverless world using Redis (future will support EdgeOne KV/Blob, queue-less approach using Redis PubSub and HTTP Redirects",
+      "docs": "https://github.com/dywongcloud/open-workflow/tree/main/packages/world-edgeone",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@open-workflow/world-edgeone",
+        "WORKFLOW_REDIS_REST_URL": "",
+        "WORKFLOW_REDIS_REST_TOKEN": ""      
+      },      
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Requires Redis credentials or Upstash Redis (https://console.upstash.com) , and EdgeOne Pages deployment with configured URL",
+      "features": []
     }
   ]
 }
