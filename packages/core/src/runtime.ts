@@ -786,7 +786,7 @@ export function workflowEntrypoint(
                         // run_started request the chained first step_started
                         // waits on — shortening time-to-second-step — and the
                         // wasted list+resolve it would otherwise compute.
-                        { requestId, skipEventPreload: true }
+                        { requestId, skipPreload: true }
                       );
                       runReadyBarrier = startedPromise;
                       // Attach a no-op rejection handler so an early failure

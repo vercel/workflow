@@ -486,8 +486,12 @@ export interface CreateEventParams {
    * A World that ignores it (or doesn't preload) remains fully correct: the
    * runtime falls back to `events.list` whenever it actually needs the log.
    * Only honored for `run_started`; ignored for other event types.
+   *
+   * Named to match the World boundary, the wire frame meta, and the backend
+   * option end-to-end (cf. {@link sinceCursor}) so the single name greps
+   * across the SDK and the backend.
    */
-  skipEventPreload?: boolean;
+  skipPreload?: boolean;
 }
 
 /**

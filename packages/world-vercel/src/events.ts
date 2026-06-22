@@ -609,7 +609,7 @@ async function createWorkflowRunEventInner(
       // barrier only and never reads the preloaded log, so tell the server to
       // skip the list+resolve. The server only acts on it for run_started;
       // older servers ignore it and simply preload as before.
-      ...(params?.skipEventPreload ? { skipPreload: true } : {}),
+      ...(params?.skipPreload ? { skipPreload: true } : {}),
       remoteRefBehavior,
       payload,
       ...meta,
