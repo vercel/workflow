@@ -110,8 +110,8 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
  * (e.g. if it shows up in both `stepFiles` and `serdeOnlyFiles`) without
  * conflating unrelated files.
  */
-function moduleIdentityKey(file: string, projectRoot: string): string {
-  const { moduleSpecifier } = resolveModuleSpecifier(file, projectRoot);
+function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
+  const { moduleSpecifier } = resolveModuleSpecifier(file, moduleSpecifierRoot);
   if (moduleSpecifier) {
     // Strip the "@<version>" suffix so source and dist copies of the same
     // export collapse to the same key.
@@ -147,6 +147,10 @@ export abstract class BaseBuilder {
 
   protected get transformProjectRoot(): string {
     return this.config.projectRoot || this.config.workingDir;
+  }
+
+  protected get moduleSpecifierRoot(): string {
+    return this.config.moduleSpecifierRoot || this.transformProjectRoot;
   }
 
   /**
@@ -248,6 +252,7 @@ export abstract class BaseBuilder {
       '**/.workflow-data/**',
       '**/.workflow-vitest/**',
       '**/.well-known/workflow/**',
+      '**/.swc/**',
       '**/.svelte-kit/**',
       '**/.turbo/**',
       '**/.cache/**',
@@ -737,7 +742,7 @@ export abstract class BaseBuilder {
     const buildImports = (files: string[]): string =>
       files
         .filter((file) => {
-          const identity = moduleIdentityKey(file, this.transformProjectRoot);
+          const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
           if (emittedImportIdentities.has(identity)) return false;
           emittedImportIdentities.add(identity);
           return true;
@@ -822,11 +827,14 @@ export abstract class BaseBuilder {
         '.mjs',
         '.cjs',
       ],
-      // Inline source maps for better stack traces in step execution.
-      // Steps execute in Node.js context and inline sourcemaps ensure we get
-      // meaningful stack traces with proper file names and line numbers when errors
-      // occur in deeply nested function calls across multiple files.
-      sourcemap: this.resolveSourcemap('inline'),
+      // Source maps for better stack traces in step execution. Steps execute
+      // in Node.js context and inline sourcemaps give meaningful stack traces
+      // with proper file names and line numbers when errors occur in deeply
+      // nested function calls across multiple files. Defaults to inline in
+      // development and off in production (see `defaultSourcemapMode`) to keep
+      // production function bundles small; override with the `sourcemap`
+      // config option or the `WORKFLOW_SOURCEMAP` env var.
+      sourcemap: this.resolveSourcemap(this.defaultSourcemapMode),
       plugins: [
         // Handle pseudo-packages like 'server-only' and 'client-only' by providing
         // empty modules. Must run first to intercept these before other resolution.
@@ -836,6 +844,7 @@ export abstract class BaseBuilder {
           entriesToBundle: normalizedEntriesToBundle,
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
           bundleTransitiveLocalStepDependencies,
           rewriteTsExtensions,
@@ -871,7 +880,8 @@ export abstract class BaseBuilder {
             source,
             'workflow',
             workflowFile,
-            this.transformProjectRoot
+            this.transformProjectRoot,
+            this.moduleSpecifierRoot
           );
           if (fileManifest.workflows) {
             workflowManifest.workflows = Object.assign(
@@ -895,8 +905,7 @@ export abstract class BaseBuilder {
       })
     );
 
-    // Create .gitignore in .swc directory
-    await this.createSwcGitignore();
+    await this.ensureSwcIgnored();
 
     if (this.config.watch) {
       return { context: esbuildCtx, manifest: workflowManifest };
@@ -991,7 +1000,7 @@ export abstract class BaseBuilder {
     const buildImports = (files: string[]): string =>
       files
         .filter((file) => {
-          const identity = moduleIdentityKey(file, this.transformProjectRoot);
+          const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
           if (emittedImportIdentities.has(identity)) return false;
           emittedImportIdentities.add(identity);
           return true;
@@ -1045,10 +1054,15 @@ export abstract class BaseBuilder {
       banner: {
         js: 'globalThis.__private_workflows = new Map();',
       },
-      // Inline source maps for better stack traces in workflow VM execution.
-      // This intermediate bundle is executed via runInContext() in a VM, so we need
-      // inline source maps to get meaningful stack traces instead of "evalmachine.<anonymous>".
-      sourcemap: this.resolveSourcemap('inline'),
+      // Source maps for better stack traces in workflow VM execution. This
+      // intermediate bundle is executed via runInContext() in a VM, so inline
+      // source maps give meaningful stack traces instead of
+      // "evalmachine.<anonymous>". Defaults to inline in development and off in
+      // production (see `defaultSourcemapMode`) to keep production function
+      // bundles small; override with the `sourcemap` config option or the
+      // `WORKFLOW_SOURCEMAP` env var. The runtime remaps stacks only when a
+      // map is present, so disabling maps degrades gracefully.
+      sourcemap: this.resolveSourcemap(this.defaultSourcemapMode),
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
@@ -1069,6 +1083,7 @@ export abstract class BaseBuilder {
         createSwcPlugin({
           mode: 'workflow',
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
           sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
@@ -1125,8 +1140,7 @@ export abstract class BaseBuilder {
         );
       }
 
-      // Create .gitignore in .swc directory
-      await this.createSwcGitignore();
+      await this.ensureSwcIgnored();
 
       if (
         !interimBundle.outputFiles ||
@@ -1588,6 +1602,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         createSwcPlugin({
           mode: 'step',
           projectRoot: this.transformProjectRoot,
+          moduleSpecifierRoot: this.moduleSpecifierRoot,
           sideEffectEntries: normalizedClientSideEffectEntries,
         }),
       ],
@@ -1595,8 +1610,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
 
     this.logEsbuildMessages(clientResult, 'client library bundle');
 
-    // Create .gitignore in .swc directory
-    await this.createSwcGitignore();
+    await this.ensureSwcIgnored();
   }
 
   /**
@@ -1778,7 +1792,47 @@ export const OPTIONS = handler;`;
     await mkdir(dirname(filePath), { recursive: true });
   }
 
-  private async createSwcGitignore(): Promise<void> {
+  protected async ensureSwcIgnored(): Promise<void> {
+    await this.ensureProjectSwcGitignoreEntry();
+    await this.createSwcDirectoryGitignore();
+  }
+
+  private async ensureProjectSwcGitignoreEntry(): Promise<void> {
+    const gitignorePath = join(this.config.workingDir, '.gitignore');
+
+    try {
+      let content = '';
+      try {
+        content = await readFile(gitignorePath, 'utf-8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          return;
+        }
+      }
+
+      const hasSwcEntry = content.split(/\r?\n/).some((line) => {
+        const trimmed = line.trim();
+        return (
+          trimmed === '.swc' ||
+          trimmed === '.swc/' ||
+          trimmed === '/.swc' ||
+          trimmed === '/.swc/'
+        );
+      });
+
+      if (hasSwcEntry) {
+        return;
+      }
+
+      const separator =
+        content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+      await writeFile(gitignorePath, `${content}${separator}/.swc\n`);
+    } catch {
+      // We're intentionally silently ignoring this error - updating .gitignore isn't critical
+    }
+  }
+
+  private async createSwcDirectoryGitignore(): Promise<void> {
     try {
       await writeFile(
         join(this.config.workingDir, '.swc', '.gitignore'),
@@ -1818,6 +1872,30 @@ export const OPTIONS = handler;`;
   }
 
   /**
+   * Whether this is a development/watch build (e.g. `next dev`, `nitro dev`,
+   * or a Vite-based dev server for astro/sveltekit/vite). `config.watch` is
+   * plumbed by the builders that own a dev server (next, nitro, nest); the
+   * Vite-based integrations don't set it but run with
+   * `NODE_ENV === 'development'`. When neither signal is present we treat the
+   * build as production, so CLI/Vercel production builds default to off.
+   */
+  protected get isDevelopmentBuild(): boolean {
+    return this.config.watch === true || process.env.NODE_ENV === 'development';
+  }
+
+  /**
+   * Default source map mode for the stack-relevant bundles (steps + the
+   * intermediate workflow VM bundle): inline source maps in development so
+   * stack traces point at source files, and off in production so function
+   * bundles stay small (helps stay under the Vercel 250MB function limit) and
+   * skip the source-map-support runtime shim. The `sourcemap` config option
+   * and `WORKFLOW_SOURCEMAP` env var override this in either environment.
+   */
+  protected get defaultSourcemapMode(): SourcemapMode {
+    return this.isDevelopmentBuild ? 'inline' : false;
+  }
+
+  /**
    * Resolve the effective source map mode for a given call site. Precedence:
    * explicit `sourcemap` config > `WORKFLOW_SOURCEMAP` env var > the call
    * site's default. Returned value is passed directly to esbuild's
@@ -1833,10 +1911,12 @@ export const OPTIONS = handler;`;
   /**
    * Whether the resolved source map mode emits any source maps at all.
    * Used by consumers like the Vercel builder to decide whether to include
-   * the source-map-support runtime shim in generated functions.
+   * the source-map-support runtime shim in generated functions. Uses the same
+   * environment-aware default (`defaultSourcemapMode`) as the step/workflow
+   * bundles, so a production build with no override omits the shim.
    */
   protected get sourcemapsEnabled(): boolean {
-    return this.resolveSourcemap(true) !== false;
+    return this.resolveSourcemap(this.defaultSourcemapMode) !== false;
   }
 
   /**

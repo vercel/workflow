@@ -118,6 +118,90 @@ export function _resetReplayTimeoutWarnCacheForTests(): void {
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
 
+/**
+ * Default maximum number of steps the owned-inline path runs inline (in
+ * parallel) per suspension. The rest are queued to background handlers. Each
+ * inline step is created lazily — its `step_created` is folded into the
+ * `step_started` that `executeStep` sends — so inlining N steps saves N queue
+ * round-trips for a `Promise.all`-style fan-out. `1` reproduces the
+ * single-inline-step behavior exactly (useful kill-switch).
+ *
+ * Override via `WORKFLOW_MAX_INLINE_STEPS` (clamped to
+ * `MIN_MAX_INLINE_STEPS`..`MAX_MAX_INLINE_STEPS`).
+ */
+export const MAX_INLINE_STEPS = 3;
+
+/** Lower bound for the inline-steps env override (1 = single inline step). */
+export const MIN_MAX_INLINE_STEPS = 1;
+
+/**
+ * Upper bound for the inline-steps env override. Inline bodies run in parallel
+ * within one function invocation, so this caps memory/CPU fan-out per handler.
+ */
+export const MAX_MAX_INLINE_STEPS = 16;
+
+// Warn-once cache for WORKFLOW_MAX_INLINE_STEPS, keyed by raw env value.
+const warnedMaxInlineStepsValues = new Set<string>();
+
+/**
+ * Resolve the effective max number of inline steps for the current process.
+ *
+ * Reads `process.env.WORKFLOW_MAX_INLINE_STEPS` lazily so tests and
+ * deployments can override per invocation. Invalid / out-of-range values fall
+ * back to a safe value (no throw — the env var is an escape hatch) and emit a
+ * one-time warning so misconfiguration is observable.
+ */
+export function getMaxInlineSteps(): number {
+  const raw = process.env.WORKFLOW_MAX_INLINE_STEPS;
+  if (!raw) return MAX_INLINE_STEPS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    if (!warnedMaxInlineStepsValues.has(raw)) {
+      warnedMaxInlineStepsValues.add(raw);
+      runtimeLogger.warn(
+        'Ignoring WORKFLOW_MAX_INLINE_STEPS: not a positive integer; using default',
+        { raw, defaultValue: MAX_INLINE_STEPS }
+      );
+    }
+    return MAX_INLINE_STEPS;
+  }
+  if (parsed < MIN_MAX_INLINE_STEPS) return MIN_MAX_INLINE_STEPS;
+  if (parsed > MAX_MAX_INLINE_STEPS) {
+    if (!warnedMaxInlineStepsValues.has(raw)) {
+      warnedMaxInlineStepsValues.add(raw);
+      runtimeLogger.warn('WORKFLOW_MAX_INLINE_STEPS above maximum; clamped', {
+        raw,
+        clampedValue: MAX_MAX_INLINE_STEPS,
+        maxValue: MAX_MAX_INLINE_STEPS,
+      });
+    }
+    return MAX_MAX_INLINE_STEPS;
+  }
+  return parsed;
+}
+
+/**
+ * Whether optimistic inline step start is enabled. When on, the owned-inline
+ * path begins running a brand-new step's body *before* its lazy `step_started`
+ * network call resolves (the input is already known locally), awaiting the
+ * `step_started` only before the terminal write.
+ *
+ * This can run a step body more than once when handlers race for the same
+ * step's create-claim — both run the body before one wins. That is unsafe for
+ * steps with non-idempotent side effects; in particular, two concurrent runs
+ * of a step that writes to the workflow stream (e.g. an AI agent streaming
+ * tokens) can interleave and corrupt the stream data. So the optimization is
+ * **off by default** and must be explicitly opted into per deployment.
+ *
+ * Reads `process.env.WORKFLOW_OPTIMISTIC_INLINE_START` lazily. Default OFF;
+ * enabled only by an explicit `'1'` / `'true'`.
+ */
+export function isOptimisticInlineStartEnabled(): boolean {
+  const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+  if (raw === undefined || raw === '') return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
 // A replay-consumer mismatch can be caused by a transient divergent replay
 // rather than an invalid persisted history. Queue bounded recovery replays
 // before recording terminal corruption for a run that cannot replay.

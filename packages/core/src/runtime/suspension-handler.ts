@@ -11,6 +11,7 @@ import {
   type CreateEventRequest,
   type SerializedData,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -26,6 +27,7 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
+import { getMaxInlineSteps } from './constants.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -51,6 +53,24 @@ export interface SuspensionHandlerResult {
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
+  /**
+   * The steps whose `step_created` writes were intentionally deferred so the
+   * caller can run them inline via lazy `step_started` events (which create
+   * the step on the fly), saving one world round-trip per inline step. Up to
+   * `getMaxInlineSteps()` steps are deferred; the caller runs them inline in
+   * parallel and queues the rest. Empty when no step was deferred (nothing
+   * pending, or a `hook.getConflict()` awaiter is present so nothing is
+   * executed inline). The caller passes each `dehydratedInput` straight to
+   * `executeStep`, which sends it as the `step_started` payload. The atomic
+   * create-claim inside each `step_started` is the exactly-one-owner gate that
+   * the standalone `step_created` provided before: the loser of the race gets
+   * `EntityConflictError` → `skipped` and does not run the body.
+   */
+  lazyInlineSteps: Array<{
+    correlationId: string;
+    stepName: string;
+    dehydratedInput: SerializedData;
+  }>;
   /**
    * The soonest pending wait, if any: seconds until it elapses and the
    * correlationId of the wait that produced that timeout. The
@@ -170,6 +190,11 @@ export async function handleSuspension({
   const rawKey = await world.getEncryptionKeyForRun?.(run);
   const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
+  // Gate payload compression on the run's specVersion: only runs marked
+  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  const compression =
+    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+
   // Build and process hook_created events (same as V1)
   const hookEvents = await Promise.all(
     hooksNeedingCreation.map(async (queueItem) => {
@@ -180,7 +205,9 @@ export async function handleSuspension({
               queueItem.metadata,
               runId,
               encryptionKey,
-              suspension.globalThis
+              suspension.globalThis,
+              false,
+              compression
             )) as SerializedData);
       return {
         queueItem,
@@ -287,7 +314,9 @@ export async function handleSuspension({
             { aborted: true, reason: queueItem.abortReason },
             runId,
             encryptionKey,
-            suspension.globalThis
+            suspension.globalThis,
+            false,
+            compression
           );
 
           // Create hook_received event with abort payload
@@ -360,6 +389,32 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  // Lazy inline start: defer the step_created write for up to
+  // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
+  // step is created on the fly by the lazy `step_started` executeStep sends
+  // (saving a round-trip per step). We never defer when a `hook.getConflict()`
+  // awaiter is present, because in that case the caller executes nothing inline
+  // (it re-invokes immediately to resolve the awaiter), so deferring would
+  // leave the steps uncreated and unqueued. We pick the first N uncreated steps
+  // — matching the caller's inline-candidate selection — and dehydrate their
+  // input here so executeStep can ship it as the step_started payload.
+  const lazyInlineCorrelationIds = new Set<string>(
+    hasAwaitedHookCreation === false
+      ? stepItems
+          .filter((item) => stepsNeedingCreation.has(item.correlationId))
+          .slice(0, getMaxInlineSteps())
+          .map((item) => item.correlationId)
+      : []
+  );
+  // Collected by correlationId because the per-step ops below run concurrently
+  // and settle out of order. We rebuild the array in deterministic
+  // `lazyInlineCorrelationIds` order (the ordered slice above) after the ops
+  // settle, so the inline batch order is stable regardless of dehydration timing.
+  const lazyInlineByCorrelationId = new Map<
+    string,
+    SuspensionHandlerResult['lazyInlineSteps'][number]
+  >();
+
   const ops: Promise<void>[] = [];
 
   // Steps: create step_created events (no queuing — V2 returns pending steps to caller)
@@ -375,14 +430,31 @@ export async function handleSuspension({
             },
             runId,
             encryptionKey,
-            suspension.globalThis
+            suspension.globalThis,
+            false,
+            compression
           );
+          // Deferred (lazy) inline step: skip the step_created write — the
+          // caller's inline executeStep will send a lazy step_started carrying
+          // this input, and the world creates the step (entity + synthetic
+          // step_created event) atomically. We do NOT add it to
+          // createdStepCorrelationIds; ownership is decided by that lazy
+          // step_started's atomic create-claim instead.
+          if (lazyInlineCorrelationIds.has(queueItem.correlationId)) {
+            lazyInlineByCorrelationId.set(queueItem.correlationId, {
+              correlationId: queueItem.correlationId,
+              stepName: queueItem.stepName,
+              dehydratedInput: dehydratedInput as SerializedData,
+            });
+            return;
+          }
           const stepEvent: CreateEventRequest = {
             eventType: 'step_created' as const,
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: queueItem.correlationId,
             eventData: {
               stepName: queueItem.stepName,
+              workflowName: run.workflowName,
               input: dehydratedInput as SerializedData,
             },
           };
@@ -499,6 +571,15 @@ export async function handleSuspension({
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
 
+  // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
+  // is a Set seeded from the ordered first-N slice, so iterating it preserves
+  // stepItems order; every id in it was set by the lazy branch above.
+  const lazyInlineSteps: SuspensionHandlerResult['lazyInlineSteps'] = [];
+  for (const correlationId of lazyInlineCorrelationIds) {
+    const lazyStep = lazyInlineByCorrelationId.get(correlationId);
+    if (lazyStep) lazyInlineSteps.push(lazyStep);
+  }
+
   // Find the soonest pending wait (minimum timeout)
   const now = Date.now();
   let soonestWait: { seconds: number; correlationId: string } | undefined;
@@ -524,6 +605,7 @@ export async function handleSuspension({
   return {
     pendingSteps: stepItems,
     createdStepCorrelationIds,
+    lazyInlineSteps,
     // On hook conflict the caller re-invokes immediately and never reads
     // the wait timeout, so don't report one.
     waitTimeout: hasHookConflict ? undefined : soonestWait,

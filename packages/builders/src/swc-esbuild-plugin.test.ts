@@ -1047,6 +1047,39 @@ describe('createSwcPlugin projectRoot', () => {
       expect.stringContaining('"use workflow"'),
       'workflow',
       fixture.workflowFile,
+      fixture.appRoot,
+      fixture.appRoot
+    );
+  });
+
+  it('passes an explicit moduleSpecifierRoot separately from projectRoot', async () => {
+    const fixture = setupFixture();
+    const tracingRoot = testRoot;
+
+    const result = await esbuild.build({
+      entryPoints: [fixture.workflowFile],
+      absWorkingDir: fixture.packageRoot,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'workflow',
+          projectRoot: tracingRoot,
+          moduleSpecifierRoot: fixture.appRoot,
+          workflowManifest: {},
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    expect(applySwcTransformMock).toHaveBeenCalledWith(
+      'src/internal/message/workflow/handle-message.ts',
+      expect.stringContaining('"use workflow"'),
+      'workflow',
+      fixture.workflowFile,
+      tracingRoot,
       fixture.appRoot
     );
   });
@@ -1075,6 +1108,7 @@ describe('createSwcPlugin projectRoot', () => {
       expect.stringContaining('"use workflow"'),
       'workflow',
       fixture.workflowFile,
+      fixture.packageRoot,
       fixture.packageRoot
     );
   });

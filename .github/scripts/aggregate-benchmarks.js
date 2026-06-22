@@ -138,7 +138,7 @@ function getObservabilityUrl(vercelMetadata, runId) {
   if (!teamSlug || !projectSlug) return null;
   // Always use 'preview' for PR benchmarks
   const env = environment === 'production' ? 'production' : 'preview';
-  return `https://vercel.com/${teamSlug}/${projectSlug}/observability/workflows/runs/${runId}?environment=${env}`;
+  return `https://vercel.com/${teamSlug}/${projectSlug}/workflows/runs/${runId}?environment=${env}`;
 }
 
 // Collect all benchmark data

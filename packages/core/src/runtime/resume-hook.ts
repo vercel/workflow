@@ -8,6 +8,7 @@ import {
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
@@ -21,7 +22,7 @@ import {
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
+import { linkToTraceCarrier, trace } from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -139,6 +140,13 @@ export async function resumeHook<T = any>(
           encryptionKey = undefined;
         }
 
+        // Compress the payload only when the target run is marked as
+        // possibly containing compressed payloads (specVersion >= 5) AND
+        // its deployment can decode the 'gzip' format.
+        const compression =
+          (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION &&
+          capabilities.supportedFormats.has(SerializationFormat.GZIP);
+
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
         const v1Compat = isLegacySpecVersion(hook.specVersion);
@@ -149,7 +157,8 @@ export async function resumeHook<T = any>(
           ops,
           globalThis,
           v1Compat,
-          capabilities.framedByteStreams
+          capabilities.framedByteStreams,
+          compression
         );
         // These payload-stream ops are flushed in the background; the
         // promise handed to waitUntil must never reject (an unconsumed
@@ -185,13 +194,13 @@ export async function resumeHook<T = any>(
           ...Attribute.WorkflowName(workflowRun.workflowName),
         });
 
-        const traceCarrier = workflowRun.executionContext?.traceCarrier;
-
-        if (traceCarrier) {
-          const context = await getSpanContextForTraceCarrier(traceCarrier);
-          if (context) {
-            span?.addLink?.({ context });
-          }
+        // Link to the run-origin context from the workflow run's stored
+        // trace carrier (skipped when absent or invalid).
+        const originLink = await linkToTraceCarrier(
+          workflowRun.executionContext?.traceCarrier
+        );
+        if (originLink) {
+          span?.addLink?.(originLink);
         }
 
         // Re-trigger the workflow against the deployment ID associated

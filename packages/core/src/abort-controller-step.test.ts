@@ -177,6 +177,10 @@ function createStepContext(ops: Promise<void>[]) {
       workflowId: 'wf_test',
     },
     ops,
+    // The mock reviveAbortController above routes everything (stream write +
+    // hook resume) into `ops`, so this stays empty; the real routing into
+    // preCompletionOps is covered by the dedicated suite at the end of the file.
+    preCompletionOps: [],
   };
 }
 

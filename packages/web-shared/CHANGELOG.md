@@ -1,5 +1,66 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.20
+
+### Patch Changes
+
+- [#2520](https://github.com/vercel/workflow/pull/2520) [`d575c7e`](https://github.com/vercel/workflow/commit/d575c7e1a920f305a299d4afd2bcacb1d08cf96d) Thanks [@mitul-s](https://github.com/mitul-s)! - Show pending runs with gray animated stripes instead of the blue running indicator in the new trace viewer.
+
+- Updated dependencies [[`7aee0d4`](https://github.com/vercel/workflow/commit/7aee0d4e4aae627d900068a4740fd69e651d1a2f), [`16b3670`](https://github.com/vercel/workflow/commit/16b36703e2b1102df33bb301e8b19d7031dbb70f), [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca), [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9), [`722bb7c`](https://github.com/vercel/workflow/commit/722bb7c6a20a7f255757280739d8b51661ed7792), [`de91f20`](https://github.com/vercel/workflow/commit/de91f20f6828904a2da1d80c9f6ae729438a453b), [`ab2e9b8`](https://github.com/vercel/workflow/commit/ab2e9b8d0740c457f80e05f05c1fd907bcf4f027), [`84ccd40`](https://github.com/vercel/workflow/commit/84ccd40ea3e12ba6b67967a4ff9f0b84b2393c48), [`939890d`](https://github.com/vercel/workflow/commit/939890d4c2998823d95732dbc310712709618bc9), [`a92c16d`](https://github.com/vercel/workflow/commit/a92c16debd46f3804b01682eadfbfc355f03921c), [`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a)]:
+  - @workflow/core@5.0.0-beta.20
+  - @workflow/world@5.0.0-beta.12
+
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@5.0.0-beta.19
+
+## 5.0.0-beta.18
+
+### Minor Changes
+
+- [#2452](https://github.com/vercel/workflow/pull/2452) [`2acf13c`](https://github.com/vercel/workflow/commit/2acf13cc72f4d78ac3671dddb7041dd96340c18e) Thanks [@mitul-s](https://github.com/mitul-s)! - Add point-in-time event markers (hook resumptions, attribute writes) to the trace timeline.
+
+- [#2394](https://github.com/vercel/workflow/pull/2394) [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97) Thanks [@pranaygp](https://github.com/pranaygp)! - Decode zstd-compressed workflow payloads in the observability UI. Since the Web `DecompressionStream` has no zstd support, the web o11y registers a WASM-backed zstd decoder (`@tootallnate/zstd-wasm`) with `@workflow/core` before hydrating payloads; the WASM is compiled lazily on first use.
+
+### Patch Changes
+
+- [#2459](https://github.com/vercel/workflow/pull/2459) [`8edd84d`](https://github.com/vercel/workflow/commit/8edd84d643134037b39f167856f07ebd856e6055) Thanks [@mitul-s](https://github.com/mitul-s)! - Detail panel cleanup: module copy button, step id spacing, line for trace state
+
+- [#2366](https://github.com/vercel/workflow/pull/2366) [`8f69733`](https://github.com/vercel/workflow/commit/8f6973319d797c31f1470adc14eb4e2eb45803b5) Thanks [@mitul-s](https://github.com/mitul-s)! - Auto-scroll the trace viewer when navigating spans with the `J`/`K` keys (or the up/down chevrons) so the newly-selected span is always revealed when it falls outside the visible area.
+
+- [#2483](https://github.com/vercel/workflow/pull/2483) [`2599da0`](https://github.com/vercel/workflow/commit/2599da0d8c4fe365abc0146deccc8b6413fa2bc0) Thanks [@mitul-s](https://github.com/mitul-s)! - Adjust attributes panel UI
+
+- [#2474](https://github.com/vercel/workflow/pull/2474) [`0090788`](https://github.com/vercel/workflow/commit/0090788c45d32ea1428f9801a1dd14dea61afa47) Thanks [@mitul-s](https://github.com/mitul-s)! - Yse solid gray for queued trace segment
+
+- Updated dependencies [[`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`4b7a720`](https://github.com/vercel/workflow/commit/4b7a7203bf7093a435a9c4fc33a3af1060f010f7), [`3c79c56`](https://github.com/vercel/workflow/commit/3c79c56af257b4c327e4363c0cdb482149b55c73), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97)]:
+  - @workflow/core@5.0.0-beta.18
+  - @workflow/world@5.0.0-beta.11
+
+## 5.0.0-beta.17
+
+### Patch Changes
+
+- Updated dependencies [[`926a5e7`](https://github.com/vercel/workflow/commit/926a5e7c6a50c1e74f2e2cc37324caa0f6442d85)]:
+  - @workflow/core@5.0.0-beta.17
+  - @workflow/utils@5.0.0-beta.4
+
+## 5.0.0-beta.16
+
+### Minor Changes
+
+- [#2328](https://github.com/vercel/workflow/pull/2328) [`56dcf5f`](https://github.com/vercel/workflow/commit/56dcf5f2e14e65606ca51e50cff2e63a3f23c6c6) Thanks [@mitul-s](https://github.com/mitul-s)! - Add RelativeTimeCard.
+
+### Patch Changes
+
+- [#2393](https://github.com/vercel/workflow/pull/2393) [`dde689a`](https://github.com/vercel/workflow/commit/dde689a056c9b7df8025c8531e73a499a0967331) Thanks [@pranaygp](https://github.com/pranaygp)! - Render `attr_set` events across the observability UI: diamond markers on the trace timeline, expandable change payloads (keys set/removed and the writer) in the run sidebar and Events tab, and a key-value Attributes card on run details with reserved `$`-prefixed keys badged.
+
+- Updated dependencies [[`628795a`](https://github.com/vercel/workflow/commit/628795aa8729bef442c7a1583cf2f3d986e9e4fc)]:
+  - @workflow/core@5.0.0-beta.16
+  - @workflow/world@5.0.0-beta.10
+
 ## 5.0.0-beta.15
 
 ### Patch Changes

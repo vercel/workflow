@@ -37,8 +37,19 @@ export type StepContext = {
    * guarantees the abort is ordered ahead of any continuation that observes the
    * step's result. Unlike these, `ops` holds best-effort real-time stream
    * writes that should fire ASAP and are intentionally left in the background.
+   *
+   * Contract: producers MUST NOT push a promise that can reject — these are
+   * awaited only to enforce ordering, never to surface an outcome. A rejection
+   * here would propagate as an infra error (queue re-delivery), not the
+   * user-code failure path, so each producer swallows its own errors (see
+   * `reviveAbortController` in serialization.ts). The await sites also
+   * defensively `.catch()` so ordering is all this bucket can ever enforce.
+   *
+   * Required (not optional) so a new step-context construction site that
+   * forgets to wire it fails at compile time, rather than silently regressing
+   * the ordering guarantee back to background-flush behavior.
    */
-  preCompletionOps?: Promise<void>[];
+  preCompletionOps: Promise<void>[];
   closureVars?: Record<string, any>;
   encryptionKey?: CryptoKey;
   writables?: Map<string, CachedWritable>;
