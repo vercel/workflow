@@ -182,34 +182,30 @@ describe('createReconnectingFramedStream', () => {
     const calls: number[] = [];
     let reopenAttempts = 0;
     const world = {
-      streams: {
-        get: vi.fn(
-          async (_runId: string, _name: string, startIndex?: number) => {
-            const idx = startIndex ?? 0;
-            calls.push(idx);
-            if (idx === 0) {
-              return scriptedStream([
-                { kind: 'value', value: payloadFrame(1) },
-                { kind: 'value', value: payloadFrame(2) },
-                { kind: 'error', err: new Error('max-duration abort') },
-              ]);
-            }
-            // Reopen at index 2: throw on the first attempt, succeed on the next.
-            reopenAttempts++;
-            if (reopenAttempts === 1) {
-              throw new Error('reopen failed: server briefly unavailable');
-            }
-            return scriptedStream([
-              { kind: 'value', value: payloadFrame(3) },
-              { kind: 'close' },
-            ]);
-          }
-        ),
-      },
+      readFromStream: vi.fn(async (_name: string, startIndex?: number) => {
+        const idx = startIndex ?? 0;
+        calls.push(idx);
+        if (idx === 0) {
+          return scriptedStream([
+            { kind: 'value', value: payloadFrame(1) },
+            { kind: 'value', value: payloadFrame(2) },
+            { kind: 'error', err: new Error('max-duration abort') },
+          ]);
+        }
+        // Reopen at index 2: throw on the first attempt, succeed on the next.
+        reopenAttempts++;
+        if (reopenAttempts === 1) {
+          throw new Error('reopen failed: server briefly unavailable');
+        }
+        return scriptedStream([
+          { kind: 'value', value: payloadFrame(3) },
+          { kind: 'close' },
+        ]);
+      }),
     } as unknown as World;
     setWorld(world);
 
-    const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
+    const stream = createReconnectingFramedStream('s', 0);
     const chunks = await readAll(stream);
 
     // The failed reopen did not surface to the consumer; the stream recovered.
