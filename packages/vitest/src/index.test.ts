@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -121,6 +121,9 @@ describe('@workflow/vitest', () => {
     expect(createStepsBundle).toHaveBeenCalledWith(
       expect.objectContaining({
         outfile: path.join(rootDir, '.workflow-vitest', 'steps.mjs'),
+        // Bundles are loaded directly by Node in the vitest worker, so
+        // project-local step dependencies must be bundled inline (#2289).
+        bundleTransitiveLocalStepDependencies: true,
       })
     );
     expect(initDataDir).toHaveBeenCalledWith(

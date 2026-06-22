@@ -405,8 +405,8 @@ export function getFallbackWorkflowId(
 ): string {
   const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
   // Keep this in sync with the SWC transform ID format. This fallback is
-  // intentionally coupled so tests can continue running when deferred manifest
-  // publication lags behind discovery in staged/out-of-monorepo scenarios.
+  // intentionally coupled so tests can continue running when manifest
+  // publication lags in staged/out-of-monorepo scenarios.
   return `workflow//./${fileWithoutExt}//${workflowFn}`;
 }
 
@@ -432,8 +432,8 @@ export async function getWorkflowMetadata(
     return metadata;
   }
 
-  // Deferred discovery can grow the manifest during test execution, so poll
-  // briefly before failing to avoid races in staged/out-of-monorepo mode.
+  // Manifest publication can lag in staged/out-of-monorepo tests, so poll
+  // briefly before failing to avoid races.
   const deadline = Date.now() + manifestRetryTimeoutMs;
   while (Date.now() < deadline) {
     manifest = await fetchManifest(deploymentUrl, { forceRefresh: true });
@@ -448,9 +448,9 @@ export async function getWorkflowMetadata(
     await sleep(manifestRetryIntervalMs);
   }
 
-  // Deferred discovery can lag behind manifest publication in staged/out-of-
-  // monorepo tests. Fall back to the deterministic workflow ID format used by
-  // the transform so tests can continue exercising runtime behavior.
+  // Manifest publication can lag in staged/out-of-monorepo tests. Fall back to
+  // the deterministic workflow ID format used by the transform so tests can
+  // continue exercising runtime behavior.
   const fallbackWorkflowId = getFallbackWorkflowId(workflowFile, workflowFn);
   console.warn(
     `Workflow "${workflowFn}" not found in manifest for "${workflowFile}" after ${manifestRetryTimeoutMs}ms; ` +
