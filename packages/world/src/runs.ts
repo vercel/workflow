@@ -140,6 +140,8 @@ export interface CreateWorkflowRunRequest {
   input: SerializedData;
   executionContext?: SerializedData;
   specVersion?: number;
+  /** Plaintext attributes to seed when the run is created. */
+  attributes?: Record<string, string>;
 }
 
 export interface GetWorkflowRunParams {

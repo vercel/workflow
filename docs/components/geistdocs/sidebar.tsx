@@ -104,7 +104,7 @@ export const Folder: SidebarPageTreeComponents['Folder'] = ({
     <SidebarFolder defaultOpen={defaultOpen}>
       {item.index ? (
         <SidebarFolderLink
-          className="flex items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground data-[active=true]:text-foreground [&_svg]:size-3.5"
+          className="flex w-full items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground data-[active=true]:text-foreground [&_svg]:size-3.5"
           external={item.index.external}
           href={item.index.url}
         >
@@ -112,7 +112,7 @@ export const Folder: SidebarPageTreeComponents['Folder'] = ({
           {item.name}
         </SidebarFolderLink>
       ) : (
-        <SidebarFolderTrigger className="flex items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground [&_svg]:size-3.5">
+        <SidebarFolderTrigger className="flex w-full items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground [&_svg]:size-3.5">
           {item.icon}
           {item.name}
         </SidebarFolderTrigger>

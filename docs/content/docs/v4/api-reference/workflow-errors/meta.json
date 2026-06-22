@@ -1,16 +1,21 @@
 {
   "title": "workflow/errors",
   "pages": [
+    "workflow-error",
     "hook-not-found-error",
+    "hook-conflict-error",
     "step-not-registered-error",
     "workflow-not-registered-error",
     "workflow-run-not-found-error",
     "workflow-run-failed-error",
     "workflow-run-cancelled-error",
+    "workflow-run-not-completed-error",
+    "workflow-runtime-error",
     "workflow-world-error",
     "throttle-error",
     "entity-conflict-error",
     "run-expired-error",
+    "run-not-supported-error",
     "too-early-error"
   ]
 }

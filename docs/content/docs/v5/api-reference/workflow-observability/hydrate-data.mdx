@@ -1,0 +1,35 @@
+---
+title: hydrateData
+description: Hydrate a single serialized value from workflow storage into a plain JavaScript value.
+type: reference
+summary: Use hydrateData to deserialize a single value when hydrateResourceIO's field mapping doesn't apply.
+related:
+  - /docs/api-reference/workflow-observability/hydrate-resource-io
+  - /docs/api-reference/workflow-observability/observability-revivers
+---
+
+Hydrates (deserializes) a single value that was stored by the workflow runtime. This is the lower-level building block behind [`hydrateResourceIO()`](/docs/api-reference/workflow-observability/hydrate-resource-io) — use it when you have a raw serialized value rather than a whole resource, such as a single field from an event payload.
+
+```typescript lineNumbers
+import { hydrateData, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+declare const serialized: unknown; // @setup
+
+const value = hydrateData(serialized, observabilityRevivers); // [!code highlight]
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | `unknown` | The serialized value from workflow storage |
+| `revivers` | `Revivers` | Reviver functions for deserialization. Use [`observabilityRevivers`](/docs/api-reference/workflow-observability/observability-revivers) for standard use. |
+
+### Returns
+
+The hydrated plain JavaScript value. The input is handled by shape:
+
+- Format-prefixed binary data (`Uint8Array`) is decoded and parsed from the [devalue](https://github.com/Rich-Harris/devalue) format
+- Encrypted data is returned as-is (a raw `Uint8Array`) — see [Encrypted Data](/docs/api-reference/workflow-observability#encrypted-data)
+- Already-plain values (numbers, strings, `null`) are returned unchanged

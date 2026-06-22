@@ -76,6 +76,16 @@ const compilerOptions: ts.CompilerOptions = {
     'workflow/observability': [
       path.join(repoRoot, 'packages/workflow/dist/observability'),
     ],
+    'workflow/runtime': [path.join(repoRoot, 'packages/workflow/dist/runtime')],
+    'workflow/next': [path.join(repoRoot, 'packages/workflow/dist/next.d.cts')],
+    'workflow/nitro': [path.join(repoRoot, 'packages/workflow/dist/nitro')],
+    'workflow/nuxt': [path.join(repoRoot, 'packages/workflow/dist/nuxt')],
+    'workflow/sveltekit': [
+      path.join(repoRoot, 'packages/workflow/dist/sveltekit'),
+    ],
+    'workflow/astro': [path.join(repoRoot, 'packages/workflow/dist/astro')],
+    'workflow/vite': [path.join(repoRoot, 'packages/workflow/dist/vite')],
+    'workflow/nest': [path.join(repoRoot, 'packages/workflow/dist/nest')],
     '@workflow/core': [path.join(repoRoot, 'packages/core/dist/index')],
     '@workflow/core/serialization-format': [
       path.join(repoRoot, 'packages/core/dist/serialization-format'),
@@ -87,9 +97,24 @@ const compilerOptions: ts.CompilerOptions = {
     ],
     '@workflow/next': [path.join(repoRoot, 'packages/next/dist/index')],
     '@workflow/errors': [path.join(repoRoot, 'packages/errors/dist/index')],
+    '@workflow/serde': [path.join(repoRoot, 'packages/serde/dist/index')],
+    '@workflow/vitest': [path.join(repoRoot, 'packages/vitest/dist/index')],
+    '@workflow/world': [path.join(repoRoot, 'packages/world/dist/index')],
     // Third-party deps available in docs-typecheck/node_modules
     zod: [path.join(__dirname, '../node_modules/zod')],
     ai: [path.join(__dirname, '../node_modules/ai')],
+    // Pin vite/vitest to a single instance. pnpm can materialize multiple
+    // copies of vite (differing only by peer-dep hash), and a docs sample
+    // mixing `vitest/config` with `@workflow/vitest` would otherwise see two
+    // structurally-incompatible `Plugin` types.
+    vite: [path.join(__dirname, '../node_modules/vite')],
+    vitest: [path.join(__dirname, '../node_modules/vitest')],
+    'vitest/config': [path.join(__dirname, '../node_modules/vitest/config')],
+    // Nitro's vite plugin augments vite's UserConfig with a `nitro` key;
+    // resolve it so getting-started samples using `nitro/vite` type-check.
+    'nitro/vite': [
+      path.join(repoRoot, 'packages/nitro/node_modules/nitro/dist/vite.d.mts'),
+    ],
   },
 };
 

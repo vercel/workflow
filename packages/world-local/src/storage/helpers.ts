@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import { monotonicFactory } from 'ulid';
 import { stripTag, ulidToDate } from '../fs.js';
 
@@ -7,6 +8,33 @@ import { stripTag, ulidToDate } from '../fs.js';
  */
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Compute the path of the recovery-marker sidecar for a specific
+ * `(token, runId, hookId)` triple. Identity is encoded in the
+ * filename hash so different token lifetimes (e.g. the same token
+ * reused by a later run after the first run was deleted) never
+ * contend on a single sidecar — without per-lifetime identity, a
+ * stale marker surviving prior-run cleanup could "leak" its
+ * eventId into the new lifetime's recovery and cause divergent
+ * publication.
+ *
+ * See `events-storage.ts` for the full recovery-marker rationale.
+ */
+export function hookRecoveryMarkerPath(
+  basedir: string,
+  token: string,
+  runId: string,
+  hookId: string
+): string {
+  // Distinct from `hashToken(token)` so a token's claim file and
+  // its recovery marker live at different paths AND a different
+  // lifetime's recovery marker never collides with this one.
+  const key = createHash('sha256')
+    .update(`${token}\x00${runId}\x00${hookId}`)
+    .digest('hex');
+  return path.join(basedir, 'hooks', 'tokens', `${key}.recovery.json`);
 }
 
 /**
