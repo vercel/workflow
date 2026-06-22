@@ -1745,21 +1745,32 @@ function reviveAbortController(
       );
 
       if (value.hookToken) {
-        ctx.ops.push(
-          (async () => {
-            try {
-              const { resumeHook: resumeHookFn } = await import(
-                './runtime/resume-hook.js'
-              );
-              await resumeHookFn(value.hookToken, {
-                aborted: true,
-                reason,
-              });
-            } catch {
-              // Best-effort hook resume — retry on next replay
-            }
-          })()
-        );
+        // The durable hook resume (which writes the `hook_received` event that
+        // records this abort in the workflow's event log) must be committed
+        // before the step completes. Otherwise the workflow continuation
+        // enqueued by `step_completed` can advance past the abort — dispatching
+        // a later step with a stale, non-aborted `signal` — before the event
+        // exists. Route it to `preCompletionOps` (awaited inline before
+        // completion) rather than `ops` (best-effort, background). The stream
+        // write above stays in `ops`: it must fire ASAP to reach an in-flight
+        // sibling step and is not the durable record.
+        // Swallow errors here so the promise can only ever enforce ordering
+        // when awaited (see the no-reject contract on
+        // StepContext.preCompletionOps); a failed resume retries on next replay.
+        const hookResume = (async () => {
+          try {
+            const { resumeHook: resumeHookFn } = await import(
+              './runtime/resume-hook.js'
+            );
+            await resumeHookFn(value.hookToken, {
+              aborted: true,
+              reason,
+            });
+          } catch {
+            // Best-effort hook resume — retry on next replay
+          }
+        })();
+        ctx.preCompletionOps.push(hookResume);
       }
     }
   };

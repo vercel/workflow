@@ -10,12 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const {
-  buildMock,
-  builderConfigs,
-  getNextBuilderMock,
-  shouldUseDeferredBuilderMock,
-} = vi.hoisted(() => {
+const { buildMock, builderConfigs, getNextBuilderMock } = vi.hoisted(() => {
   const buildMock = vi.fn(async () => {});
   const builderConfigs: Record<string, unknown>[] = [];
   const getNextBuilderMock = vi.fn(async () => {
@@ -27,24 +22,16 @@ const {
       }
     };
   });
-  const shouldUseDeferredBuilderMock = vi.fn(() => false);
 
   return {
     buildMock,
     builderConfigs,
     getNextBuilderMock,
-    shouldUseDeferredBuilderMock,
   };
 });
 
 vi.mock('./builder.js', () => ({
   getNextBuilder: getNextBuilderMock,
-  shouldUseDeferredBuilder: shouldUseDeferredBuilderMock,
-  WORKFLOW_DEFERRED_ENTRIES: [
-    '/.well-known/workflow/v1/flow',
-    '/.well-known/workflow/v1/step',
-    '/.well-known/workflow/v1/webhook/[token]',
-  ],
 }));
 
 import { withWorkflow } from './index.js';
@@ -70,7 +57,6 @@ describe('withWorkflow builder config', () => {
     PORT: process.env.PORT,
     VERCEL_DEPLOYMENT_ID: process.env.VERCEL_DEPLOYMENT_ID,
     WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
-    WORKFLOW_NEXT_LAZY_DISCOVERY: process.env.WORKFLOW_NEXT_LAZY_DISCOVERY,
     WORKFLOW_NEXT_PRIVATE_BUILT: process.env.WORKFLOW_NEXT_PRIVATE_BUILT,
     WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
   };
@@ -79,7 +65,6 @@ describe('withWorkflow builder config', () => {
     buildMock.mockClear();
     builderConfigs.length = 0;
     getNextBuilderMock.mockClear();
-    shouldUseDeferredBuilderMock.mockClear();
 
     if (!hadLoaderStub) {
       writeFileSync(loaderStubPath, 'module.exports = {};\n', 'utf-8');
@@ -88,7 +73,6 @@ describe('withWorkflow builder config', () => {
     delete process.env.PORT;
     delete process.env.VERCEL_DEPLOYMENT_ID;
     delete process.env.WORKFLOW_LOCAL_DATA_DIR;
-    delete process.env.WORKFLOW_NEXT_LAZY_DISCOVERY;
     delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
     delete process.env.WORKFLOW_TARGET_WORLD;
   });
@@ -128,21 +112,6 @@ describe('withWorkflow builder config', () => {
       moduleSpecifierRoot: process.cwd(),
       workingDir: process.cwd(),
     });
-  });
-
-  it('enables lazyDiscovery by default', async () => {
-    withWorkflow({});
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
-  });
-
-  it('enables lazyDiscovery when explicitly set to true', async () => {
-    withWorkflow({}, { workflows: { lazyDiscovery: true } });
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
-  });
-
-  it('disables lazyDiscovery when explicitly set to false', async () => {
-    withWorkflow({}, { workflows: { lazyDiscovery: false } });
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBeUndefined();
   });
 
   it('configures diagnostics inside the default Next.js dist dir', async () => {
@@ -217,36 +186,6 @@ describe('withWorkflow builder config', () => {
 
     expect(userWebpack).toHaveBeenCalledOnce();
     expect(webpackConfig?.externals).toEqual([{ react: 'commonjs react' }]);
-  });
-
-  it('preserves an explicit lazyDiscovery disable override', () => {
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '0';
-
-    withWorkflow(
-      {},
-      {
-        workflows: {
-          lazyDiscovery: true,
-        },
-      }
-    );
-
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('0');
-  });
-
-  it('treats an empty lazyDiscovery env override as unset', () => {
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '';
-
-    withWorkflow(
-      {},
-      {
-        workflows: {
-          lazyDiscovery: true,
-        },
-      }
-    );
-
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
   });
 
   it('removes workflow packages from serverExternalPackages for this build', async () => {

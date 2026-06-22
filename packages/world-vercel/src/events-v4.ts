@@ -31,6 +31,7 @@ import {
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getDispatcher } from './http-client.js';
+import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
@@ -56,6 +57,13 @@ async function fetchV4(
   // breaking replay correctness. The v3 `makeRequest` path does the same.
   // See: https://github.com/vercel/workflow/issues/618
   init.headers.set('X-Request-Time', Date.now().toString());
+  // Explicitly propagate the active trace context (traceparent / tracestate /
+  // baggage) onto the outgoing request so workflow-server can parent its spans
+  // to this invocation — matching the v3 `makeRequest` path (see utils.ts).
+  // The custom undici dispatcher bypasses ambient auto-instrumentation, so
+  // without this v4 event traffic from the flow route would not propagate
+  // context to workflow-server. No-ops when no OTEL SDK is registered.
+  await injectTraceContextIntoHeaders(init.headers);
   return fetch(url, {
     method: init.method,
     headers: init.headers,

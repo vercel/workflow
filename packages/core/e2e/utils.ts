@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { createVercelWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
-import { parseEnvironmentFlag } from '../../next/src/environment-flag.js';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
 
@@ -95,10 +94,6 @@ function splitArgs(raw: string): string[] {
   return value.split(/\s+/);
 }
 
-export function isNextLazyDiscoveryEnabledForTest(): boolean {
-  return parseEnvironmentFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? true;
-}
-
 export function getWorkbenchAppPath(overrideAppName?: string): string {
   const explicitWorkbenchPath = process.env.WORKBENCH_APP_PATH;
   const appName = process.env.APP_NAME ?? overrideAppName;
@@ -135,12 +130,6 @@ export function hasStepSourceMaps(): boolean {
   if (appName === 'nextjs-turbopack') {
     return false;
   }
-  // Webpack's eager Next flow route executes steps from the generated
-  // __step_registrations.js bundle. Lazy discovery imports step sources through
-  // the flow route and preserves source filenames in local dev stacks.
-  if (appName === 'nextjs-webpack' && !isNextLazyDiscoveryEnabledForTest()) {
-    return false;
-  }
   // V2 carve-out: the V2 combined flow handler does not yet wire up inline
   // source maps for step bundles across the framework integrations on Vercel.
   // To unblock CI while V2 source-map coverage catches up, treat every
@@ -151,13 +140,18 @@ export function hasStepSourceMaps(): boolean {
     return false;
   }
 
-  // NestJS preserves source maps in all builds including prod
+  // The Nest integration builds with `watch: false` and does not set
+  // `NODE_ENV=development`, so even `nest start --watch` resolves to a
+  // production build under the environment-aware source map default — step
+  // bundles have no inline map (dev-on/prod-off). Users can still opt in via
+  // the `sourcemap` option or the `WORKFLOW_SOURCEMAP` env var.
   if (appName === 'nest') {
-    return true;
+    return false;
   }
 
-  // Prod buils for frameworks typically don't consume source maps. So let's disable testing
-  // in local prod and local postgres tests
+  // Source maps now default to off in production builds and on only in dev
+  // servers. Local prod and local postgres runs (no DEV_TEST_CONFIG) are
+  // production builds, so step bundles have no source maps.
   if (!process.env.DEV_TEST_CONFIG) {
     return false;
   }
@@ -185,21 +179,27 @@ export function hasNestedStepStackFrames(): boolean {
 export function hasWorkflowSourceMaps(): boolean {
   const appName = process.env.APP_NAME as string;
 
-  // Vercel deployments have proper source map support for workflow errors
-  if (!isLocalDeployment()) {
-    return true;
+  // Source maps now default to off in production builds and on only in dev
+  // servers (the environment-aware default). In CI, DEV_TEST_CONFIG marks the
+  // local dev-server runs; local prod, postgres, and Vercel runs are all
+  // production builds, so the workflow VM bundle has no inline source map and
+  // stack traces reference generated code.
+  if (!process.env.DEV_TEST_CONFIG) {
+    return false;
   }
 
-  // These frameworks currently don't handle sourcemaps correctly in local dev
+  // These frameworks' dev servers don't produce consumable workflow source
+  // maps. vite/astro/sveltekit/tanstack have pre-existing dev gaps; the Nest
+  // integration builds with watch:false / no NODE_ENV=development, so even
+  // `nest start --watch` resolves to a production build (maps off).
   // TODO: figure out how to get sourcemaps working in these frameworks too
   if (
-    process.env.DEV_TEST_CONFIG &&
-    ['vite', 'astro', 'sveltekit', 'tanstack-start'].includes(appName)
+    ['vite', 'astro', 'sveltekit', 'tanstack-start', 'nest'].includes(appName)
   ) {
     return false;
   }
 
-  // Works everywhere else
+  // Works everywhere else (other frameworks in dev mode)
   return true;
 }
 
@@ -425,8 +425,8 @@ export function getFallbackWorkflowId(
 ): string {
   const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
   // Keep this in sync with the SWC transform ID format. This fallback is
-  // intentionally coupled so tests can continue running when deferred manifest
-  // publication lags behind discovery in staged/out-of-monorepo scenarios.
+  // intentionally coupled so tests can continue running when manifest
+  // publication lags in staged/out-of-monorepo scenarios.
   return `workflow//./${fileWithoutExt}//${workflowFn}`;
 }
 
@@ -452,8 +452,8 @@ export async function getWorkflowMetadata(
     return metadata;
   }
 
-  // Deferred discovery can grow the manifest during test execution, so poll
-  // briefly before failing to avoid races in staged/out-of-monorepo mode.
+  // Manifest publication can lag in staged/out-of-monorepo tests, so poll
+  // briefly before failing to avoid races.
   const deadline = Date.now() + manifestRetryTimeoutMs;
   while (Date.now() < deadline) {
     manifest = await fetchManifest(deploymentUrl, { forceRefresh: true });
@@ -468,9 +468,9 @@ export async function getWorkflowMetadata(
     await sleep(manifestRetryIntervalMs);
   }
 
-  // Deferred discovery can lag behind manifest publication in staged/out-of-
-  // monorepo tests. Fall back to the deterministic workflow ID format used by
-  // the transform so tests can continue exercising runtime behavior.
+  // Manifest publication can lag in staged/out-of-monorepo tests. Fall back to
+  // the deterministic workflow ID format used by the transform so tests can
+  // continue exercising runtime behavior.
   const fallbackWorkflowId = getFallbackWorkflowId(workflowFile, workflowFn);
   console.warn(
     `Workflow "${workflowFn}" not found in manifest for "${workflowFile}" after ${manifestRetryTimeoutMs}ms; ` +

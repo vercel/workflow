@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   FatalError,
+  ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -189,11 +190,11 @@ import {
   normalizeUnknownError,
 } from '../types.js';
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import { executeStep } from './step-executor.js';
 // Import the module AFTER all mocks are set up
 // Since getWorldHandlers is now async, we need to call stepEntrypoint
 // to trigger createQueueHandler and populate capturedHandlerRef
 import { stepEntrypoint } from './step-handler.js';
-import { executeStep } from './step-executor.js';
 import { getWorld } from './world.js';
 
 function capturedHandler(
@@ -1173,5 +1174,216 @@ describe('executeStep inline-delta threading', () => {
     expect(result.type).toBe('completed');
     if (result.type !== 'completed') throw new Error('unreachable');
     expect(result.inlineDelta).toBeUndefined();
+  });
+});
+
+describe('executeStep optimistic inline start', () => {
+  const baseParams = {
+    workflowRunId: 'wrun_test123',
+    workflowName: 'test-workflow',
+    workflowStartedAt: Date.now(),
+    stepId: 'step_abc',
+    stepName: 'myStep',
+    // Empty dehydrated input — the world round-trips this back as step.input.
+    lazyStepInput: [] as never,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Optimistic start is OFF by default — explicitly enable it so these tests
+    // exercise the optimistic path. (The disabled-path test overrides to '0'.)
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+  });
+
+  afterEach(() => {
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    vi.restoreAllMocks();
+  });
+
+  it('sends step_started carrying the input and completes (when enabled)', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) =>
+        Promise.resolve({ event: {} })
+      );
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result.type).toBe('completed');
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    // The lazy step_started carries the input so the world creates the step.
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_started',
+        correlationId: 'step_abc',
+        eventData: expect.objectContaining({ stepName: 'myStep', input: [] }),
+      })
+    );
+  });
+
+  it('runs the body optimistically but discards the result when step_started loses the create race (409)', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('lost create race'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    // The body ran (optimistic execution before the start was confirmed)...
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    // ...but we lost the race, so the result is discarded and no terminal
+    // event is written.
+    expect(result.type).toBe('skipped');
+    const completedWrites = mockEventsCreate.mock.calls.filter(
+      ([, event]) =>
+        (event as { eventType: string }).eventType === 'step_completed'
+    );
+    expect(completedWrites).toHaveLength(0);
+  });
+
+  it('returns throttled (discarding the body result) when step_started is throttled', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(
+            new ThrottleError('slow down', { retryAfter: 7 })
+          );
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result).toEqual({ type: 'throttled', timeoutSeconds: 7 });
+  });
+
+  it('does NOT run the body before confirming start when the flag is disabled', async () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('already running'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    // Await-first path: the conflict short-circuits before the body runs.
+    expect(result.type).toBe('skipped');
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('forces optimistic start via forceOptimisticStart when the flag is unset', async () => {
+    // Turbo passes forceOptimisticStart; with the env var UNSET (off by default
+    // but not an explicit opt-out), turbo forces optimistic start on.
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('lost create race'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+    });
+
+    // Forced optimistic: the body ran before the (lost) create-claim resolved —
+    // unlike the env-disabled case above, where the body never runs.
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    expect(result.type).toBe('skipped');
+  });
+
+  it('forceOptimisticStart defers to an EXPLICIT WORKFLOW_OPTIMISTIC_INLINE_START=0', async () => {
+    // An operator who explicitly set the flag to 0 has opted out of "body runs
+    // before start is confirmed"; that opt-out wins over turbo's force, so the
+    // step takes the await-then-run path and the body never runs on a 409.
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('already running'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+    });
+
+    expect(result.type).toBe('skipped');
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('holds the optimistic step_started until runReadyBarrier resolves, but runs the body immediately', async () => {
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    let release!: () => void;
+    const barrier = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls: string[] = [];
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        calls.push(event.eventType);
+        return Promise.resolve({ event: {} });
+      });
+    mockStepFn.mockReset().mockImplementation(async () => {
+      calls.push('body');
+      return 'step-result';
+    });
+
+    const world = await getWorld();
+    const resultPromise = executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+      runReadyBarrier: barrier,
+    });
+
+    // The body runs immediately against synthesized state; step_started is NOT
+    // issued until the run-ready barrier resolves. Widen the default 1s
+    // vi.waitFor timeout — reaching the body can be slow on cold CI (Windows).
+    await vi.waitFor(() => expect(calls).toContain('body'), {
+      timeout: 15_000,
+    });
+    expect(calls).not.toContain('step_started');
+
+    release();
+    const result = await resultPromise;
+    expect(result.type).toBe('completed');
+    expect(calls).toContain('step_started');
+    expect(calls.indexOf('body')).toBeLessThan(calls.indexOf('step_started'));
   });
 });

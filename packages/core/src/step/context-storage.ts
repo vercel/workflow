@@ -23,6 +23,33 @@ export type StepContext = {
   /** Deployment that owns the current workflow run, used for forwarded streams. */
   workflowDeploymentId?: string;
   ops: Promise<void>[];
+  /**
+   * Operations that MUST be durably committed before the step's
+   * `step_completed`/`step_failed` event is written, because the workflow
+   * continuation triggered by that event depends on them.
+   *
+   * The canonical case is a step-initiated `AbortController.abort()`: the
+   * durable `hook_received` event records the cancellation in the workflow's
+   * event log. If it is flushed in the background (like `ops`), the workflow
+   * continuation enqueued by `step_completed` can run — and advance past the
+   * abort, dispatching a later step with a stale, non-aborted `signal` — before
+   * the `hook_received` event exists. Awaiting these inline before completion
+   * guarantees the abort is ordered ahead of any continuation that observes the
+   * step's result. Unlike these, `ops` holds best-effort real-time stream
+   * writes that should fire ASAP and are intentionally left in the background.
+   *
+   * Contract: producers MUST NOT push a promise that can reject — these are
+   * awaited only to enforce ordering, never to surface an outcome. A rejection
+   * here would propagate as an infra error (queue re-delivery), not the
+   * user-code failure path, so each producer swallows its own errors (see
+   * `reviveAbortController` in serialization.ts). The await sites also
+   * defensively `.catch()` so ordering is all this bucket can ever enforce.
+   *
+   * Required (not optional) so a new step-context construction site that
+   * forgets to wire it fails at compile time, rather than silently regressing
+   * the ordering guarantee back to background-flush behavior.
+   */
+  preCompletionOps: Promise<void>[];
   closureVars?: Record<string, any>;
   encryptionKey?: CryptoKey;
   writables?: Map<string, CachedWritable>;
