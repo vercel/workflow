@@ -1,5 +1,27 @@
 # workflow
 
+## 5.0.0-beta.21
+
+### Minor Changes
+
+- [#2526](https://github.com/vercel/workflow/pull/2526) [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add turbo mode (on by default, disable with `WORKFLOW_TURBO=0`): on the first delivery of a run's first invocation the runtime backgrounds `run_started`, skips the initial event-log load, and forces optimistic inline start so the run reaches its first steps with no preceding network round-trips. It is safe there because the first delivery has no concurrent handler to race; turbo mode deactivates once a hook or sleep is encountered.
+
+### Patch Changes
+
+- [#2472](https://github.com/vercel/workflow/pull/2472) [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615) Thanks [@pranaygp](https://github.com/pranaygp)! - Memoize hydrated step return values across inline replay iterations, turning the per-invocation step-result decrypt+parse cost from O(N²) to O(N) for sequential workflows. Only primitive results are cached, so deterministic replay is preserved.
+
+- Updated dependencies [[`6de5ea5`](https://github.com/vercel/workflow/commit/6de5ea5c2f32b474274f5dabe5f3663e03622ac5), [`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc), [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615), [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3), [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055)]:
+  - @workflow/core@5.0.0-beta.21
+  - @workflow/next@5.0.0-beta.21
+  - @workflow/cli@5.0.0-beta.21
+  - @workflow/nitro@5.0.0-beta.21
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/astro@5.0.0-beta.21
+  - @workflow/nest@5.0.0-beta.21
+  - @workflow/rollup@5.0.0-beta.21
+  - @workflow/sveltekit@5.0.0-beta.21
+  - @workflow/nuxt@5.0.0-beta.21
+
 ## 5.0.0-beta.20
 
 ### Minor Changes

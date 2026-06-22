@@ -1,5 +1,20 @@
 # @workflow/builders
 
+## 5.0.0-beta.21
+
+### Patch Changes
+
+- [#2546](https://github.com/vercel/workflow/pull/2546) [`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc) Thanks [@ijjk](https://github.com/ijjk)! - Optimize eager workflow discovery and improve default eager build compatibility.
+
+- [#2324](https://github.com/vercel/workflow/pull/2324) [`b713d84`](https://github.com/vercel/workflow/commit/b713d8417b1334abd1e30bdc50701d0d96dee39d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Decode escaped workflowCode template literals before graph extraction so unicode-escape identifiers parse correctly.
+
+- [#2545](https://github.com/vercel/workflow/pull/2545) [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3) Thanks [@ijjk](https://github.com/ijjk)! - Remove the Next.js lazy discovery/deferred builder path and the `workflows.lazyDiscovery` option.
+
+  Fall back to direct generated-file overwrites on Windows when atomic rename is blocked by Next.js dev server file handles.
+
+- Updated dependencies [[`6de5ea5`](https://github.com/vercel/workflow/commit/6de5ea5c2f32b474274f5dabe5f3663e03622ac5), [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615), [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055)]:
+  - @workflow/core@5.0.0-beta.21
+
 ## 5.0.0-beta.20
 
 ### Minor Changes
