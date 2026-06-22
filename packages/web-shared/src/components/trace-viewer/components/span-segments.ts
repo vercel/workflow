@@ -252,18 +252,25 @@ function computeHookSegments(node: SpanNode): Segment[] {
     });
   }
 
-  // Received period
+  // Received period — active (received) until disposed, then completed (green)
   if (receivedFraction !== null) {
     const end = disposedFraction ?? 1;
     segments.push({
       startFraction: receivedFraction,
       endFraction: end,
-      status: 'received',
+      status: disposedFraction !== null ? 'succeeded' : 'received',
     });
   }
 
-  // Post-disposed (if there's remaining span after disposal)
-  if (disposedFraction !== null && disposedFraction < 0.999) {
+  // Disposed without receiving — mark completion at disposal
+  if (receivedFraction === null && disposedFraction !== null) {
+    segments.push({
+      startFraction: disposedFraction,
+      endFraction: 1,
+      status: 'succeeded',
+    });
+  } else if (disposedFraction !== null && disposedFraction < 0.999) {
+    // Disposal before span end (span end is usually disposedAt)
     segments.push({
       startFraction: disposedFraction,
       endFraction: 1,

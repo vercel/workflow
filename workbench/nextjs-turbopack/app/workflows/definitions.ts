@@ -33,6 +33,7 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
     RANDOM_ARG_PLACEHOLDER,
   ],
   hookCleanupTestWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
+  hookDisposeTestWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   hookGetConflictWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   hookGetConflictWithPriorStepWorkflow: [
     RANDOM_ARG_PLACEHOLDER,
