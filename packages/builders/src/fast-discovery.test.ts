@@ -140,6 +140,72 @@ describe('fast workflow discovery', () => {
     ).toBe(true);
   });
 
+  it('uses the workflow package export condition when discovering SDK stdlib steps', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const workflowPackageRoot = join(testRoot, 'node_modules', 'workflow');
+    const workflowEntry = join(workflowPackageRoot, 'workflow.js');
+    const workflowRequireEntry = join(
+      workflowPackageRoot,
+      'typescript-plugin.cjs'
+    );
+    const stdlibFile = join(workflowPackageRoot, 'stdlib.js');
+
+    writeFile(
+      entryFile,
+      `import { fetch } from 'workflow';
+
+export async function run() {
+  'use workflow';
+  return fetch('https://example.com');
+}
+`
+    );
+    writeFile(
+      join(workflowPackageRoot, 'package.json'),
+      JSON.stringify({
+        name: 'workflow',
+        version: '1.0.0',
+        exports: {
+          '.': {
+            workflow: './workflow.js',
+            require: './typescript-plugin.cjs',
+            default: './index.js',
+          },
+        },
+      })
+    );
+    writeFile(
+      workflowEntry,
+      `export * from './stdlib.js';
+`
+    );
+    writeFile(
+      workflowRequireEntry,
+      `module.exports = {};
+`
+    );
+    writeFile(
+      stdlibFile,
+      `export async function fetch(...args) {
+  'use step';
+  return globalThis.fetch(...args);
+}
+`
+    );
+
+    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+      [entryFile],
+      join(testRoot, 'out')
+    );
+
+    expect(discovered.discoveredSteps).toEqual(
+      new Set([normalize(stdlibFile)])
+    );
+    expect(
+      parentHasChild(normalize(workflowEntry), normalize(stdlibFile))
+    ).toBe(true);
+  });
+
   it('discovers files reached through tsconfig path aliases', async () => {
     const entryFile = join(testRoot, 'src', 'entry.ts');
     const registryFile = join(testRoot, 'src', '_workflows.ts');

@@ -25,7 +25,7 @@ const fastDiscoveryResolve = promisify(
   enhancedResolveOriginal.create({
     extensions: [...FAST_DISCOVERY_SOURCE_EXTENSIONS, '.json', '.node'],
     fullySpecified: false,
-    conditionNames: ['node', 'import', 'require'],
+    conditionNames: ['workflow', 'node', 'import', 'require'],
   })
 );
 const require = createRequire(import.meta.url);

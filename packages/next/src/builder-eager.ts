@@ -467,7 +467,6 @@ export async function getNextBuilderEager() {
         inputFiles,
         outfile: join(stepsRouteDir, 'route.js'),
         externalizeNonSteps: true,
-        sourceStepRegistrationImports: true,
         tsconfigPath,
       });
     }
