@@ -12,6 +12,7 @@ import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
 import {
   applySwcTransform,
+  getWorkflowFilenamesFromManifest,
   type WorkflowManifest,
 } from './apply-swc-transform.js';
 import { createWorkflowEntrypointOptionsCode } from './constants.js';
@@ -1190,8 +1191,11 @@ export abstract class BaseBuilder {
         }
       }
 
-      const workflowEntrypointOptionsCode =
-        createWorkflowEntrypointOptionsCode();
+      const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
+        {
+          workflowFilenames: getWorkflowFilenamesFromManifest(workflowManifest),
+        }
+      );
 
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
@@ -1381,7 +1385,12 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     // 3. Generate combined route file
     const stepsRelativePath = './' + basename(stepsOutfile).replace(/\\/g, '/');
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
-    const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode();
+    const workflowFilenames = getWorkflowFilenamesFromManifest(
+      workflowsResult.manifest
+    );
+    const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
+      workflowFilenames,
+    });
 
     const combinedFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
@@ -1454,8 +1463,11 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
     const combinedBundleFinal = async (interimBundleText: string) => {
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
-      const workflowEntrypointOptionsCode =
-        createWorkflowEntrypointOptionsCode();
+      const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
+        {
+          workflowFilenames,
+        }
+      );
       const code = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';

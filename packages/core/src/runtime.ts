@@ -68,6 +68,7 @@ import {
 } from './telemetry.js';
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
+import { precompileWorkflowScripts } from './vm/script-cache.js';
 import { runWorkflow } from './workflow.js';
 
 export type { Event, WorkflowRun };
@@ -270,6 +271,34 @@ function hasOpenHookOrWait(events: Event[]): boolean {
 }
 
 /**
+ * Default filename used to warm the compiled-bundle cache when the set of
+ * workflow names is not provided. Paying the top-level parse under any single
+ * filename compiles the bulk of the bundle; the per-workflow filenames then
+ * recompile lazily (a cheap re-parse) on first replay.
+ */
+const PRECOMPILE_FALLBACK_FILENAME = '<workflow-bundle>';
+
+/**
+ * Warms the compiled workflow-bundle `vm.Script` cache at module-init time.
+ *
+ * `workflowFilenames` must already be the per-file source filenames that
+ * {@link runWorkflow} compiles under (`parseWorkflowName(name)?.moduleSpecifier
+ * || name`), so the precompiled `Script` is identical to the one the replay
+ * path looks up and the first delivery's replay is a cache hit. When none are
+ * provided, a single representative filename still pays the bulk parse.
+ */
+function precompileWorkflowBundle(
+  workflowCode: string,
+  workflowFilenames: string[] | undefined
+): void {
+  const filenames =
+    workflowFilenames && workflowFilenames.length > 0
+      ? workflowFilenames
+      : [PRECOMPILE_FALLBACK_FILENAME];
+  precompileWorkflowScripts(workflowCode, filenames);
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -282,13 +311,40 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string }
+  options?: {
+    namespace?: string;
+    /**
+     * The unique source filenames of the workflows contained in
+     * `workflowCode`, as known at build time. These must match the `filename`
+     * {@link runWorkflow} compiles under — i.e.
+     * `parseWorkflowName(name)?.moduleSpecifier || name`. Because that filename
+     * is per *file* (not per function), this is the deduplicated set of
+     * workflow module specifiers, not one entry per workflow function.
+     *
+     * When provided, the workflow bundle's compiled `vm.Script` is warmed for
+     * each filename at module-init time, so the first queue delivery's replay
+     * skips the (expensive) bundle parse/compile.
+     *
+     * Optional and best-effort: when omitted, the script is still precompiled
+     * once under a representative filename to pay the bulk of the parse cost
+     * early; per-filename scripts then compile lazily on first replay.
+     */
+    workflowFilenames?: string[];
+  }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+
+  // Module-init optimization: warm the compiled-bundle cache now, before the
+  // first queue delivery, so replay doesn't pay the parse/compile cost on the
+  // critical path. `runWorkflow` keys the cache by the per-file source filename
+  // (for stack-trace attribution); the builder passes that deduplicated set of
+  // filenames. When none are provided, fall back to a single representative
+  // filename so the bulk top-level parse is still done eagerly.
+  precompileWorkflowBundle(workflowCode, options?.workflowFilenames);
 
   const handler = (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(

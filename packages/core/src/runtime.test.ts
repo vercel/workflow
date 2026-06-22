@@ -17,6 +17,10 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from './serialization.js';
+import {
+  clearWorkflowScriptCache,
+  isWorkflowScriptCached,
+} from './vm/script-cache.js';
 
 // Capture every promise handed to `waitUntil` so tests can assert that
 // progress-critical sends are never registered on a detached, unconsumed
@@ -1328,5 +1332,47 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // The throttled step is NOT re-queued as a background (stepId) message —
     // the orchestrator is deferred instead so it re-runs inline with input.
     expect(stepIdMessages).toHaveLength(0);
+  });
+});
+
+describe('workflowEntrypoint module-init script precompile', () => {
+  afterEach(() => {
+    clearWorkflowScriptCache();
+  });
+
+  // A unique bundle string per test so cache state can't leak between tests.
+  const uniqueBundle = (marker: string) =>
+    `;globalThis.__private_workflows = new Map(); /* ${marker} */`;
+
+  it('precompiles the bundle Script for each provided workflow filename at construction time', () => {
+    const code = uniqueBundle('with-filenames');
+    expect(isWorkflowScriptCached(code, './src/a')).toBe(false);
+    expect(isWorkflowScriptCached(code, './src/b')).toBe(false);
+
+    // Constructing the entrypoint should warm the cache — no queue delivery
+    // required.
+    workflowEntrypoint(code, {
+      workflowFilenames: ['./src/a', './src/b'],
+    });
+
+    expect(isWorkflowScriptCached(code, './src/a')).toBe(true);
+    expect(isWorkflowScriptCached(code, './src/b')).toBe(true);
+  });
+
+  it('precompiles under a fallback filename when no workflow filenames are given', () => {
+    const code = uniqueBundle('no-filenames');
+
+    workflowEntrypoint(code);
+
+    // The fallback filename is an internal detail, but the cache must hold
+    // exactly one entry for this bundle (the bulk parse was paid eagerly).
+    expect(isWorkflowScriptCached(code, '<workflow-bundle>')).toBe(true);
+  });
+
+  it('does not throw at construction time when the bundle has a syntax error', () => {
+    // Precompile failures must never break module init / route construction.
+    expect(() =>
+      workflowEntrypoint('function (', { workflowFilenames: ['./src/broken'] })
+    ).not.toThrow();
   });
 });

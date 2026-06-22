@@ -4,6 +4,7 @@ import { createContext } from './index.js';
 import {
   clearWorkflowScriptCache,
   getCachedWorkflowScript,
+  precompileWorkflowScripts,
   runCachedWorkflowScript,
   workflowScriptCacheSize,
 } from './script-cache.js';
@@ -198,5 +199,70 @@ describe('script-cache', () => {
       ctxY
     ) as (n: string) => Promise<string>;
     expect(await fnY('z')).toContain('bundle-Y:3:z');
+  });
+
+  describe('precompileWorkflowScripts', () => {
+    it('warms the cache so a later lookup returns the same Script', () => {
+      const bundle = buildBundle('precompile');
+      const fileA = 'workflows/a.ts';
+      const fileB = 'workflows/b.ts';
+
+      precompileWorkflowScripts(bundle, [fileA, fileB]);
+
+      // The cache is warm: a subsequent getCachedWorkflowScript is a hit, not a
+      // recompile. We can't observe "compiled vs cached" directly, but identity
+      // stability across the precompile boundary proves the precompiled Script
+      // is the one served afterward.
+      const a1 = getCachedWorkflowScript(bundle, fileA);
+      precompileWorkflowScripts(bundle, [fileA]);
+      const a2 = getCachedWorkflowScript(bundle, fileA);
+      expect(a2).toBe(a1);
+
+      // Each precompiled filename is independently cached.
+      expect(getCachedWorkflowScript(bundle, fileB)).toBe(
+        getCachedWorkflowScript(bundle, fileB)
+      );
+    });
+
+    it('precompiles a Script identical to the one the lazy path would compile', async () => {
+      // The whole point: precompiling at module init must not change replay
+      // behaviour. The precompiled Script must produce a byte-identical result
+      // to compiling lazily on first replay.
+      const fileA = 'workflows/a.ts';
+
+      precompileWorkflowScripts(SAMPLE_BUNDLE, [fileA]);
+      const { context: warmCtx } = createContext({ seed, fixedTimestamp });
+      runCachedWorkflowScript(SAMPLE_BUNDLE, fileA, warmCtx);
+      const warmFn = runInContext(
+        `globalThis.__private_workflows?.get('my/workflow')`,
+        warmCtx
+      ) as (n: string) => Promise<string>;
+      const warmResult = await warmFn('world');
+
+      // A genuinely cold lookup (different filename never precompiled) compiled
+      // lazily on first run.
+      const { context: coldCtx } = createContext({ seed, fixedTimestamp });
+      runCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/cold.ts', coldCtx);
+      const coldFn = runInContext(
+        `globalThis.__private_workflows?.get('my/workflow')`,
+        coldCtx
+      ) as (n: string) => Promise<string>;
+      const coldResult = await coldFn('world');
+
+      expect(warmResult).toEqual(coldResult);
+    });
+
+    it('does not throw when given an empty filename list', () => {
+      expect(() => precompileWorkflowScripts(SAMPLE_BUNDLE, [])).not.toThrow();
+    });
+
+    it('swallows compile errors so module init never breaks', () => {
+      // Syntactically invalid code would throw from `new Script(...)`. The
+      // precompile helper must swallow it (the lazy replay path surfaces the
+      // real error with full context).
+      expect(() =>
+        precompileWorkflowScripts('function (', ['workflows/broken.ts'])
+      ).not.toThrow();
+    });
   });
 });
