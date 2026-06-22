@@ -282,10 +282,18 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string }
+  options?: { namespace?: string; cachedData?: string }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
+
+  // Decode the build-time V8 code cache (base64) once per process. Passed to
+  // every replay so the first bundle compile in a fresh process can skip
+  // parsing (see `runWorkflow` / `getCachedWorkflowScript`). Undefined when the
+  // build emitted no cache (e.g. dev, or a bundle below the size threshold).
+  const workflowCodeCachedData = options?.cachedData
+    ? Buffer.from(options.cachedData, 'base64')
+    : undefined;
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
@@ -1075,7 +1083,8 @@ export function workflowEntrypoint(
                         workflowCode,
                         workflowRun,
                         events,
-                        encryptionKey
+                        encryptionKey,
+                        workflowCodeCachedData
                       );
                       runtimeLogger.debug('Workflow replay completed', {
                         workflowRunId: runId,

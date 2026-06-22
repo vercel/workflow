@@ -14,7 +14,10 @@ import {
   applySwcTransform,
   type WorkflowManifest,
 } from './apply-swc-transform.js';
-import { createWorkflowEntrypointOptionsCode } from './constants.js';
+import {
+  createWorkflowEntrypointArgs,
+  createWorkflowEntrypointOptionsCode,
+} from './constants.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
@@ -1190,19 +1193,18 @@ export abstract class BaseBuilder {
         }
       }
 
-      const workflowEntrypointOptionsCode =
-        createWorkflowEntrypointOptionsCode();
-
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
+        const { cachedDataDecl, secondArg } =
+          createWorkflowEntrypointArgs(workflowBundleCode);
 
         const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
-
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+${cachedDataDecl}
+export const POST = workflowEntrypoint(workflowCode${secondArg});`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {
@@ -1381,7 +1383,8 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     // 3. Generate combined route file
     const stepsRelativePath = './' + basename(stepsOutfile).replace(/\\/g, '/');
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
-    const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode();
+    const { cachedDataDecl, secondArg } =
+      createWorkflowEntrypointArgs(workflowVMCode);
 
     const combinedFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
@@ -1392,8 +1395,8 @@ import { workflowEntrypoint } from 'workflow/runtime';
 void __steps_registered;
 
 const workflowCode = \`${escapedVMCode}\`;
-
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+${cachedDataDecl}
+export const POST = workflowEntrypoint(workflowCode${secondArg});`;
 
     if (!bundleFinalOutput) {
       // Write directly (Next.js will bundle)

@@ -199,4 +199,61 @@ describe('script-cache', () => {
     ) as (n: string) => Promise<string>;
     expect(await fnY('z')).toContain('bundle-Y:3:z');
   });
+
+  describe('build-time code cache (cachedData)', () => {
+    it('accepts a matching code cache and still produces the right workflow', async () => {
+      const bundle = buildBundle('cached-ok');
+      // Build-time step: compile once and capture the V8 code cache.
+      const { Script } = await import('node:vm');
+      const cachedData = new Script(bundle, {
+        filename: 'build.js',
+      }).createCachedData();
+
+      // Runtime: compiling with the cache must not reject it...
+      const script = getCachedWorkflowScript(bundle, 'app/file.js', cachedData);
+      expect(script.cachedDataRejected).toBe(false);
+
+      // ...and the workflow it registers still runs correctly.
+      const { context } = createContext({ seed, fixedTimestamp });
+      script.runInContext(context);
+      const fn = runInContext(
+        `globalThis.__private_workflows?.get('app/workflow-5')`,
+        context
+      ) as (n: string) => Promise<string>;
+      expect(await fn('q')).toContain('cached-ok:5:q');
+    });
+
+    it('falls back to a full parse when the code cache is corrupt', async () => {
+      const bundle = buildBundle('cached-corrupt');
+      const corrupt = Buffer.from('not a real v8 code cache blob');
+
+      // A rejected cache must not throw and must still compile correctly.
+      const script = getCachedWorkflowScript(bundle, 'app/file.js', corrupt);
+      expect(script.cachedDataRejected).toBe(true);
+
+      const { context } = createContext({ seed, fixedTimestamp });
+      script.runInContext(context);
+      const fn = runInContext(
+        `globalThis.__private_workflows?.get('app/workflow-2')`,
+        context
+      ) as (n: string) => Promise<string>;
+      expect(await fn('q')).toContain('cached-corrupt:2:q');
+    });
+
+    it('is independent of filename: a cache built under one filename is accepted under another', async () => {
+      const bundle = buildBundle('cached-fname');
+      const { Script } = await import('node:vm');
+      const cachedData = new Script(bundle, {
+        filename: 'workflow//./a//wfA',
+      }).createCachedData();
+
+      // Runtime compiles under a different per-workflow filename.
+      const script = getCachedWorkflowScript(
+        bundle,
+        'workflow//./b//wfB',
+        cachedData
+      );
+      expect(script.cachedDataRejected).toBe(false);
+    });
+  });
 });

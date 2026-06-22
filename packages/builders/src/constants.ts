@@ -1,3 +1,5 @@
+import { Script } from 'node:vm';
+
 const QUEUE_NAMESPACE_PATTERN = /^[a-z][a-z0-9]*$/;
 
 function resolveQueueNamespace(namespace?: string): string | undefined {
@@ -65,6 +67,76 @@ export function createWorkflowEntrypointOptionsCode(options?: {
   getQueueTopicPrefix('workflow', namespace);
 
   return `, { namespace: ${JSON.stringify(namespace)} }`;
+}
+
+/**
+ * Variable name a generated route uses to hold the build-time V8 code cache.
+ */
+const WORKFLOW_CODE_CACHED_DATA_VAR = '__workflowCodeCachedData';
+
+/**
+ * Bundles below this size parse in ~1ms, so embedding a base64 code cache
+ * (which roughly doubles the route's source size) is not worth it. Above it,
+ * the cold-instance parse — the dominant first-replay cost — grows ~linearly
+ * (~30ms/MB), and the cache skips it.
+ */
+const MIN_CODE_CACHE_BYTES = 256 * 1024;
+
+/**
+ * Builds the trailing pieces a generated flow route needs to hand a build-time
+ * V8 code cache to `workflowEntrypoint`:
+ *  - `cachedDataDecl`: a `const __workflowCodeCachedData = "<base64>";` line to
+ *    emit right after `const workflowCode = ...` (empty when no cache).
+ *  - `secondArg`: the full `, { namespace, cachedData }` argument string.
+ *
+ * The cache (`Script.createCachedData()`) lets a fresh serverless instance skip
+ * parsing the bundle on its first replay. Skipped for small bundles and when
+ * `WORKFLOW_DISABLE_BUNDLE_CODE_CACHE=1`. Generation failure degrades silently
+ * to no cache; at runtime V8 also validates the blob and falls back to a full
+ * parse on any mismatch, so this is never a correctness risk.
+ *
+ * Only for production (bundle-embedded) routes — dev/watch routes that read the
+ * bundle from disk should keep using `createWorkflowEntrypointOptionsCode`.
+ */
+export function createWorkflowEntrypointArgs(
+  workflowCode: string,
+  options?: { namespace?: string }
+): { cachedDataDecl: string; secondArg: string } {
+  const namespace = resolveQueueNamespace(options?.namespace);
+  if (namespace) {
+    // Reuse prefix construction for namespace validation.
+    getQueueTopicPrefix('workflow', namespace);
+  }
+
+  let cachedDataB64 = '';
+  if (
+    process.env.WORKFLOW_DISABLE_BUNDLE_CODE_CACHE !== '1' &&
+    workflowCode.length >= MIN_CODE_CACHE_BYTES
+  ) {
+    try {
+      const script = new Script(workflowCode, {
+        filename: 'workflow-bundle.js',
+      });
+      cachedDataB64 = script.createCachedData().toString('base64');
+    } catch {
+      cachedDataB64 = '';
+    }
+  }
+
+  const entries: string[] = [];
+  if (namespace) {
+    entries.push(`namespace: ${JSON.stringify(namespace)}`);
+  }
+  if (cachedDataB64) {
+    entries.push(`cachedData: ${WORKFLOW_CODE_CACHED_DATA_VAR}`);
+  }
+
+  return {
+    cachedDataDecl: cachedDataB64
+      ? `const ${WORKFLOW_CODE_CACHED_DATA_VAR} = ${JSON.stringify(cachedDataB64)};\n`
+      : '',
+    secondArg: entries.length ? `, { ${entries.join(', ')} }` : '',
+  };
 }
 
 /**
