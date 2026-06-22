@@ -257,6 +257,7 @@ export abstract class BaseBuilder {
    */
   private warnedExternalPackages = new Set<string>();
   private workflowBuildStartTime: number | undefined;
+  private workflowBuildSummaryCount = 0;
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -294,6 +295,12 @@ export abstract class BaseBuilder {
 
   private resetWorkflowBuildTimer(): void {
     this.workflowBuildStartTime = undefined;
+  }
+
+  private getWorkflowBuildSummaryPrefix(): string {
+    return this.workflowBuildSummaryCount === 0
+      ? 'workflows build complete'
+      : 'workflows rebuilt';
   }
 
   private logCreateWorkflowsBundleInfo(...args: unknown[]): void {
@@ -2264,9 +2271,10 @@ export const OPTIONS = handler;`;
 
       if (!this.config.suppressCreateManifestLogs) {
         console.log(
-          `workflows build complete (${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, time ${formatBuildDuration(this.getWorkflowBuildDuration())})`
+          `${this.getWorkflowBuildSummaryPrefix()} (${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, time ${formatBuildDuration(this.getWorkflowBuildDuration())})`
         );
       }
+      this.workflowBuildSummaryCount += 1;
       this.resetWorkflowBuildTimer();
 
       return manifestJson;

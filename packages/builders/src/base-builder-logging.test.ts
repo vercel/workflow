@@ -68,33 +68,44 @@ describe('base builder logging', () => {
     expect(debugSpy).toHaveBeenCalledWith('Created step registrations', '10ms');
   });
 
-  it('emits one compact build summary when the manifest is created', async () => {
+  it('emits compact build and rebuild summaries when manifests are created', async () => {
     const workflowBundlePath = join(testRoot, 'workflow.js');
     const manifestDir = join(testRoot, '.well-known/workflow/v1');
     mkdirSync(manifestDir, { recursive: true });
     writeFileSync(workflowBundlePath, '', 'utf-8');
 
-    await createBuilder(testRoot).createTestManifest({
-      workflowBundlePath,
-      manifestDir,
-      manifest: {
-        steps: {
-          'src/workflow.ts': {
-            stepOne: { stepId: 'step//src/workflow.ts//stepOne' },
-            stepTwo: { stepId: 'step//src/workflow.ts//stepTwo' },
-          },
-        },
-        workflows: {
-          'src/workflow.ts': {
-            run: { workflowId: 'workflow//src/workflow.ts//run' },
-          },
+    const builder = createBuilder(testRoot);
+    const manifest: WorkflowManifest = {
+      steps: {
+        'src/workflow.ts': {
+          stepOne: { stepId: 'step//src/workflow.ts//stepOne' },
+          stepTwo: { stepId: 'step//src/workflow.ts//stepTwo' },
         },
       },
+      workflows: {
+        'src/workflow.ts': {
+          run: { workflowId: 'workflow//src/workflow.ts//run' },
+        },
+      },
+    };
+
+    await builder.createTestManifest({
+      workflowBundlePath,
+      manifestDir,
+      manifest,
+    });
+    await builder.createTestManifest({
+      workflowBundlePath,
+      manifestDir,
+      manifest,
     });
 
-    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy).toHaveBeenCalledTimes(2);
     expect(logSpy.mock.calls[0]?.[0]).toMatch(
       /^workflows build complete \(2 steps, 1 workflow, time \d+(?:ms|\.\d+s)\)$/
+    );
+    expect(logSpy.mock.calls[1]?.[0]).toMatch(
+      /^workflows rebuilt \(2 steps, 1 workflow, time \d+(?:ms|\.\d+s)\)$/
     );
   });
 });
