@@ -1,10 +1,7 @@
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { extname, join, relative, resolve } from 'node:path';
-import type {
-  NextConfig as BuilderNextConfig,
-  WorkflowManifest,
-} from '@workflow/builders';
+import type { NextConfig as BuilderNextConfig } from '@workflow/builders';
 import type { NextConfig as ProjectNextConfig } from 'next';
 import Watchpack from 'watchpack';
 
