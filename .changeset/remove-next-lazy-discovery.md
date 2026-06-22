@@ -1,5 +1,5 @@
 ---
-'@workflow/next': major
+'@workflow/next': minor
 '@workflow/builders': patch
 ---
 
