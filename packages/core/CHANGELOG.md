@@ -1,5 +1,17 @@
 # @workflow/core
 
+## 5.0.0-beta.21
+
+### Minor Changes
+
+- [#2526](https://github.com/vercel/workflow/pull/2526) [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add turbo mode (on by default, disable with `WORKFLOW_TURBO=0`): on the first delivery of a run's first invocation the runtime backgrounds `run_started`, skips the initial event-log load, and forces optimistic inline start so the run reaches its first steps with no preceding network round-trips. It is safe there because the first delivery has no concurrent handler to race; turbo mode deactivates once a hook or sleep is encountered.
+
+### Patch Changes
+
+- [#2412](https://github.com/vercel/workflow/pull/2412) [`6de5ea5`](https://github.com/vercel/workflow/commit/6de5ea5c2f32b474274f5dabe5f3663e03622ac5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a race where an `AbortController` aborted from a step was not reflected in a `controller.signal` passed to a subsequent step. The step now commits the abort's durable hook event before completing, and the workflow's suspension waits for the abort to land before serializing downstream step arguments.
+
+- [#2472](https://github.com/vercel/workflow/pull/2472) [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615) Thanks [@pranaygp](https://github.com/pranaygp)! - Memoize hydrated step return values across inline replay iterations, turning the per-invocation step-result decrypt+parse cost from O(N²) to O(N) for sequential workflows. Only primitive results are cached, so deterministic replay is preserved.
+
 ## 5.0.0-beta.20
 
 ### Minor Changes

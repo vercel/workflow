@@ -615,6 +615,9 @@ function createStepHandler(namespace?: string) {
             // operations (e.g., stream loading) are added to `ops` and executed later
             // via Promise.all(ops) - their timing is not included in this measurement.
             const ops: Promise<void>[] = [];
+            // Ops that must be durably committed before step completion (e.g. a
+            // step-initiated abort's hook_received event). See StepContext.
+            const preCompletionOps: Promise<void>[] = [];
             const hydratedInput = await trace(
               'step.hydrate',
               {},
@@ -672,6 +675,7 @@ function createStepHandler(namespace?: string) {
                     },
                     workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                     ops,
+                    preCompletionOps,
                     closureVars: hydratedInput.closureVars,
                     encryptionKey,
                   },
@@ -685,6 +689,19 @@ function createStepHandler(namespace?: string) {
             const executionTimeMs = Date.now() - executionStartTime;
 
             cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
+
+            // Commit must-be-durable ops (e.g. a step-initiated abort's
+            // hook_received event) before writing step_completed/step_failed,
+            // so any workflow continuation triggered by that event observes the
+            // abort rather than racing it. Producers swallow their own errors
+            // per the no-reject contract on StepContext.preCompletionOps; the
+            // `.catch()` defends it, since this await sits outside the
+            // user-code try/catch (a stray rejection here would otherwise
+            // surface as an infra error → queue re-delivery, not a step
+            // failure). The await only enforces ordering.
+            if (preCompletionOps.length > 0) {
+              await Promise.all(preCompletionOps).catch(() => {});
+            }
 
             span?.setAttributes({
               ...Attribute.QueueExecutionTimeMs(executionTimeMs),
