@@ -1,7 +1,11 @@
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
-import type { WorkflowManifest } from '@workflow/builders';
+import { extname, join, relative, resolve } from 'node:path';
+import type {
+  NextConfig as BuilderNextConfig,
+  WorkflowManifest,
+} from '@workflow/builders';
+import type { NextConfig as ProjectNextConfig } from 'next';
 import Watchpack from 'watchpack';
 
 let CachedNextBuilderEager: any;
@@ -23,6 +27,10 @@ export async function getNextBuilderEager() {
   )) as typeof import('@workflow/builders');
 
   class NextBuilder extends BaseBuilderClass {
+    protected declare config: BuilderNextConfig & {
+      pageExtensions: NonNullable<ProjectNextConfig['pageExtensions']>;
+    };
+
     async build() {
       const outputDir = await this.findAppDirectory();
       const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');
@@ -387,21 +395,30 @@ export async function getNextBuilderEager() {
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
-      return inputFiles.filter((item) => {
-        // Match App Router entrypoints: route.ts, page.ts, layout.ts in app/ or src/app/ directories
-        // Matches: /app/page.ts, /app/dashboard/page.ts, /src/app/route.ts, etc.
-        if (
-          item.match(
-            /(^|.*[/\\])(app|src[/\\]app)([/\\](route|page|layout)\.|[/\\].*[/\\](route|page|layout)\.)/
+      return inputFiles.filter((file) => {
+        const entry = relative(this.config.workingDir, file).replaceAll(
+          '\\',
+          '/'
+        );
+
+        // Match App Router route, page, and layout entrypoints in app/ or src/app/.
+        if (/^(?:app|src\/app)\/(?:.*\/)?(?:route|page|layout)\./.test(entry)) {
+          return true;
+        }
+
+        // Match every Pages Router entrypoint in pages/ or src/pages/.
+        if (/^(?:pages|src\/pages)\//.test(entry)) {
+          return true;
+        }
+
+        // Match Next.js root entrypoints at the project root or under src/.
+        return ['instrumentation', 'middleware', 'proxy'].some((name) =>
+          this.config.pageExtensions.some(
+            (extension) =>
+              entry === `${name}.${extension}` ||
+              entry === `src/${name}.${extension}`
           )
-        ) {
-          return true;
-        }
-        // Match Pages Router entrypoints: files in pages/ or src/pages/
-        if (item.match(/[/\\](pages|src[/\\]pages)[/\\]/)) {
-          return true;
-        }
-        return false;
+        );
       });
     }
 
