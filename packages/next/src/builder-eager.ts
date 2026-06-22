@@ -204,6 +204,7 @@ export async function getNextBuilderEager() {
         };
 
         const fullRebuild = async () => {
+          this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
 
@@ -469,6 +470,7 @@ export async function getNextBuilderEager() {
         inputFiles,
         outfile: join(stepsRouteDir, 'route.js'),
         externalizeNonSteps: true,
+        sourceStepRegistrationImports: true,
         tsconfigPath,
       });
     }
