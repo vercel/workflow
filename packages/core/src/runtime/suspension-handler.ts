@@ -35,6 +35,16 @@ export interface SuspensionHandlerParams {
   run: WorkflowRun;
   span?: Span;
   requestId?: string;
+  /**
+   * Turbo mode only: a promise that resolves once the backgrounded
+   * `run_started` has landed (the run exists). When present, every world write
+   * this suspension performs (`hook_created`, `wait_created`, eager overflow
+   * `step_created`, …) is gated on it so the write never races ahead of the
+   * run's creation. The pure inline hot path defers all of its steps and writes
+   * nothing here, so it never awaits this barrier. `undefined` outside turbo,
+   * where `run_started` was already awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>;
 }
 
 /**
@@ -85,6 +95,14 @@ export interface SuspensionHandlerResult {
   hasAwaitedHookCreation: boolean;
   /** Whether native workflow attribute events were written for replay. */
   hasAttributeEvents: boolean;
+  /**
+   * Whether this suspension created any hook (`hook_created`) events. Unlike
+   * `hasHookConflict` / `hasAwaitedHookCreation`, this is true even for a plain
+   * fire-and-forget hook with no conflict and no awaiter. Turbo mode uses it to
+   * detect "a hook was created this suspension" and stop forcing optimistic
+   * inline start (a hook introduces later resume invocations that could race).
+   */
+  hasHookEvents: boolean;
 }
 
 async function createHookEvent({
@@ -164,8 +182,26 @@ export async function handleSuspension({
   run,
   span,
   requestId,
+  runReadyBarrier,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
+  // Turbo mode: hold every world write below until the backgrounded
+  // `run_started` has *settled*, so we never write a step/hook/wait event for a
+  // run that does not exist yet. A no-op outside turbo (barrier undefined) and
+  // on the pure inline hot path, which defers all steps and writes nothing.
+  // Awaiting the same (usually already-settled) promise more than once is cheap.
+  // A barrier rejection is swallowed for ordering only: if `run_started` truly
+  // failed the run does not exist, so the subsequent write surfaces the real
+  // error (run not found / gone) and the message redelivers.
+  const ensureRunReady = async (): Promise<void> => {
+    if (runReadyBarrier) {
+      try {
+        await runReadyBarrier;
+      } catch {
+        // intentional: ordering barrier only — see above.
+      }
+    }
+  };
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -234,6 +270,7 @@ export async function handleSuspension({
   let hasAwaitedHookCreation = false;
 
   if (hookEvents.length > 0) {
+    await ensureRunReady();
     const results = await Promise.all(
       hookEvents.map(({ hookEvent, queueItem }) =>
         createHookEvent({
@@ -253,6 +290,7 @@ export async function handleSuspension({
 
   // Process hook disposals — these release hook tokens for reuse by other workflows.
   if (hooksNeedingDisposal.length > 0) {
+    await ensureRunReady();
     await Promise.all(
       hooksNeedingDisposal.map(async (queueItem) => {
         const hookDisposedEvent: CreateEventRequest = {
@@ -306,6 +344,7 @@ export async function handleSuspension({
   );
 
   if (hooksNeedingAbort.length > 0) {
+    await ensureRunReady();
     await Promise.all(
       hooksNeedingAbort.map(async (queueItem) => {
         try {
@@ -459,6 +498,7 @@ export async function handleSuspension({
             },
           };
           try {
+            await ensureRunReady();
             await world.events.create(runId, stepEvent, { requestId });
             createdStepCorrelationIds.add(queueItem.correlationId);
           } catch (err) {
@@ -491,6 +531,7 @@ export async function handleSuspension({
             },
           };
           try {
+            await ensureRunReady();
             await world.events.create(runId, waitEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
@@ -512,6 +553,7 @@ export async function handleSuspension({
     ops.push(
       (async () => {
         try {
+          await ensureRunReady();
           await world.events.create(
             runId,
             {
@@ -612,6 +654,7 @@ export async function handleSuspension({
     hasHookConflict,
     hasAwaitedHookCreation,
     hasAttributeEvents: attributeItems.length > 0,
+    hasHookEvents: hookEvents.length > 0,
   };
 }
 

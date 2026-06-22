@@ -33,7 +33,10 @@ import {
   promoteAbortErrorToFatal,
 } from '../types.js';
 
-import { isOptimisticInlineStartEnabled } from './constants.js';
+import {
+  isOptimisticInlineStartEnabled,
+  isOptimisticInlineStartExplicitlyDisabled,
+} from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import { safeWaitUntil } from './wait-until.js';
@@ -99,6 +102,23 @@ export interface StepExecutorParams {
    * handler is the sole inline writer for the run on this iteration.
    */
   inlineDeltaSinceCursor?: string;
+  /**
+   * Force optimistic inline start regardless of
+   * `WORKFLOW_OPTIMISTIC_INLINE_START`. Set by turbo mode on the first delivery
+   * of the first invocation, where forcing it is safe: there is no concurrent
+   * peer handler to race the create-claim, so the body runs exactly once. Only
+   * meaningful together with `lazyStepInput` (a brand-new lazy step).
+   */
+  forceOptimisticStart?: boolean;
+  /**
+   * Turbo mode only: a promise that resolves once the backgrounded
+   * `run_started` has landed. When set, the lazy/optimistic `step_started` is
+   * chained on it so the step is never created before its run exists. The body
+   * still runs immediately against locally-synthesized state — only the network
+   * write waits — so the `run_started` round-trip overlaps the body. `undefined`
+   * outside turbo, where `run_started` was already awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>;
 }
 
 /**
@@ -201,6 +221,13 @@ export async function executeStep(
       // return `skipped` and never write the failure twice.
       if (params.lazyStepInput !== undefined) {
         try {
+          // Turbo: this lazy `step_started` must not precede the backgrounded
+          // `run_started`. Order it after the run-ready barrier (best-effort —
+          // a barrier rejection means the run doesn't exist, and the create
+          // below surfaces the real error). No-op outside turbo.
+          if (params.runReadyBarrier) {
+            await params.runReadyBarrier.catch(() => {});
+          }
           await world.events.create(workflowRunId, {
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
@@ -310,8 +337,18 @@ export async function executeStep(
     // discard the body result. Running the body before confirming ownership can
     // execute a step more than once when handlers race — inline step bodies
     // must be idempotent; disable via WORKFLOW_OPTIMISTIC_INLINE_START=0.
+    //
+    // Turbo mode passes `forceOptimisticStart` to enable this regardless of the
+    // env flag (its single-handler guarantee removes the race). But it still
+    // defers to an *explicit* `WORKFLOW_OPTIMISTIC_INLINE_START=0`: forced
+    // optimistic start runs the body before `step_started`/`run_started` is
+    // confirmed, which is exactly the property an operator opts out of with that
+    // flag, so an explicit opt-out wins over turbo's force.
     const optimisticStart =
-      params.lazyStepInput !== undefined && isOptimisticInlineStartEnabled();
+      params.lazyStepInput !== undefined &&
+      (isOptimisticInlineStartEnabled() ||
+        (params.forceOptimisticStart === true &&
+          !isOptimisticInlineStartExplicitlyDisabled()));
 
     let step: Step;
     // Settled outcome of the in-flight optimistic `step_started`. Handlers are
@@ -338,12 +375,20 @@ export async function executeStep(
     };
 
     if (optimisticStart) {
-      const startedPromise = world.events.create(workflowRunId, {
-        eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: stepId,
-        eventData: { stepName, workflowName, input: params.lazyStepInput },
-      });
+      // Chain the lazy `step_started` on the run-ready barrier (turbo mode):
+      // the step can't be created before its run exists, but the body below
+      // runs immediately against synthesized state, so the `run_started`
+      // round-trip overlaps the body rather than blocking it. Outside turbo the
+      // barrier is undefined and this is a plain create.
+      const startedPromise = (params.runReadyBarrier ?? Promise.resolve()).then(
+        () =>
+          world.events.create(workflowRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: { stepName, workflowName, input: params.lazyStepInput },
+          })
+      );
       optimisticStartSettled = startedPromise.then(
         () => ({ ok: true as const }),
         (err) => ({ ok: false as const, err })
