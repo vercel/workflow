@@ -3,7 +3,12 @@ import type { AddressInfo } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import { Agent } from 'undici';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEFAULT_AGENT_OPTIONS, getDispatcher } from './http-client.js';
+import {
+  DEFAULT_AGENT_OPTIONS,
+  EVENTS_AGENT_OPTIONS,
+  getDispatcher,
+  getEventsDispatcher,
+} from './http-client.js';
 
 describe('getDispatcher', () => {
   it('returns the shared default dispatcher when none is provided', () => {
@@ -17,12 +22,27 @@ describe('getDispatcher', () => {
   });
 });
 
-describe('default agent transport', () => {
-  // Regression guard: HTTP/2 must stay enabled on the shared dispatcher. It was
-  // previously disabled for a SvelteKit-on-Vercel-prod hang; re-disabling it
-  // silently would regress every dispatcher-backed path (v3/v4/queue).
-  it('enables HTTP/2', () => {
-    expect(DEFAULT_AGENT_OPTIONS.allowH2).toBe(true);
+describe('getEventsDispatcher', () => {
+  it('returns its own shared dispatcher, distinct from the default', () => {
+    expect(getEventsDispatcher()).toBe(getEventsDispatcher());
+    expect(getEventsDispatcher()).not.toBe(getDispatcher());
+  });
+
+  it('returns the caller-supplied dispatcher when provided', () => {
+    const custom = {};
+    expect(getEventsDispatcher({ dispatcher: custom })).toBe(custom);
+  });
+});
+
+describe('agent transport', () => {
+  // Regression guards for the deliberate HTTP/2 scoping:
+  //   - the events API opts into H2 (the hot read/write path), while
+  //   - the default agent (queue webhook respondWith, v3, streaming) stays on
+  //     H1 because H2 deadlocks the webhook mechanism.
+  // Flipping either silently would regress one side or the other.
+  it('enables HTTP/2 for the events API only', () => {
+    expect(EVENTS_AGENT_OPTIONS.allowH2).toBe(true);
+    expect(DEFAULT_AGENT_OPTIONS.allowH2).toBe(false);
   });
 });
 

@@ -30,7 +30,7 @@ import {
 } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
-import { getDispatcher } from './http-client.js';
+import { getEventsDispatcher } from './http-client.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
@@ -44,6 +44,12 @@ import { type APIConfig, getHttpConfig } from './utils.js';
  * custom undici dispatcher restores visibility. The dispatcher itself does
  * not affect instrumentation — the v3 `makeRequest` path has always passed
  * one (see utils.ts) and stayed visible.
+ *
+ * The events API uses its own HTTP/2-enabled dispatcher
+ * (`getEventsDispatcher`): these reads/writes are plain request/response (or a
+ * streamed LIST response) and benefit from multiplexing. The default dispatcher
+ * stays on HTTP/1.1 because H2 deadlocks the queue's webhook respondWith
+ * mechanism — see http-client.ts.
  */
 async function fetchV4(
   url: string,
@@ -69,7 +75,7 @@ async function fetchV4(
     headers: init.headers,
     body: init.body,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-    dispatcher: getDispatcher(config),
+    dispatcher: getEventsDispatcher(config),
   } as any);
 }
 
