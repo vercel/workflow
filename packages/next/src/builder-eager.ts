@@ -197,6 +197,7 @@ export async function getNextBuilderEager() {
         };
 
         const fullRebuild = async () => {
+          this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
 

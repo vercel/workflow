@@ -332,6 +332,104 @@ describe('transform-utils patterns', () => {
       expect(result.hasUseStep).toBe(true);
       expect(result.hasSerde).toBe(true);
     });
+
+    it('does not detect directives inside template literals', () => {
+      const source = `'use client';
+const CODE_SNIPPET = \`import { sleep } from "workflow";
+
+export async function handleUserSignup(email: string) {
+  "use workflow";
+  const user = await createUser(email);
+}
+\`;
+export default function Page() { return null; }
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseWorkflow).toBe(false);
+      expect(result.hasDirective).toBe(false);
+    });
+
+    it('does not detect single-quoted step directives inside template literals', () => {
+      const source = `const CODE_SNIPPET = \`
+export async function doThing() {
+  'use step';
+}
+\`;
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(false);
+      expect(result.hasDirective).toBe(false);
+    });
+
+    it('does not detect directives inside comments', () => {
+      const source = `/*
+export async function run() {
+  "use workflow";
+}
+*/
+
+// 'use step';
+export const value = 1;
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseWorkflow).toBe(false);
+      expect(result.hasUseStep).toBe(false);
+      expect(result.hasDirective).toBe(false);
+    });
+
+    it('does not detect directive-looking strings inside multiline calls', () => {
+      const source = `console.log(
+  "use step"
+);
+
+console.log(
+  'use workflow'
+);
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseWorkflow).toBe(false);
+      expect(result.hasUseStep).toBe(false);
+      expect(result.hasDirective).toBe(false);
+    });
+
+    it('does not detect quoted directive-looking strings inside multiline calls', () => {
+      const source = `console.log(
+  '"use step"'
+);
+
+console.log(
+  "'use step'"
+);
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(false);
+      expect(result.hasDirective).toBe(false);
+    });
+
+    it('still detects real directives after template literals', () => {
+      const source = `const CODE_SNIPPET = \`
+  "use workflow";
+\`;
+
+export async function run() {
+  "use workflow";
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseWorkflow).toBe(true);
+      expect(result.hasDirective).toBe(true);
+    });
+
+    it('still detects directives after other directive prologue entries', () => {
+      const source = `export async function run() {
+  "use strict";
+  "use workflow";
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseWorkflow).toBe(true);
+      expect(result.hasDirective).toBe(true);
+    });
   });
 
   describe('isWorkflowSdkFile', () => {
