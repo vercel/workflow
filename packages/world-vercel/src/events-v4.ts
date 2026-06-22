@@ -144,6 +144,11 @@ export interface CreateEventV4Input {
    *  other event types; older servers ignore it entirely (the runtime then
    *  falls back to events.list). */
   sinceCursor?: string;
+  /** Run-started preload opt-out. Turbo backgrounds run_started as a write
+   *  barrier only and never reads the preloaded log, so it asks the server to
+   *  skip the list+resolve. Acted on by the server only for run_started;
+   *  older servers ignore it and preload as before. */
+  skipPreload?: boolean;
 }
 
 export interface CreateEventV4Result {
@@ -211,6 +216,7 @@ function buildPostFrameMeta(
     meta.allowReservedAttributes = input.allowReservedAttributes;
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
+  if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   return meta;
 }
 
