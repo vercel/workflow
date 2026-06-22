@@ -523,13 +523,15 @@ export async function runQuickJSWorkflow(
 
     // Inject a deterministic timestamp for the VM's ULID factory. ULIDs
     // produced inside the VM use this as their time prefix instead of
-    // Date.now(), so two concurrent workflow invocations of the same
-    // resumption produce IDENTICAL correlationIds (the random portion
-    // also matches because the PRNG is seeded the same way) and the
-    // world's EntityConflictError on `events.create` dedups one of each
-    // pair. Use `startedAt` (constant per-run) — distinctness across
-    // resumptions comes from the cursor mixed into the seedrandom seed,
-    // which advances the PRNG sequence between resumes.
+    // Date.now(). Because we replay the FULL event log from scratch on every
+    // invocation and seed the PRNG from the same `runId:workflowName:startedAt`
+    // (no snapshots, no cursor), every invocation regenerates the IDENTICAL
+    // correlationId sequence. That determinism is the whole dedup contract:
+    // each step/hook/wait gets the same correlationId across invocations, so
+    // the world's EntityConflictError on `events.create` collapses duplicates.
+    // (`startedAt` is the persisted run_started timestamp — see the note in
+    // runtime.ts on excluding the QuickJS runtime from turbo so the first
+    // invocation seeds from it, not a transient local `now`.)
     vm.evalCode(`globalThis.__ulidTimestamp = ${startedAt};`).dispose();
 
     // Deterministic Date — workflow time follows the event timeline (like the
@@ -691,6 +693,23 @@ export async function runQuickJSWorkflow(
       } while (batch > 0);
     } while (madeProgress && --maxIterations > 0);
 
+    // If we exhausted the iteration budget while still making progress, the VM
+    // hasn't settled — checkWorkflowState would read a half-processed state
+    // (e.g. suspend with ops not yet surfaced), silently wedging the run. Fail
+    // loud instead so the queue retries / surfaces a real error.
+    if (maxIterations <= 0 && madeProgress) {
+      runtimeLogger.error(
+        'QuickJS runtime: event processing did not converge within iteration budget',
+        { workflowId, eventCount: events.length }
+      );
+      return {
+        failed: {
+          message:
+            'QuickJS runtime: event processing did not converge (exceeded iteration budget). This likely indicates a runtime bug.',
+        },
+      };
+    }
+
     // ---- Check result ----
     return checkWorkflowState(vm);
   }
@@ -721,7 +740,11 @@ async function processEvents(
     const cid = event.correlationId;
     if (!cid) continue;
 
-    const escapedCid = cid.replace(/"/g, '\\"');
+    // Escape both backslash and double-quote before interpolating cid into the
+    // evalCode strings below. correlationIds are `step_`/`wait_`/`hook_` + ULID
+    // (Crockford base32 — no quotes or backslashes) so this is belt-and-braces
+    // today, but it keeps the interpolation safe if the id format ever changes.
+    const escapedCid = cid.replace(/[\\"]/g, '\\$&');
     const eventData =
       'eventData' in event
         ? (event.eventData as Record<string, unknown>)

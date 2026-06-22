@@ -561,8 +561,26 @@ export function workflowEntrypoint(
                   // ineligible. The single-handler guarantee that makes forced
                   // optimistic start safe ends once a hook/wait/attr is created,
                   // so turbo exits at that point (see `forceOptimisticStart`).
+                  // Decide the QuickJS runtime up front — from the env var or
+                  // the run's executionContext carried on the queue message —
+                  // so it can be EXCLUDED from turbo below. Turbo synthesizes
+                  // the run locally with `startedAt: now`, but the QuickJS
+                  // runtime seeds its PRNG and ULID clock from the run's
+                  // `startedAt` (quickjs-runtime.ts). A turbo first-invocation
+                  // would therefore seed from a transient local `now` while
+                  // every resume seeds from the persisted `run_started`
+                  // timestamp — divergent correlationIds/hook tokens that break
+                  // replay dedup. Excluding QuickJS from turbo makes the first
+                  // invocation await a real `run_started` and seed from the
+                  // persisted `startedAt` (and avoids racing the entrypoint's
+                  // event writes ahead of a backgrounded run_started).
+                  const quickjs =
+                    getWorkflowRuntimeFromEnv() === 'quickjs' ||
+                    runInput?.executionContext?.workflowRuntime === 'quickjs';
+
                   const turbo =
                     isTurboEnabled() &&
+                    !quickjs &&
                     runInput !== undefined &&
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
