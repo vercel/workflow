@@ -24,10 +24,20 @@ export const SPEC_VERSION_LEGACY = 1 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_EVENT_SOURCING = 2 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT = 3 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_ATTRIBUTES = 4 as SpecVersion;
+/**
+ * Runs at this spec version or later may contain gzip-compressed payloads
+ * ('gzip' format prefix). Readers older than this version cannot decode
+ * such payloads and reject the run via `requiresNewerWorld()` instead of
+ * failing on individual payloads.
+ */
+export const SPEC_VERSION_SUPPORTS_COMPRESSION = 5 as SpecVersion;
 
-/** Current spec version (event-sourced architecture with native attributes). */
+/**
+ * Current spec version (event-sourced architecture with native attributes
+ * and compressed payloads).
+ */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_ATTRIBUTES as SpecVersion;
+  SPEC_VERSION_SUPPORTS_COMPRESSION as SpecVersion;
 
 /**
  * Check if a spec version is legacy (<= SPEC_VERSION_LEGACY or undefined).

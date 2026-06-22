@@ -18,6 +18,7 @@ import {
   getSpanKind,
   HttpRequestMethod,
   HttpResponseStatusCode,
+  injectTraceContextIntoHeaders,
   PeerService,
   RpcService,
   RpcSystem,
@@ -331,6 +332,13 @@ export async function makeRequest<T>({
       });
 
       headers.set('Accept', 'application/cbor');
+
+      // Explicitly propagate the active trace context (traceparent /
+      // tracestate / baggage) onto the outgoing request so workflow-server
+      // can parent its spans to this client span — without relying on the
+      // customer app having undici auto-instrumentation. No-ops when no
+      // OTEL SDK is registered.
+      await injectTraceContextIntoHeaders(headers);
 
       // Encode body as CBOR if data is provided
       let body: Buffer | undefined;

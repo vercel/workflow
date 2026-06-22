@@ -186,7 +186,7 @@ function getObservabilityUrl(metadata, appName, testName) {
   if (!runInfo) return null;
 
   const env = vercel.environment === 'production' ? 'production' : 'preview';
-  return `https://vercel.com/${vercel.teamSlug}/${vercel.projectSlug}/observability/workflows/runs/${runInfo.runId}?environment=${env}`;
+  return `https://vercel.com/${vercel.teamSlug}/${vercel.projectSlug}/workflows/runs/${runInfo.runId}?environment=${env}`;
 }
 
 // Parse vitest JSON output

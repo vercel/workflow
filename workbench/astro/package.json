@@ -14,10 +14,10 @@
     "start": "node scripts/start-with-pg.mjs"
   },
   "dependencies": {
-    "@astrojs/node": "9.5.0",
-    "@astrojs/vercel": "^9.0.0",
+    "@astrojs/node": "10.1.4",
+    "@astrojs/vercel": "^10.0.8",
     "ai": "catalog:",
-    "astro": "^5.15.6",
+    "astro": "^6.4.6",
     "lodash.chunk": "^4.2.0",
     "openai": "6.9.0",
     "workflow": "workspace:*",

@@ -3,11 +3,10 @@ import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 import { notFound, permanentRedirect } from 'next/navigation';
-import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
-import { PreviewInstallServer } from '@/components/preview-install-server';
 import { AskAI } from '@/components/geistdocs/ask-ai';
+import { AutoCards } from '@/components/geistdocs/auto-cards';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
   DocsBody,
@@ -21,10 +20,15 @@ import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { MobileDocsBar } from '@/components/geistdocs/mobile-docs-bar';
 import { OpenInChat } from '@/components/geistdocs/open-in-chat';
 import { ScrollTop } from '@/components/geistdocs/scroll-top';
+import { PreviewInstallServer } from '@/components/preview-install-server';
 import * as AccordionComponents from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
+import { resolveSectionChildren } from '@/lib/geistdocs/section-children';
 import { getLLMText, getPageImage, source } from '@/lib/geistdocs/source';
+import { getDocsTreeForVersion } from '@/lib/geistdocs/version-source';
+import { LATEST_VERSION } from '@/lib/geistdocs/versions';
 import { TSDoc } from '@/lib/tsdoc';
 
 // No-op component for world MDX files rendered outside /worlds/ context
@@ -46,7 +50,11 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
     notFound();
   }
 
-  const markdown = await getLLMText(page);
+  // v4's sidebar tree is already in the `/docs/...` URL space (no version
+  // rewrite), so the same tree drives both the rendered cards and the markdown
+  // export expansion in getLLMText.
+  const tree = getDocsTreeForVersion(lang, LATEST_VERSION);
+  const markdown = await getLLMText(page, tree);
   const MDX = page.data.body;
 
   return (
@@ -78,6 +86,9 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
             a: createRelativeLink(source, page),
 
             // Add your custom components here
+            AutoCards: () => (
+              <AutoCards items={resolveSectionChildren(tree, page.url)} />
+            ),
             AgentTraces,
             FluidComputeCallout,
             Badge,

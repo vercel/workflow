@@ -67,7 +67,7 @@ Extends [`NestBuilderOptions`](/docs/api-reference/workflow-nest/nest-local-buil
 | `watch` | `boolean` | `false` | Enable watch mode for development. |
 | `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. Set to `'commonjs'` if your NestJS project compiles to CJS via SWC. |
 | `distDir` | `string` | `'dist'` | Directory where NestJS compiles `.ts` source files to `.js` (relative to `workingDir`). Used when `moduleType` is `'commonjs'`. Should match the `outDir` in your `tsconfig.json`. |
-| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Defaults to `'inline'` in development and `false` in production. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
 
 ### Returns
 

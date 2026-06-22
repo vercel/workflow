@@ -5,7 +5,7 @@
  *
  *   list-response := frame*  end-frame
  *   frame         := u32_be(meta_len) || cbor_meta || u32_be(body_len) || body_bytes
- *   end-frame     := u32_be(meta_len) || cbor_meta {_end: 1, next?: string} || u32_be(0)
+ *   end-frame     := u32_be(meta_len) || cbor_meta {_end: 1, next?: string, hasMore?: boolean} || u32_be(0)
  */
 
 import { decode, encode } from 'cbor-x';
