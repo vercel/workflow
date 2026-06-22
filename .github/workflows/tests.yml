@@ -1005,21 +1005,56 @@ jobs:
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
-  # Final required check: passes only when unit + all E2E jobs succeed.
+  # Final required check: passes only when package validation + all E2E jobs succeed.
   # Community worlds are intentionally excluded — they are disabled on main.
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs:
+      [
+        ci-scope,
+        unit,
+        serializable-revivers,
+        build-error-messages,
+        vitest-plugin,
+        e2e-package-build,
+        e2e-vercel-prod,
+        getTestMatrix,
+        e2e-local-dev,
+        e2e-local-prod,
+        e2e-local-postgres,
+        e2e-windows,
+      ]
     if: always()
     timeout-minutes: 5
 
     steps:
+      - name: Fail on failed or cancelled dependencies
+        if: ${{ always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node - <<'NODE'
+          const needs = JSON.parse(process.env.NEEDS_JSON);
+          const failed = Object.entries(needs)
+            .filter(([, job]) => job.result === 'failure' || job.result === 'cancelled')
+            .map(([name, job]) => `${name} (${job.result})`);
+
+          console.log('The following required dependency jobs failed or were cancelled:');
+          for (const job of failed) console.log(`- ${job}`);
+          NODE
+          exit 1
+
       - name: Validate E2E job statuses
         env:
+          CI_SCOPE_STATUS: ${{ needs.ci-scope.result }}
           UNIT_STATUS: ${{ needs.unit.result }}
+          REVIVERS_STATUS: ${{ needs.serializable-revivers.result }}
+          BUILD_ERRORS_STATUS: ${{ needs.build-error-messages.result }}
+          VITEST_PLUGIN_STATUS: ${{ needs.vitest-plugin.result }}
           BUILD_STATUS: ${{ needs.e2e-package-build.result }}
           VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
+          MATRIX_STATUS: ${{ needs.getTestMatrix.result }}
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
@@ -1031,9 +1066,14 @@ jobs:
           FAILED_JOBS=()
 
           if [[ "$FAST_PATH" == "true" ]]; then
-            if [[ "$VALIDATION_FAST_PATH" != "true" && "$HAS_LABEL" != "true" && "$UNIT_STATUS" != "success" ]]; then
-              echo "UI-only fast path still requires unit tests; unit status was $UNIT_STATUS."
-              exit 1
+            if [[ "$VALIDATION_FAST_PATH" != "true" && "$HAS_LABEL" != "true" ]]; then
+              [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
+              [[ "$REVIVERS_STATUS" == "success" ]] || FAILED_JOBS+=("serializable-revivers ($REVIVERS_STATUS)")
+              if [[ ${#FAILED_JOBS[@]} -gt 0 ]]; then
+                echo "UI-only fast path still requires package validation jobs:"
+                printf '%s\n' "${FAILED_JOBS[@]}"
+                exit 1
+              fi
             fi
             echo "Docs/UI-only change detected - no runtime E2E lanes are required."
             exit 0
@@ -1047,15 +1087,24 @@ jobs:
 
             # Verify other jobs were actually skipped
             [[ "$UNIT_STATUS" == "skipped" ]] || echo "Warning: unit was not skipped ($UNIT_STATUS)"
+            [[ "$REVIVERS_STATUS" == "skipped" ]] || echo "Warning: serializable-revivers was not skipped ($REVIVERS_STATUS)"
+            [[ "$BUILD_ERRORS_STATUS" == "skipped" ]] || echo "Warning: build-error-messages was not skipped ($BUILD_ERRORS_STATUS)"
+            [[ "$BUILD_STATUS" == "skipped" ]] || echo "Warning: e2e-package-build was not skipped ($BUILD_STATUS)"
+            [[ "$MATRIX_STATUS" == "skipped" ]] || echo "Warning: getTestMatrix was not skipped ($MATRIX_STATUS)"
             [[ "$LOCAL_DEV_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dev was not skipped ($LOCAL_DEV_STATUS)"
             [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
             [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
             [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
           else
             echo "Standard PR - checking all jobs"
+            [[ "$CI_SCOPE_STATUS" == "success" ]] || FAILED_JOBS+=("ci-scope ($CI_SCOPE_STATUS)")
             [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
+            [[ "$REVIVERS_STATUS" == "success" ]] || FAILED_JOBS+=("serializable-revivers ($REVIVERS_STATUS)")
+            [[ "$BUILD_ERRORS_STATUS" == "success" ]] || FAILED_JOBS+=("build-error-messages ($BUILD_ERRORS_STATUS)")
+            [[ "$VITEST_PLUGIN_STATUS" == "success" ]] || FAILED_JOBS+=("vitest-plugin ($VITEST_PLUGIN_STATUS)")
             [[ "$BUILD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-package-build ($BUILD_STATUS)")
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            [[ "$MATRIX_STATUS" == "success" ]] || FAILED_JOBS+=("getTestMatrix ($MATRIX_STATUS)")
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
