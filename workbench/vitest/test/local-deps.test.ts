@@ -29,7 +29,7 @@ it('bundles local helpers into the step bundle instead of externalizing', async 
       dirname(fileURLToPath(import.meta.url)),
       '..',
       '.workflow-vitest',
-      '__step_registrations.mjs'
+      'steps.mjs'
     ),
     'utf8'
   );
