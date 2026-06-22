@@ -28,6 +28,9 @@
  * (local or postgres world). Targets the nextjs-turbopack workbench.
  */
 import { type ChildProcess, execSync, spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { getWorld } from '../src/runtime';
@@ -35,6 +38,13 @@ import { getWorkbenchAppPath, isLocalDeployment, setupWorld } from './utils';
 
 const enabled =
   process.env.RESTART_RECOVERY_TEST === '1' && isLocalDeployment();
+
+// Multi-worker duplicate-execution repro: only meaningful on the postgres world
+// (a shared DB + a graphile-worker pool). Gated behind its own flag so it stays
+// out of the default CI gate until the owner-aware recovery fix lands.
+const multiWorkerEnabled =
+  process.env.MULTIWORKER_RECOVERY_TEST === '1' &&
+  process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL ?? 'http://localhost:3000';
 const port = Number(new URL(deploymentUrl).port || '3000');
@@ -365,6 +375,194 @@ describe.skipIf(!enabled)('restart recovery', () => {
 
       await waitForCompleted(runId);
       log('run completed');
+    }
+  );
+});
+
+// ===========================================================================
+// Multi-worker duplicate-execution repro (postgres only)
+// ===========================================================================
+
+// How long the single step in `sideEffectStepWorkflow` runs — long enough that
+// it is reliably still executing on the first worker when the second worker
+// boots and re-enqueues active runs.
+const SIDE_EFFECT_STEP_MS = 20_000;
+const secondPort = port + 1;
+const secondUrl = `http://localhost:${secondPort}`;
+
+function spawnServerOnPort(
+  p: number,
+  extraEnv: Record<string, string>
+): ChildProcess {
+  return spawn('pnpm', ['start'], {
+    cwd: getWorkbenchAppPath(),
+    detached: true,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      PORT: String(p),
+      WORKFLOW_PUBLIC_MANIFEST: '1',
+      ...extraEnv,
+    },
+  });
+}
+
+async function waitForReadyAt(url: string, child: ChildProcess): Promise<void> {
+  const deadline = Date.now() + SERVER_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(
+        `Server process exited early with code ${child.exitCode}`
+      );
+    }
+    try {
+      const res = await fetch(url, { method: 'GET' });
+      if (res.status > 0) return;
+    } catch {
+      // not up yet
+    }
+    await sleep(500);
+  }
+  throw new Error(`Server at ${url} did not become ready in time`);
+}
+
+async function killChild(child: ChildProcess, p: number): Promise<void> {
+  const exited =
+    child.exitCode !== null
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+  await Promise.race([exited, sleep(5_000)]);
+
+  // `pnpm start` wraps `next start`; SIGKILLing the wrapper can leave `next`
+  // alive on the port and holding handles. Poll until the port is free,
+  // escalating to a port-based kill so the vitest worker can exit cleanly.
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://localhost:${p}`, { method: 'GET' });
+      if (!(res.status > 0)) return;
+    } catch {
+      return; // nothing answering — port is free
+    }
+    try {
+      execSync(`lsof -ti tcp:${p} | xargs kill -9`, { stdio: 'ignore' });
+    } catch {
+      // lsof found nothing or isn't available
+    }
+    await sleep(500);
+  }
+}
+
+/** Count recorded step-body executions in the shared side-effect log. */
+function countExecutions(logPath: string): number {
+  try {
+    return readFileSync(logPath, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim() === 'exec').length;
+  } catch {
+    return 0;
+  }
+}
+
+async function waitForExecutions(
+  logPath: string,
+  min: number,
+  timeoutMs: number
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const n = countExecutions(logPath);
+    if (n >= min) return n;
+    await sleep(250);
+  }
+  return countExecutions(logPath);
+}
+
+describe.skipIf(!multiWorkerEnabled)('multi-worker recovery (postgres)', () => {
+  let workerB: ChildProcess | undefined;
+  let workerA: ChildProcess | undefined;
+
+  beforeAll(() => {
+    setupWorld(deploymentUrl);
+  });
+
+  afterEach(async () => {
+    if (workerA) {
+      await killChild(workerA, secondPort);
+      workerA = undefined;
+    }
+    if (workerB) {
+      await killChild(workerB, port);
+      workerB = undefined;
+    }
+  });
+
+  test(
+    'a worker booting does not re-run a step already executing on another worker',
+    {
+      timeout:
+        RECOVERY_TIMEOUT_MS +
+        WAIT_CREATED_TIMEOUT_MS +
+        SERVER_READY_TIMEOUT_MS * 2,
+    },
+    async () => {
+      // Shared side-effect log: the step appends one line per execution of its
+      // body (before sleeping), so we can count how many times it actually ran.
+      const dir = mkdtempSync(join(tmpdir(), 'wf-multiworker-'));
+      const logPath = join(dir, 'side-effects.log');
+      writeFileSync(logPath, '');
+      const env = { WORKFLOW_SIDE_EFFECT_LOG: logPath };
+
+      // 1. Worker B owns the run.
+      workerB = spawnServerOnPort(port, env);
+      await waitForReadyAt(deploymentUrl, workerB);
+      log('worker B ready');
+
+      const runId = await startWorkflowOnServer(
+        'sideEffectStepWorkflow',
+        [SIDE_EFFECT_STEP_MS],
+        /sideEffectStepWorkflow/
+      );
+      log(`started run ${runId}`);
+
+      // 2. Wait until B has entered the step body (one execution recorded). The
+      //    step's queue job is now locked by B and the step is mid-run.
+      const initial = await waitForExecutions(
+        logPath,
+        1,
+        WAIT_CREATED_TIMEOUT_MS
+      );
+      expect(initial).toBe(1);
+      log('B is mid-step (1 execution recorded)');
+
+      // 3. Boot a SECOND worker while the step is still running. Its startup
+      //    wiring (ensureWorldStarted -> reenqueueActiveRuns) re-drives ALL
+      //    active runs — including this one, which is healthy on B.
+      workerA = spawnServerOnPort(secondPort, env);
+      await waitForReadyAt(secondUrl, workerA);
+      log('worker A booted (reenqueueActiveRuns ran)');
+
+      // 4. Let the run finish (B's original step completes at ~SIDE_EFFECT_STEP_MS).
+      await waitForCompleted(runId);
+      const executions = countExecutions(logPath);
+      log(`step body executed ${executions} time(s)`);
+
+      // Exactly-once guarantee: boot-time recovery must NOT re-run a step that
+      // is healthily in-flight on another worker. This holds because the step is
+      // dispatched under its `correlationId` idempotency key — graphile-worker
+      // does not run a concurrent duplicate of a locked job, and by the time any
+      // re-dispatch could run, the original step has completed and the step's
+      // terminal-state guard skips re-execution.
+      expect(executions).toBe(1);
     }
   );
 });
