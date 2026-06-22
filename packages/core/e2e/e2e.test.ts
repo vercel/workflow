@@ -752,17 +752,27 @@ describe('e2e', () => {
   test('sleepWinsRaceWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('sleepWinsRaceWorkflow'), []);
     const returnValue = await run.returnValue;
+    // The real invariant: the 1s sleep wins the race against the 10s step.
     expect(returnValue.winner).toBe('sleep');
-    // Sleep is 1s; step would take 10s. Should resolve in ~1s, well under 5s.
-    expect(returnValue.durationMs).toBeLessThan(5_000);
+    // durationMs is only a guard that we didn't block on the 10s losing step.
+    // The fast branch is ~1s, but on preview it carries queue round-trips,
+    // cold starts, and replay overhead (observed up to ~5.1s in CI), so a 5s
+    // bound flakes. 8s stays comfortably below the 10s loser — proving the
+    // step did not win — while leaving generous headroom for that jitter.
+    expect(returnValue.durationMs).toBeLessThan(8_000);
   });
 
   test('stepWinsRaceWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('stepWinsRaceWorkflow'), []);
     const returnValue = await run.returnValue;
+    // The real invariant: the 1s step wins the race against the 10s sleep.
     expect(returnValue.winner).toBe('step');
-    // Step is 1s; sleep would take 10s. Should resolve in ~1s, well under 5s.
-    expect(returnValue.durationMs).toBeLessThan(5_000);
+    // durationMs is only a guard that we didn't block on the 10s losing sleep.
+    // The fast branch is ~1s, but on preview it carries queue round-trips,
+    // cold starts, and replay overhead, so the previous 5s bound was brittle.
+    // 8s stays comfortably below the 10s loser — proving the sleep did not win
+    // — while leaving generous headroom for that jitter.
+    expect(returnValue.durationMs).toBeLessThan(8_000);
   });
 
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
