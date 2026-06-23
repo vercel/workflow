@@ -127,6 +127,31 @@ export const WorkflowWaitsCreated = SemanticConvention<number>(
   'workflow.waits.created'
 );
 
+// Route attributes
+
+/** The workflow runtime route being handled */
+export const WorkflowRouteType = SemanticConvention<'flow' | 'step'>(
+  'workflow.route.type'
+);
+
+/** Whether this route invocation reused an already-created request handler */
+export const WorkflowRouteHandlerCached = SemanticConvention<boolean>(
+  'workflow.route.handler_cached'
+);
+
+/** Number of times this in-memory route handler has been invoked */
+export const WorkflowRouteInvocationCount = SemanticConvention<number>(
+  'workflow.route.invocation_count'
+);
+
+/** Time since this route entrypoint was constructed, in milliseconds */
+export const WorkflowRouteEntrypointAgeMs = SemanticConvention<number>(
+  'workflow.route.entrypoint_age_ms'
+);
+
+/** Route pattern for the request */
+export const HttpRoute = SemanticConvention<string>('http.route');
+
 // Step attributes
 
 /** Name of the step function being executed */

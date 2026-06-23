@@ -461,7 +461,9 @@ export function workflowEntrypoint(
           return await withWorkflowBaggage(
             { workflowRunId: runId, workflowName },
             async () => {
-              const world = await getWorld();
+              const world = await trace('workflow.route.get_world', async () =>
+                getWorld()
+              );
               return trace(
                 `workflow.execute ${workflowDisplayName(workflowName)}`,
                 { kind: spanKind, links: spanLinks },
@@ -2012,10 +2014,48 @@ export function workflowEntrypoint(
     );
 
   let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  let invocationCount = 0;
+  const entrypointCreatedAt = Date.now();
+
   return withHealthCheck(async (req) => {
-    if (!cachedHandler) {
-      cachedHandler = handler(await getWorldHandlers());
-    }
-    return cachedHandler(req);
+    invocationCount += 1;
+    const handlerCached = cachedHandler !== undefined;
+    const spanKind = await getSpanKind('SERVER');
+
+    return trace(
+      'workflow.route.flow',
+      {
+        kind: spanKind,
+        attributes: {
+          ...Attribute.WorkflowRouteType('flow'),
+          ...Attribute.WorkflowRouteHandlerCached(handlerCached),
+          ...Attribute.WorkflowRouteInvocationCount(invocationCount),
+          ...Attribute.WorkflowRouteEntrypointAgeMs(
+            Date.now() - entrypointCreatedAt
+          ),
+          ...Attribute.HttpRequestMethod(req.method),
+          ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+        },
+      },
+      async (span) => {
+        if (!cachedHandler) {
+          cachedHandler = await trace('workflow.route.init', async () => {
+            const worldHandlers = await trace(
+              'workflow.route.get_world_handlers',
+              async () => getWorldHandlers()
+            );
+            return handler(worldHandlers);
+          });
+        }
+
+        const response = await cachedHandler(req);
+        if (response instanceof Response) {
+          span?.setAttributes(
+            Attribute.HttpResponseStatusCode(response.status)
+          );
+        }
+        return response;
+      }
+    );
   });
 }
