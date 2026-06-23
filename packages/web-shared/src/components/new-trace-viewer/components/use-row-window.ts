@@ -91,3 +91,50 @@ export function useRowWindow(
 
 /** Row height (px) shared by the events list and timeline rows (`h-10`). */
 export const ROW_HEIGHT_PX = 40;
+
+/**
+ * Scroll a windowed row into view by index.
+ *
+ * The list is virtualized (fixed `rowHeight` rows), so an off-screen row has no
+ * DOM node to `scrollIntoView` — its target offset is computed from its index
+ * instead. Walks up from `listEl` to the shared scrollable ancestor (the same
+ * one `useRowWindow` measures against), only scrolls when the row sits outside
+ * the visible area, leaves a one-row `margin` of breathing room past it, and
+ * clamps the result to `[0, scrollHeight - clientHeight]`.
+ */
+export function scrollRowIntoView(
+  listEl: HTMLElement | null,
+  index: number,
+  rowHeight: number,
+  opts?: { margin?: number; behavior?: ScrollBehavior }
+): void {
+  const scroller = listEl ? getScrollParent(listEl) : null;
+  if (!listEl || !scroller) return;
+
+  const margin = opts?.margin ?? rowHeight;
+
+  // Offset of the list's top within the scroll container's content.
+  const listOffset =
+    listEl.getBoundingClientRect().top -
+    scroller.getBoundingClientRect().top +
+    scroller.scrollTop;
+
+  const rowTop = listOffset + index * rowHeight;
+  const rowBottom = rowTop + rowHeight;
+  const viewTop = scroller.scrollTop;
+  const viewBottom = viewTop + scroller.clientHeight;
+
+  let top: number | null = null;
+  if (rowTop < viewTop) {
+    top = rowTop - margin;
+  } else if (rowBottom > viewBottom) {
+    top = rowBottom + margin - scroller.clientHeight;
+  }
+  if (top === null) return;
+
+  const max = scroller.scrollHeight - scroller.clientHeight;
+  scroller.scrollTo({
+    top: Math.max(0, Math.min(top, max)),
+    behavior: opts?.behavior,
+  });
+}

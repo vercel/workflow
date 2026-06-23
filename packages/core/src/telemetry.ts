@@ -79,33 +79,25 @@ export function getNextTraceCarrier(
  * Builds the span links for a queue-delivered invocation span
  * (`workflow.execute` / `step.execute`):
  *
- * - a link to the incoming delivery context (the active span extracted from
- *   the queue delivery request, i.e. the enqueue site once the queue
- *   propagates producer context), and
- * - in `linked` mode, a link to the run-origin context from the message's
- *   trace carrier (skipped when absent, empty, invalid, or identical to the
- *   delivery context).
+ * - In `linked` mode the invocation span is a CHILD of the local delivery
+ *   (flow-route) context, so the only link is to the run-origin context
+ *   from the message's trace carrier — connecting this bounded per-invocation
+ *   trace back to where the run was started. The run-origin context is a
+ *   link, never a parent, and re-enqueues forward the original carrier
+ *   unchanged, so the whole run is never stitched into one giant trace.
+ *   The link is skipped when the carrier is absent, empty, or invalid.
+ * - In `continuous` mode the run-origin context is restored as the parent
+ *   instead, and the link points at the incoming delivery context.
  */
 export async function buildInvocationSpanLinks(
   traceMode: WorkflowTraceMode,
   incomingCarrier: Record<string, string> | undefined
 ): Promise<api.Link[] | undefined> {
-  const deliveryLinks = await linkToCurrentContext();
-  if (traceMode !== 'linked') return deliveryLinks;
+  if (traceMode !== 'linked') return linkToCurrentContext();
   const originLink = await linkToTraceCarrier(
     isUsableTraceCarrier(incomingCarrier) ? incomingCarrier : undefined
   );
-  if (
-    !originLink ||
-    deliveryLinks?.some(
-      (link) =>
-        link.context.traceId === originLink.context.traceId &&
-        link.context.spanId === originLink.context.spanId
-    )
-  ) {
-    return deliveryLinks;
-  }
-  return [...(deliveryLinks ?? []), originLink];
+  return originLink ? [originLink] : undefined;
 }
 
 /**

@@ -87,7 +87,7 @@ The key points:
 
 ### Checking for Token Conflicts
 
-Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict()` for that:
+Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict()` (available starting in `workflow@4.5.0`) for that:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";

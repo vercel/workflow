@@ -746,6 +746,141 @@ describe('Storage (Postgres integration)', () => {
       });
     });
 
+    describe('lazy step start', () => {
+      it('creates the step on the fly when step_started carries input', async () => {
+        const result = await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-1',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([7, 8, 9]),
+          },
+        });
+
+        // Created + started in one call: running, attempt 1, ownership signal.
+        expect(result.step?.stepId).toBe('lazy-step-1');
+        expect(result.step?.stepName).toBe('lazy-step');
+        expect(result.step?.status).toBe('running');
+        expect(result.step?.attempt).toBe(1);
+        expect(result.step?.input).toEqual(new Uint8Array([7, 8, 9]));
+        expect(result.stepCreated).toBe(true);
+
+        const persisted = await steps.get(testRunId, 'lazy-step-1');
+        expect(persisted.status).toBe('running');
+        expect(persisted.input).toEqual(new Uint8Array([7, 8, 9]));
+      });
+
+      it('writes a synthetic step_created event (input there, not on step_started)', async () => {
+        await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-2',
+          eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+        });
+
+        const evts = await events.listByCorrelationId({
+          correlationId: 'lazy-step-2',
+        });
+        const created = evts.data.find((e) => e.eventType === 'step_created');
+        const started = evts.data.find((e) => e.eventType === 'step_started');
+        expect(created).toBeDefined();
+        expect(started).toBeDefined();
+        expect(
+          (created?.eventData as { input?: unknown } | undefined)?.input
+        ).toBeDefined();
+        expect(
+          (started?.eventData as { input?: unknown } | undefined)?.input
+        ).toBeUndefined();
+      });
+
+      it('still rejects a bare step_started (no input) on a missing step', async () => {
+        await expect(
+          events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: 'never-created',
+            eventData: { stepName: 'legacy-step' },
+          })
+        ).rejects.toThrow('not found');
+      });
+
+      it('rejects a second lazy step_started for an existing step (concurrent loser)', async () => {
+        const first = await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-3',
+          eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+        });
+        expect(first.step?.attempt).toBe(1);
+        expect(first.stepCreated).toBe(true);
+
+        // The step exists → this caller lost the create race → must not start
+        // or run the body. EntityConflictError → executeStep `skipped`.
+        await expect(
+          events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: 'lazy-step-3',
+            eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+          })
+        ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      });
+
+      it('crash recovery re-starts via a non-lazy step_started on the existing step', async () => {
+        // Owner creates + starts lazily (attempt 1). On recovery the step
+        // already exists, so it is re-run via a NON-lazy step_started (no
+        // input), which re-starts the step (attempt 2) — at-least-once.
+        await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-4',
+          eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+        });
+
+        const rerun = await updateStep(
+          events,
+          testRunId,
+          'lazy-step-4',
+          'step_started',
+          {}
+        );
+        expect(rerun.status).toBe('running');
+        expect(rerun.attempt).toBe(2);
+      });
+
+      it('rejects a lazy step_started on a terminal run', async () => {
+        await updateRun(events, testRunId, 'run_started');
+        await updateRun(events, testRunId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
+
+        await expect(
+          events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: 'lazy-on-terminal',
+            eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+          })
+        ).rejects.toThrow('terminal state');
+      });
+
+      it('a lazy step_started followed by step_failed marks the step failed', async () => {
+        // Regression guard for the unregistered-step path on the lazy inline
+        // route: executeStep sends the lazy step_started to materialize the
+        // deferred step, then writes step_failed. Failing a never-created step
+        // would hit the "step must exist" ordering guard and wedge the run.
+        await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-fail',
+          eventData: { stepName: 'ghost-step', input: new Uint8Array([1]) },
+        });
+
+        const failed = await updateStep(
+          events,
+          testRunId,
+          'lazy-step-fail',
+          'step_failed',
+          { error: new Uint8Array([2, 3]) }
+        );
+        expect(failed.status).toBe('failed');
+        expect(failed.attempt).toBe(1);
+      });
+    });
+
     describe('list', () => {
       it('should list all steps for a run', async () => {
         const step1 = await createStep(events, testRunId, {

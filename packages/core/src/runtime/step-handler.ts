@@ -15,6 +15,7 @@ import {
   getQueueTopicPrefix,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type Step,
   StepInvokePayloadSchema,
 } from '@workflow/world';
@@ -189,13 +190,15 @@ function createStepHandler(namespace?: string) {
         return;
       }
 
-      // Span links to the incoming delivery context and (in linked mode)
-      // the run-origin context from the trace carrier.
+      // In linked mode the only span link is to the run-origin context; the
+      // step.execute span stays a child of the local delivery (flow-route)
+      // context. In continuous mode the link points at the delivery context.
       const spanLinks = await buildInvocationSpanLinks(traceMode, traceContext);
 
       // Execute step within the propagated trace context (continuous mode
-      // only — in linked mode the STEP span below becomes a new trace root
-      // carrying span links instead, so withTraceContext is a passthrough).
+      // only — in linked mode the run-origin is NOT restored as the parent,
+      // so withTraceContext is a passthrough and the step.execute span stays
+      // a child of the local delivery context, linked to the run origin).
       const parentTraceCarrier =
         traceMode === 'continuous' ? traceContext : undefined;
       return await withTraceContext(parentTraceCarrier, async () => {
@@ -221,9 +224,7 @@ function createStepHandler(namespace?: string) {
 
         return trace(
           `step.execute ${stepDisplayName(stepName)}`,
-          traceMode === 'linked'
-            ? { kind: spanKind, links: spanLinks, root: true }
-            : { kind: spanKind, links: spanLinks },
+          { kind: spanKind, links: spanLinks },
           async (span) => {
             span?.setAttributes({
               ...Attribute.StepName(stepName),
@@ -255,6 +256,14 @@ function createStepHandler(namespace?: string) {
             // - retryAfter timestamp reached (returns 425 with Retry-After header)
             // - Workflow still active (returns 410 if completed)
             let step!: Step;
+            // Gate payload compression on the step entity's specVersion
+            // (stamped by the same-deployment orchestrator that created the
+            // step, so spec >= 5 implies every reader of this run's payloads
+            // understands the 'gzip' format). Returns false on the early
+            // failure paths where step_started didn't return an entity.
+            const compressionForStep = () =>
+              ((step as Step | undefined)?.specVersion ?? 0) >=
+              SPEC_VERSION_SUPPORTS_COMPRESSION;
             try {
               const startResult = await world.events.create(
                 workflowRunId,
@@ -391,7 +400,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         err,
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -491,7 +503,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         wrappedError,
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -558,7 +573,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         new FatalError(errorMessage),
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -597,6 +615,9 @@ function createStepHandler(namespace?: string) {
             // operations (e.g., stream loading) are added to `ops` and executed later
             // via Promise.all(ops) - their timing is not included in this measurement.
             const ops: Promise<void>[] = [];
+            // Ops that must be durably committed before step completion (e.g. a
+            // step-initiated abort's hook_received event). See StepContext.
+            const preCompletionOps: Promise<void>[] = [];
             const hydratedInput = await trace(
               'step.hydrate',
               {},
@@ -654,6 +675,7 @@ function createStepHandler(namespace?: string) {
                     },
                     workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                     ops,
+                    preCompletionOps,
                     closureVars: hydratedInput.closureVars,
                     encryptionKey,
                   },
@@ -667,6 +689,19 @@ function createStepHandler(namespace?: string) {
             const executionTimeMs = Date.now() - executionStartTime;
 
             cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
+
+            // Commit must-be-durable ops (e.g. a step-initiated abort's
+            // hook_received event) before writing step_completed/step_failed,
+            // so any workflow continuation triggered by that event observes the
+            // abort rather than racing it. Producers swallow their own errors
+            // per the no-reject contract on StepContext.preCompletionOps; the
+            // `.catch()` defends it, since this await sits outside the
+            // user-code try/catch (a stray rejection here would otherwise
+            // surface as an infra error → queue re-delivery, not a step
+            // failure). The await only enforces ordering.
+            if (preCompletionOps.length > 0) {
+              await Promise.all(preCompletionOps).catch(() => {});
+            }
 
             span?.setAttributes({
               ...Attribute.QueueExecutionTimeMs(executionTimeMs),
@@ -697,7 +732,8 @@ function createStepHandler(namespace?: string) {
                       ops,
                       globalThis,
                       false,
-                      true
+                      true,
+                      compressionForStep()
                     );
                     const durationMs = Date.now() - startTime;
                     dehydrateSpan?.setAttributes({
@@ -808,7 +844,10 @@ function createStepHandler(namespace?: string) {
                         error: await dehydrateStepError(
                           effectiveErr,
                           workflowRunId,
-                          encryptionKey
+                          encryptionKey,
+                          [],
+                          globalThis,
+                          compressionForStep()
                         ),
                       },
                     },
@@ -893,7 +932,10 @@ function createStepHandler(namespace?: string) {
                           error: await dehydrateStepError(
                             wrappedError,
                             workflowRunId,
-                            encryptionKey
+                            encryptionKey,
+                            [],
+                            globalThis,
+                            compressionForStep()
                           ),
                         },
                       },
@@ -962,7 +1004,10 @@ function createStepHandler(namespace?: string) {
                           error: await dehydrateStepError(
                             err,
                             workflowRunId,
-                            encryptionKey
+                            encryptionKey,
+                            [],
+                            globalThis,
+                            compressionForStep()
                           ),
                           ...(RetryableError.is(err) && {
                             retryAfter: err.retryAfter,

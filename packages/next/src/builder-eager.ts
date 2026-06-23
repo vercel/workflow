@@ -1,9 +1,12 @@
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
-import type { WorkflowManifest } from '@workflow/builders';
+import { extname, join, relative, resolve } from 'node:path';
+import type {
+  NextConfig as BuilderNextConfig,
+  WorkflowManifest,
+} from '@workflow/builders';
+import type { NextConfig as ProjectNextConfig } from 'next';
 import Watchpack from 'watchpack';
-import { cleanupStaleSocketInfoFiles } from './socket-server.js';
 
 let CachedNextBuilderEager: any;
 
@@ -24,17 +27,11 @@ export async function getNextBuilderEager() {
   )) as typeof import('@workflow/builders');
 
   class NextBuilder extends BaseBuilderClass {
-    async build() {
-      // Eager mode never starts a discovery socket server, so any leftover
-      // workflow-socket.json is from a previous deferred-mode build and
-      // would make the webpack loader connect to a dead port.
-      await cleanupStaleSocketInfoFiles(
-        join(
-          this.config.workingDir,
-          (this.config as { distDir?: string }).distDir || '.next'
-        )
-      );
+    protected declare config: BuilderNextConfig & {
+      pageExtensions: NonNullable<ProjectNextConfig['pageExtensions']>;
+    };
 
+    async build() {
       const outputDir = await this.findAppDirectory();
       const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');
 
@@ -96,25 +93,30 @@ export async function getNextBuilderEager() {
       if (this.config.watch) {
         // TODO: implement watch mode for combined bundle
         // For now, fall back to full rebuild on file changes
-        let stepsCtx = combinedResult?.stepsContext;
-        if (!stepsCtx) {
+        if (!combinedResult?.interimBundleCtx || !combinedResult.bundleFinal) {
           throw new Error(
-            'Invariant: expected steps build context in watch mode'
+            'Invariant: expected workflow build context in watch mode'
           );
         }
 
-        // Use stepsCtx for the watch rebuild (workflow interim ctx from combined)
+        // Step registrations may be emitted as source imports without an
+        // esbuild context when externalizeNonSteps is enabled.
+        let stepsCtx = combinedResult.stepsContext;
         let workflowsCtx = {
-          interimBundleCtx: combinedResult?.interimBundleCtx!,
-          bundleFinal: combinedResult?.bundleFinal!,
+          interimBundleCtx: combinedResult.interimBundleCtx,
+          bundleFinal: combinedResult.bundleFinal,
         };
 
         const normalizePath = (pathname: string) =>
           pathname.replace(/\\/g, '/');
-        const knownFiles = new Set<string>();
         type WatchpackTimeInfoEntry = {
           safeTime: number;
           timestamp?: number;
+        };
+        type FileChanges = {
+          addedFiles: string[];
+          modifiedFiles: string[];
+          removedFiles: string[];
         };
         let previousTimeInfo = new Map<string, WatchpackTimeInfoEntry>();
 
@@ -195,18 +197,14 @@ export async function getNextBuilderEager() {
         };
 
         const fullRebuild = async () => {
+          this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
 
-          await stepsCtx!.dispose();
+          await stepsCtx?.dispose();
           await workflowsCtx.interimBundleCtx.dispose();
 
           const newCombined = await this.buildCombinedFunction(options);
-          if (!newCombined?.stepsContext) {
-            throw new Error(
-              'Invariant: expected steps build context after rebuild'
-            );
-          }
           stepsCtx = newCombined.stepsContext;
 
           if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
@@ -222,62 +220,26 @@ export async function getNextBuilderEager() {
           await writeManifest(newCombined.manifest);
         };
 
-        const logBuildMessages = (
-          result: {
-            errors?: import('esbuild').Message[];
-            warnings?: import('esbuild').Message[];
-          },
-          label: string
-        ) => {
-          const logByType = (
-            messages: import('esbuild').Message[] | undefined,
-            method: 'error' | 'warn'
-          ) => {
-            if (!messages || messages.length === 0) {
-              return;
-            }
-            const descriptor = method === 'error' ? 'errors' : 'warnings';
-            console[method](`${descriptor} while rebuilding ${label}`);
-            for (const message of messages) {
-              console[method](message);
-            }
-          };
-
-          logByType(result.errors, 'error');
-          logByType(result.warnings, 'warn');
-        };
-
-        const rebuildExistingFiles = async () => {
-          const rebuiltStepStart = Date.now();
-          const stepsResult = await stepsCtx!.rebuild();
-          logBuildMessages(stepsResult, 'steps bundle');
-          console.log(
-            'Rebuilt steps bundle',
-            `${Date.now() - rebuiltStepStart}ms`
-          );
-
-          const rebuiltWorkflowStart = Date.now();
-          const workflowResult = await workflowsCtx.interimBundleCtx.rebuild();
-          logBuildMessages(workflowResult, 'workflows bundle');
-
-          if (
-            !workflowResult.outputFiles ||
-            workflowResult.outputFiles.length === 0
-          ) {
-            console.error(
-              'No output generated while rebuilding workflows bundle'
-            );
-            return;
-          }
-          await workflowsCtx.bundleFinal(workflowResult.outputFiles[0].text);
-          console.log(
-            'Rebuilt workflow bundle',
-            `${Date.now() - rebuiltWorkflowStart}ms`
-          );
-        };
-
         const isWatchableFile = (path: string) =>
           watchableExtensions.has(extname(path));
+
+        const normalizeWatchpackPaths = (paths?: Iterable<string>) => {
+          const normalizedPaths: string[] = [];
+          if (!paths) {
+            return normalizedPaths;
+          }
+
+          for (const path of paths) {
+            const normalizedPath = normalizePath(path);
+            if (isWatchableFile(normalizedPath)) {
+              normalizedPaths.push(normalizedPath);
+            }
+          }
+
+          return normalizedPaths;
+        };
+
+        const unique = (paths: string[]) => [...new Set(paths)];
 
         const getComparableTimestamp = (entry: WatchpackTimeInfoEntry) =>
           entry.timestamp ?? entry.safeTime;
@@ -326,7 +288,7 @@ export async function getNextBuilderEager() {
         const determineFileChanges = (
           currentEntries: Map<string, WatchpackTimeInfoEntry>,
           previousEntries: Map<string, WatchpackTimeInfoEntry>
-        ) => {
+        ): FileChanges => {
           const removedFiles = findRemovedFiles(
             currentEntries,
             previousEntries
@@ -343,71 +305,120 @@ export async function getNextBuilderEager() {
           };
         };
 
+        const mergeFileChanges = ({
+          currentEntries,
+          previousEntries,
+          timestampChanges,
+          eventChangedFiles,
+          eventRemovedFiles,
+        }: {
+          currentEntries: Map<string, WatchpackTimeInfoEntry>;
+          previousEntries: Map<string, WatchpackTimeInfoEntry>;
+          timestampChanges: FileChanges;
+          eventChangedFiles: string[];
+          eventRemovedFiles: string[];
+        }): FileChanges => ({
+          addedFiles: unique([
+            ...timestampChanges.addedFiles,
+            ...eventChangedFiles.filter(
+              (path) => currentEntries.has(path) && !previousEntries.has(path)
+            ),
+          ]),
+          modifiedFiles: unique([
+            ...timestampChanges.modifiedFiles,
+            ...eventChangedFiles,
+          ]),
+          removedFiles: unique([
+            ...timestampChanges.removedFiles,
+            ...eventRemovedFiles,
+          ]),
+        });
+
+        const hasFileChanges = ({
+          addedFiles,
+          modifiedFiles,
+          removedFiles,
+        }: FileChanges) =>
+          addedFiles.length > 0 ||
+          modifiedFiles.length > 0 ||
+          removedFiles.length > 0;
+
         let isInitial = true;
 
-        watcher.on('aggregated', () => {
-          const currentEntries = readTimeInfoEntries();
-          const { addedFiles, modifiedFiles, removedFiles } =
-            determineFileChanges(currentEntries, previousTimeInfo);
+        watcher.on(
+          'aggregated',
+          (changes?: Set<string>, removals?: Set<string>) => {
+            const currentEntries = readTimeInfoEntries();
+            const eventChangedFiles = normalizeWatchpackPaths(changes);
+            const eventRemovedFiles = normalizeWatchpackPaths(removals);
+            const timestampChanges = determineFileChanges(
+              currentEntries,
+              previousTimeInfo
+            );
 
-          previousTimeInfo = currentEntries;
+            const fileChanges = mergeFileChanges({
+              currentEntries,
+              previousEntries: previousTimeInfo,
+              timestampChanges,
+              eventChangedFiles,
+              eventRemovedFiles,
+            });
 
-          if (isInitial) {
-            isInitial = false;
-            return;
-          }
+            previousTimeInfo = currentEntries;
 
-          if (
-            addedFiles.length === 0 &&
-            modifiedFiles.length === 0 &&
-            removedFiles.length === 0
-          ) {
-            return;
-          }
+            if (isInitial) {
+              isInitial = false;
+              if (
+                eventChangedFiles.length === 0 &&
+                eventRemovedFiles.length === 0
+              ) {
+                return;
+              }
+            }
 
-          for (const removal of removedFiles) {
-            knownFiles.delete(removal);
-          }
-          for (const added of addedFiles) {
-            knownFiles.add(added);
-          }
-
-          enqueue(async () => {
-            if (addedFiles.length > 0 || removedFiles.length > 0) {
-              await fullRebuild();
+            if (!hasFileChanges(fileChanges)) {
               return;
             }
 
-            if (modifiedFiles.length > 0) {
-              await rebuildExistingFiles();
-            }
-          });
-        });
+            enqueue(async () => {
+              await fullRebuild();
+            });
+          }
+        );
 
         watcher.watch({
           directories: [this.config.workingDir],
-          startTime: 0,
+          startTime: Date.now(),
         });
       }
     }
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
-      return inputFiles.filter((item) => {
-        // Match App Router entrypoints: route.ts, page.ts, layout.ts in app/ or src/app/ directories
-        // Matches: /app/page.ts, /app/dashboard/page.ts, /src/app/route.ts, etc.
-        if (
-          item.match(
-            /(^|.*[/\\])(app|src[/\\]app)([/\\](route|page|layout)\.|[/\\].*[/\\](route|page|layout)\.)/
+      return inputFiles.filter((file) => {
+        const entry = relative(this.config.workingDir, file).replaceAll(
+          '\\',
+          '/'
+        );
+
+        // Match App Router route, page, and layout entrypoints in app/ or src/app/.
+        if (/^(?:app|src\/app)\/(?:.*\/)?(?:route|page|layout)\./.test(entry)) {
+          return true;
+        }
+
+        // Match every Pages Router entrypoint in pages/ or src/pages/.
+        if (/^(?:pages|src\/pages)\//.test(entry)) {
+          return true;
+        }
+
+        // Match Next.js root entrypoints at the project root or under src/.
+        return ['instrumentation', 'middleware', 'proxy'].some((name) =>
+          this.config.pageExtensions.some(
+            (extension) =>
+              entry === `${name}.${extension}` ||
+              entry === `src/${name}.${extension}`
           )
-        ) {
-          return true;
-        }
-        // Match Pages Router entrypoints: files in pages/ or src/pages/
-        if (item.match(/[/\\](pages|src[/\\]pages)[/\\]/)) {
-          return true;
-        }
-        return false;
+        );
       });
     }
 
@@ -456,6 +467,7 @@ export async function getNextBuilderEager() {
         flowOutfile: join(flowRouteDir, 'route.js'),
         bundleFinalOutput: false,
         externalizeNonSteps: true,
+        sourceStepRegistrationImports: true,
         tsconfigPath,
       });
     }

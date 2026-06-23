@@ -11,7 +11,7 @@
  *   the server stores without ever decoding it.
  * - **GET single event**: response body is one frame.
  * - **LIST events**: response body is a stream of frames terminated by a
- *   sentinel frame (meta = `{_end: 1, next?: cursor}`).
+ *   sentinel frame (meta = `{_end: 1, next?: cursor, hasMore?: boolean}`).
  *
  * Requests carry special HTTP response headers (eventId / runId / createdAt)
  * for client convenience, to allow metadata access without decoding the body.
@@ -29,10 +29,59 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { decode } from 'cbor-x';
-import { type Dispatcher, request } from 'undici';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getDispatcher } from './http-client.js';
+import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
+
+/**
+ * Issue a v4 request through the global `fetch` — NOT undici's `request`.
+ *
+ * Vercel's observability "outgoing requests" view instruments the global
+ * `fetch`. Calling `undici.request()` directly bypasses that instrumentation,
+ * so v4 event traffic disappeared from the log viewer while queue traffic
+ * (which uses `fetch`) kept showing. Routing through `fetch` with the same
+ * custom undici dispatcher restores visibility. The dispatcher itself does
+ * not affect instrumentation — the v3 `makeRequest` path has always passed
+ * one (see utils.ts) and stayed visible.
+ */
+async function fetchV4(
+  url: string,
+  init: { method: string; headers: Headers; body?: Uint8Array },
+  config: APIConfig | undefined
+): Promise<Response> {
+  // Set a unique header per request to bypass Next.js fetch memoization /
+  // Data Cache. Routing through the global `fetch` (above) re-exposes these
+  // reads to that caching — without busting it, an identical event read could
+  // be served a stale or truncated cached page and silently drop events,
+  // breaking replay correctness. The v3 `makeRequest` path does the same.
+  // See: https://github.com/vercel/workflow/issues/618
+  init.headers.set('X-Request-Time', Date.now().toString());
+  // Explicitly propagate the active trace context (traceparent / tracestate /
+  // baggage) onto the outgoing request so workflow-server can parent its spans
+  // to this invocation — matching the v3 `makeRequest` path (see utils.ts).
+  // The custom undici dispatcher bypasses ambient auto-instrumentation, so
+  // without this v4 event traffic from the flow route would not propagate
+  // context to workflow-server. No-ops when no OTEL SDK is registered.
+  await injectTraceContextIntoHeaders(init.headers);
+  return fetch(url, {
+    method: init.method,
+    headers: init.headers,
+    body: init.body,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+    dispatcher: getDispatcher(config),
+  } as any);
+}
+
+/** Flatten a fetch `Headers` into the record shape throwForErrorResponse
+ *  expects (it mirrors the v3 `makeRequest` error contract). */
+function headersToRecord(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key] = value;
+  });
+  return out;
+}
 
 /**
  * POST surfaces these so callers can read the created eventId without
@@ -87,6 +136,19 @@ export interface CreateEventV4Input {
   /** Opt-in for framework-level callers to write `$`-prefixed reserved
    *  attribute keys (attr_set / run_created / run_started). */
   allowReservedAttributes?: boolean;
+  /** Opt-in inline-delta request. On a step-terminal write
+   *  (step_completed / step_failed) the inline loop passes the cursor it
+   *  held before the write so the server can return the authoritative
+   *  event-log delta on the response `events`/`cursor`/`hasMore`, letting
+   *  the runtime skip a follow-up events.list. Ignored by the server for
+   *  other event types; older servers ignore it entirely (the runtime then
+   *  falls back to events.list). */
+  sinceCursor?: string;
+  /** Run-started preload opt-out. Turbo backgrounds run_started as a write
+   *  barrier only and never reads the preloaded log, so it asks the server to
+   *  skip the list+resolve. Acted on by the server only for run_started;
+   *  older servers ignore it and preload as before. */
+  skipPreload?: boolean;
 }
 
 export interface CreateEventV4Result {
@@ -109,6 +171,12 @@ export interface CreateEventV4Result {
     events?: unknown[];
     cursor?: string | null;
     hasMore?: boolean;
+    /**
+     * Lazy step start: true when the server's step_started created the step
+     * on this call. Absent from older servers (safe default: not the lazy
+     * creator). Threaded into EventResult.stepCreated by the events adapter.
+     */
+    stepCreated?: boolean;
   };
 }
 
@@ -147,6 +215,8 @@ function buildPostFrameMeta(
   if (input.allowReservedAttributes !== undefined) {
     meta.allowReservedAttributes = input.allowReservedAttributes;
   }
+  if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
+  if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   return meta;
 }
 
@@ -232,29 +302,25 @@ export async function createWorkflowRunEventV4(
   );
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
-  const response = await request(url, {
-    method: 'POST',
-    headers: Object.fromEntries(headers.entries()),
-    body: frame,
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
+  const response = await fetchV4(
+    url,
+    { method: 'POST', headers, body: frame },
+    config
+  );
+  if (!response.ok) {
+    const errorBody = await response.text();
     throwForErrorResponse(
-      response.statusCode,
-      response.headers,
+      response.status,
+      headersToRecord(response.headers),
       errorBody,
       'createEvent',
       url
     );
   }
 
-  const eventId = response.headers[V4_RESPONSE_HEADERS.eventId];
-  const runId = response.headers[V4_RESPONSE_HEADERS.runId];
-  const createdAt = response.headers[V4_RESPONSE_HEADERS.createdAt];
+  const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
+  const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
+  const createdAt = response.headers.get(V4_RESPONSE_HEADERS.createdAt);
   if (
     typeof eventId !== 'string' ||
     typeof runId !== 'string' ||
@@ -264,7 +330,7 @@ export async function createWorkflowRunEventV4(
   }
 
   // Decode the materialized-entity bag from the CBOR response body.
-  const bodyBytes = new Uint8Array(await response.body.arrayBuffer());
+  const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const body =
     bodyBytes.byteLength > 0
       ? (decode(bodyBytes) as CreateEventV4Result['body'])
@@ -319,34 +385,29 @@ export async function getEventV4(
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
-  const response = await request(url, {
-    method: 'GET',
-    headers: Object.fromEntries(headers.entries()),
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
+  const response = await fetchV4(url, { method: 'GET', headers }, config);
+  if (!response.ok) {
+    const errorBody = await response.text();
     throwForErrorResponse(
-      response.statusCode,
-      response.headers,
+      response.status,
+      headersToRecord(response.headers),
       errorBody,
       'getEvent',
       url
     );
   }
-  const contentType = readHeader(response.headers, 'content-type');
+  const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
       `v4 getEvent: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
 
-  // undici's response body is an AsyncIterable of byte chunks — feed it
-  // to decodeFrames directly. Do NOT convert via node:stream
-  // Readable.toWeb: dynamic `import('node:stream')` resolves to an empty
+  // fetch's `Response.body` is a web ReadableStream, which is async-iterable
+  // on Node (readableStream async iteration, since v16.5.0) — feed it straight
+  // to decodeFrames. The cast is only because TS's lib `ReadableStream` type
+  // omits the async iterator. Do NOT round-trip through `node:stream`
+  // Readable.toWeb: a dynamic `import('node:stream')` resolves to an empty
   // module namespace in Next.js webpack server bundles and crashes.
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
@@ -362,6 +423,15 @@ export interface ListEventsV4Params {
   cursor?: string;
   limit?: number;
   sortOrder?: 'asc' | 'desc';
+  /**
+   * Whether the backend resolves payload bytes into each frame body.
+   * `resolve` (default) streams the bytes; `lazy` emits empty-body frames
+   * (the ref descriptor stays in the frame meta) — for metadata-only
+   * listings that would otherwise download every payload just to discard
+   * it. A backend that predates this flag ignores it and streams full
+   * bodies, so callers must still tolerate bodies being present.
+   */
+  remoteRefBehavior?: 'resolve' | 'lazy';
 }
 
 /**
@@ -379,8 +449,18 @@ export interface ListedEventV4 {
 
 export interface ListEventsV4Result {
   events: ListedEventV4[];
-  /** Pagination cursor — present when more pages remain. */
+  /**
+   * Trailing cursor. Present even on the final page — it doubles as the
+   * resume point for incremental loads — so it is NOT a reliable "more
+   * pages" signal on its own. Use `hasMore` for that.
+   */
   next?: string;
+  /**
+   * Explicit "another page of results exists" flag from the sentinel.
+   * `undefined` against older servers that don't emit it, in which case
+   * the caller falls back to `Boolean(next)`.
+   */
+  hasMore?: boolean;
 }
 
 /**
@@ -398,43 +478,36 @@ async function consumeListFrameStream(
   config: APIConfig | undefined,
   opName: string
 ): Promise<ListEventsV4Result> {
-  const response = await request(url, {
-    method: 'GET',
-    headers: Object.fromEntries(headers.entries()),
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
+  const response = await fetchV4(url, { method: 'GET', headers }, config);
+  if (!response.ok) {
+    const errorBody = await response.text();
     throwForErrorResponse(
-      response.statusCode,
-      response.headers,
+      response.status,
+      headersToRecord(response.headers),
       errorBody,
       opName,
       url
     );
   }
-  const contentType = readHeader(response.headers, 'content-type');
+  const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
       `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
 
-  // undici's response body is an AsyncIterable of byte chunks — feed it
-  // to decodeFrames directly. Do NOT convert via node:stream
-  // Readable.toWeb: dynamic `import('node:stream')` resolves to an empty
-  // module namespace in Next.js webpack server bundles and crashes.
+  // See getEventV4: fetch's web ReadableStream is async-iterable on Node; the
+  // cast only works around TS's lib type omitting the async iterator.
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
   const events: ListedEventV4[] = [];
   let next: string | undefined;
+  let hasMore: boolean | undefined;
   let sawEndSentinel = false;
   for await (const frame of decodeFrames(chunks)) {
     if (frame.meta._end === 1) {
       if (typeof frame.meta.next === 'string') next = frame.meta.next;
+      if (typeof frame.meta.hasMore === 'boolean') hasMore = frame.meta.hasMore;
       sawEndSentinel = true;
       break;
     }
@@ -457,14 +530,30 @@ async function consumeListFrameStream(
     );
   }
 
-  return { events, ...(next ? { next } : {}) };
+  return {
+    events,
+    ...(next ? { next } : {}),
+    ...(hasMore !== undefined ? { hasMore } : {}),
+  };
+}
+
+/**
+ * Append the shared list params (pagination + ref behavior) to `sp`.
+ * Shared by the runId and correlationId list query builders so both send
+ * `remoteRefBehavior` identically.
+ */
+function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
+  if (params.cursor) sp.set('cursor', params.cursor);
+  if (params.limit !== undefined) sp.set('limit', String(params.limit));
+  if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
+  if (params.remoteRefBehavior) {
+    sp.set('remoteRefBehavior', params.remoteRefBehavior);
+  }
 }
 
 function paginationToQuery(params: ListEventsV4Params): string {
   const sp = new URLSearchParams();
-  if (params.cursor) sp.set('cursor', params.cursor);
-  if (params.limit !== undefined) sp.set('limit', String(params.limit));
-  if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
+  appendListParams(sp, params);
   const qs = sp.toString();
   return qs ? `?${qs}` : '';
 }
@@ -511,9 +600,7 @@ export async function getEventsByCorrelationIdV4(
   const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
   sp.set('correlationId', correlationId);
-  if (params.cursor) sp.set('cursor', params.cursor);
-  if (params.limit !== undefined) sp.set('limit', String(params.limit));
-  if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
+  appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   return consumeListFrameStream(
     url,
