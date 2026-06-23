@@ -61,6 +61,18 @@ interface NewTraceViewerProps {
 const MIN_VIEWPORT_MS = 0.001;
 
 const ZOOM_DEBOUNCE_MS = 150;
+const TRACE_SHORTCUT_HELPER_DISMISSALS_KEY =
+  'workflow-step-shortcut-helper-dismissals';
+const TRACE_SHORTCUT_HELPER_DISMISSAL_LIMIT = 3;
+const TRACE_SHORTCUT_HELPER_ROTATION_MS = 8000;
+const TRACE_SHORTCUT_HELPER_ANIMATION_MS = 150;
+const TRACE_SHORTCUT_HINT_IDS = {
+  spanDeltas: 'span-deltas',
+  spanNavigation: 'span-navigation',
+} as const;
+
+type TraceShortcutHintId =
+  (typeof TRACE_SHORTCUT_HINT_IDS)[keyof typeof TRACE_SHORTCUT_HINT_IDS];
 
 interface Viewport {
   start: number;
@@ -163,6 +175,188 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
       rawEvents,
     };
   }, [activeSpan, sidebar]);
+}
+
+function getAltKeyLabel(): 'Alt' | 'Option' {
+  if (typeof navigator === 'undefined') return 'Alt';
+  return navigator.platform.toLowerCase().includes('mac') ? 'Option' : 'Alt';
+}
+
+function readTraceShortcutHelperDismissals() {
+  try {
+    const dismissals = Number.parseInt(
+      window.localStorage.getItem(TRACE_SHORTCUT_HELPER_DISMISSALS_KEY) ?? '0',
+      10
+    );
+    return Number.isNaN(dismissals) ? 0 : dismissals;
+  } catch {
+    return 0;
+  }
+}
+
+function writeTraceShortcutHelperDismissals(dismissals: number) {
+  try {
+    window.localStorage.setItem(
+      TRACE_SHORTCUT_HELPER_DISMISSALS_KEY,
+      String(dismissals)
+    );
+  } catch {
+    return;
+  }
+}
+
+function TraceShortcutHint({ hintId }: { hintId: TraceShortcutHintId }) {
+  if (hintId === TRACE_SHORTCUT_HINT_IDS.spanDeltas) {
+    return (
+      <>
+        Hold
+        <Kbd variant="outline" size="compact" className="mx-1">
+          {getAltKeyLabel()}
+        </Kbd>
+        to show duration deltas between spans
+      </>
+    );
+  }
+
+  return (
+    <>
+      Use
+      <Kbd variant="outline" size="compact" className="ml-1">
+        J
+      </Kbd>
+      <span className="mx-1">/</span>
+      <Kbd variant="outline" size="compact" className="mr-1">
+        K
+      </Kbd>
+      to move between spans
+    </>
+  );
+}
+
+function TraceShortcutHelper({
+  hasMultipleSpans,
+  canNavigateSpans,
+  reducedMotion,
+}: {
+  hasMultipleSpans: boolean;
+  canNavigateSpans: boolean;
+  reducedMotion: boolean;
+}) {
+  const [visible, setVisible] = useState(false);
+  const [activeHintId, setActiveHintId] = useState<TraceShortcutHintId>(
+    TRACE_SHORTCUT_HINT_IDS.spanDeltas
+  );
+  const [hintVisible, setHintVisible] = useState(true);
+  const [dismissing, setDismissing] = useState(false);
+
+  const availableHintIds = useMemo<TraceShortcutHintId[]>(() => {
+    if (!canNavigateSpans) return [TRACE_SHORTCUT_HINT_IDS.spanDeltas];
+    return [
+      TRACE_SHORTCUT_HINT_IDS.spanDeltas,
+      TRACE_SHORTCUT_HINT_IDS.spanNavigation,
+    ];
+  }, [canNavigateSpans]);
+
+  const resolvedActiveHintId = availableHintIds.includes(activeHintId)
+    ? activeHintId
+    : TRACE_SHORTCUT_HINT_IDS.spanDeltas;
+
+  useEffect(() => {
+    if (activeHintId !== resolvedActiveHintId) {
+      setActiveHintId(resolvedActiveHintId);
+    }
+  }, [activeHintId, resolvedActiveHintId]);
+
+  useEffect(() => {
+    const dismissals = readTraceShortcutHelperDismissals();
+    setVisible(dismissals < TRACE_SHORTCUT_HELPER_DISMISSAL_LIMIT);
+  }, []);
+
+  const dismiss = useCallback(() => {
+    const nextDismissals = readTraceShortcutHelperDismissals() + 1;
+    writeTraceShortcutHelperDismissals(nextDismissals);
+
+    if (reducedMotion) {
+      setVisible(false);
+      return;
+    }
+
+    setDismissing(true);
+    window.setTimeout(() => {
+      setVisible(false);
+      setDismissing(false);
+    }, TRACE_SHORTCUT_HELPER_ANIMATION_MS);
+  }, [reducedMotion]);
+
+  useEffect(() => {
+    if (
+      !visible ||
+      dismissing ||
+      reducedMotion ||
+      availableHintIds.length < 2
+    ) {
+      return;
+    }
+
+    let swapTimeoutId: number | undefined;
+    const rotationTimeoutId = window.setTimeout(() => {
+      setHintVisible(false);
+      swapTimeoutId = window.setTimeout(() => {
+        setActiveHintId((currentHintId) => {
+          const currentIndex = availableHintIds.indexOf(currentHintId);
+          const nextIndex =
+            currentIndex === -1
+              ? 0
+              : (currentIndex + 1) % availableHintIds.length;
+          return (
+            availableHintIds[nextIndex] ?? TRACE_SHORTCUT_HINT_IDS.spanDeltas
+          );
+        });
+        setHintVisible(true);
+      }, TRACE_SHORTCUT_HELPER_ANIMATION_MS);
+    }, TRACE_SHORTCUT_HELPER_ROTATION_MS);
+
+    return () => {
+      window.clearTimeout(rotationTimeoutId);
+      if (swapTimeoutId !== undefined) {
+        window.clearTimeout(swapTimeoutId);
+      }
+    };
+  }, [
+    availableHintIds,
+    dismissing,
+    reducedMotion,
+    resolvedActiveHintId,
+    visible,
+  ]);
+
+  if (!visible || !hasMultipleSpans) return null;
+
+  return (
+    <div
+      className={`group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1 text-xs leading-none text-muted-foreground transition-opacity duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
+        dismissing ? 'opacity-0' : 'opacity-100'
+      }`}
+    >
+      <span
+        aria-live="polite"
+        aria-atomic="true"
+        className={`inline-flex items-center whitespace-nowrap transition-opacity duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
+          hintVisible ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
+        <TraceShortcutHint hintId={resolvedActiveHintId} />
+      </span>
+      <button
+        type="button"
+        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none"
+        onClick={dismiss}
+        aria-label="Dismiss trace shortcuts helper"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +654,6 @@ function NewTraceViewerContent({
       if (e.key === 'Escape') {
         handleClearActiveSpan();
       } else if (e.key === 'Alt') {
-        e.preventDefault();
         setAltHeld(true);
       } else if (e.key === 'j' || e.key === 'k') {
         handleSidebarNavKey(e);
@@ -758,6 +951,11 @@ function NewTraceViewerContent({
             <ZoomIn className="w-4 h-4" />
           </IconButton>
         </div>
+        <TraceShortcutHelper
+          hasMultipleSpans={trace.spans.length > 1}
+          canNavigateSpans={Boolean(activeSpanId && (prevSpanId || nextSpanId))}
+          reducedMotion={reducedMotion}
+        />
       </div>
 
       {/* Detail panel */}

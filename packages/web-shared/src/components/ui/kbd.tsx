@@ -34,7 +34,7 @@ export function Kbd({
   ...props
 }: KbdProps): ReactNode {
   return (
-    <kbd className={cn(kbdVariants({ variant, size }), className)} {...props}>
+    <kbd className={cn(kbdVariants({ variant, size, className }))} {...props}>
       {children}
     </kbd>
   );

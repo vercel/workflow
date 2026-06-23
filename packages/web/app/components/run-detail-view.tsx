@@ -6,7 +6,6 @@ import {
   EventListView,
   hydrateResourceIO,
   hydrateResourceIOWithKey,
-  Kbd,
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
@@ -20,9 +19,8 @@ import {
   List,
   Loader2,
   Lock,
-  X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
@@ -203,156 +201,6 @@ interface RunDetailViewProps {
 }
 
 type Tab = 'trace' | 'graph' | 'streams' | 'events';
-
-const STEP_SHORTCUT_HELPER_DISMISSALS_KEY =
-  'workflow-step-shortcut-helper-dismissals';
-const STEP_SHORTCUT_HELPER_DISMISSAL_LIMIT = 3;
-const STEP_SHORTCUT_HELPER_ROTATION_MS = 8000;
-const STEP_SHORTCUT_HELPER_ANIMATION_MS = 200;
-
-function readStepShortcutHelperDismissals() {
-  try {
-    return Number.parseInt(
-      window.localStorage.getItem(STEP_SHORTCUT_HELPER_DISMISSALS_KEY) ?? '0',
-      10
-    );
-  } catch {
-    return 0;
-  }
-}
-
-function StepShortcutHint({ hint }: { hint: number }) {
-  if (hint === 0) {
-    return (
-      <>
-        Hold
-        <Kbd variant="outline" size="compact" className="mx-1">
-          Alt
-        </Kbd>
-        to show delta between steps
-      </>
-    );
-  }
-
-  return (
-    <>
-      Use
-      <Kbd variant="outline" size="compact" className="ml-1">
-        J
-      </Kbd>
-      <span className="mx-1">/</span>
-      <Kbd variant="outline" size="compact" className="mr-1">
-        K
-      </Kbd>
-      to move between steps
-    </>
-  );
-}
-
-function StepShortcutHelperToast() {
-  const [visible, setVisible] = useState(false);
-  const [activeHint, setActiveHint] = useState(0);
-  const [previousHint, setPreviousHint] = useState<number | null>(null);
-  const [hintAnimating, setHintAnimating] = useState(false);
-  const [dismissing, setDismissing] = useState(false);
-
-  useEffect(() => {
-    const dismissals = readStepShortcutHelperDismissals();
-    setVisible(
-      Number.isNaN(dismissals) ||
-        dismissals < STEP_SHORTCUT_HELPER_DISMISSAL_LIMIT
-    );
-  }, []);
-
-  const dismiss = useCallback(() => {
-    const currentDismissals = readStepShortcutHelperDismissals();
-    const nextDismissals =
-      (Number.isNaN(currentDismissals) ? 0 : currentDismissals) + 1;
-    try {
-      window.localStorage.setItem(
-        STEP_SHORTCUT_HELPER_DISMISSALS_KEY,
-        String(nextDismissals)
-      );
-    } catch {
-      // The toast can still be dismissed for this render if storage is blocked.
-    }
-    setDismissing(true);
-    window.setTimeout(() => {
-      setVisible(false);
-      setDismissing(false);
-    }, STEP_SHORTCUT_HELPER_ANIMATION_MS);
-  }, []);
-
-  useEffect(() => {
-    if (!visible || dismissing) return;
-
-    const timeoutId = window.setTimeout(() => {
-      setPreviousHint(activeHint);
-      setActiveHint(activeHint === 0 ? 1 : 0);
-    }, STEP_SHORTCUT_HELPER_ROTATION_MS);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [activeHint, dismissing, visible]);
-
-  useEffect(() => {
-    if (previousHint === null) return;
-
-    setHintAnimating(false);
-    const animationFrameId = window.requestAnimationFrame(() => {
-      setHintAnimating(true);
-    });
-    const timeoutId = window.setTimeout(() => {
-      setPreviousHint(null);
-      setHintAnimating(false);
-    }, STEP_SHORTCUT_HELPER_ANIMATION_MS);
-
-    return () => {
-      window.cancelAnimationFrame(animationFrameId);
-      window.clearTimeout(timeoutId);
-    };
-  }, [previousHint]);
-
-  if (!visible) return null;
-
-  return (
-    <div
-      className={`group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1 text-xs leading-none text-muted-foreground transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
-        dismissing
-          ? '-translate-y-1 opacity-0'
-          : 'translate-y-0 opacity-100'
-      }`}
-    >
-      <span className="relative grid h-5 items-center overflow-hidden whitespace-nowrap">
-        {previousHint !== null ? (
-          <span
-            className={`col-start-1 row-start-1 inline-flex items-center transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
-              hintAnimating ? '-translate-y-2 opacity-0' : 'translate-y-0 opacity-100'
-            }`}
-          >
-            <StepShortcutHint hint={previousHint} />
-          </span>
-        ) : null}
-        <span
-          className={`col-start-1 row-start-1 inline-flex items-center transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
-            previousHint !== null && !hintAnimating
-              ? 'translate-y-2 opacity-0'
-              : 'translate-y-0 opacity-100'
-          }`}
-        >
-          <StepShortcutHint hint={activeHint} />
-        </span>
-      </span>
-      <button
-        type="button"
-        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
-        onClick={dismiss}
-        aria-label="Dismiss step shortcuts helper"
-      >
-        <X className="h-3 w-3" />
-      </button>
-    </div>
-  );
-}
 
 export function RunDetailView({
   runId,
@@ -946,7 +794,6 @@ export function RunDetailView({
                     hasMore={hasMoreTraceData}
                     isLoadingMore={isLoadingMoreTraceData}
                   />
-                  <StepShortcutHelperToast />
                 </div>
               </ErrorBoundary>
             </TabsContent>
