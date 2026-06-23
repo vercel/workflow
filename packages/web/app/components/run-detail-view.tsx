@@ -208,8 +208,6 @@ const STEP_SHORTCUT_HELPER_DISMISSALS_KEY =
   'workflow-step-shortcut-helper-dismissals';
 const STEP_SHORTCUT_HELPER_DISMISSAL_LIMIT = 3;
 const STEP_SHORTCUT_HELPER_ROTATION_MS = 8000;
-const STEP_SHORTCUT_KEY_CLASS_NAME =
-  'h-4 min-h-4 min-w-4 border border-gray-alpha-400 bg-background-100 px-1 text-[11px] font-medium leading-none text-gray-900';
 
 function readStepShortcutHelperDismissals() {
   try {
@@ -264,27 +262,33 @@ function StepShortcutHelperToast() {
   const activeHint = activeHintIndex % 2;
 
   return (
-    <div className="group absolute bottom-4 left-1/2 z-10 inline-flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-xs text-muted-foreground">
-      <span className="whitespace-nowrap">
+    <div className="group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-xs leading-none text-muted-foreground">
+      <span className="inline-flex items-center whitespace-nowrap">
         {activeHint === 0 ? (
           <>
             Press{' '}
-            <Kbd className={STEP_SHORTCUT_KEY_CLASS_NAME}>Alt</Kbd>{' '}
+            <Kbd variant="outline" size="compact">
+              Alt
+            </Kbd>{' '}
             to see delta between steps
           </>
         ) : (
           <>
             Press{' '}
-            <Kbd className={STEP_SHORTCUT_KEY_CLASS_NAME}>J</Kbd>
+            <Kbd variant="outline" size="compact">
+              J
+            </Kbd>
             /
-            <Kbd className={STEP_SHORTCUT_KEY_CLASS_NAME}>K</Kbd>{' '}
+            <Kbd variant="outline" size="compact">
+              K
+            </Kbd>{' '}
             to navigate through steps
           </>
         )}
       </span>
       <button
         type="button"
-        className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
         onClick={dismiss}
         aria-label="Dismiss step shortcuts helper"
       >
