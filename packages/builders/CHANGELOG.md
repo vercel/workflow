@@ -1,5 +1,14 @@
 # @workflow/builders
 
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- [#2592](https://github.com/vercel/workflow/pull/2592) [`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add OpenTelemetry spans, turbo tagging, and generated-route module timing around `/flow` initialization.
+
+- Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
+  - @workflow/core@5.0.0-beta.23
+
 ## 5.0.0-beta.22
 
 ### Patch Changes

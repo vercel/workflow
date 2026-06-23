@@ -1,5 +1,14 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- [#2595](https://github.com/vercel/workflow/pull/2595) [`5a57547`](https://github.com/vercel/workflow/commit/5a57547512b96438b7d54da203e580ad10f314e1) Thanks [@mitul-s](https://github.com/mitul-s)! - Use text-gray-900 for trace shortcut helper text.
+
+- Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
+  - @workflow/core@5.0.0-beta.23
+
 ## 5.0.0-beta.22
 
 ### Patch Changes
