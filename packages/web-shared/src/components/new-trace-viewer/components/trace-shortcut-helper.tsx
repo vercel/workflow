@@ -61,20 +61,13 @@ export function TraceShortcutHelper({
   hasMultipleSpans: boolean;
   reducedMotion: boolean;
 }) {
-  // Start hidden so SSR markup matches the first client render, then reveal
-  // once we can read the persisted dismissal count.
   const [visible, setVisible] = useState(false);
-  // Index of the hint currently shown (0 = Alt hint, 1 = J/K hint). Only one
-  // hint is in the DOM at a time so the container width tracks the visible
-  // text and the dismiss button always hugs it.
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
     setVisible(readDismissals() < DISMISSAL_LIMIT);
   }, []);
 
-  // Rotate between the two hints. The interval lives here (not tied to props)
-  // so parent re-renders from trace-viewer interactions never restart it.
   useEffect(() => {
     if (reducedMotion) return;
     const id = setInterval(() => {
@@ -88,9 +81,7 @@ export function TraceShortcutHelper({
   const dismiss = () => {
     try {
       window.localStorage.setItem(DISMISSALS_KEY, String(readDismissals() + 1));
-    } catch {
-      // Ignore storage failures — dismissal just won't persist.
-    }
+    } catch {}
     setVisible(false);
   };
 
@@ -104,9 +95,6 @@ export function TraceShortcutHelper({
         {reducedMotion ? (
           <AltHint />
         ) : (
-          // Keying by index remounts the node on each rotation so the CSS
-          // fade-in plays. Only one hint is ever in the DOM, so the width
-          // matches the visible text and the dismiss button hugs it.
           <span
             key={index}
             className={`inline-flex items-center ${styles.hint}`}

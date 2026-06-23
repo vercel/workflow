@@ -839,8 +839,6 @@ function NewTraceViewerContent({
         </aside>
       ) : null}
 
-      {/* Centered relative to the whole viewer (timeline + detail panel) so it
-          doesn't shift when the detail panel opens or closes. */}
       <TraceShortcutHelper
         hasMultipleSpans={trace.spans.length > 1}
         reducedMotion={reducedMotion}
