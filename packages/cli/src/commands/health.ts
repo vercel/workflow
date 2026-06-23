@@ -7,7 +7,7 @@ import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
 
-type HealthCheckEndpoint = 'workflow' | 'step';
+type HealthCheckEndpoint = 'workflow';
 
 interface HealthCheckResult {
   healthy: boolean;
@@ -35,9 +35,17 @@ function formatUnhealthyResult(endpoint: string, error?: string): string {
 }
 
 function getEndpointsToCheck(endpointFlag: string): HealthCheckEndpoint[] {
-  return endpointFlag === 'both'
-    ? ['workflow', 'step']
-    : [endpointFlag as HealthCheckEndpoint];
+  // Post-#1338 the workflow handler executes steps inline, so there is no
+  // separate `step` endpoint to probe. `--endpoint step` and `--endpoint both`
+  // are accepted as aliases for `workflow` to avoid breaking existing
+  // invocations, with a deprecation warning printed where verbose logging
+  // is enabled. The flag definition only advertises `workflow`.
+  if (endpointFlag === 'step' || endpointFlag === 'both') {
+    logger.debug(
+      `--endpoint=${endpointFlag} is deprecated; the workflow route handles steps inline (see PR #1338). Falling back to --endpoint=workflow.`
+    );
+  }
+  return ['workflow'];
 }
 
 function printSummary(results: EndpointHealthResult[], backend: string): void {
@@ -212,23 +220,27 @@ async function runHealthCheckWithLogging(
 
 export default class Health extends BaseCommand {
   static description =
-    'Check health of workflow and step endpoints via queue-based health check';
+    'Check health of the workflow endpoint via queue-based health check';
 
   static examples = [
     '$ workflow health',
     '$ workflow health --endpoint workflow',
-    '$ workflow health --endpoint step --timeout 60000',
+    '$ workflow health --timeout 60000',
     '$ workflow health --backend vercel --project my-project --team my-team',
   ];
 
   static flags = {
     endpoint: Flags.string({
-      description: 'Which endpoint(s) to check',
+      description:
+        'Which endpoint to check (only `workflow` is supported; `step` and `both` are deprecated aliases retained for backward compatibility)',
+      // Accept the legacy values so existing CI invocations keep working, but
+      // only advertise `workflow` in --help. `getEndpointsToCheck` normalises
+      // all values to `workflow`.
       options: ['workflow', 'step', 'both'],
-      default: 'both',
+      default: 'workflow',
       helpGroup: 'Health Check',
       helpLabel: '--endpoint',
-      helpValue: ['workflow', 'step', 'both'],
+      helpValue: 'workflow',
     }),
     timeout: Flags.integer({
       char: 't',

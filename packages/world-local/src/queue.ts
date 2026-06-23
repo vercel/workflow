@@ -94,15 +94,24 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
 }
 
 function getQueueRoute(queueName: ValidQueueName): {
-  pathname: 'flow' | 'step';
+  pathname: 'flow';
   prefix: QueuePrefix;
 } {
   const { kind, prefix } = parseQueueName(queueName);
 
-  return {
-    pathname: kind === 'workflow' ? 'flow' : 'step',
-    prefix,
-  };
+  // `__wkf_step_*` queue messages were used by the legacy two-route
+  // architecture (separate /flow and /step bundles). Since PR #1338 the
+  // combined workflow route executes steps inline, so no `__wkf_step_*`
+  // messages are produced by the runtime and no `/step` route is served by
+  // the framework builders. Surface a clear error if something still tries
+  // to dispatch one (e.g. a stale code path) rather than silently 404'ing.
+  if (kind === 'step') {
+    throw new Error(
+      `Refusing to dispatch legacy step-queue message "${queueName}": the /.well-known/workflow/v1/step route was removed in PR #1338. Steps are now executed inline by the combined workflow handler.`
+    );
+  }
+
+  return { pathname: 'flow', prefix };
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {

@@ -112,7 +112,10 @@ function generateHealthCheckRunId(correlationId: string): string {
  * The caller can listen to this stream to get the health check response.
  *
  * @param healthCheck - The parsed health check payload
- * @param endpoint - Which endpoint is responding ('workflow' or 'step')
+ * @param endpoint - Which endpoint is responding. Post-#1338 only `'workflow'`
+ *   is meaningful (the combined route handles both flows and steps inline),
+ *   but the parameter still accepts `'step'` so legacy callers in
+ *   `step-handler.ts` (no longer wired up by builders) keep type-checking.
  */
 export async function handleHealthCheckMessage(
   healthCheck: HealthCheckPayload,
@@ -136,7 +139,14 @@ export async function handleHealthCheckMessage(
   await world.streams.close(fakeRunId, streamName);
 }
 
-export type HealthCheckEndpoint = 'workflow' | 'step';
+/**
+ * Health check endpoint identifier.
+ *
+ * Only `'workflow'` is supported: as of the combined-route architecture
+ * (PR #1338), the workflow handler executes steps inline rather than via a
+ * separate `step` route, so there is no `step` endpoint to probe.
+ */
+export type HealthCheckEndpoint = 'workflow';
 
 export interface HealthCheckOptions {
   /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
@@ -147,13 +157,14 @@ export interface HealthCheckOptions {
 
 /**
  * Performs a health check by sending a message through the queue pipeline
- * and verifying it is processed by the specified endpoint.
+ * and verifying it is processed by the workflow endpoint.
  *
  * This function bypasses Deployment Protection on Vercel because it goes
  * through the queue infrastructure rather than direct HTTP.
  *
  * @param world - The World instance to use for the health check
- * @param endpoint - Which endpoint to health check: 'workflow' or 'step'
+ * @param endpoint - Which endpoint to health check. Only `'workflow'` is
+ *   supported post-#1338; the combined route handles both workflows and steps.
  * @param options - Optional configuration for the health check
  * @returns Promise resolving to health check result
  */
@@ -261,8 +272,16 @@ export async function healthCheck(
   const correlationId = generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
+  // Only the workflow queue carries health-check messages now — the step
+  // route was removed in PR #1338 and `__wkf_step_health_check` messages
+  // have no handler.
+  if (endpoint !== 'workflow') {
+    throw new Error(
+      `Unsupported health check endpoint "${endpoint}": only 'workflow' is supported`
+    );
+  }
   const queueName =
-    `${getQueueTopicPrefix(endpoint, resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
+    `${getQueueTopicPrefix('workflow', resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
 
   const startTime = Date.now();
 

@@ -5,7 +5,6 @@ import { MessageId, parseQueueName, type QueuePayload } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stepEntrypoint } from '../../core/dist/runtime/step-handler.js';
 import { MessageData } from './message.js';
 import { createQueue } from './queue.js';
 
@@ -77,59 +76,13 @@ describe('postgres queue http execution', () => {
     delete process.env.PORT;
   });
 
-  it('uses the workflow http step route when the real runtime step handler would fail in-process with Step not found', async () => {
-    const requests: Array<{
-      method: string | undefined;
-      url: string | undefined;
-      headers: Record<string, string | string[] | undefined>;
-      body: string;
-    }> = [];
-    const server = await startWorkflowHttpServer(requests);
-    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
-    createQueueHandler.mockImplementation((queuePrefix) => {
-      if (queuePrefix === '__wkf_step_') {
-        return stepEntrypoint;
-      }
-      return wrappedHandler;
-    });
-
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-
-    // Regression for #1416: when the worker process has a real step route
-    // loaded but no matching step registration, beta.44 direct execution fails
-    // with `Step "..." not found` instead of using the healthy HTTP route.
-    queue.createQueueHandler(
-      '__wkf_step_',
-      vi.fn(async () => undefined)
-    );
-    await queue.start();
-
-    const task = getTaskHandler('workflow_steps');
-    const message = {
-      workflowName: 'test-workflow',
-      workflowRunId: 'run_01ABC',
-      workflowStartedAt: Date.now(),
-      stepId: 'step_01ABC',
-    } satisfies QueuePayload;
-    const payload = buildMessageData('__wkf_step_test-step', message, {
-      headers: { traceparent: 'trace-parent' },
-      idempotencyKey: 'step_01ABC',
-    });
-
-    await expect(task(payload, {} as any)).resolves.toBeUndefined();
-
-    expect(requests).toEqual([
-      expect.objectContaining({
-        method: 'POST',
-        url: '/.well-known/workflow/v1/step',
-        headers: expect.objectContaining({
-          'x-vqs-queue-name': '__wkf_step_test-step',
-          'x-vqs-message-attempt': '1',
-          traceparent: 'trace-parent',
-        }),
-      }),
-    ]);
-  });
+  // NOTE: Prior to PR #1338 a regression test here covered the case where
+  // `__wkf_step_*` messages were routed to a separate `/.well-known/workflow/v1/step`
+  // bundle (see #1416). Steps are now executed inline by the combined workflow
+  // route, no `/v1/step` route is generated, and `__wkf_step_*` queue messages
+  // are no longer produced by the runtime — so that scenario is no longer
+  // representable. The remaining tests in this block exercise the same
+  // queue-routing/port-detection behaviour against the workflow queue.
 
   it('uses a late-detected local port when the queue starts before PORT is available', async () => {
     const requests: Array<{
@@ -146,16 +99,13 @@ describe('postgres queue http execution', () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
 
-    const task = getTaskHandler('workflow_steps');
+    const task = getTaskHandler('workflow_flows');
     const message = {
-      workflowName: 'test-workflow',
-      workflowRunId: 'run_01ABC',
-      workflowStartedAt: Date.now(),
-      stepId: 'step_01ABC',
+      runId: 'wrun_01ABC',
     } satisfies QueuePayload;
-    const payload = buildMessageData('__wkf_step_test-step', message, {
+    const payload = buildMessageData('__wkf_workflow_test-workflow', message, {
       headers: { traceparent: 'trace-parent' },
-      idempotencyKey: 'step_01ABC',
+      idempotencyKey: 'wrun_01ABC',
     });
 
     await expect(task(payload, {} as any)).resolves.toBeUndefined();
@@ -164,7 +114,7 @@ describe('postgres queue http execution', () => {
     expect(requests).toEqual([
       expect.objectContaining({
         method: 'POST',
-        url: '/.well-known/workflow/v1/step',
+        url: '/.well-known/workflow/v1/flow',
       }),
     ]);
   });
@@ -173,15 +123,12 @@ describe('postgres queue http execution', () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
 
-    const task = getTaskHandler('workflow_steps');
+    const task = getTaskHandler('workflow_flows');
     const message = {
-      workflowName: 'test-workflow',
-      workflowRunId: 'run_01ABC',
-      workflowStartedAt: Date.now(),
-      stepId: 'step_01ABC',
+      runId: 'wrun_01ABC',
     } satisfies QueuePayload;
-    const payload = buildMessageData('__wkf_step_test-step', message, {
-      idempotencyKey: 'step_01ABC',
+    const payload = buildMessageData('__wkf_workflow_test-workflow', message, {
+      idempotencyKey: 'wrun_01ABC',
     });
 
     await expect(task(payload, {} as any)).rejects.toThrow(
@@ -513,7 +460,7 @@ async function startWorkflowHttpServer(
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/.well-known/workflow/v1/step') {
+    if (req.method === 'POST' && req.url === '/.well-known/workflow/v1/flow') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;

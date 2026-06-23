@@ -26,7 +26,10 @@ export function HealthCheckButton() {
   const runChecks = useCallback(async () => {
     setIsChecking(true);
 
-    const endpoints: HealthCheckEndpoint[] = ['workflow', 'step'];
+    // Post-#1338 the workflow handler executes steps inline, so there is no
+    // separate `step` endpoint to probe — checking the workflow endpoint
+    // exercises the same combined route that handles step execution.
+    const endpoints: HealthCheckEndpoint[] = ['workflow'];
     const results: EndpointResult[] = [];
 
     try {
@@ -49,8 +52,8 @@ export function HealthCheckButton() {
           (sum, r) => sum + (r.result.latencyMs ?? 0),
           0
         );
-        toast.success('All endpoints healthy', {
-          description: `Workflow and Step endpoints are responding (${totalLatency}ms total)`,
+        toast.success('Workflow endpoint healthy', {
+          description: `Combined workflow route is responding (${totalLatency}ms)`,
         });
       } else if (anyHealthy) {
         const healthy = results.filter((r) => r.result.healthy);
@@ -98,7 +101,7 @@ export function HealthCheckButton() {
       </TooltipTrigger>
       <TooltipContent>
         <p>
-          Run a queue-based health check on workflow and step endpoints.
+          Run a queue-based health check on the workflow endpoint.
           <br />
           This bypasses Deployment Protection.
         </p>

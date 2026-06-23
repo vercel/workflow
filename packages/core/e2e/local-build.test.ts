@@ -76,11 +76,15 @@ async function readFileIfExists(filePath: string): Promise<string | null> {
 }
 
 /**
- * Projects that use the VercelBuildOutputAPIBuilder and produce ESM step bundles.
+ * Projects that use the VercelBuildOutputAPIBuilder and produce an ESM
+ * workflow bundle. Pre-#1338 there were two function bundles (`flow.func`
+ * + `step.func`); post-#1338 the BOA builder emits a single combined
+ * `flow.func` that handles both workflow execution and inline step
+ * execution.
  */
-const ESM_STEP_BUNDLE_PROJECTS: Record<string, string> = {
+const ESM_FLOW_BUNDLE_PROJECTS: Record<string, string> = {
   example:
-    '.vercel/output/functions/.well-known/workflow/v1/step.func/index.mjs',
+    '.vercel/output/functions/.well-known/workflow/v1/flow.func/index.mjs',
 };
 
 const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {
@@ -129,8 +133,8 @@ describe.each([
       await fs.access(resolvedDiagnosticsManifestPath);
     }
 
-    // Verify ESM step bundles use native import.meta (no CJS polyfill needed)
-    const esmBundlePath = ESM_STEP_BUNDLE_PROJECTS[project];
+    // Verify the ESM workflow bundle uses native import.meta (no CJS polyfill needed)
+    const esmBundlePath = ESM_FLOW_BUNDLE_PROJECTS[project];
     if (esmBundlePath) {
       const bundleContent = await readFileIfExists(
         path.join(getWorkbenchAppPath(project), esmBundlePath)
