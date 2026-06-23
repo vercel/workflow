@@ -605,6 +605,11 @@ async function createWorkflowRunEventInner(
       // step_completed/step_failed; older servers ignore it and the runtime
       // falls back to events.list.
       ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
+      // Run-started preload opt-out: turbo backgrounds run_started as a write
+      // barrier only and never reads the preloaded log, so tell the server to
+      // skip the list+resolve. The server only acts on it for run_started;
+      // older servers ignore it and simply preload as before.
+      ...(params?.skipPreload ? { skipPreload: true } : {}),
       remoteRefBehavior,
       payload,
       ...meta,
