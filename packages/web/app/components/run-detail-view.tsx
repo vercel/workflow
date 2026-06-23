@@ -225,10 +225,10 @@ function StepShortcutHint({ hint }: { hint: number }) {
   if (hint === 0) {
     return (
       <>
-        Hold{' '}
-        <Kbd variant="outline" size="compact">
+        Hold
+        <Kbd variant="outline" size="compact" className="mx-1">
           Alt
-        </Kbd>{' '}
+        </Kbd>
         to show delta between steps
       </>
     );
@@ -236,14 +236,14 @@ function StepShortcutHint({ hint }: { hint: number }) {
 
   return (
     <>
-      Use{' '}
-      <Kbd variant="outline" size="compact">
+      Use
+      <Kbd variant="outline" size="compact" className="ml-1">
         J
       </Kbd>
-      {' / '}
-      <Kbd variant="outline" size="compact">
+      <span className="mx-1">/</span>
+      <Kbd variant="outline" size="compact" className="mr-1">
         K
-      </Kbd>{' '}
+      </Kbd>
       to move between steps
     </>
   );
