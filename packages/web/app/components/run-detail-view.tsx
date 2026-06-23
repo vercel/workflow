@@ -316,17 +316,17 @@ function StepShortcutHelperToast() {
 
   return (
     <div
-      className={`group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-xs leading-none text-muted-foreground transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
+      className={`group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1 text-xs leading-none text-muted-foreground transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
         dismissing
           ? '-translate-y-1 opacity-0'
           : 'translate-y-0 opacity-100'
       }`}
     >
-      <span className="relative grid items-center overflow-hidden whitespace-nowrap">
+      <span className="relative grid h-5 items-center overflow-hidden whitespace-nowrap">
         {previousHint !== null ? (
           <span
             className={`col-start-1 row-start-1 inline-flex items-center transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
-              hintAnimating ? '-translate-y-1 opacity-0' : 'translate-y-0 opacity-100'
+              hintAnimating ? '-translate-y-2 opacity-0' : 'translate-y-0 opacity-100'
             }`}
           >
             <StepShortcutHint hint={previousHint} />
@@ -335,7 +335,7 @@ function StepShortcutHelperToast() {
         <span
           className={`col-start-1 row-start-1 inline-flex items-center transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
             previousHint !== null && !hintAnimating
-              ? 'translate-y-1 opacity-0'
+              ? 'translate-y-2 opacity-0'
               : 'translate-y-0 opacity-100'
           }`}
         >
