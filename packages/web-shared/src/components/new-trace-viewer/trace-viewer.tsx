@@ -29,6 +29,7 @@ import {
 } from '../sidebar/entity-detail-panel';
 import { useSidebarData } from '../sidebar/sidebar-data-context';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import { ContextCardProvider } from '../ui/context-card';
 import { IconButton } from '../ui/icon-button';
 import { Kbd } from '../ui/kbd';
 import { Spinner } from '../ui/spinner';
@@ -178,14 +179,21 @@ export function NewTraceViewer({
 }: NewTraceViewerProps): ReactNode {
   return (
     <TooltipProvider delayDuration={300}>
-      <ActiveSpanProvider spans={trace.spans}>
-        <NewTraceViewerContent
-          trace={trace}
-          onLoadMore={onLoadMore}
-          hasMore={hasMore}
-          isLoadingMore={isLoadingMore}
-        />
-      </ActiveSpanProvider>
+      {/* One shared provider for every timeline-marker TimestampTooltip. Without
+          it, each marker tick self-mounts its own ContextCardProvider — a
+          full-screen portal + ResizeObserver + document scroll listener — and
+          those mount/unmount in bulk as bars cross the tiny↔full threshold on
+          each zoom frame. Sharing one provider is the design's intended usage. */}
+      <ContextCardProvider>
+        <ActiveSpanProvider spans={trace.spans}>
+          <NewTraceViewerContent
+            trace={trace}
+            onLoadMore={onLoadMore}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+          />
+        </ActiveSpanProvider>
+      </ContextCardProvider>
     </TooltipProvider>
   );
 }
