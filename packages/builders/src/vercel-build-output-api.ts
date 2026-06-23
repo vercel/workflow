@@ -68,7 +68,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     workflowGeneratedDir: string;
     tsconfigPath?: string;
   }) {
-    console.log('Creating Vercel Build Output API steps function');
+    this.logBaseBuilderInfo('Creating Vercel Build Output API steps function');
     const stepsFuncDir = join(workflowGeneratedDir, 'step.func');
     await mkdir(stepsFuncDir, { recursive: true });
 
@@ -100,7 +100,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     workflowGeneratedDir: string;
     tsconfigPath?: string;
   }) {
-    console.log('Creating Vercel Build Output API workflows function');
+    this.logBaseBuilderInfo(
+      'Creating Vercel Build Output API workflows function'
+    );
     const workflowsFuncDir = join(workflowGeneratedDir, 'flow.func');
     await mkdir(workflowsFuncDir, { recursive: true });
 
@@ -128,7 +130,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     workflowGeneratedDir: string;
     bundle?: boolean;
   }): Promise<void> {
-    console.log('Creating Vercel Build Output API webhook function');
+    this.logBaseBuilderInfo(
+      'Creating Vercel Build Output API webhook function'
+    );
     const webhookFuncDir = join(workflowGeneratedDir, 'webhook/[token].func');
 
     // Bundle the webhook route with dependencies resolved
@@ -162,12 +166,14 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       JSON.stringify(buildOutputConfig, null, 2)
     );
 
-    console.log(`Build Output API created at ${outputDir}`);
-    console.log('Steps function available at /.well-known/workflow/v1/step');
-    console.log(
+    this.logBaseBuilderInfo(`Build Output API created at ${outputDir}`);
+    this.logBaseBuilderInfo(
+      'Steps function available at /.well-known/workflow/v1/step'
+    );
+    this.logBaseBuilderInfo(
       'Workflows function available at /.well-known/workflow/v1/flow'
     );
-    console.log(
+    this.logBaseBuilderInfo(
       'Webhook function available at /.well-known/workflow/v1/webhook/[token]'
     );
   }

@@ -70,7 +70,10 @@ export class StandaloneBuilder extends BaseBuilder {
     inputFiles: string[];
     tsconfigPath?: string;
   }) {
-    console.log('Creating steps bundle at', this.config.stepsBundlePath);
+    this.logBaseBuilderInfo(
+      'Creating steps bundle at',
+      this.config.stepsBundlePath
+    );
 
     const stepsBundlePath = this.resolvePath(this.config.stepsBundlePath);
     await this.ensureDirectory(stepsBundlePath);
@@ -91,7 +94,7 @@ export class StandaloneBuilder extends BaseBuilder {
     inputFiles: string[];
     tsconfigPath?: string;
   }) {
-    console.log(
+    this.logBaseBuilderInfo(
       'Creating workflows bundle at',
       this.config.workflowsBundlePath
     );
@@ -111,7 +114,10 @@ export class StandaloneBuilder extends BaseBuilder {
   }
 
   private async buildWebhookFunction(): Promise<void> {
-    console.log('Creating webhook bundle at', this.config.webhookBundlePath);
+    this.logBaseBuilderInfo(
+      'Creating webhook bundle at',
+      this.config.webhookBundlePath
+    );
 
     const webhookBundlePath = this.resolvePath(this.config.webhookBundlePath);
     await this.ensureDirectory(webhookBundlePath);
