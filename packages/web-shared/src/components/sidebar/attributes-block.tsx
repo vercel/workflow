@@ -39,15 +39,23 @@ export function DetailKeyValueRow({
   copyText,
   removed = false,
   showReservedBadge = false,
+  mono = false,
 }: {
   label: string;
   value?: ReactNode;
   copyText?: string;
   removed?: boolean;
   showReservedBadge?: boolean;
+  mono?: boolean;
 }) {
   const reserved = showReservedBadge && isReservedAttributeKey(label);
   const stringValue = typeof value === 'string' ? value : undefined;
+  const valueClassName = mono
+    ? 'max-w-[60%] truncate text-right text-copy-13 font-mono text-gray-1000'
+    : 'max-w-[60%] truncate text-right text-copy-13 text-gray-1000';
+  const copyClassName = mono
+    ? 'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 font-mono text-gray-1000'
+    : 'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000';
 
   return (
     <div className="flex items-center justify-between gap-3 py-0.5">
@@ -63,13 +71,10 @@ export function DetailKeyValueRow({
           removed
         </span>
       ) : copyText ? (
-        <div
-          className="flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000"
-          title={copyText}
-        >
+        <div className={copyClassName} title={copyText}>
           <MiddleTruncate
             value={copyText}
-            className="text-right"
+            className={mono ? 'text-right font-mono' : 'text-right'}
             style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
           />
           <CopyButton
@@ -79,10 +84,7 @@ export function DetailKeyValueRow({
           />
         </div>
       ) : (
-        <span
-          className="max-w-[60%] truncate text-right text-copy-13 text-gray-1000"
-          title={stringValue}
-        >
+        <span className={valueClassName} title={stringValue}>
           {value}
         </span>
       )}

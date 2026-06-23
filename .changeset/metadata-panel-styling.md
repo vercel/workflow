@@ -2,4 +2,4 @@
 '@workflow/web-shared': patch
 ---
 
-Align the detail panel top info rows (Module, Step ID, timestamps, etc.) with the Attributes section key-value styling.
+Align the detail panel top info rows with the Attributes section styling, group them in a collapsible Metadata section, and render values in monospace.
