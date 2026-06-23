@@ -1745,6 +1745,8 @@ importers:
         specifier: ^7.3.2
         version: 7.3.2(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
 
+  workbench/apm-trace-viewer: {}
+
   workbench/astro:
     dependencies:
       '@astrojs/node':
