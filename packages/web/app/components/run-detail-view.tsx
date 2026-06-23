@@ -6,6 +6,7 @@ import {
   EventListView,
   hydrateResourceIO,
   hydrateResourceIOWithKey,
+  Kbd,
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
@@ -206,6 +207,9 @@ type Tab = 'trace' | 'graph' | 'streams' | 'events';
 const STEP_SHORTCUT_HELPER_DISMISSALS_KEY =
   'workflow-step-shortcut-helper-dismissals';
 const STEP_SHORTCUT_HELPER_DISMISSAL_LIMIT = 3;
+const STEP_SHORTCUT_HELPER_ROTATION_MS = 8000;
+const STEP_SHORTCUT_KEY_CLASS_NAME =
+  'h-4 min-h-4 min-w-4 border border-gray-alpha-400 bg-background-100 px-1 text-[11px] font-medium leading-none text-gray-900';
 
 function readStepShortcutHelperDismissals() {
   try {
@@ -250,7 +254,7 @@ function StepShortcutHelperToast() {
 
     const intervalId = window.setInterval(() => {
       setActiveHintIndex((index) => index + 1);
-    }, 4000);
+    }, STEP_SHORTCUT_HELPER_ROTATION_MS);
 
     return () => window.clearInterval(intervalId);
   }, [visible]);
@@ -260,26 +264,20 @@ function StepShortcutHelperToast() {
   const activeHint = activeHintIndex % 2;
 
   return (
-    <div className="group absolute bottom-4 left-1/2 z-10 inline-flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-sm text-muted-foreground">
+    <div className="group absolute bottom-4 left-1/2 z-10 inline-flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-xs text-muted-foreground">
       <span className="whitespace-nowrap">
         {activeHint === 0 ? (
           <>
             Press{' '}
-            <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs font-medium text-foreground">
-              Alt
-            </kbd>{' '}
+            <Kbd className={STEP_SHORTCUT_KEY_CLASS_NAME}>Alt</Kbd>{' '}
             to see delta between steps
           </>
         ) : (
           <>
             Press{' '}
-            <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs font-medium text-foreground">
-              J
-            </kbd>
+            <Kbd className={STEP_SHORTCUT_KEY_CLASS_NAME}>J</Kbd>
             /
-            <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs font-medium text-foreground">
-              K
-            </kbd>{' '}
+            <Kbd className={STEP_SHORTCUT_KEY_CLASS_NAME}>K</Kbd>{' '}
             to navigate through steps
           </>
         )}
