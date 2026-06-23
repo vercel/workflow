@@ -2,4 +2,4 @@
 '@workflow/web-shared': patch
 ---
 
-Fix trace viewer lag when selecting/zooming a span. Timeline marker tooltips now share a single `ContextCardProvider` instead of each tick self-mounting its own portal/observer/listener, the detail panel and event list no longer re-render on every frame of the click-to-zoom animation, and the per-frame span-gap pass is skipped unless the Alt-key delta overlay is active.
+Fix the trace viewer click-to-zoom animation jumping/stuttering on large traces. The easing clock now starts on the first animation frame (so a heavy detail-panel mount can't make the zoom skip ahead), the panel opens as a low-priority transition so it doesn't block the animation, and the panel/event list/marker tooltips no longer do redundant work on every animation frame.

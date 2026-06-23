@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import {
   type ReactNode,
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -99,10 +100,19 @@ function useAnimatedViewport(initial: Viewport) {
       }
 
       const from = currentRef.current;
-      const anim = { raf: 0, from, to: target, start: performance.now() };
+      // Anchor the easing clock to the first delivered frame, not to call time.
+      // Selecting a span mounts the detail panel in the same tick, and on large
+      // production traces that synchronous render can delay the first animation
+      // frame by tens/hundreds of ms. With a call-time clock, that delay makes
+      // the zoom skip ahead — or jump straight to the end — which reads exactly
+      // like "the animation broke / reduced motion is on". Starting the clock on
+      // the first frame keeps the zoom smooth no matter how late it begins.
+      const anim = { raf: 0, from, to: target, start: 0 };
 
       const tick = () => {
-        const t = Math.min((performance.now() - anim.start) / 150, 1);
+        const now = performance.now();
+        if (anim.start === 0) anim.start = now;
+        const t = Math.min((now - anim.start) / 150, 1);
         const e = 1 - (1 - t) * (1 - t);
         setViewportState({
           start: anim.from.start + (anim.to.start - anim.from.start) * e,
@@ -420,8 +430,16 @@ function NewTraceViewerContent({
         clearActiveSpan();
         return;
       }
-      setActiveSpan(spanId);
+      // Start the zoom first (urgent), then open the detail panel as a
+      // low-priority transition. On large production traces the panel's first
+      // render is heavy; as an urgent update it blocks the animation's opening
+      // frames (the zoom then jumps instead of easing). As a transition, React
+      // keeps the rAF-driven viewport updates responsive and renders the panel
+      // without blocking them.
       focusViewportOnSpan(spanId);
+      startTransition(() => {
+        setActiveSpan(spanId);
+      });
     },
     [
       cancelPendingZoom,
