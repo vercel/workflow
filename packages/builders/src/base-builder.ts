@@ -10,6 +10,7 @@ import {
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { buildLogger } from '@workflow/core/logger';
 import { WorkflowBuildError } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import chalk from 'chalk';
@@ -86,39 +87,6 @@ function parseSourcemapEnv(
       );
       return undefined;
   }
-}
-
-function matchesDebugNamespace(
-  namespace: string,
-  patternList: string | undefined
-): boolean {
-  if (!patternList) {
-    return false;
-  }
-
-  let enabled = false;
-  for (const rawPattern of patternList.split(',')) {
-    const pattern = rawPattern.trim();
-    if (!pattern) {
-      continue;
-    }
-
-    const isNegated = pattern.startsWith('-');
-    const candidate = isNegated ? pattern.slice(1) : pattern;
-    const regex = new RegExp(
-      `^${candidate.replace(/[|\\{}()[\]^$+?.]/g, '\\$&').replace(/\*/g, '.*')}$`
-    );
-
-    if (regex.test(namespace)) {
-      enabled = !isNegated;
-    }
-  }
-
-  return enabled;
-}
-
-function isWorkflowBuildDebugEnabled(): boolean {
-  return matchesDebugNamespace('workflow:build', process.env.DEBUG);
 }
 
 function formatBuildDuration(durationMs: number): string {
@@ -271,18 +239,8 @@ export abstract class BaseBuilder {
     return this.config.moduleSpecifierRoot || this.transformProjectRoot;
   }
 
-  /**
-   * Whether detailed BaseBuilder progress logs should be printed.
-   * Subclasses can override this to silence progress logs while keeping warnings/errors.
-   */
-  protected get shouldLogBaseBuilderInfo(): boolean {
-    return isWorkflowBuildDebugEnabled();
-  }
-
   protected logBaseBuilderInfo(...args: unknown[]): void {
-    if (this.shouldLogBaseBuilderInfo) {
-      console.debug(...args);
-    }
+    buildLogger.debug(args.map(String).join(' '));
   }
 
   private startWorkflowBuildTimer(): void {

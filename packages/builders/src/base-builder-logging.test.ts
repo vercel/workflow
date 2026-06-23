@@ -65,7 +65,32 @@ describe('base builder logging', () => {
 
     createBuilder(testRoot).logProgress('Created step registrations', '10ms');
 
-    expect(debugSpy).toHaveBeenCalledWith('Created step registrations', '10ms');
+    expect(debugSpy).toHaveBeenCalledWith(
+      '[workflow:build] Created step registrations 10ms',
+      ''
+    );
+  });
+
+  it.each([
+    'workflow:*',
+    '*',
+  ])('shows progress logs when DEBUG wildcard %s matches workflow:build', (debugPattern) => {
+    vi.stubEnv('DEBUG', debugPattern);
+
+    createBuilder(testRoot).logProgress('Created step registrations', '10ms');
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      '[workflow:build] Created step registrations 10ms',
+      ''
+    );
+  });
+
+  it('hides progress logs when DEBUG negates workflow:build', () => {
+    vi.stubEnv('DEBUG', 'workflow:*,-workflow:build');
+
+    createBuilder(testRoot).logProgress('Created step registrations', '10ms');
+
+    expect(debugSpy).not.toHaveBeenCalled();
   });
 
   it('emits compact build and rebuild summaries when manifests are created', async () => {

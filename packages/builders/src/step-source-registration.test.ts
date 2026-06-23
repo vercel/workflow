@@ -17,10 +17,6 @@ class TestBuilder extends BaseBuilder {
     // no-op
   }
 
-  protected get shouldLogBaseBuilderInfo(): boolean {
-    return false;
-  }
-
   public createSourceStepRegistrations(
     inputFiles: string[],
     outfile: string,

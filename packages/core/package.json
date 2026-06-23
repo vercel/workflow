@@ -44,6 +44,10 @@
       "types": "./dist/runtime/helpers.d.ts",
       "default": "./dist/runtime/helpers.js"
     },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "default": "./dist/logger.js"
+    },
     "./runtime/resume-hook": {
       "types": "./dist/runtime/resume-hook.d.ts",
       "default": "./dist/runtime/resume-hook.js"
