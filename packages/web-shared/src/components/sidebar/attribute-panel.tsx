@@ -257,6 +257,7 @@ type AttributeKey =
   | keyof WorkflowRun
   | keyof Hook
   | keyof Event
+  | 'occurredAt'
   | 'moduleSpecifier'
   | 'eventData'
   | 'resumeAt'
@@ -289,6 +290,7 @@ const attributeOrder: AttributeKey[] = [
   'projectId',
   'environment',
   'executionContext',
+  'occurredAt',
   'createdAt',
   'startedAt',
   'updatedAt',
@@ -314,6 +316,7 @@ const sortByAttributeOrder = (a: string, b: string): number => {
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   workflowCoreVersion: '@workflow/core version',
+  occurredAt: 'Occurred',
   receivedCount: 'times resolved',
 };
 
@@ -423,6 +426,7 @@ const attributeToDisplayFn: Record<
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  occurredAt: timestampWithTooltipOrNull,
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
   updatedAt: timestampWithTooltipOrNull,
