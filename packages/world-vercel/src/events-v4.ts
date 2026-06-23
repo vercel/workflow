@@ -109,6 +109,8 @@ export interface CreateEventV4Input {
   specVersion: number;
   correlationId?: string;
   vercelId?: string;
+  /** Client-side time at which the event occurred. */
+  occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
   deploymentId?: string;
   workflowName?: string;
@@ -198,6 +200,7 @@ function buildPostFrameMeta(
   if (input.correlationId !== undefined)
     meta.correlationId = input.correlationId;
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
+  if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
   }
@@ -358,6 +361,7 @@ export interface DecodedV4Event {
   eventType: string;
   correlationId?: string;
   createdAt: Date | string;
+  occurredAt?: Date | string;
   specVersion?: number;
   eventData?: Record<string, unknown>;
 }

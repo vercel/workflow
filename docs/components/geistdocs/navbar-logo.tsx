@@ -9,7 +9,6 @@ import { LogoChatSdk } from '@/components/geistcn-fallbacks/geistcn-assets/logos
 import { LogoEve } from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-eve';
 import { LogoFlagsSdk } from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-flags-sdk';
 import { LogoIconVercel } from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-icon-vercel';
-import { LogoStreamdown } from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-streamdown';
 import { LogoVercelOss } from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-vercel-oss';
 import {
   NavigationMenu,
@@ -26,12 +25,11 @@ const OSS_PRODUCT_LINKS: {
   logo: ComponentType<{ height: number }>;
   height: number;
 }[] = [
-  { href: 'https://eve.dev/docs', logo: LogoEve, height: 18 },
+  { href: 'https://eve.dev/docs', logo: LogoEve, height: 12 },
   { href: 'https://ai-sdk.dev/', logo: LogoAiSdk, height: 12 },
   { href: 'https://flags-sdk.dev/', logo: LogoFlagsSdk, height: 20 },
   { href: 'https://chat-sdk.dev/', logo: LogoChatSdk, height: 20 },
   { href: 'https://elements.ai-sdk.dev/', logo: LogoAiElements, height: 12 },
-  { href: 'https://streamdown.ai/', logo: LogoStreamdown, height: 17 },
 ];
 
 type NavbarLogoProps = {

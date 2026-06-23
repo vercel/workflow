@@ -298,7 +298,7 @@ export function getWebRevivers(): Revivers {
 
     // Web-specific overrides for class instances.
     // Create objects with a dynamically-named constructor so that
-    // react-inspector shows the class name (it reads constructor.name).
+    // the data inspector shows the class name (it reads constructor.name).
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) => {
       // Run instances are rendered as clickable RunRef badges
@@ -311,7 +311,7 @@ export function getWebRevivers(): Revivers {
       const props =
         data && typeof data === 'object' ? { ...data } : { value: data };
       // Create a constructor with the right name using computed property
-      // so react-inspector's `object.constructor.name` shows the class name.
+      // so the data inspector's `object.constructor.name` shows the class name.
       // Must use `function` (not arrow) because arrow functions have no .prototype.
       // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
       const ctor = { [className]: function () {} }[className]!;

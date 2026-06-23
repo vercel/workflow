@@ -10,6 +10,7 @@ import {
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { buildLogger } from '@workflow/core/logger';
 import { WorkflowBuildError } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import chalk from 'chalk';
@@ -24,8 +25,8 @@ import {
 import { createWorkflowEntrypointOptionsCode } from './constants.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
-  fastDiscoverEntries,
   type DiscoveredEntries,
+  fastDiscoverEntries,
 } from './fast-discovery.js';
 import {
   getImportPath,
@@ -86,6 +87,14 @@ function parseSourcemapEnv(
       );
       return undefined;
   }
+}
+
+function formatBuildDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
 /**
@@ -215,6 +224,8 @@ export abstract class BaseBuilder {
    * to avoid duplicate warnings across multiple discoverEntries() calls.
    */
   private warnedExternalPackages = new Set<string>();
+  private workflowBuildStartTime: number | undefined;
+  private workflowBuildSummaryCount = 0;
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -228,18 +239,26 @@ export abstract class BaseBuilder {
     return this.config.moduleSpecifierRoot || this.transformProjectRoot;
   }
 
-  /**
-   * Whether informational BaseBuilder logs should be printed.
-   * Subclasses can override this to silence progress logs while keeping warnings/errors.
-   */
-  protected get shouldLogBaseBuilderInfo(): boolean {
-    return true;
+  protected logBaseBuilderInfo(...args: unknown[]): void {
+    buildLogger.debug(args.map(String).join(' '));
   }
 
-  protected logBaseBuilderInfo(...args: unknown[]): void {
-    if (this.shouldLogBaseBuilderInfo) {
-      console.log(...args);
-    }
+  private startWorkflowBuildTimer(): void {
+    this.workflowBuildStartTime = Date.now();
+  }
+
+  private getWorkflowBuildDuration(): number {
+    return Date.now() - (this.workflowBuildStartTime ?? Date.now());
+  }
+
+  private resetWorkflowBuildTimer(): void {
+    this.workflowBuildStartTime = undefined;
+  }
+
+  private getWorkflowBuildSummaryPrefix(): string {
+    return this.workflowBuildSummaryCount === 0
+      ? 'workflows build complete'
+      : 'workflows rebuilt';
   }
 
   private logCreateWorkflowsBundleInfo(...args: unknown[]): void {
@@ -1425,8 +1444,11 @@ export const __steps_registered = true;
         }
       }
 
-      const workflowEntrypointOptionsCode =
-        createWorkflowEntrypointOptionsCode();
+      const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
+        {
+          routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+        }
+      );
 
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
@@ -1435,6 +1457,7 @@ export const __steps_registered = true;
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
+const workflowRouteModuleBodyStartedAt = Date.now();
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
 export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
@@ -1564,6 +1587,8 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
   }> {
+    this.startWorkflowBuildTimer();
+
     // 1. Build step registrations bundle (used as separate file for
     // bundleFinalOutput: false, or read back for inline content when true)
     const { context: stepsContext, manifest: stepsManifest } =
@@ -1613,14 +1638,18 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     }
 
     // 3. Generate combined route file
-    const stepsRelativePath = './' + basename(stepsOutfile).replace(/\\/g, '/');
+    const stepsRelativePath = `./${basename(stepsOutfile).replace(/\\/g, '/')}`;
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
-    const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode();
+    const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
+      routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+    });
 
     const combinedFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
 import { workflowEntrypoint } from 'workflow/runtime';
+
+const workflowRouteModuleBodyStartedAt = Date.now();
 
 // Prevent rollup from tree-shaking the steps side-effect import
 void __steps_registered;
@@ -1685,12 +1714,17 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
     const combinedBundleFinal = async (interimBundleText: string) => {
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
-      const workflowEntrypointOptionsCode =
-        createWorkflowEntrypointOptionsCode();
+      const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
+        {
+          routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+        }
+      );
       const code = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
 import { workflowEntrypoint } from 'workflow/runtime';
+
+const workflowRouteModuleBodyStartedAt = Date.now();
 
 void __steps_registered;
 
@@ -2206,12 +2240,21 @@ export const OPTIONS = handler;`;
         `${Date.now() - buildStart}ms`
       );
 
+      if (!this.config.suppressCreateManifestLogs) {
+        console.log(
+          `${this.getWorkflowBuildSummaryPrefix()} (${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, time ${formatBuildDuration(this.getWorkflowBuildDuration())})`
+        );
+      }
+      this.workflowBuildSummaryCount += 1;
+      this.resetWorkflowBuildTimer();
+
       return manifestJson;
     } catch (error) {
       console.warn(
         'Failed to create manifest:',
         error instanceof Error ? error.message : String(error)
       );
+      this.resetWorkflowBuildTimer();
       return undefined;
     }
   }

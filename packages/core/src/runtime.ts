@@ -287,7 +287,7 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string }
+  options?: { namespace?: string; routeModuleBodyStartedAt?: number }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
@@ -461,7 +461,9 @@ export function workflowEntrypoint(
           return await withWorkflowBaggage(
             { workflowRunId: runId, workflowName },
             async () => {
-              const world = await getWorld();
+              const world = await trace('workflow.route.get_world', async () =>
+                getWorld()
+              );
               return trace(
                 `workflow.execute ${workflowDisplayName(workflowName)}`,
                 { kind: spanKind, links: spanLinks },
@@ -536,6 +538,7 @@ export function workflowEntrypoint(
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
                     !replayDivergence;
+                  span?.setAttributes(Attribute.WorkflowTurbo(turbo));
 
                   // Turbo mode only: resolves once the backgrounded
                   // `run_started` has landed (or rejects if it failed). Threaded
@@ -766,6 +769,13 @@ export function workflowEntrypoint(
                           }
                         : {}),
                     };
+                    const recordRunStartedCreateStart = (
+                      skipPreload: boolean
+                    ) => {
+                      span?.addEvent('workflow.run_started.create.start', {
+                        'workflow.run_started.skip_preload': skipPreload,
+                      });
+                    };
 
                     if (turbo && runInput) {
                       // Turbo: background `run_started` and synthesize the run
@@ -776,6 +786,7 @@ export function workflowEntrypoint(
                       // barrier is consumed by every downstream write (suspension
                       // handler, optimistic step_started, terminal run writes) so
                       // nothing is written before the run exists.
+                      recordRunStartedCreateStart(true);
                       const startedPromise = world.events.create(
                         runId,
                         runStartedEvent,
@@ -835,6 +846,7 @@ export function workflowEntrypoint(
                       });
                     } else {
                       try {
+                        recordRunStartedCreateStart(false);
                         const result = await world.events.create(
                           runId,
                           runStartedEvent,
@@ -2012,10 +2024,55 @@ export function workflowEntrypoint(
     );
 
   let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  let invocationCount = 0;
+  const entrypointCreatedAt = Date.now();
+  const routeModuleBodyInitMs =
+    typeof options?.routeModuleBodyStartedAt === 'number'
+      ? entrypointCreatedAt - options.routeModuleBodyStartedAt
+      : undefined;
+
   return withHealthCheck(async (req) => {
-    if (!cachedHandler) {
-      cachedHandler = handler(await getWorldHandlers());
-    }
-    return cachedHandler(req);
+    invocationCount += 1;
+    const handlerCached = cachedHandler !== undefined;
+    const spanKind = await getSpanKind('SERVER');
+
+    return trace(
+      'workflow.route.flow',
+      {
+        kind: spanKind,
+        attributes: {
+          ...Attribute.WorkflowRouteType('flow'),
+          ...Attribute.WorkflowRouteHandlerCached(handlerCached),
+          ...Attribute.WorkflowRouteInvocationCount(invocationCount),
+          ...Attribute.WorkflowRouteEntrypointAgeMs(
+            Date.now() - entrypointCreatedAt
+          ),
+          ...(routeModuleBodyInitMs === undefined
+            ? {}
+            : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
+          ...Attribute.HttpRequestMethod(req.method),
+          ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+        },
+      },
+      async (span) => {
+        if (!cachedHandler) {
+          cachedHandler = await trace('workflow.route.init', async () => {
+            const worldHandlers = await trace(
+              'workflow.route.get_world_handlers',
+              async () => getWorldHandlers()
+            );
+            return handler(worldHandlers);
+          });
+        }
+
+        const response = await cachedHandler(req);
+        if (response instanceof Response) {
+          span?.setAttributes(
+            Attribute.HttpResponseStatusCode(response.status)
+          );
+        }
+        return response;
+      }
+    );
   });
 }

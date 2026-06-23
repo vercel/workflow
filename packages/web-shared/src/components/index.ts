@@ -33,6 +33,7 @@ export {
 } from './ui/data-inspector';
 export { DecryptButton } from './ui/decrypt-button';
 export { IconButton } from './ui/icon-button';
+export { Kbd } from './ui/kbd';
 export { LoadMoreButton } from './ui/load-more-button';
 export { MenuDropdown, type MenuDropdownOption } from './ui/menu-dropdown';
 export { Spinner } from './ui/spinner';

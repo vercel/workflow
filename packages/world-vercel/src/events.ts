@@ -433,6 +433,14 @@ function buildEventFromV4(
       decoded.createdAt instanceof Date
         ? decoded.createdAt
         : new Date(decoded.createdAt),
+    ...(decoded.occurredAt !== undefined
+      ? {
+          occurredAt:
+            decoded.occurredAt instanceof Date
+              ? decoded.occurredAt
+              : new Date(decoded.occurredAt),
+        }
+      : {}),
     ...(decoded.correlationId ? { correlationId: decoded.correlationId } : {}),
     eventData,
     ...(decoded.specVersion !== undefined
@@ -598,6 +606,7 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before
       // this write so the server can return the authoritative event-log
       // delta on the response (events/cursor/hasMore), letting the inline
