@@ -220,9 +220,10 @@ export default {
         typeof dashboardOption === 'object'
           ? (dashboardOption.enabled ?? nitro.options.dev)
           : (dashboardOption ?? nitro.options.dev);
-      const dashboardPath =
+      const dashboardPath = normalizeDashboardPath(
         (typeof dashboardOption === 'object' && dashboardOption.path) ||
-        '/_workflow';
+          DEFAULT_DASHBOARD_PATH
+      );
       if (dashboardEnabled && !isVercelDeploy) {
         addDashboardHandler(nitro, dashboardPath);
       }
@@ -306,6 +307,23 @@ export default {
 } satisfies NitroModule;
 
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
+const DEFAULT_DASHBOARD_PATH = '/_workflow';
+
+/**
+ * Normalize the dashboard mount path so the Nitro route registration and the
+ * embedded handler's own basename normalization can't disagree.
+ *
+ * `dashboardPath` feeds two consumers: the Nitro route registration
+ * (`[path, path + '/**']`) and the handler's `basename` (which re-normalizes
+ * internally via `normalizeBasename`). Normalizing once, here, keeps them in
+ * sync. We force a single leading slash, strip trailing slashes, and reject
+ * the root mount (whose `/**` catch-all would swallow the host app), falling
+ * back to the default.
+ */
+function normalizeDashboardPath(path: string): string {
+  const normalized = `/${path.trim().replace(/^\/+/, '').replace(/\/+$/, '')}`;
+  return normalized === '/' ? DEFAULT_DASHBOARD_PATH : normalized;
+}
 
 /**
  * Mount the observability dashboard in-process at `basename` (e.g. `/_workflow`).
@@ -349,7 +367,7 @@ function addDashboardHandler(nitro: Nitro, basename: string) {
     }
   `;
 
-  if (!nitro.routing) {
+  if (isNitroV2(nitro)) {
     // Nitro v2 (legacy h3)
     nitro.options.virtual[DASHBOARD_VIRTUAL_ID] = /* js */ `
       import { fromWebHandler } from "h3";
@@ -402,7 +420,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
     // This keeps `.nitro/workflow/*.mjs` out of Nitro's own bundle graph,
     // which avoids rebuild loops and stale dependency graphs during HMR.
     // Cache-bust by file mtime so each successful rebuild loads fresh code.
-    if (!nitro.routing) {
+    if (isNitroV2(nitro)) {
       nitro.options.virtual[`#${buildPath}`] = /* js */ `
       import { fromWebHandler } from "h3";
       import { statSync } from "node:fs";
@@ -463,7 +481,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
   // step bundle's top-level registrations, so the handler loaded but steps
   // were missing at runtime.
 
-  if (!nitro.routing) {
+  if (isNitroV2(nitro)) {
     // Nitro v2 (legacy)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import ${handlerImportPath};
@@ -502,7 +520,7 @@ function addManifestHandler(nitro: Nitro) {
     // Dev mode: use a virtual handler that reads the manifest from disk at
     // request time. The absolute path is valid because we're on the build machine.
     nitro.options.handlers.push({ route, handler: MANIFEST_VIRTUAL_ID });
-    nitro.options.virtual[MANIFEST_VIRTUAL_ID] = !nitro.routing
+    nitro.options.virtual[MANIFEST_VIRTUAL_ID] = isNitroV2(nitro)
       ? /* js */ `
       import { fromWebHandler } from "h3";
       import { readFileSync } from "node:fs";
@@ -557,7 +575,7 @@ function writeManifestHandler(nitro: Nitro) {
     const manifestContent = readFileSync(manifestPath, 'utf-8');
     JSON.parse(manifestContent); // validate
 
-    const handlerCode = !nitro.routing
+    const handlerCode = isNitroV2(nitro)
       ? `import { fromWebHandler } from "h3";
 const manifest = ${JSON.stringify(manifestContent)};
 export default fromWebHandler(() => new Response(manifest, {
@@ -572,7 +590,7 @@ export default async () => new Response(manifest, {
     writeFileSync(handlerPath, handlerCode);
   } catch {
     // Write a 404 fallback handler
-    const fallback = !nitro.routing
+    const fallback = isNitroV2(nitro)
       ? `import { fromWebHandler } from "h3";
 export default fromWebHandler(() => new Response("Manifest not found", { status: 404 }));
 `
