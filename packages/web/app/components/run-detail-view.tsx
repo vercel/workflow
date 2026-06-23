@@ -240,7 +240,7 @@ function StepShortcutHint({ hint }: { hint: number }) {
       <Kbd variant="outline" size="compact">
         J
       </Kbd>
-      /
+      {' / '}
       <Kbd variant="outline" size="compact">
         K
       </Kbd>{' '}
@@ -251,8 +251,9 @@ function StepShortcutHint({ hint }: { hint: number }) {
 
 function StepShortcutHelperToast() {
   const [visible, setVisible] = useState(false);
-  const [activeHintIndex, setActiveHintIndex] = useState(0);
-  const [exitingHint, setExitingHint] = useState<number | null>(null);
+  const [activeHint, setActiveHint] = useState(0);
+  const [previousHint, setPreviousHint] = useState<number | null>(null);
+  const [hintAnimating, setHintAnimating] = useState(false);
   const [dismissing, setDismissing] = useState(false);
 
   useEffect(() => {
@@ -285,46 +286,58 @@ function StepShortcutHelperToast() {
   useEffect(() => {
     if (!visible || dismissing) return;
 
-    const activeHint = activeHintIndex % 2;
     const timeoutId = window.setTimeout(() => {
-      setExitingHint(activeHint);
-      setActiveHintIndex((index) => index + 1);
+      setPreviousHint(activeHint);
+      setActiveHint(activeHint === 0 ? 1 : 0);
     }, STEP_SHORTCUT_HELPER_ROTATION_MS);
 
     return () => window.clearTimeout(timeoutId);
-  }, [activeHintIndex, dismissing, visible]);
+  }, [activeHint, dismissing, visible]);
 
   useEffect(() => {
-    if (exitingHint === null) return;
+    if (previousHint === null) return;
 
+    setHintAnimating(false);
+    const animationFrameId = window.requestAnimationFrame(() => {
+      setHintAnimating(true);
+    });
     const timeoutId = window.setTimeout(() => {
-      setExitingHint(null);
+      setPreviousHint(null);
+      setHintAnimating(false);
     }, STEP_SHORTCUT_HELPER_ANIMATION_MS);
 
-    return () => window.clearTimeout(timeoutId);
-  }, [exitingHint]);
+    return () => {
+      window.cancelAnimationFrame(animationFrameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [previousHint]);
 
   if (!visible) return null;
 
-  const activeHint = activeHintIndex % 2;
-
   return (
     <div
-      className={`group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-xs leading-none text-muted-foreground motion-reduce:animate-none ${
+      className={`group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-xs leading-none text-muted-foreground transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
         dismissing
-          ? 'animate-out fade-out slide-out-to-top-1 duration-150 ease-out'
-          : 'animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out'
+          ? '-translate-y-1 opacity-0'
+          : 'translate-y-0 opacity-100'
       }`}
     >
-      <span className="grid items-center whitespace-nowrap">
-        {exitingHint !== null ? (
-          <span className="col-start-1 row-start-1 inline-flex items-center animate-out fade-out slide-out-to-top-1 duration-150 ease-out motion-reduce:animate-none">
-            <StepShortcutHint hint={exitingHint} />
+      <span className="relative grid items-center overflow-hidden whitespace-nowrap">
+        {previousHint !== null ? (
+          <span
+            className={`col-start-1 row-start-1 inline-flex items-center transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
+              hintAnimating ? '-translate-y-1 opacity-0' : 'translate-y-0 opacity-100'
+            }`}
+          >
+            <StepShortcutHint hint={previousHint} />
           </span>
         ) : null}
         <span
-          key={activeHintIndex}
-          className="col-start-1 row-start-1 inline-flex items-center animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out motion-reduce:animate-none"
+          className={`col-start-1 row-start-1 inline-flex items-center transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
+            previousHint !== null && !hintAnimating
+              ? 'translate-y-1 opacity-0'
+              : 'translate-y-0 opacity-100'
+          }`}
         >
           <StepShortcutHint hint={activeHint} />
         </span>
