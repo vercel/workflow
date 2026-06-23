@@ -103,6 +103,58 @@ export function RunAttributesCard({
   );
 }
 
+function formatMetadataValue(value: unknown): string {
+  if (value == null) {
+    return String(value);
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function isMetadataRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Collapsible section showing hook (or other resource) metadata as key-value
+ * rows, matching the Attributes section styling.
+ */
+export function RunMetadataCard({ metadata }: { metadata: unknown }) {
+  if (!isMetadataRecord(metadata)) {
+    return (
+      <DetailCard summary="Metadata" defaultOpen contentClassName="mb-4">
+        <CopyableDataBlock data={metadata} />
+      </DetailCard>
+    );
+  }
+
+  const keys = Object.keys(metadata).sort((a, b) => a.localeCompare(b));
+  if (keys.length === 0) return null;
+
+  return (
+    <DetailCard summary="Metadata" defaultOpen contentClassName="mb-4">
+      <div className="flex flex-col">
+        {keys.map((key) => (
+          <AttributeRow
+            attributeKey={key}
+            key={key}
+            value={formatMetadataValue(metadata[key])}
+          />
+        ))}
+      </div>
+    </DetailCard>
+  );
+}
+
 interface AttrSetEventData {
   changes: AttributeChange[];
   writer?:

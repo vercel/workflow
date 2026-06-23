@@ -20,7 +20,7 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
-import { RunAttributesCard } from './attributes-block';
+import { RunAttributesCard, RunMetadataCard } from './attributes-block';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -431,9 +431,21 @@ const attributeToDisplayFn: Record<
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedDataBlock />;
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return JsonBlock(value);
+    if (isEncryptedMarker(value)) {
+      return (
+        <DetailCard summary="Metadata">
+          <EncryptedDataBlock />
+        </DetailCard>
+      );
+    }
+    if (isExpiredMarker(value)) {
+      return (
+        <DetailCard summary="Metadata">
+          <ExpiredFieldBlock />
+        </DetailCard>
+      );
+    }
+    return <RunMetadataCard metadata={value} />;
   },
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
@@ -597,6 +609,7 @@ const selfHeaderedAttributes = new Set([
   'input',
   'output',
   'error',
+  'metadata',
   'attributes',
   'eventData',
 ]);
