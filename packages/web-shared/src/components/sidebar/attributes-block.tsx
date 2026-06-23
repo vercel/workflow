@@ -4,6 +4,9 @@ import {
   type AttributeChange,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
 } from '@workflow/world';
+import type { ReactNode } from 'react';
+import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
@@ -30,6 +33,63 @@ function ReservedBadge() {
   );
 }
 
+export function DetailKeyValueRow({
+  label,
+  value,
+  copyText,
+  removed = false,
+  showReservedBadge = false,
+}: {
+  label: string;
+  value?: ReactNode;
+  copyText?: string;
+  removed?: boolean;
+  showReservedBadge?: boolean;
+}) {
+  const reserved = showReservedBadge && isReservedAttributeKey(label);
+  const stringValue = typeof value === 'string' ? value : undefined;
+
+  return (
+    <div className="flex items-center justify-between gap-3 py-0.5">
+      <span
+        className="flex min-w-0 items-center gap-1.5 text-label-13 text-gray-900"
+        style={reserved ? { color: 'var(--ds-gray-700)' } : undefined}
+      >
+        <span className="truncate">{label}</span>
+        {reserved && <ReservedBadge />}
+      </span>
+      {removed ? (
+        <span className="shrink-0 text-copy-13 italic text-gray-700">
+          removed
+        </span>
+      ) : copyText ? (
+        <div
+          className="flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000"
+          title={copyText}
+        >
+          <MiddleTruncate
+            value={copyText}
+            className="text-right"
+            style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
+          />
+          <CopyButton
+            copyText={copyText}
+            ariaLabel={`Copy ${label}`}
+            className="shrink-0 -mr-1"
+          />
+        </div>
+      ) : (
+        <span
+          className="max-w-[60%] truncate text-right text-copy-13 text-gray-1000"
+          title={stringValue}
+        >
+          {value}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AttributeRow({
   attributeKey,
   value,
@@ -39,29 +99,13 @@ function AttributeRow({
   value?: string;
   removed?: boolean;
 }) {
-  const reserved = isReservedAttributeKey(attributeKey);
   return (
-    <div className="flex items-center justify-between gap-3 py-0.5">
-      <span
-        className="flex min-w-0 items-center gap-1.5 text-label-13 text-gray-900"
-        style={reserved ? { color: 'var(--ds-gray-700)' } : undefined}
-      >
-        <span className="truncate">{attributeKey}</span>
-        {reserved && <ReservedBadge />}
-      </span>
-      {removed ? (
-        <span className="shrink-0 text-copy-13 italic text-gray-700">
-          removed
-        </span>
-      ) : (
-        <span
-          className="max-w-[60%] truncate text-copy-13 text-gray-1000"
-          title={value}
-        >
-          {value}
-        </span>
-      )}
-    </div>
+    <DetailKeyValueRow
+      label={attributeKey}
+      value={value}
+      removed={removed}
+      showReservedBadge
+    />
   );
 }
 

@@ -8,8 +8,6 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
-import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import { ContextCardProvider } from '../ui/context-card';
 import {
   DecryptClickContext,
@@ -20,7 +18,11 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
-import { RunAttributesCard, RunMetadataCard } from './attributes-block';
+import {
+  DetailKeyValueRow,
+  RunAttributesCard,
+  RunMetadataCard,
+} from './attributes-block';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -850,7 +852,7 @@ export const AttributePanel = ({
         <StreamClickContext.Provider value={onStreamClick}>
           <DecryptClickContext.Provider value={decryptValue}>
             {visibleBasicAttributes.length > 0 && (
-              <div className="flex flex-col overflow-hidden divide-y divide-gray-alpha-400 mb-3">
+              <div className="mb-3 flex flex-col">
                 {orderedBasicAttributes.map((attribute) => {
                   const displayValue = attributeToDisplayFn[
                     attribute as keyof typeof attributeToDisplayFn
@@ -858,50 +860,23 @@ export const AttributePanel = ({
                   const isCopyableBasicAttribute =
                     copyableBasicAttributes.has(attribute as AttributeKey) &&
                     typeof displayValue === 'string';
+                  const label = getAttributeDisplayName(attribute);
 
                   return (
-                    <div
-                      className="flex items-center justify-between py-2"
+                    <DetailKeyValueRow
                       key={attribute}
-                    >
-                      <span className="text-label-14 text-gray-900">
-                        {getAttributeDisplayName(attribute)}
-                      </span>
-                      {isCopyableBasicAttribute ? (
-                        <div
-                          className="flex min-w-0 max-w-[70%] items-center justify-end gap-1 text-[13px] font-mono text-gray-1000"
-                          title={displayValue}
-                        >
-                          <MiddleTruncate
-                            value={displayValue}
-                            className="text-right"
-                            style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
-                          />
-                          <CopyButton
-                            copyText={displayValue}
-                            ariaLabel={`Copy ${getAttributeDisplayName(attribute)}`}
-                            className="shrink-0 -mr-1"
-                          />
-                        </div>
-                      ) : (
-                        <span className="text-right text-label-13 font-mono">
-                          {displayValue}
-                        </span>
-                      )}
-                    </div>
+                      label={label}
+                      value={displayValue}
+                      copyText={
+                        isCopyableBasicAttribute ? displayValue : undefined
+                      }
+                    />
                   );
                 })}
                 {isLoading && resource === 'sleep' && !displayData.resumeAt && (
-                  <div className="py-1">
-                    <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                      <span
-                        className="text-[14px] first-letter:uppercase"
-                        style={{ color: 'var(--ds-gray-700)' }}
-                      >
-                        resumeAt
-                      </span>
-                      <Skeleton className="h-4 w-[55%]" />
-                    </div>
+                  <div className="flex items-center justify-between gap-3 py-0.5">
+                    <span className="text-label-13 text-gray-900">Resume</span>
+                    <Skeleton className="h-4 w-[55%]" />
                   </div>
                 )}
               </div>
