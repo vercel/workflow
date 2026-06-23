@@ -18,7 +18,7 @@ export function DetailCard({
   onToggle?: (open: boolean) => void;
   disabled?: boolean;
   defaultOpen?: boolean;
-  variant?: 'section' | 'card';
+  variant?: 'section' | 'card' | 'contained';
   trailing?: ReactNode;
   summaryClassName?: string;
   contentClassName?: string;
@@ -83,6 +83,34 @@ export function DetailCard({
   // what's in the trailing slot.
   const rowClasses =
     'flex h-9 items-center gap-2 px-2 -mx-2 text-heading-14 font-medium my-2';
+
+  const containedSummaryClasses =
+    'group/trigger list-none text-heading-14 font-medium bg-background-100 hover:bg-gray-100 py-2 w-[calc(100%+16px)] text-left flex justify-between items-center group z-[5] cursor-pointer rounded-md -mx-2 px-2 [&::-webkit-details-marker]:hidden';
+
+  if (variant === 'contained') {
+    return (
+      <section className="py-2">
+        <details className="group" open={open} onToggle={handleToggle}>
+          <summary className={cn(containedSummaryClasses, summaryClassName)}>
+            <span className="flex min-w-0 items-center gap-2">
+              <div className="isolate relative shrink-0 text-gray-700 group-hover/trigger:text-gray-1000 w-3.5 h-3.5">
+                <ChevronRight
+                  size={14}
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-100 group-open:opacity-0"
+                />
+                <ChevronDown
+                  size={14}
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-open:opacity-100"
+                />
+              </div>
+              <span className="min-w-0 flex-1">{summary}</span>
+            </span>
+          </summary>
+          <div className={contentClassName}>{children}</div>
+        </details>
+      </section>
+    );
+  }
 
   if (trailing) {
     return (
