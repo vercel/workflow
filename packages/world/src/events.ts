@@ -414,6 +414,7 @@ export const EventSchema = AllEventsSchema.and(
     runId: z.string(),
     eventId: z.string(),
     createdAt: z.coerce.date(),
+    occurredAt: z.coerce.date().optional(),
     specVersion: z.number().optional(),
   })
 );
@@ -449,6 +450,12 @@ export interface CreateEventParams {
   resolveData?: ResolveData;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
+  /**
+   * Timestamp for when the event occurred on the client side. Worlds that
+   * support this can persist it separately from `createdAt`, which represents
+   * when the backing service accepted or stored the event.
+   */
+  occurredAt?: Date;
   /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
