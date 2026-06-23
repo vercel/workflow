@@ -23,6 +23,7 @@ import type {
   OffscreenMarkers,
   Segment,
   SegmentStatus,
+  SpanGap,
   TimeMarker,
 } from '../utils';
 import {
@@ -49,6 +50,9 @@ import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 const TINY_BAR_BOX_SIZE_PX = 24;
 const TINY_BAR_WIDTH_PX = 4;
 export const TIMELINE_PADDING_PX = 16;
+
+/** Stable empty reference so the gaps memo doesn't churn when Alt isn't held. */
+const EMPTY_GAPS: SpanGap[] = [];
 
 const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   queued: 'bg-gray-400 border border-gray-500',
@@ -669,9 +673,13 @@ export function Timeline({
     return () => ro.disconnect();
   }, []);
 
+  // Only needed for the Alt-key delta overlay. Gating on `altHeld` keeps this
+  // O(spans) pass off the zoom/pan animation path — `viewStart`/`viewEnd` change
+  // on every frame, so without the guard this recomputes over the whole trace
+  // each frame even though nothing consumes it unless Alt is held.
   const gaps = useMemo(
-    () => computeSpanGaps(spans, viewStart, viewEnd),
-    [spans, viewStart, viewEnd]
+    () => (altHeld ? computeSpanGaps(spans, viewStart, viewEnd) : EMPTY_GAPS),
+    [altHeld, spans, viewStart, viewEnd]
   );
 
   return (
