@@ -16,7 +16,6 @@ import {
   AlertCircle,
   GitBranch,
   HelpCircle,
-  Keyboard,
   List,
   Loader2,
   Lock,
@@ -221,6 +220,7 @@ function readStepShortcutHelperDismissals() {
 
 function StepShortcutHelperToast() {
   const [visible, setVisible] = useState(false);
+  const [activeHintIndex, setActiveHintIndex] = useState(0);
 
   useEffect(() => {
     const dismissals = readStepShortcutHelperDismissals();
@@ -245,28 +245,53 @@ function StepShortcutHelperToast() {
     setVisible(false);
   }, []);
 
+  useEffect(() => {
+    if (!visible) return;
+
+    const intervalId = window.setInterval(() => {
+      setActiveHintIndex((index) => index + 1);
+    }, 4000);
+
+    return () => window.clearInterval(intervalId);
+  }, [visible]);
+
   if (!visible) return null;
 
+  const activeHint = activeHintIndex % 2;
+
   return (
-    <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-lg border bg-background px-4 py-3 text-sm shadow-lg">
-      <div className="flex items-start gap-3">
-        <Keyboard className="mt-0.5 h-4 w-4 text-muted-foreground" />
-        <div className="space-y-1">
-          <div className="font-medium">Step shortcuts</div>
-          <div className="text-muted-foreground">
-            Press Alt to see the delta between steps. Press J/K to navigate
-            through steps.
-          </div>
-        </div>
-        <button
-          type="button"
-          className="-mr-1 -mt-1 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-          onClick={dismiss}
-          aria-label="Dismiss step shortcuts helper"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
+    <div className="group absolute bottom-4 left-1/2 z-10 inline-flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-sm text-muted-foreground">
+      <span className="whitespace-nowrap">
+        {activeHint === 0 ? (
+          <>
+            Press{' '}
+            <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs font-medium text-foreground">
+              Alt
+            </kbd>{' '}
+            to see delta between steps
+          </>
+        ) : (
+          <>
+            Press{' '}
+            <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs font-medium text-foreground">
+              J
+            </kbd>
+            /
+            <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs font-medium text-foreground">
+              K
+            </kbd>{' '}
+            to navigate through steps
+          </>
+        )}
+      </span>
+      <button
+        type="button"
+        className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={dismiss}
+        aria-label="Dismiss step shortcuts helper"
+      >
+        <X className="h-3 w-3" />
+      </button>
     </div>
   );
 }
