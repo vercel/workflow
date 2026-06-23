@@ -7,6 +7,7 @@ import styles from './trace-shortcut-helper.module.css';
 
 const DISMISSALS_KEY = 'workflow-step-shortcut-helper-dismissals';
 const DISMISSAL_LIMIT = 3;
+const HINT_ROTATION_MS = 8000;
 
 function getAltKeyLabel(): 'Alt' | 'Option' {
   if (typeof navigator === 'undefined') return 'Alt';
@@ -32,7 +33,7 @@ function AltHint() {
       <Kbd variant="outline" size="compact" className="mx-1">
         {getAltKeyLabel()}
       </Kbd>
-      to show span deltas
+      to see delta between spans
     </>
   );
 }
@@ -63,10 +64,24 @@ export function TraceShortcutHelper({
   // Start hidden so SSR markup matches the first client render, then reveal
   // once we can read the persisted dismissal count.
   const [visible, setVisible] = useState(false);
+  // Index of the hint currently shown (0 = Alt hint, 1 = J/K hint). Only one
+  // hint is in the DOM at a time so the container width tracks the visible
+  // text and the dismiss button always hugs it.
+  const [index, setIndex] = useState(0);
 
   useEffect(() => {
     setVisible(readDismissals() < DISMISSAL_LIMIT);
   }, []);
+
+  // Rotate between the two hints. The interval lives here (not tied to props)
+  // so parent re-renders from trace-viewer interactions never restart it.
+  useEffect(() => {
+    if (reducedMotion) return;
+    const id = setInterval(() => {
+      setIndex((i) => (i === 0 ? 1 : 0));
+    }, HINT_ROTATION_MS);
+    return () => clearInterval(id);
+  }, [reducedMotion]);
 
   if (!visible || !hasMultipleSpans) return null;
 
@@ -80,32 +95,24 @@ export function TraceShortcutHelper({
   };
 
   return (
-    <div className="group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1 text-xs leading-none text-muted-foreground">
+    <div className="group absolute bottom-3 left-1/2 z-10 hidden h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1 text-xs leading-none text-muted-foreground md:inline-flex">
       <span
         aria-live="polite"
         aria-atomic="true"
-        className={
-          reducedMotion
-            ? 'inline-flex items-center whitespace-nowrap'
-            : `${styles.stack} whitespace-nowrap`
-        }
+        className="inline-flex items-center whitespace-nowrap"
       >
         {reducedMotion ? (
           <AltHint />
         ) : (
-          // Both hints are always rendered with stable classes so the CSS
-          // crossfade keeps running uninterrupted across trace-viewer
-          // interactions and never restarts.
-          <>
-            <span className={`inline-flex items-center ${styles.hint}`}>
-              <AltHint />
-            </span>
-            <span
-              className={`inline-flex items-center ${styles.hint} ${styles.hintDelayed}`}
-            >
-              <NavHint />
-            </span>
-          </>
+          // Keying by index remounts the node on each rotation so the CSS
+          // fade-in plays. Only one hint is ever in the DOM, so the width
+          // matches the visible text and the dismiss button hugs it.
+          <span
+            key={index}
+            className={`inline-flex items-center ${styles.hint}`}
+          >
+            {index === 0 ? <AltHint /> : <NavHint />}
+          </span>
         )}
       </span>
       <button
