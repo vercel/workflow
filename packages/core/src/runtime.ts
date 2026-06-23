@@ -994,7 +994,16 @@ export function workflowEntrypoint(
                   // queues steps through the same combined route — so step
                   // messages (incomingStepId) still hit executeStep above on
                   // re-entry. Return immediately after dispatch.
-                  if (useQuickJSRuntime(workflowRun)) {
+                  // Resolve the effective runtime for THIS invocation (reads the
+                  // loaded run's executionContext, so it's authoritative on
+                  // resumes too) and record it on the span for both paths.
+                  const usingQuickJS = useQuickJSRuntime(workflowRun);
+                  span?.setAttributes(
+                    Attribute.WorkflowRuntime(
+                      usingQuickJS ? 'quickjs' : 'node-vm'
+                    )
+                  );
+                  if (usingQuickJS) {
                     // Dynamically import so the QuickJS entrypoint (and its
                     // multi-MB embedded WASM assets + quickjs-wasi) is only
                     // loaded when the QuickJS runtime is actually selected —

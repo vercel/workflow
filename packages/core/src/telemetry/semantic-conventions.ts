@@ -59,6 +59,11 @@ export const WorkflowOperation = SemanticConvention<
   'start' | 'execute' | 'execute_v2' | 'run'
 >('workflow.operation');
 
+/** Which runtime executed the workflow orchestrator: node:vm or QuickJS WASM */
+export const WorkflowRuntime = SemanticConvention<'node-vm' | 'quickjs'>(
+  'workflow.runtime'
+);
+
 /** Unique identifier for a specific workflow run instance */
 export const WorkflowRunId = SemanticConvention<string>('workflow.run.id');
 
