@@ -16,11 +16,13 @@ import {
   AlertCircle,
   GitBranch,
   HelpCircle,
+  Keyboard,
   List,
   Loader2,
   Lock,
+  X,
 } from 'lucide-react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
@@ -201,6 +203,73 @@ interface RunDetailViewProps {
 }
 
 type Tab = 'trace' | 'graph' | 'streams' | 'events';
+
+const STEP_SHORTCUT_HELPER_DISMISSALS_KEY =
+  'workflow-step-shortcut-helper-dismissals';
+const STEP_SHORTCUT_HELPER_DISMISSAL_LIMIT = 3;
+
+function readStepShortcutHelperDismissals() {
+  try {
+    return Number.parseInt(
+      window.localStorage.getItem(STEP_SHORTCUT_HELPER_DISMISSALS_KEY) ?? '0',
+      10
+    );
+  } catch {
+    return 0;
+  }
+}
+
+function StepShortcutHelperToast() {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const dismissals = readStepShortcutHelperDismissals();
+    setVisible(
+      Number.isNaN(dismissals) ||
+        dismissals < STEP_SHORTCUT_HELPER_DISMISSAL_LIMIT
+    );
+  }, []);
+
+  const dismiss = useCallback(() => {
+    const currentDismissals = readStepShortcutHelperDismissals();
+    const nextDismissals =
+      (Number.isNaN(currentDismissals) ? 0 : currentDismissals) + 1;
+    try {
+      window.localStorage.setItem(
+        STEP_SHORTCUT_HELPER_DISMISSALS_KEY,
+        String(nextDismissals)
+      );
+    } catch {
+      // The toast can still be dismissed for this render if storage is blocked.
+    }
+    setVisible(false);
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-lg border bg-background px-4 py-3 text-sm shadow-lg">
+      <div className="flex items-start gap-3">
+        <Keyboard className="mt-0.5 h-4 w-4 text-muted-foreground" />
+        <div className="space-y-1">
+          <div className="font-medium">Step shortcuts</div>
+          <div className="text-muted-foreground">
+            Press Alt to see the delta between steps. Press J/K to navigate
+            through steps.
+          </div>
+        </div>
+        <button
+          type="button"
+          className="-mr-1 -mt-1 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          onClick={dismiss}
+          aria-label="Dismiss step shortcuts helper"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function RunDetailView({
   runId,
@@ -784,7 +853,7 @@ export function RunDetailView({
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load trace viewer">
-                <div className="h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
                   <NewTraceViewer
                     run={run}
                     events={allEvents ?? []}
@@ -794,6 +863,7 @@ export function RunDetailView({
                     hasMore={hasMoreTraceData}
                     isLoadingMore={isLoadingMoreTraceData}
                   />
+                  <StepShortcutHelperToast />
                 </div>
               </ErrorBoundary>
             </TabsContent>
