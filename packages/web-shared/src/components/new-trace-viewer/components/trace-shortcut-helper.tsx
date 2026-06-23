@@ -1,0 +1,121 @@
+'use client';
+
+import { X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Kbd } from '../../ui/kbd';
+import styles from './trace-shortcut-helper.module.css';
+
+const DISMISSALS_KEY = 'workflow-step-shortcut-helper-dismissals';
+const DISMISSAL_LIMIT = 3;
+
+function getAltKeyLabel(): 'Alt' | 'Option' {
+  if (typeof navigator === 'undefined') return 'Alt';
+  return navigator.platform.toLowerCase().includes('mac') ? 'Option' : 'Alt';
+}
+
+function readDismissals(): number {
+  try {
+    const dismissals = Number.parseInt(
+      window.localStorage.getItem(DISMISSALS_KEY) ?? '0',
+      10
+    );
+    return Number.isNaN(dismissals) ? 0 : dismissals;
+  } catch {
+    return 0;
+  }
+}
+
+function AltHint() {
+  return (
+    <>
+      Hold
+      <Kbd variant="outline" size="compact" className="mx-1">
+        {getAltKeyLabel()}
+      </Kbd>
+      to show span deltas
+    </>
+  );
+}
+
+function NavHint() {
+  return (
+    <>
+      Use
+      <Kbd variant="outline" size="compact" className="ml-1">
+        J
+      </Kbd>
+      <span className="mx-1">/</span>
+      <Kbd variant="outline" size="compact" className="mr-1">
+        K
+      </Kbd>
+      to move between spans
+    </>
+  );
+}
+
+export function TraceShortcutHelper({
+  hasMultipleSpans,
+  reducedMotion,
+}: {
+  hasMultipleSpans: boolean;
+  reducedMotion: boolean;
+}) {
+  // Start hidden so SSR markup matches the first client render, then reveal
+  // once we can read the persisted dismissal count.
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    setVisible(readDismissals() < DISMISSAL_LIMIT);
+  }, []);
+
+  if (!visible || !hasMultipleSpans) return null;
+
+  const dismiss = () => {
+    try {
+      window.localStorage.setItem(DISMISSALS_KEY, String(readDismissals() + 1));
+    } catch {
+      // Ignore storage failures — dismissal just won't persist.
+    }
+    setVisible(false);
+  };
+
+  return (
+    <div className="group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1 text-xs leading-none text-muted-foreground">
+      <span
+        aria-live="polite"
+        aria-atomic="true"
+        className={
+          reducedMotion
+            ? 'inline-flex items-center whitespace-nowrap'
+            : `${styles.stack} whitespace-nowrap`
+        }
+      >
+        {reducedMotion ? (
+          <AltHint />
+        ) : (
+          // Both hints are always rendered with stable classes so the CSS
+          // crossfade keeps running uninterrupted across trace-viewer
+          // interactions and never restarts.
+          <>
+            <span className={`inline-flex items-center ${styles.hint}`}>
+              <AltHint />
+            </span>
+            <span
+              className={`inline-flex items-center ${styles.hint} ${styles.hintDelayed}`}
+            >
+              <NavHint />
+            </span>
+          </>
+        )}
+      </span>
+      <button
+        type="button"
+        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none"
+        onClick={dismiss}
+        aria-label="Dismiss trace shortcuts helper"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}

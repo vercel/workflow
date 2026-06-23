@@ -1,0 +1,44 @@
+/* Two hints occupy the same grid cell so the container sizes to the wider one
+   and they can crossfade on top of each other. */
+.stack {
+  display: inline-grid;
+}
+
+.stack > * {
+  grid-area: 1 / 1;
+}
+
+/* CSS-driven crossfade: each hint is shown for half of the 16s cycle. The
+   second hint runs the same keyframe offset by half the cycle (negative delay)
+   so the two alternate. */
+.hint {
+  animation: trace-shortcut-hint 16s ease-in-out infinite;
+}
+
+.hintDelayed {
+  animation-delay: -8s;
+}
+
+@keyframes trace-shortcut-hint {
+  0% {
+    opacity: 0;
+  }
+  1% {
+    opacity: 1;
+  }
+  49% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hint {
+    animation: none;
+  }
+}
