@@ -103,6 +103,8 @@ export interface CreateEventV4Input {
   specVersion: number;
   correlationId?: string;
   vercelId?: string;
+  /** Client-side time at which the event occurred. */
+  occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
   deploymentId?: string;
   workflowName?: string;
@@ -144,6 +146,11 @@ export interface CreateEventV4Input {
    *  other event types; older servers ignore it entirely (the runtime then
    *  falls back to events.list). */
   sinceCursor?: string;
+  /** Run-started preload opt-out. Turbo backgrounds run_started as a write
+   *  barrier only and never reads the preloaded log, so it asks the server to
+   *  skip the list+resolve. Acted on by the server only for run_started;
+   *  older servers ignore it and preload as before. */
+  skipPreload?: boolean;
 }
 
 export interface CreateEventV4Result {
@@ -187,6 +194,7 @@ function buildPostFrameMeta(
   if (input.correlationId !== undefined)
     meta.correlationId = input.correlationId;
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
+  if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
   }
@@ -211,6 +219,7 @@ function buildPostFrameMeta(
     meta.allowReservedAttributes = input.allowReservedAttributes;
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
+  if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   return meta;
 }
 
@@ -346,6 +355,7 @@ export interface DecodedV4Event {
   eventType: string;
   correlationId?: string;
   createdAt: Date | string;
+  occurredAt?: Date | string;
   specVersion?: number;
   eventData?: Record<string, unknown>;
 }

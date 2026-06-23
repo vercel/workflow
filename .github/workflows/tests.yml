@@ -927,8 +927,10 @@ jobs:
       world-id: ${{ matrix.world.id }}
       world-name: ${{ matrix.world.name }}
       world-package: ${{ matrix.world.package }}
+      package-version: ${{ matrix.world.version }}
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
+      services: ${{ matrix.world.services }}
     secrets: inherit
 
   # Final job: Aggregate all E2E results and update PR comment

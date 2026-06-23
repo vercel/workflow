@@ -175,6 +175,53 @@ describe('createReconnectingFramedStream', () => {
     expect(calls).toEqual([0, 2]);
   });
 
+  it('retries the reopen itself against the budget instead of failing fatally', async () => {
+    // After 2 frames the connection drops (read error → reconnect at index 2).
+    // The first *reopen* attempt also fails — the server is briefly
+    // unavailable during the reconnect window. That transient failure of the
+    // reopen is the exact blip this wrapper exists to survive, so it must be
+    // counted against the budget and retried, not treated as fatal. The
+    // second reopen succeeds and the stream completes.
+    const calls: number[] = [];
+    let reopenAttempts = 0;
+    const world = {
+      streams: {
+        get: vi.fn(
+          async (_runId: string, _name: string, startIndex?: number) => {
+            const idx = startIndex ?? 0;
+            calls.push(idx);
+            if (idx === 0) {
+              return scriptedStream([
+                { kind: 'value', value: payloadFrame(1) },
+                { kind: 'value', value: payloadFrame(2) },
+                { kind: 'error', err: new Error('max-duration abort') },
+              ]);
+            }
+            // Reopen at index 2: throw on the first attempt, succeed on the next.
+            reopenAttempts++;
+            if (reopenAttempts === 1) {
+              throw new Error('reopen failed: server briefly unavailable');
+            }
+            return scriptedStream([
+              { kind: 'value', value: payloadFrame(3) },
+              { kind: 'close' },
+            ]);
+          }
+        ),
+      },
+    } as unknown as World;
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
+    const chunks = await readAll(stream);
+
+    // The failed reopen did not surface to the consumer; the stream recovered.
+    expect(chunks).toEqual([payloadFrame(1), payloadFrame(2), payloadFrame(3)]);
+    // index 0 once, then index 2 twice — the failed reopen and the retry both
+    // resume from the same position.
+    expect(calls).toEqual([0, 2, 2]);
+  });
+
   it('respects an initial non-zero startIndex on reconnect', async () => {
     const { world, calls } = makeWorldWithScriptedStreams({
       10: () =>

@@ -354,6 +354,17 @@ export function withWorkflow(
     phase: string,
     ctx: { defaultConfig: NextConfig }
   ) {
+    if (
+      phase === 'phase-development-server' ||
+      phase === 'phase-production-build'
+    ) {
+      const { prewarmWorkflowSwcPluginCache } = await import(
+        './swc-plugin-cache.js'
+      );
+      // Loader workers inherit this cwd and read from the same SWC cache.
+      prewarmWorkflowSwcPluginCache(process.cwd());
+    }
+
     const loaderPath = require.resolve('./loader');
     let nextConfig: NextConfig;
 
@@ -455,8 +466,14 @@ export function withWorkflow(
           const NextBuilder = await getNextBuilder(nextVersion);
           return new NextBuilder({
             watch: shouldWatch,
-            // discover workflows from pages/app entries
-            dirs: ['pages', 'app', 'src/pages', 'src/app'],
+            // getInputFiles filters the project to Next.js entrypoints
+            dirs: ['.'],
+            pageExtensions: nextConfig.pageExtensions ?? [
+              'tsx',
+              'ts',
+              'jsx',
+              'js',
+            ],
             projectRoot: nextConfig.outputFileTracingRoot,
             moduleSpecifierRoot: process.cwd(),
             workingDir: process.cwd(),

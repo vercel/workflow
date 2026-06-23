@@ -1,5 +1,17 @@
 # @workflow/next
 
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2538](https://github.com/vercel/workflow/pull/2538) [`22b2728`](https://github.com/vercel/workflow/commit/22b2728394b3a3dbfa4e32984e2feba28b4136a9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Prewarm the Workflow SWC plugin cache before Next.js starts parallel loader workers.
+
+- [#2564](https://github.com/vercel/workflow/pull/2564) [`332c63c`](https://github.com/vercel/workflow/commit/332c63ce3c63f1505025d4b35cab44d21533d26d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Discover workflows imported by Next.js instrumentation, middleware, and proxy entrypoints.
+
+- Updated dependencies [[`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626)]:
+  - @workflow/core@5.0.0-beta.22
+  - @workflow/builders@5.0.0-beta.22
+
 ## 5.0.0-beta.21
 
 ### Minor Changes

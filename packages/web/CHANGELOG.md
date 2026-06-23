@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2582](https://github.com/vercel/workflow/pull/2582) [`6855282`](https://github.com/vercel/workflow/commit/685528259ddf93c17f544c2bed841088d0973dcb) Thanks [@mitul-s](https://github.com/mitul-s)! - Add helper text that indicates keyboard shortcuts
+
 ## 5.0.0-beta.21
 
 ## 5.0.0-beta.20

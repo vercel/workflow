@@ -1576,6 +1576,37 @@ describe('workflowEntrypoint turbo mode', () => {
     );
   });
 
+  it('asks the World to skip the run_started preload only under turbo', async () => {
+    // The backgrounded run_started is used purely as a write barrier and its
+    // preloaded events are never read (preloadedEvents is forced to []), so
+    // turbo passes skipPreload to drop the wasted server-side
+    // list+resolve that the chained first step_started waits behind.
+    const turbo = await driveTurbo({
+      runId: 'wrun_turbo_skip_preload',
+      attempt: 1,
+      source: oneStepWorkflow,
+    });
+    expect((await turbo.handlerPromise).status).toBe(204);
+    const turboRunStarted = turbo.eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'run_started'
+    );
+    expect((turboRunStarted?.[2] as any)?.skipPreload).toBe(true);
+
+    // A redelivery (attempt > 1) is not turbo: it awaits run_started and
+    // consumes the preload to skip its initial events.list, so it must NOT ask
+    // the server to skip it.
+    const redeliver = await driveTurbo({
+      runId: 'wrun_turbo_skip_preload_redeliver',
+      attempt: 2,
+      source: oneStepWorkflow,
+    });
+    expect((await redeliver.handlerPromise).status).toBe(204);
+    const redeliverRunStarted = redeliver.eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'run_started'
+    );
+    expect((redeliverRunStarted?.[2] as any)?.skipPreload).toBeUndefined();
+  });
+
   it('exits turbo (no forced optimistic) when the suspension creates a wait', async () => {
     const { handlerPromise, order } = await driveTurbo({
       runId: 'wrun_turbo_wait',

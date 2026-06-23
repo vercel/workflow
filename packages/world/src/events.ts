@@ -414,6 +414,7 @@ export const EventSchema = AllEventsSchema.and(
     runId: z.string(),
     eventId: z.string(),
     createdAt: z.coerce.date(),
+    occurredAt: z.coerce.date().optional(),
     specVersion: z.number().optional(),
   })
 );
@@ -450,6 +451,12 @@ export interface CreateEventParams {
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**
+   * Timestamp for when the event occurred on the client side. Worlds that
+   * support this can persist it separately from `createdAt`, which represents
+   * when the backing service accepted or stored the event.
+   */
+  occurredAt?: Date;
+  /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
    * strictly after this cursor (via `events`/`cursor`/`hasMore`) — the
@@ -475,6 +482,23 @@ export interface CreateEventParams {
    * delta is computed atomically against the same log the fetch would read.
    */
   sinceCursor?: string;
+  /**
+   * Run-started preload opt-out (advisory). On a `run_started` write a World
+   * MAY preload the run's event log onto the {@link EventResult}
+   * (`events`/`cursor`/`hasMore`) so the runtime can skip its initial
+   * `events.list`. The turbo first invocation backgrounds `run_started`
+   * purely as a write barrier and never reads that preload, so it sets this
+   * to tell the World to skip the wasted list+resolve — trimming the
+   * `run_started` round-trip that the chained first `step_started` waits on.
+   * A World that ignores it (or doesn't preload) remains fully correct: the
+   * runtime falls back to `events.list` whenever it actually needs the log.
+   * Only honored for `run_started`; ignored for other event types.
+   *
+   * Named to match the World boundary, the wire frame meta, and the backend
+   * option end-to-end (cf. {@link sinceCursor}) so the single name greps
+   * across the SDK and the backend.
+   */
+  skipPreload?: boolean;
 }
 
 /**
