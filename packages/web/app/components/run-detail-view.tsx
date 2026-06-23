@@ -155,7 +155,7 @@ function GraphTabContent({
       <div className="flex items-center justify-center w-full h-full">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         <span className="ml-4 text-muted-foreground">
-          Loading workflow graph...
+          Loading workflow graph…
         </span>
       </div>
     );
@@ -208,6 +208,7 @@ const STEP_SHORTCUT_HELPER_DISMISSALS_KEY =
   'workflow-step-shortcut-helper-dismissals';
 const STEP_SHORTCUT_HELPER_DISMISSAL_LIMIT = 3;
 const STEP_SHORTCUT_HELPER_ROTATION_MS = 8000;
+const STEP_SHORTCUT_HELPER_ANIMATION_MS = 200;
 
 function readStepShortcutHelperDismissals() {
   try {
@@ -220,9 +221,39 @@ function readStepShortcutHelperDismissals() {
   }
 }
 
+function StepShortcutHint({ hint }: { hint: number }) {
+  if (hint === 0) {
+    return (
+      <>
+        Hold{' '}
+        <Kbd variant="outline" size="compact">
+          Alt
+        </Kbd>{' '}
+        to show delta between steps
+      </>
+    );
+  }
+
+  return (
+    <>
+      Use{' '}
+      <Kbd variant="outline" size="compact">
+        J
+      </Kbd>
+      /
+      <Kbd variant="outline" size="compact">
+        K
+      </Kbd>{' '}
+      to move between steps
+    </>
+  );
+}
+
 function StepShortcutHelperToast() {
   const [visible, setVisible] = useState(false);
   const [activeHintIndex, setActiveHintIndex] = useState(0);
+  const [exitingHint, setExitingHint] = useState<number | null>(null);
+  const [dismissing, setDismissing] = useState(false);
 
   useEffect(() => {
     const dismissals = readStepShortcutHelperDismissals();
@@ -244,47 +275,59 @@ function StepShortcutHelperToast() {
     } catch {
       // The toast can still be dismissed for this render if storage is blocked.
     }
-    setVisible(false);
+    setDismissing(true);
+    window.setTimeout(() => {
+      setVisible(false);
+      setDismissing(false);
+    }, STEP_SHORTCUT_HELPER_ANIMATION_MS);
   }, []);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || dismissing) return;
 
-    const intervalId = window.setInterval(() => {
+    const activeHint = activeHintIndex % 2;
+    const timeoutId = window.setTimeout(() => {
+      setExitingHint(activeHint);
       setActiveHintIndex((index) => index + 1);
     }, STEP_SHORTCUT_HELPER_ROTATION_MS);
 
-    return () => window.clearInterval(intervalId);
-  }, [visible]);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeHintIndex, dismissing, visible]);
+
+  useEffect(() => {
+    if (exitingHint === null) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setExitingHint(null);
+    }, STEP_SHORTCUT_HELPER_ANIMATION_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [exitingHint]);
 
   if (!visible) return null;
 
   const activeHint = activeHintIndex % 2;
 
   return (
-    <div className="group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-xs leading-none text-muted-foreground">
-      <span className="inline-flex items-center whitespace-nowrap">
-        {activeHint === 0 ? (
-          <>
-            Press{' '}
-            <Kbd variant="outline" size="compact">
-              Alt
-            </Kbd>{' '}
-            to see delta between steps
-          </>
-        ) : (
-          <>
-            Press{' '}
-            <Kbd variant="outline" size="compact">
-              J
-            </Kbd>
-            /
-            <Kbd variant="outline" size="compact">
-              K
-            </Kbd>{' '}
-            to navigate through steps
-          </>
-        )}
+    <div
+      className={`group absolute bottom-3 left-1/2 z-10 inline-flex h-8 max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1.5 text-xs leading-none text-muted-foreground motion-reduce:animate-none ${
+        dismissing
+          ? 'animate-out fade-out slide-out-to-top-1 duration-150 ease-out'
+          : 'animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out'
+      }`}
+    >
+      <span className="grid items-center whitespace-nowrap">
+        {exitingHint !== null ? (
+          <span className="col-start-1 row-start-1 inline-flex items-center animate-out fade-out slide-out-to-top-1 duration-150 ease-out motion-reduce:animate-none">
+            <StepShortcutHint hint={exitingHint} />
+          </span>
+        ) : null}
+        <span
+          key={activeHintIndex}
+          className="col-start-1 row-start-1 inline-flex items-center animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out motion-reduce:animate-none"
+        >
+          <StepShortcutHint hint={activeHint} />
+        </span>
       </span>
       <button
         type="button"
@@ -584,7 +627,7 @@ export function RunDetailView({
       await cancelRun(env, runId);
       // Trigger a refresh of the data
       await update();
-      toast.success('Run cancelled successfully');
+      toast.success('Run cancelled');
     } catch (err) {
       console.error('Failed to cancel run:', err);
       toast.error('Failed to cancel run', {
@@ -608,7 +651,7 @@ export function RunDetailView({
       setShowRerunDialog(false);
       // Start a new run with the same workflow and input arguments
       const newRunId = await recreateRun(env, run.runId);
-      toast.success('New run started successfully', {
+      toast.success('New run started', {
         description: `Run ID: ${newRunId}`,
       });
       // Navigate to the new run
