@@ -417,6 +417,7 @@ const attributeToDisplayFn: Record<
     return <RunAttributesCard attributes={value as Record<string, string>} />;
   },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  occurredAt: (_value: unknown) => null,
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
   updatedAt: (_value: unknown) => null,
