@@ -3,4 +3,4 @@
 '@workflow/builders': patch
 ---
 
-Add OpenTelemetry spans and generated-route module timing around `/flow` initialization.
+Add OpenTelemetry spans, turbo tagging, and generated-route module timing around `/flow` initialization.

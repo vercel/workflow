@@ -304,6 +304,7 @@ describe('workflowEntrypoint trace modes', () => {
 
     expect(workflowSpan?.attributes['workflow.trace.mode']).toBe('linked');
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(true);
+    expect(workflowSpan?.attributes['workflow.turbo']).toBe(false);
     const runStartedCreateEvent = workflowSpan?.events.find(
       (e) => e.name === 'workflow.run_started.create.start'
     );

@@ -538,6 +538,7 @@ export function workflowEntrypoint(
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
                     !replayDivergence;
+                  span?.setAttributes(Attribute.WorkflowTurbo(turbo));
 
                   // Turbo mode only: resolves once the backgrounded
                   // `run_started` has landed (or rejects if it failed). Threaded

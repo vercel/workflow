@@ -54,6 +54,7 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
  */
 export function createWorkflowEntrypointOptionsCode(options?: {
   namespace?: string;
+  /** Raw code identifier/expression emitted into generated route files, not data. */
   routeModuleBodyStartedAt?: string;
 }) {
   const namespace = resolveQueueNamespace(options?.namespace);

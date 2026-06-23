@@ -97,6 +97,9 @@ export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
   'workflow.trace.mode'
 );
 
+/** Whether this workflow invocation is using the turbo first-delivery path */
+export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'
@@ -153,9 +156,6 @@ export const WorkflowRouteEntrypointAgeMs = SemanticConvention<number>(
 export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
   'workflow.route.module_body_init_ms'
 );
-
-/** Route pattern for the request */
-export const HttpRoute = SemanticConvention<string>('http.route');
 
 // Step attributes
 
@@ -290,6 +290,9 @@ export const WorkflowSuspensionWaitCount = SemanticConvention<number>(
 export const HttpRequestMethod = SemanticConvention<string>(
   'http.request.method'
 );
+
+/** Route pattern for the request (standard OTEL: http.route) */
+export const HttpRoute = SemanticConvention<string>('http.route');
 
 /** Full URL of the request (standard OTEL: url.full) */
 export const UrlFull = SemanticConvention<string>('url.full');
