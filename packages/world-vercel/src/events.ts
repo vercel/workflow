@@ -461,6 +461,14 @@ function buildEventFromV4(
       decoded.createdAt instanceof Date
         ? decoded.createdAt
         : new Date(decoded.createdAt),
+    ...(decoded.occurredAt !== undefined
+      ? {
+          occurredAt:
+            decoded.occurredAt instanceof Date
+              ? decoded.occurredAt
+              : new Date(decoded.occurredAt),
+        }
+      : {}),
     ...(decoded.correlationId ? { correlationId: decoded.correlationId } : {}),
     eventData,
     ...(decoded.specVersion !== undefined
@@ -619,6 +627,7 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      occurredAt: params?.occurredAt ?? new Date(),
       remoteRefBehavior,
       payload,
       ...meta,
