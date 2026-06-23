@@ -659,26 +659,44 @@ export function createReconnectingFramedStream(
   }
 
   async function reconnect(): Promise<void> {
-    reconnectCount++;
-    totalReconnectCount++;
-    if (reconnectCount > FRAMED_STREAM_MAX_RECONNECTS) {
-      throw new Error(
-        `Stream "${name}" exceeded maximum reconnection attempts (${FRAMED_STREAM_MAX_RECONNECTS})`
-      );
-    }
-    if (totalReconnectCount > FRAMED_STREAM_MAX_TOTAL_RECONNECTS) {
-      throw new Error(
-        `Stream "${name}" exceeded maximum total reconnection attempts (${FRAMED_STREAM_MAX_TOTAL_RECONNECTS})`
-      );
-    }
     if (reader) {
       await reader.cancel().catch(() => {});
       reader = undefined;
     }
+    // Advance the resume position past the frames already delivered, then
+    // drop any partial-frame bytes — the reopened connection re-sends from a
+    // frame boundary at the new index.
     currentStartIndex += consumedFrames;
     consumedFrames = 0;
     buffer = new Uint8Array(0);
-    await connect();
+
+    // Retry the reopen itself against the reconnect budget. A transient
+    // failure of connect() — the server briefly unavailable during the
+    // reconnect window — is the exact blip this wrapper exists to survive, so
+    // count it against the budget and try again rather than treating it as
+    // fatal. Only budget exhaustion (a server that stays down) terminates the
+    // stream.
+    for (;;) {
+      reconnectCount++;
+      totalReconnectCount++;
+      if (reconnectCount > FRAMED_STREAM_MAX_RECONNECTS) {
+        throw new Error(
+          `Stream "${name}" exceeded maximum reconnection attempts (${FRAMED_STREAM_MAX_RECONNECTS})`
+        );
+      }
+      if (totalReconnectCount > FRAMED_STREAM_MAX_TOTAL_RECONNECTS) {
+        throw new Error(
+          `Stream "${name}" exceeded maximum total reconnection attempts (${FRAMED_STREAM_MAX_TOTAL_RECONNECTS})`
+        );
+      }
+      try {
+        await connect();
+        return;
+      } catch {
+        // Reopen failed transiently; loop to retry, counting against the
+        // budget so a server that never recovers still terminates the stream.
+      }
+    }
   }
 
   return new ReadableStream<Uint8Array>({

@@ -28,6 +28,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "test": "vitest run src",
     "clean": "tsc --build --clean && rm -rf dist docs",
     "prepack": "mkdir -p docs && cp ../../docs/content/docs/v5/getting-started/next.mdx ./docs/ && cp -r ../../docs/content/docs/v5/api-reference/workflow-next ./docs/api-reference",
     "postpack": "rm -rf docs"
@@ -45,7 +46,8 @@
     "@types/semver": "7.7.1",
     "@types/watchpack": "2.4.4",
     "@workflow/tsconfig": "workspace:*",
-    "next": "16.2.1"
+    "next": "16.2.1",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "next": ">13"

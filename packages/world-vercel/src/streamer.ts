@@ -23,9 +23,24 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
 // (partial writes, long-lived reads), and duplex streams are incompatible
 // with undici's experimental H2 support.
 
+// Writes (PUT) and stream completion use the v2 stream endpoint.
 function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
+}
+
+// The live-read (GET) endpoint is versioned at v3: on a max-duration timeout
+// (or a mid-stream connection drop) the server errors the response body
+// instead of closing it cleanly, which is what lets the reconnecting reader
+// (`createReconnectingFramedStream`) resume from the next chunk rather than
+// treating the timeout as end-of-stream. Reading from v2 would silently
+// truncate long-lived streams at the server's 2-minute limit. Only the live
+// read is affected by the timeout — writes, completion, and snapshot reads
+// (chunks/info/list) stay on v2.
+function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
 }
 
@@ -190,7 +205,7 @@ export function createStreamer(config?: APIConfig): Streamer {
 
       async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, runId, httpConfig);
+        const url = getStreamReadUrl(name, runId, httpConfig);
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }
