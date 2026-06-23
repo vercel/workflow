@@ -644,6 +644,116 @@ function NewTraceViewerContent({
   nextSpanIdRef.current = nextSpanId;
   navigateToSpanRef.current = navigateToSpan;
 
+  // The viewport animation (`animateTo`) updates `viewport` state ~60×/sec,
+  // re-rendering this component on every frame. The event list and the detail
+  // panel don't depend on the viewport, so we memoize them into stable element
+  // references — React bails out of reconciling a child subtree when its
+  // element is referentially identical across renders. Without this, selecting
+  // a span re-reconciles the entire (recursive) detail-panel JSON tree on every
+  // zoom frame, which is what made the click-to-zoom feel janky.
+  const eventList = useMemo(
+    () => (
+      <EventList
+        spans={trace.spans}
+        activeSpanId={activeSpanId}
+        searchResult={searchResult}
+        onSelectSpan={handleSelectSpan}
+      />
+    ),
+    [trace.spans, activeSpanId, searchResult, handleSelectSpan]
+  );
+
+  const detailPanel = useMemo(() => {
+    if (!activeSpan) return null;
+    return (
+      <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
+        {/* Panel header */}
+        <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
+          <span className="text-label-14 font-medium text-gray-1000 truncate block">
+            {selectedSpanName}
+          </span>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <IconButton
+                  aria-label="Navigate up"
+                  aria-keyshortcuts="K"
+                  onClick={handleSelectPrevSpan}
+                  disabled={!prevSpanId}
+                >
+                  <ChevronUp className="w-4 h-4" />
+                </IconButton>
+              </TooltipTrigger>
+              {prevSpanId ? (
+                <TooltipContent>
+                  Navigate up
+                  <Kbd>K</Kbd>
+                </TooltipContent>
+              ) : null}
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <IconButton
+                  aria-label="Navigate down"
+                  aria-keyshortcuts="J"
+                  onClick={handleSelectNextSpan}
+                  disabled={!nextSpanId}
+                >
+                  <ChevronDown className="w-4 h-4" />
+                </IconButton>
+              </TooltipTrigger>
+              {nextSpanId ? (
+                <TooltipContent>
+                  Navigate down
+                  <Kbd>J</Kbd>
+                </TooltipContent>
+              ) : null}
+            </Tooltip>
+            <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
+            <IconButton
+              aria-label="Close span details"
+              aria-keyshortcuts="Escape"
+              onClick={handleClearActiveSpan}
+            >
+              <X className="w-4 h-4" />
+            </IconButton>
+          </div>
+        </div>
+        {/* Panel body */}
+        <div className="flex-1 overflow-y-auto">
+          <ErrorBoundary>
+            <EntityDetailPanel
+              run={sidebar.run}
+              onStreamClick={sidebar.onStreamClick}
+              onRunClick={sidebar.onRunClick}
+              spanDetailData={sidebar.spanDetailData}
+              spanDetailError={sidebar.spanDetailError}
+              spanDetailLoading={sidebar.spanDetailLoading}
+              onSpanSelect={sidebar.onSpanSelect}
+              onWakeUpSleep={sidebar.onWakeUpSleep}
+              onLoadEventData={sidebar.onLoadEventData}
+              onResolveHook={sidebar.onResolveHook}
+              encryptionKey={sidebar.encryptionKey}
+              onDecrypt={sidebar.onDecrypt}
+              isDecrypting={sidebar.isDecrypting}
+              selectedSpan={selectedSpan}
+            />
+          </ErrorBoundary>
+        </div>
+      </aside>
+    );
+  }, [
+    activeSpan,
+    selectedSpanName,
+    handleSelectPrevSpan,
+    prevSpanId,
+    handleSelectNextSpan,
+    nextSpanId,
+    handleClearActiveSpan,
+    sidebar,
+    selectedSpan,
+  ]);
+
   return (
     <div
       data-pane="pane-root"
@@ -695,12 +805,7 @@ function NewTraceViewerContent({
           }
         >
           <div className="block overflow-visible">
-            <EventList
-              spans={trace.spans}
-              activeSpanId={activeSpanId}
-              searchResult={searchResult}
-              onSelectSpan={handleSelectSpan}
-            />
+            {eventList}
             <div ref={loadMoreSentinelRef} className="flex justify-center">
               {isLoadingMore ? (
                 <div className="flex items-center justify-center gap-2 py-3 text-sm text-gray-800">
@@ -761,83 +866,7 @@ function NewTraceViewerContent({
       </div>
 
       {/* Detail panel */}
-      {activeSpan ? (
-        <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
-          {/* Panel header */}
-          <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
-            <span className="text-label-14 font-medium text-gray-1000 truncate block">
-              {selectedSpanName}
-            </span>
-            <div className="flex items-center gap-0.5 shrink-0">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <IconButton
-                    aria-label="Navigate up"
-                    aria-keyshortcuts="K"
-                    onClick={handleSelectPrevSpan}
-                    disabled={!prevSpanId}
-                  >
-                    <ChevronUp className="w-4 h-4" />
-                  </IconButton>
-                </TooltipTrigger>
-                {prevSpanId ? (
-                  <TooltipContent>
-                    Navigate up
-                    <Kbd>K</Kbd>
-                  </TooltipContent>
-                ) : null}
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <IconButton
-                    aria-label="Navigate down"
-                    aria-keyshortcuts="J"
-                    onClick={handleSelectNextSpan}
-                    disabled={!nextSpanId}
-                  >
-                    <ChevronDown className="w-4 h-4" />
-                  </IconButton>
-                </TooltipTrigger>
-                {nextSpanId ? (
-                  <TooltipContent>
-                    Navigate down
-                    <Kbd>J</Kbd>
-                  </TooltipContent>
-                ) : null}
-              </Tooltip>
-              <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
-              <IconButton
-                aria-label="Close span details"
-                aria-keyshortcuts="Escape"
-                onClick={handleClearActiveSpan}
-              >
-                <X className="w-4 h-4" />
-              </IconButton>
-            </div>
-          </div>
-          {/* Panel body */}
-          <div className="flex-1 overflow-y-auto">
-            <ErrorBoundary>
-              <EntityDetailPanel
-                run={sidebar.run}
-                onStreamClick={sidebar.onStreamClick}
-                onRunClick={sidebar.onRunClick}
-                spanDetailData={sidebar.spanDetailData}
-                spanDetailError={sidebar.spanDetailError}
-                spanDetailLoading={sidebar.spanDetailLoading}
-                onSpanSelect={sidebar.onSpanSelect}
-                onWakeUpSleep={sidebar.onWakeUpSleep}
-                onLoadEventData={sidebar.onLoadEventData}
-                onResolveHook={sidebar.onResolveHook}
-                encryptionKey={sidebar.encryptionKey}
-                onDecrypt={sidebar.onDecrypt}
-                isDecrypting={sidebar.isDecrypting}
-                selectedSpan={selectedSpan}
-              />
-            </ErrorBoundary>
-          </div>
-        </aside>
-      ) : null}
+      {detailPanel}
 
       <TraceShortcutHelper
         hasMultipleSpans={trace.spans.length > 1}
