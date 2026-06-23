@@ -1,5 +1,6 @@
 ---
 '@workflow/core': patch
+'@workflow/builders': patch
 ---
 
-Add OpenTelemetry spans around `/flow` route initialization and world loading.
+Add OpenTelemetry spans and generated-route module timing around `/flow` initialization.

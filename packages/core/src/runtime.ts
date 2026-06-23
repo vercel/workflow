@@ -287,7 +287,7 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string }
+  options?: { namespace?: string; routeModuleBodyStartedAt?: number }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
@@ -768,6 +768,13 @@ export function workflowEntrypoint(
                           }
                         : {}),
                     };
+                    const recordRunStartedCreateStart = (
+                      skipPreload: boolean
+                    ) => {
+                      span?.addEvent('workflow.run_started.create.start', {
+                        'workflow.run_started.skip_preload': skipPreload,
+                      });
+                    };
 
                     if (turbo && runInput) {
                       // Turbo: background `run_started` and synthesize the run
@@ -778,6 +785,7 @@ export function workflowEntrypoint(
                       // barrier is consumed by every downstream write (suspension
                       // handler, optimistic step_started, terminal run writes) so
                       // nothing is written before the run exists.
+                      recordRunStartedCreateStart(true);
                       const startedPromise = world.events.create(
                         runId,
                         runStartedEvent,
@@ -837,6 +845,7 @@ export function workflowEntrypoint(
                       });
                     } else {
                       try {
+                        recordRunStartedCreateStart(false);
                         const result = await world.events.create(
                           runId,
                           runStartedEvent,
@@ -2016,6 +2025,10 @@ export function workflowEntrypoint(
   let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
+  const routeModuleBodyInitMs =
+    typeof options?.routeModuleBodyStartedAt === 'number'
+      ? entrypointCreatedAt - options.routeModuleBodyStartedAt
+      : undefined;
 
   return withHealthCheck(async (req) => {
     invocationCount += 1;
@@ -2033,6 +2046,9 @@ export function workflowEntrypoint(
           ...Attribute.WorkflowRouteEntrypointAgeMs(
             Date.now() - entrypointCreatedAt
           ),
+          ...(routeModuleBodyInitMs === undefined
+            ? {}
+            : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
           ...Attribute.HttpRequestMethod(req.method),
           ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
         },

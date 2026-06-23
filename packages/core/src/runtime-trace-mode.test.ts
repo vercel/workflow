@@ -104,6 +104,7 @@ async function driveHandler(opts: {
   runId: string;
   workflowCode: string;
   traceCarrier?: Record<string, string>;
+  routeModuleBodyStartedAt?: number;
 }) {
   const workflowRun = await makeRunningRun(opts.runId);
   const queuedMessages: any[] = [];
@@ -165,7 +166,12 @@ async function driveHandler(opts: {
     getEncryptionKeyForRun: vi.fn(async () => undefined),
   } as any);
 
-  const handler = workflowEntrypoint(opts.workflowCode);
+  const handler = workflowEntrypoint(
+    opts.workflowCode,
+    opts.routeModuleBodyStartedAt === undefined
+      ? undefined
+      : { routeModuleBodyStartedAt: opts.routeModuleBodyStartedAt }
+  );
 
   // Invoke inside an active "delivery" span so linkToCurrentContext()
   // observes a live delivery context, as it would in production.
@@ -253,6 +259,7 @@ describe('workflowEntrypoint trace modes', () => {
       runId: 'wrun_trace_linked',
       workflowCode: simpleWorkflow,
       traceCarrier: ORIGIN_CARRIER,
+      routeModuleBodyStartedAt: Date.now(),
     });
 
     expect(routeSpan).toBeDefined();
@@ -260,6 +267,10 @@ describe('workflowEntrypoint trace modes', () => {
     expect(routeSpan?.attributes['workflow.route.type']).toBe('flow');
     expect(routeSpan?.attributes['workflow.route.handler_cached']).toBe(false);
     expect(routeSpan?.attributes['workflow.route.invocation_count']).toBe(1);
+    const moduleBodyInitMs =
+      routeSpan?.attributes['workflow.route.module_body_init_ms'];
+    expect(typeof moduleBodyInitMs).toBe('number');
+    expect(moduleBodyInitMs as number).toBeGreaterThanOrEqual(0);
     expect(routeSpan?.attributes['http.route']).toBe(
       '/.well-known/workflow/v1/flow'
     );
@@ -293,6 +304,13 @@ describe('workflowEntrypoint trace modes', () => {
 
     expect(workflowSpan?.attributes['workflow.trace.mode']).toBe('linked');
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(true);
+    const runStartedCreateEvent = workflowSpan?.events.find(
+      (e) => e.name === 'workflow.run_started.create.start'
+    );
+    expect(runStartedCreateEvent).toBeDefined();
+    expect(
+      runStartedCreateEvent?.attributes['workflow.run_started.skip_preload']
+    ).toBe(false);
 
     // Queue-delivered invocation spans use the CONSUMER kind, matching
     // queue-delivered step.execute spans.

@@ -149,6 +149,11 @@ export const WorkflowRouteEntrypointAgeMs = SemanticConvention<number>(
   'workflow.route.entrypoint_age_ms'
 );
 
+/** Time spent evaluating the generated route module body before creating the entrypoint */
+export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
+  'workflow.route.module_body_init_ms'
+);
+
 /** Route pattern for the request */
 export const HttpRoute = SemanticConvention<string>('http.route');
 
