@@ -1,5 +1,21 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2582](https://github.com/vercel/workflow/pull/2582) [`6855282`](https://github.com/vercel/workflow/commit/685528259ddf93c17f544c2bed841088d0973dcb) Thanks [@mitul-s](https://github.com/mitul-s)! - Add helper text that indicates keyboard shortcuts
+
+- [#2434](https://github.com/vercel/workflow/pull/2434) [`6512d38`](https://github.com/vercel/workflow/commit/6512d38df529984a587ecca8d68d7d060d7b7ca1) Thanks [@mitul-s](https://github.com/mitul-s)! - Export `serializeForClipboard` from the copyable data block and add unit tests covering its clipboard serialization and the `CopyableDataBlock`/`EncryptedDataBlock` rendering.
+
+- [#2434](https://github.com/vercel/workflow/pull/2434) [`6512d38`](https://github.com/vercel/workflow/commit/6512d38df529984a587ecca8d68d7d060d7b7ca1) Thanks [@mitul-s](https://github.com/mitul-s)! - Rework the data inspector's JSON rendering: bracket notation (`{ … }` / `[ … ]`), colored keys, typed value colors, `▸`/`▾` disclosure icons, trailing commas, and a `...` collapsed indicator. Replaces the `react-inspector` engine with an in-house tree renderer while keeping the workflow-specific value handling (StreamRef/RunRef badges, encrypted markers, decoded byte streams, dates, class instances).
+
+- [#2581](https://github.com/vercel/workflow/pull/2581) [`0964b83`](https://github.com/vercel/workflow/commit/0964b831d30165d2f1273930abebd9732d3b8ade) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Show event occurrence timestamps in the trace detail panel when present.
+
+- Updated dependencies [[`25c3df7`](https://github.com/vercel/workflow/commit/25c3df74f88726f9336ca20e6c48fd3366c40749), [`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626)]:
+  - @workflow/world@5.0.0-beta.13
+  - @workflow/core@5.0.0-beta.22
+
 ## 5.0.0-beta.21
 
 ### Patch Changes

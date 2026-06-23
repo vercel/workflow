@@ -1,5 +1,13 @@
 # @workflow/builders
 
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- Updated dependencies [[`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626)]:
+  - @workflow/core@5.0.0-beta.22
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.21
 
 ### Patch Changes
