@@ -19,7 +19,7 @@ import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import {
-  DetailKeyValueRow,
+  DetailMonoKeyValueRow,
   RunAttributesCard,
   RunMetadataCard,
 } from './attributes-block';
@@ -855,7 +855,6 @@ export const AttributePanel = ({
               <DetailCard
                 summary="Metadata"
                 defaultOpen
-                summaryClassName="my-0 mt-2"
                 contentClassName="mb-4"
               >
                 <div className="flex flex-col">
@@ -869,14 +868,13 @@ export const AttributePanel = ({
                     const label = getAttributeDisplayName(attribute);
 
                     return (
-                      <DetailKeyValueRow
+                      <DetailMonoKeyValueRow
                         key={attribute}
                         label={label}
                         value={displayValue}
                         copyText={
                           isCopyableBasicAttribute ? displayValue : undefined
                         }
-                        mono
                       />
                     );
                   })}
@@ -902,17 +900,15 @@ export const AttributePanel = ({
             ) : hasExpired ? (
               <ExpiredDataMessage />
             ) : resolvedAttributes.length > 0 ? (
-              <>
-                {resolvedAttributes.map((attribute) => (
-                  <AttributeBlock
-                    isLoading={isLoading}
-                    key={attribute}
-                    attribute={attribute}
-                    value={displayData[attribute as keyof typeof displayData]}
-                    context={displayContext}
-                  />
-                ))}
-              </>
+              resolvedAttributes.map((attribute) => (
+                <AttributeBlock
+                  isLoading={isLoading}
+                  key={attribute}
+                  attribute={attribute}
+                  value={displayData[attribute as keyof typeof displayData]}
+                  context={displayContext}
+                />
+              ))
             ) : null}
           </DecryptClickContext.Provider>
         </StreamClickContext.Provider>

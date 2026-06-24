@@ -4,6 +4,7 @@ import {
   type AttributeChange,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
 } from '@workflow/world';
+import { cva, type VariantProps } from 'class-variance-authority';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/utils';
 import { CopyButton } from '../new-trace-viewer/components/copy-button';
@@ -15,19 +16,50 @@ function isReservedAttributeKey(key: string): boolean {
   return key.startsWith(RESERVED_ATTRIBUTE_KEY_PREFIX);
 }
 
-export function DetailKeyValueRow({
-  label,
-  value,
-  copyText,
-  removed = false,
-  mono = false,
-}: {
+const rowValueVariants = cva(
+  'max-w-[60%] truncate text-right text-copy-13 text-gray-1000',
+  {
+    variants: {
+      variant: {
+        default: '',
+        mono: 'font-mono',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+    },
+  }
+);
+
+const rowCopyValueVariants = cva(
+  'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000',
+  {
+    variants: {
+      variant: {
+        default: '',
+        mono: 'font-mono',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+    },
+  }
+);
+
+type DetailKeyValueRowProps = {
   label: string;
   value?: ReactNode;
   copyText?: string;
   removed?: boolean;
-  mono?: boolean;
-}) {
+};
+
+function DetailKeyValueRowBase({
+  label,
+  value,
+  copyText,
+  removed = false,
+  variant,
+}: DetailKeyValueRowProps & VariantProps<typeof rowValueVariants>) {
   const stringValue = typeof value === 'string' ? value : undefined;
 
   return (
@@ -40,16 +72,12 @@ export function DetailKeyValueRow({
           removed
         </span>
       ) : copyText ? (
-        <div
-          className={cn(
-            'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000',
-            mono && 'font-mono'
-          )}
-          title={copyText}
-        >
+        <div className={cn(rowCopyValueVariants({ variant }))} title={copyText}>
           <MiddleTruncate
             value={copyText}
-            className={cn('text-right', mono && 'font-mono')}
+            className={cn(
+              rowValueVariants({ variant, className: 'text-right' })
+            )}
             style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
           />
           <CopyButton
@@ -59,18 +87,20 @@ export function DetailKeyValueRow({
           />
         </div>
       ) : (
-        <span
-          className={cn(
-            'max-w-[60%] truncate text-right text-copy-13 text-gray-1000',
-            mono && 'font-mono'
-          )}
-          title={stringValue}
-        >
+        <span className={cn(rowValueVariants({ variant }))} title={stringValue}>
           {value}
         </span>
       )}
     </div>
   );
+}
+
+export function DetailKeyValueRow(props: DetailKeyValueRowProps) {
+  return <DetailKeyValueRowBase {...props} />;
+}
+
+export function DetailMonoKeyValueRow(props: DetailKeyValueRowProps) {
+  return <DetailKeyValueRowBase {...props} variant="mono" />;
 }
 
 function AttributeRow({
