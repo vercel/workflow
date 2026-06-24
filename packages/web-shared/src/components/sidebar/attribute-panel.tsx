@@ -855,6 +855,7 @@ export const AttributePanel = ({
               <DetailCard
                 summary="Metadata"
                 defaultOpen
+                summaryClassName="my-0 mt-2"
                 contentClassName="mb-4"
               >
                 <div className="flex flex-col">
