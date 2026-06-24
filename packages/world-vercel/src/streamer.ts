@@ -5,6 +5,7 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
+import { getStreamDispatcher } from './http-client.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -19,10 +20,17 @@ import {
 export const MAX_CHUNKS_PER_REQUEST = 1000;
 const DEFAULT_STREAM_MUTATION_TIMEOUT_MS = 30_000;
 
-// Streaming calls use plain fetch() without the undici dispatcher.
-// The dispatcher's retry logic doesn't apply well to streaming operations
-// (partial writes, long-lived reads), and duplex streams are incompatible
-// with undici's experimental H2 support.
+// Stream writes (the PUT write/close path) go through the H2 stream
+// dispatcher (see getStreamDispatcher): they send a fully-buffered body (or
+// none), so they benefit from H2 multiplexing without hitting the duplex
+// issues that keep the long-lived live-read (GET) on plain fetch. Because
+// stream appends aren't idempotent, that stream dispatcher uses a deliberately
+// narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only on
+// transient connection errors and HTTP 429 — both of which guarantee the chunk
+// was never persisted — and never on 5xx, so a retry can't duplicate an
+// already-applied write. Snapshot reads (chunks/info) go
+// through makeRequest (default H1 dispatcher); the live-read and list use
+// plain fetch().
 
 function getStreamUrl(
   name: string,
@@ -51,14 +59,19 @@ function getStreamMutationTimeoutMs() {
 async function fetchStreamMutation(
   url: URL,
   init: RequestInit,
-  operation: 'write' | 'close'
+  operation: 'write' | 'close',
+  config?: APIConfig
 ) {
   const timeoutMs = getStreamMutationTimeoutMs();
   try {
     return await fetch(url, {
       ...init,
       signal: AbortSignal.timeout(timeoutMs),
-    });
+      // Stream mutations go through the dedicated H2 stream dispatcher rather
+      // than the global agent — see the note at the top of this file.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici's dispatcher option isn't in @types/node's RequestInit
+      dispatcher: getStreamDispatcher(config),
+    } as any);
   } catch (err) {
     if (
       err instanceof Error &&
@@ -170,7 +183,8 @@ export function createStreamer(config?: APIConfig): Streamer {
           body: chunk,
           headers: httpConfig.headers,
         },
-        'write'
+        'write',
+        config
       );
       const text = await response.text();
       if (!response.ok) {
@@ -212,7 +226,8 @@ export function createStreamer(config?: APIConfig): Streamer {
             body,
             headers: httpConfig.headers,
           },
-          'write'
+          'write',
+          config
         );
         const text = await response.text();
         if (!response.ok) {
@@ -234,7 +249,8 @@ export function createStreamer(config?: APIConfig): Streamer {
           method: 'PUT',
           headers: httpConfig.headers,
         },
-        'close'
+        'close',
+        config
       );
       const text = await response.text();
       if (!response.ok) {

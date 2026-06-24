@@ -32,7 +32,7 @@ import {
 import { decode } from 'cbor-x';
 import { type Dispatcher, request } from 'undici';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
-import { getDispatcher } from './http-client.js';
+import { getEventsDispatcher } from './http-client.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
@@ -266,10 +266,15 @@ export async function createWorkflowRunEventV4(
     method: 'POST',
     headers: Object.fromEntries(headers.entries()),
     body: frame,
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
+    // The events API uses its own HTTP/2-enabled dispatcher: these
+    // reads/writes are plain request/response (or a streamed LIST response)
+    // and benefit from multiplexing, while the default dispatcher stays on
+    // HTTP/1.1 because H2 deadlocks the queue's webhook respondWith mechanism
+    // — see http-client.ts. getEventsDispatcher() is typed `unknown`
+    // (undici's Dispatcher type is version-specific across @types/node
+    // majors); cast to the undici Dispatcher this module's own `request`
+    // expects.
+    dispatcher: getEventsDispatcher(config) as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
@@ -353,10 +358,15 @@ export async function getEventV4(
   const response = await request(url, {
     method: 'GET',
     headers: Object.fromEntries(headers.entries()),
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
+    // The events API uses its own HTTP/2-enabled dispatcher: these
+    // reads/writes are plain request/response (or a streamed LIST response)
+    // and benefit from multiplexing, while the default dispatcher stays on
+    // HTTP/1.1 because H2 deadlocks the queue's webhook respondWith mechanism
+    // — see http-client.ts. getEventsDispatcher() is typed `unknown`
+    // (undici's Dispatcher type is version-specific across @types/node
+    // majors); cast to the undici Dispatcher this module's own `request`
+    // expects.
+    dispatcher: getEventsDispatcher(config) as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
@@ -441,10 +451,15 @@ async function consumeListFrameStream(
   const response = await request(url, {
     method: 'GET',
     headers: Object.fromEntries(headers.entries()),
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
+    // The events API uses its own HTTP/2-enabled dispatcher: these
+    // reads/writes are plain request/response (or a streamed LIST response)
+    // and benefit from multiplexing, while the default dispatcher stays on
+    // HTTP/1.1 because H2 deadlocks the queue's webhook respondWith mechanism
+    // — see http-client.ts. getEventsDispatcher() is typed `unknown`
+    // (undici's Dispatcher type is version-specific across @types/node
+    // majors); cast to the undici Dispatcher this module's own `request`
+    // expects.
+    dispatcher: getEventsDispatcher(config) as Dispatcher,
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorBody = await response.body.text();
