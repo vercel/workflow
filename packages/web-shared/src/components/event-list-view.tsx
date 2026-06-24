@@ -696,11 +696,11 @@ function RowsSkeleton() {
           <div className="w-5 flex-shrink-0 flex items-center justify-center">
             <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
           </div>
-          {/* Created */}
+          {/* Occurred */}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             <Skeleton className="h-3" style={{ width: '70%' }} />
           </div>
-          {/* Occurred */}
+          {/* Created */}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             <Skeleton className="h-3" style={{ width: '70%' }} />
           </div>
@@ -1019,16 +1019,6 @@ export function EventRow({
             />
           </div>
 
-          {/* Created */}
-          <div
-            className="tabular-nums min-w-0 px-4"
-            style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
-          >
-            <TimestampTooltip date={createdAt}>
-              <span>{formatEventTime(createdAt)}</span>
-            </TimestampTooltip>
-          </div>
-
           {/* Occurred */}
           <div
             className="tabular-nums min-w-0 px-4"
@@ -1041,6 +1031,16 @@ export function EventRow({
             ) : (
               '-'
             )}
+          </div>
+
+          {/* Created */}
+          <div
+            className="tabular-nums min-w-0 px-4"
+            style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
+          >
+            <TimestampTooltip date={createdAt}>
+              <span>{formatEventTime(createdAt)}</span>
+            </TimestampTooltip>
           </div>
 
           {/* Event Type */}
@@ -1672,10 +1672,10 @@ function EventListViewInner({
           <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
           <div className="w-5 flex-shrink-0" />
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Created
+            Occurred
           </div>
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Occurred
+            Created
           </div>
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             Event Type

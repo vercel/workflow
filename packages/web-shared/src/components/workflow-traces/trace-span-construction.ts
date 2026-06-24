@@ -29,7 +29,9 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'attr_set',
 ]);
 
-const getEventTimestamp = (event: Event | undefined): Date | undefined => {
+export const getEventTimestamp = (
+  event: Event | undefined
+): Date | undefined => {
   const value = event?.occurredAt ?? event?.createdAt;
   if (!value) return undefined;
 
@@ -381,13 +383,34 @@ export function runToSpan(
     data: runIdentity,
   };
 
-  // Use createdAt as span start time, with activeStartTime for when execution began
-  const spanStartTime = new Date(run.createdAt);
-  const activeStartTime = run.startedAt ? new Date(run.startedAt) : undefined;
-  const endTime = run.completedAt ?? now;
+  // Prefer the event occurrence timestamp when available so the root span
+  // lines up with child spans that already use event occurrence time.
+  const runCreatedEvent = runEvents.find(
+    (event) => event.eventType === 'run_created'
+  );
+  const runStartedEvent = runEvents.find(
+    (event) => event.eventType === 'run_started'
+  );
+  const terminalEvent = runEvents
+    .slice()
+    .reverse()
+    .find(
+      (event) =>
+        event.eventType === 'run_completed' ||
+        event.eventType === 'run_failed' ||
+        event.eventType === 'run_cancelled'
+    );
+  const spanStartTime =
+    getEventTimestamp(runCreatedEvent) ?? new Date(run.createdAt);
+  const activeStartTime =
+    getEventTimestamp(runStartedEvent) ??
+    (run.startedAt ? new Date(run.startedAt) : undefined);
+  const endTime = getEventTimestamp(terminalEvent) ?? run.completedAt ?? now;
 
   // Convert run-level events to span events
-  const events = convertEventsToSpanEvents(runEvents, false);
+  const events = convertEventsToSpanEvents(runEvents, false, {
+    preferOccurredAt: true,
+  });
 
   return {
     spanId: String(run.runId),
