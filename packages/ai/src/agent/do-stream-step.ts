@@ -409,10 +409,13 @@ export async function doStreamStep(
                   warnings = chunk.warnings;
                   break;
                 case 'response-metadata':
+                  // Merge per-field, mirroring the AI SDK: a provider may emit
+                  // multiple response-metadata chunks, and a later partial chunk
+                  // must not clobber fields populated by an earlier one.
                   responseMetadata = {
-                    id: chunk.id,
-                    modelId: chunk.modelId,
-                    timestamp: chunk.timestamp,
+                    id: chunk.id ?? responseMetadata?.id,
+                    modelId: chunk.modelId ?? responseMetadata?.modelId,
+                    timestamp: chunk.timestamp ?? responseMetadata?.timestamp,
                   };
                   break;
               }
