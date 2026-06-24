@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { tool } from 'ai';
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
@@ -24,6 +24,24 @@ describe('toolsToModelTools', () => {
     expect(result[0]).toHaveProperty('inputSchema');
     expect(result[0]).not.toHaveProperty('id');
     expect(result[0]).not.toHaveProperty('args');
+  });
+
+  it('throws a fatal user error for invalid Zod tool schemas', async () => {
+    const tools = {
+      broken: tool({
+        description: 'Broken schema',
+        inputSchema: z.object({
+          event: { type: 'string' } as any,
+        }),
+        execute: async () => 'never',
+      }),
+    };
+
+    await expect(toolsToModelTools(tools)).rejects.toMatchObject({
+      name: 'WorkflowAISchemaError',
+      fatal: true,
+      message: expect.stringContaining('Invalid inputSchema for tool "broken"'),
+    });
   });
 
   it('preserves provider tool type, id, and args', async () => {

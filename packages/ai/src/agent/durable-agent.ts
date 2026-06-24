@@ -28,6 +28,10 @@ import {
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { getErrorMessage } from '../get-error-message.js';
 import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
+import {
+  fatalSchemaDefinitionError,
+  isZodSchemaDefinitionError,
+} from './schema-error.js';
 import { streamTextIterator } from './stream-text-iterator.js';
 import { recordSpan, runInContext } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
@@ -1600,7 +1604,18 @@ async function executeTool(
         `Client-side tools should be filtered before calling executeTool.`
     );
   }
-  const schema = asSchema(tool.inputSchema);
+  let schema: ReturnType<typeof asSchema>;
+  try {
+    schema = asSchema(tool.inputSchema);
+  } catch (error) {
+    if (isZodSchemaDefinitionError(error)) {
+      throw fatalSchemaDefinitionError(
+        error,
+        `Invalid inputSchema for tool "${toolCall.toolName}"`
+      );
+    }
+    throw error;
+  }
 
   let parsedInput: unknown;
   try {
@@ -1634,6 +1649,13 @@ async function executeTool(
     }
     parsedInput = input.value;
   } catch (parseError) {
+    if (isZodSchemaDefinitionError(parseError)) {
+      throw fatalSchemaDefinitionError(
+        parseError,
+        `Invalid inputSchema for tool "${toolCall.toolName}"`
+      );
+    }
+
     // Try to repair the tool call if a repair function is provided
     if (repairToolCall) {
       const repairedToolCall = await repairToolCall({

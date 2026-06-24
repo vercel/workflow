@@ -283,6 +283,71 @@ describe('DurableAgent', () => {
       });
     });
 
+    it('should throw a fatal user error for invalid Zod tool schemas', async () => {
+      const execute = vi.fn(async () => 'never');
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({
+            event: { type: 'string' } as any,
+          }),
+          execute,
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      vi.mocked(streamTextIterator).mockClear();
+      const mockMessages: LanguageModelV3Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({
+          done: false,
+          value: {
+            toolCalls: [
+              {
+                toolCallId: 'test-call-id',
+                toolName: 'testTool',
+                input: '{"event":"created"}',
+              } as LanguageModelV3ToolCall,
+            ],
+            messages: mockMessages,
+          },
+        }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await expect(
+        agent.stream({
+          messages: [{ role: 'user', content: 'test' }],
+          writable: mockWritable,
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowAISchemaError',
+        fatal: true,
+        message: expect.stringContaining(
+          'Invalid inputSchema for tool "testTool"'
+        ),
+      });
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(mockIterator.next).toHaveBeenCalledTimes(1);
+    });
+
     it('should pass through LanguageModelV3ToolResultOutput directly', async () => {
       // Tool returns a pre-formatted content output (e.g., multimodal with images)
       const contentOutput = {
