@@ -2,4 +2,4 @@
 '@workflow/web-shared': patch
 ---
 
-Show workflow event occurrence timestamps inside sidebar event rows and use them for step span timing.
+Use workflow event occurrence timestamps for step span timing when available.
