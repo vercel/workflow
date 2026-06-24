@@ -112,8 +112,15 @@ function EventItem({
   return (
     <DetailCard
       variant="card"
-      summaryClassName="px-3 py-2"
-      summary={
+      onOpenChange={
+        canHaveData
+          ? (open) => {
+              if (open) handleExpand();
+            }
+          : undefined
+      }
+    >
+      <DetailCard.Trigger className="px-3 py-2">
         <div className="flex w-full items-center justify-between gap-3">
           <span className="text-gray-1000 text-label-12 font-mono">
             {event.eventType}
@@ -122,57 +129,53 @@ function EventItem({
             {createdAtTime}
           </span>
         </div>
-      }
-      onToggle={
-        canHaveData
-          ? (open) => {
-              if (open) handleExpand();
-            }
-          : undefined
-      }
-    >
-      {/* Event attributes */}
-      <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
-        <div className="flex items-center justify-between gap-2 py-2 px-3">
-          <span className="text-label-12 text-gray-900">Event ID</span>
-          <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-            {event.eventId}
-          </span>
-        </div>
-        {event.correlationId && (
+      </DetailCard.Trigger>
+      <DetailCard.Content>
+        {/* Event attributes */}
+        <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
           <div className="flex items-center justify-between gap-2 py-2 px-3">
-            <span className="text-label-12 text-gray-900">Correlation ID</span>
+            <span className="text-label-12 text-gray-900">Event ID</span>
             <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-              {event.correlationId}
+              {event.eventId}
             </span>
           </div>
+          {event.correlationId && (
+            <div className="flex items-center justify-between gap-2 py-2 px-3">
+              <span className="text-label-12 text-gray-900">
+                Correlation ID
+              </span>
+              <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+                {event.correlationId}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Loading state */}
+        {isLoading && (
+          <div className="p-3">
+            <Skeleton className="h-4 w-[35%]" />
+            <Skeleton className="mt-2 h-4 w-[90%]" />
+            <Skeleton className="mt-2 h-4 w-[75%]" />
+          </div>
         )}
-      </div>
 
-      {/* Loading state */}
-      {isLoading && (
-        <div className="p-3">
-          <Skeleton className="h-4 w-[35%]" />
-          <Skeleton className="mt-2 h-4 w-[90%]" />
-          <Skeleton className="mt-2 h-4 w-[75%]" />
-        </div>
-      )}
+        {/* Error state */}
+        {loadError && (
+          <ErrorCard
+            title="Failed to load event data"
+            details={loadError}
+            className="mt-2"
+          />
+        )}
 
-      {/* Error state */}
-      {loadError && (
-        <ErrorCard
-          title="Failed to load event data"
-          details={loadError}
-          className="mt-2"
-        />
-      )}
-
-      {/* Event data */}
-      {displayPayload != null && (
-        <div className="[&>div]:border-none [&>div]:rounded-none">
-          <EventDataBlock eventType={event.eventType} data={displayPayload} />
-        </div>
-      )}
+        {/* Event data */}
+        {displayPayload != null && (
+          <div className="[&>div]:border-none [&>div]:rounded-none">
+            <EventDataBlock eventType={event.eventType} data={displayPayload} />
+          </div>
+        )}
+      </DetailCard.Content>
     </DetailCard>
   );
 }
@@ -294,13 +297,18 @@ export function EventsList({
   const hasEvents = sortedEvents.length > 0 && !error;
 
   if (!hasEvents && !isLoading) {
-    return <DetailCard summary="Events" disabled />;
+    return (
+      <DetailCard disabled>
+        <DetailCard.Trigger>Events</DetailCard.Trigger>
+      </DetailCard>
+    );
   }
 
   return (
     <RunClickContext.Provider value={onRunClick}>
       <StreamClickContext.Provider value={onStreamClick}>
-        <DetailCard summary="Events" defaultOpen>
+        <DetailCard defaultOpen>
+          <DetailCard.Trigger>Events</DetailCard.Trigger>
           <DetailCard.Content className="mb-0">
             {isLoading ? (
               <div className="flex flex-col -mx-4">

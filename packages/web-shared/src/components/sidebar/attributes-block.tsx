@@ -144,7 +144,8 @@ export function RunAttributesCard({
   if (keys.length === 0) return null;
 
   return (
-    <DetailCard summary="Attributes" defaultOpen>
+    <DetailCard defaultOpen>
+      <DetailCard.Trigger>Attributes</DetailCard.Trigger>
       <DetailCard.Content className="mb-4">
         <div className="flex flex-col">
           {keys.map((key) => (
@@ -188,7 +189,8 @@ function isMetadataRecord(value: unknown): value is Record<string, unknown> {
 export function RunMetadataCard({ metadata }: { metadata: unknown }) {
   if (!isMetadataRecord(metadata)) {
     return (
-      <DetailCard summary="Metadata" defaultOpen>
+      <DetailCard defaultOpen>
+        <DetailCard.Trigger>Metadata</DetailCard.Trigger>
         <DetailCard.Content className="mb-4">
           <CopyableDataBlock data={metadata} />
         </DetailCard.Content>
@@ -200,7 +202,8 @@ export function RunMetadataCard({ metadata }: { metadata: unknown }) {
   if (keys.length === 0) return null;
 
   return (
-    <DetailCard summary="Metadata" defaultOpen>
+    <DetailCard defaultOpen>
+      <DetailCard.Trigger>Metadata</DetailCard.Trigger>
       <DetailCard.Content className="mb-4">
         <div className="flex flex-col">
           {keys.map((key) => (

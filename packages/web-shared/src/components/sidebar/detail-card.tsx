@@ -1,184 +1,189 @@
+'use client';
+
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { Children, isValidElement, type ReactNode, useState } from 'react';
+import {
+  createContext,
+  type ReactNode,
+  type SyntheticEvent,
+  useContext,
+  useState,
+} from 'react';
 import { cn } from '../../lib/utils';
 
-type DetailCardProps = {
-  summary: ReactNode;
-  children?: ReactNode;
-  onToggle?: (open: boolean) => void;
-  disabled?: boolean;
-  defaultOpen?: boolean;
-  variant?: 'section' | 'card';
-  trailing?: ReactNode;
-  summaryClassName?: string;
+type DetailCardVariant = 'section' | 'card';
+
+type DetailCardContextValue = {
+  variant: DetailCardVariant;
+  disabled: boolean;
 };
 
-type DetailCardContentProps = {
-  children?: ReactNode;
+const DetailCardContext = createContext<DetailCardContextValue | null>(null);
+
+function useDetailCardContext(part: string): DetailCardContextValue {
+  const context = useContext(DetailCardContext);
+  if (!context) {
+    throw new Error(
+      `<DetailCard.${part}> must be rendered inside <DetailCard>`
+    );
+  }
+  return context;
+}
+
+type DetailCardProps = {
+  children: ReactNode;
+  variant?: DetailCardVariant;
+  disabled?: boolean;
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   className?: string;
 };
 
-function DetailCardContent({ children, className }: DetailCardContentProps) {
-  return <div className={cn('mt-2 mb-3', className)}>{children}</div>;
-}
-
-function isDetailCardContent(children: ReactNode) {
-  const childArray = Children.toArray(children);
-  return (
-    childArray.length === 1 &&
-    isValidElement(childArray[0]) &&
-    childArray[0].type === DetailCardContent
-  );
-}
-
-function renderSectionContent(children: ReactNode) {
-  if (isDetailCardContent(children)) {
-    return children;
-  }
-  return <DetailCardContent>{children}</DetailCardContent>;
-}
-
-function renderCardContent(children: ReactNode) {
-  if (isDetailCardContent(children)) {
-    return children;
-  }
-  return <div>{children}</div>;
-}
-
-function DetailCardRoot({
-  summary,
+/**
+ * Collapsible section used throughout the run detail panel. Compose it with
+ * `DetailCard.Trigger` (the header) and `DetailCard.Content` (the body):
+ *
+ * ```tsx
+ * <DetailCard defaultOpen>
+ *   <DetailCard.Trigger>Metadata</DetailCard.Trigger>
+ *   <DetailCard.Content>...</DetailCard.Content>
+ * </DetailCard>
+ * ```
+ */
+function DetailCard({
   children,
-  onToggle,
+  variant = 'section',
   disabled = false,
   defaultOpen = false,
-  variant = 'section',
-  trailing,
-  summaryClassName,
+  onOpenChange,
+  className,
 }: DetailCardProps) {
   const [open, setOpen] = useState(defaultOpen);
 
-  const handleToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
-    // React surfaces `toggle` as a bubbling synthetic event even though the
-    // native event doesn't bubble. Without this guard, a nested <details>
-    // (e.g. an event card inside the Events section) collapsing would flip
-    // the outer DetailCard's state. Only react to direct toggles.
-    if (e.target !== e.currentTarget) return;
-    const next = e.currentTarget.open;
+  const handleToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
+    // React bubbles the `toggle` event even though the native one doesn't, so
+    // a nested <details> (e.g. an event card inside the Events section)
+    // collapsing would otherwise flip this card. Only react to direct toggles.
+    if (event.target !== event.currentTarget) return;
+    const next = event.currentTarget.open;
     setOpen(next);
-    onToggle?.(next);
+    onOpenChange?.(next);
   };
 
+  const details = (
+    <details
+      data-slot="detail-card"
+      data-state={open ? 'open' : 'closed'}
+      open={open}
+      onToggle={disabled ? undefined : handleToggle}
+      className={cn(
+        variant === 'card'
+          ? 'group/card border-gray-alpha-400 last:border-b'
+          : 'group',
+        className
+      )}
+    >
+      <DetailCardContext.Provider value={{ variant, disabled }}>
+        {children}
+      </DetailCardContext.Provider>
+    </details>
+  );
+
   if (variant === 'card') {
-    if (disabled) {
-      return (
-        <div
-          className={cn(
-            'list-none px-3 py-4 bg-background-200 [&::-webkit-details-marker]:hidden',
-            summaryClassName
-          )}
-          style={{ cursor: 'not-allowed', opacity: 0.8 }}
-        >
-          {summary}
-        </div>
-      );
-    }
-    return (
-      <details
-        className="group/card last:border-b border-gray-alpha-400"
-        open={open}
-        onToggle={handleToggle}
-      >
-        <summary
-          className={cn(
-            'list-none cursor-pointer px-3 py-4 border-t border-gray-alpha-400 bg-background-200 hover:bg-gray-100 [&::-webkit-details-marker]:hidden',
-            summaryClassName
-          )}
-        >
-          <span className="flex items-center gap-1.5">
-            <ChevronRight
-              size={14}
-              className={cn(
-                'shrink-0 text-gray-700 group-hover/card:text-gray-1000',
-                open && 'rotate-90'
-              )}
-            />
-            {summary}
-          </span>
-        </summary>
-        {renderCardContent(children)}
-      </details>
-    );
-  }
-
-  // Shared height with the expandable summary row. Keeps the trailing /
-  // disabled / chevron variants visually identical in height regardless of
-  // what's in the trailing slot.
-  const rowClasses =
-    'flex h-9 items-center gap-2 px-2 -mx-2 text-heading-14 font-medium';
-
-  if (trailing) {
-    return (
-      <section className="-mx-4 border-t px-4 py-2 border-gray-alpha-400">
-        <div className={cn(rowClasses, summaryClassName)}>
-          <div className="isolate relative shrink-0 w-3.5 h-3.5 text-gray-700">
-            <ChevronRight
-              size={14}
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
-            />
-          </div>
-          <span className="min-w-0 flex-1">{summary}</span>
-          <div className="shrink-0 pr-1">{trailing}</div>
-        </div>
-      </section>
-    );
-  }
-
-  if (disabled) {
-    return (
-      <section className="-mx-4 border-t px-4 py-2 border-gray-alpha-400">
-        <div
-          className={cn(
-            rowClasses,
-            'text-gray-700 cursor-not-allowed',
-            summaryClassName
-          )}
-        >
-          <span className="min-w-0 flex-1">{summary}</span>
-        </div>
-      </section>
-    );
+    return details;
   }
 
   return (
-    <section className="-mx-4 border-t px-4 py-2 border-gray-alpha-400">
-      <details className="group" open={open} onToggle={handleToggle}>
-        <summary
-          className={cn(
-            'group/trigger list-none cursor-pointer rounded hover:bg-gray-alpha-100 [&::-webkit-details-marker]:hidden',
-            rowClasses,
-            summaryClassName
-          )}
-        >
-          <div className="isolate relative shrink-0 text-gray-700 group-hover/trigger:text-gray-1000 w-3.5 h-3.5">
-            <ChevronRight
-              size={14}
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-100 group-open:opacity-0"
-            />
-            <ChevronDown
-              size={14}
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-open:opacity-100"
-            />
-          </div>
-          <span className="min-w-0 flex-1">{summary}</span>
-        </summary>
-        {renderSectionContent(children)}
-      </details>
+    <section className="-mx-4 border-t border-gray-alpha-400 px-4 py-2">
+      {details}
     </section>
   );
 }
 
-const DetailCard = Object.assign(DetailCardRoot, {
+type DetailCardTriggerProps = {
+  children: ReactNode;
+  className?: string;
+};
+
+function DetailCardTrigger({ children, className }: DetailCardTriggerProps) {
+  const { variant, disabled } = useDetailCardContext('Trigger');
+
+  if (variant === 'card') {
+    return (
+      <summary
+        data-slot="detail-card-trigger"
+        className={cn(
+          'flex cursor-pointer list-none items-center gap-1.5 border-t border-gray-alpha-400 bg-background-200 px-3 py-4 hover:bg-gray-100 [&::-webkit-details-marker]:hidden',
+          className
+        )}
+      >
+        <ChevronRight
+          size={14}
+          className="shrink-0 text-gray-700 group-hover/card:text-gray-1000 group-open/card:rotate-90"
+        />
+        {children}
+      </summary>
+    );
+  }
+
+  // Shared row metrics keep every header the same height regardless of variant.
+  const row =
+    'flex h-9 items-center gap-2 -mx-2 px-2 text-heading-14 font-medium list-none [&::-webkit-details-marker]:hidden';
+
+  if (disabled) {
+    return (
+      <summary
+        data-slot="detail-card-trigger"
+        className={cn(row, 'pointer-events-none text-gray-700', className)}
+      >
+        <span className="min-w-0 flex-1">{children}</span>
+      </summary>
+    );
+  }
+
+  return (
+    <summary
+      data-slot="detail-card-trigger"
+      className={cn(
+        row,
+        'group/trigger cursor-pointer rounded hover:bg-gray-alpha-100',
+        className
+      )}
+    >
+      <span className="relative isolate h-3.5 w-3.5 shrink-0 text-gray-700 group-hover/trigger:text-gray-1000">
+        <ChevronRight
+          size={14}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-100 group-open:opacity-0"
+        />
+        <ChevronDown
+          size={14}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-open:opacity-100"
+        />
+      </span>
+      <span className="min-w-0 flex-1">{children}</span>
+    </summary>
+  );
+}
+
+type DetailCardContentProps = {
+  children: ReactNode;
+  className?: string;
+};
+
+function DetailCardContent({ children, className }: DetailCardContentProps) {
+  const { variant } = useDetailCardContext('Content');
+  return (
+    <div
+      data-slot="detail-card-content"
+      className={cn(variant === 'section' && 'mt-2 mb-3', className)}
+    >
+      {children}
+    </div>
+  );
+}
+
+const DetailCardNamespace = Object.assign(DetailCard, {
+  Trigger: DetailCardTrigger,
   Content: DetailCardContent,
 });
 
-export { DetailCard };
+export { DetailCardNamespace as DetailCard };

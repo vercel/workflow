@@ -152,27 +152,30 @@ function ConversationWithTabs({
   );
 
   return (
-    <DetailCard summary="Input">
-      <TabbedContainer
-        tabs={conversationTabs}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        ariaLabel="Conversation view"
-      >
-        {activeTab === 'conversation' ? (
-          <ConversationView messages={conversation} />
-        ) : (
-          <div className="p-3">
-            {Array.isArray(args)
-              ? args.map((v, i) => (
-                  <div className="mt-2 first:mt-0" key={i}>
-                    {JsonBlock(v)}
-                  </div>
-                ))
-              : JsonBlock(args)}
-          </div>
-        )}
-      </TabbedContainer>
+    <DetailCard>
+      <DetailCard.Trigger>Input</DetailCard.Trigger>
+      <DetailCard.Content>
+        <TabbedContainer
+          tabs={conversationTabs}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          ariaLabel="Conversation view"
+        >
+          {activeTab === 'conversation' ? (
+            <ConversationView messages={conversation} />
+          ) : (
+            <div className="p-3">
+              {Array.isArray(args)
+                ? args.map((v, i) => (
+                    <div className="mt-2 first:mt-0" key={i}>
+                      {JsonBlock(v)}
+                    </div>
+                  ))
+                : JsonBlock(args)}
+            </div>
+          )}
+        </TabbedContainer>
+      </DetailCard.Content>
     </DetailCard>
   );
 }
@@ -435,15 +438,21 @@ const attributeToDisplayFn: Record<
     if (!hasDisplayContent(value)) return null;
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Metadata">
-          <EncryptedDataBlock />
+        <DetailCard>
+          <DetailCard.Trigger>Metadata</DetailCard.Trigger>
+          <DetailCard.Content>
+            <EncryptedDataBlock />
+          </DetailCard.Content>
         </DetailCard>
       );
     }
     if (isExpiredMarker(value)) {
       return (
-        <DetailCard summary="Metadata">
-          <ExpiredFieldBlock />
+        <DetailCard>
+          <DetailCard.Trigger>Metadata</DetailCard.Trigger>
+          <DetailCard.Content>
+            <ExpiredFieldBlock />
+          </DetailCard.Content>
         </DetailCard>
       );
     }
@@ -452,8 +461,11 @@ const attributeToDisplayFn: Record<
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Input">
-          <EncryptedFieldBlock />
+        <DetailCard>
+          <DetailCard.Trigger>Input</DetailCard.Trigger>
+          <DetailCard.Content>
+            <EncryptedFieldBlock />
+          </DetailCard.Content>
         </DetailCard>
       );
     }
@@ -477,13 +489,17 @@ const attributeToDisplayFn: Record<
             <>
               <ConversationWithTabs conversation={conversation} args={args} />
               {hasClosureVars && (
-                <DetailCard summary="Closure Variables">
-                  {JsonBlock(closureVars)}
+                <DetailCard>
+                  <DetailCard.Trigger>Closure Variables</DetailCard.Trigger>
+                  <DetailCard.Content>
+                    {JsonBlock(closureVars)}
+                  </DetailCard.Content>
                 </DetailCard>
               )}
               {hasThisVal && (
-                <DetailCard summary="This Value">
-                  {JsonBlock(thisVal)}
+                <DetailCard>
+                  <DetailCard.Trigger>This Value</DetailCard.Trigger>
+                  <DetailCard.Content>{JsonBlock(thisVal)}</DetailCard.Content>
                 </DetailCard>
               )}
             </>
@@ -493,27 +509,38 @@ const attributeToDisplayFn: Record<
 
       // Don't render an empty "Input (0 arguments)" card when no input exists.
       if (!hasArgs && !hasClosureVars && !hasThisVal) {
-        return <DetailCard summary="Input (no data)" disabled />;
+        return (
+          <DetailCard disabled>
+            <DetailCard.Trigger>Input (no data)</DetailCard.Trigger>
+          </DetailCard>
+        );
       }
 
       return (
         <>
-          <DetailCard summary="Input">
-            {Array.isArray(args)
-              ? args.map((v, i) => (
-                  <div className="mt-2 first:mt-0" key={i}>
-                    {JsonBlock(v)}
-                  </div>
-                ))
-              : JsonBlock(args)}
+          <DetailCard>
+            <DetailCard.Trigger>Input</DetailCard.Trigger>
+            <DetailCard.Content>
+              {Array.isArray(args)
+                ? args.map((v, i) => (
+                    <div className="mt-2 first:mt-0" key={i}>
+                      {JsonBlock(v)}
+                    </div>
+                  ))
+                : JsonBlock(args)}
+            </DetailCard.Content>
           </DetailCard>
           {hasClosureVars && (
-            <DetailCard summary="Closure Variables">
-              {JsonBlock(closureVars)}
+            <DetailCard>
+              <DetailCard.Trigger>Closure Variables</DetailCard.Trigger>
+              <DetailCard.Content>{JsonBlock(closureVars)}</DetailCard.Content>
             </DetailCard>
           )}
           {hasThisVal && (
-            <DetailCard summary="Context">{JsonBlock(thisVal)}</DetailCard>
+            <DetailCard>
+              <DetailCard.Trigger>Context</DetailCard.Trigger>
+              <DetailCard.Content>{JsonBlock(thisVal)}</DetailCard.Content>
+            </DetailCard>
           )}
         </>
       );
@@ -521,37 +548,55 @@ const attributeToDisplayFn: Record<
 
     // Fallback: treat as plain array or object
     if (!hasDisplayContent(value)) {
-      return <DetailCard summary="Input (no data)" disabled />;
+      return (
+        <DetailCard disabled>
+          <DetailCard.Trigger>Input (no data)</DetailCard.Trigger>
+        </DetailCard>
+      );
     }
     return (
-      <DetailCard summary="Input">
-        {Array.isArray(value)
-          ? value.map((v, i) => (
-              <div className="mt-2 first:mt-0" key={i}>
-                {JsonBlock(v)}
-              </div>
-            ))
-          : JsonBlock(value)}
+      <DetailCard>
+        <DetailCard.Trigger>Input</DetailCard.Trigger>
+        <DetailCard.Content>
+          {Array.isArray(value)
+            ? value.map((v, i) => (
+                <div className="mt-2 first:mt-0" key={i}>
+                  {JsonBlock(v)}
+                </div>
+              ))
+            : JsonBlock(value)}
+        </DetailCard.Content>
       </DetailCard>
     );
   },
   output: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Output">
-          <EncryptedFieldBlock />
+        <DetailCard>
+          <DetailCard.Trigger>Output</DetailCard.Trigger>
+          <DetailCard.Content>
+            <EncryptedFieldBlock />
+          </DetailCard.Content>
         </DetailCard>
       );
     }
     if (!hasDisplayContent(value)) return null;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return <DetailCard summary="Output">{JsonBlock(value)}</DetailCard>;
+    return (
+      <DetailCard>
+        <DetailCard.Trigger>Output</DetailCard.Trigger>
+        <DetailCard.Content>{JsonBlock(value)}</DetailCard.Content>
+      </DetailCard>
+    );
   },
   error: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Error" defaultOpen>
-          <EncryptedFieldBlock />
+        <DetailCard defaultOpen>
+          <DetailCard.Trigger>Error</DetailCard.Trigger>
+          <DetailCard.Content>
+            <EncryptedFieldBlock />
+          </DetailCard.Content>
         </DetailCard>
       );
     }
@@ -562,31 +607,39 @@ const attributeToDisplayFn: Record<
     // `{ message, stack }`. Render both with the dedicated error block.
     if (isStructuredError(value)) {
       return (
-        <DetailCard summary="Error" defaultOpen>
-          <ErrorStackBlock value={value} />
+        <DetailCard defaultOpen>
+          <DetailCard.Trigger>Error</DetailCard.Trigger>
+          <DetailCard.Content>
+            <ErrorStackBlock value={value} />
+          </DetailCard.Content>
         </DetailCard>
       );
     }
 
     return (
-      <DetailCard summary="Error" defaultOpen>
-        {JsonBlock(value)}
+      <DetailCard defaultOpen>
+        <DetailCard.Trigger>Error</DetailCard.Trigger>
+        <DetailCard.Content>{JsonBlock(value)}</DetailCard.Content>
       </DetailCard>
     );
   },
   eventData: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Event Data" defaultOpen>
-          <EncryptedFieldBlock />
+        <DetailCard defaultOpen>
+          <DetailCard.Trigger>Event Data</DetailCard.Trigger>
+          <DetailCard.Content>
+            <EncryptedFieldBlock />
+          </DetailCard.Content>
         </DetailCard>
       );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
     return (
-      <DetailCard summary="Event Data" defaultOpen>
-        {JsonBlock(value)}
+      <DetailCard defaultOpen>
+        <DetailCard.Trigger>Event Data</DetailCard.Trigger>
+        <DetailCard.Content>{JsonBlock(value)}</DetailCard.Content>
       </DetailCard>
     );
   },
@@ -664,12 +717,19 @@ export const AttributeBlock = ({
           : 'Input';
     if (decryptCtx?.hasEncryptedData) {
       return (
-        <DetailCard summary={label} defaultOpen={attribute === 'eventData'}>
-          <EncryptedFieldBlock />
+        <DetailCard defaultOpen={attribute === 'eventData'}>
+          <DetailCard.Trigger>{label}</DetailCard.Trigger>
+          <DetailCard.Content>
+            <EncryptedFieldBlock />
+          </DetailCard.Content>
         </DetailCard>
       );
     }
-    return <DetailCard summary={label} />;
+    return (
+      <DetailCard>
+        <DetailCard.Trigger>{label}</DetailCard.Trigger>
+      </DetailCard>
+    );
   }
 
   const displayFn =
@@ -852,7 +912,8 @@ export const AttributePanel = ({
         <StreamClickContext.Provider value={onStreamClick}>
           <DecryptClickContext.Provider value={decryptValue}>
             {visibleBasicAttributes.length > 0 && (
-              <DetailCard summary="Metadata" defaultOpen>
+              <DetailCard defaultOpen>
+                <DetailCard.Trigger>Metadata</DetailCard.Trigger>
                 <DetailCard.Content className="mt-0 mb-4">
                   <div className="flex flex-col">
                     {orderedBasicAttributes.map((attribute) => {
