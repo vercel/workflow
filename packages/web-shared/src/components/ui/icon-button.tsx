@@ -1,6 +1,6 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 import * as React from 'react';
-import { cn } from '../../lib/cn';
+import { cn } from '../../lib/utils';
 
 const iconButtonVariants = cva(
   [

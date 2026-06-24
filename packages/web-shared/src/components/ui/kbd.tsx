@@ -1,6 +1,6 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 import type { ComponentProps, ReactNode } from 'react';
-import { cn } from '../../lib/cn';
+import { cn } from '../../lib/utils';
 
 const kbdVariants = cva(
   'inline-flex items-center justify-center rounded px-1 text-center font-sans',

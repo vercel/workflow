@@ -6,7 +6,7 @@ import {
 } from '@workflow/world';
 import { cva, type VariantProps } from 'class-variance-authority';
 import type { ReactNode } from 'react';
-import { cn } from '../../lib/cn';
+import { cn } from '../../lib/utils';
 import { CopyButton } from '../new-trace-viewer/components/copy-button';
 import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import {
