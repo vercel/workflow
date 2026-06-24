@@ -1,18 +1,8 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { Children, isValidElement, type ReactNode, useState } from 'react';
 import { cn } from '../../lib/utils';
 
-export function DetailCard({
-  summary,
-  children,
-  onToggle,
-  disabled = false,
-  defaultOpen = false,
-  variant = 'section',
-  trailing,
-  summaryClassName,
-  contentClassName,
-}: {
+type DetailCardProps = {
   summary: ReactNode;
   children?: ReactNode;
   onToggle?: (open: boolean) => void;
@@ -21,8 +11,50 @@ export function DetailCard({
   variant?: 'section' | 'card';
   trailing?: ReactNode;
   summaryClassName?: string;
-  contentClassName?: string;
-}) {
+};
+
+type DetailCardContentProps = {
+  children?: ReactNode;
+  className?: string;
+};
+
+function DetailCardContent({ children, className }: DetailCardContentProps) {
+  return <div className={cn('mt-2 mb-3', className)}>{children}</div>;
+}
+
+function isDetailCardContent(children: ReactNode) {
+  const childArray = Children.toArray(children);
+  return (
+    childArray.length === 1 &&
+    isValidElement(childArray[0]) &&
+    childArray[0].type === DetailCardContent
+  );
+}
+
+function renderSectionContent(children: ReactNode) {
+  if (isDetailCardContent(children)) {
+    return children;
+  }
+  return <DetailCardContent>{children}</DetailCardContent>;
+}
+
+function renderCardContent(children: ReactNode) {
+  if (isDetailCardContent(children)) {
+    return children;
+  }
+  return <div>{children}</div>;
+}
+
+function DetailCardRoot({
+  summary,
+  children,
+  onToggle,
+  disabled = false,
+  defaultOpen = false,
+  variant = 'section',
+  trailing,
+  summaryClassName,
+}: DetailCardProps) {
   const [open, setOpen] = useState(defaultOpen);
 
   const handleToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
@@ -73,7 +105,7 @@ export function DetailCard({
             {summary}
           </span>
         </summary>
-        <div className={contentClassName}>{children}</div>
+        {renderCardContent(children)}
       </details>
     );
   }
@@ -139,8 +171,14 @@ export function DetailCard({
           </div>
           <span className="min-w-0 flex-1">{summary}</span>
         </summary>
-        <div className={cn('mt-2 mb-3', contentClassName)}>{children}</div>
+        {renderSectionContent(children)}
       </details>
     </section>
   );
 }
+
+const DetailCard = Object.assign(DetailCardRoot, {
+  Content: DetailCardContent,
+});
+
+export { DetailCard };

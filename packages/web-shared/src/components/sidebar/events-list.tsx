@@ -300,31 +300,33 @@ export function EventsList({
   return (
     <RunClickContext.Provider value={onRunClick}>
       <StreamClickContext.Provider value={onStreamClick}>
-        <DetailCard summary="Events" contentClassName="mb-0" defaultOpen>
-          {isLoading ? (
-            <div className="flex flex-col -mx-4">
-              {[0, 1, 2].map((i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between gap-3 bg-background-200 px-4 py-2"
-                >
-                  <Skeleton className="h-4 w-32 rounded" />
-                  <Skeleton className="h-3 w-16 rounded" />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex flex-col -mx-4">
-              {sortedEvents.map((event) => (
-                <EventItem
-                  key={event.eventId}
-                  event={event}
-                  onLoadEventData={onLoadEventData}
-                  encryptionKey={encryptionKey}
-                />
-              ))}
-            </div>
-          )}
+        <DetailCard summary="Events" defaultOpen>
+          <DetailCard.Content className="mb-0">
+            {isLoading ? (
+              <div className="flex flex-col -mx-4">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between gap-3 bg-background-200 px-4 py-2"
+                  >
+                    <Skeleton className="h-4 w-32 rounded" />
+                    <Skeleton className="h-3 w-16 rounded" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col -mx-4">
+                {sortedEvents.map((event) => (
+                  <EventItem
+                    key={event.eventId}
+                    event={event}
+                    onLoadEventData={onLoadEventData}
+                    encryptionKey={encryptionKey}
+                  />
+                ))}
+              </div>
+            )}
+          </DetailCard.Content>
         </DetailCard>
       </StreamClickContext.Provider>
     </RunClickContext.Provider>

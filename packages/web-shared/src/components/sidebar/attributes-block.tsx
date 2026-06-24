@@ -144,12 +144,18 @@ export function RunAttributesCard({
   if (keys.length === 0) return null;
 
   return (
-    <DetailCard summary="Attributes" defaultOpen contentClassName="mb-4">
-      <div className="flex flex-col">
-        {keys.map((key) => (
-          <AttributeRow attributeKey={key} key={key} value={attributes[key]} />
-        ))}
-      </div>
+    <DetailCard summary="Attributes" defaultOpen>
+      <DetailCard.Content className="mb-4">
+        <div className="flex flex-col">
+          {keys.map((key) => (
+            <AttributeRow
+              attributeKey={key}
+              key={key}
+              value={attributes[key]}
+            />
+          ))}
+        </div>
+      </DetailCard.Content>
     </DetailCard>
   );
 }
@@ -182,8 +188,10 @@ function isMetadataRecord(value: unknown): value is Record<string, unknown> {
 export function RunMetadataCard({ metadata }: { metadata: unknown }) {
   if (!isMetadataRecord(metadata)) {
     return (
-      <DetailCard summary="Metadata" defaultOpen contentClassName="mb-4">
-        <CopyableDataBlock data={metadata} />
+      <DetailCard summary="Metadata" defaultOpen>
+        <DetailCard.Content className="mb-4">
+          <CopyableDataBlock data={metadata} />
+        </DetailCard.Content>
       </DetailCard>
     );
   }
@@ -192,16 +200,18 @@ export function RunMetadataCard({ metadata }: { metadata: unknown }) {
   if (keys.length === 0) return null;
 
   return (
-    <DetailCard summary="Metadata" defaultOpen contentClassName="mb-4">
-      <div className="flex flex-col">
-        {keys.map((key) => (
-          <AttributeRow
-            attributeKey={key}
-            key={key}
-            value={formatMetadataValue(metadata[key])}
-          />
-        ))}
-      </div>
+    <DetailCard summary="Metadata" defaultOpen>
+      <DetailCard.Content className="mb-4">
+        <div className="flex flex-col">
+          {keys.map((key) => (
+            <AttributeRow
+              attributeKey={key}
+              key={key}
+              value={formatMetadataValue(metadata[key])}
+            />
+          ))}
+        </div>
+      </DetailCard.Content>
     </DetailCard>
   );
 }

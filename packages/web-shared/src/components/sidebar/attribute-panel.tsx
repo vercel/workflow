@@ -852,43 +852,42 @@ export const AttributePanel = ({
         <StreamClickContext.Provider value={onStreamClick}>
           <DecryptClickContext.Provider value={decryptValue}>
             {visibleBasicAttributes.length > 0 && (
-              <DetailCard
-                summary="Metadata"
-                defaultOpen
-                contentClassName="mt-0 mb-4"
-              >
-                <div className="flex flex-col">
-                  {orderedBasicAttributes.map((attribute) => {
-                    const displayValue = attributeToDisplayFn[
-                      attribute as keyof typeof attributeToDisplayFn
-                    ]?.(displayData[attribute as keyof typeof displayData]);
-                    const isCopyableBasicAttribute =
-                      copyableBasicAttributes.has(attribute as AttributeKey) &&
-                      typeof displayValue === 'string';
-                    const label = getAttributeDisplayName(attribute);
+              <DetailCard summary="Metadata" defaultOpen>
+                <DetailCard.Content className="mt-0 mb-4">
+                  <div className="flex flex-col">
+                    {orderedBasicAttributes.map((attribute) => {
+                      const displayValue = attributeToDisplayFn[
+                        attribute as keyof typeof attributeToDisplayFn
+                      ]?.(displayData[attribute as keyof typeof displayData]);
+                      const isCopyableBasicAttribute =
+                        copyableBasicAttributes.has(
+                          attribute as AttributeKey
+                        ) && typeof displayValue === 'string';
+                      const label = getAttributeDisplayName(attribute);
 
-                    return (
-                      <DetailMonoKeyValueRow
-                        key={attribute}
-                        label={label}
-                        value={displayValue}
-                        copyText={
-                          isCopyableBasicAttribute ? displayValue : undefined
-                        }
-                      />
-                    );
-                  })}
-                  {isLoading &&
-                    resource === 'sleep' &&
-                    !displayData.resumeAt && (
-                      <div className="flex items-center justify-between gap-3 py-0.5">
-                        <span className="text-label-13 text-gray-900">
-                          Resume
-                        </span>
-                        <Skeleton className="h-4 w-[55%]" />
-                      </div>
-                    )}
-                </div>
+                      return (
+                        <DetailMonoKeyValueRow
+                          key={attribute}
+                          label={label}
+                          value={displayValue}
+                          copyText={
+                            isCopyableBasicAttribute ? displayValue : undefined
+                          }
+                        />
+                      );
+                    })}
+                    {isLoading &&
+                      resource === 'sleep' &&
+                      !displayData.resumeAt && (
+                        <div className="flex items-center justify-between gap-3 py-0.5">
+                          <span className="text-label-13 text-gray-900">
+                            Resume
+                          </span>
+                          <Skeleton className="h-4 w-[55%]" />
+                        </div>
+                      )}
+                  </div>
+                </DetailCard.Content>
               </DetailCard>
             )}
             {error ? (
