@@ -12,9 +12,11 @@ import {
 } from 'lucide-react';
 import {
   type ReactNode,
+  type RefObject,
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -68,73 +70,166 @@ interface Viewport {
   end: number;
 }
 
-function useAnimatedViewport(initial: Viewport) {
+const ZOOM_ANIM_MS = 150;
+
+/**
+ * Drives the timeline viewport, animating zoom/pan transitions as a single
+ * GPU-composited transform on the timeline's "zoom layer" instead of a
+ * `setState`-per-frame tween.
+ *
+ * The committed `viewport` jumps straight to the target (one render, so bars
+ * and gridlines reconcile exactly once per zoom). The visual transition is then
+ * performed by seeding the layer with the inverse transform that maps the
+ * freshly-rendered target back onto the currently-displayed view, and tweening
+ * that transform to identity. Because the timeline maps time→x linearly, the
+ * mapping is a 1-D affine transform `X' = a·X + b` (with `transform-origin` at
+ * the content's left edge):
+ *
+ *   a = toDuration / fromDuration            (scaleX)
+ *   b = (W / fromDuration) · (toStart − fromStart)   (translateX, px)
+ *
+ * where `W` is the content width in px. This collapses ~9 full-timeline
+ * re-renders per zoom into a single render + a compositor animation.
+ *
+ * `rootRef` is the timeline's outer wrapper; the layer we transform is found
+ * within it via its `data-zoom-layer` marker, so `Timeline` owns the element
+ * and needs no extra prop.
+ */
+function useAnimatedViewport(
+  initial: Viewport,
+  rootRef: RefObject<HTMLElement | null>
+) {
   const [viewport, setViewportState] = useState<Viewport>(initial);
-  const animRef = useRef<{
-    raf: number;
-    from: Viewport;
-    to: Viewport;
-    start: number;
-  } | null>(null);
-  const currentRef = useRef(initial);
-  currentRef.current = viewport;
+
+  // The viewport currently *displayed*. During a transition this tracks the
+  // interpolated value (the committed `viewport` is already at the target);
+  // used as the `from` when a new animation interrupts a running one.
+  const visualRef = useRef<Viewport>(initial);
+
+  // Set by `animateTo` to request a tween; consumed once by the layout effect
+  // after the target viewport has been committed to the DOM.
+  const pendingFromRef = useRef<Viewport | null>(null);
+  const rafRef = useRef(0);
   const reducedMotion = useReducedMotion();
 
-  const cancel = useCallback(() => {
-    if (animRef.current) {
-      cancelAnimationFrame(animRef.current.raf);
-      animRef.current = null;
+  // The layer whose `transform` we drive imperatively. `transform` is NOT a
+  // React-managed style on that element, so re-renders never clobber it.
+  const getZoomLayer = useCallback(
+    () =>
+      rootRef.current?.querySelector<HTMLElement>('[data-zoom-layer]') ?? null,
+    [rootRef]
+  );
+
+  const stopRaf = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
     }
   }, []);
 
-  const animateTo = useCallback(
-    (target: Viewport) => {
-      cancel();
-
-      if (reducedMotion) {
-        currentRef.current = target;
-        setViewportState(target);
-        return;
-      }
-
-      const from = currentRef.current;
-      const anim = { raf: 0, from, to: target, start: performance.now() };
-
-      const tick = () => {
-        const t = Math.min((performance.now() - anim.start) / 150, 1);
-        const e = 1 - (1 - t) * (1 - t);
-        setViewportState({
-          start: anim.from.start + (anim.to.start - anim.from.start) * e,
-          end: anim.from.end + (anim.to.end - anim.from.end) * e,
-        });
-        if (t < 1) anim.raf = requestAnimationFrame(tick);
-        else animRef.current = null;
-      };
-
-      animRef.current = anim;
-      anim.raf = requestAnimationFrame(tick);
-    },
-    [cancel, reducedMotion]
-  );
+  const clearTransform = useCallback(() => {
+    const el = getZoomLayer();
+    if (el) {
+      el.style.transform = '';
+      el.style.willChange = '';
+    }
+  }, [getZoomLayer]);
 
   const setViewport = useCallback(
     (update: Viewport | ((prev: Viewport) => Viewport)) => {
-      cancel();
-      if (typeof update === 'function') {
-        setViewportState((prev) => {
-          const next = update(prev);
-          currentRef.current = next;
-          return next;
-        });
-      } else {
-        currentRef.current = update;
-        setViewportState(update);
-      }
+      stopRaf();
+      pendingFromRef.current = null;
+      clearTransform();
+      setViewportState((prev) => {
+        const next = typeof update === 'function' ? update(prev) : update;
+        visualRef.current = next;
+        return next;
+      });
     },
-    [cancel]
+    [stopRaf, clearTransform]
   );
 
-  useEffect(() => cancel, [cancel]);
+  const animateTo = useCallback(
+    (target: Viewport) => {
+      stopRaf();
+      if (reducedMotion) {
+        pendingFromRef.current = null;
+        clearTransform();
+        visualRef.current = target;
+        setViewportState(target);
+        return;
+      }
+      // Commit the target now (a single render); the layout effect maps the
+      // freshly-painted target back to the current visual viewport and tweens
+      // the transform to identity.
+      pendingFromRef.current = visualRef.current;
+      setViewportState(target);
+    },
+    [stopRaf, clearTransform, reducedMotion]
+  );
+
+  // After the target viewport commits, before paint: seed the inverse transform
+  // (no visible flash) and tween it to identity. Runs on every viewport change
+  // but no-ops unless `animateTo` requested a transition.
+  useLayoutEffect(() => {
+    const from = pendingFromRef.current;
+    pendingFromRef.current = null;
+    const to = viewport;
+    const el = getZoomLayer();
+    if (!from || !el) {
+      visualRef.current = to;
+      return;
+    }
+
+    const contentWidth = el.clientWidth - TIMELINE_PADDING_PX * 2;
+    const fromDuration = from.end - from.start;
+    const toDuration = to.end - to.start;
+    if (contentWidth <= 0 || fromDuration <= 0 || toDuration <= 0) {
+      clearTransform();
+      visualRef.current = to;
+      return;
+    }
+
+    const scaleFrom = toDuration / fromDuration;
+    const translateFrom =
+      (contentWidth / fromDuration) * (to.start - from.start);
+
+    // Nothing meaningful to animate — snap to the target.
+    if (Math.abs(scaleFrom - 1) < 1e-4 && Math.abs(translateFrom) < 0.5) {
+      clearTransform();
+      visualRef.current = to;
+      return;
+    }
+
+    el.style.willChange = 'transform';
+    el.style.transform = `translateX(${translateFrom}px) scaleX(${scaleFrom})`;
+
+    const startedAt = performance.now();
+    const tick = () => {
+      const t = Math.min((performance.now() - startedAt) / ZOOM_ANIM_MS, 1);
+      const e = 1 - (1 - t) * (1 - t);
+      const scale = scaleFrom + (1 - scaleFrom) * e;
+      const translate = translateFrom * (1 - e);
+      el.style.transform = `translateX(${translate}px) scaleX(${scale})`;
+      visualRef.current = {
+        start: from.start + (to.start - from.start) * e,
+        end: from.end + (to.end - from.end) * e,
+      };
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        rafRef.current = 0;
+        el.style.transform = '';
+        el.style.willChange = '';
+        visualRef.current = to;
+      }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+
+    return stopRaf;
+  }, [viewport, stopRaf, clearTransform, getZoomLayer]);
+
+  useEffect(() => stopRaf, [stopRaf]);
 
   return { viewport, setViewport, animateTo };
 }
@@ -223,10 +318,17 @@ function NewTraceViewerContent({
     rootRef: scrollContainerRef,
   });
 
-  const { viewport, setViewport, animateTo } = useAnimatedViewport({
-    start: root.startTime,
-    end: root.startTime + root.duration,
-  });
+  // Wrapper around the timeline; the zoom-transform layer lives within it and
+  // is located via its `data-zoom-layer` marker.
+  const timelineRef = useRef<HTMLDivElement>(null);
+
+  const { viewport, setViewport, animateTo } = useAnimatedViewport(
+    {
+      start: root.startTime,
+      end: root.startTime + root.duration,
+    },
+    timelineRef
+  );
 
   const prevRootRef = useRef<Viewport>({
     start: root.startTime,
@@ -481,7 +583,6 @@ function NewTraceViewerContent({
     };
   }, [handleClearActiveSpan]);
 
-  const timelineRef = useRef<HTMLDivElement>(null);
   const [hoverFraction, setHoverFraction] = useState<number | null>(null);
 
   const hoverInfo = useMemo(() => {

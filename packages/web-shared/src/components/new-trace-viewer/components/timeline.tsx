@@ -680,21 +680,49 @@ export function Timeline({
       className="relative h-full overflow-hidden"
       style={{ minHeight: spans.length * ROW_HEIGHT_PX }}
     >
+      {/*
+        Zoom layer: gridlines + bars share one transform so a zoom/pan tween is
+        a single composited transform instead of a per-frame re-render. Origin
+        sits at the content's left edge (past the timeline padding) to match the
+        affine math in `useAnimatedViewport`, which drives this element's
+        `transform` imperatively (located via the `data-zoom-layer` marker).
+      */}
       <div
-        aria-hidden
-        className="absolute inset-y-0 pointer-events-none"
-        style={TIMELINE_INSET_STYLE}
+        data-zoom-layer
+        className="absolute inset-0"
+        style={{ transformOrigin: `${TIMELINE_PADDING_PX}px 0` }}
       >
-        {markers.map((marker) =>
-          // Skip the "0s" origin marker since the left edge already implies it.
-          Math.abs(marker.value) > 0.000001 ? (
-            <div
-              key={String(marker.value)}
-              className="absolute top-0 bottom-0 w-px bg-gray-alpha-300"
-              style={{ left: `${marker.position * 100}%` }}
+        <div
+          aria-hidden
+          className="absolute inset-y-0 pointer-events-none"
+          style={TIMELINE_INSET_STYLE}
+        >
+          {markers.map((marker) =>
+            // Skip the "0s" origin marker since the left edge already implies it.
+            Math.abs(marker.value) > 0.000001 ? (
+              <div
+                key={String(marker.value)}
+                className="absolute top-0 bottom-0 w-px bg-gray-alpha-300"
+                style={{ left: `${marker.position * 100}%` }}
+              />
+            ) : null
+          )}
+        </div>
+        <div style={{ transform: `translateY(${start * ROW_HEIGHT_PX}px)` }}>
+          {spans.slice(start, end).map((span) => (
+            <TimelineBar
+              key={span.spanId}
+              span={span}
+              viewStart={viewStart}
+              viewDuration={viewDuration}
+              containerWidth={timelineWidth}
+              isSelected={selectedId === span.spanId}
+              isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
+              onSelect={onSelect}
+              onRevealTime={onRevealTime}
             />
-          ) : null
-        )}
+          ))}
+        </div>
       </div>
       {hoverFraction != null && (
         <div
@@ -707,21 +735,6 @@ export function Timeline({
           />
         </div>
       )}
-      <div style={{ transform: `translateY(${start * ROW_HEIGHT_PX}px)` }}>
-        {spans.slice(start, end).map((span) => (
-          <TimelineBar
-            key={span.spanId}
-            span={span}
-            viewStart={viewStart}
-            viewDuration={viewDuration}
-            containerWidth={timelineWidth}
-            isSelected={selectedId === span.spanId}
-            isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
-            onSelect={onSelect}
-            onRevealTime={onRevealTime}
-          />
-        ))}
-      </div>
       {altHeld && (
         <div
           aria-hidden
