@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
-import { cn } from '../../lib/utils';
+import { cn } from '../../lib/cn';
 
 export function DetailCard({
   summary,
