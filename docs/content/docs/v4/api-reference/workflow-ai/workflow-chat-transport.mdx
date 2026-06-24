@@ -9,6 +9,10 @@ related:
   - /docs/ai/resumable-streams
 ---
 
+<Callout type="warn">
+`WorkflowChatTransport` from `@workflow/ai` is deprecated. AI SDK ships a 1:1 port — use [`WorkflowChatTransport` from `@ai-sdk/workflow`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) instead. This reference is kept for existing applications that still import it from `@workflow/ai`.
+</Callout>
+
 A chat transport implementation for the AI SDK that provides reliable message streaming with automatic reconnection to interrupted streams. This transport is a drop-in replacement for the default AI SDK transport, enabling seamless recovery from network issues, page refreshes, or Vercel Function timeouts.
 
 <Callout>
@@ -252,7 +256,7 @@ export default function ChatWithCustomConfig() {
 
 ## See Also
 
-- [DurableAgent](/docs/api-reference/workflow-ai/durable-agent) - Building durable AI agents within workflows
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - Building durable, resumable AI agents (replaces `DurableAgent`)
 - [AI SDK `useChat` Documentation](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat) - Using `useChat` with custom transports
 - [Workflows and Steps](/docs/foundations/workflows-and-steps) - Understanding workflow fundamentals
 - ["flight-booking-app" Example](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) - An example application which uses `WorkflowChatTransport`
