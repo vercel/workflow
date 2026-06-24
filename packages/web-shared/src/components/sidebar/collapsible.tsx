@@ -23,13 +23,13 @@ function useCollapsibleContext(part: string): CollapsibleContextValue {
   const context = useContext(CollapsibleContext);
   if (!context) {
     throw new Error(
-      `<Collapsible.${part}> must be rendered inside <Collapsible>`
+      `<Collapsible${part}> must be rendered inside <CollapsibleRoot>`
     );
   }
   return context;
 }
 
-type CollapsibleProps = {
+type CollapsibleRootProps = {
   children: ReactNode;
   variant?: CollapsibleVariant;
   disabled?: boolean;
@@ -39,24 +39,18 @@ type CollapsibleProps = {
 };
 
 /**
- * Collapsible section used throughout the run detail panel. Compose it with
- * `Collapsible.Trigger` (the header) and `Collapsible.Content` (the body):
- *
- * ```tsx
- * <Collapsible defaultOpen>
- *   <Collapsible.Trigger>Metadata</Collapsible.Trigger>
- *   <Collapsible.Content>...</Collapsible.Content>
- * </Collapsible>
- * ```
+ * Low-level collapsible container. Use this together with `CollapsibleTrigger`
+ * and `CollapsibleContent` when you need to override the styling of individual
+ * parts. For the common case, prefer the all-in-one `Collapsible`.
  */
-function Collapsible({
+export function CollapsibleRoot({
   children,
   variant = 'section',
   disabled = false,
   defaultOpen = false,
   onOpenChange,
   className,
-}: CollapsibleProps) {
+}: CollapsibleRootProps) {
   const [open, setOpen] = useState(defaultOpen);
 
   const handleToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
@@ -104,7 +98,11 @@ type CollapsibleTriggerProps = {
   className?: string;
 };
 
-function CollapsibleTrigger({ children, className }: CollapsibleTriggerProps) {
+/** The clickable header of a `CollapsibleRoot`. */
+export function CollapsibleTrigger({
+  children,
+  className,
+}: CollapsibleTriggerProps) {
   const { variant, disabled } = useCollapsibleContext('Trigger');
 
   if (variant === 'card') {
@@ -169,7 +167,11 @@ type CollapsibleContentProps = {
   className?: string;
 };
 
-function CollapsibleContent({ children, className }: CollapsibleContentProps) {
+/** The collapsible body of a `CollapsibleRoot`. */
+export function CollapsibleContent({
+  children,
+  className,
+}: CollapsibleContentProps) {
   const { variant } = useCollapsibleContext('Content');
   return (
     <div
@@ -181,9 +183,37 @@ function CollapsibleContent({ children, className }: CollapsibleContentProps) {
   );
 }
 
-const CollapsibleNamespace = Object.assign(Collapsible, {
-  Trigger: CollapsibleTrigger,
-  Content: CollapsibleContent,
-});
+type CollapsibleProps = {
+  /** Header content shown in the trigger row. */
+  label: ReactNode;
+  /** Body content. Omit for a header-only (e.g. disabled or skeleton) row. */
+  children?: ReactNode;
+  disabled?: boolean;
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+};
 
-export { CollapsibleNamespace as Collapsible };
+/**
+ * All-in-one collapsible section: a labeled header plus body content. This is
+ * the component to reach for in most cases. When you need to override the
+ * styling of a specific part, compose `CollapsibleRoot`, `CollapsibleTrigger`,
+ * and `CollapsibleContent` directly instead.
+ */
+export function Collapsible({
+  label,
+  children,
+  disabled,
+  defaultOpen,
+  onOpenChange,
+}: CollapsibleProps) {
+  return (
+    <CollapsibleRoot
+      disabled={disabled}
+      defaultOpen={defaultOpen}
+      onOpenChange={onOpenChange}
+    >
+      <CollapsibleTrigger>{label}</CollapsibleTrigger>
+      {children != null && <CollapsibleContent>{children}</CollapsibleContent>}
+    </CollapsibleRoot>
+  );
+}

@@ -23,7 +23,12 @@ import {
   RunAttributesCard,
   RunMetadataCard,
 } from './attributes-block';
-import { Collapsible } from './collapsible';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from './collapsible';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 
@@ -152,30 +157,27 @@ function ConversationWithTabs({
   );
 
   return (
-    <Collapsible>
-      <Collapsible.Trigger>Input</Collapsible.Trigger>
-      <Collapsible.Content>
-        <TabbedContainer
-          tabs={conversationTabs}
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          ariaLabel="Conversation view"
-        >
-          {activeTab === 'conversation' ? (
-            <ConversationView messages={conversation} />
-          ) : (
-            <div className="p-3">
-              {Array.isArray(args)
-                ? args.map((v, i) => (
-                    <div className="mt-2 first:mt-0" key={i}>
-                      {JsonBlock(v)}
-                    </div>
-                  ))
-                : JsonBlock(args)}
-            </div>
-          )}
-        </TabbedContainer>
-      </Collapsible.Content>
+    <Collapsible label="Input">
+      <TabbedContainer
+        tabs={conversationTabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        ariaLabel="Conversation view"
+      >
+        {activeTab === 'conversation' ? (
+          <ConversationView messages={conversation} />
+        ) : (
+          <div className="p-3">
+            {Array.isArray(args)
+              ? args.map((v, i) => (
+                  <div className="mt-2 first:mt-0" key={i}>
+                    {JsonBlock(v)}
+                  </div>
+                ))
+              : JsonBlock(args)}
+          </div>
+        )}
+      </TabbedContainer>
     </Collapsible>
   );
 }
@@ -418,7 +420,7 @@ const attributeToDisplayFn: Record<
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
   // Attributes — string-string metadata attached to the run.
-  // Rendered as key-value rows in its own collapsible Collapsible;
+  // Rendered as key-value rows in its own collapsible section;
   // if empty/missing, hidden by the hasDisplayContent gate.
   attributes: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
@@ -438,21 +440,15 @@ const attributeToDisplayFn: Record<
     if (!hasDisplayContent(value)) return null;
     if (isEncryptedMarker(value)) {
       return (
-        <Collapsible>
-          <Collapsible.Trigger>Metadata</Collapsible.Trigger>
-          <Collapsible.Content>
-            <EncryptedDataBlock />
-          </Collapsible.Content>
+        <Collapsible label="Metadata">
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
     if (isExpiredMarker(value)) {
       return (
-        <Collapsible>
-          <Collapsible.Trigger>Metadata</Collapsible.Trigger>
-          <Collapsible.Content>
-            <ExpiredFieldBlock />
-          </Collapsible.Content>
+        <Collapsible label="Metadata">
+          <ExpiredFieldBlock />
         </Collapsible>
       );
     }
@@ -461,11 +457,8 @@ const attributeToDisplayFn: Record<
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
       return (
-        <Collapsible>
-          <Collapsible.Trigger>Input</Collapsible.Trigger>
-          <Collapsible.Content>
-            <EncryptedFieldBlock />
-          </Collapsible.Content>
+        <Collapsible label="Input">
+          <EncryptedFieldBlock />
         </Collapsible>
       );
     }
@@ -489,19 +482,13 @@ const attributeToDisplayFn: Record<
             <>
               <ConversationWithTabs conversation={conversation} args={args} />
               {hasClosureVars && (
-                <Collapsible>
-                  <Collapsible.Trigger>Closure Variables</Collapsible.Trigger>
-                  <Collapsible.Content>
-                    {JsonBlock(closureVars)}
-                  </Collapsible.Content>
+                <Collapsible label="Closure Variables">
+                  {JsonBlock(closureVars)}
                 </Collapsible>
               )}
               {hasThisVal && (
-                <Collapsible>
-                  <Collapsible.Trigger>This Value</Collapsible.Trigger>
-                  <Collapsible.Content>
-                    {JsonBlock(thisVal)}
-                  </Collapsible.Content>
+                <Collapsible label="This Value">
+                  {JsonBlock(thisVal)}
                 </Collapsible>
               )}
             </>
@@ -511,40 +498,27 @@ const attributeToDisplayFn: Record<
 
       // Don't render an empty "Input (0 arguments)" card when no input exists.
       if (!hasArgs && !hasClosureVars && !hasThisVal) {
-        return (
-          <Collapsible disabled>
-            <Collapsible.Trigger>Input (no data)</Collapsible.Trigger>
-          </Collapsible>
-        );
+        return <Collapsible label="Input (no data)" disabled />;
       }
 
       return (
         <>
-          <Collapsible>
-            <Collapsible.Trigger>Input</Collapsible.Trigger>
-            <Collapsible.Content>
-              {Array.isArray(args)
-                ? args.map((v, i) => (
-                    <div className="mt-2 first:mt-0" key={i}>
-                      {JsonBlock(v)}
-                    </div>
-                  ))
-                : JsonBlock(args)}
-            </Collapsible.Content>
+          <Collapsible label="Input">
+            {Array.isArray(args)
+              ? args.map((v, i) => (
+                  <div className="mt-2 first:mt-0" key={i}>
+                    {JsonBlock(v)}
+                  </div>
+                ))
+              : JsonBlock(args)}
           </Collapsible>
           {hasClosureVars && (
-            <Collapsible>
-              <Collapsible.Trigger>Closure Variables</Collapsible.Trigger>
-              <Collapsible.Content>
-                {JsonBlock(closureVars)}
-              </Collapsible.Content>
+            <Collapsible label="Closure Variables">
+              {JsonBlock(closureVars)}
             </Collapsible>
           )}
           {hasThisVal && (
-            <Collapsible>
-              <Collapsible.Trigger>Context</Collapsible.Trigger>
-              <Collapsible.Content>{JsonBlock(thisVal)}</Collapsible.Content>
-            </Collapsible>
+            <Collapsible label="Context">{JsonBlock(thisVal)}</Collapsible>
           )}
         </>
       );
@@ -552,55 +526,37 @@ const attributeToDisplayFn: Record<
 
     // Fallback: treat as plain array or object
     if (!hasDisplayContent(value)) {
-      return (
-        <Collapsible disabled>
-          <Collapsible.Trigger>Input (no data)</Collapsible.Trigger>
-        </Collapsible>
-      );
+      return <Collapsible label="Input (no data)" disabled />;
     }
     return (
-      <Collapsible>
-        <Collapsible.Trigger>Input</Collapsible.Trigger>
-        <Collapsible.Content>
-          {Array.isArray(value)
-            ? value.map((v, i) => (
-                <div className="mt-2 first:mt-0" key={i}>
-                  {JsonBlock(v)}
-                </div>
-              ))
-            : JsonBlock(value)}
-        </Collapsible.Content>
+      <Collapsible label="Input">
+        {Array.isArray(value)
+          ? value.map((v, i) => (
+              <div className="mt-2 first:mt-0" key={i}>
+                {JsonBlock(v)}
+              </div>
+            ))
+          : JsonBlock(value)}
       </Collapsible>
     );
   },
   output: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <Collapsible>
-          <Collapsible.Trigger>Output</Collapsible.Trigger>
-          <Collapsible.Content>
-            <EncryptedFieldBlock />
-          </Collapsible.Content>
+        <Collapsible label="Output">
+          <EncryptedFieldBlock />
         </Collapsible>
       );
     }
     if (!hasDisplayContent(value)) return null;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return (
-      <Collapsible>
-        <Collapsible.Trigger>Output</Collapsible.Trigger>
-        <Collapsible.Content>{JsonBlock(value)}</Collapsible.Content>
-      </Collapsible>
-    );
+    return <Collapsible label="Output">{JsonBlock(value)}</Collapsible>;
   },
   error: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <Collapsible defaultOpen>
-          <Collapsible.Trigger>Error</Collapsible.Trigger>
-          <Collapsible.Content>
-            <EncryptedFieldBlock />
-          </Collapsible.Content>
+        <Collapsible label="Error" defaultOpen>
+          <EncryptedFieldBlock />
         </Collapsible>
       );
     }
@@ -611,39 +567,31 @@ const attributeToDisplayFn: Record<
     // `{ message, stack }`. Render both with the dedicated error block.
     if (isStructuredError(value)) {
       return (
-        <Collapsible defaultOpen>
-          <Collapsible.Trigger>Error</Collapsible.Trigger>
-          <Collapsible.Content>
-            <ErrorStackBlock value={value} />
-          </Collapsible.Content>
+        <Collapsible label="Error" defaultOpen>
+          <ErrorStackBlock value={value} />
         </Collapsible>
       );
     }
 
     return (
-      <Collapsible defaultOpen>
-        <Collapsible.Trigger>Error</Collapsible.Trigger>
-        <Collapsible.Content>{JsonBlock(value)}</Collapsible.Content>
+      <Collapsible label="Error" defaultOpen>
+        {JsonBlock(value)}
       </Collapsible>
     );
   },
   eventData: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <Collapsible defaultOpen>
-          <Collapsible.Trigger>Event Data</Collapsible.Trigger>
-          <Collapsible.Content>
-            <EncryptedFieldBlock />
-          </Collapsible.Content>
+        <Collapsible label="Event Data" defaultOpen>
+          <EncryptedFieldBlock />
         </Collapsible>
       );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
     return (
-      <Collapsible defaultOpen>
-        <Collapsible.Trigger>Event Data</Collapsible.Trigger>
-        <Collapsible.Content>{JsonBlock(value)}</Collapsible.Content>
+      <Collapsible label="Event Data" defaultOpen>
+        {JsonBlock(value)}
       </Collapsible>
     );
   },
@@ -721,19 +669,12 @@ export const AttributeBlock = ({
           : 'Input';
     if (decryptCtx?.hasEncryptedData) {
       return (
-        <Collapsible defaultOpen={attribute === 'eventData'}>
-          <Collapsible.Trigger>{label}</Collapsible.Trigger>
-          <Collapsible.Content>
-            <EncryptedFieldBlock />
-          </Collapsible.Content>
+        <Collapsible label={label} defaultOpen={attribute === 'eventData'}>
+          <EncryptedFieldBlock />
         </Collapsible>
       );
     }
-    return (
-      <Collapsible>
-        <Collapsible.Trigger>{label}</Collapsible.Trigger>
-      </Collapsible>
-    );
+    return <Collapsible label={label} />;
   }
 
   const displayFn =
@@ -916,9 +857,9 @@ export const AttributePanel = ({
         <StreamClickContext.Provider value={onStreamClick}>
           <DecryptClickContext.Provider value={decryptValue}>
             {visibleBasicAttributes.length > 0 && (
-              <Collapsible defaultOpen>
-                <Collapsible.Trigger>Metadata</Collapsible.Trigger>
-                <Collapsible.Content className="mt-0 mb-4">
+              <CollapsibleRoot defaultOpen>
+                <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+                <CollapsibleContent className="mt-0 mb-4">
                   <div className="flex flex-col">
                     {orderedBasicAttributes.map((attribute) => {
                       const displayValue = attributeToDisplayFn[
@@ -952,8 +893,8 @@ export const AttributePanel = ({
                         </div>
                       )}
                   </div>
-                </Collapsible.Content>
-              </Collapsible>
+                </CollapsibleContent>
+              </CollapsibleRoot>
             )}
             {error ? (
               <ErrorCard

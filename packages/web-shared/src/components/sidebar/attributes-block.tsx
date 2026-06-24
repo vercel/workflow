@@ -9,7 +9,11 @@ import type { ReactNode } from 'react';
 import { cn } from '../../lib/utils';
 import { CopyButton } from '../new-trace-viewer/components/copy-button';
 import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
-import { Collapsible } from './collapsible';
+import {
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from './collapsible';
 import { CopyableDataBlock } from './copyable-data-block';
 
 function isReservedAttributeKey(key: string): boolean {
@@ -144,9 +148,9 @@ export function RunAttributesCard({
   if (keys.length === 0) return null;
 
   return (
-    <Collapsible defaultOpen>
-      <Collapsible.Trigger>Attributes</Collapsible.Trigger>
-      <Collapsible.Content className="mb-4">
+    <CollapsibleRoot defaultOpen>
+      <CollapsibleTrigger>Attributes</CollapsibleTrigger>
+      <CollapsibleContent className="mb-4">
         <div className="flex flex-col">
           {keys.map((key) => (
             <AttributeRow
@@ -156,8 +160,8 @@ export function RunAttributesCard({
             />
           ))}
         </div>
-      </Collapsible.Content>
-    </Collapsible>
+      </CollapsibleContent>
+    </CollapsibleRoot>
   );
 }
 
@@ -189,12 +193,12 @@ function isMetadataRecord(value: unknown): value is Record<string, unknown> {
 export function RunMetadataCard({ metadata }: { metadata: unknown }) {
   if (!isMetadataRecord(metadata)) {
     return (
-      <Collapsible defaultOpen>
-        <Collapsible.Trigger>Metadata</Collapsible.Trigger>
-        <Collapsible.Content className="mb-4">
+      <CollapsibleRoot defaultOpen>
+        <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+        <CollapsibleContent className="mb-4">
           <CopyableDataBlock data={metadata} />
-        </Collapsible.Content>
-      </Collapsible>
+        </CollapsibleContent>
+      </CollapsibleRoot>
     );
   }
 
@@ -202,9 +206,9 @@ export function RunMetadataCard({ metadata }: { metadata: unknown }) {
   if (keys.length === 0) return null;
 
   return (
-    <Collapsible defaultOpen>
-      <Collapsible.Trigger>Metadata</Collapsible.Trigger>
-      <Collapsible.Content className="mb-4">
+    <CollapsibleRoot defaultOpen>
+      <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+      <CollapsibleContent className="mb-4">
         <div className="flex flex-col">
           {keys.map((key) => (
             <AttributeRow
@@ -214,8 +218,8 @@ export function RunMetadataCard({ metadata }: { metadata: unknown }) {
             />
           ))}
         </div>
-      </Collapsible.Content>
-    </Collapsible>
+      </CollapsibleContent>
+    </CollapsibleRoot>
   );
 }
 

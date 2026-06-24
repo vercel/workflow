@@ -8,7 +8,12 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { AttrSetEventBlock } from './attributes-block';
-import { Collapsible } from './collapsible';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from './collapsible';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 
 /**
@@ -110,7 +115,7 @@ function EventItem({
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
   return (
-    <Collapsible
+    <CollapsibleRoot
       variant="card"
       onOpenChange={
         canHaveData
@@ -120,7 +125,7 @@ function EventItem({
           : undefined
       }
     >
-      <Collapsible.Trigger className="px-3 py-2">
+      <CollapsibleTrigger className="px-3 py-2">
         <div className="flex w-full items-center justify-between gap-3">
           <span className="text-gray-1000 text-label-12 font-mono">
             {event.eventType}
@@ -129,8 +134,8 @@ function EventItem({
             {createdAtTime}
           </span>
         </div>
-      </Collapsible.Trigger>
-      <Collapsible.Content>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
         {/* Event attributes */}
         <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
           <div className="flex items-center justify-between gap-2 py-2 px-3">
@@ -175,8 +180,8 @@ function EventItem({
             <EventDataBlock eventType={event.eventType} data={displayPayload} />
           </div>
         )}
-      </Collapsible.Content>
-    </Collapsible>
+      </CollapsibleContent>
+    </CollapsibleRoot>
   );
 }
 
@@ -297,19 +302,15 @@ export function EventsList({
   const hasEvents = sortedEvents.length > 0 && !error;
 
   if (!hasEvents && !isLoading) {
-    return (
-      <Collapsible disabled>
-        <Collapsible.Trigger>Events</Collapsible.Trigger>
-      </Collapsible>
-    );
+    return <Collapsible label="Events" disabled />;
   }
 
   return (
     <RunClickContext.Provider value={onRunClick}>
       <StreamClickContext.Provider value={onStreamClick}>
-        <Collapsible defaultOpen>
-          <Collapsible.Trigger>Events</Collapsible.Trigger>
-          <Collapsible.Content className="mb-0">
+        <CollapsibleRoot defaultOpen>
+          <CollapsibleTrigger>Events</CollapsibleTrigger>
+          <CollapsibleContent className="mb-0">
             {isLoading ? (
               <div className="flex flex-col -mx-4">
                 {[0, 1, 2].map((i) => (
@@ -334,8 +335,8 @@ export function EventsList({
                 ))}
               </div>
             )}
-          </Collapsible.Content>
-        </Collapsible>
+          </CollapsibleContent>
+        </CollapsibleRoot>
       </StreamClickContext.Provider>
     </RunClickContext.Provider>
   );
