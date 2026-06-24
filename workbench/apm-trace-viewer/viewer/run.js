@@ -23,14 +23,13 @@ const run = await (
 const wallMs = run.totalMs;
 const metrics = run.metrics ?? [];
 
-// Vertical timeline markers. Supplied metric offsets (TTFT, first chunk, …) plus two
-// derived "first step" markers, because they can differ by seconds on a stalled run:
-//   • first step body  = start of the earliest `step.execute` span (when the SDK began
-//                         running the first step body)
-//   • first step started = when the first step is *durably* started — the completion of
-//                         the earliest `step_started` write. This matches the workflow
-//                         event log's "Step Started", and can lag the body start a lot
-//                         when that first write blocks (e.g. behind run_started).
+// Vertical timeline markers: any supplied metric offset (TTFT, first chunk, …) plus a
+// derived TTFS (time to first step). TTFS = time from the `start()` call — the
+// `workflow.start` span emitted in the API route before the workflow runs — to the very
+// first `step.execute` span (the first step beginning to execute). We measure from
+// start() rather than the group origin because the origin can precede start() by a lot
+// (edge/routing before the API handler), e.g. on the Flora runs start() is ~1.2s in. The
+// marker line sits at the first step; its label shows the start()→firstStep duration.
 const MARKERS = metrics
   .filter((m) => m.markerOffsetMs != null)
   .map((m, i) => ({
@@ -40,31 +39,28 @@ const MARKERS = metrics
   }))
   .filter((m) => Number.isFinite(m.offsetMs));
 
-const firstBodyMs = Math.min(
+const firstStepMs = Math.min(
   ...run.spans
     .filter((s) => (s.name ?? '').startsWith('step.execute'))
     .map((s) => s.startMs)
 );
-// earliest-starting durable step-start write; its end ≈ the durable "Step Started".
-const firstStartedWrite = run.spans
-  .filter((s) => (s.name ?? '').includes('step_started'))
-  .sort((a, b) => a.startMs - b.startMs)[0];
-const firstStartedMs = firstStartedWrite
-  ? firstStartedWrite.startMs + firstStartedWrite.durMs
-  : Number.POSITIVE_INFINITY;
+// start() anchor: the `workflow.start` span (the start() call), else the run_created
+// write, else the group origin (0).
+const startCall =
+  run.spans
+    .filter((s) => (s.name ?? '').startsWith('workflow.start'))
+    .sort((a, b) => a.startMs - b.startMs)[0] ??
+  run.spans
+    .filter((s) => (s.name ?? '').includes('run_created'))
+    .sort((a, b) => a.startMs - b.startMs)[0];
+const startMs = startCall ? startCall.startMs : 0;
 
-if (Number.isFinite(firstBodyMs)) {
+if (Number.isFinite(firstStepMs)) {
   MARKERS.push({
-    label: 'first step body',
-    offsetMs: firstBodyMs,
+    label: 'TTFS',
+    offsetMs: firstStepMs, // line sits at the first step
+    valueMs: firstStepMs - startMs, // …but the label is the time since start()
     color: '#f5a623',
-  });
-}
-if (Number.isFinite(firstStartedMs)) {
-  MARKERS.push({
-    label: 'first step started',
-    offsetMs: firstStartedMs,
-    color: '#ef4444',
   });
 }
 
@@ -295,7 +291,7 @@ function visibleSpan(s) {
 function markersHtml() {
   return MARKERS.map((m) => {
     const frac = Math.max(0, Math.min(m.offsetMs / wallMs, 1));
-    return `<div class="marker" style="left:calc(var(--label-w) + var(--track-w) * ${frac});border-color:${m.color}"><span class="mlabel" style="color:${m.color}">${esc(m.label)} ${fmtMs(m.offsetMs)}</span></div>`;
+    return `<div class="marker" style="left:calc(var(--label-w) + var(--track-w) * ${frac});border-color:${m.color}"><span class="mlabel" style="color:${m.color}">${esc(m.label)} ${fmtMs(m.valueMs ?? m.offsetMs)}</span></div>`;
   }).join('');
 }
 
