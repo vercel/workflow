@@ -69,6 +69,13 @@ function formatEventTime(date: Date): string {
   );
 }
 
+function parseEventDate(value: unknown): Date | null {
+  if (value == null) return null;
+
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function formatEventType(eventType: Event['eventType']): string {
   return eventType
     .split('_')
@@ -689,7 +696,11 @@ function RowsSkeleton() {
           <div className="w-5 flex-shrink-0 flex items-center justify-center">
             <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
           </div>
-          {/* Time */}
+          {/* Created */}
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '70%' }} />
+          </div>
+          {/* Occurred */}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             <Skeleton className="h-3" style={{ width: '70%' }} />
           </div>
@@ -756,7 +767,7 @@ interface EventsListProps {
   ) => Promise<ExactIdSearchResult>;
 }
 
-function EventRow({
+export function EventRow({
   event,
   index,
   isFirst,
@@ -827,6 +838,7 @@ function EventRow({
 
   const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
+  const occurredAt = parseEventDate(event.occurredAt);
   const hasExistingEventData = 'eventData' in event && event.eventData != null;
   const isRun = isRunLevel(event.eventType);
   const eventName = isRun
@@ -1007,7 +1019,7 @@ function EventRow({
             />
           </div>
 
-          {/* Time */}
+          {/* Created */}
           <div
             className="tabular-nums min-w-0 px-4"
             style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
@@ -1015,6 +1027,20 @@ function EventRow({
             <TimestampTooltip date={createdAt}>
               <span>{formatEventTime(createdAt)}</span>
             </TimestampTooltip>
+          </div>
+
+          {/* Occurred */}
+          <div
+            className="tabular-nums min-w-0 px-4"
+            style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
+          >
+            {occurredAt ? (
+              <TimestampTooltip date={occurredAt}>
+                <span>{formatEventTime(occurredAt)}</span>
+              </TimestampTooltip>
+            ) : (
+              '-'
+            )}
           </div>
 
           {/* Event Type */}
@@ -1646,7 +1672,10 @@ function EventListViewInner({
           <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
           <div className="w-5 flex-shrink-0" />
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Time
+            Created
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            Occurred
           </div>
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             Event Type
