@@ -854,9 +854,8 @@ export const AttributePanel = ({
             {visibleBasicAttributes.length > 0 && (
               <DetailCard
                 summary="Metadata"
-                variant="contained"
                 defaultOpen
-                contentClassName="mb-2"
+                contentClassName="mb-4"
               >
                 <div className="flex flex-col">
                   {orderedBasicAttributes.map((attribute) => {
