@@ -135,7 +135,8 @@ export function getWebRevivers(): Revivers {
     // Error family. The reducer side (see
     // `packages/core/src/serialization/reducers/common.ts`) emits a tagged
     // entry for each built-in Error subclass plus the workflow-specific
-    // `FatalError` / `RetryableError` and `AggregateError`. Without
+    // `FatalError` / `RetryableError` / `HookConflictError` /
+    // `RuntimeDecryptionError` and `AggregateError`. Without
     // matching revivers here, `devalue.unflatten` throws "Unknown type X"
     // — which surfaces in the web o11y UI as "Failed to load resource
     // details: Unknown type FatalError".
@@ -183,6 +184,20 @@ export function getWebRevivers(): Revivers {
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
+    HookConflictError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        token?: string;
+        conflictingRunId?: string;
+      };
+      error.name = 'HookConflictError';
+      error.token = value.token;
+      if (value.conflictingRunId !== undefined) {
+        error.conflictingRunId = value.conflictingRunId;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
     RetryableError: (value) => {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;
       const error = new Error(value.message, opts) as Error & {
@@ -199,6 +214,18 @@ export function getWebRevivers(): Revivers {
       if (value.retryAfter != null) {
         error.retryAfter = new Date(value.retryAfter);
       }
+      return error;
+    },
+    RuntimeDecryptionError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        context?: unknown;
+      };
+      error.name = 'RuntimeDecryptionError';
+      if (value.context !== undefined) {
+        error.context = value.context;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     DOMException: (value) => {
@@ -271,7 +298,7 @@ export function getWebRevivers(): Revivers {
 
     // Web-specific overrides for class instances.
     // Create objects with a dynamically-named constructor so that
-    // react-inspector shows the class name (it reads constructor.name).
+    // the data inspector shows the class name (it reads constructor.name).
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) => {
       // Run instances are rendered as clickable RunRef badges
@@ -284,7 +311,7 @@ export function getWebRevivers(): Revivers {
       const props =
         data && typeof data === 'object' ? { ...data } : { value: data };
       // Create a constructor with the right name using computed property
-      // so react-inspector's `object.constructor.name` shows the class name.
+      // so the data inspector's `object.constructor.name` shows the class name.
       // Must use `function` (not arrow) because arrow functions have no .prototype.
       // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
       const ctor = { [className]: function () {} }[className]!;
@@ -449,6 +476,13 @@ export async function hydrateResourceIOWithKey<T>(
     '@workflow/core/serialization-format'
   );
   const { importKey } = await import('@workflow/core/encryption');
+  // Payloads may be zstd-compressed (the Web DecompressionStream has no zstd);
+  // register the WASM-backed browser decoder before hydrating. Idempotent and
+  // lazy — the WASM is only compiled when a zstd payload is actually decoded.
+  const { ensureZstdDecoderRegistered } = await import(
+    './zstd-browser-decoder.js'
+  );
+  ensureZstdDecoderRegistered();
   const cryptoKey = await importKey(key);
   const revivers = getRevivers();
 

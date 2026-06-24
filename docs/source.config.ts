@@ -38,6 +38,11 @@ const docsSchema = frontmatterSchema.extend({
     .optional(),
   summary: z.string().optional(),
   keywords: z.array(z.string()).optional(),
+  // Opt a section landing page out of the card↔nav completeness lint when its
+  // `<Cards>` grid is intentionally curated (e.g. links outside the section or
+  // deliberately omits children). Exhaustive list pages should use `<AutoCards />`
+  // instead, which derives cards from the page tree and can never drift.
+  manualCards: z.boolean().optional(),
 });
 
 // You can customise Zod schemas for frontmatter and `meta.json` here

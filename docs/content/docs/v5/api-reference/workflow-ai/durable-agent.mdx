@@ -1,59 +1,21 @@
 ---
 title: DurableAgent
-description: Create AI agents that maintain state, call tools, and handle interruptions gracefully.
+description: Deprecated DurableAgent API reference; use WorkflowAgent for new durable agents.
 type: reference
-summary: Use DurableAgent to build AI agents that maintain state across steps and survive interruptions.
+summary: "Deprecated: use AI SDK's WorkflowAgent instead of DurableAgent."
 prerequisites:
   - /docs/ai
 related:
   - /docs/ai/defining-tools
 ---
 
-The `DurableAgent` class enables you to create AI-powered agents that can maintain state across workflow steps, call tools, and gracefully handle interruptions and resumptions.
+<Callout type="warn">
+`DurableAgent` is deprecated. Use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable agents and migration guidance.
+</Callout>
 
-Tool calls can be implemented as workflow steps for automatic retries, or as regular workflow-level logic utilizing core library features such as [`sleep()`](/docs/api-reference/workflow/sleep) and [Hooks](/docs/foundations/hooks).
+This reference is kept for existing applications that still import `DurableAgent` from `@workflow/ai/agent`. Do not use `DurableAgent` for new code.
 
-```typescript lineNumbers
-import { DurableAgent } from "@workflow/ai/agent";
-import { getWritable } from "workflow";
-import { z } from "zod";
-import type { UIMessageChunk } from "ai";
-
-async function getWeather({ city }: { city: string }) {
-  "use step";
-
-  return `Weather in ${city} is sunny`;
-}
-
-async function myAgent() {
-  "use workflow";
-
-  const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
-    instructions: "You are a helpful weather assistant.",
-    temperature: 0.7,
-    tools: {
-      getWeather: {
-        description: "Get weather for a city",
-        inputSchema: z.object({ city: z.string() }),
-        execute: getWeather,
-      },
-    },
-  });
-
-  // The agent will stream its output to the workflow
-  // run's default output stream
-  const writable = getWritable<UIMessageChunk>();
-
-  const result = await agent.stream({
-    messages: [{ role: "user", content: "How is the weather in San Francisco?" }],
-    writable,
-  });
-
-  // result contains messages, steps, and optional structured output
-  console.log(result.messages);
-}
-```
+For current examples and implementation guidance, see AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) docs. For legacy code, the API surface below documents the existing `DurableAgent` exports.
 
 ## API Signature
 

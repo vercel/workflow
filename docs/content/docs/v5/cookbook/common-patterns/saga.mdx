@@ -241,7 +241,7 @@ export async function subscriptionUpgradeSaga(accountId: string, seats: number) 
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) -- declares the orchestrator function
-- [`"use step"`](/docs/api-reference/workflow/use-step) -- declares step functions with full Node.js access
+- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) -- declares the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) -- declares step functions with full Node.js access
 - [`FatalError`](/docs/api-reference/workflow/fatal-error) -- non-retryable error that triggers compensation
 - [`getWritable()`](/docs/api-reference/workflow/get-writable) -- streams data from workflows for real-time UI updates

@@ -1,6 +1,15 @@
 import { Agent, RetryAgent } from 'undici';
+import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
+
+/**
+ * Resolves the undici dispatcher for a request: the caller's override, or the
+ * shared default agent.
+ */
+export function getDispatcher(config?: APIConfig): unknown {
+  return config?.dispatcher ?? getDefaultDispatcher();
+}
 
 /**
  * Returns a shared undici RetryAgent wrapping an Agent.
@@ -9,7 +18,7 @@ let _dispatcher: RetryAgent | undefined;
  * - Retry: Automatic retry on 429/5xx or network errors with exponential backoff
  *   - Observes Retry-After header if received and lower than 30s
  */
-export function getDispatcher(): RetryAgent {
+function getDefaultDispatcher(): RetryAgent {
   if (!_dispatcher) {
     _dispatcher = new RetryAgent(
       new Agent({

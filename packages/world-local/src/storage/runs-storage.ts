@@ -1,18 +1,27 @@
 import path from 'node:path';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import type {
+  AttributeChange,
+  ExperimentalSetAttributesResult,
   ListWorkflowRunsParams,
   PaginatedResponse,
   Storage,
   WorkflowRun,
   WorkflowRunWithoutData,
 } from '@workflow/world';
-import { WorkflowRunSchema } from '@workflow/world';
+import {
+  applyAttributeChanges,
+  AttributeValidationError,
+  validateAttributeChanges,
+  WorkflowRunSchema,
+} from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
   paginatedFileSystemQuery,
   readJSONWithFallback,
+  taggedPath,
+  writeJSON,
 } from '../fs.js';
 import { filterRunData } from './filters.js';
 import { getObjectCreatedAt } from './helpers.js';
@@ -40,6 +49,47 @@ export interface LocalRunsStorage {
       params?: LocalListWorkflowRunsParams
     ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
   };
+  experimentalSetAttributes(
+    runId: string,
+    changes: AttributeChange[],
+    options?: { allowReservedAttributes?: boolean }
+  ): Promise<ExperimentalSetAttributesResult>;
+}
+
+/**
+ * Per-run in-process async mutex. Serializes concurrent writes that
+ * touch the same run JSON file — both attribute writes via
+ * `experimentalSetAttributes` and run-lifecycle writes (run_started,
+ * run_completed, run_failed, run_cancelled) acquire it. Without the
+ * shared lock, an attribute write that lands between a lifecycle
+ * handler's read and write would be silently overwritten by the
+ * lifecycle write's stale attribute snapshot.
+ *
+ * Lifecycle writers acquire the lock and re-read the run file inside
+ * the critical section to pick up any attributes that landed since
+ * their pre-validation read.
+ */
+const runFileLocks = new Map<string, Promise<unknown>>();
+
+export function withRunFileLock<T>(
+  key: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prev = runFileLocks.get(key);
+  const taskBox: { task?: Promise<T> } = {};
+  const task = (async () => {
+    if (prev) await prev.catch(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      if (runFileLocks.get(key) === taskBox.task) {
+        runFileLocks.delete(key);
+      }
+    }
+  })();
+  taskBox.task = task;
+  runFileLocks.set(key, task);
+  return task;
 }
 
 /**
@@ -107,5 +157,52 @@ export function createRunsStorage(
 
       return result;
     }) as LocalRunsStorage['list'],
+
+    experimentalSetAttributes: async (runId, changes, options) => {
+      assertSafeEntityId('runId', runId);
+
+      return withRunFileLock(runId, async () => {
+        const run = await readJSONWithFallback(
+          basedir,
+          'runs',
+          runId,
+          WorkflowRunSchema,
+          tag
+        );
+        if (!run) {
+          throw new WorkflowRunNotFoundError(runId);
+        }
+
+        // Server-side validation. The SDK validates before sending, but
+        // the world is the final authority — re-check so direct callers
+        // (tests, other consumers) cannot bypass the limits.
+        try {
+          validateAttributeChanges(changes, {
+            existingKeys: Object.keys(run.attributes ?? {}),
+            allowReservedAttributes: options?.allowReservedAttributes,
+          });
+        } catch (err) {
+          if (err instanceof AttributeValidationError) {
+            // Re-throw as a plain error; callers (the SDK) wrap as
+            // FatalError on their side.
+            throw err;
+          }
+          throw err;
+        }
+
+        const nextAttributes = applyAttributeChanges(run.attributes, changes);
+        const updatedRun = {
+          ...run,
+          attributes: nextAttributes,
+          updatedAt: new Date(),
+        };
+
+        await writeJSON(taggedPath(basedir, 'runs', runId, tag), updatedRun, {
+          overwrite: true,
+        });
+
+        return { attributes: nextAttributes };
+      });
+    },
   };
 }

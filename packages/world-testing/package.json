@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-testing",
-  "version": "5.0.0-beta.7",
+  "version": "5.0.0-beta.24",
   "description": "Testing utilities and World implementation for Workflow SDK",
   "main": "dist/src/index.mjs",
   "files": [
@@ -19,22 +19,22 @@
     "build": "wf build && node scripts/generate-well-known-dts.mjs && tsc && cp .well-known/workflow/v1/*.mjs dist/.well-known/workflow/v1/",
     "clean": "tsc --build --clean && rm -rf dist .well-known* .workflow-data",
     "start": "node --watch src/server.mts",
-    "test": "vitest"
+    "test": "vitest run"
   },
   "dependencies": {
-    "@hono/node-server": "1.19.9",
+    "@hono/node-server": "1.19.13",
     "@workflow/cli": "workspace:*",
     "@workflow/core": "workspace:*",
-    "workflow": "workspace:*",
     "@workflow/world": "workspace:*",
     "chalk": "5.6.2",
-    "hono": "4.12.3",
+    "hono": "4.12.25",
     "jsonlines": "0.1.1",
+    "workflow": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "catalog:",
     "@types/jsonlines": "0.1.5",
+    "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "vitest": "catalog:"
   },

@@ -1,7 +1,7 @@
 ---
 title: Observability
 description: Inspect, monitor, and debug workflows through the CLI and Web UI with powerful observability tools.
-type: guide
+type: overview
 summary: Inspect and debug workflow runs using the CLI and Web UI.
 prerequisites:
   - /docs/foundations
@@ -41,6 +41,19 @@ npx workflow inspect runs --web
 ```
 
 ![Workflow SDK Web UI](/o11y-ui.png)
+
+To share a link to a specific run without opening a browser, use the `--url`
+flag. It prints the dashboard deep link to stdout and exits (no browser, no
+local server) — useful for scripts, PR comments, or automation. Add `--json` to
+get `{ "url": "..." }`.
+
+```bash
+# Print the deep-link URL for a run (no browser, no server)
+npx workflow inspect run <run_id> --url
+
+# Vercel runs: add the backend (and --env preview for preview deployments)
+npx workflow inspect run <run_id> --backend vercel --url
+```
 
 ## Backends
 

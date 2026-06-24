@@ -95,6 +95,17 @@ export const runs = schema.table(
      * decryption or hydration.
      */
     errorCode: varchar('error_code'),
+    /**
+     * Plaintext string-string metadata attached to the run via
+     * `setAttributes()`. EXPERIMENTAL MVP: stored as JSONB to allow
+     * SQL-side merge (`jsonb_set` / `jsonb_strip_nulls`) without a
+     * read-modify-write cycle. Defaults to `{}` so existing rows
+     * (pre-migration) read as the empty map.
+     */
+    attributes: jsonb('attributes')
+      .$type<Record<string, string>>()
+      .default({})
+      .notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -125,21 +136,22 @@ export const events = schema.table(
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
-    Cborized<Event & { eventData?: undefined }, 'eventData'>
+    Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
   >,
   (tb) => [
     index().on(tb.runId),
     index().on(tb.correlationId),
-    // Entity-creating events must be unique per (run, correlation) — without
+    // Runtime-correlated one-shot events must be unique per (run, correlation)
+    // — without
     // this, two concurrent invocations producing identical correlationIds
     // (e.g. the snapshot runtime's deterministic ULIDs across replays) can
-    // both insert events, causing duplicate steps/hooks/waits in the log.
+    // both insert events, causing duplicate operations in the log.
     // The unique violation is caught in events.create and translated to
     // EntityConflictError, matching the runtime's expected dedup contract.
     uniqueIndex('workflow_events_entity_creation_unique')
       .on(tb.runId, tb.correlationId, tb.eventType)
       .where(
-        sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created')`
+        sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created', 'attr_set')`
       ),
   ]
 );

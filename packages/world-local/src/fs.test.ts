@@ -18,11 +18,13 @@ import { z } from 'zod';
 import {
   assertSafeEntityId,
   paginatedFileSystemQuery,
+  readFirstByte,
   readJSONWithFallback,
   resolveWithinBase,
   taggedPath,
   UnsafeEntityIdError,
   ulidToDate,
+  writeExclusive,
   writeJSON,
 } from './fs.js';
 
@@ -65,6 +67,7 @@ describe('fs utilities', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
@@ -94,6 +97,21 @@ describe('fs utilities', () => {
       const testUlid = ulid(testTime.getTime());
       const result = ulidToDate(testUlid);
       expect(result?.getTime()).toEqual(testTime.getTime());
+    });
+  });
+
+  describe('readFirstByte', () => {
+    it('reads only the marker value and handles empty files', async () => {
+      const dataPath = path.join(testDir, 'chunk.bin');
+      const nonEofPath = path.join(testDir, 'non-eof-chunk.bin');
+      const emptyPath = path.join(testDir, 'empty.bin');
+      await fs.writeFile(dataPath, Buffer.from([1, 2, 3]));
+      await fs.writeFile(nonEofPath, Buffer.from([0, 2, 3]));
+      await fs.writeFile(emptyPath, Buffer.alloc(0));
+
+      expect(await readFirstByte(dataPath)).toBe(1);
+      expect(await readFirstByte(nonEofPath)).toBe(0);
+      expect(await readFirstByte(emptyPath)).toBeUndefined();
     });
   });
 
@@ -849,6 +867,81 @@ describe('fs utilities', () => {
     });
   });
 
+  describe('writeExclusive', () => {
+    it('does not expose the destination until the full contents are written', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const contents = JSON.stringify({ value: 'complete' });
+      const originalWriteFile = fs.writeFile.bind(fs);
+      let notifyWriteStarted: () => void = () => {};
+      let releaseWrite: () => void = () => {};
+      const writeStarted = new Promise<void>((resolve) => {
+        notifyWriteStarted = resolve;
+      });
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+
+      vi.spyOn(fs, 'writeFile').mockImplementation(
+        async (target, data, options) => {
+          const targetPath = target.toString();
+          if (
+            targetPath === filePath ||
+            targetPath.startsWith(`${filePath}.tmp.`)
+          ) {
+            await originalWriteFile(target, '{"value":', options);
+            notifyWriteStarted();
+            await writeReleased;
+            await originalWriteFile(target, data);
+            return;
+          }
+          await originalWriteFile(target, data, options);
+        }
+      );
+
+      const writePromise = writeExclusive(filePath, contents);
+      await writeStarted;
+
+      try {
+        await expect(fs.readFile(filePath, 'utf8')).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        releaseWrite();
+        await writePromise;
+      }
+
+      expect(await fs.readFile(filePath, 'utf8')).toBe(contents);
+    });
+
+    it('allows exactly one concurrent writer to publish the destination', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const values = Array.from({ length: 16 }, (_, index) => `value-${index}`);
+
+      const results = await Promise.all(
+        values.map((value) => writeExclusive(filePath, value))
+      );
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(await fs.readFile(filePath, 'utf8')).toBe(values[winner]);
+      expect(await fs.readdir(testDir)).toEqual(['exclusive.json']);
+    });
+
+    it('does not clean up a temp file that it failed to create', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const unlink = vi.spyOn(fs, 'unlink');
+      vi.spyOn(fs, 'writeFile').mockRejectedValueOnce(
+        Object.assign(new Error('file already exists'), { code: 'EEXIST' })
+      );
+
+      await expect(writeExclusive(filePath, 'value')).rejects.toMatchObject({
+        code: 'EEXIST',
+      });
+
+      expect(unlink).not.toHaveBeenCalled();
+    });
+  });
+
   describe('assertSafeEntityId (path traversal prevention)', () => {
     // Values that should be accepted: actual entity IDs used by the system.
     const safeIds = [
@@ -861,11 +954,11 @@ describe('fs utilities', () => {
       'vitest-0', // tag
       'strm_01ARZ3_user', // stream id with underscores
       'strm_01ARZ3_user_bmFtZXNwYWNl', // stream id with base64url namespace
-      'wrun_ABC.vitest-0', // tagged file id
       'a', // minimal valid value
     ];
 
-    // Values that should be rejected: real-world path traversal attempts.
+    // Values that should be rejected: real-world path traversal attempts
+    // plus dotted inputs that would confuse stripTag()/getObjectCreatedAt().
     const unsafeIds = [
       '',
       '.',
@@ -883,6 +976,14 @@ describe('fs utilities', () => {
       'foo\0bar', // null byte
       'a/../b',
       'a\\..\\b',
+      // Dots in entity IDs would be misparsed by stripTag(), which strips
+      // a trailing `.[tag]` suffix from filenames. A runId like
+      // `wrun_123.foo` would be silently mangled to `wrun_123` during
+      // listing/pagination, breaking lookups for tagged file handling.
+      'wrun_ABC.vitest-0',
+      'wrun_123.foo',
+      'foo.bar',
+      'wrun_ABC.',
     ];
 
     for (const id of safeIds) {

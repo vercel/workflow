@@ -6,6 +6,11 @@ type PgConnectionConfig =
 
 export type PostgresWorldConfig = PgConnectionConfig & {
   jobPrefix?: string;
+  /**
+   * namespace for queue topic prefixes (e.g. 'custom' → '__custom_wkf_workflow_').
+   * defaults to WORKFLOW_QUEUE_NAMESPACE env var if not provided.
+   */
+  namespace?: string;
   queueConcurrency?: number;
   /**
    * Override the flush interval (in ms) for buffered stream writes.

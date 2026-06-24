@@ -1,5 +1,4 @@
 import { types } from 'node:util';
-import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -9,9 +8,12 @@ import {
   TooEarlyError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
-import type { World } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { pluralize, stepDisplayName } from '@workflow/utils';
+import type { Event, SerializedData, Step, World } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
+} from '@workflow/world';
 import type { CryptoKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -28,28 +30,128 @@ import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
+  promoteAbortErrorToFatal,
 } from '../types.js';
+
+import {
+  isOptimisticInlineStartEnabled,
+  isOptimisticInlineStartExplicitlyDisabled,
+} from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
+import { safeWaitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
+
+/**
+ * Extract the inline delta from a step-terminal `events.create` result,
+ * if the World populated one. A delta is only meaningful when the caller
+ * requested it (`sinceCursor` was passed) and the World returned both
+ * `events` and a `cursor`; otherwise we return undefined and the caller
+ * falls back to the normal incremental `events.list`. `hasMore` defaults
+ * to false (single page) when the World omits it.
+ */
+function extractInlineDelta(
+  result: { events?: Event[]; cursor?: string | null; hasMore?: boolean },
+  requested: boolean
+): InlineEventDelta | undefined {
+  if (!requested) return undefined;
+  if (!result.events || result.cursor === undefined) return undefined;
+  return {
+    events: result.events,
+    cursor: result.cursor,
+    hasMore: result.hasMore ?? false,
+  };
+}
 
 export interface StepExecutorParams {
   world: World;
   workflowRunId: string;
+  /** Deployment that owns the workflow run, for forwarded writable streams. */
+  workflowDeploymentId?: string;
   workflowName: string;
   workflowStartedAt: number;
   stepId: string;
   stepName: string;
   encryptionKey?: CryptoKey;
+  /**
+   * The workflow run's specVersion, used to gate payload compression.
+   * Step outputs/errors are only gzip-compressed when the run is marked
+   * as possibly containing compressed payloads (specVersion >= 5).
+   */
+  runSpecVersion?: number;
+  /**
+   * Lazy step start: the already-dehydrated step input. When provided, the
+   * `step_started` event carries this input so the world creates the step on
+   * the fly (no separate `step_created` round-trip). Set by the owned-inline
+   * path for the step whose `step_created` the suspension handler deferred.
+   * The world's atomic create-claim is the exactly-one-owner gate: losing it
+   * surfaces as `EntityConflictError` → `{ type: 'skipped' }`, so a handler
+   * that did not win the create never runs the body. Omitted on every other
+   * path, where the step already has a `step_created` and `step_started`
+   * carries no payload (the legacy contract).
+   */
+  lazyStepInput?: SerializedData;
+  /**
+   * Inline-delta optimization (opt-in). When provided, the cursor of the
+   * event log as observed by the caller *before* this step's events were
+   * written. It is threaded into the step-terminal `events.create` so a
+   * supporting World can return the delta of events written since (see
+   * {@link import('@workflow/world').CreateEventParams.sinceCursor}).
+   * Only set this when `correlationId`-based ownership guarantees this
+   * handler is the sole inline writer for the run on this iteration.
+   */
+  inlineDeltaSinceCursor?: string;
+  /**
+   * Force optimistic inline start regardless of
+   * `WORKFLOW_OPTIMISTIC_INLINE_START`. Set by turbo mode on the first delivery
+   * of the first invocation, where forcing it is safe: there is no concurrent
+   * peer handler to race the create-claim, so the body runs exactly once. Only
+   * meaningful together with `lazyStepInput` (a brand-new lazy step).
+   */
+  forceOptimisticStart?: boolean;
+  /**
+   * Turbo mode only: a promise that resolves once the backgrounded
+   * `run_started` has landed. When set, the lazy/optimistic `step_started` is
+   * chained on it so the step is never created before its run exists. The body
+   * still runs immediately against locally-synthesized state — only the network
+   * write waits — so the `run_started` round-trip overlaps the body. `undefined`
+   * outside turbo, where `run_started` was already awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>;
+}
+
+/**
+ * Inline-delta returned by a step-terminal write when the caller passed
+ * {@link StepExecutorParams.inlineDeltaSinceCursor} and the World supports
+ * the optimization. `events` are the events written strictly after that
+ * cursor (this step's events plus anything interleaved in-band), `cursor`
+ * is the position past the last one, and `hasMore` signals a further page
+ * (the caller then falls back to a full incremental fetch). Absent when
+ * the World did not return a delta.
+ */
+export interface InlineEventDelta {
+  events: Event[];
+  cursor: string | null;
+  hasMore: boolean;
 }
 
 /**
  * Result of a step execution attempt. The caller decides what to do
  * based on the result type (e.g., queue workflow continuation, replay inline, etc.).
+ *
+ * `inlineDelta` is attached to a `completed` result when the caller
+ * requested it via {@link StepExecutorParams.inlineDeltaSinceCursor} and
+ * the World returned one. Step failures are rare and not the inline
+ * optimization's target, so the `failed` path leaves it to the normal
+ * incremental fetch.
  */
 export type StepExecutionResult =
-  | { type: 'completed'; hasPendingOps?: boolean }
+  | {
+      type: 'completed';
+      hasPendingOps?: boolean;
+      inlineDelta?: InlineEventDelta;
+    }
   | { type: 'failed' }
   | { type: 'retry'; timeoutSeconds: number }
   | { type: 'skipped' }
@@ -75,8 +177,13 @@ export async function executeStep(
     stepName,
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
+  // Gate payload compression on the run's specVersion: only runs marked
+  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  const compression =
+    (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
-  return trace(`STEP ${stepName}`, {}, async (span) => {
+  const spanName = `step.execute ${stepDisplayName(stepName)}`;
+  return trace(spanName, {}, async (span) => {
     span?.setAttributes({
       ...Attribute.StepName(stepName),
       ...Attribute.WorkflowName(workflowName),
@@ -101,6 +208,42 @@ export async function executeStep(
         stepName,
         stepId,
       });
+      // On the lazy inline path the suspension handler deferred this step's
+      // `step_created`, expecting executeStep to materialize the step via a
+      // lazy `step_started` carrying its input. We never get that far for an
+      // unregistered step, so the step entity does not exist yet — writing
+      // `step_failed` straight away would hit the world's "step must exist"
+      // ordering guard and wedge the run. Send the lazy `step_started` first
+      // (it creates the step + synthetic `step_created` atomically and keeps
+      // replay correct), then fail it below. This also preserves the
+      // exactly-one-owner guarantee: a concurrent handler that won the create
+      // makes our lazy `step_started` reject with EntityConflictError → we
+      // return `skipped` and never write the failure twice.
+      if (params.lazyStepInput !== undefined) {
+        try {
+          // Turbo: this lazy `step_started` must not precede the backgrounded
+          // `run_started`. Order it after the run-ready barrier (best-effort —
+          // a barrier rejection means the run doesn't exist, and the create
+          // below surfaces the real error). No-op outside turbo.
+          if (params.runReadyBarrier) {
+            await params.runReadyBarrier.catch(() => {});
+          }
+          await world.events.create(workflowRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: { stepName, workflowName, input: params.lazyStepInput },
+          });
+        } catch (startErr) {
+          if (EntityConflictError.is(startErr)) {
+            return { type: 'skipped' };
+          }
+          if (RunExpiredError.is(startErr)) {
+            return { type: 'gone' };
+          }
+          throw startErr;
+        }
+      }
       try {
         await world.events.create(workflowRunId, {
           eventType: 'step_failed',
@@ -111,7 +254,10 @@ export async function executeStep(
             error: await dehydrateStepError(
               new FatalError(errorMessage),
               workflowRunId,
-              await getEncryptionKey()
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
             ),
           },
         });
@@ -134,23 +280,12 @@ export async function executeStep(
       ...Attribute.StepMaxRetries(maxRetries),
     });
 
-    // step_started validates state and returns the step entity
-    let step;
-    try {
-      const startResult = await world.events.create(workflowRunId, {
-        eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: stepId,
-        eventData: { stepName },
-      });
-
-      if (!startResult.step) {
-        throw new WorkflowRuntimeError(
-          `step_started event for "${stepId}" did not return step entity`
-        );
-      }
-      step = startResult.step;
-    } catch (err) {
+    // Maps a `step_started` rejection to a terminal StepExecutionResult,
+    // shared by the await path (below) and the optimistic-start reconciliation.
+    // Returns undefined when the error is not one we translate (caller rethrows).
+    const startErrorToResult = (
+      err: unknown
+    ): StepExecutionResult | undefined => {
       if (ThrottleError.is(err)) {
         const retryAfter = Math.max(
           1,
@@ -172,7 +307,7 @@ export async function executeStep(
           stepName,
           stepId,
           workflowRunId,
-          error: err.message,
+          error: err instanceof Error ? err.message : String(err),
         });
         span?.setAttributes({
           ...Attribute.StepSkipped(true),
@@ -189,7 +324,117 @@ export async function executeStep(
         });
         return { type: 'retry', timeoutSeconds };
       }
-      throw err;
+      return undefined;
+    };
+
+    // Optimistic inline start: when we hold the step input locally (lazy inline
+    // path) and the optimization is enabled, fire `step_started` WITHOUT
+    // awaiting and run the body against locally-synthesized state. A lazy step
+    // is always brand-new ⇒ attempt 1, no prior error, started now — so we
+    // don't need the server round-trip to begin. We reconcile the in-flight
+    // `step_started` before any terminal write (`reconcileOptimisticStart`): if
+    // it lost the atomic create-claim (409) or the run is gone/throttled, we
+    // discard the body result. Running the body before confirming ownership can
+    // execute a step more than once when handlers race — inline step bodies
+    // must be idempotent; disable via WORKFLOW_OPTIMISTIC_INLINE_START=0.
+    //
+    // Turbo mode passes `forceOptimisticStart` to enable this regardless of the
+    // env flag (its single-handler guarantee removes the race). But it still
+    // defers to an *explicit* `WORKFLOW_OPTIMISTIC_INLINE_START=0`: forced
+    // optimistic start runs the body before `step_started`/`run_started` is
+    // confirmed, which is exactly the property an operator opts out of with that
+    // flag, so an explicit opt-out wins over turbo's force.
+    const optimisticStart =
+      params.lazyStepInput !== undefined &&
+      (isOptimisticInlineStartEnabled() ||
+        (params.forceOptimisticStart === true &&
+          !isOptimisticInlineStartExplicitlyDisabled()));
+
+    let step: Step;
+    // Settled outcome of the in-flight optimistic `step_started`. Handlers are
+    // attached synchronously (`.then(ok, err)`) so a fast rejection never
+    // surfaces as an unhandledRejection while the body runs.
+    let optimisticStartSettled:
+      | Promise<{ ok: true } | { ok: false; err: unknown }>
+      | undefined;
+    // Await the optimistic `step_started` outcome and translate a lost race /
+    // terminal run / throttle into a result that short-circuits the body
+    // output. Returns undefined when we own the step and may write its terminal
+    // event. A non-translatable rejection is rethrown (so a transient
+    // step_started failure propagates to the queue handler for redelivery,
+    // exactly as on the await path). Idempotent — safe to call more than once.
+    const reconcileOptimisticStart = async (): Promise<
+      StepExecutionResult | undefined
+    > => {
+      if (!optimisticStartSettled) return undefined;
+      const settled = await optimisticStartSettled;
+      if (settled.ok) return undefined;
+      const mapped = startErrorToResult(settled.err);
+      if (!mapped) throw settled.err;
+      return mapped;
+    };
+
+    if (optimisticStart) {
+      // Chain the lazy `step_started` on the run-ready barrier (turbo mode):
+      // the step can't be created before its run exists, but the body below
+      // runs immediately against synthesized state, so the `run_started`
+      // round-trip overlaps the body rather than blocking it. Outside turbo the
+      // barrier is undefined and this is a plain create.
+      const startedPromise = (params.runReadyBarrier ?? Promise.resolve()).then(
+        () =>
+          world.events.create(workflowRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: { stepName, workflowName, input: params.lazyStepInput },
+          })
+      );
+      optimisticStartSettled = startedPromise.then(
+        () => ({ ok: true as const }),
+        (err) => ({ ok: false as const, err })
+      );
+      const now = new Date();
+      step = {
+        runId: workflowRunId,
+        stepId,
+        stepName,
+        status: 'running',
+        input: params.lazyStepInput,
+        attempt: 1,
+        startedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+    } else {
+      // step_started validates state and returns the step entity. On the lazy
+      // inline path we also carry the step `input` so the world creates the
+      // step on the fly (no separate step_created round-trip). The world's
+      // atomic create-claim makes this exactly-one-owner: a concurrent loser
+      // gets EntityConflictError, mapped to `{ type: 'skipped' }`, so it never
+      // runs the body. When `lazyStepInput` is absent this is the legacy
+      // step_started (step already created, no payload).
+      try {
+        const startResult = await world.events.create(workflowRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData:
+            params.lazyStepInput !== undefined
+              ? { stepName, workflowName, input: params.lazyStepInput }
+              : { stepName },
+        });
+
+        if (!startResult.step) {
+          throw new WorkflowRuntimeError(
+            `step_started event for "${stepId}" did not return step entity`
+          );
+        }
+        step = startResult.step;
+      } catch (err) {
+        const mapped = startErrorToResult(err);
+        if (mapped) return mapped;
+        throw err;
+      }
     }
 
     runtimeLogger.debug('Step execution details', {
@@ -245,7 +490,10 @@ export async function executeStep(
             error: await dehydrateStepError(
               wrappedError,
               workflowRunId,
-              await getEncryptionKey()
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
             ),
           },
         });
@@ -271,6 +519,11 @@ export async function executeStep(
       return { type: 'failed' };
     }
 
+    // Ops that must be durably committed before step completion (e.g. a
+    // step-initiated abort's hook_received event). See StepContext. Declared
+    // outside the try so the failure path below can also drain them.
+    const preCompletionOps: Promise<void>[] = [];
+
     try {
       const attempt = step.attempt;
 
@@ -293,7 +546,10 @@ export async function executeStep(
             step.input,
             workflowRunId,
             encryptionKey,
-            ops
+            ops,
+            globalThis,
+            {},
+            params.workflowDeploymentId
           );
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
@@ -327,7 +583,9 @@ export async function executeStep(
                 : `http://localhost:${port ?? 3000}`,
               features: { encryption: !!encryptionKey },
             },
+            workflowDeploymentId: params.workflowDeploymentId,
             ops,
+            preCompletionOps,
             closureVars: hydratedInput.closureVars,
             encryptionKey,
           },
@@ -346,7 +604,11 @@ export async function executeStep(
           result,
           workflowRunId,
           encryptionKey,
-          ops
+          ops,
+          globalThis,
+          false,
+          false,
+          compression
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({
@@ -365,30 +627,85 @@ export async function executeStep(
       // across steps), waitUntil handles the rest.
       let opsSettled = true;
       if (ops.length > 0) {
-        const opsPromise = Promise.all(ops).catch((err) => {
-          const isAbortError =
-            err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-          if (!isAbortError) throw err;
+        const opsPromise = Promise.all(ops);
+        // The race below surfaces failures inline when ops settle quickly;
+        // if the 500ms timeout wins, the failure is only observed here. The
+        // promise handed to waitUntil must never reject (an unconsumed
+        // waitUntil rejection crashes the process as unhandledRejection),
+        // so unexpected failures are logged instead.
+        safeWaitUntil(opsPromise, (err) => {
+          runtimeLogger.warn('Background flush of step stream ops failed', {
+            workflowRunId,
+            stepId,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
-        waitUntil(opsPromise);
         opsSettled = await Promise.race([
-          opsPromise.then(() => true as const),
+          opsPromise.then(
+            () => true as const,
+            (err) => {
+              // Ignore expected client disconnect errors (e.g., browser
+              // refresh during streaming)
+              const isAbortError =
+                err?.name === 'AbortError' || err?.name === 'ResponseAborted';
+              if (isAbortError) return true as const;
+              throw err;
+            }
+          ),
           new Promise<false>((r) => setTimeout(() => r(false), 500)),
         ]);
       }
 
-      // Create step_completed event
+      // Optimistic start: the body ran before `step_started` was confirmed.
+      // Reconcile it now — if we lost the create-claim (or the run is
+      // gone/throttled) discard this result and don't write step_completed.
+      // Reconcile before draining preCompletionOps: a discarded result means
+      // the winning handler owns the outcome (and re-fires any abort
+      // idempotently), so there's no point paying the abort-commit latency.
+      if (optimisticStart) {
+        const reconcile = await reconcileOptimisticStart();
+        if (reconcile) return reconcile;
+      }
+
+      // Commit must-be-durable ops (e.g. a step-initiated abort's
+      // hook_received event) before writing step_completed, so any workflow
+      // continuation triggered by that event observes the abort rather than
+      // racing it. These ops swallow their own errors, so awaiting only
+      // enforces ordering (the `.catch()` defends the no-reject contract on
+      // StepContext.preCompletionOps).
+      //
+      // Tradeoff: correctness requires the hook be durable before completion,
+      // so — unlike the background `ops` flush above — this cannot be capped
+      // with a resolve-on-timeout race. A slow resume therefore adds its
+      // latency to a step that aborts a controller, and a true hang holds
+      // completion until the platform/queue execution timeout fires; the queue
+      // then redelivers and the step retries, re-firing the abort idempotently.
+      if (preCompletionOps.length > 0) {
+        await Promise.all(preCompletionOps).catch(() => {});
+      }
+
+      // Create step_completed event. When the caller supplied a
+      // sinceCursor (inline sequential execution), thread it through so a
+      // supporting World returns the event-log delta on the result,
+      // letting the inline loop skip the next events.list round-trip.
       let stepCompleted409 = false;
-      await world.events
-        .create(workflowRunId, {
-          eventType: 'step_completed',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: stepId,
-          eventData: {
-            stepName,
-            result: result as Uint8Array,
+      const completedResult = await world.events
+        .create(
+          workflowRunId,
+          {
+            eventType: 'step_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: {
+              stepName,
+              workflowName,
+              result: result as Uint8Array,
+            },
           },
-        })
+          params.inlineDeltaSinceCursor !== undefined
+            ? { sinceCursor: params.inlineDeltaSinceCursor }
+            : undefined
+        )
         .catch((err) => {
           if (EntityConflictError.is(err)) {
             runtimeLogger.info(
@@ -401,7 +718,7 @@ export async function executeStep(
               }
             );
             stepCompleted409 = true;
-            return;
+            return undefined;
           }
           throw err;
         });
@@ -409,6 +726,13 @@ export async function executeStep(
       if (stepCompleted409) {
         return { type: 'skipped' };
       }
+
+      const inlineDelta = completedResult
+        ? extractInlineDelta(
+            completedResult,
+            params.inlineDeltaSinceCursor !== undefined
+          )
+        : undefined;
 
       span?.setAttributes({
         ...Attribute.StepStatus('completed'),
@@ -424,23 +748,50 @@ export async function executeStep(
       }
       // hasPendingOps signals the V2 handler to break the loop
       // and queue a continuation so waitUntil can flush them.
-      return { type: 'completed', hasPendingOps: !opsSettled };
+      return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
     } catch (err: unknown) {
-      const normalizedError = await normalizeUnknownError(err);
-      const normalizedStack = normalizedError.stack || getErrorStack(err) || '';
-
-      if (err instanceof Error) {
-        span?.recordException?.(err);
+      // Optimistic start: the body threw before `step_started` was confirmed.
+      // Reconcile first — if we lost the create-claim (or the run is
+      // gone/throttled) the body error is moot; discard it and don't write a
+      // terminal event (the winning handler owns the outcome). Reconcile
+      // before draining preCompletionOps for the same reason as the success
+      // path: a discarded outcome doesn't need the abort committed here.
+      if (optimisticStart) {
+        const reconcile = await reconcileOptimisticStart();
+        if (reconcile) return reconcile;
       }
 
-      const isFatal = FatalError.is(err);
+      // Order any must-be-durable ops (e.g. a step-initiated abort's
+      // hook_received event) ahead of step_failed too — a step that aborts and
+      // then throws must still have the abort recorded before the failure
+      // continuation observes it. Same latency tradeoff and no-reject contract
+      // as the success path above. See StepContext.preCompletionOps.
+      if (preCompletionOps.length > 0) {
+        await Promise.all(preCompletionOps).catch(() => {});
+      }
+
+      const effectiveErr = promoteAbortErrorToFatal(err);
+
+      const normalizedError = await normalizeUnknownError(effectiveErr);
+      const normalizedStack =
+        normalizedError.stack || getErrorStack(effectiveErr) || '';
+
+      if (effectiveErr instanceof Error) {
+        span?.recordException?.(effectiveErr);
+      }
+
+      const isFatal = FatalError.is(effectiveErr);
 
       span?.setAttributes({
-        ...Attribute.StepErrorName(getErrorName(err)),
+        ...Attribute.StepErrorName(getErrorName(effectiveErr)),
         ...Attribute.StepErrorMessage(normalizedError.message),
-        ...Attribute.ErrorType(getErrorName(err)),
+        ...Attribute.ErrorType(getErrorName(effectiveErr)),
         ...Attribute.ErrorCategory(
-          isFatal ? 'fatal' : RetryableError.is(err) ? 'retryable' : 'transient'
+          isFatal
+            ? 'fatal'
+            : RetryableError.is(effectiveErr)
+              ? 'retryable'
+              : 'transient'
         ),
         ...Attribute.ErrorRetryable(!isFatal),
       });
@@ -463,8 +814,8 @@ export async function executeStep(
         // error preserves it for consumers. `types.isNativeError()` works
         // across VM realms (a workflow-thrown error is an instance of the
         // VM's Error class, not the host's).
-        if (types.isNativeError(err) && normalizedStack) {
-          (err as Error).stack = normalizedStack;
+        if (types.isNativeError(effectiveErr) && normalizedStack) {
+          (effectiveErr as Error).stack = normalizedStack;
         }
         try {
           await world.events.create(workflowRunId, {
@@ -474,9 +825,12 @@ export async function executeStep(
             eventData: {
               stepName,
               error: await dehydrateStepError(
-                err,
+                effectiveErr,
                 workflowRunId,
-                await getEncryptionKey()
+                await getEncryptionKey(),
+                [],
+                globalThis,
+                compression
               ),
             },
           });
@@ -541,7 +895,10 @@ export async function executeStep(
               error: await dehydrateStepError(
                 wrappedError,
                 workflowRunId,
-                await getEncryptionKey()
+                await getEncryptionKey(),
+                [],
+                globalThis,
+                compression
               ),
             },
           });
@@ -600,7 +957,10 @@ export async function executeStep(
             error: await dehydrateStepError(
               err,
               workflowRunId,
-              await getEncryptionKey()
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
             ),
             ...(RetryableError.is(err) && { retryAfter: err.retryAfter }),
           },

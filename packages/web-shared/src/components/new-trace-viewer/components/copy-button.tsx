@@ -31,7 +31,7 @@ export function CopyButton({
       type="button"
       aria-label={ariaLabel}
       className={cn(
-        'cursor-pointer text-gray-800 hover:text-gray-1000 bg-transparent border-none p-1 m-0',
+        'cursor-pointer text-gray-800 hover:text-gray-1000 bg-transparent border-0 p-1 m-0',
         className
       )}
       onClick={(e) => {

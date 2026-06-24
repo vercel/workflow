@@ -15,7 +15,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     const tsconfigPath = await this.findTsConfigPath();
     // Create combined bundle in flow.func/
-    console.log('Creating Vercel Build Output API combined function');
+    this.logBaseBuilderInfo(
+      'Creating Vercel Build Output API combined function'
+    );
     const workflowsFuncDir = join(workflowGeneratedDir, 'flow.func');
     await mkdir(workflowsFuncDir, { recursive: true });
 
@@ -81,7 +83,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     workflowGeneratedDir: string;
     bundle?: boolean;
   }): Promise<void> {
-    console.log('Creating Vercel Build Output API webhook function');
+    this.logBaseBuilderInfo(
+      'Creating Vercel Build Output API webhook function'
+    );
     const webhookFuncDir = join(workflowGeneratedDir, 'webhook/[token].func');
 
     // Bundle the webhook route with dependencies resolved
@@ -116,9 +120,11 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       JSON.stringify(buildOutputConfig, null, 2)
     );
 
-    console.log(`Build Output API created at ${outputDir}`);
-    console.log('Combined function available at /.well-known/workflow/v1/flow');
-    console.log(
+    this.logBaseBuilderInfo(`Build Output API created at ${outputDir}`);
+    this.logBaseBuilderInfo(
+      'Combined function available at /.well-known/workflow/v1/flow'
+    );
+    this.logBaseBuilderInfo(
       'Webhook function available at /.well-known/workflow/v1/webhook/[token]'
     );
   }

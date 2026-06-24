@@ -23,9 +23,43 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
 // (partial writes, long-lived reads), and duplex streams are incompatible
 // with undici's experimental H2 support.
 
+// Writes (PUT) and stream completion use the v2 stream endpoint.
 function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
+}
+
+// The live-read (GET) endpoint is versioned at v3: on a max-duration timeout
+// (or a mid-stream connection drop) the server errors the response body
+// instead of closing it cleanly, which is what lets the reconnecting reader
+// (`createReconnectingFramedStream`) resume from the next chunk rather than
+// treating the timeout as end-of-stream. Reading from v2 would silently
+// truncate long-lived streams at the server's 2-minute limit. Only the live
+// read is affected by the timeout — writes, completion, and snapshot reads
+// (chunks/info/list) stay on v2.
+function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
+}
+
+function createStreamRequestError(
+  operation: 'write' | 'close',
+  url: URL,
+  response: Response,
+  text: string
+): Error {
+  const context = [`PUT ${url.origin}${url.pathname}`];
+  for (const header of ['x-vercel-id', 'x-vercel-error']) {
+    const value = response.headers.get(header);
+    if (value) {
+      context.push(`${header}=${value}`);
+    }
+  }
+
+  return new Error(
+    `Stream ${operation} failed: HTTP ${response.status} (${context.join('; ')}): ${text}`
   );
 }
 
@@ -101,19 +135,15 @@ export function createStreamer(config?: APIConfig): Streamer {
         const resolvedRunId = await runId;
 
         const httpConfig = await getHttpConfig(config);
-        const response = await fetch(
-          getStreamUrl(name, resolvedRunId, httpConfig),
-          {
-            method: 'PUT',
-            body: chunk,
-            headers: httpConfig.headers,
-          }
-        );
+        const url = getStreamUrl(name, resolvedRunId, httpConfig);
+        const response = await fetch(url, {
+          method: 'PUT',
+          body: chunk,
+          headers: httpConfig.headers,
+        });
         const text = await response.text();
         if (!response.ok) {
-          throw new Error(
-            `Stream write failed: HTTP ${response.status}: ${text}`
-          );
+          throw createStreamRequestError('write', url, response, text);
         }
       },
 
@@ -143,19 +173,15 @@ export function createStreamer(config?: APIConfig): Streamer {
         for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
           const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
           const body = encodeMultiChunks(batch);
-          const response = await fetch(
-            getStreamUrl(name, resolvedRunId, httpConfig),
-            {
-              method: 'PUT',
-              body,
-              headers: httpConfig.headers,
-            }
-          );
+          const url = getStreamUrl(name, resolvedRunId, httpConfig);
+          const response = await fetch(url, {
+            method: 'PUT',
+            body,
+            headers: httpConfig.headers,
+          });
           const text = await response.text();
           if (!response.ok) {
-            throw new Error(
-              `Stream write failed: HTTP ${response.status}: ${text}`
-            );
+            throw createStreamRequestError('write', url, response, text);
           }
         }
       },
@@ -166,24 +192,20 @@ export function createStreamer(config?: APIConfig): Streamer {
 
         const httpConfig = await getHttpConfig(config);
         httpConfig.headers.set('X-Stream-Done', 'true');
-        const response = await fetch(
-          getStreamUrl(name, resolvedRunId, httpConfig),
-          {
-            method: 'PUT',
-            headers: httpConfig.headers,
-          }
-        );
+        const url = getStreamUrl(name, resolvedRunId, httpConfig);
+        const response = await fetch(url, {
+          method: 'PUT',
+          headers: httpConfig.headers,
+        });
         const text = await response.text();
         if (!response.ok) {
-          throw new Error(
-            `Stream close failed: HTTP ${response.status}: ${text}`
-          );
+          throw createStreamRequestError('close', url, response, text);
         }
       },
 
       async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, runId, httpConfig);
+        const url = getStreamReadUrl(name, runId, httpConfig);
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }
