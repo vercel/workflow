@@ -1,12 +1,20 @@
 'use client';
 
 import { EVENT_DATA_REF_FIELDS, type Event } from '@workflow/world';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ReactNode,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
 import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -33,6 +41,39 @@ const DATA_EVENT_TYPES = new Set([
   'wait_completed',
   'attr_set',
 ]);
+
+const parseDateValue = (value: unknown): Date | null => {
+  if (value == null) return null;
+
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatEventTimestamp = (date: Date): string =>
+  date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    fractionalSecondDigits: 3,
+    timeZoneName: 'short',
+  });
+
+function EventMetadataRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 py-2 px-3">
+      <span className="text-label-12 text-gray-900">{label}</span>
+      {children}
+    </div>
+  );
+}
 
 /**
  * A single event row that can lazy-load its eventData when expanded.
@@ -106,6 +147,7 @@ function EventItem({
     minute: 'numeric',
     second: 'numeric',
   });
+  const occurredAt = parseDateValue(event.occurredAt);
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
@@ -133,19 +175,26 @@ function EventItem({
     >
       {/* Event attributes */}
       <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
-        <div className="flex items-center justify-between gap-2 py-2 px-3">
-          <span className="text-label-12 text-gray-900">Event ID</span>
+        {occurredAt && (
+          <EventMetadataRow label="Occurred">
+            <TimestampTooltip date={occurredAt}>
+              <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+                {formatEventTimestamp(occurredAt)}
+              </span>
+            </TimestampTooltip>
+          </EventMetadataRow>
+        )}
+        <EventMetadataRow label="Event ID">
           <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
             {event.eventId}
           </span>
-        </div>
+        </EventMetadataRow>
         {event.correlationId && (
-          <div className="flex items-center justify-between gap-2 py-2 px-3">
-            <span className="text-label-12 text-gray-900">Correlation ID</span>
+          <EventMetadataRow label="Correlation ID">
             <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
               {event.correlationId}
             </span>
-          </div>
+          </EventMetadataRow>
         )}
       </div>
 
