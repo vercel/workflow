@@ -8,6 +8,12 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from '../ui/collapsible';
 import { ContextCardProvider } from '../ui/context-card';
 import {
   DecryptClickContext,
@@ -23,12 +29,6 @@ import {
   RunAttributesCard,
   RunMetadataCard,
 } from './attributes-block';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleRoot,
-  CollapsibleTrigger,
-} from './collapsible';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 

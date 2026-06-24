@@ -13,7 +13,7 @@ import {
   CollapsibleContent,
   CollapsibleRoot,
   CollapsibleTrigger,
-} from './collapsible';
+} from '../ui/collapsible';
 import { CopyableDataBlock } from './copyable-data-block';
 
 function isReservedAttributeKey(key: string): boolean {

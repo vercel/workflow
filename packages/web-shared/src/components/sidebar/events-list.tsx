@@ -3,17 +3,17 @@
 import { EVENT_DATA_REF_FIELDS, type Event } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
-import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
-import { ErrorCard } from '../ui/error-card';
-import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
-import { Skeleton } from '../ui/skeleton';
-import { AttrSetEventBlock } from './attributes-block';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleRoot,
   CollapsibleTrigger,
-} from './collapsible';
+} from '../ui/collapsible';
+import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
+import { ErrorCard } from '../ui/error-card';
+import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
+import { Skeleton } from '../ui/skeleton';
+import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 
 /**
