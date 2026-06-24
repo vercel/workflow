@@ -23,6 +23,30 @@ const run = await (
 const wallMs = run.totalMs;
 const metrics = run.metrics ?? [];
 
+// Vertical timeline markers: any supplied metric carrying a ms offset (TTFT, first
+// chunk, …) plus a derived "time to first step" = the start of the earliest
+// `step.execute` span. Each marker keeps its own color so the line + legend match.
+const MARKERS = metrics
+  .filter((m) => m.markerOffsetMs != null)
+  .map((m, i) => ({
+    label: m.label ?? m.key,
+    offsetMs: Number(m.markerOffsetMs),
+    color: MARKER_COLORS[i % MARKER_COLORS.length],
+  }))
+  .filter((m) => Number.isFinite(m.offsetMs));
+const firstStepMs = Math.min(
+  ...run.spans
+    .filter((s) => (s.name ?? '').startsWith('step.execute'))
+    .map((s) => s.startMs)
+);
+if (Number.isFinite(firstStepMs)) {
+  MARKERS.push({
+    label: 'time to first step',
+    offsetMs: firstStepMs,
+    color: '#f5a623',
+  });
+}
+
 document.querySelector('.topbar a').href =
   `index.html?dataset=${encodeURIComponent(dataset)}`;
 document.getElementById('runId').textContent = run.label ?? runId;
@@ -245,20 +269,13 @@ function visibleSpan(s) {
   return true;
 }
 
-// metric markers: any metric carrying markerOffsetMs renders as a vertical line at
-// that ms offset from the trace origin. Drawn as overlays inside .rows so they scroll
-// with the timeline; colored by order from the marker palette.
+// Render MARKERS as full-height vertical lines at their ms offset from the trace
+// origin, as overlays inside .rows so they scroll with the timeline.
 function markersHtml() {
-  return metrics
-    .filter((m) => m.markerOffsetMs != null)
-    .map((m, i) => {
-      const v = Number(m.markerOffsetMs);
-      if (!Number.isFinite(v)) return '';
-      const frac = Math.max(0, Math.min(v / wallMs, 1));
-      const color = MARKER_COLORS[i % MARKER_COLORS.length];
-      return `<div class="marker" style="left:calc(var(--label-w) + var(--track-w) * ${frac});border-color:${color}"><span class="mlabel" style="color:${color}">${esc(m.label ?? m.key)} ${fmtMs(v)}</span></div>`;
-    })
-    .join('');
+  return MARKERS.map((m) => {
+    const frac = Math.max(0, Math.min(m.offsetMs / wallMs, 1));
+    return `<div class="marker" style="left:calc(var(--label-w) + var(--track-w) * ${frac});border-color:${m.color}"><span class="mlabel" style="color:${m.color}">${esc(m.label)} ${fmtMs(m.offsetMs)}</span></div>`;
+  }).join('');
 }
 
 function render() {
@@ -439,13 +456,10 @@ waterfall.addEventListener('mouseleave', () => {
 });
 
 // ---------- legend (markers + categories present) ----------
-const markerLegend = metrics
-  .filter((m) => m.markerOffsetMs != null)
-  .map(
-    (m, i) =>
-      `<span><i style="border-left:2px dashed ${MARKER_COLORS[i % MARKER_COLORS.length]};width:0;background:none"></i>${esc(m.label ?? m.key)}</span>`
-  )
-  .join('');
+const markerLegend = MARKERS.map(
+  (m) =>
+    `<span><i style="border-left:2px dashed ${m.color};width:0;background:none"></i>${esc(m.label)}</span>`
+).join('');
 const legendEntries = new Map();
 for (const s of run.spans) {
   const c = categoryOf(s);
