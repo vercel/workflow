@@ -5,6 +5,7 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
+import { getStreamDispatcher } from './http-client.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -19,10 +20,17 @@ import {
 export const MAX_CHUNKS_PER_REQUEST = 1000;
 const DEFAULT_STREAM_MUTATION_TIMEOUT_MS = 30_000;
 
-// Streaming calls use plain fetch() without the undici dispatcher.
-// The dispatcher's retry logic doesn't apply well to streaming operations
-// (partial writes, long-lived reads), and duplex streams are incompatible
-// with undici's experimental H2 support.
+// Stream writes (the PUT write/close path) go through the H2 stream
+// dispatcher (see getStreamDispatcher): they send a fully-buffered body (or
+// none), so they benefit from H2 multiplexing without hitting the duplex
+// issues that keep the long-lived live-read (GET) on plain fetch. Because
+// stream appends aren't idempotent, that stream dispatcher uses a deliberately
+// narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only on
+// transient connection errors and HTTP 429 — both of which guarantee the chunk
+// was never persisted — and never on 5xx, so a retry can't duplicate an
+// already-applied write. Snapshot reads (chunks/info) go
+// through makeRequest (default H1 dispatcher); the live-read and list use
+// plain fetch().
 
 function getStreamUrl(
   name: string,
@@ -169,7 +177,9 @@ export function createStreamer(config?: APIConfig): Streamer {
           method: 'PUT',
           body: chunk,
           headers: httpConfig.headers,
-        },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+          dispatcher: getStreamDispatcher(config),
+        } as any,
         'write'
       );
       const text = await response.text();
@@ -211,7 +221,9 @@ export function createStreamer(config?: APIConfig): Streamer {
             method: 'PUT',
             body,
             headers: httpConfig.headers,
-          },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+            dispatcher: getStreamDispatcher(config),
+          } as any,
           'write'
         );
         const text = await response.text();
@@ -233,7 +245,9 @@ export function createStreamer(config?: APIConfig): Streamer {
         {
           method: 'PUT',
           headers: httpConfig.headers,
-        },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+          dispatcher: getStreamDispatcher(config),
+        } as any,
         'close'
       );
       const text = await response.text();
