@@ -76,6 +76,18 @@ function parseEventDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function getEffectiveEventDate(
+  event: Pick<Event, 'createdAt' | 'occurredAt'>
+): Date {
+  return parseEventDate(event.occurredAt) ?? new Date(event.createdAt);
+}
+
+function getEffectiveEventTime(
+  event: Pick<Event, 'createdAt' | 'occurredAt'>
+): number {
+  return getEffectiveEventDate(event).getTime();
+}
+
 function formatEventType(eventType: Event['eventType']): string {
   return eventType
     .split('_')
@@ -185,7 +197,7 @@ export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
   // events for the same correlationId; the queued duration must be measured
   // against the first one, not the last.
   const chronological = [...events].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    (a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b)
   );
 
   const createdTimes = new Map<string, number>();
@@ -194,7 +206,7 @@ export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
   const durations = new Map<string, DurationInfo>();
 
   for (const event of chronological) {
-    const ts = new Date(event.createdAt).getTime();
+    const ts = getEffectiveEventTime(event);
     const key = event.correlationId ?? '__run__';
     const type: string = event.eventType;
 
@@ -659,7 +671,11 @@ const SORT_OPTIONS = [
   { value: 'asc' as const, label: 'Oldest' },
 ];
 
-function RowsSkeleton() {
+function RowsSkeleton({
+  showSeparateEventOccurrenceTimestamps = false,
+}: {
+  showSeparateEventOccurrenceTimestamps?: boolean;
+}) {
   return (
     <div className="flex-1 overflow-hidden">
       {Array.from({ length: 16 }, (_, i) => (
@@ -696,10 +712,11 @@ function RowsSkeleton() {
           <div className="w-5 flex-shrink-0 flex items-center justify-center">
             <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
           </div>
-          {/* Occurred */}
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: '70%' }} />
-          </div>
+          {showSeparateEventOccurrenceTimestamps && (
+            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+              <Skeleton className="h-3" style={{ width: '70%' }} />
+            </div>
+          )}
           {/* Created */}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             <Skeleton className="h-3" style={{ width: '70%' }} />
@@ -765,6 +782,8 @@ interface EventsListProps {
     kind: ExactWorkflowSearchIdKind,
     signal?: AbortSignal
   ) => Promise<ExactIdSearchResult>;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }
 
 export function EventRow({
@@ -788,6 +807,7 @@ export function EventRow({
   encryptionKey,
   onEncryptedDataDetected,
   suppressGroupDimming = false,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   event: Event;
   index: number;
@@ -810,6 +830,8 @@ export function EventRow({
   onEncryptedDataDetected?: () => void;
   /** Exact-ID search results should not dim unrelated rows. */
   suppressGroupDimming?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -839,6 +861,9 @@ export function EventRow({
   const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
   const occurredAt = parseEventDate(event.occurredAt);
+  const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
+    ? createdAt
+    : getEffectiveEventDate(event);
   const hasExistingEventData = 'eventData' in event && event.eventData != null;
   const isRun = isRunLevel(event.eventType);
   const eventName = isRun
@@ -1019,27 +1044,28 @@ export function EventRow({
             />
           </div>
 
-          {/* Occurred */}
-          <div
-            className="tabular-nums min-w-0 px-4"
-            style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
-          >
-            {occurredAt ? (
-              <TimestampTooltip date={occurredAt}>
-                <span>{formatEventTime(occurredAt)}</span>
-              </TimestampTooltip>
-            ) : (
-              '-'
-            )}
-          </div>
+          {showSeparateEventOccurrenceTimestamps && (
+            <div
+              className="tabular-nums min-w-0 px-4"
+              style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
+            >
+              {occurredAt ? (
+                <TimestampTooltip date={occurredAt}>
+                  <span>{formatEventTime(occurredAt)}</span>
+                </TimestampTooltip>
+              ) : (
+                '-'
+              )}
+            </div>
+          )}
 
           {/* Created */}
           <div
             className="tabular-nums min-w-0 px-4"
             style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
           >
-            <TimestampTooltip date={createdAt}>
-              <span>{formatEventTime(createdAt)}</span>
+            <TimestampTooltip date={displayedCreatedAt}>
+              <span>{formatEventTime(displayedCreatedAt)}</span>
             </TimestampTooltip>
           </div>
 
@@ -1218,6 +1244,7 @@ function EventListViewInner({
   isDecrypting = false,
   hasEncryptedData: hasEncryptedDataProp = false,
   onExactIdSearch,
+  showSeparateEventOccurrenceTimestamps = false,
 }: EventsListProps) {
   const toast = useToast();
   const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
@@ -1255,9 +1282,7 @@ function EventListViewInner({
     if (sourceEvents.length === 0) return [];
     const dir = effectiveSortOrder === 'desc' ? -1 : 1;
     return [...sourceEvents].sort(
-      (a, b) =>
-        dir *
-        (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      (a, b) => dir * (getEffectiveEventTime(a) - getEffectiveEventTime(b))
     );
   }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
 
@@ -1671,9 +1696,11 @@ function EventListViewInner({
         >
           <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
           <div className="w-5 flex-shrink-0" />
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Occurred
-          </div>
+          {showSeparateEventOccurrenceTimestamps && (
+            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+              Occurred
+            </div>
+          )}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             Created
           </div>
@@ -1693,7 +1720,11 @@ function EventListViewInner({
 
         {/* Virtualized event rows or refetching skeleton */}
         {isRefetching || searchLoading ? (
-          <RowsSkeleton />
+          <RowsSkeleton
+            showSeparateEventOccurrenceTimestamps={
+              showSeparateEventOccurrenceTimestamps
+            }
+          />
         ) : sortedEvents.length === 0 ? (
           <div
             className="flex flex-1 items-center justify-center px-6 text-center text-sm"
@@ -1749,6 +1780,9 @@ function EventListViewInner({
                   encryptionKey={encryptionKey}
                   onEncryptedDataDetected={handleEncryptedDataDetected}
                   suppressGroupDimming={isExactSearchActive}
+                  showSeparateEventOccurrenceTimestamps={
+                    showSeparateEventOccurrenceTimestamps
+                  }
                 />
               );
             }}

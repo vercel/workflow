@@ -29,6 +29,7 @@ interface RunTraceViewProps {
   onLoadMoreSpans?: () => void | Promise<void>;
   hasMoreSpans?: boolean;
   isLoadingMoreSpans?: boolean;
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }
 
 export function RunTraceView({
@@ -48,6 +49,7 @@ export function RunTraceView({
   onLoadMoreSpans,
   hasMoreSpans,
   isLoadingMoreSpans,
+  showSeparateEventOccurrenceTimestamps,
 }: RunTraceViewProps) {
   if (error && !run) {
     return (
@@ -78,6 +80,9 @@ export function RunTraceView({
         onLoadMoreSpans={onLoadMoreSpans}
         hasMoreSpans={hasMoreSpans}
         isLoadingMoreSpans={isLoadingMoreSpans}
+        showSeparateEventOccurrenceTimestamps={
+          showSeparateEventOccurrenceTimestamps
+        }
       />
     </div>
   );

@@ -780,6 +780,7 @@ export const WorkflowTraceViewer = ({
   encryptionKey,
   onDecrypt,
   isDecrypting = false,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -822,6 +823,8 @@ export const WorkflowTraceViewer = ({
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched */
   isDecrypting?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) => {
   const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
@@ -1169,6 +1172,9 @@ export const WorkflowTraceViewer = ({
                 onDecrypt={onDecrypt}
                 isDecrypting={isDecrypting}
                 selectedSpan={selectedSpan}
+                showSeparateEventOccurrenceTimestamps={
+                  showSeparateEventOccurrenceTimestamps
+                }
               />
             </ErrorBoundary>
           </div>

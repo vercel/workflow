@@ -1,7 +1,7 @@
 'use client';
 
-import { createContext, useContext, type ReactNode } from 'react';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import { createContext, type ReactNode, useContext } from 'react';
 import type { SpanSelectionInfo } from './entity-detail-panel';
 
 export interface SidebarDataContextValue {
@@ -30,6 +30,8 @@ export interface SidebarDataContextValue {
   onDecrypt?: () => void;
   isDecrypting?: boolean;
   hasEncryptedData?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }
 
 const SidebarDataContext = createContext<SidebarDataContextValue | null>(null);
