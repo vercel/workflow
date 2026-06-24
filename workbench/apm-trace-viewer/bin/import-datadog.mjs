@@ -9,6 +9,8 @@
 //     --title <str>      landing-page title (default: dataset id)
 //     --group-by <key>   group spans into "runs" by 'trace_id' (default) or a tag key
 //                        (e.g. @workflow.run.id) read from each span's custom attributes
+//     --group <id>       force ALL imported spans into a single trace-group with this id
+//                        (e.g. view a run's API-route trace + execution trace together)
 //     --site <site>      Datadog site (default: $DD_SITE or datadoghq.com)
 //     --limit <n>        page size (default 1000)
 //     --max <n>          stop after this many spans (default 20000)
@@ -39,6 +41,7 @@ const { values } = parseArgs({
     dataset: { type: 'string' },
     title: { type: 'string' },
     'group-by': { type: 'string' },
+    group: { type: 'string' },
     site: { type: 'string' },
     limit: { type: 'string' },
     max: { type: 'string' },
@@ -151,7 +154,9 @@ function mapSpan(raw) {
     ? (cv(c, groupByTag) ?? cv(c, groupByTag.replace(/^@/, '')))
     : null;
   return {
-    group: groupTagVal ?? a.trace_id,
+    // --group forces every span into one trace-group (e.g. to view several
+    // correlated trace_ids of a single workflow run together on one timeline).
+    group: values.group ?? groupTagVal ?? a.trace_id,
     id: a.span_id,
     parent: a.parent_id && a.parent_id !== '0' ? a.parent_id : null,
     trace: a.trace_id,
