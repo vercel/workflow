@@ -82,11 +82,11 @@ export function DetailCard({
   // disabled / chevron variants visually identical in height regardless of
   // what's in the trailing slot.
   const rowClasses =
-    'flex h-9 items-center gap-2 px-2 -mx-2 text-heading-14 font-medium my-2';
+    'flex h-9 items-center gap-2 px-2 -mx-2 text-heading-14 font-medium';
 
   if (trailing) {
     return (
-      <section className="-mx-4 border-t px-4 border-gray-alpha-400">
+      <section className="-mx-4 border-t px-4 py-2 border-gray-alpha-400">
         <div className={cn(rowClasses, summaryClassName)}>
           <div className="isolate relative shrink-0 w-3.5 h-3.5 text-gray-700">
             <ChevronRight
@@ -103,7 +103,7 @@ export function DetailCard({
 
   if (disabled) {
     return (
-      <section className="-mx-4 border-t px-4 border-gray-alpha-400">
+      <section className="-mx-4 border-t px-4 py-2 border-gray-alpha-400">
         <div
           className={cn(rowClasses, summaryClassName)}
           style={{ color: 'var(--ds-gray-700)', cursor: 'not-allowed' }}
@@ -115,7 +115,7 @@ export function DetailCard({
   }
 
   return (
-    <section className="-mx-4 border-t px-4 border-gray-alpha-400">
+    <section className="-mx-4 border-t px-4 py-2 border-gray-alpha-400">
       <details className="group" open={open} onToggle={handleToggle}>
         <summary
           className={cn(
