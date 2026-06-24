@@ -10,28 +10,28 @@ import {
 } from 'react';
 import { cn } from '../../lib/utils';
 
-type DetailCardVariant = 'section' | 'card';
+type CollapsibleVariant = 'section' | 'card';
 
-type DetailCardContextValue = {
-  variant: DetailCardVariant;
+type CollapsibleContextValue = {
+  variant: CollapsibleVariant;
   disabled: boolean;
 };
 
-const DetailCardContext = createContext<DetailCardContextValue | null>(null);
+const CollapsibleContext = createContext<CollapsibleContextValue | null>(null);
 
-function useDetailCardContext(part: string): DetailCardContextValue {
-  const context = useContext(DetailCardContext);
+function useCollapsibleContext(part: string): CollapsibleContextValue {
+  const context = useContext(CollapsibleContext);
   if (!context) {
     throw new Error(
-      `<DetailCard.${part}> must be rendered inside <DetailCard>`
+      `<Collapsible.${part}> must be rendered inside <Collapsible>`
     );
   }
   return context;
 }
 
-type DetailCardProps = {
+type CollapsibleProps = {
   children: ReactNode;
-  variant?: DetailCardVariant;
+  variant?: CollapsibleVariant;
   disabled?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -40,23 +40,23 @@ type DetailCardProps = {
 
 /**
  * Collapsible section used throughout the run detail panel. Compose it with
- * `DetailCard.Trigger` (the header) and `DetailCard.Content` (the body):
+ * `Collapsible.Trigger` (the header) and `Collapsible.Content` (the body):
  *
  * ```tsx
- * <DetailCard defaultOpen>
- *   <DetailCard.Trigger>Metadata</DetailCard.Trigger>
- *   <DetailCard.Content>...</DetailCard.Content>
- * </DetailCard>
+ * <Collapsible defaultOpen>
+ *   <Collapsible.Trigger>Metadata</Collapsible.Trigger>
+ *   <Collapsible.Content>...</Collapsible.Content>
+ * </Collapsible>
  * ```
  */
-function DetailCard({
+function Collapsible({
   children,
   variant = 'section',
   disabled = false,
   defaultOpen = false,
   onOpenChange,
   className,
-}: DetailCardProps) {
+}: CollapsibleProps) {
   const [open, setOpen] = useState(defaultOpen);
 
   const handleToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
@@ -71,7 +71,7 @@ function DetailCard({
 
   const details = (
     <details
-      data-slot="detail-card"
+      data-slot="collapsible"
       data-state={open ? 'open' : 'closed'}
       open={open}
       onToggle={disabled ? undefined : handleToggle}
@@ -82,9 +82,9 @@ function DetailCard({
         className
       )}
     >
-      <DetailCardContext.Provider value={{ variant, disabled }}>
+      <CollapsibleContext.Provider value={{ variant, disabled }}>
         {children}
-      </DetailCardContext.Provider>
+      </CollapsibleContext.Provider>
     </details>
   );
 
@@ -99,18 +99,18 @@ function DetailCard({
   );
 }
 
-type DetailCardTriggerProps = {
+type CollapsibleTriggerProps = {
   children: ReactNode;
   className?: string;
 };
 
-function DetailCardTrigger({ children, className }: DetailCardTriggerProps) {
-  const { variant, disabled } = useDetailCardContext('Trigger');
+function CollapsibleTrigger({ children, className }: CollapsibleTriggerProps) {
+  const { variant, disabled } = useCollapsibleContext('Trigger');
 
   if (variant === 'card') {
     return (
       <summary
-        data-slot="detail-card-trigger"
+        data-slot="collapsible-trigger"
         className={cn(
           'flex cursor-pointer list-none items-center gap-1.5 border-t border-gray-alpha-400 bg-background-200 px-3 py-4 hover:bg-gray-100 [&::-webkit-details-marker]:hidden',
           className
@@ -132,7 +132,7 @@ function DetailCardTrigger({ children, className }: DetailCardTriggerProps) {
   if (disabled) {
     return (
       <summary
-        data-slot="detail-card-trigger"
+        data-slot="collapsible-trigger"
         className={cn(row, 'pointer-events-none text-gray-700', className)}
       >
         <span className="min-w-0 flex-1">{children}</span>
@@ -142,7 +142,7 @@ function DetailCardTrigger({ children, className }: DetailCardTriggerProps) {
 
   return (
     <summary
-      data-slot="detail-card-trigger"
+      data-slot="collapsible-trigger"
       className={cn(
         row,
         'group/trigger cursor-pointer rounded hover:bg-gray-alpha-100',
@@ -164,16 +164,16 @@ function DetailCardTrigger({ children, className }: DetailCardTriggerProps) {
   );
 }
 
-type DetailCardContentProps = {
+type CollapsibleContentProps = {
   children: ReactNode;
   className?: string;
 };
 
-function DetailCardContent({ children, className }: DetailCardContentProps) {
-  const { variant } = useDetailCardContext('Content');
+function CollapsibleContent({ children, className }: CollapsibleContentProps) {
+  const { variant } = useCollapsibleContext('Content');
   return (
     <div
-      data-slot="detail-card-content"
+      data-slot="collapsible-content"
       className={cn(variant === 'section' && 'mt-2 mb-3', className)}
     >
       {children}
@@ -181,9 +181,9 @@ function DetailCardContent({ children, className }: DetailCardContentProps) {
   );
 }
 
-const DetailCardNamespace = Object.assign(DetailCard, {
-  Trigger: DetailCardTrigger,
-  Content: DetailCardContent,
+const CollapsibleNamespace = Object.assign(Collapsible, {
+  Trigger: CollapsibleTrigger,
+  Content: CollapsibleContent,
 });
 
-export { DetailCardNamespace as DetailCard };
+export { CollapsibleNamespace as Collapsible };

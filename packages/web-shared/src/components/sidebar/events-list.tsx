@@ -8,8 +8,8 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { AttrSetEventBlock } from './attributes-block';
+import { Collapsible } from './collapsible';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-import { DetailCard } from './detail-card';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -110,7 +110,7 @@ function EventItem({
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
   return (
-    <DetailCard
+    <Collapsible
       variant="card"
       onOpenChange={
         canHaveData
@@ -120,7 +120,7 @@ function EventItem({
           : undefined
       }
     >
-      <DetailCard.Trigger className="px-3 py-2">
+      <Collapsible.Trigger className="px-3 py-2">
         <div className="flex w-full items-center justify-between gap-3">
           <span className="text-gray-1000 text-label-12 font-mono">
             {event.eventType}
@@ -129,8 +129,8 @@ function EventItem({
             {createdAtTime}
           </span>
         </div>
-      </DetailCard.Trigger>
-      <DetailCard.Content>
+      </Collapsible.Trigger>
+      <Collapsible.Content>
         {/* Event attributes */}
         <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
           <div className="flex items-center justify-between gap-2 py-2 px-3">
@@ -175,8 +175,8 @@ function EventItem({
             <EventDataBlock eventType={event.eventType} data={displayPayload} />
           </div>
         )}
-      </DetailCard.Content>
-    </DetailCard>
+      </Collapsible.Content>
+    </Collapsible>
   );
 }
 
@@ -298,18 +298,18 @@ export function EventsList({
 
   if (!hasEvents && !isLoading) {
     return (
-      <DetailCard disabled>
-        <DetailCard.Trigger>Events</DetailCard.Trigger>
-      </DetailCard>
+      <Collapsible disabled>
+        <Collapsible.Trigger>Events</Collapsible.Trigger>
+      </Collapsible>
     );
   }
 
   return (
     <RunClickContext.Provider value={onRunClick}>
       <StreamClickContext.Provider value={onStreamClick}>
-        <DetailCard defaultOpen>
-          <DetailCard.Trigger>Events</DetailCard.Trigger>
-          <DetailCard.Content className="mb-0">
+        <Collapsible defaultOpen>
+          <Collapsible.Trigger>Events</Collapsible.Trigger>
+          <Collapsible.Content className="mb-0">
             {isLoading ? (
               <div className="flex flex-col -mx-4">
                 {[0, 1, 2].map((i) => (
@@ -334,8 +334,8 @@ export function EventsList({
                 ))}
               </div>
             )}
-          </DetailCard.Content>
-        </DetailCard>
+          </Collapsible.Content>
+        </Collapsible>
       </StreamClickContext.Provider>
     </RunClickContext.Provider>
   );
