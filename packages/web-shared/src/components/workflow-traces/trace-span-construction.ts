@@ -28,6 +28,27 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'wait_completed',
 ]);
 
+const findEventByType = (
+  events: Event[],
+  eventTypes: Event['eventType'][]
+): Event | undefined => {
+  for (const eventType of eventTypes) {
+    const event = events.find((e) => e.eventType === eventType);
+    if (event) return event;
+  }
+  return undefined;
+};
+
+const withOccurredAt = <T extends object>(
+  entity: T,
+  occurredAt: Event['occurredAt'] | undefined
+): T & { occurredAt?: Date } => {
+  if (!occurredAt || (entity as { occurredAt?: unknown }).occurredAt != null) {
+    return entity;
+  }
+  return { ...entity, occurredAt };
+};
+
 /**
  * Convert workflow events to span events
  * Only includes events that should be displayed as markers
@@ -59,7 +80,8 @@ export const waitEventsToWaitEntity = (
   waitId: string;
   runId: string;
   createdAt: Date;
-  resumeAt: Date;
+  occurredAt?: Date;
+  resumeAt?: Date;
   completedAt?: Date;
 } | null => {
   const startEvent = events.find((event) => event.eventType === 'wait_created');
@@ -69,13 +91,18 @@ export const waitEventsToWaitEntity = (
   const completedEvent = events.find(
     (event) => event.eventType === 'wait_completed'
   );
-  return {
-    waitId: startEvent.correlationId,
-    runId: startEvent.runId,
-    createdAt: startEvent.createdAt,
-    resumeAt: startEvent.eventData?.resumeAt,
-    completedAt: completedEvent?.createdAt,
-  };
+  return withOccurredAt(
+    {
+      waitId: startEvent.correlationId,
+      runId: startEvent.runId,
+      createdAt: startEvent.createdAt,
+      resumeAt: startEvent.eventData?.resumeAt
+        ? new Date(startEvent.eventData.resumeAt)
+        : undefined,
+      completedAt: completedEvent?.createdAt,
+    },
+    startEvent.occurredAt
+  );
 };
 
 /**
@@ -122,6 +149,7 @@ export const stepEventsToStepEntity = (
   attempt: number;
   createdAt: Date;
   updatedAt: Date;
+  occurredAt?: Date;
   startedAt?: Date;
   completedAt?: Date;
   specVersion?: number;
@@ -172,18 +200,24 @@ export const stepEventsToStepEntity = (
   if (attempt === 0) attempt = 1;
 
   const lastEvent = events[events.length - 1];
-  return {
-    stepId: anchorEvent.correlationId ?? '',
-    runId: anchorEvent.runId,
-    stepName: createdEvent?.eventData?.stepName ?? '',
-    status,
-    attempt,
-    createdAt: anchorEvent.createdAt,
-    updatedAt: lastEvent?.createdAt ?? anchorEvent.createdAt,
-    startedAt,
-    completedAt,
-    specVersion: anchorEvent.specVersion,
-  };
+  const occurrenceEvent =
+    findEventByType(events, ['step_created', 'step_started']) ?? anchorEvent;
+
+  return withOccurredAt(
+    {
+      stepId: anchorEvent.correlationId ?? '',
+      runId: anchorEvent.runId,
+      stepName: createdEvent?.eventData?.stepName ?? '',
+      status,
+      attempt,
+      createdAt: anchorEvent.createdAt,
+      updatedAt: lastEvent?.createdAt ?? anchorEvent.createdAt,
+      startedAt,
+      completedAt,
+      specVersion: anchorEvent.specVersion,
+    },
+    occurrenceEvent.occurredAt
+  );
 };
 
 /**
@@ -252,6 +286,7 @@ export const hookEventsToHookEntity = (
   runId: string;
   token?: string;
   createdAt: Date;
+  occurredAt?: Date;
   receivedCount: number;
   lastReceivedAt?: Date;
   disposedAt?: Date;
@@ -269,15 +304,18 @@ export const hookEventsToHookEntity = (
     (event) => event.eventType === 'hook_disposed'
   );
   const lastReceivedEvent = receivedEvents.at(-1);
-  return {
-    hookId: createdEvent.correlationId,
-    runId: createdEvent.runId,
-    token: createdEvent.eventData?.token,
-    createdAt: createdEvent.createdAt,
-    receivedCount: receivedEvents.length,
-    lastReceivedAt: lastReceivedEvent?.createdAt || undefined,
-    disposedAt: disposedEvents.at(-1)?.createdAt || undefined,
-  };
+  return withOccurredAt(
+    {
+      hookId: createdEvent.correlationId,
+      runId: createdEvent.runId,
+      token: createdEvent.eventData?.token,
+      createdAt: createdEvent.createdAt,
+      receivedCount: receivedEvents.length,
+      lastReceivedAt: lastReceivedEvent?.createdAt || undefined,
+      disposedAt: disposedEvents.at(-1)?.createdAt || undefined,
+    },
+    createdEvent.occurredAt
+  );
 };
 
 /**
@@ -327,9 +365,13 @@ export function runToSpan(
   // Only embed identification fields — not the full object with
   // input/output/error which may contain non-cloneable types.
   const { input: _i, output: _o, error: _e, ...runIdentity } = run;
+  const occurrenceEvent = findEventByType(runEvents, [
+    'run_created',
+    'run_started',
+  ]);
   const attributes = {
     resource: 'run' as const,
-    data: runIdentity,
+    data: withOccurredAt(runIdentity, occurrenceEvent?.occurredAt),
   };
 
   // Use createdAt as span start time, with activeStartTime for when execution began
