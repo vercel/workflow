@@ -2,7 +2,12 @@
 // Import APM spans from the Datadog Spans API into a viewer dataset.
 //
 //   DD_API_KEY=… DD_APP_KEY=… node bin/import-datadog.mjs --query '<spans query>' [options]
-//     --query <q>        Datadog spans search query (e.g. 'service:flora-web @workflow.run.id:wrun_…')
+//   DD_API_KEY=… DD_APP_KEY=… node bin/import-datadog.mjs --run <workflowRunId>   (one run, all its traces)
+//     --run <id>         import a single workflow run: discover every trace carrying the
+//                        run-id tag (the request that starts it + each execution invocation),
+//                        fetch all their spans, and fold them into one group on a shared timeline
+//     --run-tag <tag>    the run-id search tag (default '@workflow.run.id')
+//     --query <q>        Datadog spans search query (e.g. 'service:my-app @workflow.run.id:wrun_…')
 //     --from <t>         start of window: ISO, epoch ms, or relative ('now-1h'). default now-1h
 //     --to <t>           end of window. default now
 //     --dataset <id>     dataset id (default: 'datadog')
@@ -17,8 +22,8 @@
 //     --debug-first      print the first raw span and exit (to inspect field names)
 //     --input <file>     skip the network and map a saved Spans API payload instead —
 //                        a JSON file holding `{data:[...]}` or an array of such pages.
-//                        Lets you re-import offline or via another auth path, e.g.
-//                        `pup --no-agent traces search … > spans.json` then `--input spans.json`.
+//                        Lets you re-import offline, or ingest a payload fetched by any
+//                        other client (e.g. a curl against the Spans API).
 //     --out <dir>        viewer data dir (default: ../viewer/data)
 //
 // Auth (network mode): DD_API_KEY (DD-API-KEY) + DD_APP_KEY (DD-APPLICATION-KEY). The
@@ -42,6 +47,8 @@ const { values } = parseArgs({
     title: { type: 'string' },
     'group-by': { type: 'string' },
     group: { type: 'string' },
+    run: { type: 'string' },
+    'run-tag': { type: 'string' },
     site: { type: 'string' },
     limit: { type: 'string' },
     max: { type: 'string' },
@@ -70,18 +77,23 @@ const groupByTag =
     : null;
 const pageLimit = Number(values.limit ?? 1000);
 const maxSpans = Number(values.max ?? 20000);
-const datasetId = (values.dataset ?? 'datadog').replace(/[^\w.-]+/g, '-');
-const title = values.title ?? datasetId;
+// `--run` defaults the dataset/title/group to the run id; the run id is read from
+// the `workflow.run.id` OTel tag the Workflow SDK emits (overridable via --run-tag).
+const runTag = values['run-tag'] ?? '@workflow.run.id';
+const defaultId = values.run ?? 'datadog';
+const datasetId = (values.dataset ?? defaultId).replace(/[^\w.-]+/g, '-');
+const title = values.title ?? defaultId;
+const forceGroup = values.group ?? values.run ?? null;
 const out = values.out ?? DEFAULT_OUT;
 
 const url = `https://api.${site}/api/v2/spans/events/search`;
 
-async function fetchPage(cursor) {
+async function fetchPage(q, cursor) {
   const body = {
     data: {
       type: 'search_request',
       attributes: {
-        filter: { from: String(from), to: String(to), query },
+        filter: { from: String(from), to: String(to), query: q },
         sort: 'timestamp',
         page: { limit: pageLimit, ...(cursor ? { cursor } : {}) },
       },
@@ -103,6 +115,18 @@ async function fetchPage(cursor) {
     );
   }
   return res.json();
+}
+
+// Page through all spans matching a query (up to maxSpans), returning raw span objects.
+async function searchAll(q) {
+  const raw = [];
+  let cursor = null;
+  do {
+    const json = await fetchPage(q, cursor);
+    for (const s of json.data ?? []) raw.push(s);
+    cursor = json.meta?.page?.after ?? null;
+  } while (cursor && raw.length < maxSpans);
+  return raw;
 }
 
 // Read a custom-attribute value. The Spans API returns `attributes.custom` as a
@@ -154,9 +178,9 @@ function mapSpan(raw) {
     ? (cv(c, groupByTag) ?? cv(c, groupByTag.replace(/^@/, '')))
     : null;
   return {
-    // --group forces every span into one trace-group (e.g. to view several
+    // --run / --group force every span into one trace-group (e.g. to view all
     // correlated trace_ids of a single workflow run together on one timeline).
-    group: values.group ?? groupTagVal ?? a.trace_id,
+    group: forceGroup ?? groupTagVal ?? a.trace_id,
     id: a.span_id,
     parent: a.parent_id && a.parent_id !== '0' ? a.parent_id : null,
     trace: a.trace_id,
@@ -183,30 +207,42 @@ function mapSpan(raw) {
 }
 
 const spans = [];
-let pages = 0;
 if (values.input) {
   // Offline mode: map a saved Spans API payload ({data:[…]} or an array of pages).
   const parsed = JSON.parse(readFileSync(values.input, 'utf8'));
   const pageList = Array.isArray(parsed) ? parsed : [parsed];
-  for (const page of pageList) {
+  for (const page of pageList)
     for (const raw of page.data ?? []) spans.push(mapSpan(raw));
-    pages++;
+} else if (values.run) {
+  // Run mode: a workflow run spans several traces (the request that starts it +
+  // each execution invocation). Find those trace_ids via the run-id tag, then
+  // fetch every span in them and fold all into one group (forceGroup = run id).
+  const tagged = await searchAll(`${runTag}:${values.run}`);
+  const traceIds = [
+    ...new Set(tagged.map((s) => s.attributes?.trace_id).filter(Boolean)),
+  ];
+  if (traceIds.length === 0) {
+    console.error(
+      `no spans tagged ${runTag}:${values.run} in that window (try --from/--to or --run-tag).`
+    );
+    process.exit(1);
   }
+  console.error(
+    `run ${values.run}: ${traceIds.length} trace(s) — fetching full spans…`
+  );
+  const raw = await searchAll(
+    traceIds.map((t) => `trace_id:${t}`).join(' OR ')
+  );
+  for (const r of raw) spans.push(mapSpan(r));
 } else {
-  let cursor = null;
-  do {
-    const json = await fetchPage(cursor);
-    const data = json.data ?? [];
-    if (values['debug-first']) {
-      console.error(
-        JSON.stringify(data[0] ?? { note: 'no spans returned' }, null, 2)
-      );
-      process.exit(0);
-    }
-    for (const raw of data) spans.push(mapSpan(raw));
-    cursor = json.meta?.page?.after ?? null;
-    pages++;
-  } while (cursor && spans.length < maxSpans);
+  const raw = await searchAll(query);
+  if (values['debug-first']) {
+    console.error(
+      JSON.stringify(raw[0] ?? { note: 'no spans returned' }, null, 2)
+    );
+    process.exit(0);
+  }
+  for (const r of raw) spans.push(mapSpan(r));
 }
 
 if (spans.length === 0) {
@@ -222,5 +258,5 @@ const count = buildDataset({
   spans,
 });
 console.log(
-  `datadog → dataset "${datasetId}": ${count} trace group(s), ${spans.length} spans (${pages} page(s)) → ${join(out, datasetId)}`
+  `datadog → dataset "${datasetId}": ${count} trace group(s), ${spans.length} spans → ${join(out, datasetId)}`
 );

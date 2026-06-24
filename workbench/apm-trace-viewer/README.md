@@ -54,28 +54,55 @@ directory of `.jsonl` files.
 
 ### Datadog (Spans API)
 
-```bash
-DD_API_KEY=… DD_APP_KEY=… DD_SITE=datadoghq.com \
-  pnpm import:datadog --query '<spans query>' --from now-1h --to now \
-  [--dataset id] [--group-by trace_id|@workflow.run.id] [--site datadoghq.com]
-```
-
-Pages `POST /api/v2/spans/events/search` (rate-limited to 300 req/hr; `--limit 1000`
-keeps page count low) and groups by `trace_id` by default, or by a custom tag (e.g. a
-workflow run id). `--debug-first` prints the first raw span and exits, for inspecting
-field names.
-
-**Offline / alternate auth.** If you don't have API keys but can reach Datadog another
-way (e.g. the `pup` CLI), save a verbatim Spans API payload and import it with `--input`:
+Auth comes from your own Datadog [API key + application key](https://docs.datadoghq.com/account_management/api-app-keys/):
 
 ```bash
-pup --no-agent traces search --query 'trace_id:<id>' \
-  --from '<iso>' --to '<iso>' --limit 1000 > spans.json
-pnpm import:datadog --input spans.json --dataset mytrace
+export DD_API_KEY=…  DD_APP_KEY=…  DD_SITE=datadoghq.com   # DD_SITE per your org
 ```
 
-`--input` accepts a `{ "data": [...] }` payload or an array of such pages, and skips the
-network (no keys required).
+The importer pages `POST /api/v2/spans/events/search` (rate-limited to 300 req/hr;
+`--limit 1000` keeps page count low) and groups by `trace_id` by default, or by a custom
+tag. `--debug-first` prints the first raw span and exits, for inspecting field names.
+
+#### View one workflow run (recommended)
+
+A single workflow run produces **several traces** — the request that *starts* it, plus one
+per execution invocation — so to see the whole run you want all of them on a shared
+timeline. `--run <runId>` does that in one step:
+
+```bash
+pnpm import:datadog --run wrun_… --from <start> --to <end>
+pnpm serve
+```
+
+It searches for the run's spans by the OTel tag the Workflow SDK emits for the run id
+(`workflow.run.id`, i.e. `@workflow.run.id:<runId>` in Datadog query syntax — override with
+`--run-tag`), collects every trace that carries it, fetches all of their spans, and folds
+them into a single group keyed by the run id. In the viewer that shows one entry with a
+**trace-head per trace** (start trace, execution trace(s)) on one timeline. `--from`/`--to`
+accept ISO, epoch ms, or relative (`now-1h`); widen the window if a run is long-lived.
+
+#### Arbitrary query
+
+```bash
+pnpm import:datadog --query '<spans query>' --from now-1h --to now \
+  [--dataset id] [--group-by trace_id|<tag>] [--group <id>]
+```
+
+`--group-by` splits into one run per `trace_id` (default) or per tag value; `--group <id>`
+forces *everything* into a single group (handy when you've already narrowed to a set of
+correlated trace_ids).
+
+#### Offline / alternate fetch
+
+`--input <file>` imports a saved Spans API payload instead of calling the network — a JSON
+file holding `{ "data": [...] }` (or an array of such pages), however you obtained it
+(e.g. a `curl` against the Spans API, or any other client). No keys required for the import
+step:
+
+```bash
+pnpm import:datadog --input spans.json --dataset mytrace [--group <runId>]
+```
 
 ## Adding a source / labeling vendors
 
