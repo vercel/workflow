@@ -70,5 +70,16 @@ describe('runToSpan', () => {
     expect(
       span.events.find((e) => e.name === 'run_created')?.timestamp
     ).toEqual([0, 100_000_000]);
+
+    const data = span.attributes.data as {
+      createdAt: Date;
+      startedAt?: Date;
+      completedAt?: Date;
+      occurredAt?: Date;
+    };
+    expect(data.createdAt).toEqual(date(100));
+    expect(data.startedAt).toEqual(date(200));
+    expect(data.completedAt).toEqual(date(500));
+    expect(data).not.toHaveProperty('occurredAt');
   });
 });

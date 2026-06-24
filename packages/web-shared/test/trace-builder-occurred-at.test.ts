@@ -104,6 +104,15 @@ describe('trace builder occurredAt timing', () => {
     expect(otelTimeToMs(startMarker.timestamp)).toBe(
       stepStartedOccurredAt.getTime()
     );
-    expect(stepSpan.attributes.data).not.toHaveProperty('occurredAt');
+    const stepData = stepSpan.attributes.data as {
+      createdAt: Date;
+      startedAt?: Date;
+      completedAt?: Date;
+      occurredAt?: Date;
+    };
+    expect(stepData.createdAt).toEqual(stepCreatedOccurredAt);
+    expect(stepData.startedAt).toEqual(stepStartedOccurredAt);
+    expect(stepData.completedAt).toEqual(stepCompletedOccurredAt);
+    expect(stepData).not.toHaveProperty('occurredAt');
   });
 });

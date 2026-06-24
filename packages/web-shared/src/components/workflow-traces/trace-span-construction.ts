@@ -88,11 +88,11 @@ export const waitEventsToWaitEntity = (
   return {
     waitId: startEvent.correlationId,
     runId: startEvent.runId,
-    createdAt: startEvent.createdAt,
+    createdAt: getEventTimestamp(startEvent) ?? startEvent.createdAt,
     resumeAt: startEvent.eventData?.resumeAt
       ? new Date(startEvent.eventData.resumeAt)
       : undefined,
-    completedAt: completedEvent?.createdAt,
+    completedAt: getEventTimestamp(completedEvent),
   };
 };
 
@@ -184,16 +184,16 @@ export const stepEventsToStepEntity = (
       case 'step_started':
         status = 'running';
         attempt += 1;
-        if (!startedAt) startedAt = e.createdAt;
+        if (!startedAt) startedAt = getEventTimestamp(e) ?? e.createdAt;
         completedAt = undefined;
         break;
       case 'step_completed':
         status = 'completed';
-        completedAt = e.createdAt;
+        completedAt = getEventTimestamp(e) ?? e.createdAt;
         break;
       case 'step_failed':
         status = 'failed';
-        completedAt = e.createdAt;
+        completedAt = getEventTimestamp(e) ?? e.createdAt;
         break;
       case 'step_retrying':
         status = 'pending';
@@ -213,8 +213,11 @@ export const stepEventsToStepEntity = (
     stepName: createdEvent?.eventData?.stepName ?? '',
     status,
     attempt,
-    createdAt: anchorEvent.createdAt,
-    updatedAt: lastEvent?.createdAt ?? anchorEvent.createdAt,
+    createdAt: getEventTimestamp(anchorEvent) ?? anchorEvent.createdAt,
+    updatedAt:
+      getEventTimestamp(lastEvent) ??
+      lastEvent?.createdAt ??
+      anchorEvent.createdAt,
     startedAt,
     completedAt,
     specVersion: anchorEvent.specVersion,
@@ -324,10 +327,10 @@ export const hookEventsToHookEntity = (
     hookId: createdEvent.correlationId,
     runId: createdEvent.runId,
     token: createdEvent.eventData?.token,
-    createdAt: createdEvent.createdAt,
+    createdAt: getEventTimestamp(createdEvent) ?? createdEvent.createdAt,
     receivedCount: receivedEvents.length,
-    lastReceivedAt: lastReceivedEvent?.createdAt || undefined,
-    disposedAt: disposedEvents.at(-1)?.createdAt || undefined,
+    lastReceivedAt: getEventTimestamp(lastReceivedEvent),
+    disposedAt: getEventTimestamp(disposedEvents.at(-1)),
   };
 };
 
@@ -375,14 +378,6 @@ export function runToSpan(
 ): Span {
   const now = nowTime ?? new Date();
 
-  // Only embed identification fields — not the full object with
-  // input/output/error which may contain non-cloneable types.
-  const { input: _i, output: _o, error: _e, ...runIdentity } = run;
-  const attributes = {
-    resource: 'run' as const,
-    data: runIdentity,
-  };
-
   // Prefer the event occurrence timestamp when available so the root span
   // lines up with child spans that already use event occurrence time.
   const runCreatedEvent = runEvents.find(
@@ -405,7 +400,23 @@ export function runToSpan(
   const activeStartTime =
     getEventTimestamp(runStartedEvent) ??
     (run.startedAt ? new Date(run.startedAt) : undefined);
-  const endTime = getEventTimestamp(terminalEvent) ?? run.completedAt ?? now;
+  const completedAt =
+    getEventTimestamp(terminalEvent) ?? run.completedAt ?? undefined;
+  const endTime = completedAt ?? now;
+
+  // Only embed identification fields — not the full object with
+  // input/output/error which may contain non-cloneable types. Lifecycle
+  // timestamps are event-derived so detail rows align with the span timeline.
+  const { input: _i, output: _o, error: _e, ...runIdentity } = run;
+  const attributes = {
+    resource: 'run' as const,
+    data: {
+      ...runIdentity,
+      createdAt: spanStartTime,
+      startedAt: activeStartTime,
+      completedAt,
+    },
+  };
 
   // Convert run-level events to span events
   const events = convertEventsToSpanEvents(runEvents, false, {
