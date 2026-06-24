@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Span, SpanEvent } from './types';
 import {
   computeOffscreenMarkers,
+  computeSpanDelta,
   computeSpanMarkers,
   computeSpanSegments,
 } from './utils';
@@ -157,6 +158,90 @@ describe('computeSpanMarkers', () => {
   it('returns no markers when the span has no marker events', () => {
     const span = hookSpan({ startMs: 0, endMs: 100_000, receivesMs: [] });
     expect(computeSpanMarkers(span)).toEqual([]);
+  });
+});
+
+describe('computeSpanDelta', () => {
+  function mkSpan(startMs: number, endMs: number, id = 'span'): Span {
+    return {
+      name: id,
+      kind: 0,
+      resource: 'step',
+      library: { name: 'workflow' },
+      spanId: id,
+      status: { code: 1 },
+      traceFlags: 0,
+      attributes: {},
+      links: [],
+      events: [],
+      startTime: ts(startMs),
+      endTime: ts(endMs),
+      duration: ts(endMs - startMs),
+    };
+  }
+
+  it('measures the idle gap when the hovered span is after the selected one', () => {
+    const selected = mkSpan(0, 20, 'a');
+    const hovered = mkSpan(50, 70, 'b');
+
+    const delta = computeSpanDelta(selected, hovered, 0, 3, 0, 100);
+    expect(delta).not.toBeNull();
+    expect(delta?.kind).toBe('gap');
+    expect(delta?.deltaMs).toBe(30);
+    expect(delta?.leftFrac).toBeCloseTo(0.2, 6);
+    expect(delta?.rightFrac).toBeCloseTo(0.5, 6);
+    expect(delta?.fromRowIndex).toBe(0);
+    expect(delta?.toRowIndex).toBe(3);
+  });
+
+  it('measures the same gap regardless of which span is selected', () => {
+    const a = mkSpan(0, 20, 'a');
+    const b = mkSpan(50, 70, 'b');
+
+    const forward = computeSpanDelta(a, b, 0, 1, 0, 100);
+    const reverse = computeSpanDelta(b, a, 1, 0, 0, 100);
+
+    expect(forward?.deltaMs).toBe(30);
+    expect(reverse?.deltaMs).toBe(30);
+    expect(forward?.leftFrac).toBeCloseTo(reverse?.leftFrac ?? -1, 6);
+    expect(forward?.rightFrac).toBeCloseTo(reverse?.rightFrac ?? -1, 6);
+  });
+
+  it('measures the start offset when the hovered span overlaps (nested)', () => {
+    const run = mkSpan(0, 100, 'run');
+    const step = mkSpan(10, 30, 'step');
+
+    const delta = computeSpanDelta(run, step, 0, 2, 0, 100);
+    expect(delta?.kind).toBe('overlap');
+    expect(delta?.deltaMs).toBe(10);
+    expect(delta?.leftFrac).toBeCloseTo(0, 6);
+    expect(delta?.rightFrac).toBeCloseTo(0.1, 6);
+  });
+
+  it('treats touching spans as a zero-length gap', () => {
+    const a = mkSpan(0, 20, 'a');
+    const b = mkSpan(20, 40, 'b');
+
+    const delta = computeSpanDelta(a, b, 0, 1, 0, 100);
+    expect(delta?.kind).toBe('gap');
+    expect(delta?.deltaMs).toBe(0);
+  });
+
+  it('clamps the measured region to the visible viewport', () => {
+    const a = mkSpan(0, 20, 'a');
+    const b = mkSpan(50, 70, 'b');
+
+    // Viewport [25, 45] cuts off both edges of the [20, 50] gap region.
+    const delta = computeSpanDelta(a, b, 0, 1, 25, 45);
+    expect(delta?.deltaMs).toBe(30);
+    expect(delta?.leftFrac).toBe(0);
+    expect(delta?.rightFrac).toBe(1);
+  });
+
+  it('returns null for a non-positive viewport range', () => {
+    const a = mkSpan(0, 20, 'a');
+    const b = mkSpan(50, 70, 'b');
+    expect(computeSpanDelta(a, b, 0, 1, 50, 50)).toBeNull();
   });
 });
 

@@ -46,11 +46,13 @@ const EventRow = ({
   isSelected,
   isDimmed,
   onSelectSpan,
+  onHoverSpan,
 }: {
   span: Span;
   isSelected: boolean;
   isDimmed?: boolean;
   onSelectSpan: (spanId: string) => void;
+  onHoverSpan?: (spanId: string) => void;
 }) => {
   const durationMs = getSpanDurationMs(span);
   const workflowStatus = (span.attributes.data as Record<string, unknown>)
@@ -73,6 +75,7 @@ const EventRow = ({
       aria-expanded={isSelected}
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
+      onMouseEnter={() => onHoverSpan?.(span.spanId)}
     >
       <div className="h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200">
         <div className="flex h-full min-w-0 items-center pl-4 pr-2">
@@ -100,11 +103,13 @@ const EventList = ({
   activeSpanId,
   searchResult,
   onSelectSpan,
+  onHoverSpan,
 }: {
   spans: Span[];
   activeSpanId: string | null;
   searchResult: SpanSearchResult;
   onSelectSpan: (spanId: string) => void;
+  onHoverSpan?: (spanId: string) => void;
 }) => {
   const listRef = useRef<HTMLUListElement>(null);
   const { start, end } = useRowWindow(listRef, spans.length, ROW_HEIGHT_PX);
@@ -127,6 +132,7 @@ const EventList = ({
           isSelected={span.spanId === activeSpanId}
           isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
           onSelectSpan={onSelectSpan}
+          onHoverSpan={onHoverSpan}
         />
       ))}
     </ul>

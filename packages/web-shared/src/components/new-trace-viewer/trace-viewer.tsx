@@ -439,6 +439,23 @@ function NewTraceViewerContent({
 
   const [altHeld, setAltHeld] = useState(false);
 
+  // Span the pointer is currently over (in either pane). Combined with a
+  // selection and a held Alt key, this drives the Figma-style delta overlay.
+  const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
+  const handleHoverSpan = useCallback((spanId: string) => {
+    setHoveredSpanId(spanId);
+  }, []);
+
+  // Clear the hovered span when the pointer leaves the shared scroll container
+  // (covers both panes at once, so moving between them doesn't flicker).
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const handleLeave = (): void => setHoveredSpanId(null);
+    el.addEventListener('mouseleave', handleLeave);
+    return () => el.removeEventListener('mouseleave', handleLeave);
+  }, []);
+
   useEffect(() => {
     const handleSidebarNavKey = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement | null;
@@ -700,6 +717,7 @@ function NewTraceViewerContent({
               activeSpanId={activeSpanId}
               searchResult={searchResult}
               onSelectSpan={handleSelectSpan}
+              onHoverSpan={handleHoverSpan}
             />
             <div ref={loadMoreSentinelRef} className="flex justify-center">
               {isLoadingMore ? (
@@ -724,9 +742,11 @@ function NewTraceViewerContent({
               viewEnd={viewport.end}
               markers={timeMarkers}
               selectedId={activeSpanId}
+              hoveredId={hoveredSpanId}
               searchResult={searchResult}
               onSelect={handleSelectSpan}
               onRevealTime={handleRevealTime}
+              onHoverSpan={handleHoverSpan}
               hoverFraction={hoverFraction}
               altHeld={altHeld}
             />
