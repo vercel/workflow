@@ -26,6 +26,33 @@ function isNitroV2(nitro: Nitro): boolean {
   return !nitro.routing;
 }
 
+/**
+ * Prepend a `createRequire`-backed global `require` to every server chunk so
+ * undici's bundled `require('node:http2')` resolves the real builtin instead of
+ * throwing (which would make undici fall back to a stub without
+ * `http2.connect`, breaking HTTP/2). The guard keeps it idempotent across
+ * chunks, and `node:module` is always available in the Node server runtime.
+ */
+function addNodeRequireBanner(config: RollupConfig): void {
+  const banner =
+    "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+  const output = config.output;
+  if (output == null) {
+    config.output = { banner };
+    return;
+  }
+  const outputs = Array.isArray(output) ? output : [output];
+  for (const o of outputs) {
+    const existing = o.banner;
+    o.banner =
+      existing == null
+        ? banner
+        : typeof existing === 'function'
+          ? async (chunk: unknown) => `${banner}\n${await existing(chunk)}`
+          : `${banner}\n${existing}`;
+  }
+}
+
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
@@ -46,6 +73,19 @@ export default {
           exclude: [workflowBuildDir],
         })
       );
+
+      // Nitro bundles undici (via the world adapter) into the ESM server
+      // output. undici loads most node: builtins as ESM imports, but pulls in
+      // `node:http2` lazily via a bare `require('node:http2')` inside a
+      // try/catch — which the bundler leaves un-wired, so in the ESM bundle the
+      // require throws and undici silently falls back to a stub whose
+      // `http2.connect` is undefined. That breaks any HTTP/2 request (the
+      // workflow flow-route callback fails with "fetch failed", so runs never
+      // start). Prepend a working CJS `require` to the server chunks so the
+      // real `node:http2` resolves. Skipped in dev (Vite SSR provides require).
+      if (!nitro.options.dev) {
+        addNodeRequireBanner(config);
+      }
     });
 
     // NOTE: Temporary workaround for debug unenv mock
