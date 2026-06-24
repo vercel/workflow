@@ -5,32 +5,14 @@ import {
   RESERVED_ATTRIBUTE_KEY_PREFIX,
 } from '@workflow/world';
 import type { ReactNode } from 'react';
+import { cn } from '../../lib/utils';
 import { CopyButton } from '../new-trace-viewer/components/copy-button';
 import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
 import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
-/**
- * Check whether an attribute key is in the reserved (`$`-prefixed)
- * namespace used by framework/library code.
- */
-export const isReservedAttributeKey = (key: string): boolean =>
-  key.startsWith(RESERVED_ATTRIBUTE_KEY_PREFIX);
-
-function ReservedBadge() {
-  return (
-    <span
-      className="shrink-0 rounded border px-1 py-px text-[10px] font-medium leading-3"
-      style={{
-        borderColor: 'var(--ds-gray-alpha-400)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-700)',
-      }}
-      title={`Keys prefixed with "${RESERVED_ATTRIBUTE_KEY_PREFIX}" are reserved for framework and library code`}
-    >
-      Reserved
-    </span>
-  );
+function isReservedAttributeKey(key: string): boolean {
+  return key.startsWith(RESERVED_ATTRIBUTE_KEY_PREFIX);
 }
 
 export function DetailKeyValueRow({
@@ -38,43 +20,36 @@ export function DetailKeyValueRow({
   value,
   copyText,
   removed = false,
-  showReservedBadge = false,
   mono = false,
 }: {
   label: string;
   value?: ReactNode;
   copyText?: string;
   removed?: boolean;
-  showReservedBadge?: boolean;
   mono?: boolean;
 }) {
-  const reserved = showReservedBadge && isReservedAttributeKey(label);
   const stringValue = typeof value === 'string' ? value : undefined;
-  const valueClassName = mono
-    ? 'max-w-[60%] truncate text-right text-copy-13 font-mono text-gray-1000'
-    : 'max-w-[60%] truncate text-right text-copy-13 text-gray-1000';
-  const copyClassName = mono
-    ? 'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 font-mono text-gray-1000'
-    : 'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000';
 
   return (
     <div className="flex items-center justify-between gap-3 py-0.5">
-      <span
-        className="flex min-w-0 items-center gap-1.5 text-label-13 text-gray-900"
-        style={reserved ? { color: 'var(--ds-gray-700)' } : undefined}
-      >
-        <span className="truncate">{label}</span>
-        {reserved && <ReservedBadge />}
+      <span className="flex min-w-0 items-center gap-1.5 truncate text-label-13 text-gray-900">
+        {label}
       </span>
       {removed ? (
         <span className="shrink-0 text-copy-13 italic text-gray-700">
           removed
         </span>
       ) : copyText ? (
-        <div className={copyClassName} title={copyText}>
+        <div
+          className={cn(
+            'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000',
+            mono && 'font-mono'
+          )}
+          title={copyText}
+        >
           <MiddleTruncate
             value={copyText}
-            className={mono ? 'text-right font-mono' : 'text-right'}
+            className={cn('text-right', mono && 'font-mono')}
             style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
           />
           <CopyButton
@@ -84,7 +59,13 @@ export function DetailKeyValueRow({
           />
         </div>
       ) : (
-        <span className={valueClassName} title={stringValue}>
+        <span
+          className={cn(
+            'max-w-[60%] truncate text-right text-copy-13 text-gray-1000',
+            mono && 'font-mono'
+          )}
+          title={stringValue}
+        >
           {value}
         </span>
       )}
@@ -102,12 +83,7 @@ function AttributeRow({
   removed?: boolean;
 }) {
   return (
-    <DetailKeyValueRow
-      label={attributeKey}
-      value={value}
-      removed={removed}
-      showReservedBadge
-    />
+    <DetailKeyValueRow label={attributeKey} value={value} removed={removed} />
   );
 }
 
@@ -127,8 +103,7 @@ export function sortAttributeKeys(keys: string[]): string[] {
 
 /**
  * Collapsible section showing a run's materialized attributes as key-value
- * rows. Reserved (`$`-prefixed) keys are visually de-emphasized with a
- * badge and sorted after user keys.
+ * rows. Reserved (`$`-prefixed) keys are sorted after user keys.
  */
 export function RunAttributesCard({
   attributes,
