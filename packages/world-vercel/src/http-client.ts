@@ -99,7 +99,9 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
 /**
  * Resolves the dispatcher for stream writes (the PUT write/close path): the
  * caller's override, or the shared HTTP/2 stream agent. See
- * getDefaultStreamDispatcher for why this is a bare Agent (no retry).
+ * getDefaultStreamDispatcher (and STREAM_RETRY_OPTIONS) for its deliberately
+ * narrowed retry policy — transient connection errors + HTTP 429 only, never
+ * 5xx — chosen because stream appends are not idempotent.
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
   return config?.dispatcher ?? getDefaultStreamDispatcher();
