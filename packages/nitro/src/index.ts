@@ -32,6 +32,19 @@ function isNitroV2(nitro: Nitro): boolean {
  * throwing (which would make undici fall back to a stub without
  * `http2.connect`, breaking HTTP/2). The guard keeps it idempotent across
  * chunks, and `node:module` is always available in the Node server runtime.
+ *
+ * This is a Node-server-runtime-only shim (callers gate it to the production
+ * server build). Note the deliberate global side effect: defining
+ * `globalThis.require` makes `typeof require` truthy for *every* bundled
+ * dependency in this ESM server output, so any library that feature-detects
+ * `require` will take its CJS path here. That is safe because (a) it never
+ * touches the client bundle, (b) the `typeof require === 'undefined'` guard
+ * makes it a no-op in CJS chunks where a real `require` already exists, and
+ * (c) the `require` we install is a working `createRequire`, so a library that
+ * switches to the require path gets a functional `require`, not a broken stub.
+ * The behavior to watch for is a bundled lib that, on seeing `require`, does
+ * `require()` of an ESM-only dependency on a Node version without `require(ESM)`
+ * support.
  */
 function addNodeRequireBanner(config: RollupConfig): void {
   const banner =
