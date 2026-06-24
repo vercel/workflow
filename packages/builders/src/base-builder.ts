@@ -10,6 +10,7 @@ import {
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { buildLogger } from '@workflow/core/logger';
 import { pluralize, usesVercelWorld } from '@workflow/utils';
 import chalk from 'chalk';
 import enhancedResolveOriginal from 'enhanced-resolve';
@@ -88,6 +89,14 @@ class WorkflowBuildError extends Error {
  */
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
+
+function formatBuildDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
 
 /**
  * Normalize an array of file paths by appending the `realpath()` of each entry
@@ -216,6 +225,8 @@ export abstract class BaseBuilder {
    * to avoid duplicate warnings across multiple discoverEntries() calls.
    */
   private warnedExternalPackages = new Set<string>();
+  private workflowBuildStartTime: number | undefined;
+  private workflowBuildSummaryCount = 0;
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -229,18 +240,26 @@ export abstract class BaseBuilder {
     return this.config.moduleSpecifierRoot || this.transformProjectRoot;
   }
 
-  /**
-   * Whether informational BaseBuilder logs should be printed.
-   * Subclasses can override this to silence progress logs while keeping warnings/errors.
-   */
-  protected get shouldLogBaseBuilderInfo(): boolean {
-    return true;
+  protected logBaseBuilderInfo(...args: unknown[]): void {
+    buildLogger.debug(args.map(String).join(' '));
   }
 
-  protected logBaseBuilderInfo(...args: unknown[]): void {
-    if (this.shouldLogBaseBuilderInfo) {
-      console.log(...args);
-    }
+  private startWorkflowBuildTimer(): void {
+    this.workflowBuildStartTime = Date.now();
+  }
+
+  private getWorkflowBuildDuration(): number {
+    return Date.now() - (this.workflowBuildStartTime ?? Date.now());
+  }
+
+  private resetWorkflowBuildTimer(): void {
+    this.workflowBuildStartTime = undefined;
+  }
+
+  private getWorkflowBuildSummaryPrefix(): string {
+    return this.workflowBuildSummaryCount === 0
+      ? 'workflows build complete'
+      : 'workflows rebuilt';
   }
 
   private logCreateWorkflowsBundleInfo(...args: unknown[]): void {
@@ -1096,6 +1115,8 @@ export const __steps_registered = true;
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
   }> {
+    this.startWorkflowBuildTimer();
+
     const discovered =
       discoveredEntries ??
       (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
@@ -1856,12 +1877,21 @@ export const OPTIONS = handler;`;
         `${Date.now() - buildStart}ms`
       );
 
+      if (!this.config.suppressCreateManifestLogs) {
+        console.log(
+          `${this.getWorkflowBuildSummaryPrefix()} (${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, time ${formatBuildDuration(this.getWorkflowBuildDuration())})`
+        );
+      }
+      this.workflowBuildSummaryCount += 1;
+      this.resetWorkflowBuildTimer();
+
       return manifestJson;
     } catch (error) {
       console.warn(
         'Failed to create manifest:',
         error instanceof Error ? error.message : String(error)
       );
+      this.resetWorkflowBuildTimer();
       return undefined;
     }
   }
