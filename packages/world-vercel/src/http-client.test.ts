@@ -8,6 +8,7 @@ import {
   EVENTS_AGENT_OPTIONS,
   getDispatcher,
   getEventsDispatcher,
+  getStreamDispatcher,
 } from './http-client.js';
 
 describe('getDispatcher', () => {
@@ -31,6 +32,19 @@ describe('getEventsDispatcher', () => {
   it('returns the caller-supplied dispatcher when provided', () => {
     const custom = {};
     expect(getEventsDispatcher({ dispatcher: custom })).toBe(custom);
+  });
+});
+
+describe('getStreamDispatcher', () => {
+  it('returns its own shared dispatcher, distinct from default and events', () => {
+    expect(getStreamDispatcher()).toBe(getStreamDispatcher());
+    expect(getStreamDispatcher()).not.toBe(getDispatcher());
+    expect(getStreamDispatcher()).not.toBe(getEventsDispatcher());
+  });
+
+  it('returns the caller-supplied dispatcher when provided', () => {
+    const custom = {};
+    expect(getStreamDispatcher({ dispatcher: custom })).toBe(custom);
   });
 });
 

@@ -3,6 +3,7 @@ import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
 let _eventsDispatcher: RetryAgent | undefined;
+let _streamDispatcher: Agent | undefined;
 
 /** Shared between both agents — connection pooling and H1 pipelining tuning. */
 const BASE_AGENT_OPTIONS = {
@@ -72,6 +73,15 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
 }
 
 /**
+ * Resolves the dispatcher for stream writes (the PUT write/close path): the
+ * caller's override, or the shared HTTP/2 stream agent. See
+ * getDefaultStreamDispatcher for why this is a bare Agent (no retry).
+ */
+export function getStreamDispatcher(config?: APIConfig): unknown {
+  return config?.dispatcher ?? getDefaultStreamDispatcher();
+}
+
+/**
  * Returns a shared undici RetryAgent wrapping an Agent.
  *
  * - HTTP/1.1 (see DEFAULT_AGENT_OPTIONS)
@@ -101,4 +111,23 @@ function getDefaultEventsDispatcher(): RetryAgent {
     );
   }
   return _eventsDispatcher;
+}
+
+/**
+ * Returns the shared HTTP/2 Agent used for stream writes (PUT write/close).
+ *
+ * Unlike the default and events dispatchers, this is a bare `Agent` *without*
+ * the RetryAgent wrapper: stream writes append chunks and are not idempotent,
+ * so an automatic retry of a write the server already received would duplicate
+ * chunks. We keep undici's retry off here (matching the streamer's original
+ * plain-`fetch` behavior) and only opt into H2 — the write/close requests send
+ * a fully-buffered body (or none), so they don't hit the duplex-streaming H2
+ * issues that keep the long-lived live-read on plain `fetch`. Reuses the events
+ * agent's H2 / pooling options.
+ */
+function getDefaultStreamDispatcher(): Agent {
+  if (!_streamDispatcher) {
+    _streamDispatcher = new Agent(EVENTS_AGENT_OPTIONS);
+  }
+  return _streamDispatcher;
 }
