@@ -1,5 +1,14 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- [#2608](https://github.com/vercel/workflow/pull/2608) [`b9a10d8`](https://github.com/vercel/workflow/commit/b9a10d87e12e70657ac5c356c6ac121c53958951) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Thread workflow event occurrence timestamps into derived observability entity data.
+
+- Updated dependencies [[`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba)]:
+  - @workflow/core@5.0.0-beta.24
+
 ## 5.0.0-beta.23
 
 ### Patch Changes
