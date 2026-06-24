@@ -23,9 +23,14 @@ const run = await (
 const wallMs = run.totalMs;
 const metrics = run.metrics ?? [];
 
-// Vertical timeline markers: any supplied metric carrying a ms offset (TTFT, first
-// chunk, …) plus a derived "time to first step" = the start of the earliest
-// `step.execute` span. Each marker keeps its own color so the line + legend match.
+// Vertical timeline markers. Supplied metric offsets (TTFT, first chunk, …) plus two
+// derived "first step" markers, because they can differ by seconds on a stalled run:
+//   • first step body  = start of the earliest `step.execute` span (when the SDK began
+//                         running the first step body)
+//   • first step started = when the first step is *durably* started — the completion of
+//                         the earliest `step_started` write. This matches the workflow
+//                         event log's "Step Started", and can lag the body start a lot
+//                         when that first write blocks (e.g. behind run_started).
 const MARKERS = metrics
   .filter((m) => m.markerOffsetMs != null)
   .map((m, i) => ({
@@ -34,16 +39,32 @@ const MARKERS = metrics
     color: MARKER_COLORS[i % MARKER_COLORS.length],
   }))
   .filter((m) => Number.isFinite(m.offsetMs));
-const firstStepMs = Math.min(
+
+const firstBodyMs = Math.min(
   ...run.spans
     .filter((s) => (s.name ?? '').startsWith('step.execute'))
     .map((s) => s.startMs)
 );
-if (Number.isFinite(firstStepMs)) {
+// earliest-starting durable step-start write; its end ≈ the durable "Step Started".
+const firstStartedWrite = run.spans
+  .filter((s) => (s.name ?? '').includes('step_started'))
+  .sort((a, b) => a.startMs - b.startMs)[0];
+const firstStartedMs = firstStartedWrite
+  ? firstStartedWrite.startMs + firstStartedWrite.durMs
+  : Number.POSITIVE_INFINITY;
+
+if (Number.isFinite(firstBodyMs)) {
   MARKERS.push({
-    label: 'time to first step',
-    offsetMs: firstStepMs,
+    label: 'first step body',
+    offsetMs: firstBodyMs,
     color: '#f5a623',
+  });
+}
+if (Number.isFinite(firstStartedMs)) {
+  MARKERS.push({
+    label: 'first step started',
+    offsetMs: firstStartedMs,
+    color: '#ef4444',
   });
 }
 
