@@ -17,6 +17,8 @@ const {
 
   const mockSend = vi.fn();
   const mockHandleCallback = vi.fn();
+  // Must be a regular function (not an arrow) — the queue constructs it with
+  // `new QueueClient(...)`, and arrow functions are not constructors.
   const MockQueueClient = vi.fn().mockImplementation(function () {
     return {
       send: mockSend,
@@ -37,6 +39,23 @@ vi.mock('@vercel/queue', () => ({
   DuplicateMessageError: MockDuplicateMessageError,
 }));
 
+// Stub the ambient Vercel request-context reader (the global key the runtime
+// registers and that getTraceCollectionHeaders reads). Lets tests simulate the
+// headers on the request that triggers the enqueue — a `_vercel_tracing` cookie
+// (browser start()) or a VQS-forwarded `x-vercel-tracing` header (re-enqueue).
+const REQUEST_CONTEXT_SYMBOL = Symbol.for('@vercel/request-context');
+function setRequestContextHeaders(headers: Record<string, string>): void {
+  (globalThis as Record<symbol, unknown>)[REQUEST_CONTEXT_SYMBOL] = {
+    get: () => ({ headers }),
+  };
+}
+function setRequestContextCookie(cookie: string | undefined): void {
+  setRequestContextHeaders(cookie ? { cookie } : {});
+}
+function clearRequestContext(): void {
+  delete (globalThis as Record<symbol, unknown>)[REQUEST_CONTEXT_SYMBOL];
+}
+
 vi.mock('./utils.js', () => ({
   getHttpUrl: vi
     .fn()
@@ -49,10 +68,14 @@ import { createQueue } from './queue.js';
 describe('createQueue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: no ambient request context. Individual tests opt in via
+    // setRequestContextCookie() to simulate an incoming `_vercel_tracing` cookie.
+    clearRequestContext();
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    clearRequestContext();
   });
 
   describe('queue()', () => {
@@ -297,6 +320,102 @@ describe('createQueue', () => {
           'x-vercel-workflow-run-id': 'wrun_override',
           'x-custom-header': 'custom-value',
         });
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it('should attach x-vercel-tracing header from the _vercel_tracing cookie', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+      setRequestContextCookie('_vercel_tracing=jwt.trace.token');
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc123' });
+
+        const sendOpts = mockSend.mock.calls[0][2];
+        expect(sendOpts.headers).toEqual(
+          expect.objectContaining({ 'x-vercel-tracing': 'jwt.trace.token' })
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it('should read x-vercel-tracing from an incoming forwarded header', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+      // No cookie — the delivery request carried the VQS-forwarded header,
+      // which the proxy reads directly as a fallback trace-session source.
+      setRequestContextHeaders({ 'x-vercel-tracing': 'jwt.trace.token' });
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc123' });
+
+        const sendOpts = mockSend.mock.calls[0][2];
+        expect(sendOpts.headers).toEqual(
+          expect.objectContaining({ 'x-vercel-tracing': 'jwt.trace.token' })
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it('should parse _vercel_tracing from a multi-cookie header', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+      setRequestContextCookie(
+        'foo=bar; _vercel_tracing=jwt.trace.token; baz=qux'
+      );
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc123' });
+
+        const sendOpts = mockSend.mock.calls[0][2];
+        expect(sendOpts.headers['x-vercel-tracing']).toBe('jwt.trace.token');
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it('should not attach x-vercel-tracing when no _vercel_tracing cookie is present', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+      setRequestContextCookie('other=value');
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc123' });
+
+        const sendOpts = mockSend.mock.calls[0][2];
+        expect(sendOpts.headers).not.toHaveProperty('x-vercel-tracing');
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -660,6 +779,30 @@ describe('createQueue', () => {
             'x-vercel-workflow-step-id': 'step_xyz789',
           }),
         })
+      );
+    });
+
+    it('should propagate x-vercel-tracing on delayed re-enqueue', async () => {
+      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+      // The delivery request carried the VQS-forwarded x-vercel-tracing header;
+      // the re-enqueue runs inside that request context, so it re-attaches the
+      // trace header.
+      setRequestContextHeaders({ 'x-vercel-tracing': 'jwt.trace.token' });
+      const handler = setupHandler({ timeoutSeconds: 300 });
+
+      await handler(
+        {
+          payload: { runId: 'wrun_abc123' },
+          queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_original',
+        },
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const sendOpts = mockSend.mock.calls[0][2];
+      expect(sendOpts.headers).toEqual(
+        expect.objectContaining({ 'x-vercel-tracing': 'jwt.trace.token' })
       );
     });
 
