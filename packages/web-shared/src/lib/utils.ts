@@ -1,8 +1,6 @@
 import type { Step } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 
-export { cn } from './cn';
-
 const MS_IN_SECOND = 1000;
 const MS_IN_MINUTE = 60 * MS_IN_SECOND;
 const MS_IN_HOUR = 60 * MS_IN_MINUTE;
