@@ -1,9 +1,9 @@
-import { Agent, RetryAgent } from 'undici';
+import { Agent, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
 let _eventsDispatcher: RetryAgent | undefined;
-let _streamDispatcher: Agent | undefined;
+let _streamDispatcher: RetryAgent | undefined;
 
 /** Shared between both agents — connection pooling and H1 pipelining tuning. */
 const BASE_AGENT_OPTIONS = {
@@ -54,6 +54,30 @@ const RETRY_AGENT_OPTIONS = {
   // TODO: We might want to let 429s pass through, so that we can do
   // runtime retry-after handling through the queue.
 } as const;
+
+/**
+ * Retry options for stream writes (PUT). Stream appends are NOT idempotent, so
+ * we must never retry a write the server may already have applied. We therefore
+ * narrow undici's defaults to only the conditions that guarantee the request was
+ * rejected *before* the chunk was persisted:
+ *  - transient connection errors (undici's default `errorCodes`: ECONNRESET,
+ *    ECONNREFUSED, ENOTFOUND, …) — the request never reached, or was not
+ *    accepted by, the server, and
+ *  - HTTP 429 — the server rejected the request outright (rate limited), so no
+ *    chunk was written; honoring Retry-After backs off cleanly.
+ *
+ * Crucially, 5xx is excluded from the default `[500, 502, 503, 504, 429]`: a
+ * 5xx can mean the chunk *was* written but the response failed, and a retry
+ * would duplicate it. Other 4xx are client errors a retry can't fix. `methods`
+ * is pinned to PUT (the only stream-write verb) for clarity; `errorCodes` is
+ * left at undici's transient-network-error defaults. Exported so a test can
+ * assert that 5xx never sneaks back into the retryable set.
+ */
+export const STREAM_RETRY_OPTIONS: RetryHandler.RetryOptions = {
+  retryAfter: true,
+  methods: ['PUT'],
+  statusCodes: [429],
+};
 
 /**
  * Resolves the undici dispatcher for a request: the caller's override, or the
@@ -114,20 +138,23 @@ function getDefaultEventsDispatcher(): RetryAgent {
 }
 
 /**
- * Returns the shared HTTP/2 Agent used for stream writes (PUT write/close).
+ * Returns the shared HTTP/2 RetryAgent used for stream writes (PUT write/close).
  *
- * Unlike the default and events dispatchers, this is a bare `Agent` *without*
- * the RetryAgent wrapper: stream writes append chunks and are not idempotent,
- * so an automatic retry of a write the server already received would duplicate
- * chunks. We keep undici's retry off here (matching the streamer's original
- * plain-`fetch` behavior) and only opt into H2 — the write/close requests send
- * a fully-buffered body (or none), so they don't hit the duplex-streaming H2
- * issues that keep the long-lived live-read on plain `fetch`. Reuses the events
- * agent's H2 / pooling options.
+ * Stream writes append chunks and are NOT idempotent, so this dispatcher uses a
+ * deliberately narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only
+ * on transient connection errors and HTTP 429 — both of which guarantee the
+ * chunk was not persisted — and never on 5xx or other 4xx, where a retry could
+ * duplicate an already-applied write. It opts into H2 (the write/close requests
+ * send a fully-buffered body, or none, so they don't hit the duplex-streaming H2
+ * issues that keep the long-lived live-read on plain `fetch`) by reusing the
+ * events agent's H2 / pooling options.
  */
-function getDefaultStreamDispatcher(): Agent {
+function getDefaultStreamDispatcher(): RetryAgent {
   if (!_streamDispatcher) {
-    _streamDispatcher = new Agent(EVENTS_AGENT_OPTIONS);
+    _streamDispatcher = new RetryAgent(
+      new Agent(EVENTS_AGENT_OPTIONS),
+      STREAM_RETRY_OPTIONS
+    );
   }
   return _streamDispatcher;
 }

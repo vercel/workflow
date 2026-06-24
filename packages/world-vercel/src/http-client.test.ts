@@ -9,6 +9,7 @@ import {
   getDispatcher,
   getEventsDispatcher,
   getStreamDispatcher,
+  STREAM_RETRY_OPTIONS,
 } from './http-client.js';
 
 describe('getDispatcher', () => {
@@ -45,6 +46,19 @@ describe('getStreamDispatcher', () => {
   it('returns the caller-supplied dispatcher when provided', () => {
     const custom = {};
     expect(getStreamDispatcher({ dispatcher: custom })).toBe(custom);
+  });
+
+  // Stream writes (PUT) append chunks and are NOT idempotent. Retrying a write
+  // the server already applied would duplicate a chunk, so the retry policy is
+  // deliberately narrowed: only transient connection errors and HTTP 429 (both
+  // of which guarantee nothing was persisted) are retryable. A 5xx must never
+  // be retried — it can mean the chunk was written but the response failed.
+  it('retries stream writes only on transient errors and 429, never on 5xx', () => {
+    expect(STREAM_RETRY_OPTIONS.methods).toEqual(['PUT']);
+    expect(STREAM_RETRY_OPTIONS.statusCodes).toEqual([429]);
+    for (const code of [500, 502, 503, 504]) {
+      expect(STREAM_RETRY_OPTIONS.statusCodes).not.toContain(code);
+    }
   });
 });
 
