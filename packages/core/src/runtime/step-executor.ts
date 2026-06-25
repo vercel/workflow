@@ -615,7 +615,11 @@ export async function executeStep(
           globalThis,
           false,
           false,
-          compression
+          compression,
+          // Turbo optimistic start: a returned stream is piped to the server
+          // after the body but within this same op flush, so gate its first
+          // write on the run-ready barrier. Undefined on the await path.
+          optimisticStart ? params.runReadyBarrier : undefined
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({

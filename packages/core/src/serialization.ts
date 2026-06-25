@@ -1440,7 +1440,12 @@ function getStepReducers(
   ops: Promise<void>[],
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  framedByteStreams = false
+  framedByteStreams = false,
+  // Turbo optimistic start: a returned `ReadableStream` is piped to the server
+  // after the body but within the same op flush, so its first chunk can race
+  // `run_started`. Thread the run-ready barrier into the sink so that write
+  // orders after the run exists. Undefined outside turbo / on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1476,7 +1481,11 @@ function getStepReducers(
         type = getStreamType(value);
         framing = type === 'bytes' && framedByteStreams ? 'framed-v1' : framing;
 
-        const writable = new WorkflowServerWritableStream(runId, name);
+        const writable = new WorkflowServerWritableStream(
+          runId,
+          name,
+          runReadyBarrier
+        );
         if (type === 'bytes') {
           if (framing === 'framed-v1') {
             ops.push(
@@ -1495,7 +1504,8 @@ function getStepReducers(
                     ops,
                     runId,
                     cryptoKey,
-                    framedByteStreams
+                    framedByteStreams,
+                    runReadyBarrier
                   ),
                   cryptoKey
                 )
@@ -2759,12 +2769,23 @@ export async function dehydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false
+  compression = false,
+  // Turbo optimistic start: order the first chunk of a returned stream after
+  // the backgrounded `run_started`. Threaded into the step reducers' stream
+  // sink. Undefined outside turbo / on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
       value,
-      getStepReducers(global, ops, runId, key, framedByteStreams)
+      getStepReducers(
+        global,
+        ops,
+        runId,
+        key,
+        framedByteStreams,
+        runReadyBarrier
+      )
     );
     return revive(str);
   }
@@ -2773,7 +2794,14 @@ export async function dehydrateStepReturnValue(
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
-        getStepReducers(global, ops, runId, key, framedByteStreams)
+        getStepReducers(
+          global,
+          ops,
+          runId,
+          key,
+          framedByteStreams,
+          runReadyBarrier
+        )
       ),
       compression,
       compressionStats,

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setWorld } from './runtime/world.js';
-import { WorkflowServerWritableStream } from './serialization.js';
+import {
+  dehydrateStepReturnValue,
+  WorkflowServerWritableStream,
+} from './serialization.js';
 
 describe('WorkflowServerWritableStream', () => {
   let mockStreams: {
@@ -368,6 +371,57 @@ describe('WorkflowServerWritableStream', () => {
       expect(mockStreams.write).toHaveBeenCalledTimes(1);
 
       await writer.close();
+    });
+
+    it('gates the first write of a stream RETURNED from a turbo first step', async () => {
+      // Regression: getWritable()/setAttributes are gated while the step
+      // context is active, but a step that *returns* a fresh ReadableStream
+      // is serialized after the body via dehydrateStepReturnValue(), whose
+      // sink must also wait for run_started before the first chunk lands.
+      const order: string[] = [];
+      mockStreams.write.mockImplementation(async () => {
+        order.push('write');
+      });
+
+      let releaseBarrier!: () => void;
+      const runReadyBarrier = new Promise<void>((resolve) => {
+        releaseBarrier = () => {
+          order.push('barrier');
+          resolve();
+        };
+      });
+
+      const returned = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1, 2, 3]));
+          controller.close();
+        },
+      });
+
+      const ops: Promise<unknown>[] = [];
+      await dehydrateStepReturnValue(
+        returned,
+        'run-123',
+        undefined, // encryption key
+        ops,
+        globalThis,
+        false, // v1Compat
+        false, // framedByteStreams
+        false, // compression
+        runReadyBarrier
+      );
+
+      // The pipe is queued but must not have written before the run exists.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockStreams.write).not.toHaveBeenCalled();
+
+      releaseBarrier();
+      await Promise.all(ops);
+
+      // The returned stream's first chunk reaches the server only after the
+      // run-ready barrier resolves.
+      expect(order[0]).toBe('barrier');
+      expect(mockStreams.write).toHaveBeenCalled();
     });
 
     it('gates a close that is itself the first write to a new stream', async () => {
