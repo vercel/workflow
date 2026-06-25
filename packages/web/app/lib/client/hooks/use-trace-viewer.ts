@@ -7,8 +7,16 @@ import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 
 const LIVE_POLL_LIMIT = 100;
-const INITIAL_PAGE_SIZE = 500;
-const LOAD_MORE_PAGE_SIZE = 100;
+// The trace render is gated on this first events page, so keep it small: a
+// run with hundreds of events otherwise blocks first paint on a large, slow
+// `events.list` round-trip (the dominant cost when loading a run over the
+// network). We paint the first page quickly, then keep filling in the
+// background (up to AUTO_LOAD_MAX_EVENTS) and on scroll — neither of which
+// blocks the initial render.
+const INITIAL_PAGE_SIZE = 100;
+// Background/scroll page size. Larger than the initial page so filling up to
+// AUTO_LOAD_MAX_EVENTS after first paint takes few round-trips.
+const LOAD_MORE_PAGE_SIZE = 200;
 const LIVE_UPDATE_INTERVAL_MS = 5000;
 const AUTO_LOAD_MAX_EVENTS = 500;
 
