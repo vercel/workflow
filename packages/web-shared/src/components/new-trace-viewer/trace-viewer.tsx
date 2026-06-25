@@ -730,10 +730,6 @@ function NewTraceViewerContent({
               hoverFraction={hoverFraction}
               altHeld={altHeld}
             />
-            <TraceShortcutHelper
-              hasMultipleSpans={trace.spans.length > 1}
-              reducedMotion={reducedMotion}
-            />
           </div>
         </SplitPane>
         <div className="absolute right-3 bottom-3 z-[5] flex items-center border border-gray-alpha-400 rounded-md bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
@@ -843,6 +839,10 @@ function NewTraceViewerContent({
         </aside>
       ) : null}
 
+      <TraceShortcutHelper
+        hasMultipleSpans={trace.spans.length > 1}
+        reducedMotion={reducedMotion}
+      />
     </div>
   );
 }
