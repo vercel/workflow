@@ -107,8 +107,16 @@ export function getStreamDispatcher(config?: APIConfig): unknown {
   return config?.dispatcher ?? getDefaultStreamDispatcher();
 }
 
+/** Build a shared undici RetryAgent wrapping an Agent with the given options. */
+function makeRetryDispatcher(
+  agentOptions: typeof DEFAULT_AGENT_OPTIONS | typeof EVENTS_AGENT_OPTIONS,
+  retryOptions: RetryHandler.RetryOptions
+): RetryAgent {
+  return new RetryAgent(new Agent(agentOptions), retryOptions);
+}
+
 /**
- * Returns a shared undici RetryAgent wrapping an Agent.
+ * Returns the shared default RetryAgent.
  *
  * - HTTP/1.1 (see DEFAULT_AGENT_OPTIONS)
  * - Connection pooling (up to 8 connections per origin)
@@ -116,12 +124,10 @@ export function getStreamDispatcher(config?: APIConfig): unknown {
  *   - Observes Retry-After header if received and lower than 30s
  */
 function getDefaultDispatcher(): RetryAgent {
-  if (!_dispatcher) {
-    _dispatcher = new RetryAgent(
-      new Agent(DEFAULT_AGENT_OPTIONS),
-      RETRY_AGENT_OPTIONS
-    );
-  }
+  _dispatcher ??= makeRetryDispatcher(
+    DEFAULT_AGENT_OPTIONS,
+    RETRY_AGENT_OPTIONS
+  );
   return _dispatcher;
 }
 
@@ -130,12 +136,10 @@ function getDefaultDispatcher(): RetryAgent {
  * pooling behavior as the default dispatcher, but with `allowH2` enabled.
  */
 function getDefaultEventsDispatcher(): RetryAgent {
-  if (!_eventsDispatcher) {
-    _eventsDispatcher = new RetryAgent(
-      new Agent(EVENTS_AGENT_OPTIONS),
-      RETRY_AGENT_OPTIONS
-    );
-  }
+  _eventsDispatcher ??= makeRetryDispatcher(
+    EVENTS_AGENT_OPTIONS,
+    RETRY_AGENT_OPTIONS
+  );
   return _eventsDispatcher;
 }
 
@@ -152,11 +156,9 @@ function getDefaultEventsDispatcher(): RetryAgent {
  * events agent's H2 / pooling options.
  */
 function getDefaultStreamDispatcher(): RetryAgent {
-  if (!_streamDispatcher) {
-    _streamDispatcher = new RetryAgent(
-      new Agent(EVENTS_AGENT_OPTIONS),
-      STREAM_RETRY_OPTIONS
-    );
-  }
+  _streamDispatcher ??= makeRetryDispatcher(
+    EVENTS_AGENT_OPTIONS,
+    STREAM_RETRY_OPTIONS
+  );
   return _streamDispatcher;
 }

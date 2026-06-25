@@ -1,75 +1,31 @@
 import os from 'node:os';
 import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
-import {
-  EntityConflictError,
-  RunExpiredError,
-  ThrottleError,
-  TooEarlyError,
-  WorkflowWorldError,
-} from '@workflow/errors';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { SerializedData } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
+import {
+  errorForResponse,
+  formatVercelDiagnostics,
+  HTTP_DEBUG_ENABLED,
+  httpClientSpanAttributes,
+  httpLog,
+  logCurlRepro,
+  parseRetryAfter,
+  REQUEST_TIMEOUT_MS,
+} from './http-core.js';
 
 import {
   ErrorType,
   getSpanKind,
-  HttpRequestMethod,
   HttpResponseStatusCode,
   injectTraceContextIntoHeaders,
-  PeerService,
-  RpcService,
-  RpcSystem,
-  ServerAddress,
-  ServerPort,
   trace,
-  UrlFull,
   WorldParseFormat,
 } from './telemetry.js';
 import { version } from './version.js';
-
-/**
- * Lightweight debug logger for HTTP requests. Activated when the DEBUG
- * env var contains "workflow:" or is "*".
- *
- * Note: this does not implement full `debug` module semantics (e.g.
- * comma-separated globs, negation with `-`). It is a simple check
- * sufficient for enabling HTTP-level debug output.
- */
-const HTTP_DEBUG_ENABLED =
-  typeof process !== 'undefined' &&
-  typeof process.env.DEBUG === 'string' &&
-  (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*');
-
-function httpLog(
-  method: string,
-  endpoint: string,
-  response: Response,
-  ms: number
-): void {
-  if (HTTP_DEBUG_ENABLED) {
-    const responseContext = getResponseDiagnosticHeaders(response);
-    const diagnosticSuffix =
-      responseContext.length > 0 ? `; ${responseContext.join('; ')}` : '';
-    console.debug(
-      `[workflow:world-vercel:http] ${method} ${endpoint} -> ${response.status} (${ms}ms${diagnosticSuffix})`
-    );
-  }
-}
-
-function getResponseDiagnosticHeaders(response: Response): string[] {
-  return ['x-vercel-id', 'x-vercel-error'].flatMap((header) => {
-    const value = response.headers.get(header);
-    return value ? [`${header}=${value}`] : [];
-  });
-}
-
-function formatResponseDiagnostics(response: Response): string {
-  const headers = getResponseDiagnosticHeaders(response);
-  return headers.length > 0 ? ` (${headers.join('; ')})` : '';
-}
 
 /**
  * Inline workflow-server URL override. Must remain an empty string on
@@ -77,15 +33,6 @@ function formatResponseDiagnostics(response: Response): string {
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
 const WORKFLOW_SERVER_URL_OVERRIDE = '';
-
-/**
- * Per-request timeout for HTTP calls to workflow-server (in ms).
- *
- * Without this, a hung workflow-server response would keep the caller
- * blocked until the platform's `maxDuration` SIGTERM — burning compute
- * and defeating upstream timeout handlers (e.g. the replay timeout).
- */
-const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
@@ -305,21 +252,6 @@ export async function makeRequest<T>({
   const { baseUrl, headers } = await getHttpConfig(config);
   const url = `${baseUrl}${endpoint}`;
 
-  // Parse server address and port from URL for OTEL attributes
-  let serverAddress: string | undefined;
-  let serverPort: number | undefined;
-  try {
-    const parsedUrl = new URL(url);
-    serverAddress = parsedUrl.hostname;
-    serverPort = parsedUrl.port
-      ? parseInt(parsedUrl.port, 10)
-      : parsedUrl.protocol === 'https:'
-        ? 443
-        : 80;
-  } catch {
-    // URL parsing failed, skip these attributes
-  }
-
   // Standard OTEL span name for HTTP client: "{method}"
   // See: https://opentelemetry.io/docs/specs/semconv/http/http-spans/#name
   return trace(
@@ -327,16 +259,13 @@ export async function makeRequest<T>({
     { kind: await getSpanKind('CLIENT') },
     async (span) => {
       // Set standard OTEL HTTP client attributes
-      span?.setAttributes({
-        ...HttpRequestMethod(method),
-        ...UrlFull(url),
-        ...(serverAddress && ServerAddress(serverAddress)),
-        ...(serverPort && ServerPort(serverPort)),
-        // Peer service for Datadog service maps
-        ...PeerService('workflow-server'),
-        ...RpcSystem('http'),
-        ...RpcService('workflow-server'),
-      });
+      span?.setAttributes(
+        httpClientSpanAttributes({
+          method,
+          url,
+          peerService: 'workflow-server',
+        })
+      );
 
       headers.set('Accept', 'application/cbor');
 
@@ -410,7 +339,7 @@ export async function makeRequest<T>({
         }
         const fetchMs = Date.now() - fetchStart;
 
-        responseDiagnostics = formatResponseDiagnostics(response);
+        responseDiagnostics = formatVercelDiagnostics(response.headers);
         httpLog(method, endpoint, response, fetchMs);
 
         span?.setAttributes({
@@ -422,64 +351,31 @@ export async function makeRequest<T>({
             await parseResponseBody(response)
               .then((r) => r.data as { message?: string; code?: string })
               .catch(() => ({}));
-          if (process.env.DEBUG) {
-            const stringifiedHeaders = Array.from(headers.entries())
-              .filter(([key]) => key.toLowerCase() !== 'authorization')
-              .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
-              .join(' ');
-            console.error(
-              `Failed to fetch, reproduce with:\ncurl -X ${request.method} ${stringifiedHeaders} "${url}"`
-            );
-          }
+          logCurlRepro(request.method, url, headers);
 
-          // Parse Retry-After header (value is in seconds).
-          // Used by both 425 (TooEarlyError) and 429 (ThrottleError).
-          // Note: RetryAgent handles most 429 retries automatically, but this
-          // catches the case where retries are exhausted.
-          let retryAfter: number | undefined;
-          const retryAfterHeader = response.headers.get('Retry-After');
-          if (retryAfterHeader) {
-            const parsed = parseInt(retryAfterHeader, 10);
-            if (!Number.isNaN(parsed)) {
-              retryAfter = parsed;
-            }
-          }
+          // RetryAgent handles most 429 retries automatically, but this catches
+          // the case where retries are exhausted. Used by 425 and 429.
+          const retryAfter = parseRetryAfter(
+            response.headers.get('Retry-After')
+          );
 
           const defaultMessage =
             (errorData.message ||
               `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`) +
             responseDiagnostics;
 
-          // Map specific HTTP status codes to semantic error types
-          const throwWithTrace = (error: Error): never => {
-            span?.setAttributes({
-              ...ErrorType(errorData.code || `HTTP ${response.status}`),
-            });
-            span?.recordException?.(error);
-            throw error;
-          };
-
-          if (response.status === 409) {
-            throwWithTrace(new EntityConflictError(defaultMessage));
-          }
-          if (response.status === 410) {
-            throwWithTrace(new RunExpiredError(defaultMessage));
-          }
-          if (response.status === 425) {
-            throwWithTrace(new TooEarlyError(defaultMessage, { retryAfter }));
-          }
-          if (response.status === 429) {
-            throwWithTrace(new ThrottleError(defaultMessage, { retryAfter }));
-          }
-
-          throwWithTrace(
-            new WorkflowWorldError(defaultMessage, {
-              url,
-              status: response.status,
-              code: errorData.code,
-              retryAfter,
-            })
-          );
+          // Map the status to the typed error the runtime branches on (shared
+          // with the v4 path via errorForResponse).
+          const error = errorForResponse(response.status, defaultMessage, {
+            url,
+            code: errorData.code,
+            retryAfter,
+          });
+          span?.setAttributes({
+            ...ErrorType(errorData.code || `HTTP ${response.status}`),
+          });
+          span?.recordException?.(error);
+          throw error;
         }
 
         // Expose response headers to caller before consuming the body
