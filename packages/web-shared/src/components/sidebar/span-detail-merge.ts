@@ -4,6 +4,98 @@ const hasField = (
 ): value is Record<string, unknown> => key in value;
 
 /**
+ * Resources whose input/output is loaded by a downstream fetch (the trace
+ * strips those heavy fields from the span). Hooks are intentionally excluded:
+ * their fetch is disabled and the panel renders them from inline span data, so
+ * they are considered ready immediately.
+ */
+const RESOURCES_WITH_FETCHED_DETAIL = new Set(['run', 'step', 'sleep']);
+
+export function resourceNeedsFetchedDetail(
+  resource: string | undefined
+): boolean {
+  return resource !== undefined && RESOURCES_WITH_FETCHED_DETAIL.has(resource);
+}
+
+export type SpanDetailStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+export interface SpanDetailView {
+  status: SpanDetailStatus;
+  /** Inline span data merged with the matching fetched detail (if any). */
+  displayData: Record<string, unknown>;
+  /** The fetched detail that matches the current selection, else null. */
+  detail: unknown;
+  /** Error for the current selection, if the fetch failed. */
+  error: Error | undefined;
+}
+
+/**
+ * Derive the detail view-model for the selected span from the synchronously
+ * known selection and whatever fetched detail we currently hold.
+ *
+ * Because the result is a pure function of (selection, fetched detail), the
+ * `status` can never lag the selection: the panel is `loading` from the first
+ * render after a new span is picked until its matching detail arrives. This is
+ * what removes the Input/Output flicker — previously the loading flag came from
+ * an async fetch hook several commits downstream of the selection.
+ *
+ * `fetchedError` must already be scoped to the current selection by the caller
+ * (a fetch error for a previously selected span must not surface here).
+ */
+export function deriveSpanDetailView(args: {
+  resource: string | undefined;
+  resourceId: string | undefined;
+  inlineData: unknown;
+  fetchedDetail: unknown;
+  fetchedError: Error | null;
+}): SpanDetailView {
+  const { resource, resourceId, inlineData, fetchedDetail, fetchedError } =
+    args;
+
+  const matchedDetail = spanDetailMatchesSelection(
+    fetchedDetail,
+    resource,
+    resourceId
+  )
+    ? fetchedDetail
+    : null;
+  const displayData = mergeSpanDetail(inlineData, matchedDetail) as Record<
+    string,
+    unknown
+  >;
+
+  if (!resource || !resourceId) {
+    return { status: 'idle', displayData, detail: null, error: undefined };
+  }
+  if (fetchedError) {
+    return {
+      status: 'error',
+      displayData,
+      detail: matchedDetail,
+      error: fetchedError,
+    };
+  }
+  // Hooks have no fetch step — inline data is authoritative.
+  if (!resourceNeedsFetchedDetail(resource)) {
+    return {
+      status: 'ready',
+      displayData,
+      detail: matchedDetail,
+      error: undefined,
+    };
+  }
+  if (matchedDetail !== null) {
+    return {
+      status: 'ready',
+      displayData,
+      detail: matchedDetail,
+      error: undefined,
+    };
+  }
+  return { status: 'loading', displayData, detail: null, error: undefined };
+}
+
+/**
  * Returns true when the fetched `detail` belongs to the current selection.
  * The fetch lags selection, so it can briefly hold a previously selected span
  * (even a different resource type); reject it before merging or its fields
