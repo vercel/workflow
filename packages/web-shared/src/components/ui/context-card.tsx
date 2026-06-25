@@ -14,7 +14,7 @@ import {
 import { createPortal } from 'react-dom';
 import useMeasure from 'react-use-measure';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
-import { cn } from '../../lib/utils';
+import { cn } from '../../lib/cn';
 
 const INACTIVE_TIMEOUT_MS = 250;
 const ENTER_DELAY_MS = 0;
