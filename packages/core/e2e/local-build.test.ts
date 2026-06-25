@@ -3,10 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { usesVercelWorld } from '../../utils/src/world-target';
-import {
-  getWorkbenchAppPath,
-  isNextLazyDiscoveryEnabledForTest,
-} from './utils';
+import { getWorkbenchAppPath } from './utils';
 
 interface CommandResult {
   stdout: string;
@@ -92,14 +89,6 @@ const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {
   'nextjs-turbopack': '.next/diagnostics/workflows-manifest.json',
 };
 
-const DEFERRED_BUILD_MODE_PROJECTS = new Set([
-  'nextjs-webpack',
-  'nextjs-turbopack',
-]);
-const DEFERRED_BUILD_UNSUPPORTED_WARNING =
-  'Enabled lazyDiscovery but Next.js version is not compatible';
-const EAGER_DISCOVERY_LOG = 'Discovering workflow directives';
-
 describe.each([
   'example',
   'nextjs-webpack',
@@ -128,18 +117,6 @@ describe.each([
     );
 
     expect(result.output).not.toContain('Error:');
-
-    if (
-      DEFERRED_BUILD_MODE_PROJECTS.has(project) &&
-      isNextLazyDiscoveryEnabledForTest()
-    ) {
-      const deferredBuildSupported = !result.output.includes(
-        DEFERRED_BUILD_UNSUPPORTED_WARNING
-      );
-      if (deferredBuildSupported) {
-        expect(result.output).not.toContain(EAGER_DISCOVERY_LOG);
-      }
-    }
 
     const diagnosticsManifestPath = usesVercelWorld()
       ? '.vercel/output/diagnostics/workflows-manifest.json'

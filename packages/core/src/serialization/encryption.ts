@@ -5,7 +5,7 @@
  * using the format prefix system to mark encrypted data.
  */
 
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { RuntimeDecryptionError } from '@workflow/errors';
 import {
   decrypt as aesGcmDecrypt,
   encrypt as aesGcmEncrypt,
@@ -22,12 +22,19 @@ export type { CryptoKey };
 
 /**
  * Encryption key parameter type. Accepts a resolved key, undefined (no encryption),
- * or a promise that resolves to either.
+ * a promise, or a resolver that can defer fetching the key until data needs it.
  */
 export type EncryptionKeyParam =
   | CryptoKey
   | undefined
-  | Promise<CryptoKey | undefined>;
+  | Promise<CryptoKey | undefined>
+  | (() => Promise<CryptoKey | undefined>);
+
+export async function resolveEncryptionKey(
+  key: EncryptionKeyParam
+): Promise<CryptoKey | undefined> {
+  return typeof key === 'function' ? key() : key;
+}
 
 /**
  * Encrypt a format-prefixed payload if a key is provided.
@@ -64,12 +71,17 @@ export async function decrypt(
   const format = peekFormatPrefix(data);
 
   // If the data is encrypted but no key was provided, fail fast.
-  // Uses WorkflowRuntimeError to preserve the error contract from the
-  // legacy maybeDecrypt() implementation that callers may rely on.
   if (format === SerializationFormat.ENCRYPTED && !key) {
-    throw new WorkflowRuntimeError(
+    throw new RuntimeDecryptionError(
       'Encrypted data encountered but no encryption key is available. ' +
-        'Encryption is not configured or no key was provided for this run.'
+        'Encryption is not configured or no key was provided for this run.',
+      {
+        context: {
+          operation: 'decrypt',
+          byteLength: data.byteLength,
+          formatPrefix: 'encr',
+        },
+      }
     );
   }
 
@@ -77,5 +89,16 @@ export async function decrypt(
   if (format !== SerializationFormat.ENCRYPTED) return data;
 
   const { payload } = decodeFormatPrefix(data);
-  return aesGcmDecrypt(key!, payload);
+  try {
+    return await aesGcmDecrypt(key!, payload);
+  } catch (error) {
+    // The low-level AES layer only sees the stripped payload, so it cannot
+    // record the outer envelope prefix. This layer peeked it (`encr`), so
+    // enrich the diagnostic context with the real format prefix before
+    // rethrowing.
+    if (RuntimeDecryptionError.is(error) && error.context) {
+      error.context.formatPrefix = format;
+    }
+    throw error;
+  }
 }

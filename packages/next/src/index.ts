@@ -3,12 +3,7 @@ import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
-import {
-  getNextBuilder,
-  shouldUseDeferredBuilder,
-  WORKFLOW_DEFERRED_ENTRIES,
-} from './builder.js';
-import { parseEnvironmentFlag } from './environment-flag.js';
+import { getNextBuilder } from './builder.js';
 
 const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
 const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
@@ -185,8 +180,8 @@ function warnAboutAutoRemovedServerExternalPackages(
     .join(', ');
 
   console.warn(
-    `\n⚠ Workflow removed ${packageDescriptions} from serverExternalPackages for this build.` +
-      `\n  These packages contain workflow code and must be transformed by the workflow compiler.` +
+    `\n⚠ Workflow found workflow code in serverExternalPackages: ${packageDescriptions}.` +
+      `\n  Workflow removed the affected entries from serverExternalPackages for this build and is compiling the packages anyway.` +
       `\n  Remove ${packageNames} from serverExternalPackages in next.config to silence this warning.\n`
   );
 }
@@ -326,7 +321,6 @@ export function withWorkflow(
     workflows,
   }: {
     workflows?: {
-      lazyDiscovery?: boolean;
       local?: {
         port?: number;
       };
@@ -341,19 +335,6 @@ export function withWorkflow(
     };
   } = {}
 ) {
-  const lazyDiscoveryOverride = parseEnvironmentFlag(
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY
-  );
-  if (lazyDiscoveryOverride === undefined) {
-    if (workflows?.lazyDiscovery) {
-      process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
-    }
-  } else {
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = lazyDiscoveryOverride
-      ? '1'
-      : '0';
-  }
-
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
       process.env.WORKFLOW_TARGET_WORLD = 'local';
@@ -373,9 +354,18 @@ export function withWorkflow(
     phase: string,
     ctx: { defaultConfig: NextConfig }
   ) {
-    const loaderPath = require.resolve('./loader');
-    let runDeferredBuildFromCallback: (() => Promise<void>) | undefined;
+    if (
+      phase === 'phase-development-server' ||
+      phase === 'phase-production-build'
+    ) {
+      const { prewarmWorkflowSwcPluginCache } = await import(
+        './swc-plugin-cache.js'
+      );
+      // Loader workers inherit this cwd and read from the same SWC cache.
+      prewarmWorkflowSwcPluginCache(process.cwd());
+    }
 
+    const loaderPath = require.resolve('./loader');
     let nextConfig: NextConfig;
 
     if (typeof nextConfigOrFn === 'function') {
@@ -454,12 +444,7 @@ export function withWorkflow(
     const existingRules = nextConfig.turbopack.rules as any;
     const nextVersion = resolveNextVersion(process.cwd());
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
-    const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
 
-    // Deferred builder discovers files via loader socket notifications, so
-    // turbopack content conditions are only needed with the eager builder.
-    const shouldApplyTurboCondition =
-      supportsTurboCondition && !useDeferredBuilder;
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;
     const distDir = nextConfig.distDir || '.next';
@@ -481,9 +466,16 @@ export function withWorkflow(
           const NextBuilder = await getNextBuilder(nextVersion);
           return new NextBuilder({
             watch: shouldWatch,
-            // discover workflows from pages/app entries
-            dirs: ['pages', 'app', 'src/pages', 'src/app'],
+            // getInputFiles filters the project to Next.js entrypoints
+            dirs: ['.'],
+            pageExtensions: nextConfig.pageExtensions ?? [
+              'tsx',
+              'ts',
+              'jsx',
+              'js',
+            ],
             projectRoot: nextConfig.outputFileTracingRoot,
+            moduleSpecifierRoot: process.cwd(),
             workingDir: process.cwd(),
             distDir,
             diagnosticsDir: `${distDir}/diagnostics`,
@@ -492,10 +484,6 @@ export function withWorkflow(
             stepsBundlePath: '', // not used in base
             webhookBundlePath: '', // node used in base
             sourcemap: workflows?.sourcemap,
-            suppressCreateWorkflowsBundleLogs: useDeferredBuilder,
-            suppressCreateWorkflowsBundleWarnings: useDeferredBuilder,
-            suppressCreateWebhookBundleLogs: useDeferredBuilder,
-            suppressCreateManifestLogs: useDeferredBuilder,
             externalPackages: [
               // server-only and client-only are pseudo-packages handled by Next.js
               // during its build process. We mark them as external to prevent esbuild
@@ -512,50 +500,6 @@ export function withWorkflow(
       return workflowBuilderPromise;
     };
 
-    if (useDeferredBuilder) {
-      runDeferredBuildFromCallback = async () => {
-        const workflowBuilder = await getWorkflowBuilder();
-        if (typeof workflowBuilder.onBeforeDeferredEntries === 'function') {
-          await workflowBuilder.onBeforeDeferredEntries();
-        }
-      };
-
-      const existingExperimental = (nextConfig.experimental ?? {}) as Record<
-        string,
-        any
-      >;
-      const existingDeferredEntries = Array.isArray(
-        existingExperimental.deferredEntries
-      )
-        ? existingExperimental.deferredEntries
-        : [];
-      const existingOnBeforeDeferredEntries =
-        typeof existingExperimental.onBeforeDeferredEntries === 'function'
-          ? existingExperimental.onBeforeDeferredEntries
-          : undefined;
-
-      nextConfig.experimental = {
-        ...existingExperimental,
-
-        // biome-ignore lint/suspicious/noTsIgnore: expect-error is wrong as it will work on valid version
-        // @ts-ignore this is only available in canary Next.js
-        deferredEntries: [
-          ...new Set([
-            ...existingDeferredEntries,
-            ...WORKFLOW_DEFERRED_ENTRIES,
-          ]),
-        ],
-        onBeforeDeferredEntries: async (...args: unknown[]) => {
-          if (existingOnBeforeDeferredEntries) {
-            await existingOnBeforeDeferredEntries(...args);
-          }
-          if (runDeferredBuildFromCallback) {
-            await runDeferredBuildFromCallback();
-          }
-        },
-      };
-    }
-
     for (const key of [
       '*.tsx',
       '*.ts',
@@ -567,7 +511,7 @@ export function withWorkflow(
       '*.cts',
     ]) {
       nextConfig.turbopack.rules[key] = {
-        ...(shouldApplyTurboCondition
+        ...(supportsTurboCondition
           ? {
               condition: {
                 // Use 'all' to combine: must match content AND must NOT be in generated path

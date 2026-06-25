@@ -1,4 +1,9 @@
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  FatalError,
+  ThrottleError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   afterEach,
   beforeAll,
@@ -91,8 +96,17 @@ vi.mock('../telemetry.js', () => ({
   }),
   withTraceContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
   getSpanKind: vi.fn().mockResolvedValue(undefined),
+  getWorkflowTraceMode: vi.fn(() => 'linked'),
+  isUsableTraceCarrier: vi.fn(
+    (carrier?: Record<string, string>) =>
+      carrier !== undefined && Object.keys(carrier).length > 0
+  ),
+  getNextTraceCarrier: vi.fn().mockResolvedValue({}),
+  buildInvocationSpanLinks: vi.fn().mockResolvedValue([]),
   linkToCurrentContext: vi.fn().mockResolvedValue([]),
+  linkToTraceCarrier: vi.fn().mockResolvedValue(undefined),
   withWorkflowBaggage: vi.fn((_attrs: unknown, fn: () => unknown) => fn()),
+  getActiveSpan: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock logger
@@ -137,6 +151,18 @@ vi.mock('../step/context-storage.js', () => ({
 
 // Mock types
 vi.mock('../types.js', () => ({
+  promoteAbortErrorToFatal: vi
+    .fn()
+    .mockImplementation((err: unknown) =>
+      typeof err === 'object' &&
+      err !== null &&
+      'name' in err &&
+      err.name === 'AbortError' &&
+      'message' in err &&
+      typeof err.message === 'string'
+        ? new FatalError(`Aborted: ${err.message}`)
+        : err
+    ),
   normalizeUnknownError: vi.fn().mockImplementation(async (err: unknown) => ({
     message: err instanceof Error ? err.message : String(err),
     name: err instanceof Error ? err.name : 'Error',
@@ -157,12 +183,14 @@ vi.mock('@workflow/utils/get-port', () => ({
 }));
 
 import { getStepFunction } from '../private.js';
+import { dehydrateStepError } from '../serialization.js';
 import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import { executeStep } from './step-executor.js';
 // Import the module AFTER all mocks are set up
 // Since getWorldHandlers is now async, we need to call stepEntrypoint
 // to trigger createQueueHandler and populate capturedHandlerRef
@@ -853,6 +881,29 @@ describe('step-handler fatal vs retryable behavior', () => {
     expect(stepRetryingCalls).toHaveLength(0);
   });
 
+  it('promotes an AbortError-shaped rejection to FatalError without retrying', async () => {
+    mockStepFn.mockReset().mockRejectedValue({
+      name: 'AbortError',
+      message: 'This operation was aborted',
+    });
+    mockStepFn.maxRetries = 3;
+
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    const stepRetryingCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_retrying'
+    );
+    expect(stepRetryingCalls).toHaveLength(0);
+    expect(dehydrateStepError).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'FatalError', fatal: true }),
+      'wrun_test123',
+      undefined,
+      [],
+      globalThis,
+      expect.any(Boolean)
+    );
+  });
+
   it('schedules a retry (and does not fail the step) on the first attempt of a non-fatal Error', async () => {
     mockStepFn
       .mockReset()
@@ -901,5 +952,438 @@ describe('step-handler fatal vs retryable behavior', () => {
       ([, event]) => event.eventType === 'step_failed'
     );
     expect(stepFailedCalls).toHaveLength(1);
+  });
+});
+
+describe('executeStep inline-delta threading', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        return Promise.resolve({ event: {} });
+      });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const baseParams = {
+    workflowRunId: 'wrun_test123',
+    workflowName: 'test-workflow',
+    workflowStartedAt: Date.now(),
+    stepId: 'step_abc',
+    stepName: 'myStep',
+  };
+
+  it('passes sinceCursor to the step_completed write and surfaces the returned delta', async () => {
+    const deltaEvents = [
+      { eventId: 'evnt_1', eventType: 'step_created' },
+      { eventId: 'evnt_2', eventType: 'step_started' },
+      { eventId: 'evnt_3', eventType: 'step_completed' },
+    ];
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          // The World returns the delta only because sinceCursor was passed.
+          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+          return Promise.resolve({
+            event: {},
+            events: deltaEvents,
+            cursor: 'cursor_post',
+            hasMore: false,
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toEqual({
+      events: deltaEvents,
+      cursor: 'cursor_post',
+      hasMore: false,
+    });
+  });
+
+  it('surfaces hasMore=true verbatim when the World returns a truncated delta', async () => {
+    // The World truncates a delta larger than one page and reports
+    // hasMore=true. executeStep must forward that flag unchanged so the
+    // runtime's consume gate (which only stashes a delta when !hasMore) falls
+    // back to the exhaustive events.list loop instead of consuming a partial
+    // page as the complete delta.
+    const truncatedEvents = [
+      { eventId: 'evnt_1', eventType: 'hook_received' },
+      { eventId: 'evnt_2', eventType: 'hook_received' },
+    ];
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+          return Promise.resolve({
+            event: {},
+            events: truncatedEvents,
+            cursor: 'cursor_mid',
+            hasMore: true,
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toEqual({
+      events: truncatedEvents,
+      cursor: 'cursor_mid',
+      hasMore: true,
+    });
+  });
+
+  it('does not pass sinceCursor or surface a delta when it is omitted', async () => {
+    let completedParams: unknown = 'unset';
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          completedParams = params;
+          // Even if a World returned events here, the runtime must ignore them
+          // when it never requested a delta.
+          return Promise.resolve({
+            event: {},
+            events: [{ eventId: 'evnt_x', eventType: 'step_completed' }],
+            cursor: 'cursor_post',
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(completedParams).toBeUndefined();
+    expect(result.inlineDelta).toBeUndefined();
+  });
+
+  it('surfaces no delta when a supporting cursor is requested but the World omits one', async () => {
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        // World ignores sinceCursor (returns no events/cursor) — backward compat.
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toBeUndefined();
+  });
+});
+
+describe('executeStep optimistic inline start', () => {
+  const baseParams = {
+    workflowRunId: 'wrun_test123',
+    workflowName: 'test-workflow',
+    workflowStartedAt: Date.now(),
+    stepId: 'step_abc',
+    stepName: 'myStep',
+    // Empty dehydrated input — the world round-trips this back as step.input.
+    lazyStepInput: [] as never,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Optimistic start is OFF by default — explicitly enable it so these tests
+    // exercise the optimistic path. (The disabled-path test overrides to '0'.)
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+  });
+
+  afterEach(() => {
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    vi.restoreAllMocks();
+  });
+
+  it('sends step_started carrying the input and completes (when enabled)', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) =>
+        Promise.resolve({ event: {} })
+      );
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result.type).toBe('completed');
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    // The lazy step_started carries the input so the world creates the step.
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_started',
+        correlationId: 'step_abc',
+        eventData: expect.objectContaining({ stepName: 'myStep', input: [] }),
+      })
+    );
+  });
+
+  it('runs the body optimistically but discards the result when step_started loses the create race (409)', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('lost create race'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    // The body ran (optimistic execution before the start was confirmed)...
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    // ...but we lost the race, so the result is discarded and no terminal
+    // event is written.
+    expect(result.type).toBe('skipped');
+    const completedWrites = mockEventsCreate.mock.calls.filter(
+      ([, event]) =>
+        (event as { eventType: string }).eventType === 'step_completed'
+    );
+    expect(completedWrites).toHaveLength(0);
+  });
+
+  it('returns throttled (discarding the body result) when step_started is throttled', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(
+            new ThrottleError('slow down', { retryAfter: 7 })
+          );
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result).toEqual({ type: 'throttled', timeoutSeconds: 7 });
+  });
+
+  it('does NOT run the body before confirming start when the flag is disabled', async () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('already running'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    // Await-first path: the conflict short-circuits before the body runs.
+    expect(result.type).toBe('skipped');
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('forces optimistic start via forceOptimisticStart when the flag is unset', async () => {
+    // Turbo passes forceOptimisticStart; with the env var UNSET (off by default
+    // but not an explicit opt-out), turbo forces optimistic start on.
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('lost create race'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+    });
+
+    // Forced optimistic: the body ran before the (lost) create-claim resolved —
+    // unlike the env-disabled case above, where the body never runs.
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    expect(result.type).toBe('skipped');
+  });
+
+  it('forceOptimisticStart defers to an EXPLICIT WORKFLOW_OPTIMISTIC_INLINE_START=0', async () => {
+    // An operator who explicitly set the flag to 0 has opted out of "body runs
+    // before start is confirmed"; that opt-out wins over turbo's force, so the
+    // step takes the await-then-run path and the body never runs on a 409.
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('already running'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+    });
+
+    expect(result.type).toBe('skipped');
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('holds the optimistic step_started until runReadyBarrier resolves, but runs the body immediately', async () => {
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    let release!: () => void;
+    const barrier = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls: string[] = [];
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        calls.push(event.eventType);
+        return Promise.resolve({ event: {} });
+      });
+    mockStepFn.mockReset().mockImplementation(async () => {
+      calls.push('body');
+      return 'step-result';
+    });
+
+    const world = await getWorld();
+    const resultPromise = executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+      runReadyBarrier: barrier,
+    });
+
+    // The body runs immediately against synthesized state; step_started is NOT
+    // issued until the run-ready barrier resolves. Widen the default 1s
+    // vi.waitFor timeout — reaching the body can be slow on cold CI (Windows).
+    await vi.waitFor(() => expect(calls).toContain('body'), {
+      timeout: 15_000,
+    });
+    expect(calls).not.toContain('step_started');
+
+    release();
+    const result = await resultPromise;
+    expect(result.type).toBe('completed');
+    expect(calls).toContain('step_started');
+    expect(calls.indexOf('body')).toBeLessThan(calls.indexOf('step_started'));
   });
 });

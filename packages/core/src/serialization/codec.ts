@@ -14,6 +14,7 @@
  *   plain objects). No Date, Map, Set, typed arrays, etc.
  */
 
+import type { CompressionStats } from './compression.js';
 import type { FormatPrefix } from './types.js';
 
 /**
@@ -54,6 +55,23 @@ export interface CodecOptions {
    * or other mode-specific type revivers.
    */
   extraRevivers?: Record<string, (value: any) => any>;
+
+  /**
+   * Whether to gzip-compress the serialized payload (write side only;
+   * reads always handle both compressed and uncompressed data). Must
+   * only be enabled when the target run supports compressed payloads:
+   * run specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION, and for
+   * cross-deployment writes the target deployment's capabilities (see
+   * `getRunCapabilities` in capabilities.ts). Defaults to `false`.
+   */
+  compression?: boolean;
+
+  /**
+   * Optional telemetry sink populated by the compression layer with what
+   * it did to the payload (whether it compressed, logical vs stored size).
+   * Used by the dehydrate/hydrate wrappers to emit OTel span attributes.
+   */
+  compressionStats?: CompressionStats;
 }
 
 export interface Codec {

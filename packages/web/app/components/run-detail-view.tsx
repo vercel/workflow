@@ -153,7 +153,7 @@ function GraphTabContent({
       <div className="flex items-center justify-center w-full h-full">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         <span className="ml-4 text-muted-foreground">
-          Loading workflow graph...
+          Loading workflow graph…
         </span>
       </div>
     );
@@ -345,6 +345,9 @@ export function RunDetailView({
     error,
     update,
     hasEncryptedData,
+    loadMoreTraceData,
+    hasMoreTraceData,
+    isLoadingMoreTraceData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
@@ -363,6 +366,7 @@ export function RunDetailView({
     hasMore: hasMoreEventsTab,
     loadingMore: loadingMoreEventsTab,
     loadMore: loadMoreEventsTab,
+    searchByExactId,
   } = useEventsListData(env, runId, {
     sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
@@ -484,7 +488,7 @@ export function RunDetailView({
       await cancelRun(env, runId);
       // Trigger a refresh of the data
       await update();
-      toast.success('Run cancelled successfully');
+      toast.success('Run cancelled');
     } catch (err) {
       console.error('Failed to cancel run:', err);
       toast.error('Failed to cancel run', {
@@ -508,7 +512,7 @@ export function RunDetailView({
       setShowRerunDialog(false);
       // Start a new run with the same workflow and input arguments
       const newRunId = await recreateRun(env, run.runId);
-      toast.success('New run started successfully', {
+      toast.success('New run started', {
         description: `Run ID: ${newRunId}`,
       });
       // Navigate to the new run
@@ -780,11 +784,15 @@ export function RunDetailView({
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load trace viewer">
-                <div className="h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
                   <NewTraceViewer
                     run={run}
                     events={allEvents ?? []}
+                    loading={loading}
                     sidebarData={sidebarData}
+                    onLoadMore={loadMoreTraceData}
+                    hasMore={hasMoreTraceData}
+                    isLoadingMore={isLoadingMoreTraceData}
                   />
                 </div>
               </ErrorBoundary>
@@ -807,6 +815,7 @@ export function RunDetailView({
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
+                    onExactIdSearch={searchByExactId}
                   />
                 </div>
               </ErrorBoundary>

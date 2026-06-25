@@ -6,7 +6,6 @@
     "errors-and-retries",
     "hooks",
     "streaming",
-    "cancellation",
     "serialization",
     "idempotency",
     "versioning"

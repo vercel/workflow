@@ -1,41 +1,67 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import { RotateCcw, Search, X, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronUp,
+  RotateCcw,
+  Search,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
+import { filterSpanRawEvents } from '../../lib/trace-builder';
 import { ErrorBoundary } from '../error-boundary';
 import {
   EntityDetailPanel,
   type SelectedSpanInfo,
 } from '../sidebar/entity-detail-panel';
-import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
-import type { Trace } from '../trace-viewer/types';
+import { useSidebarData } from '../sidebar/sidebar-data-context';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
-import { CopyButton } from './components/copy-button';
+import { IconButton } from '../ui/icon-button';
+import { Kbd } from '../ui/kbd';
+import { Spinner } from '../ui/spinner';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '../ui/tooltip';
 import EventList from './components/event-list';
+import { TraceShortcutHelper } from './components/trace-shortcut-helper';
+import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { SplitPane } from './components/split-pane';
 import {
+  TIMELINE_PADDING_PX,
   Timeline,
   TimelineHeader,
-  TIMELINE_PADDING_PX,
 } from './components/timeline';
 import { ActiveSpanProvider, useActiveSpan } from './context';
-import { DetailPanel } from './detail-panel';
+import { searchSpans } from './search';
+import type { TraceWithMeta } from './types';
 import { computeRootBounds, computeTimeMarkers } from './utils';
 
 interface NewTraceViewerProps {
-  trace: Trace;
+  trace: TraceWithMeta;
+  onLoadMore?: () => void | Promise<void>;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
 }
 
 const MIN_VIEWPORT_MS = 0.001;
+
+const ZOOM_DEBOUNCE_MS = 150;
 
 interface Viewport {
   start: number;
@@ -119,56 +145,83 @@ function useAnimatedViewport(initial: Viewport) {
 
 function useSelectedSpanInfo(): SelectedSpanInfo | null {
   const { activeSpan } = useActiveSpan();
-  const sidebar = useSidebarDataOptional();
+  const sidebar = useSidebarData();
 
   return useMemo(() => {
-    if (!activeSpan || !sidebar) return null;
+    if (!activeSpan) return null;
 
-    const correlationId = activeSpan.spanId;
-    const rawEvents = correlationId
-      ? sidebar.events.filter((e) => e.correlationId === correlationId)
-      : [];
+    const resource = activeSpan.attributes?.resource as string | undefined;
+    const rawEvents = filterSpanRawEvents(
+      sidebar.events,
+      resource,
+      activeSpan.spanId
+    );
 
     return {
       data: activeSpan.attributes?.data,
-      resource: activeSpan.attributes?.resource as string | undefined,
+      resource,
       spanId: activeSpan.spanId,
       rawEvents,
     };
-  }, [activeSpan, sidebar?.events]);
+  }, [activeSpan, sidebar]);
 }
 
 // ---------------------------------------------------------------------------
 // Root component
 // ---------------------------------------------------------------------------
 
-export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
+export function NewTraceViewer({
+  trace,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: NewTraceViewerProps): ReactNode {
   return (
-    <ActiveSpanProvider spans={trace.spans}>
-      <NewTraceViewerContent trace={trace} />
-    </ActiveSpanProvider>
+    <TooltipProvider delayDuration={300}>
+      <ActiveSpanProvider spans={trace.spans}>
+        <NewTraceViewerContent
+          trace={trace}
+          onLoadMore={onLoadMore}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
+        />
+      </ActiveSpanProvider>
+    </TooltipProvider>
   );
 }
 
-function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
+function NewTraceViewerContent({
+  trace,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: NewTraceViewerProps): ReactNode {
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
 
-  const sidebar = useSidebarDataOptional();
+  const sidebar = useSidebarData();
   const selectedSpan = useSelectedSpanInfo();
+  const reducedMotion = useReducedMotion();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
-  const filteredSpans = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return trace.spans;
-    return trace.spans.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) || s.resource.toLowerCase().includes(q)
-    );
-  }, [trace.spans, searchQuery]);
+  const searchResult = useMemo(
+    () => searchSpans(trace.spans, deferredSearchQuery),
+    [trace.spans, deferredSearchQuery]
+  );
 
   const root = useMemo(() => computeRootBounds(trace.spans), [trace.spans]);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const loadMore = useCallback(() => {
+    void onLoadMore?.();
+  }, [onLoadMore]);
+  const loadMoreSentinelRef = useLoadMoreOnScroll(loadMore, {
+    hasMore: Boolean(onLoadMore && hasMore),
+    isLoadingMore: Boolean(isLoadingMore),
+    rootRef: scrollContainerRef,
+  });
 
   const { viewport, setViewport, animateTo } = useAnimatedViewport({
     start: root.startTime,
@@ -197,9 +250,15 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     });
 
     prevRootRef.current = { start: newStart, end: newEnd };
-  }, [root.startTime, root.duration]);
+  }, [root.startTime, root.duration, setViewport]);
 
   const viewDuration = viewport.end - viewport.start;
+
+  // Keep a ref to the live viewport so the reveal callback can read the current
+  // zoom without being recreated on every pan (which would bust TimelineBar's
+  // memo and re-render every row each animation frame).
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
 
   const timeMarkers = useMemo(
     () => computeTimeMarkers(viewDuration, viewport.start - root.startTime),
@@ -209,6 +268,29 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const resetZoom = useCallback(() => {
     animateTo({ start: root.startTime, end: root.startTime + root.duration });
   }, [animateTo, root.startTime, root.duration]);
+
+  // Pan (keeping the current zoom) so `timeMs` is centered in view — used by the
+  // off-screen marker indicators to scroll their marker into view.
+  const handleRevealTime = useCallback(
+    (timeMs: number) => {
+      const rootS = root.startTime;
+      const rootE = root.startTime + root.duration;
+      const { start, end } = viewportRef.current;
+      const duration = end - start;
+      let newStart = timeMs - duration / 2;
+      let newEnd = timeMs + duration / 2;
+      if (newStart < rootS) {
+        newStart = rootS;
+        newEnd = rootS + duration;
+      }
+      if (newEnd > rootE) {
+        newEnd = rootE;
+        newStart = Math.max(rootS, rootE - duration);
+      }
+      animateTo({ start: newStart, end: newEnd });
+    },
+    [animateTo, root.startTime, root.duration]
+  );
 
   const ZOOM_FACTOR = 0.5;
 
@@ -246,14 +328,8 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const zoomIn = useCallback(() => zoomBy(ZOOM_FACTOR), [zoomBy]);
   const zoomOut = useCallback(() => zoomBy(1 / ZOOM_FACTOR), [zoomBy]);
 
-  const handleSelectSpan = useCallback(
+  const focusViewportOnSpan = useCallback(
     (spanId: string) => {
-      if (spanId === activeSpanId) {
-        clearActiveSpan();
-        return;
-      }
-      setActiveSpan(spanId);
-
       const span = trace.spans.find((s) => s.spanId === spanId);
       if (!span) return;
 
@@ -293,27 +369,101 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
       animateTo({ start: newStart, end: newEnd });
     },
+    [animateTo, trace.spans, root.startTime, root.duration]
+  );
+
+  // Bring a row into view when keyboard/button navigation lands on a span that
+  // sits outside the shared scroll container's visible area. The list is
+  // windowed, so an off-screen row has no DOM node to `scrollIntoView` —
+  // `scrollRowIntoView` computes the target offset from the span's index.
+  const scrollSpanIntoView = useCallback(
+    (spanId: string) => {
+      const index = trace.spans.findIndex((s) => s.spanId === spanId);
+      if (index === -1) return;
+
+      const list =
+        scrollContainerRef.current?.querySelector<HTMLElement>('#event-list') ??
+        null;
+      scrollRowIntoView(list, index, ROW_HEIGHT_PX, {
+        behavior: reducedMotion ? 'auto' : 'smooth',
+      });
+    },
+    [trace.spans, reducedMotion]
+  );
+
+  const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPendingZoom = useCallback(() => {
+    if (zoomTimerRef.current !== null) {
+      clearTimeout(zoomTimerRef.current);
+      zoomTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => cancelPendingZoom, [cancelPendingZoom]);
+
+  const handleClearActiveSpan = useCallback(() => {
+    cancelPendingZoom();
+    clearActiveSpan();
+  }, [cancelPendingZoom, clearActiveSpan]);
+
+  const handleSelectSpan = useCallback(
+    (spanId: string) => {
+      cancelPendingZoom();
+      if (spanId === activeSpanId) {
+        clearActiveSpan();
+        return;
+      }
+      setActiveSpan(spanId);
+      focusViewportOnSpan(spanId);
+    },
     [
-      animateTo,
-      setActiveSpan,
-      clearActiveSpan,
+      cancelPendingZoom,
       activeSpanId,
-      trace.spans,
-      root.startTime,
-      root.duration,
+      clearActiveSpan,
+      setActiveSpan,
+      focusViewportOnSpan,
     ]
+  );
+
+  const navigateToSpan = useCallback(
+    (spanId: string) => {
+      setActiveSpan(spanId);
+      scrollSpanIntoView(spanId);
+      cancelPendingZoom();
+      zoomTimerRef.current = setTimeout(() => {
+        zoomTimerRef.current = null;
+        focusViewportOnSpan(spanId);
+      }, ZOOM_DEBOUNCE_MS);
+    },
+    [setActiveSpan, scrollSpanIntoView, cancelPendingZoom, focusViewportOnSpan]
   );
 
   const [altHeld, setAltHeld] = useState(false);
 
   useEffect(() => {
+    const handleSidebarNavKey = (e: KeyboardEvent): void => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      const targetId =
+        e.key === 'k' ? prevSpanIdRef.current : nextSpanIdRef.current;
+      if (targetId) {
+        e.preventDefault();
+        navigateToSpanRef.current(targetId);
+      }
+    };
+
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
-        clearActiveSpan();
-      }
-      if (e.key === 'Alt') {
-        e.preventDefault();
+        handleClearActiveSpan();
+      } else if (e.key === 'Alt') {
         setAltHeld(true);
+      } else if (e.key === 'j' || e.key === 'k') {
+        handleSidebarNavKey(e);
       }
     };
     const onKeyUp = (e: KeyboardEvent): void => {
@@ -329,7 +479,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [clearActiveSpan]);
+  }, [handleClearActiveSpan]);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const [hoverFraction, setHoverFraction] = useState<number | null>(null);
@@ -395,7 +545,8 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             (e.clientX - rect.left - TIMELINE_PADDING_PX) / contentWidth
           )
         );
-        const scaleFactor = Math.pow(2, dy / 200);
+        const isMouseWheel = e.deltaMode === 1 || Math.abs(e.deltaY) >= 50;
+        const scaleFactor = 2 ** (dy / (isMouseWheel ? 200 : 60));
 
         setViewport((prev) => {
           const prevDuration = prev.end - prev.start;
@@ -446,7 +597,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [root.startTime, root.duration]);
+  }, [root.startTime, root.duration, setViewport]);
 
   // Derive the selected span name and metadata for the panel header
   const selectedSpanName = useMemo(() => {
@@ -468,35 +619,45 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     );
   }, [selectedSpan?.data, selectedSpan?.resource]);
 
-  const selectedResource = selectedSpan?.resource as string | undefined;
-  const selectedResourceId = useMemo(() => {
-    if (!selectedSpan?.data) return undefined;
-    const data = selectedSpan.data as Record<string, unknown>;
-    if (selectedSpan.resource === 'hook') {
-      return (data.hookId as string | undefined) ?? selectedSpan.spanId;
-    }
+  const { prevSpanId, nextSpanId } = useMemo(() => {
+    if (!activeSpanId) return { prevSpanId: null, nextSpanId: null };
+    const i = trace.spans.findIndex((s) => s.spanId === activeSpanId);
+    if (i === -1) return { prevSpanId: null, nextSpanId: null };
+    return {
+      prevSpanId: trace.spans[i - 1]?.spanId ?? null,
+      nextSpanId: trace.spans[i + 1]?.spanId ?? null,
+    };
+  }, [activeSpanId, trace.spans]);
 
-    return (
-      (data.stepId as string) ??
-      (data.runId as string) ??
-      (data.hookId as string) ??
-      selectedSpan.spanId
-    );
-  }, [selectedSpan?.data, selectedSpan?.resource, selectedSpan?.spanId]);
+  const handleSelectPrevSpan = useCallback(() => {
+    if (prevSpanId) navigateToSpan(prevSpanId);
+  }, [prevSpanId, navigateToSpan]);
+
+  const handleSelectNextSpan = useCallback(() => {
+    if (nextSpanId) navigateToSpan(nextSpanId);
+  }, [nextSpanId, navigateToSpan]);
+
+  const prevSpanIdRef = useRef(prevSpanId);
+  const nextSpanIdRef = useRef(nextSpanId);
+  const navigateToSpanRef = useRef(navigateToSpan);
+  prevSpanIdRef.current = prevSpanId;
+  nextSpanIdRef.current = nextSpanId;
+  navigateToSpanRef.current = navigateToSpan;
 
   return (
     <div
       data-pane="pane-root"
       data-has-detail={activeSpan ? '' : undefined}
-      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,420px,100%)]"
+      className="relative grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,360px,100%)]"
     >
       <div
         id="trace-parent"
         className="grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
         <SplitPane
+          scrollContainerRef={scrollContainerRef}
           startHeader={
-            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center px-2 gap-1.5">
+            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
               <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
               <input
                 id="trace-viewer-search"
@@ -504,6 +665,13 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && searchQuery) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setSearchQuery('');
+                  }
+                }}
                 placeholder="Search spans..."
                 aria-label="Search spans"
                 className="flex-1 min-w-0 bg-transparent text-sm text-gray-1000 placeholder:text-gray-800 outline-none"
@@ -511,10 +679,13 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               {searchQuery && (
                 <button
                   type="button"
+                  aria-label="Clear search"
                   onClick={() => setSearchQuery('')}
-                  className="shrink-0 p-0.5 rounded-sm text-gray-800 hover:text-gray-1000 hover:bg-gray-200 transition-colors"
+                  className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-base text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
                 >
-                  <X className="w-3 h-3" />
+                  <Kbd variant="outline" size="search">
+                    Esc
+                  </Kbd>
                 </button>
               )}
             </div>
@@ -525,11 +696,21 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         >
           <div className="block overflow-visible">
             <EventList
-              spans={filteredSpans}
+              spans={trace.spans}
               activeSpanId={activeSpanId}
+              searchResult={searchResult}
               onSelectSpan={handleSelectSpan}
             />
+            <div ref={loadMoreSentinelRef} className="flex justify-center">
+              {isLoadingMore ? (
+                <div className="flex items-center justify-center gap-2 py-3 text-sm text-gray-800">
+                  <Spinner size={14} />
+                  <span>Loading spans…</span>
+                </div>
+              ) : null}
+            </div>
           </div>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: timeline hover and wheel gestures are pointer-only annotations */}
           <div
             ref={timelineRef}
             className="block min-h-0 overflow-visible relative"
@@ -538,92 +719,100 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             onMouseLeave={handleTimelineMouseLeave}
           >
             <Timeline
-              spans={filteredSpans}
+              spans={trace.spans}
               viewStart={viewport.start}
               viewEnd={viewport.end}
               markers={timeMarkers}
               selectedId={activeSpanId}
+              searchResult={searchResult}
               onSelect={handleSelectSpan}
+              onRevealTime={handleRevealTime}
               hoverFraction={hoverFraction}
               altHeld={altHeld}
             />
           </div>
         </SplitPane>
-        <div className="absolute right-3 bottom-3 z-[5] flex items-center border border-gray-alpha-400 rounded-lg bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
-          <button
-            type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+        <div className="absolute right-3 bottom-3 z-[5] flex items-center border border-gray-alpha-400 rounded-md bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
+          <IconButton
+            variant="muted"
+            size="small"
             onClick={zoomOut}
             aria-label="Zoom out"
           >
             <ZoomOut className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+          </IconButton>
+          <IconButton
+            variant="muted"
+            size="small"
             onClick={resetZoom}
             aria-label="Reset zoom"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+          </IconButton>
+          <IconButton
+            variant="muted"
+            size="small"
             onClick={zoomIn}
             aria-label="Zoom in"
           >
             <ZoomIn className="w-4 h-4" />
-          </button>
+          </IconButton>
         </div>
       </div>
 
       {/* Detail panel */}
-      {activeSpan && sidebar ? (
+      {activeSpan ? (
         <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
           {/* Panel header */}
-          <div className="flex-shrink-0 px-4 pt-4 pb-3">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0 flex-1">
-                <span className="text-[15px] font-semibold text-gray-1000 truncate block">
-                  {selectedSpanName}
-                </span>
-                {selectedResourceId && (
-                  <div className="mt-1 flex items-center gap-2">
-                    {selectedResource && (
-                      <span
-                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-none shrink-0 ${
-                          selectedResource === 'step'
-                            ? 'bg-green-200 text-green-900'
-                            : selectedResource === 'run'
-                              ? 'bg-blue-200 text-blue-900'
-                              : 'bg-gray-200 text-gray-900'
-                        }`}
-                      >
-                        {selectedResource.charAt(0).toUpperCase() +
-                          selectedResource.slice(1)}
-                      </span>
-                    )}
-                    <div
-                      className="flex items-center gap-1 text-[13px] font-mono text-gray-700 min-w-0"
-                      title={selectedResourceId}
-                    >
-                      <span className="truncate">{selectedResourceId}</span>
-                      <CopyButton
-                        copyText={selectedResourceId}
-                        ariaLabel="Copy ID"
-                        className="shrink-0"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className="p-1 rounded-md text-gray-900 hover:text-gray-1000 hover:bg-gray-alpha-200 transition-colors shrink-0"
-                onClick={clearActiveSpan}
+          <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
+            <span className="text-label-14 font-medium text-gray-1000 truncate block">
+              {selectedSpanName}
+            </span>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <IconButton
+                    aria-label="Navigate up"
+                    aria-keyshortcuts="K"
+                    onClick={handleSelectPrevSpan}
+                    disabled={!prevSpanId}
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </IconButton>
+                </TooltipTrigger>
+                {prevSpanId ? (
+                  <TooltipContent>
+                    Navigate up
+                    <Kbd>K</Kbd>
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <IconButton
+                    aria-label="Navigate down"
+                    aria-keyshortcuts="J"
+                    onClick={handleSelectNextSpan}
+                    disabled={!nextSpanId}
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </IconButton>
+                </TooltipTrigger>
+                {nextSpanId ? (
+                  <TooltipContent>
+                    Navigate down
+                    <Kbd>J</Kbd>
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
+              <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
+              <IconButton
+                aria-label="Close span details"
+                aria-keyshortcuts="Escape"
+                onClick={handleClearActiveSpan}
               >
                 <X className="w-4 h-4" />
-              </button>
+              </IconButton>
             </div>
           </div>
           {/* Panel body */}
@@ -648,13 +837,12 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             </ErrorBoundary>
           </div>
         </aside>
-      ) : activeSpan ? (
-        <DetailPanel
-          span={activeSpan}
-          rootStart={root.startTime}
-          onClose={clearActiveSpan}
-        />
       ) : null}
+
+      <TraceShortcutHelper
+        hasMultipleSpans={trace.spans.length > 1}
+        reducedMotion={reducedMotion}
+      />
     </div>
   );
 }

@@ -174,7 +174,7 @@ describe('runWorkflow', () => {
         eventId: 'event-0',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           stepName: 'add',
         },
@@ -184,7 +184,7 @@ describe('runWorkflow', () => {
         eventId: 'event-1',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(
@@ -209,6 +209,85 @@ describe('runWorkflow', () => {
       events,
       noEncryptionKey
     );
+    expect(
+      await hydrateWorkflowReturnValue(
+        result as any,
+        'wrun_123',
+        noEncryptionKey,
+        ops
+      )
+    ).toEqual(3);
+  });
+
+  it('regenerates step correlation IDs independent of startedAt (turbo replay-stability)', async () => {
+    // Turbo's first delivery synthesizes `startedAt` from the local clock,
+    // while later (non-turbo) deliveries load the server-canonical `startedAt`.
+    // Replay matching must NOT depend on `startedAt`: correlation IDs come from
+    // `generateUlid`, keyed off the run-ID-recovered `fixedTimestamp`, not
+    // `startedAt`. Here the recorded `add` event uses the createdAt-derived
+    // correlation ID, but `startedAt` is months away — replay must still
+    // regenerate the same ID and consume the completion rather than throwing
+    // ReplayDivergenceError. Reverting `generateUlid` to `ulid(+startedAt)`
+    // fails this test.
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'wrun_123';
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_123',
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      // Diverges from createdAt by months — replay must ignore it.
+      startedAt: new Date('2024-06-01T12:34:56.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const events: Event[] = [
+      {
+        eventId: 'event-0',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
+        eventData: {
+          stepName: 'add',
+        },
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+      {
+        eventId: 'event-1',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
+        eventData: {
+          stepName: 'add',
+          result: await dehydrateStepReturnValue(
+            3,
+            'wrun_123',
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:02.000Z'),
+      },
+    ];
+
+    const result = await runWorkflow(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+          async function workflow() {
+            const a = await add(1, 2);
+            return a;
+          }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      noEncryptionKey
+    );
+
     expect(
       await hydrateWorkflowReturnValue(
         result as any,
@@ -257,7 +336,7 @@ describe('runWorkflow', () => {
         eventId: 'event-step1-created',
         runId: workflowRunId,
         eventType: 'step_created',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           stepName: 'add',
         },
@@ -267,7 +346,7 @@ describe('runWorkflow', () => {
         eventId: 'event-0',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           stepName: 'add',
         },
@@ -277,7 +356,7 @@ describe('runWorkflow', () => {
         eventId: 'event-1',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(
@@ -293,7 +372,7 @@ describe('runWorkflow', () => {
         eventId: 'event-step2-created',
         runId: workflowRunId,
         eventType: 'step_created',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PK',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810T',
         eventData: {
           stepName: 'add',
         },
@@ -303,7 +382,7 @@ describe('runWorkflow', () => {
         eventId: 'event-2',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PK',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810T',
         eventData: {
           stepName: 'add',
         },
@@ -313,7 +392,7 @@ describe('runWorkflow', () => {
         eventId: 'event-3',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PK',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810T',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(
@@ -329,7 +408,7 @@ describe('runWorkflow', () => {
         eventId: 'event-step3-created',
         runId: workflowRunId,
         eventType: 'step_created',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: {
           stepName: 'add',
         },
@@ -339,7 +418,7 @@ describe('runWorkflow', () => {
         eventId: 'event-4',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: {
           stepName: 'add',
         },
@@ -349,7 +428,7 @@ describe('runWorkflow', () => {
         eventId: 'event-5',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(
@@ -382,8 +461,8 @@ describe('runWorkflow', () => {
     );
     // Timestamps:
     // - Initial: 0s (from startedAt)
-    // - After step 1 completes (at 2s), timestamp advances to step2_created (2.5s)
-    // - After step 2 completes (at 4s), timestamp advances to step3_created (4.5s)
+    // - After step 1 completes, timestamp advances to the consumed completion at 2s
+    // - After step 2 completes, timestamp advances to the consumed completion at 4s
     // - After step 3 completes: 6s
     expect(
       await hydrateWorkflowReturnValue(
@@ -394,11 +473,181 @@ describe('runWorkflow', () => {
       )
     ).toEqual([
       new Date('2024-01-01T00:00:00.000Z'),
-      1704067202500, // 2.5s (step2_created timestamp)
-      1704067204500, // 4.5s (step3_created timestamp)
+      1704067202000,
+      1704067204000,
       new Date('2024-01-01T00:00:06.000Z'),
     ]);
   });
+
+  // 200 batched VM replays consume several CPU-seconds even on fast hardware;
+  // on 2-vCPU CI runners (notably Windows) competing with parallel test
+  // workers, the default 60s timeout is regularly exceeded.
+  it(
+    'should repeatedly replay a recorded step branch without looking ahead through Date',
+    { timeout: 180_000 },
+    async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'wrun_123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          workflowRunId,
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const startStepId = 'step_01HK153X00SFW49DWMQP3J810S';
+      const branchStepId = 'step_01HK153X00SFW49DWMQP3J810T';
+      const events: Event[] = [
+        {
+          eventId: 'event-run-created',
+          runId: workflowRunId,
+          eventType: 'run_created',
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-run-started',
+          runId: workflowRunId,
+          eventType: 'run_started',
+          createdAt: new Date('2024-01-01T00:00:00.500Z'),
+        },
+        {
+          eventId: 'event-start-created',
+          runId: workflowRunId,
+          eventType: 'step_created',
+          correlationId: startStepId,
+          eventData: { stepName: 'startQueuedLogicalRunStep' },
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        {
+          eventId: 'event-start-started',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: startStepId,
+          eventData: { stepName: 'startQueuedLogicalRunStep' },
+          createdAt: new Date('2024-01-01T00:00:01.500Z'),
+        },
+        {
+          eventId: 'event-start-completed',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: startStepId,
+          eventData: {
+            stepName: 'startQueuedLogicalRunStep',
+            result: await dehydrateStepReturnValue(
+              'started',
+              workflowRunId,
+              noEncryptionKey,
+              ops
+            ),
+          },
+          createdAt: new Date('2024-01-01T00:00:02.000Z'),
+        },
+        {
+          eventId: 'event-drain-created',
+          runId: workflowRunId,
+          eventType: 'step_created',
+          correlationId: branchStepId,
+          eventData: { stepName: 'drainLogicalRunRuntimeStep' },
+          createdAt: new Date('2024-01-01T00:00:02.500Z'),
+        },
+        {
+          eventId: 'event-drain-started',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: branchStepId,
+          eventData: { stepName: 'drainLogicalRunRuntimeStep' },
+          createdAt: new Date('2024-01-01T00:00:03.000Z'),
+        },
+        {
+          eventId: 'event-drain-completed',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: branchStepId,
+          eventData: {
+            stepName: 'drainLogicalRunRuntimeStep',
+            result: await dehydrateStepReturnValue(
+              'drained',
+              workflowRunId,
+              noEncryptionKey,
+              ops
+            ),
+          },
+          createdAt: new Date('2024-01-01T00:00:03.500Z'),
+        },
+      ];
+
+      const workflowCode = `const start = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("startQueuedLogicalRunStep");
+       const drain = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("drainLogicalRunRuntimeStep");
+       const settle = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("settleQueueActionStep");
+       async function workflow() {
+         await start();
+         if (Date.now() < 1704067202250) {
+           return await drain();
+         }
+         return await settle();
+       }${getWorkflowTransformCode('workflow')}`;
+
+      const replayCount = 200;
+      const maxConcurrentReplays = 8;
+      const replay = async () => {
+        try {
+          const result = await runWorkflow(
+            workflowCode,
+            workflowRun,
+            events,
+            noEncryptionKey
+          );
+          const value = await hydrateWorkflowReturnValue(
+            result as any,
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          );
+          return value === 'drained'
+            ? 'drained'
+            : `unexpected replay result: ${String(value)}`;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      };
+      const outcomes: string[] = [];
+      for (
+        let replayIndex = 0;
+        replayIndex < replayCount;
+        replayIndex += maxConcurrentReplays
+      ) {
+        const batchSize = Math.min(
+          maxConcurrentReplays,
+          replayCount - replayIndex
+        );
+        outcomes.push(
+          ...(await Promise.all(Array.from({ length: batchSize }, replay)))
+        );
+      }
+      const failures = outcomes.filter((outcome) => outcome !== 'drained');
+
+      expect({
+        replayCount,
+        drainedCount: outcomes.length - failures.length,
+        failureCount: failures.length,
+        firstFailure: failures[0],
+      }).toEqual({
+        replayCount,
+        drainedCount: replayCount,
+        failureCount: 0,
+        firstFailure: undefined,
+      });
+    }
+  );
 
   // TODO: Date.now determinism is currently broken in the workflow!!
   it.fails('should maintain determinism of `Date` across executions', async () => {
@@ -425,7 +674,7 @@ describe('runWorkflow', () => {
         eventId: 'event-0',
         runId: workflowRunId,
         eventType: 'wait_created',
-        correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+        correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -435,7 +684,7 @@ describe('runWorkflow', () => {
         eventId: 'event-1',
         runId: workflowRunId,
         eventType: 'wait_created',
-        correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HF',
+        correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRT',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:02.000Z'),
         },
@@ -445,7 +694,7 @@ describe('runWorkflow', () => {
         eventId: 'event-2',
         runId: workflowRunId,
         eventType: 'wait_completed',
-        correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+        correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -478,7 +727,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:02.000Z'),
           },
@@ -529,7 +778,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'add',
           },
@@ -539,7 +788,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
           },
@@ -549,7 +798,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -565,7 +814,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -623,7 +872,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'add',
           },
@@ -633,7 +882,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
           },
@@ -643,7 +892,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -659,7 +908,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -717,7 +966,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'add',
           },
@@ -727,7 +976,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
           },
@@ -737,7 +986,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -753,7 +1002,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -808,7 +1057,7 @@ describe('runWorkflow', () => {
       const events: Event[] = [
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCH',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7M',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K755385N02MMWXYHFCQSP9P0',
           eventData: {
@@ -818,7 +1067,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCJ',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7N',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K755386GHGAFYYDC58V17E3T',
           eventData: {
@@ -828,7 +1077,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCK',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7P',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K75538D4Q4X8PJ1ZNDZD5R0W',
           eventData: {
@@ -838,7 +1087,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCM',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7Q',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K75538Y9GEHXJQXT3JB89M4C',
           eventData: {
@@ -848,7 +1097,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCN',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7R',
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K75539CD2PAH419SKJ2X5V5T',
           eventData: {
@@ -858,7 +1107,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCN',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7R',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -874,7 +1123,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCM',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7Q',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -890,7 +1139,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCK',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7P',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -906,7 +1155,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCJ',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7N',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -922,7 +1171,7 @@ describe('runWorkflow', () => {
         },
         {
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00XRNYC8CR128NPYCH',
+          correlationId: 'step_01K75533W5WAVWBK9YGJQC6R7M',
           eventData: {
             stepName: 'promiseRaceStressTestDelayStep',
             result: await dehydrateStepReturnValue(
@@ -1179,7 +1428,7 @@ describe('runWorkflow', () => {
         {
           type: 'step',
           stepName: 'add',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           args: [1, 2],
         },
       ]);
@@ -1210,7 +1459,7 @@ describe('runWorkflow', () => {
             eventId: 'event-0',
             runId: workflowRun.runId,
             eventType: 'step_started',
-            correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+            correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
             eventData: {
               stepName: 'add',
             },
@@ -1281,13 +1530,13 @@ describe('runWorkflow', () => {
         {
           type: 'step',
           stepName: 'add',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           args: [1, 2],
         },
         {
           type: 'step',
           stepName: 'add',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           args: [3, 4],
         },
       ]);
@@ -1666,7 +1915,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -1724,7 +1973,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'wrong-token',
             payload: await dehydrateStepReturnValue(
@@ -1776,7 +2025,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -1792,7 +2041,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -1851,7 +2100,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -1867,7 +2116,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -1934,7 +2183,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -1950,7 +2199,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -2008,7 +2257,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -2024,7 +2273,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -2040,7 +2289,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRun.runId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
           },
@@ -2050,7 +2299,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRun.runId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -2119,7 +2368,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -2135,7 +2384,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRun.runId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
           },
@@ -2145,7 +2394,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRun.runId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -2207,7 +2456,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'my-custom-token',
             payload: await dehydrateStepReturnValue(
@@ -2245,6 +2494,166 @@ describe('runWorkflow', () => {
       });
     });
 
+    it('should throw `WorkflowSuspension` when hook.getConflict() is awaited before hook creation is recorded', async () => {
+      let error: Error | undefined;
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRun: WorkflowRun = {
+          runId: 'test-run-123',
+          workflowName: 'workflow',
+          status: 'running',
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_123',
+            noEncryptionKey,
+            ops
+          ),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        await runWorkflow(
+          `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+          async function workflow() {
+            const hook = createHook({ token: 'claim-only-token' });
+            await hook.getConflict();
+            return 'registered';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          [],
+          noEncryptionKey
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+
+      assert(error);
+      expect(error.name).toEqual('WorkflowSuspension');
+      expect(error.message).toEqual('1 hook has not been created yet');
+      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
+    });
+
+    it('should resolve hook.getConflict() with null on hook_created without waiting for hook payload data', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_created',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          eventData: {},
+          createdAt: new Date(),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          const hook = createHook({ token: 'claim-only-token' });
+          const conflict = await hook.getConflict();
+          return conflict === null ? 'registered' : 'conflict';
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
+
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        )
+      ).toEqual('registered');
+    });
+
+    it('should resolve hook.getConflict() with the conflicting run when hook_conflict event is received', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_conflict',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          eventData: {
+            token: 'claim-only-token',
+            conflictingRunId: 'wrun_conflicting_owner',
+          },
+          createdAt: new Date(),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        // In real bundles the SWC plugin auto-registers the compiled Run
+        // class in the serialization class registry and the workflow-mode
+        // create-hook module aliases it under the stable id; mirror that
+        // here, including the WORKFLOW_DESERIALIZE hook the host-side
+        // consumer constructs through.
+        {
+          const registrySym = Symbol.for("workflow-class-registry");
+          const registry = globalThis[registrySym] || (globalThis[registrySym] = new Map());
+          registry.set("class//workflow//Run", class Run {
+            static [Symbol.for("workflow-deserialize")](data) { return new Run(data.runId); }
+            constructor(runId) { this.runId = runId; }
+          });
+        }
+        async function workflow() {
+          const hook = createHook({ token: 'claim-only-token' });
+          const conflict = await hook.getConflict();
+          return conflict === null ? 'registered' : conflict.runId;
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
+
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        )
+      ).toEqual('wrun_conflicting_owner');
+    });
+
     it('should reject with HookConflictError when hook_conflict event is received', async () => {
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {
@@ -2268,7 +2677,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_conflict',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'my-duplicate-token',
             conflictingRunId: 'wrun_conflicting',
@@ -2325,7 +2734,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_conflict',
-          correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             token: 'conflicting-token',
           },
@@ -3140,7 +3549,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'wait_created',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt,
           },
@@ -3150,7 +3559,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:05.000Z'),
           },
@@ -3203,7 +3612,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'wait_created',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt,
           },
@@ -3213,7 +3622,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:06.000Z'),
           },
@@ -3302,7 +3711,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'wait_created',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:02.000Z'),
           },
@@ -3312,7 +3721,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'wait_created',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:05.000Z'),
           },
@@ -3322,7 +3731,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:02.000Z'),
           },
@@ -3332,7 +3741,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:05.000Z'),
           },
@@ -3386,7 +3795,7 @@ describe('runWorkflow', () => {
             eventId: 'event-0',
             runId: workflowRunId,
             eventType: 'wait_created',
-            correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+            correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
             eventData: {
               resumeAt: new Date('2024-01-01T00:00:02.000Z'),
             },
@@ -3396,7 +3805,7 @@ describe('runWorkflow', () => {
             eventId: 'event-1',
             runId: workflowRunId,
             eventType: 'wait_created',
-            correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HF',
+            correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRT',
             eventData: {
               resumeAt: new Date('2024-01-01T00:00:05.000Z'),
             },
@@ -3406,7 +3815,7 @@ describe('runWorkflow', () => {
             eventId: 'event-2',
             runId: workflowRunId,
             eventType: 'wait_completed',
-            correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+            correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
             eventData: {
               resumeAt: new Date('2024-01-01T00:00:02.000Z'),
             },
@@ -3457,7 +3866,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'add',
           },
@@ -3467,7 +3876,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'add',
             result: await dehydrateStepReturnValue(
@@ -3483,7 +3892,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'wait_created',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:03.000Z'),
           },
@@ -3493,7 +3902,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:03.000Z'),
           },
@@ -3551,7 +3960,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'wait_created',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt,
           },
@@ -3561,7 +3970,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt: resumeAt,
           },
@@ -3614,7 +4023,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'wait_created',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:05.000Z'),
           },
@@ -3624,7 +4033,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:05.000Z'),
           },
@@ -3639,7 +4048,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             resumeAt: new Date('2024-01-01T00:00:05.000Z'),
           },
@@ -3649,7 +4058,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'doWork',
           },
@@ -3659,7 +4068,7 @@ describe('runWorkflow', () => {
           eventId: 'event-4',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'doWork',
             result: await dehydrateStepReturnValue('step done', ops),
@@ -3680,7 +4089,7 @@ describe('runWorkflow', () => {
           workflowRun,
           events
         )
-      ).rejects.toThrow('Unconsumed event in event log');
+      ).rejects.toThrow('Replay could not consume event');
     });
 
     it('should reject with WorkflowRuntimeError for duplicate step_completed blocking subsequent events', async () => {
@@ -3707,7 +4116,7 @@ describe('runWorkflow', () => {
           eventId: 'event-0',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'doWork1',
           },
@@ -3717,7 +4126,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'doWork1',
             result: await dehydrateStepReturnValue('first done', ops),
@@ -3729,7 +4138,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'doWork1',
             result: await dehydrateStepReturnValue('duplicate', ops),
@@ -3740,7 +4149,7 @@ describe('runWorkflow', () => {
           eventId: 'event-3',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'doWork2',
           },
@@ -3750,7 +4159,7 @@ describe('runWorkflow', () => {
           eventId: 'event-4',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HF',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
           eventData: {
             stepName: 'doWork2',
             result: await dehydrateStepReturnValue('second done', ops),
@@ -3809,7 +4218,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'doWork',
           },
@@ -3819,7 +4228,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'doWork',
             result: await dehydrateStepReturnValue('done', ops),
@@ -3875,7 +4284,7 @@ describe('runWorkflow', () => {
           eventId: 'event-1',
           runId: workflowRunId,
           eventType: 'step_started',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'doWork',
           },
@@ -3885,7 +4294,7 @@ describe('runWorkflow', () => {
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
-          correlationId: 'step_01HK153X00GYR8SV1JHHTGN5HE',
+          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
           eventData: {
             stepName: 'doWork',
             result: await dehydrateStepReturnValue('done', ops),
@@ -4139,7 +4548,7 @@ describe('runWorkflow', () => {
             eventId: 'event-0',
             runId: workflowRun.runId,
             eventType: 'hook_created' as const,
-            correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+            correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
             eventData: {},
             createdAt: new Date(),
           },
@@ -4147,7 +4556,7 @@ describe('runWorkflow', () => {
             eventId: 'event-1',
             runId: workflowRun.runId,
             eventType: 'hook_received',
-            correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+            correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
             eventData: {
               token: 'test-token',
               payload: await dehydrateStepReturnValue(
@@ -4163,7 +4572,7 @@ describe('runWorkflow', () => {
             eventId: 'event-2',
             runId: workflowRun.runId,
             eventType: 'hook_disposed',
-            correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
+            correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
             eventData: {
               token: 'test-token',
             },
@@ -4269,9 +4678,9 @@ describe('runWorkflow', () => {
 
     // Correlation IDs match the deterministic ULID generator for the seed
     // `${runId}:${workflowName}:${+startedAt}`
-    const stepA = 'step_01HK153X00SP082GGA0AAJC6PJ';
-    const stepB = 'step_01HK153X00SP082GGA0AAJC6PK';
-    const stepC = 'step_01HK153X00SP082GGA0AAJC6PM';
+    const stepA = 'step_01HK153X00SFW49DWMQP3J810S';
+    const stepB = 'step_01HK153X00SFW49DWMQP3J810T';
+    const stepC = 'step_01HK153X00SFW49DWMQP3J810V';
 
     const events: Event[] = [
       {
@@ -4499,7 +4908,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-hook-created',
         runId: workflowRunId,
         eventType: 'hook_created',
-        correlationId: 'hook_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'hook_01HK153X00SFW49DWMQP3J810S',
         eventData: { token: 'test-token' },
         createdAt: new Date('2024-01-01T00:00:00.200Z'),
       },
@@ -4507,7 +4916,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-wait-created',
         runId: workflowRunId,
         eventType: 'wait_created',
-        correlationId: 'wait_01HK153X00SP082GGA0AAJC6PK',
+        correlationId: 'wait_01HK153X00SFW49DWMQP3J810T',
         eventData: { resumeAt: new Date('2024-01-02T00:00:00.000Z') },
         createdAt: new Date('2024-01-01T00:00:00.300Z'),
       },
@@ -4515,7 +4924,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-hook-1',
         runId: workflowRunId,
         eventType: 'hook_received',
-        correlationId: 'hook_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'hook_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           token: 'test-token',
           payload: payload1,
@@ -4526,7 +4935,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-step-1-created',
         runId: workflowRunId,
         eventType: 'step_created',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: { stepName: 'processPayload', input: payload1 },
         createdAt: new Date('2024-01-01T00:00:01.100Z'),
       },
@@ -4534,7 +4943,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-step-1-started',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: {
           stepName: 'processPayload',
         },
@@ -4544,7 +4953,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-step-1-completed',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: {
           stepName: 'processPayload',
           result: stepResult1,
@@ -4555,7 +4964,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-hook-2',
         runId: workflowRunId,
         eventType: 'hook_received',
-        correlationId: 'hook_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'hook_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           token: 'test-token',
           payload: payload2,
@@ -4566,7 +4975,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-step-2-created',
         runId: workflowRunId,
         eventType: 'step_created',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PN',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810W',
         eventData: { stepName: 'processPayload', input: payload2 },
         createdAt: new Date('2024-01-01T00:00:02.100Z'),
       },
@@ -4574,7 +4983,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-step-2-started',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PN',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810W',
         eventData: {
           stepName: 'processPayload',
         },
@@ -4584,7 +4993,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-step-2-completed',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PN',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810W',
         eventData: {
           stepName: 'processPayload',
           result: stepResult2,
@@ -4687,7 +5096,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s1-created',
         runId: workflowRunId,
         eventType: 'step_created',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           stepName: 'add',
         },
@@ -4697,7 +5106,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s1-started',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           stepName: 'add',
         },
@@ -4707,7 +5116,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s1-completed',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PJ',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(
@@ -4724,7 +5133,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s2-created',
         runId: workflowRunId,
         eventType: 'step_created',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PK',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810T',
         eventData: {
           stepName: 'add',
         },
@@ -4734,7 +5143,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s2-started',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PK',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810T',
         eventData: {
           stepName: 'add',
         },
@@ -4744,7 +5153,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s2-completed',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PK',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810T',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(
@@ -4761,7 +5170,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s3-created',
         runId: workflowRunId,
         eventType: 'step_created',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: {
           stepName: 'add',
         },
@@ -4771,7 +5180,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s3-started',
         runId: workflowRunId,
         eventType: 'step_started',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: {
           stepName: 'add',
         },
@@ -4781,7 +5190,7 @@ describe('runWorkflow', () => {
         eventId: 'evnt-s3-completed',
         runId: workflowRunId,
         eventType: 'step_completed',
-        correlationId: 'step_01HK153X00SP082GGA0AAJC6PM',
+        correlationId: 'step_01HK153X00SFW49DWMQP3J810V',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(
@@ -4855,8 +5264,8 @@ describe('runWorkflow', () => {
 
     // Derive deterministic correlation IDs using the same seeded ULID
     // factory runWorkflow uses internally, so events match what the runtime
-    // expects.
-    const seed = `${workflowRunId}:${workflowRun.workflowName}:${+startedAt}`;
+    // expects. The seed mirrors runWorkflow's `runId:workflowName:deploymentId`.
+    const seed = `${workflowRunId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
     const vm = createContext({ seed, fixedTimestamp: +startedAt });
     const ulid = monotonicFactory(() => vm.globalThis.Math.random());
     const hookCorr = `hook_${ulid(+startedAt)}`;

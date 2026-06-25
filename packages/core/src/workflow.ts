@@ -1,14 +1,13 @@
-import { runInContext } from 'node:vm';
 import {
-  CorruptedEventLogError,
   ERROR_SLUGS,
+  ReplayDivergenceError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPortLazy } from './runtime/get-port-lazy.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import type { CryptoKey } from './encryption.js';
@@ -16,19 +15,23 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import type { WorkflowOrchestratorContext } from './private.js';
+import { getPortLazy } from './runtime/get-port-lazy.js';
+import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
-import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
 } from './serialization.js';
 import { createUseStep } from './step.js';
+import type { StepHydrationCache } from './step-hydration-cache.js';
 import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
 } from './symbols.js';
@@ -36,12 +39,14 @@ import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
-import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
-import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
+import { runCachedWorkflowScript } from './vm/script-cache.js';
 import {
   createAbortSignalStatics,
   createCreateAbortController,
 } from './workflow/abort-controller.js';
+import { createSetAttributes } from './workflow/attribute-dispatcher.js';
+import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
+import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
@@ -59,6 +64,16 @@ import { createSleep } from './workflow/sleep.js';
  * propagates to in-flight steps on other compute instances — without this,
  * the abort hook is created but never resumed and the cancellation never
  * reaches the running step.
+ *
+ * NOTE: drain commits native attribute events and the `*_created` events; it
+ * does NOT enqueue step
+ * bodies for execution. The platform's step worker rejects `step_started`
+ * for runs that have already transitioned to terminal (`RunExpiredError`),
+ * so a step queued here would be skipped anyway. Fire-and-forget step calls
+ * with side effects therefore work only when followed by some later `await`
+ * on a runtime primitive that triggers a real suspension (the normal
+ * runtime loop in `runtime.ts` queues the step there). Native attribute writes
+ * do not have this limitation because their event is the durable write.
  *
  * Drain failures are swallowed: the workflow's own outcome (the user's return
  * value or thrown error) is the source of truth; secondary cleanup that fails
@@ -111,7 +126,15 @@ export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined
+  encryptionKey: CryptoKey | undefined,
+  /**
+   * Optional per-run cache for hydrated step return values, owned by the inline
+   * replay loop so it survives across the loop's iterations (each of which
+   * creates a fresh context). Memoizes the decrypt + devalue-parse of completed
+   * step results to turn O(N²) replay hydration into O(N). Omitted by callers
+   * that replay only once (then there is nothing to reuse).
+   */
+  stepHydrationCache?: StepHydrationCache
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -128,13 +151,31 @@ export async function runWorkflow(
       );
     }
 
+    // The deterministic RNG seed is derived from identifiers that are all
+    // known the instant the queue message arrives — `runId`, `workflowName`,
+    // and `deploymentId` — with no timestamp component. `runId` alone already
+    // makes the seed unique-per-run and replay-stable; `workflowName` and
+    // `deploymentId` are included for extra entropy. Dropping the timestamp
+    // means the seed no longer depends on `startedAt`/`createdAt`, so it (and
+    // the VM context) can be computed before any server round-trip.
+    //
+    // The VM's initial fixed clock is derived from the run's creation time,
+    // recovered from the ULID embedded in `runId` (also available immediately),
+    // falling back to the run snapshot's `createdAt` for non-ULID ids. This
+    // initial `fixedTimestamp` only governs `Date.now()` / `new Date()` in the
+    // window before the first event is consumed; thereafter `updateTimestamp`
+    // advances the VM clock to each consumed event's `createdAt` (see the
+    // EventsConsumer below), starting with `run_created`.
+    const fixedTimestamp =
+      runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
+
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
     // Load getPort lazily to prevent Turbopack from tracing get-port's
-    // fs ops (readdir, readFile) into the flow route bundle.
-    // Uses globalThis.__wkf_getPort as a lazy-initialized cache to avoid
-    // bundler static analysis while staying compatible with CJS/ESM/VM.
+    // fs ops (readdir, readFile) into the flow route bundle. The resolved
+    // port is cached per process (see get-port-lazy.ts), so this is cheap
+    // on replays after the first.
     const port = isVercel ? undefined : await getPortLazy();
 
     const {
@@ -142,8 +183,8 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${+startedAt}`,
-      fixedTimestamp: +startedAt,
+      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
+      fixedTimestamp,
     });
 
     const workflowDiscontinuation = withResolvers<void>();
@@ -159,10 +200,14 @@ export async function runWorkflow(
     const promiseQueueHolder = { current: Promise.resolve() };
 
     const eventsConsumer = new EventsConsumer(events, {
+      onConsumedEvent: (event) => {
+        updateTimestamp(+event.createdAt);
+      },
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
-          new CorruptedEventLogError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          new ReplayDivergenceError(
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            { eventId: event.eventId }
           )
         );
       },
@@ -175,7 +220,16 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
-      generateUlid: () => ulid(+startedAt),
+      // Correlation IDs (step_/wait_/hook_) are derived from `generateUlid`, so
+      // the time prefix fed to `ulid()` MUST be replay-stable across every
+      // delivery — otherwise a redelivery regenerates different correlation IDs
+      // and replay throws ReplayDivergenceError. `startedAt` is NOT safe here:
+      // under turbo the first delivery synthesizes `startedAt` from the local
+      // clock, but later (non-turbo) deliveries load the server-canonical
+      // `startedAt`, which differs by >=1ms. Use the same replay-stable value
+      // that already seeds the RNG and the VM clock (`fixedTimestamp`, recovered
+      // from the run ID's ULID and known the instant the message arrives).
+      generateUlid: () => ulid(fixedTimestamp),
       generateNanoid,
       invocationsQueue: new Map(),
       // Use getter/setter so the EventsConsumer's getPromiseQueue() always
@@ -187,17 +241,9 @@ export async function runWorkflow(
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      pendingDeliveryBarriers: new Map(),
+      stepHydrationCache,
     };
-
-    // Subscribe to the events log to update the timestamp in the vm context
-    workflowContext.eventsConsumer.subscribe((event) => {
-      const createdAt = event?.createdAt;
-      if (createdAt) {
-        updateTimestamp(+createdAt);
-      }
-      // Never consume events - this is only a passive subscriber
-      return EventConsumerResult.NotConsumed;
-    });
 
     // Consume run lifecycle events - these are structural events that don't
     // need special handling in the workflow, but must be consumed to advance
@@ -217,15 +263,28 @@ export async function runWorkflow(
         return EventConsumerResult.Consumed;
       }
 
+      // Attribute writes performed from a step have no workflow-body call to
+      // consume them during replay; they are already reflected in the run
+      // snapshot and remain structural until a read API is introduced.
+      if (
+        event.eventType === 'attr_set' &&
+        event.eventData.writer.type === 'step'
+      ) {
+        return EventConsumerResult.Consumed;
+      }
+
       return EventConsumerResult.NotConsumed;
     });
 
     const useStep = createUseStep(workflowContext);
     const createHook = createCreateHook(workflowContext);
     const sleep = createSleep(workflowContext);
+    const setAttributes = createSetAttributes(workflowContext);
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_USE_STEP] = useStep;
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[WORKFLOW_SET_ATTRIBUTES] = setAttributes;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
@@ -748,10 +807,29 @@ export async function runWorkflow(
     const parsedName = parseWorkflowName(workflowRun.workflowName);
     const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
-    const workflowFn = runInContext(
-      `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-      context,
-      { filename }
+    // Evaluate the workflow bundle against the fresh context using a
+    // process-wide cache of the compiled `vm.Script`. The bundle is the same
+    // string for every replay and every invocation in this process, and
+    // compilation is a pure function of `(code, filename)`, so reusing the
+    // compiled Script across replays is determinism-safe: it produces the same
+    // workflow function and the same `filename` source attribution as
+    // re-parsing the bundle every time, but skips the (expensive) re-parse.
+    // Evaluating the bundle registers every workflow on
+    // `globalThis.__private_workflows`; the trailing lookup expression then
+    // retrieves the requested workflow function. The lookup is evaluated as a
+    // separate cached Script under the same `filename`, so error stack frames
+    // still attribute to the workflow's source file (`remapErrorStack` keys on
+    // `filename`). The one behavioural difference from the previous
+    // single-combined-string approach is the *line number* of an error thrown
+    // by the lookup expression itself: it now reports line 1 of the lookup
+    // Script rather than the line just past the end of the bundle. That path
+    // is rare (it requires the lookup `?.get(...)` expression to throw) and
+    // does not affect the workflow function or replay determinism.
+    runCachedWorkflowScript(workflowCode, filename, context);
+    const workflowFn = runCachedWorkflowScript(
+      `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
+      filename,
+      context
     );
 
     if (typeof workflowFn !== 'function') {
@@ -790,7 +868,12 @@ export async function runWorkflow(
         result,
         workflowRun.runId,
         encryptionKey,
-        vmGlobalThis
+        vmGlobalThis,
+        false,
+        // Gate payload compression on the run's specVersion: only runs
+        // marked as possibly containing compressed payloads (spec >= 5)
+        // get gzip data.
+        (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
       );
 
       span?.setAttributes({
@@ -807,8 +890,9 @@ export async function runWorkflow(
 
       return dehydrated;
     } catch (err) {
-      // Let WorkflowSuspension propagate — handled separately by the runtime
-      if (WorkflowSuspension.is(err)) {
+      // Control-flow signals are handled by the runtime and do not mean the
+      // workflow has terminally failed.
+      if (WorkflowSuspension.is(err) || ReplayDivergenceError.is(err)) {
         throw err;
       }
 
