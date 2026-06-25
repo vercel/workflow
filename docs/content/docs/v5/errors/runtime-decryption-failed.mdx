@@ -35,18 +35,7 @@ Common causes, in rough order of likelihood:
 2. **Key resolution mismatch.** The key used to decrypt is not the key that was used to encrypt — e.g. the run's `deploymentId` was not threaded through key resolution and the SDK fell back to the wrong deployment's key material.
 3. **Malformed encrypted envelope.** The envelope is too short to contain the GCM nonce (12 bytes) and auth tag (16 bytes), so decryption is rejected before it begins.
 
-When custom observability code reads a run across deployments, load the run metadata first and pass its originating deployment to key resolution. Calling `getEncryptionKeyForRun(runId)` without context assumes the current deployment.
-
-```typescript lineNumbers
-import { getWorld } from "workflow/runtime";
-declare const runId: string; // @setup
-
-const world = await getWorld();
-const run = await world.runs.get(runId, { resolveData: "none" });
-const key = await world.getEncryptionKeyForRun?.(runId, {
-  deploymentId: run.deploymentId,
-});
-```
+When custom observability code reads a run across deployments, resolve the run and pass it to `getEncryptionKeyForRun(run)`. Calling `getEncryptionKeyForRun(runId)` without context assumes the current deployment.
 
 ## What To Do
 
