@@ -622,6 +622,30 @@ const copyableBasicAttributes = new Set<AttributeKey>([
   'moduleSpecifier',
 ]);
 
+/**
+ * Placeholder for the Input/Output section while the span's detail is still
+ * loading. The trace strips those heavy fields, so inline data never has them;
+ * rendering the collapsed header in-position keeps the section from vanishing
+ * and popping back in once the fetched detail arrives. Surfaces the encrypted
+ * state when the run data is encrypted.
+ */
+function LoadingSectionPlaceholder({
+  attribute,
+}: {
+  attribute: 'input' | 'output';
+}) {
+  const decryptCtx = useContext(DecryptClickContext);
+  const label = attribute === 'output' ? 'Output' : 'Input';
+  if (decryptCtx?.hasEncryptedData) {
+    return (
+      <DetailCard summary={label}>
+        <EncryptedFieldBlock />
+      </DetailCard>
+    );
+  }
+  return <DetailCard summary={label} />;
+}
+
 export const AttributeBlock = ({
   attribute,
   value,
@@ -635,28 +659,6 @@ export const AttributeBlock = ({
   inline?: boolean;
   context?: DisplayContext;
 }) => {
-  const decryptCtx = useContext(DecryptClickContext);
-  const isExpandableLoadingTarget =
-    attribute === 'input' ||
-    attribute === 'output' ||
-    attribute === 'eventData';
-  if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
-    const label =
-      attribute === 'eventData'
-        ? 'Event Data'
-        : attribute === 'output'
-          ? 'Output'
-          : 'Input';
-    if (decryptCtx?.hasEncryptedData) {
-      return (
-        <DetailCard summary={label} defaultOpen={attribute === 'eventData'}>
-          <EncryptedFieldBlock />
-        </DetailCard>
-      );
-    }
-    return <DetailCard summary={label} />;
-  }
-
   const displayFn =
     attributeToDisplayFn[attribute as keyof typeof attributeToDisplayFn];
   if (!displayFn) {
@@ -759,27 +761,34 @@ export const AttributePanel = ({
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))
     .sort(sortByAttributeOrder);
-  const resolvedAttributes = useMemo(() => {
-    const present = Object.keys(displayData)
-      .filter((key) => resolvableAttributes.includes(key))
-      .sort(sortByAttributeOrder);
-
-    if (!isLoading) return present;
-
-    if (resource === 'sleep') return present;
-
-    // The span's inline data has no input/output — those load lazily. While
-    // `useSelectedSpanDetail` reports `loading` (a signal now kept in phase
-    // with the selection, so it can't drop out mid-navigation), render the
-    // Input/Output section placeholders in their natural position so they hold
-    // their place instead of vanishing and popping back in.
-    const loadingPlaceholders = ['input', 'output'];
-    for (const key of loadingPlaceholders) {
-      if (!present.includes(key)) {
-        present.push(key);
-      }
+  // Resolvable sections to render, in attribute order. While the detail is
+  // still loading, Input/Output are included as explicit placeholders (the
+  // trace strips those heavy fields, so inline data never has them) so the
+  // sections hold their position instead of vanishing and popping back in once
+  // the fetched detail arrives. Sleep has no input/output (it resolves
+  // `resumeAt`, rendered in the basics section).
+  const resolvedSections = useMemo(() => {
+    const keys = new Set(
+      Object.keys(displayData).filter((key) =>
+        resolvableAttributes.includes(key)
+      )
+    );
+    const showIoPlaceholders = isLoading && resource !== 'sleep';
+    if (showIoPlaceholders) {
+      keys.add('input');
+      keys.add('output');
     }
-    return present.sort(sortByAttributeOrder);
+    return Array.from(keys)
+      .sort(sortByAttributeOrder)
+      .map((attribute) => ({
+        attribute,
+        isPlaceholder:
+          showIoPlaceholders &&
+          (attribute === 'input' || attribute === 'output') &&
+          !hasDisplayContent(
+            displayData[attribute as keyof typeof displayData]
+          ),
+      }));
   }, [displayData, isLoading, resource]);
 
   // Filter out attributes that return null
@@ -904,9 +913,14 @@ export const AttributePanel = ({
               />
             ) : hasExpired ? (
               <ExpiredDataMessage />
-            ) : resolvedAttributes.length > 0 ? (
-              <>
-                {resolvedAttributes.map((attribute) => (
+            ) : resolvedSections.length > 0 ? (
+              resolvedSections.map(({ attribute, isPlaceholder }) =>
+                isPlaceholder ? (
+                  <LoadingSectionPlaceholder
+                    key={attribute}
+                    attribute={attribute as 'input' | 'output'}
+                  />
+                ) : (
                   <AttributeBlock
                     isLoading={isLoading}
                     key={attribute}
@@ -914,8 +928,8 @@ export const AttributePanel = ({
                     value={displayData[attribute as keyof typeof displayData]}
                     context={displayContext}
                   />
-                ))}
-              </>
+                )
+              )
             ) : null}
           </DecryptClickContext.Provider>
         </StreamClickContext.Provider>
