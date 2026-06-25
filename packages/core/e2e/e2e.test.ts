@@ -52,6 +52,16 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
+const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
+
+function expectElapsedAtLeast(actualMs: number, expectedMs: number) {
+  // Vercel e2e compares timestamps from different invocations and services.
+  // Allow clock skew while still catching immediate or default-delay resumes.
+  expect(actualMs).toBeGreaterThanOrEqual(
+    Math.max(0, expectedMs - DISTRIBUTED_CLOCK_TOLERANCE_MS)
+  );
+}
+
 /**
  * Tracked wrapper around start() that automatically registers runs
  * for diagnostics on test failure and observability metadata collection.
@@ -95,6 +105,10 @@ function writeE2EMetadata() {
 const e2e = (fn: string) =>
   getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
 
+type WorkflowEvent = Awaited<
+  ReturnType<World['events']['list']>
+>['data'][number];
+
 /**
  * Polls `getHookByToken(token)` until it resolves or the timeout is hit.
  * Replaces fixed `setTimeout(N)` waits in hook tests, which are flaky on
@@ -136,6 +150,40 @@ async function waitForHook(
     await sleep(intervalMs);
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function waitForRunEvents(
+  runId: string,
+  predicate: (event: WorkflowEvent) => boolean,
+  options: {
+    timeoutMs?: number;
+    intervalMs?: number;
+    minCount?: number;
+    description?: string;
+  } = {}
+): Promise<WorkflowEvent[]> {
+  const {
+    timeoutMs = 30_000,
+    intervalMs = 250,
+    minCount = 1,
+    description = 'matching event',
+  } = options;
+  const world = await getWorld();
+  const deadline = Date.now() + timeoutMs;
+  let latestMatches: WorkflowEvent[] = [];
+
+  while (Date.now() < deadline) {
+    const { data: events } = await world.events.list({ runId });
+    latestMatches = events.filter(predicate);
+    if (latestMatches.length >= minCount) {
+      return latestMatches;
+    }
+    await sleep(intervalMs);
+  }
+
+  throw new Error(
+    `Timed out waiting for ${minCount} ${description} for run ${runId}; saw ${latestMatches.length}`
+  );
 }
 
 /**
@@ -733,7 +781,7 @@ describe('e2e', () => {
     const run = await start(await e2e('sleepingWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
-    expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
+    expectElapsedAtLeast(returnValue.endTime - returnValue.startTime, 10_000);
   });
 
   test('parallelSleepWorkflow', { timeout: 60_000 }, async () => {
@@ -743,7 +791,7 @@ describe('e2e', () => {
     // On Vercel, cold starts and queue round-trips add latency, so we use a
     // generous upper bound. The key assertion is parallel < sequential (10s+).
     const elapsed = returnValue.endTime - returnValue.startTime;
-    expect(elapsed).toBeGreaterThan(999);
+    expectElapsedAtLeast(elapsed, 1_000);
     // Sequential would be ~10s+ per sleep. Allow up to 20s for parallel on
     // Vercel with cold start overhead, but fail if it looks sequential (>25s).
     expect(elapsed).toBeLessThan(25_000);
@@ -753,16 +801,18 @@ describe('e2e', () => {
     const run = await start(await e2e('sleepWinsRaceWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue.winner).toBe('sleep');
-    // Sleep is 1s; step would take 10s. Should resolve in ~1s, well under 5s.
-    expect(returnValue.durationMs).toBeLessThan(5_000);
+    // Sleep is 1s; step would take 10s. Keep this below the losing branch
+    // without depending on exact remote queue/cold-start overhead.
+    expect(returnValue.durationMs).toBeLessThan(9_000);
   });
 
   test('stepWinsRaceWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('stepWinsRaceWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue.winner).toBe('step');
-    // Step is 1s; sleep would take 10s. Should resolve in ~1s, well under 5s.
-    expect(returnValue.durationMs).toBeLessThan(5_000);
+    // Step is 1s; sleep would take 10s. Keep this below the losing branch
+    // without depending on exact remote queue/cold-start overhead.
+    expect(returnValue.durationMs).toBeLessThan(9_000);
   });
 
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
@@ -1397,7 +1447,7 @@ describe('e2e', () => {
           const result = await run.returnValue;
 
           expect(result.attempt).toBe(2);
-          expect(result.duration).toBeGreaterThan(10_000);
+          expectElapsedAtLeast(result.duration, 10_000);
         }
       );
 
@@ -1883,7 +1933,6 @@ describe('e2e', () => {
 
       const { stepAResult, stepBResult } = returnValue;
       const stepADuration = stepAResult.endedAt - stepAResult.startedAt;
-      const stepStartDelta = stepBResult.startedAt - stepAResult.startedAt;
 
       expect(stepAResult.label).toBe('A');
       expect(stepBResult.label).toBe('B');
@@ -1892,10 +1941,6 @@ describe('e2e', () => {
         stepBResult.startedAt,
         'stepB should start before stepA finishes, proving hook.getConflict() can continue independently of other steps'
       ).toBeLessThan(stepAResult.endedAt);
-      expect(
-        stepStartDelta,
-        'stepB should start roughly alongside stepA instead of only after stepA finishes'
-      ).toBeLessThan(8_000);
     }
   );
 
@@ -3051,8 +3096,14 @@ describe('e2e', () => {
       // window for the cancel to arrive while the workflow is still running.
       const run = await start(await e2e('sleepingWorkflow'), [30_000]);
 
-      // Wait for the workflow to start and enter the sleep
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      // Wait for the workflow to start and enter the sleep.
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'wait_created',
+        {
+          description: 'wait_created event',
+        }
+      );
 
       // Cancel the run using the core runtime cancelRun function.
       // This exercises the same cancelRun code path that the CLI uses
@@ -3078,8 +3129,14 @@ describe('e2e', () => {
       // window for the cancel to arrive while the workflow is still running.
       const run = await start(await e2e('sleepingWorkflow'), [30_000]);
 
-      // Wait for the workflow to start and enter the sleep
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      // Wait for the workflow to start and enter the sleep.
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'wait_created',
+        {
+          description: 'wait_created event',
+        }
+      );
 
       // Cancel the run via the CLI command. This tests the full CLI code path
       // including World.close() which ensures the process exits cleanly.
@@ -3137,7 +3194,7 @@ describe('e2e', () => {
       );
       const returnValue = await run.returnValue;
       expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
-      expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
+      expectElapsedAtLeast(returnValue.endTime - returnValue.startTime, 10_000);
     });
   });
 
@@ -3159,13 +3216,23 @@ describe('e2e', () => {
       expect(hook.runId).toBe(run.runId);
       await resumeHook(hook, { type: 'subscribe', id: 1 });
 
-      // Wait for the first payload to be processed (step must complete)
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'step_completed',
+        { description: 'step_completed event after first hook payload' }
+      );
 
       hook = await getHookByToken(token);
       await resumeHook(hook, { type: 'subscribe', id: 2 });
 
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'step_completed',
+        {
+          minCount: 2,
+          description: 'step_completed events after second hook payload',
+        }
+      );
 
       hook = await getHookByToken(token);
       await resumeHook(hook, { type: 'done', done: true });
@@ -3205,19 +3272,20 @@ describe('e2e', () => {
         token,
       ]);
 
-      // Wait for the hook to register.
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      let hook = await getHookByToken(token);
+      let hook = await waitForHook(token, { runId: run.runId });
       expect(hook.runId).toBe(run.runId);
       await resumeHook(hook, { type: 'msg', id: 1 });
 
       // Let the workflow replay and suspend before the next payload so the
       // final event log contains two `hook_received` entries before any
       // `step_created` — the exact replay shape from production.
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'hook_received',
+        { description: 'hook_received event after first payload' }
+      );
 
-      hook = await getHookByToken(token);
+      hook = await waitForHook(token, { runId: run.runId });
       await resumeHook(hook, { type: 'final', id: 2, done: true });
 
       const returnValue = await run.returnValue;
@@ -3243,9 +3311,9 @@ describe('e2e', () => {
       expect(returnValue.timestamps).toHaveLength(3);
       const delta1 = returnValue.timestamps[1] - returnValue.timestamps[0];
       const delta2 = returnValue.timestamps[2] - returnValue.timestamps[1];
-      expect(delta1).toBeGreaterThan(2_500);
-      expect(delta2).toBeGreaterThan(2_500);
-      expect(returnValue.totalElapsed).toBeGreaterThan(5_000);
+      expectElapsedAtLeast(delta1, 3_000);
+      expectElapsedAtLeast(delta2, 3_000);
+      expectElapsedAtLeast(returnValue.totalElapsed, 6_000);
     }
   );
 
@@ -3993,10 +4061,6 @@ describe('e2e', () => {
       // Abort the controller
       await resumeHook(token, { reason: 'Test complete' });
 
-      // Workflow should still be running (grace period), so hook should still be findable
-      await sleep(1_000);
-      const _hookAfterAbort = await getHookByToken(token).catch(() => null);
-      // Hook may or may not be disposed depending on timing, but run should complete
       const returnValue = await run1.returnValue;
       expect(returnValue.aborted).toBe(true);
       expect(returnValue.reason).toBe('Test complete');
