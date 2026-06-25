@@ -373,10 +373,9 @@ export function RunDetailView({
     enabled: activeTab === 'events',
   });
 
-  // Loads a selected span's full detail on demand. The trace viewer owns the
-  // loading/ready/error state machine (useSelectedSpanDetail); here we only
-  // provide how to fetch. Closing over encryptionKey means clicking Decrypt
-  // re-runs the fetch for the open span with the key (prior data stays visible).
+  // How to load a selected span's full detail; the trace viewer owns the
+  // loading state. Closing over encryptionKey makes Decrypt re-fetch the open
+  // span with the key.
   const fetchSpanDetail = useCallback<FetchSpanDetail>(
     (selection) =>
       fetchSpanDetailResource(env, selection, {

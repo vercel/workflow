@@ -30,14 +30,10 @@ export interface SpanDetailView {
 }
 
 /**
- * Derive the detail view-model for the selected span from the synchronously
- * known selection and whatever fetched detail we currently hold.
- *
- * Because the result is a pure function of (selection, fetched detail), the
- * `status` can never lag the selection: the panel is `loading` from the first
- * render after a new span is picked until its matching detail arrives. This is
- * what removes the Input/Output flicker — previously the loading flag came from
- * an async fetch hook several commits downstream of the selection.
+ * Derive the detail view-model for the selected span. `status` is a pure
+ * function of (selection, fetched detail), so it can't lag the selection — the
+ * panel reports `loading` from the first render after a new span is picked
+ * until its matching detail arrives.
  *
  * `fetchedError` must already be scoped to the current selection by the caller
  * (a fetch error for a previously selected span must not surface here).

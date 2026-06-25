@@ -111,10 +111,8 @@ export function EntityDetailPanel({
   const rawEvents = selectedSpan?.rawEvents;
   const rawEventsLength = rawEvents?.length ?? 0;
 
-  // Single source of truth for the selected span's detail: derives the
-  // selection, fetches its input/output/metadata directly, and exposes a
-  // status that stays in phase with the selection on every render. This is
-  // what keeps the Input/Output sections from flickering on navigation.
+  // Selected span's detail (input/output/metadata) plus a loading status kept
+  // in phase with the selection. See useSelectedSpanDetail.
   const {
     status,
     resource,

@@ -84,13 +84,9 @@ export interface SelectedSpanDetailResult {
 }
 
 /**
- * Single source of truth for the selected span's detail. It derives the
- * selection synchronously, fetches its detail directly (no notify-effect
- * round-trip through the host page), and returns a view-model whose `status`
- * is a pure function of (selection, fetched detail). Because `status` is
- * computed synchronously from the current selection, the panel is `loading`
- * from the first render after a new span is picked until its matching detail
- * arrives — which is what removes the Input/Output flicker.
+ * Single source of truth for the selected span's detail: derives the selection
+ * synchronously and fetches its detail directly (no notify-effect round-trip
+ * through the host page), returning the `deriveSpanDetailView` view-model.
  */
 export function useSelectedSpanDetail(
   selectedSpan: SelectedSpanInfo | null,
