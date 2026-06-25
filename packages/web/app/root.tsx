@@ -31,6 +31,17 @@ export async function loader() {
   return { serverConfig };
 }
 
+// The server config is derived from server-side env vars and is effectively
+// static for the lifetime of the server process. Without this, React Router
+// revalidates the root loader on every client navigation, issuing a blocking
+// `.data` round-trip to the (potentially remote/slow) dashboard backend before
+// the destination page can render — which makes the whole page appear to hang
+// for the duration of that request. Load the config once on the initial
+// document load and reuse it for all subsequent client navigations.
+export function shouldRevalidate() {
+  return false;
+}
+
 // Catch-all action: handles stray POST requests (e.g. from Radix UI dialogs
 // that render internal <form method="dialog"> elements).
 export async function action({ request }: { request: Request }) {

@@ -19,4 +19,10 @@ export default {
   appDirectory: 'app',
   ssr: true,
   presets,
+  // Ship the full route manifest on the initial document load instead of
+  // lazily fetching it per navigation. This app has a handful of routes, so
+  // the manifest is tiny — and lazy discovery otherwise costs a blocking
+  // `/__manifest` round-trip on the first navigation to each route, which
+  // stalls the whole page when the dashboard backend is remote/slow.
+  routeDiscovery: { mode: 'initial' },
 } satisfies Config;
