@@ -795,7 +795,16 @@ export function createReconnectingFramedStream(
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
-  constructor(runId: string, name: string) {
+  /**
+   * @param runReadyBarrier Turbo mode only: a promise that resolves once the
+   * backgrounded `run_started` has landed. When the step body runs
+   * optimistically (before `run_started` is durable), the first chunk write to
+   * a brand-new stream would otherwise reach the World before the run exists
+   * and be rejected as run-not-found. Awaiting this once before the first
+   * flush/close orders the write after the run's creation. `undefined` outside
+   * turbo and on the await path, where the run was already durable.
+   */
+  constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
     if (typeof runId !== 'string') {
       throw new WorkflowRuntimeError(
         `"runId" must be a string, got "${typeof runId}"`
@@ -805,6 +814,22 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       throw new WorkflowRuntimeError(`"name" is required, got "${name}"`);
     }
     const worldPromise = getWorldLazy();
+
+    // Hold the first server write until the run exists (turbo optimistic
+    // start). Awaited once, then cleared so later flushes pay nothing. The
+    // rejection is swallowed for ordering only: if `run_started` truly failed
+    // the run does not exist, so the write below surfaces the real error.
+    let pendingRunReady: Promise<unknown> | undefined = runReadyBarrier;
+    const ensureRunReady = async (): Promise<void> => {
+      if (pendingRunReady) {
+        try {
+          await pendingRunReady;
+        } catch {
+          // intentional: ordering barrier only — see above.
+        }
+        pendingRunReady = undefined;
+      }
+    };
 
     // Buffering state for batched writes
     // Encryption/decryption is handled at the framing level by
@@ -821,6 +846,10 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
 
       if (buffer.length === 0) return;
+
+      // Order the first server write after the run exists (turbo optimistic
+      // start); a no-op on every later flush and outside turbo.
+      await ensureRunReady();
 
       // Copy chunks to flush, but don't clear buffer until write succeeds
       // This prevents data loss if the write operation fails
@@ -902,6 +931,10 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
         // Flush any remaining buffered chunks
         await flush();
+
+        // A close with an empty buffer skips flush()'s write (and its barrier),
+        // but can itself be the first write to a brand-new stream — gate it too.
+        await ensureRunReady();
 
         const world = await worldPromise;
         await world.streams.close(runId, name);

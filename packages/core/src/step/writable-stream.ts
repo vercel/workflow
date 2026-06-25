@@ -86,7 +86,14 @@ export function getWritable<W = any>(
   // their writer lock, not only when the stream is explicitly closed.
   // Without this, Vercel functions hang until the runtime timeout because
   // .pipeTo() only resolves on stream close.
-  const serverWritable = new WorkflowServerWritableStream(runId, name);
+  // In turbo optimistic start the body runs before `run_started` is durable;
+  // pass the run-ready barrier so the first server write orders after the run
+  // exists. Undefined outside turbo / on the await path (run already durable).
+  const serverWritable = new WorkflowServerWritableStream(
+    runId,
+    name,
+    ctx.runReadyBarrier
+  );
   const state = createFlushableState();
   ctx.ops.push(state.promise);
 
