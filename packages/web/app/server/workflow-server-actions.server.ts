@@ -702,20 +702,14 @@ export async function fetchEvents(
   const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    // Prefer the metadata-only analytics read path when the backend provides
-    // one and no payload data is requested; otherwise use the runtime storage
-    // API (which can resolve payloads).
-    const result =
-      world.analytics && !withData
-        ? await world.analytics.events.list({
-            runId,
-            pagination: { cursor, limit, sortOrder },
-          })
-        : await world.events.list({
-            runId,
-            pagination: { cursor, limit, sortOrder },
-            resolveData: withData ? 'all' : 'none',
-          });
+    // Always use the runtime storage API for events. The Events tab and trace
+    // viewer derive step names and wait `resumeAt` from the resolved event
+    // payload, which the metadata-only analytics event rows do not carry.
+    const result = await world.events.list({
+      runId,
+      pagination: { cursor, limit, sortOrder },
+      resolveData: withData ? 'all' : 'none',
+    });
     return createResponse({
       data: result.data as unknown as Event[],
       cursor: result.cursor ?? undefined,
@@ -771,20 +765,14 @@ export async function fetchEventsByCorrelationId(
   const { cursor, sortOrder = 'asc', limit = 100, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    // Prefer the metadata-only analytics read path when the backend provides
-    // one and no payload data is requested; otherwise use the runtime storage
-    // API (which can resolve payloads).
-    const result =
-      world.analytics && !withData
-        ? await world.analytics.events.listByCorrelationId({
-            correlationId,
-            pagination: { cursor, limit, sortOrder },
-          })
-        : await world.events.listByCorrelationId({
-            correlationId,
-            pagination: { cursor, limit, sortOrder },
-            resolveData: withData ? 'all' : 'none',
-          });
+    // Always use the runtime storage API for events. The Events tab and trace
+    // viewer derive step names and wait `resumeAt` from the resolved event
+    // payload, which the metadata-only analytics event rows do not carry.
+    const result = await world.events.listByCorrelationId({
+      correlationId,
+      pagination: { cursor, limit, sortOrder },
+      resolveData: withData ? 'all' : 'none',
+    });
     return createResponse({
       data: result.data as unknown as Event[],
       cursor: result.cursor ?? undefined,
@@ -817,20 +805,15 @@ export async function fetchHooks(
   const { runId, cursor, sortOrder = 'desc', limit = 10 } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    // Prefer the metadata-only analytics read path when the backend provides
-    // one; fall back to the runtime storage API otherwise. Analytics hook rows
-    // carry metadata only (e.g. no owner), so the listing relies on the
-    // common fields used by the hooks table.
-    const result = world.analytics
-      ? await world.analytics.hooks.list({
-          ...(runId ? { runId } : {}),
-          pagination: { cursor, limit, sortOrder },
-        })
-      : await world.hooks.list({
-          ...(runId ? { runId } : {}),
-          pagination: { cursor, limit, sortOrder },
-          resolveData: 'none',
-        });
+    // Always use the runtime storage API for hooks. Unlike runs/steps, the
+    // hooks table needs the secret `token` (used for the resume action and the
+    // copy-token affordance) and `ownerId`, which the metadata-only analytics
+    // hook rows do not carry.
+    const result = await world.hooks.list({
+      ...(runId ? { runId } : {}),
+      pagination: { cursor, limit, sortOrder },
+      resolveData: 'none',
+    });
     return createResponse({
       data: result.data as unknown as Hook[],
       cursor: result.cursor ?? undefined,
