@@ -15,20 +15,15 @@ It comes with pre-styled UI components that accept data + callbacks:
 ```tsx
 import { WorkflowTraceViewer } from '@workflow/web-shared';
 
-export default function MyRunDetailView({
-  run,
-  steps,
-  hooks,
-  events,
-  onSpanSelect,
-}) {
+export default function MyRunDetailView({ run, events, fetchSpanDetail }) {
+  // `fetchSpanDetail(selection)` resolves a selected span's full
+  // input/output/metadata. The viewer owns the loading/ready/error state
+  // internally, so the host only supplies how to fetch.
   return (
     <WorkflowTraceViewer
       run={run}
-      steps={steps}
-      hooks={hooks}
       events={events}
-      onSpanSelect={onSpanSelect}
+      fetchSpanDetail={fetchSpanDetail}
     />
   );
 }

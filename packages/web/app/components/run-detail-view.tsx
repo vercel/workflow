@@ -1,5 +1,5 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { SpanSelectionInfo } from '@workflow/web-shared';
+import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
@@ -56,10 +56,10 @@ import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
+  fetchSpanDetailResource,
   recreateRun,
   resumeHook,
   unwrapServerActionResult,
-  useWorkflowResourceData,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   wakeUpRun,
@@ -373,34 +373,24 @@ export function RunDetailView({
     enabled: activeTab === 'events',
   });
 
-  const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
-    null
-  );
-  const {
-    data: spanDetailData,
-    loading: spanDetailLoading,
-    error: spanDetailError,
-    refresh: refreshSpanDetail,
-  } = useWorkflowResourceData(
-    env,
-    spanSelection?.resource ?? 'run',
-    spanSelection?.resourceId ?? '',
-    {
-      runId: spanSelection?.runId,
-      enabled: Boolean(
-        spanSelection?.resource &&
-          spanSelection?.resourceId &&
-          spanSelection.resource !== 'hook'
-      ),
-      encryptionKey: encryptionKey ?? undefined,
-    }
+  // Loads a selected span's full detail on demand. The trace viewer owns the
+  // loading/ready/error state machine (useSelectedSpanDetail); here we only
+  // provide how to fetch. Closing over encryptionKey means clicking Decrypt
+  // re-runs the fetch for the open span with the key (prior data stays visible).
+  const fetchSpanDetail = useCallback<FetchSpanDetail>(
+    (selection) =>
+      fetchSpanDetailResource(env, selection, {
+        encryptionKey: encryptionKey ?? undefined,
+      }),
+    [env, encryptionKey]
   );
 
   const [isDecrypting, setIsDecrypting] = useState(false);
 
   const handleDecrypt = useCallback(async () => {
+    // The key is fetched once and reused; once present every selection (and a
+    // re-fetch of the open span) hydrates with it automatically.
     if (encryptionKey) {
-      refreshSpanDetail();
       return;
     }
     setIsDecrypting(true);
@@ -419,20 +409,13 @@ export function RunDetailView({
     } finally {
       setIsDecrypting(false);
     }
-  }, [encryptionKey, env, runId, refreshSpanDetail]);
-
-  const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
-    setSpanSelection(info);
-  }, []);
+  }, [encryptionKey, env, runId]);
 
   const sidebarData = useMemo<SidebarDataContextValue>(
     () => ({
       run,
       events: allEvents ?? [],
-      spanDetailData: spanDetailData ?? null,
-      spanDetailError,
-      spanDetailLoading,
-      onSpanSelect: handleSpanSelect,
+      fetchSpanDetail,
       onStreamClick: handleStreamClick,
       onRunClick: handleRunRefClick,
       onWakeUpSleep: handleWakeUpSleep,
@@ -446,10 +429,7 @@ export function RunDetailView({
     [
       run,
       allEvents,
-      spanDetailData,
-      spanDetailError,
-      spanDetailLoading,
-      handleSpanSelect,
+      fetchSpanDetail,
       handleStreamClick,
       handleRunRefClick,
       handleWakeUpSleep,
