@@ -16,7 +16,7 @@ import {
 } from '@workflow/core/runtime/helpers';
 import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-hook';
 
-import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
   Event,
@@ -571,12 +571,20 @@ export async function fetchRuns(
   } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await world.runs.list({
-      ...(workflowName ? { workflowName } : {}),
-      ...(status ? { status: status } : {}),
-      pagination: { cursor, limit, sortOrder },
-      resolveData: 'none',
-    });
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one; fall back to the runtime storage API otherwise.
+    const result = world.analytics
+      ? await world.analytics.runs.list({
+          ...(workflowName ? { workflowName } : {}),
+          ...(status ? { status } : {}),
+          pagination: { cursor, limit, sortOrder },
+        })
+      : await world.runs.list({
+          ...(workflowName ? { workflowName } : {}),
+          ...(status ? { status } : {}),
+          pagination: { cursor, limit, sortOrder },
+          resolveData: 'none',
+        });
     return createResponse({
       data: result.data as unknown as WorkflowRun[],
       cursor: result.cursor ?? undefined,
@@ -626,11 +634,18 @@ export async function fetchSteps(
   const { cursor, sortOrder = 'asc', limit = 100 } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await world.steps.list({
-      runId,
-      pagination: { cursor, limit, sortOrder },
-      resolveData: 'none',
-    });
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one; fall back to the runtime storage API otherwise.
+    const result = world.analytics
+      ? await world.analytics.steps.list({
+          runId,
+          pagination: { cursor, limit, sortOrder },
+        })
+      : await world.steps.list({
+          runId,
+          pagination: { cursor, limit, sortOrder },
+          resolveData: 'none',
+        });
     return createResponse({
       // StepWithoutData has undefined input/output, but after hydration the structure is compatible
       data: result.data as unknown as Step[],
@@ -687,11 +702,20 @@ export async function fetchEvents(
   const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await world.events.list({
-      runId,
-      pagination: { cursor, limit, sortOrder },
-      resolveData: withData ? 'all' : 'none',
-    });
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one and no payload data is requested; otherwise use the runtime storage
+    // API (which can resolve payloads).
+    const result =
+      world.analytics && !withData
+        ? await world.analytics.events.list({
+            runId,
+            pagination: { cursor, limit, sortOrder },
+          })
+        : await world.events.list({
+            runId,
+            pagination: { cursor, limit, sortOrder },
+            resolveData: withData ? 'all' : 'none',
+          });
     return createResponse({
       data: result.data as unknown as Event[],
       cursor: result.cursor ?? undefined,
@@ -747,11 +771,20 @@ export async function fetchEventsByCorrelationId(
   const { cursor, sortOrder = 'asc', limit = 100, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await world.events.listByCorrelationId({
-      correlationId,
-      pagination: { cursor, limit, sortOrder },
-      resolveData: withData ? 'all' : 'none',
-    });
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one and no payload data is requested; otherwise use the runtime storage
+    // API (which can resolve payloads).
+    const result =
+      world.analytics && !withData
+        ? await world.analytics.events.listByCorrelationId({
+            correlationId,
+            pagination: { cursor, limit, sortOrder },
+          })
+        : await world.events.listByCorrelationId({
+            correlationId,
+            pagination: { cursor, limit, sortOrder },
+            resolveData: withData ? 'all' : 'none',
+          });
     return createResponse({
       data: result.data as unknown as Event[],
       cursor: result.cursor ?? undefined,
@@ -784,13 +817,22 @@ export async function fetchHooks(
   const { runId, cursor, sortOrder = 'desc', limit = 10 } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await world.hooks.list({
-      ...(runId ? { runId } : {}),
-      pagination: { cursor, limit, sortOrder },
-      resolveData: 'none',
-    });
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one; fall back to the runtime storage API otherwise. Analytics hook rows
+    // carry metadata only (e.g. no owner), so the listing relies on the
+    // common fields used by the hooks table.
+    const result = world.analytics
+      ? await world.analytics.hooks.list({
+          ...(runId ? { runId } : {}),
+          pagination: { cursor, limit, sortOrder },
+        })
+      : await world.hooks.list({
+          ...(runId ? { runId } : {}),
+          pagination: { cursor, limit, sortOrder },
+          resolveData: 'none',
+        });
     return createResponse({
-      data: result.data as Hook[],
+      data: result.data as unknown as Hook[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
     });
