@@ -2,11 +2,14 @@
 
 import { EVENT_DATA_REF_FIELDS, type Event } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { cn } from '../../lib/cn';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
+import { formatEventGap } from '../../lib/utils';
 import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -35,14 +38,36 @@ const DATA_EVENT_TYPES = new Set([
 ]);
 
 /**
+ * Inter-event gaps at or above this threshold are visually emphasized so long
+ * waits (sleeps, retries, queue backlog) stand out from the rapid
+ * created/started/completed bursts.
+ */
+const LARGE_GAP_MS = 60_000;
+
+/**
+ * Effective timestamp (ms) used to order events and compute the gap between
+ * consecutive rows. Prefers the client-side `occurredAt` when a world
+ * persists it, falling back to the server `createdAt`.
+ */
+function eventTimeMs(event: Event): number {
+  return new Date(event.occurredAt ?? event.createdAt).getTime();
+}
+
+/**
  * A single event row that can lazy-load its eventData when expanded.
  */
 function EventItem({
   event,
+  previousTimeMs,
   onLoadEventData,
   encryptionKey,
 }: {
   event: Event;
+  /**
+   * Effective timestamp (ms) of the preceding event in the list, or
+   * `undefined` for the first row (which anchors with an absolute time).
+   */
+  previousTimeMs?: number;
   onLoadEventData?: (
     correlationId: string,
     eventId: string
@@ -100,12 +125,22 @@ function EventItem({
     void loadEventData({ force: true });
   }, [encryptionKey, loadEventData]);
 
-  const createdAt = new Date(event.createdAt);
-  const createdAtTime = createdAt.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-  });
+  const timeMs = eventTimeMs(event);
+  const isFirst = previousTimeMs === undefined;
+  // The first row anchors with an absolute time; later rows show the gap
+  // since the previous event so the time spent between steps is obvious and
+  // unambiguous across day boundaries (a long sleep reads "+26h", not a
+  // misleading bare clock time).
+  const deltaMs =
+    previousTimeMs === undefined ? 0 : Math.max(0, timeMs - previousTimeMs);
+  const isLargeGap = !isFirst && deltaMs >= LARGE_GAP_MS;
+  const rightLabel = isFirst
+    ? new Date(timeMs).toLocaleTimeString(undefined, {
+        hour: 'numeric',
+        minute: 'numeric',
+        second: 'numeric',
+      })
+    : formatEventGap(deltaMs);
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
@@ -118,9 +153,16 @@ function EventItem({
           <span className="text-gray-1000 text-label-12 font-mono">
             {event.eventType}
           </span>
-          <span className="shrink-0 text-label-13 text-gray-900">
-            {createdAtTime}
-          </span>
+          <TimestampTooltip date={timeMs}>
+            <span
+              className={cn(
+                'shrink-0 text-label-13 tabular-nums',
+                isLargeGap ? 'text-gray-1000 font-medium' : 'text-gray-900'
+              )}
+            >
+              {rightLabel}
+            </span>
+          </TimestampTooltip>
         </div>
       }
       onToggle={
@@ -281,13 +323,9 @@ export function EventsList({
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */
   encryptionKey?: Uint8Array;
 }) {
-  // Sort by createdAt
+  // Sort chronologically by effective event time (occurredAt ?? createdAt)
   const sortedEvents = useMemo(
-    () =>
-      [...events].sort(
-        (a, b) =>
-          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      ),
+    () => [...events].sort((a, b) => eventTimeMs(a) - eventTimeMs(b)),
     [events]
   );
 
@@ -315,10 +353,15 @@ export function EventsList({
             </div>
           ) : (
             <div className="flex flex-col -mx-4">
-              {sortedEvents.map((event) => (
+              {sortedEvents.map((event, index) => (
                 <EventItem
                   key={event.eventId}
                   event={event}
+                  previousTimeMs={
+                    index === 0
+                      ? undefined
+                      : eventTimeMs(sortedEvents[index - 1])
+                  }
                   onLoadEventData={onLoadEventData}
                   encryptionKey={encryptionKey}
                 />
