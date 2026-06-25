@@ -53,6 +53,7 @@ if (!deploymentUrl) {
 }
 
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
+const STREAM_READ_TIMEOUT_MS = 90_000;
 
 function expectElapsedAtLeast(actualMs: number, expectedMs: number) {
   // Vercel e2e compares timestamps from different invocations and services.
@@ -397,7 +398,7 @@ describe('e2e', () => {
     }
   );
 
-  test('readableStreamWorkflow', { timeout: 120_000 }, async () => {
+  test('readableStreamWorkflow', { timeout: 180_000 }, async () => {
     const run = await start(await e2e('readableStreamWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue).toBeInstanceOf(ReadableStream);
@@ -406,16 +407,18 @@ describe('e2e', () => {
     const decoder = new TextDecoder();
     let contents = '';
     // Read chunks until we have all expected content or hit a timeout.
-    // On Vercel, the stream close event can be delayed even after all
-    // chunks are delivered, so we stop once we have the expected data
-    // rather than waiting for the stream to end.
+    // On Vercel, the final chunk or close event can be delayed, so we stop
+    // once we have the expected data rather than waiting for stream closure.
     const reader = returnValue.getReader();
-    const readDeadline = Date.now() + 60_000;
+    const readDeadline = Date.now() + STREAM_READ_TIMEOUT_MS;
     try {
       while (Date.now() < readDeadline) {
         const { done, value } = await Promise.race([
           reader.read(),
-          sleep(30_000).then(() => ({ done: true, value: undefined })),
+          sleep(STREAM_READ_TIMEOUT_MS).then(() => ({
+            done: true,
+            value: undefined,
+          })),
         ]);
         if (value) {
           contents += decoder.decode(value, { stream: true });
