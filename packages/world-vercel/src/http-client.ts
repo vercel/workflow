@@ -16,13 +16,15 @@ let _streamDispatcher: RetryAgent | undefined;
 // connection through RetryAgent's backoff (~16s) and fail.
 //
 // Install a working global `require` so undici's bare require resolves the real
-// builtin, regardless of how a consumer bundles us. This is the same mechanism
-// the @workflow framework integrations apply via a build banner, but lives here
-// so it travels with the package and protects *any* bundled consumer — not just
-// the integrations we ship. The `typeof require === 'function'` guard makes it a
-// no-op wherever a real `require` already exists (every CJS context), and we
-// install a real `createRequire`, never a stub. The base path passed to
-// `createRequire` is irrelevant for resolving a builtin like `node:http2`.
+// builtin, regardless of how a consumer bundles us. This previously lived in
+// each framework integration as a build banner (@workflow/sveltekit, nitro,
+// web); doing it here instead means the fix travels with the package and
+// protects *any* bundled consumer — custom Vite/Rollup/esbuild builds and
+// third parties included — not just the integrations we ship. The `typeof
+// require === 'function'` guard makes it a no-op wherever a real `require`
+// already exists (every CJS context), and we install a real `createRequire`,
+// never a stub. The base path passed to `createRequire` is irrelevant for
+// resolving a builtin like `node:http2`.
 //
 // `globalThis.require` becoming defined makes `typeof require` truthy for every
 // other bundled dependency too; that is acceptable because the value is a
