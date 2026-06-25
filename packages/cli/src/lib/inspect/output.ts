@@ -1095,19 +1095,11 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
     );
   }
 
-  if (opts.withData) {
-    warnWithDataDeprecatedForList('hook');
-  }
-
   const runId = opts.runId;
-  const useAnalytics = !opts.withData && Boolean(world.analytics);
   const resolveData = opts.withData ? 'all' : 'none';
-  // The analytics read path does not expose `ownerId`; drop that column when
-  // rendering analytics rows rather than showing an empty value.
-  const props = useAnalytics
-    ? HOOK_LISTED_PROPS.filter((prop) => prop !== 'ownerId')
-    : HOOK_LISTED_PROPS;
-
+  // Hooks always read from the runtime storage API. Unlike runs/steps/events,
+  // the analytics read path omits `ownerId` (and the secret hook token used by
+  // resume/copy-token surfaces), so hook listing stays on the canonical APIs.
   const fetchHooksPage = async (
     cursor: string | undefined
   ): Promise<PageData<Record<string, unknown>>> => {
@@ -1121,14 +1113,6 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
       cursor,
       limit: opts.limit || DEFAULT_PAGE_SIZE,
     };
-    if (useAnalytics && world.analytics) {
-      const hooks = await world.analytics.hooks.list({ runId, pagination });
-      return {
-        data: hooks.data as unknown as Record<string, unknown>[],
-        cursor: hooks.cursor,
-        hasMore: hooks.hasMore,
-      };
-    }
     const hooks = await world.hooks.list({ runId, pagination, resolveData });
     const data = await Promise.all(
       hooks.data.map((h) => hydrateResourceIO(h, resolveKey))
@@ -1169,7 +1153,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (hooks) => {
-      logger.log(showTable(hooks, props, opts));
+      logger.log(showTable(hooks, HOOK_LISTED_PROPS, opts));
       showInspectInfoBox('hook');
     },
   });
