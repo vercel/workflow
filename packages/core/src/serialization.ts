@@ -1211,7 +1211,13 @@ export function getExternalReducers(
   ops: Promise<void>[],
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  framedByteStreams = false
+  framedByteStreams = false,
+  // Turbo optimistic start: a nested `ReadableStream` found while serializing
+  // is piped to its own server stream independently of the outer sink, so its
+  // first chunk can race `run_started`. Thread the run-ready barrier into that
+  // sink so the write orders after the run exists. Undefined outside turbo /
+  // on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1233,7 +1239,11 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(runId, name);
+      const writable = new WorkflowServerWritableStream(
+        runId,
+        name,
+        runReadyBarrier
+      );
       if (type === 'bytes') {
         if (framedByteStreams) {
           ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
@@ -1250,7 +1260,8 @@ export function getExternalReducers(
                   ops,
                   runId,
                   cryptoKey,
-                  framedByteStreams
+                  framedByteStreams,
+                  runReadyBarrier
                 ),
                 cryptoKey
               )

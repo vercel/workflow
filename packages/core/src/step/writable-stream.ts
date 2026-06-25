@@ -78,7 +78,18 @@ export function getWritable<W = any>(
   // version skew protection) is on this same SDK version, so byte-stream
   // framing is always safe here.
   const serialize = getSerializeStream(
-    getExternalReducers(globalThis, ctx.ops, runId, ctx.encryptionKey, true),
+    // In turbo optimistic start the body runs before `run_started` is durable.
+    // Thread the run-ready barrier so that a nested ReadableStream written into
+    // this writable is piped to its own server stream only after the run
+    // exists. Undefined outside turbo / on the await path.
+    getExternalReducers(
+      globalThis,
+      ctx.ops,
+      runId,
+      ctx.encryptionKey,
+      true,
+      ctx.runReadyBarrier
+    ),
     ctx.encryptionKey
   );
 
