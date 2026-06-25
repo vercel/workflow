@@ -1,9 +1,106 @@
+import { createRequire } from 'node:module';
 import { Agent, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
 let _eventsDispatcher: RetryAgent | undefined;
 let _streamDispatcher: RetryAgent | undefined;
+
+// undici loads most node: builtins as ESM imports, but pulls in `node:http2`
+// lazily via a bare `require('node:http2')` inside a try/catch. When this
+// package is bundled into an ESM server output (a custom Vite/Rollup/esbuild
+// build, or a framework integration that doesn't externalize undici), there is
+// no `require` in that scope: the call throws, undici swallows it and falls
+// back to a stub whose `http2.connect` is undefined — silently breaking every
+// HTTP/2 request (our events API and stream writes), which then hang on a dead
+// connection through RetryAgent's backoff (~16s) and fail.
+//
+// Install a working global `require` so undici's bare require resolves the real
+// builtin, regardless of how a consumer bundles us. This is the same mechanism
+// the @workflow framework integrations apply via a build banner, but lives here
+// so it travels with the package and protects *any* bundled consumer — not just
+// the integrations we ship. The `typeof require === 'function'` guard makes it a
+// no-op wherever a real `require` already exists (every CJS context), and we
+// install a real `createRequire`, never a stub. The base path passed to
+// `createRequire` is irrelevant for resolving a builtin like `node:http2`.
+//
+// `globalThis.require` becoming defined makes `typeof require` truthy for every
+// other bundled dependency too; that is acceptable because the value is a
+// functional `require`, so a library that switches to a CJS path gets a working
+// one. Runs once at module load — before any Agent is constructed, and well
+// before undici's lazy http2 require fires at first connect.
+type GlobalWithRequire = typeof globalThis & { require?: NodeRequire };
+
+function ensureGlobalRequireForUndiciH2(): void {
+  const g = globalThis as GlobalWithRequire;
+  if (typeof g.require === 'function') return;
+  try {
+    g.require = createRequire(import.meta.url);
+  } catch {
+    // `node:module` / `import.meta` unavailable (e.g. an edge runtime). The
+    // HTTP/1.1 fallback below keeps requests working without H2.
+  }
+}
+
+ensureGlobalRequireForUndiciH2();
+
+/**
+ * Whether undici can actually negotiate HTTP/2 in this runtime — i.e. whether
+ * `node:http2` resolves to the real builtin (with a `connect` function) rather
+ * than the undefined stub undici falls back to in an un-wired ESM bundle. Used
+ * to downgrade H2 dispatchers to HTTP/1.1 instead of failing. Exported for
+ * tests.
+ */
+export function isHttp2Available(): boolean {
+  const req = (globalThis as GlobalWithRequire).require;
+  if (typeof req !== 'function') return false;
+  try {
+    const http2 = req('node:http2') as { connect?: unknown };
+    return typeof http2.connect === 'function';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pure decision helper: an H2-requesting dispatcher must fall back to HTTP/1.1
+ * exactly when H2 was requested but `node:http2` is not usable. Exported for
+ * tests.
+ */
+export function shouldFallBackToH1(
+  requestedAllowH2: boolean,
+  http2Available: boolean
+): boolean {
+  return requestedAllowH2 === true && !http2Available;
+}
+
+let _warnedH2Fallback = false;
+
+/**
+ * Resolve the Agent options for a dispatcher that requests HTTP/2, downgrading
+ * `allowH2` to false (and warning once) when `node:http2` can't be loaded.
+ * Keeps requests working on HTTP/1.1 instead of failing on a dead H2
+ * connection. Leaves the exported `*_AGENT_OPTIONS` constants untouched.
+ */
+function resolveH2AgentOptions(
+  options: typeof EVENTS_AGENT_OPTIONS
+): Agent.Options {
+  if (!shouldFallBackToH1(options.allowH2, isHttp2Available())) {
+    return options;
+  }
+  if (!_warnedH2Fallback) {
+    _warnedH2Fallback = true;
+    console.warn(
+      "[workflow:world-vercel] node:http2 is unavailable, so undici can't " +
+        'negotiate HTTP/2 — falling back to HTTP/1.1. This usually means ' +
+        'world-vercel was bundled into an ESM server where undici’s lazy ' +
+        "require('node:http2') was left un-wired. Requests still work on " +
+        'HTTP/1.1; to restore H2, ensure a global `require` exists in the ' +
+        'server bundle (e.g. a createRequire-backed banner).'
+    );
+  }
+  return { ...options, allowH2: false };
+}
 
 /** Shared between both agents — connection pooling and H1 pipelining tuning. */
 const BASE_AGENT_OPTIONS = {
@@ -132,7 +229,7 @@ function getDefaultDispatcher(): RetryAgent {
 function getDefaultEventsDispatcher(): RetryAgent {
   if (!_eventsDispatcher) {
     _eventsDispatcher = new RetryAgent(
-      new Agent(EVENTS_AGENT_OPTIONS),
+      new Agent(resolveH2AgentOptions(EVENTS_AGENT_OPTIONS)),
       RETRY_AGENT_OPTIONS
     );
   }
@@ -154,7 +251,7 @@ function getDefaultEventsDispatcher(): RetryAgent {
 function getDefaultStreamDispatcher(): RetryAgent {
   if (!_streamDispatcher) {
     _streamDispatcher = new RetryAgent(
-      new Agent(EVENTS_AGENT_OPTIONS),
+      new Agent(resolveH2AgentOptions(EVENTS_AGENT_OPTIONS)),
       STREAM_RETRY_OPTIONS
     );
   }

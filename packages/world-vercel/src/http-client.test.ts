@@ -9,8 +9,12 @@ import {
   getDispatcher,
   getEventsDispatcher,
   getStreamDispatcher,
+  isHttp2Available,
   STREAM_RETRY_OPTIONS,
+  shouldFallBackToH1,
 } from './http-client.js';
+
+type GlobalWithRequire = typeof globalThis & { require?: unknown };
 
 describe('getDispatcher', () => {
   it('returns the shared default dispatcher when none is provided', () => {
@@ -71,6 +75,49 @@ describe('agent transport', () => {
   it('enables HTTP/2 for the events API only', () => {
     expect(EVENTS_AGENT_OPTIONS.allowH2).toBe(true);
     expect(DEFAULT_AGENT_OPTIONS.allowH2).toBe(false);
+  });
+});
+
+describe('HTTP/2 availability fallback', () => {
+  // The decision that keeps a bundled consumer working: when undici can't load
+  // node:http2 (an un-wired ESM bundle), the H2 dispatchers downgrade to H1
+  // instead of failing on a dead connection. shouldFallBackToH1 is that gate.
+  it('falls back to H1 only when H2 is requested but unavailable', () => {
+    expect(shouldFallBackToH1(true, false)).toBe(true);
+    expect(shouldFallBackToH1(true, true)).toBe(false);
+    expect(shouldFallBackToH1(false, false)).toBe(false);
+    expect(shouldFallBackToH1(false, true)).toBe(false);
+  });
+
+  it('detects real node:http2 as available in a normal Node runtime', () => {
+    expect(isHttp2Available()).toBe(true);
+  });
+
+  it('reports H2 unavailable when require resolves an http2 stub (no connect)', () => {
+    // Reproduces the bundled-undici failure mode: a global `require` exists but
+    // `require('node:http2')` returns a stub whose `connect` is undefined.
+    const g = globalThis as GlobalWithRequire;
+    const original = g.require;
+    g.require = (id: string) => {
+      if (id === 'node:http2') return {};
+      return (original as (m: string) => unknown)(id);
+    };
+    try {
+      expect(isHttp2Available()).toBe(false);
+    } finally {
+      g.require = original;
+    }
+  });
+
+  it('reports H2 unavailable when there is no global require at all', () => {
+    const g = globalThis as GlobalWithRequire;
+    const original = g.require;
+    g.require = undefined;
+    try {
+      expect(isHttp2Available()).toBe(false);
+    } finally {
+      g.require = original;
+    }
   });
 });
 
