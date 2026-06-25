@@ -23,9 +23,7 @@
     "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {
-    "ulid": "catalog:"
-  },
-  "peerDependencies": {
+    "ulid": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

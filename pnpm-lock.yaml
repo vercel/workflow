@@ -55,7 +55,7 @@ catalogs:
       specifier: ^4.0.18
       version: 4.0.18
     zod:
-      specifier: 4.3.6
+      specifier: ~4.3.6
       version: 4.3.6
 
 overrides:
@@ -1331,6 +1331,9 @@ importers:
       ulid:
         specifier: 'catalog:'
         version: 3.0.1
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1338,9 +1341,6 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
-      zod:
-        specifier: 'catalog:'
-        version: 4.3.6
 
   packages/world-local:
     dependencies:

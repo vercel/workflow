@@ -2,7 +2,7 @@
 
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { cn } from '../../../lib/utils';
+import { cn } from '../../../lib/cn';
 import { TimestampTooltip } from '../../ui/timestamp-tooltip';
 import type { SpanMarker } from '../utils';
 
@@ -153,7 +153,7 @@ export function OffscreenMarkerIndicator({
         onReveal?.(targetMs);
       }}
       className={cn(
-        'pointer-events-auto absolute top-1/2 z-20 flex h-6 -translate-y-1/2 cursor-pointer items-center rounded-[0.25rem] border border-gray-alpha-400 bg-background-100 shadow-sm hover:bg-gray-100',
+        'pointer-events-auto absolute top-1/2 z-20 flex h-6 -translate-y-1/2 cursor-pointer items-center rounded-[0.25rem] border border-gray-alpha-400 bg-background-100 hover:bg-gray-100',
         direction === 'right' ? 'right-0 pl-1.5' : 'left-0 pr-1.5'
       )}
     >
