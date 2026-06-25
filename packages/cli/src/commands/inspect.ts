@@ -124,7 +124,8 @@ export default class Inspect extends BaseCommand {
       helpLabel: '--status',
     }),
     withData: Flags.boolean({
-      description: 'include full input/output data in list views',
+      description:
+        'include full input/output data in list views (deprecated for list views — use `inspect <resource> <id>` to view payloads)',
       required: false,
       char: 'd',
       default: false,
