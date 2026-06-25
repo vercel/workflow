@@ -95,6 +95,19 @@ getEncryptionKeyForRun?(
 
 Use `getEncryptionKeyForRun(run)` when the run entity already exists. Use `getEncryptionKeyForRun(runId, context?)` in runtime paths like `start()` where the run has not been created yet but the world may still need context such as `deploymentId`.
 
+<Callout type="warning">
+  When reading an existing run that may have been created by another deployment, do not call `getEncryptionKeyForRun(runId)` without context. Omitting the context tells the World to assume the current deployment, which can derive a different key. Load the run without resolving its encrypted data and pass the run entity instead:
+</Callout>
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+declare const runId: string; // @setup
+
+const world = await getWorld();
+const run = await world.runs.get(runId, { resolveData: "none" });
+const key = await world.getEncryptionKeyForRun?.(run);
+```
+
 To add encryption support to a custom `World`:
 
 1. Implement `getEncryptionKeyForRun()` on your `World` class, handling both call shapes
