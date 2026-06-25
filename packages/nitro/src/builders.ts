@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import assert from 'node:assert';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
@@ -6,6 +7,11 @@ import {
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
 import { join } from 'pathe';
+
+const FLOW_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/flow$';
+const STEP_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/step$';
+const WEBHOOK_ROUTE =
+  '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$';
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
@@ -23,10 +29,29 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       this.config.workingDir,
       '.vercel/output/config.json'
     );
+    const functionsDir = join(
+      this.config.workingDir,
+      '.vercel/output/functions'
+    );
+    const workflowFunctionsDir = join(functionsDir, '.well-known/workflow');
     const originalConfig = JSON.parse(await readFile(configPath, 'utf-8'));
+    const serverFunc = (await readdir(functionsDir)).find(
+      (name) => name === '__server.func' || name === '__fallback.func'
+    );
+    assert(serverFunc);
+    const serverDest = `/${serverFunc.replace(/\.func$/, '')}`;
+    originalConfig.routes = originalConfig.routes.filter(
+      (route: { dest?: string; src?: string }) =>
+        !route.src?.includes('.well-known/workflow') &&
+        !route.dest?.includes('.well-known/workflow')
+    );
+    await rm(workflowFunctionsDir, { recursive: true, force: true });
     await super.build();
-    const newConfig = JSON.parse(await readFile(configPath, 'utf-8'));
-    originalConfig.routes.unshift(...newConfig.routes);
+    originalConfig.routes.unshift(
+      { src: FLOW_ROUTE, dest: serverDest },
+      { src: STEP_ROUTE, dest: serverDest },
+      { src: WEBHOOK_ROUTE, dest: serverDest }
+    );
     await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
   }
 }

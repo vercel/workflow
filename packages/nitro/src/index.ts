@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
@@ -54,8 +54,14 @@ export default {
       });
     }
 
+    const localBuilder = new LocalBuilder(nitro);
+
     // Generate functions for vercel build
     if (isVercelDeploy) {
+      nitro.hooks.hook('build:before', async () => {
+        await localBuilder.build();
+      });
+
       nitro.hooks.hook('compiled', async () => {
         await new VercelBuilder(nitro).build();
       });
@@ -63,11 +69,10 @@ export default {
 
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
-      const builder = new LocalBuilder(nitro);
       let isInitialBuild = true;
 
       nitro.hooks.hook('build:before', async () => {
-        await builder.build();
+        await localBuilder.build();
 
         // For prod: write the manifest handler file with inlined content
         // now that the builder has generated the manifest. Rollup will
@@ -87,32 +92,34 @@ export default {
             isInitialBuild = false;
             return;
           }
-          await builder.build();
+          await localBuilder.build();
         });
       }
+    }
 
-      if (nitro.options.dev) {
-        addDashboardHandler(nitro);
-      }
+    if (nitro.options.dev) {
+      addDashboardHandler(nitro);
+    }
 
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/webhook/:token',
-        'workflow/webhook.mjs'
-      );
+    addVirtualHandler(
+      nitro,
+      '/.well-known/workflow/v1/webhook/:token',
+      'workflow/webhook.mjs'
+    );
 
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/step',
-        'workflow/steps.mjs'
-      );
+    addVirtualHandler(
+      nitro,
+      '/.well-known/workflow/v1/step',
+      'workflow/steps.mjs'
+    );
 
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/flow',
-        'workflow/workflows.mjs'
-      );
+    addVirtualHandler(
+      nitro,
+      '/.well-known/workflow/v1/flow',
+      'workflow/workflows.mjs'
+    );
 
+    if (!isVercelDeploy) {
       // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
       if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
         // Write a placeholder manifest-data.mjs so rollup can resolve the
