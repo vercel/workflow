@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "workflow-postgres-setup": "./bin/setup.js"
+    "bootstrap": "./bin/setup.js",
+    "workflow-postgres-setup": "./bin/setup-deprecated.js"
   },
   "files": [
     "dist",
@@ -37,7 +38,7 @@
     "./migrations/*.sql": "./src/drizzle/migrations/*.sql"
   },
   "scripts": {
-    "build": "tsc && chmod +x bin/setup.js",
+    "build": "tsc && chmod +x bin/setup.js bin/setup-deprecated.js",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
     "test": "vitest run",
