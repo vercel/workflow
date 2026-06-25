@@ -16,15 +16,24 @@ let _streamDispatcher: RetryAgent | undefined;
 // connection through RetryAgent's backoff (~16s) and fail.
 //
 // Install a working global `require` so undici's bare require resolves the real
-// builtin, regardless of how a consumer bundles us. This previously lived in
-// each framework integration as a build banner (@workflow/sveltekit, nitro,
-// web); doing it here instead means the fix travels with the package and
-// protects *any* bundled consumer — custom Vite/Rollup/esbuild builds and
-// third parties included — not just the integrations we ship. The `typeof
-// require === 'function'` guard makes it a no-op wherever a real `require`
-// already exists (every CJS context), and we install a real `createRequire`,
-// never a stub. The base path passed to `createRequire` is irrelevant for
-// resolving a builtin like `node:http2`.
+// builtin. This is a best-effort backstop for consumers we don't ship a builder
+// for — a custom Vite/Rollup/esbuild ESM server, or a third-party bundle —
+// where undici's free `require` identifier resolves to this global.
+//
+// It is NOT a replacement for the framework build banners (@workflow/sveltekit,
+// @workflow/nitro, @workflow/web), which are still required: in some bundlers
+// (notably nitro/rollup) undici's bundled `require` resolves to a tool-injected
+// per-chunk binding that this global never reaches, so setting it here has no
+// effect on undici there. The banner, prepended as the first statement of every
+// chunk, does reach that binding. Removing the banners regressed the vite /
+// tanstack-start e2e lanes (runs never start → 30-min timeout), so the layers
+// are complementary: banner first for the bundlers we know, this global +
+// the H1 fallback below as the catch-all for the ones we don't.
+//
+// The `typeof require === 'function'` guard makes it a no-op wherever a real
+// `require` already exists (every CJS context), and we install a real
+// `createRequire`, never a stub. The base path passed to `createRequire` is
+// irrelevant for resolving a builtin like `node:http2`.
 //
 // `globalThis.require` becoming defined makes `typeof require` truthy for every
 // other bundled dependency too; that is acceptable because the value is a
