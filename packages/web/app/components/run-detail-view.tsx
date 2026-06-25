@@ -9,7 +9,6 @@ import {
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
-  stepEventsToStepEntity,
 } from '@workflow/web-shared';
 import type { Event, WorkflowRun } from '@workflow/world';
 import {
@@ -20,7 +19,7 @@ import {
   Loader2,
   Lock,
 } from 'lucide-react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
@@ -49,8 +48,6 @@ import {
   TooltipTrigger,
 } from '~/components/ui/tooltip';
 import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
-import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
-import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
 import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
@@ -70,130 +67,18 @@ import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
-import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
 import { Skeleton } from './ui/skeleton';
 
 /**
- * Graph tab content component that fetches the manifest internally
- * This ensures the manifest is only fetched when the Graph tab is mounted
+ * The graph tab pulls in the flow-graph viewer and its heavy dependency tree
+ * (~600 KB of JS). Lazy-load it so that cost stays off the run page's
+ * initial-load critical path — it's only fetched if/when the Graph tab is
+ * actually rendered.
  */
-function GraphTabContent({
-  run,
-  allEvents,
-  env,
-}: {
-  run: WorkflowRun;
-  allEvents: Event[] | null;
-  env: EnvMap;
-}) {
-  // Fetch workflow graph manifest only when this tab is mounted
-  const {
-    manifest: graphManifest,
-    loading: graphLoading,
-    error: graphError,
-  } = useWorkflowGraphManifest();
-
-  // Find the workflow graph for this run
-  const workflowGraph = useMemo(() => {
-    if (!graphManifest || !run.workflowName) return null;
-    const runWorkflowName = String(run.workflowName).trim();
-
-    // Primary lookup: manifest key match.
-    const direct = graphManifest.workflows[runWorkflowName];
-    if (direct) return direct;
-
-    const runShortName = parseWorkflowName(runWorkflowName)?.shortName;
-    const workflows = Object.values(graphManifest.workflows);
-
-    // Fallbacks: workflowId/workflowName/shortName match.
-    return (
-      workflows.find((wf) => {
-        if (wf.workflowId === runWorkflowName) return true;
-        if (wf.workflowName === runWorkflowName) return true;
-        if (!runShortName) return false;
-        return parseWorkflowName(wf.workflowName)?.shortName === runShortName;
-      }) ?? null
-    );
-  }, [graphManifest, run.workflowName]);
-
-  // Reconstruct step entities from events for the graph mapper
-  const stepsFromEvents = useMemo(() => {
-    if (!allEvents) return [];
-    const stepEventsMap = new Map<string, Event[]>();
-    for (const event of allEvents) {
-      if (event.eventType.startsWith('step_') && event.correlationId) {
-        const existing = stepEventsMap.get(event.correlationId);
-        if (existing) {
-          existing.push(event);
-        } else {
-          stepEventsMap.set(event.correlationId, [event]);
-        }
-      }
-    }
-    return Array.from(stepEventsMap.values())
-      .map(stepEventsToStepEntity)
-      .filter((s): s is NonNullable<typeof s> => s !== null);
-  }, [allEvents]);
-
-  // Map run data to execution overlay
-  const execution = useMemo(() => {
-    if (!workflowGraph || !run.runId) return null;
-
-    return mapRunToExecution(
-      run,
-      stepsFromEvents as any,
-      allEvents || [],
-      workflowGraph
-    );
-  }, [workflowGraph, run, stepsFromEvents, allEvents]);
-
-  if (graphLoading) {
-    return (
-      <div className="flex items-center justify-center w-full h-full">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <span className="ml-4 text-muted-foreground">
-          Loading workflow graph…
-        </span>
-      </div>
-    );
-  }
-
-  if (graphError) {
-    return (
-      <div className="flex items-center justify-center w-full h-full p-4">
-        <Alert variant="destructive" className="max-w-lg">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Error Loading Workflow Graph</AlertTitle>
-          <AlertDescription>{graphError.message}</AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
-
-  if (!workflowGraph) {
-    return (
-      <div className="flex items-center justify-center w-full h-full">
-        <Alert className="max-w-lg">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Workflow Graph Not Found</AlertTitle>
-          <AlertDescription>
-            Could not find the workflow graph for this run. The workflow may
-            have been deleted or the graph manifest may need to be regenerated.
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
-
-  return (
-    <WorkflowGraphExecutionViewer
-      workflow={workflowGraph}
-      execution={execution || undefined}
-      env={env}
-    />
-  );
-}
+const GraphTabContent = lazy(() =>
+  import('./graph-tab-content').then((m) => ({ default: m.GraphTabContent }))
+);
 
 interface RunDetailViewProps {
   runId: string;
@@ -946,11 +831,19 @@ export function RunDetailView({
               <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
                 <ErrorBoundary title="Failed to load execution graph">
                   <div className="h-full min-h-[500px]">
-                    <GraphTabContent
-                      run={run}
-                      allEvents={allEvents}
-                      env={env}
-                    />
+                    <Suspense
+                      fallback={
+                        <div className="flex items-center justify-center w-full h-full">
+                          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                        </div>
+                      }
+                    >
+                      <GraphTabContent
+                        run={run}
+                        allEvents={allEvents}
+                        env={env}
+                      />
+                    </Suspense>
                   </div>
                 </ErrorBoundary>
               </TabsContent>

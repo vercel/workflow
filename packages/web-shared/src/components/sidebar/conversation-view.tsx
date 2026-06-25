@@ -1,6 +1,17 @@
 import type { ModelMessage } from 'ai';
-import { Streamdown } from 'streamdown';
+import { lazy, Suspense } from 'react';
 import { DataInspector } from '../ui/data-inspector';
+
+/**
+ * `streamdown` bundles heavyweight markdown dependencies (Mermaid, Shiki).
+ * Importing it statically pulls ~1.7 MB of JS onto every run-detail page even
+ * though the conversation view only renders for the occasional AI/DurableAgent
+ * step span. Load it lazily so that cost is paid only when an assistant
+ * markdown message is actually displayed; until then we show the raw text.
+ */
+const Streamdown = lazy(() =>
+  import('streamdown').then((m) => ({ default: m.Streamdown }))
+);
 
 interface ConversationViewProps {
   messages: ModelMessage[];
@@ -73,14 +84,22 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
   if (part.type === 'text') {
     if (!part.text) return null;
 
-    // Use Streamdown for assistant messages (they often contain markdown)
+    // Use Streamdown for assistant messages (they often contain markdown).
+    // Streamdown is lazy-loaded (see above); while its chunk loads we fall
+    // back to the raw text so there's no flash of empty content.
     if (role === 'assistant') {
       return (
         <div
           className="prose prose-sm max-w-none text-[11px] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
           style={{ color: 'var(--ds-gray-1000)' }}
         >
-          <Streamdown>{part.text}</Streamdown>
+          <Suspense
+            fallback={
+              <div className="whitespace-pre-wrap break-words">{part.text}</div>
+            }
+          >
+            <Streamdown>{part.text}</Streamdown>
+          </Suspense>
         </div>
       );
     }
