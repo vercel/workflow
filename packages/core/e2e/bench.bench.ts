@@ -99,6 +99,10 @@ async function getWorkflowMetadata(
 
 const benchWf = (fn: string) =>
   getWorkflowMetadata('workflows/97_bench.ts', fn);
+const STREAM_READ_TIMEOUT_MS = process.env.WORKFLOW_VERCEL_ENV
+  ? 90_000
+  : 30_000;
+const STREAM_READ_RETRY_INTERVAL_MS = 1_000;
 
 // Store workflow execution times for each benchmark
 const workflowTimings: Record<
@@ -328,6 +332,37 @@ async function consumeStreamWithMetrics(
   return { firstByteTimeMs, slurpTimeMs, totalBytes, chunks };
 }
 
+/**
+ * Rehydrate a returned stream until enough persisted bytes are visible.
+ * Vercel stream chunks can lag the completed run output by a short window;
+ * opening the returned stream in that window can produce an empty reader.
+ */
+async function consumeReturnedStreamWithMetrics(
+  run: Run<unknown>,
+  startedAt: string | undefined,
+  { minBytes = 1 }: { minBytes?: number } = {}
+): ReturnType<typeof consumeStreamWithMetrics> {
+  const deadline = Date.now() + STREAM_READ_TIMEOUT_MS;
+  let result: Awaited<ReturnType<typeof consumeStreamWithMetrics>> | undefined;
+
+  while (Date.now() < deadline) {
+    result = await consumeStreamWithMetrics(await run.returnValue, startedAt);
+    if (result.totalBytes >= minBytes) {
+      return result;
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, STREAM_READ_RETRY_INTERVAL_MS)
+    );
+  }
+
+  return (
+    result ?? {
+      totalBytes: 0,
+      chunks: [],
+    }
+  );
+}
+
 describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with no steps',
@@ -386,10 +421,10 @@ describe('Workflow Performance Benchmarks', () => {
     'workflow with stream',
     async () => {
       const run = await start(await benchWf('streamWorkflow'), []);
-      const value = await run.returnValue;
+      await run.returnValue;
       const timings = await getRunTimings(run);
       const { firstByteTimeMs, slurpTimeMs, totalBytes } =
-        await consumeStreamWithMetrics(value, timings.startedAt);
+        await consumeReturnedStreamWithMetrics(run, timings.startedAt);
       // Correctness: stream should produce ~5KB (50 chunks * ~100 bytes)
       if (totalBytes === 0) {
         throw new Error(
@@ -570,10 +605,12 @@ describe('Workflow Performance Benchmarks', () => {
       name,
       async () => {
         const run = await start(await benchWf(workflow), args);
-        const value = await run.returnValue;
+        await run.returnValue;
         const timings = await getRunTimings(run);
         const { firstByteTimeMs, slurpTimeMs, totalBytes, chunks } =
-          await consumeStreamWithMetrics(value, timings.startedAt);
+          await consumeReturnedStreamWithMetrics(run, timings.startedAt, {
+            minBytes: summaryStream ? 1 : expectedTotalBytes,
+          });
 
         if (summaryStream) {
           // Parallel/fan-out workflows return a JSON summary stream;
