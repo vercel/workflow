@@ -31,7 +31,12 @@ function deriveSpanSelection(
     'stepId' in data
   ) {
     const step = data as Step;
-    return { resource: 'step', resourceId: step.stepId, runId: step.runId };
+    return {
+      resource: 'step',
+      resourceId: step.stepId,
+      runId: step.runId,
+      spanId: selectedSpan.spanId,
+    };
   }
   if (
     resource === 'run' &&
@@ -39,7 +44,11 @@ function deriveSpanSelection(
     typeof data === 'object' &&
     'runId' in data
   ) {
-    return { resource: 'run', resourceId: (data as WorkflowRun).runId };
+    return {
+      resource: 'run',
+      resourceId: (data as WorkflowRun).runId,
+      spanId: selectedSpan.spanId,
+    };
   }
   if (
     resource === 'hook' &&
@@ -47,7 +56,11 @@ function deriveSpanSelection(
     typeof data === 'object' &&
     'hookId' in data
   ) {
-    return { resource: 'hook', resourceId: (data as Hook).hookId };
+    return {
+      resource: 'hook',
+      resourceId: (data as Hook).hookId,
+      spanId: selectedSpan.spanId,
+    };
   }
   if (resource === 'sleep') {
     if (!selectedSpan.spanId) return null;
@@ -56,6 +69,7 @@ function deriveSpanSelection(
       resource: 'sleep',
       resourceId: selectedSpan.spanId,
       runId: waitData?.runId,
+      spanId: selectedSpan.spanId,
     };
   }
   return null;
@@ -83,7 +97,9 @@ export function useSelectedSpanDetail(
   const resourceId = selection?.resourceId;
   const runId = selection?.runId;
   const selectionKey =
-    resource && resourceId ? `${resource}:${resourceId}` : null;
+    resource && resourceId
+      ? `${resource}:${resourceId}:${selection?.spanId ?? ''}`
+      : null;
   const needsFetch = resourceNeedsFetchedDetail(resource);
 
   const [fetched, setFetched] = useState<{

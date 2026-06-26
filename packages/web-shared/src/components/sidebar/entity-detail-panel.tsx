@@ -5,6 +5,7 @@ import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
+import type { WorkflowSpanTiming } from '../../lib/workflow-span-timing';
 import { DecryptClickContext } from '../ui/data-inspector';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
@@ -14,6 +15,7 @@ import {
   type FetchSpanDetail,
   useSelectedSpanDetail,
 } from './use-selected-span-detail';
+import { WorkflowTimingBreakdown } from './workflow-timing-breakdown';
 
 // Type guard for runtime validation of span attribute data
 function isHook(data: unknown): data is Hook {
@@ -27,6 +29,7 @@ export type SpanSelectionInfo = {
   resource: 'run' | 'step' | 'hook' | 'sleep';
   resourceId: string;
   runId?: string;
+  spanId?: string;
 };
 
 /**
@@ -39,6 +42,8 @@ export interface SelectedSpanInfo {
   resource?: string;
   /** The span ID (correlationId for filtering events) */
   spanId?: string;
+  /** Optional log-derived timing data for run and step invocations. */
+  timing?: WorkflowSpanTiming;
   /** Raw correlated events from the store (NOT from the trace worker pipeline) */
   rawEvents?: Event[];
 }
@@ -368,6 +373,11 @@ export function EntityDetailPanel({
             onDecrypt={onDecrypt}
             isDecrypting={isDecrypting}
             resource={resource}
+          />
+
+          <WorkflowTimingBreakdown
+            resource={resource}
+            timing={selectedSpan.timing}
           />
 
           {rawEvents && (

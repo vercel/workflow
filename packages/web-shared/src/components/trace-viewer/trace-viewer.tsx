@@ -173,9 +173,12 @@ export function TraceViewerTimeline({
       for (const [id, newNode] of Object.entries(newSpanMap)) {
         const oldNode = oldSpanMap[id];
         if (oldNode) {
+          const attributesChanged =
+            oldNode.span.attributes !== newNode.span.attributes;
           if (
             oldNode.endTime !== newNode.endTime ||
-            oldNode.duration !== newNode.duration
+            oldNode.duration !== newNode.duration ||
+            attributesChanged
           ) {
             oldNode.endTime = newNode.endTime;
             oldNode.duration = newNode.duration;

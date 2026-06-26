@@ -1,3 +1,10 @@
+export type {
+  WorkflowQueuedTiming,
+  WorkflowSpanTiming,
+  WorkflowSpanTimingAttempt,
+  WorkflowSpanTimingMap,
+  WorkflowTimingTimeValue,
+} from '../lib/workflow-span-timing';
 export { ErrorBoundary } from './error-boundary';
 export { EventListView } from './event-list-view';
 export type {

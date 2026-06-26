@@ -22,6 +22,7 @@ import {
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { filterSpanRawEvents } from '../../lib/trace-builder';
+import { getWorkflowSpanTiming } from '../../lib/workflow-span-timing';
 import { ErrorBoundary } from '../error-boundary';
 import {
   EntityDetailPanel,
@@ -161,6 +162,7 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
       data: activeSpan.attributes?.data,
       resource,
       spanId: activeSpan.spanId,
+      timing: getWorkflowSpanTiming(activeSpan.attributes),
       rawEvents,
     };
   }, [activeSpan, sidebar]);
