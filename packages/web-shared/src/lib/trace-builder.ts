@@ -12,8 +12,8 @@ import {
   hookToSpan,
   runToSpan,
   stepToSpan,
-  waitToSpan,
   WORKFLOW_LIBRARY,
+  waitToSpan,
 } from '../components/workflow-traces/trace-span-construction';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 
@@ -30,6 +30,37 @@ export const isHookLifecycleEvent = (eventType: string) =>
   eventType === 'hook_received' ||
   eventType === 'hook_created' ||
   eventType === 'hook_disposed';
+
+/**
+ * Events that belong to the run root span rather than a child entity span.
+ * Mirrors the fallthrough logic in {@link groupEventsByCorrelation}: events
+ * without a correlationId (run lifecycle) plus correlated events that aren't
+ * step/timer/hook events (e.g. `attr_set`, whose correlationId is a dedup
+ * token rather than a child entity ID).
+ */
+export const isRunLevelEvent = (event: Event): boolean =>
+  !event.correlationId ||
+  (!isTimerEvent(event.eventType) &&
+    !isHookLifecycleEvent(event.eventType) &&
+    !isStepEvent(event.eventType));
+
+/**
+ * Filter the raw event list down to the events for a selected span.
+ * For the run root span this returns run-level events (see
+ * {@link isRunLevelEvent}); for child spans it returns the events
+ * correlated to that span's ID.
+ */
+export function filterSpanRawEvents(
+  events: Event[],
+  resource: string | undefined,
+  spanId: string | undefined
+): Event[] {
+  if (resource === 'run') {
+    return events.filter(isRunLevelEvent);
+  }
+  if (!spanId) return [];
+  return events.filter((e) => e.correlationId === spanId);
+}
 
 // ---------------------------------------------------------------------------
 // Event grouping
@@ -117,6 +148,7 @@ function buildSpans(
   // unknown territory. Even when the run is completed, we may not have loaded
   // all events yet, so always use the latest event we've actually seen.
   const childMaxEnd = latestKnownTime;
+  const runMaxEnd = run.completedAt ?? now;
 
   const stepSpans = Array.from(groupedEvents.eventsByStepId.values())
     .map((events) => stepToSpan(events, childMaxEnd))
@@ -127,7 +159,7 @@ function buildSpans(
     .filter((span): span is Span => span !== null);
 
   const waitSpans = Array.from(groupedEvents.timerEvents.values())
-    .map((events) => waitToSpan(events, childMaxEnd))
+    .map((events) => waitToSpan(events, childMaxEnd, runMaxEnd))
     .filter((span): span is Span => span !== null);
 
   return {

@@ -1,14 +1,15 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { SpanSelectionInfo } from '@workflow/web-shared';
+import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
   EventListView,
   hydrateResourceIO,
   hydrateResourceIOWithKey,
+  NewTraceViewer,
+  type SidebarDataContextValue,
   StreamViewer,
   stepEventsToStepEntity,
-  WorkflowTraceViewer,
 } from '@workflow/web-shared';
 import type { Event, WorkflowRun } from '@workflow/world';
 import {
@@ -18,7 +19,6 @@ import {
   List,
   Loader2,
   Lock,
-  Unlock,
 } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
@@ -42,27 +42,24 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '~/components/ui/breadcrumb';
-import { Button } from '~/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '~/components/ui/tooltip';
+import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
-
 import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
-
-import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
+  fetchSpanDetailResource,
   recreateRun,
   resumeHook,
   unwrapServerActionResult,
-  useWorkflowResourceData,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   wakeUpRun,
@@ -156,7 +153,7 @@ function GraphTabContent({
       <div className="flex items-center justify-center w-full h-full">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         <span className="ml-4 text-muted-foreground">
-          Loading workflow graph...
+          Loading workflow graph…
         </span>
       </div>
     );
@@ -347,10 +344,10 @@ export function RunDetailView({
     loading,
     error,
     update,
+    hasEncryptedData,
     loadMoreTraceData,
     hasMoreTraceData,
     isLoadingMoreTraceData,
-    hasEncryptedData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
@@ -369,40 +366,25 @@ export function RunDetailView({
     hasMore: hasMoreEventsTab,
     loadingMore: loadingMoreEventsTab,
     loadMore: loadMoreEventsTab,
+    searchByExactId,
   } = useEventsListData(env, runId, {
     sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
     enabled: activeTab === 'events',
   });
 
-  const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
-    null
-  );
-  const {
-    data: spanDetailData,
-    loading: spanDetailLoading,
-    error: spanDetailError,
-    refresh: refreshSpanDetail,
-  } = useWorkflowResourceData(
-    env,
-    spanSelection?.resource ?? 'run',
-    spanSelection?.resourceId ?? '',
-    {
-      runId: spanSelection?.runId,
-      enabled: Boolean(
-        spanSelection?.resource &&
-          spanSelection?.resourceId &&
-          spanSelection.resource !== 'hook'
-      ),
-      encryptionKey: encryptionKey ?? undefined,
-    }
+  const fetchSpanDetail = useCallback<FetchSpanDetail>(
+    (selection) =>
+      fetchSpanDetailResource(env, selection, {
+        encryptionKey: encryptionKey ?? undefined,
+      }),
+    [env, encryptionKey]
   );
 
   const [isDecrypting, setIsDecrypting] = useState(false);
 
   const handleDecrypt = useCallback(async () => {
     if (encryptionKey) {
-      refreshSpanDetail();
       return;
     }
     setIsDecrypting(true);
@@ -418,15 +400,41 @@ export function RunDetailView({
         return;
       }
       setEncryptionKey(keyResult);
-      toast.success('Run data decrypted successfully');
     } finally {
       setIsDecrypting(false);
     }
-  }, [encryptionKey, env, runId, refreshSpanDetail]);
+  }, [encryptionKey, env, runId]);
 
-  const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
-    setSpanSelection(info);
-  }, []);
+  const sidebarData = useMemo<SidebarDataContextValue>(
+    () => ({
+      run,
+      events: allEvents ?? [],
+      fetchSpanDetail,
+      onStreamClick: handleStreamClick,
+      onRunClick: handleRunRefClick,
+      onWakeUpSleep: handleWakeUpSleep,
+      onLoadEventData: handleLoadSidebarEventData,
+      onResolveHook: handleResolveHook,
+      encryptionKey: encryptionKey ?? undefined,
+      onDecrypt: handleDecrypt,
+      isDecrypting,
+      hasEncryptedData,
+    }),
+    [
+      run,
+      allEvents,
+      fetchSpanDetail,
+      handleStreamClick,
+      handleRunRefClick,
+      handleWakeUpSleep,
+      handleLoadSidebarEventData,
+      handleResolveHook,
+      encryptionKey,
+      handleDecrypt,
+      isDecrypting,
+      hasEncryptedData,
+    ]
+  );
 
   // Fetch streams for this run
   const {
@@ -454,7 +462,7 @@ export function RunDetailView({
       await cancelRun(env, runId);
       // Trigger a refresh of the data
       await update();
-      toast.success('Run cancelled successfully');
+      toast.success('Run cancelled');
     } catch (err) {
       console.error('Failed to cancel run:', err);
       toast.error('Failed to cancel run', {
@@ -478,7 +486,7 @@ export function RunDetailView({
       setShowRerunDialog(false);
       // Start a new run with the same workflow and input arguments
       const newRunId = await recreateRun(env, run.runId);
-      toast.success('New run started successfully', {
+      toast.success('New run started', {
         description: `Run ID: ${newRunId}`,
       });
       // Navigate to the new run
@@ -750,28 +758,15 @@ export function RunDetailView({
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load trace viewer">
-                <div className="h-full">
-                  <WorkflowTraceViewer
-                    error={error}
-                    events={allEvents}
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
+                  <NewTraceViewer
                     run={run}
-                    isLoading={loading}
-                    spanDetailData={spanDetailData}
-                    spanDetailLoading={spanDetailLoading}
-                    spanDetailError={spanDetailError}
-                    onSpanSelect={handleSpanSelect}
-                    onStreamClick={handleStreamClick}
-                    onRunClick={handleRunRefClick}
-                    onWakeUpSleep={handleWakeUpSleep}
-                    onResolveHook={handleResolveHook}
-                    onLoadEventData={handleLoadSidebarEventData}
-                    onLoadMoreSpans={loadMoreTraceData}
-                    hasMoreSpans={hasMoreTraceData}
-                    isLoadingMoreSpans={isLoadingMoreTraceData}
-                    encryptionKey={encryptionKey ?? undefined}
-                    onDecrypt={handleDecrypt}
-                    isDecrypting={isDecrypting}
-                    hasEncryptedData={hasEncryptedData}
+                    events={allEvents ?? []}
+                    loading={loading}
+                    sidebarData={sidebarData}
+                    onLoadMore={loadMoreTraceData}
+                    hasMore={hasMoreTraceData}
+                    isLoadingMore={isLoadingMoreTraceData}
                   />
                 </div>
               </ErrorBoundary>
@@ -794,6 +789,7 @@ export function RunDetailView({
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
+                    onExactIdSearch={searchByExactId}
                   />
                 </div>
               </ErrorBoundary>

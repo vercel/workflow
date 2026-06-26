@@ -1,0 +1,11 @@
+{
+  "title": "Changelog",
+  "pages": [
+    "index",
+    "eager-processing",
+    "resilient-start",
+    "lazy-event-creation",
+    "turbo-mode"
+  ],
+  "defaultOpen": false
+}

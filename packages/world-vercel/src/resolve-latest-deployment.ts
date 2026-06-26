@@ -9,7 +9,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
-import { type APIConfig, getProtectionBypassHeader } from './utils.js';
+import type { APIConfig } from './utils.js';
 
 const ResolveLatestDeploymentResponseSchema = z.object({
   id: z.string(),
@@ -56,10 +56,9 @@ export function createResolveLatestDeploymentId(
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
-        ...getProtectionBypassHeader(),
       },
       // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
-      dispatcher: getDispatcher(),
+      dispatcher: getDispatcher(config),
     });
 
     if (!response.ok) {

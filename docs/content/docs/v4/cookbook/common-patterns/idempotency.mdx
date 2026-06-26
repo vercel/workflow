@@ -1,0 +1,91 @@
+---
+title: Idempotency
+description: Make step retries safe and coordinate duplicate workflow starts with hook tokens.
+type: guide
+summary: Use step IDs for retry-safe external calls, and use deterministic hook tokens when duplicate requests must route to one active workflow.
+---
+
+Use idempotency when a retry or duplicate request should not repeat the underlying work. In Workflow, there are two common patterns: use the step ID for retry-safe external calls, and use hook tokens to coordinate duplicate workflow starts.
+
+## When to use this
+
+- A step charges a payment, sends an email, enqueues work, or creates an external record.
+- A route may receive duplicate requests that should map to one active workflow run.
+
+## Step idempotency
+
+Every step has a unique, deterministic `stepId` available via `getStepMetadata()`. Pass this as the idempotency key to external APIs:
+
+```typescript
+import { getStepMetadata } from "workflow";
+
+export async function createCharge(
+  customerId: string,
+  amount: number
+): Promise<{ id: string }> {
+  "use step";
+
+  const { stepId } = getStepMetadata(); // [!code highlight]
+
+  // Stripe uses the idempotency key to deduplicate requests.
+  // If this step is retried, Stripe returns the same charge.
+  const charge = await fetch("https://api.stripe.com/v1/charges", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+      "Idempotency-Key": stepId, // [!code highlight]
+    },
+    body: new URLSearchParams({
+      amount: String(amount),
+      currency: "usd",
+      customer: customerId,
+    }),
+  });
+
+  if (!charge.ok) {
+    const error = await charge.json();
+    throw new Error(`Charge failed: ${error.message}`);
+  }
+
+  return charge.json();
+}
+```
+
+See [Step Idempotency](/docs/foundations/idempotency#step-idempotency) for why `stepId` is stable across retries and how to think about external API conflicts.
+
+## Run idempotency
+
+For duplicate workflow-start requests, derive a hook token from your domain key. You can avoid obvious duplicate starts by checking whether an active hook already owns that token before calling `start()`:
+
+```typescript
+import { getHookByToken, start } from "workflow/api";
+import { HookNotFoundError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+  const token = `order:${orderId}`;
+
+  try {
+    const hook = await getHookByToken(token); // [!code highlight]
+    return Response.json({ runId: hook.runId, reused: true });
+  } catch (error) {
+    if (!HookNotFoundError.is(error)) throw error;
+  }
+
+  const run = await start(processOrder, [orderId]); // [!code highlight]
+  return Response.json({ runId: run.runId, reused: false });
+}
+```
+
+The workflow should create the deterministic hook and check `await hook.getConflict()` before duplicate-sensitive work — awaiting `getConflict()` suspends the workflow to commit the hook registration and resolves with the conflicting run when another active run already owns the token (or `null` once the hook is registered). See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how to steer an active run with `resumeHook()` and how to handle the current race between `start()` and hook registration.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) -- declares the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) -- declares step functions with full Node.js access
+- [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) -- provides the deterministic `stepId` for idempotency keys
+- [`createHook()`](/docs/api-reference/workflow/create-hook) -- creates a hook with an optional deterministic token
+- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) -- finds the active hook for a token
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) -- resumes the active hook when the duplicate request carries data
+- [`start()`](/docs/api-reference/workflow-api/start) -- starts a new workflow run

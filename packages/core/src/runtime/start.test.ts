@@ -2,6 +2,7 @@ import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
@@ -14,28 +15,22 @@ import {
   it,
   vi,
 } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
-import { start } from './start.js';
-import { getWorld } from './world.js';
+import { _resetLatestNoOpWarnForTests, start } from './start.js';
+import { setWorld } from './world.js';
 
 // Mock @vercel/functions
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn(),
 }));
 
-// Mock the world module with all required exports
-vi.mock('./world.js', () => ({
-  getWorld: vi.fn(),
-  getWorldHandlers: vi.fn(() => ({
-    createQueueHandler: vi.fn(() => vi.fn()),
-  })),
-}));
-
 // Mock telemetry
 vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),
   trace: vi.fn((_name, fn) => fn(undefined)),
+  getActiveSpan: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('start', () => {
@@ -103,7 +98,7 @@ describe('start', () => {
       });
       mockQueue = vi.fn().mockResolvedValue(undefined);
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -111,6 +106,7 @@ describe('start', () => {
     });
 
     afterEach(() => {
+      setWorld(undefined);
       vi.clearAllMocks();
     });
 
@@ -136,7 +132,7 @@ describe('start', () => {
       vi.clearAllMocks();
 
       // Mock world with specVersion 3 → uses it
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
@@ -194,6 +190,180 @@ describe('start', () => {
         })
       );
     });
+
+    it('seeds initial attributes on run_created and resilient run input for v4', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(validWorkflow, [], { attributes: { tenant: 't1' } });
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          eventData: expect.objectContaining({
+            attributes: { tenant: 't1' },
+          }),
+        }),
+        expect.anything()
+      );
+      expect(mockQueue.mock.calls[0]?.[1].runInput.attributes).toEqual({
+        tenant: 't1',
+      });
+      // The reserved-namespace escape hatch was not requested, so the
+      // flag must not appear on either payload.
+      expect(mockEventsCreate.mock.calls[0]?.[1].eventData).not.toHaveProperty(
+        'allowReservedAttributes'
+      );
+      expect(mockQueue.mock.calls[0]?.[1].runInput).not.toHaveProperty(
+        'allowReservedAttributes'
+      );
+    });
+
+    it('rejects initial attributes for pre-v4 runs', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      await expect(
+        start(validWorkflow, [], {
+          specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+          attributes: { tenant: 't1' },
+        })
+      ).rejects.toThrow(/spec version 4/);
+    });
+
+    it('rejects non-string initial attribute values', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          attributes: { tenant: undefined } as any,
+        })
+      ).rejects.toThrow(/must be a string value/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects reserved-prefix initial attribute keys with guidance', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], { attributes: { $system: 'x' } })
+      ).rejects.toThrow(/reserved prefix/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('seeds reserved-prefix initial attributes with allowReservedAttributes and forwards the flag on both payloads', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(validWorkflow, [], {
+        attributes: { $rootRunId: 'wrun_root', tenant: 't1' },
+        allowReservedAttributes: true,
+      });
+
+      // run_created carries the attributes and the flag, so server-side
+      // validation permits the reserved keys the same way the client did.
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          eventData: expect.objectContaining({
+            attributes: { $rootRunId: 'wrun_root', tenant: 't1' },
+            allowReservedAttributes: true,
+          }),
+        }),
+        expect.anything()
+      );
+      // The resilient-start queue input carries both too, so a run
+      // bootstrapped from run_started validates identically.
+      expect(mockQueue.mock.calls[0]?.[1].runInput).toEqual(
+        expect.objectContaining({
+          attributes: { $rootRunId: 'wrun_root', tenant: 't1' },
+          allowReservedAttributes: true,
+        })
+      );
+    });
+
+    it('still enforces non-reserved validation rules when allowReservedAttributes is set', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          attributes: { $note: 'v'.repeat(257) },
+          allowReservedAttributes: true,
+        })
+      ).rejects.toThrow(/exceeds limit 256/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects oversized initial attribute keys, values, and batches before any write', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          attributes: { ['k'.repeat(257)]: 'v' },
+        })
+      ).rejects.toThrow(/exceeds limit 256/);
+
+      await expect(
+        start(validWorkflow, [], {
+          attributes: { note: 'v'.repeat(257) },
+        })
+      ).rejects.toThrow(/exceeds limit 256/);
+
+      const overCap: Record<string, string> = {};
+      for (let i = 0; i <= 64; i++) overCap[`key_${i}`] = 'v';
+      await expect(
+        start(validWorkflow, [], { attributes: overCap })
+      ).rejects.toThrow(/exceed limit 64/);
+
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
   });
 
   describe('encryption', () => {
@@ -210,7 +380,7 @@ describe('start', () => {
       mockQueue = vi.fn().mockResolvedValue(undefined);
       mockGetEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_resolved'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -219,6 +389,7 @@ describe('start', () => {
     });
 
     afterEach(() => {
+      setWorld(undefined);
       vi.clearAllMocks();
     });
 
@@ -271,10 +442,17 @@ describe('start', () => {
         });
       });
       mockQueue = vi.fn().mockResolvedValue(undefined);
+      // Reset the warn-once guard so the no-op warn path is exercisable
+      // regardless of test order.
+      _resetLatestNoOpWarnForTests();
     });
 
     afterEach(() => {
+      setWorld(undefined);
       vi.clearAllMocks();
+      // Restore any spies (e.g. on runtimeLogger.warn) even if a test threw
+      // before its own cleanup — clearAllMocks alone doesn't restore spies.
+      vi.restoreAllMocks();
     });
 
     it('should resolve "latest" to the actual deployment ID via resolveLatestDeploymentId', async () => {
@@ -282,7 +460,7 @@ describe('start', () => {
         .fn()
         .mockResolvedValue('dpl_resolved_abc123');
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -319,7 +497,7 @@ describe('start', () => {
         .mockResolvedValue('dpl_resolved_abc123');
       const mockGetEncryptionKeyForRun = vi.fn();
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -344,23 +522,74 @@ describe('start', () => {
       );
     });
 
-    it('should throw WorkflowRuntimeError when "latest" is used with a World that does not implement resolveLatestDeploymentId', async () => {
-      vi.mocked(getWorld).mockReturnValue({
+    it('should warn and fall back to the current deployment ID when "latest" is used with a World that does not implement resolveLatestDeploymentId', async () => {
+      const warnSpy = vi
+        .spyOn(runtimeLogger, 'warn')
+        .mockImplementation(() => {});
+
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
         // No resolveLatestDeploymentId
       } as any);
 
-      await expect(
-        start(validWorkflow, [], { deploymentId: 'latest' })
-      ).rejects.toThrow(WorkflowRuntimeError);
+      // Should not throw — 'latest' is a no-op in worlds without atomic
+      // deployments.
+      await start(validWorkflow, [], { deploymentId: 'latest' });
 
-      await expect(
-        start(validWorkflow, [], { deploymentId: 'latest' })
-      ).rejects.toThrow(
-        "deploymentId 'latest' requires a World that implements resolveLatestDeploymentId()"
+      // It should warn that 'latest' had no effect in this world.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("deploymentId: 'latest' has no effect"),
+        expect.objectContaining({ currentDeploymentId: 'deploy_123' })
       );
+
+      // The run should fall back to the current deployment ID in both the
+      // run_created event and the queue call.
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          eventData: expect.objectContaining({
+            deploymentId: 'deploy_123',
+          }),
+        }),
+        expect.anything()
+      );
+      expect(mockQueue).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Object),
+        expect.objectContaining({ deploymentId: 'deploy_123' })
+      );
+    });
+
+    it('should only warn once per process when "latest" is used repeatedly in an unsupported World', async () => {
+      const warnSpy = vi
+        .spyOn(runtimeLogger, 'warn')
+        .mockImplementation(() => {});
+
+      setWorld({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        // No resolveLatestDeploymentId
+      } as any);
+
+      // Multiple runs that all hit the no-op path...
+      await start(validWorkflow, [], { deploymentId: 'latest' });
+      await start(validWorkflow, [], { deploymentId: 'latest' });
+      await start(validWorkflow, [], { deploymentId: 'latest' });
+
+      // ...should only log the warning a single time.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      // ...but every run still falls back to the current deployment.
+      expect(mockQueue).toHaveBeenCalledTimes(3);
+      for (const call of mockQueue.mock.calls) {
+        expect(call[2]).toEqual(
+          expect.objectContaining({ deploymentId: 'deploy_123' })
+        );
+      }
     });
 
     it('should not call resolveLatestDeploymentId when a normal deploymentId is provided', async () => {
@@ -368,7 +597,7 @@ describe('start', () => {
         .fn()
         .mockResolvedValue('dpl_resolved_abc123');
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -396,7 +625,7 @@ describe('start', () => {
         .fn()
         .mockResolvedValue('dpl_resolved_abc123');
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('dpl_default_789'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -426,6 +655,7 @@ describe('start', () => {
     });
 
     afterEach(() => {
+      setWorld(undefined);
       vi.clearAllMocks();
     });
 
@@ -436,7 +666,7 @@ describe('start', () => {
       });
       const mockEventsCreate = vi.fn().mockRejectedValue(serverError);
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         // World declares specVersion 3 to enable CBOR queue transport + runInput
         specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
@@ -467,7 +697,7 @@ describe('start', () => {
         .fn()
         .mockRejectedValue(new Error('Queue unavailable'));
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -485,7 +715,7 @@ describe('start', () => {
       const mockEventsCreate = vi.fn().mockRejectedValue(badRequest);
       const mockQueue = vi.fn().mockResolvedValue({ messageId: null });
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,

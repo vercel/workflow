@@ -1,4 +1,9 @@
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  FatalError,
+  ThrottleError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   afterEach,
   beforeAll,
@@ -28,12 +33,19 @@ const {
     },
     mockEventsCreate: vi.fn(),
     mockQueue: vi.fn().mockResolvedValue({ messageId: 'msg_test' }),
-    mockRuntimeLogger: {
-      warn: vi.fn(),
-      debug: vi.fn(),
-      info: vi.fn(),
-      error: vi.fn(),
-    },
+    mockRuntimeLogger: (() => {
+      const logger = {
+        warn: vi.fn(),
+        debug: vi.fn(),
+        info: vi.fn(),
+        error: vi.fn(),
+        forRun: vi.fn(),
+        child: vi.fn(),
+      };
+      logger.forRun.mockReturnValue(logger);
+      logger.child.mockReturnValue(logger);
+      return logger;
+    })(),
     mockStepLogger: {
       warn: vi.fn(),
       debug: vi.fn(),
@@ -84,8 +96,17 @@ vi.mock('../telemetry.js', () => ({
   }),
   withTraceContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
   getSpanKind: vi.fn().mockResolvedValue(undefined),
+  getWorkflowTraceMode: vi.fn(() => 'linked'),
+  isUsableTraceCarrier: vi.fn(
+    (carrier?: Record<string, string>) =>
+      carrier !== undefined && Object.keys(carrier).length > 0
+  ),
+  getNextTraceCarrier: vi.fn().mockResolvedValue({}),
+  buildInvocationSpanLinks: vi.fn().mockResolvedValue([]),
   linkToCurrentContext: vi.fn().mockResolvedValue([]),
+  linkToTraceCarrier: vi.fn().mockResolvedValue(undefined),
   withWorkflowBaggage: vi.fn((_attrs: unknown, fn: () => unknown) => fn()),
+  getActiveSpan: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock logger
@@ -117,6 +138,8 @@ vi.mock('../serialization.js', () => ({
   dehydrateStepReturnValue: vi
     .fn()
     .mockResolvedValue(new Uint8Array([1, 2, 3])),
+  cancelAbortReaders: vi.fn(),
+  dehydrateStepError: vi.fn().mockResolvedValue(new Uint8Array([4, 5, 6])),
 }));
 
 // Mock context storage
@@ -128,6 +151,18 @@ vi.mock('../step/context-storage.js', () => ({
 
 // Mock types
 vi.mock('../types.js', () => ({
+  promoteAbortErrorToFatal: vi
+    .fn()
+    .mockImplementation((err: unknown) =>
+      typeof err === 'object' &&
+      err !== null &&
+      'name' in err &&
+      err.name === 'AbortError' &&
+      'message' in err &&
+      typeof err.message === 'string'
+        ? new FatalError(`Aborted: ${err.message}`)
+        : err
+    ),
   normalizeUnknownError: vi.fn().mockImplementation(async (err: unknown) => ({
     message: err instanceof Error ? err.message : String(err),
     name: err instanceof Error ? err.name : 'Error',
@@ -147,17 +182,19 @@ vi.mock('@workflow/utils/get-port', () => ({
   getPort: vi.fn().mockResolvedValue(3000),
 }));
 
-// Import the module AFTER all mocks are set up
-// Since getWorldHandlers is now async, we need to call stepEntrypoint
-// to trigger createQueueHandler and populate capturedHandlerRef
-import { stepEntrypoint } from './step-handler.js';
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getStepFunction } from '../private.js';
+import { dehydrateStepError } from '../serialization.js';
 import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import { executeStep } from './step-executor.js';
+// Import the module AFTER all mocks are set up
+// Since getWorldHandlers is now async, we need to call stepEntrypoint
+// to trigger createQueueHandler and populate capturedHandlerRef
+import { stepEntrypoint } from './step-handler.js';
 import { getWorld } from './world.js';
 
 function capturedHandler(
@@ -284,9 +321,16 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried completing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      // Workflow/step context is attached via the scoped logger (forRun),
+      // not repeated in every log call.
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
       // Should NOT have queued a workflow continuation
       expect(mockQueueMessage).not.toHaveBeenCalled();
@@ -333,9 +377,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
     });
   });
@@ -379,9 +428,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
       // Step function should NOT have been called (pre-execution guard)
       expect(mockStepFn).not.toHaveBeenCalled();
@@ -428,9 +482,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried retrying step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
     });
 
@@ -554,13 +613,22 @@ describe('step-handler max deliveries', () => {
       expect.objectContaining({
         eventType: 'step_failed',
         correlationId: 'step_abc',
+        eventData: expect.objectContaining({
+          stepName: 'myStep',
+          error: expect.any(Uint8Array),
+        }),
       }),
       expect.anything()
     );
     expect(mockQueueMessage).toHaveBeenCalled();
     expect(mockRuntimeLogger.error).toHaveBeenCalledWith(
       expect.stringContaining('exceeded max deliveries'),
-      expect.objectContaining({ workflowRunId: 'wrun_test123' })
+      expect.objectContaining({ attempt: MAX_QUEUE_DELIVERIES + 1 })
+    );
+    expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.any(String),
+      expect.objectContaining({ stepId: 'step_abc' })
     );
   });
 
@@ -633,18 +701,22 @@ describe('step-handler step not found', () => {
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_started',
+        eventData: expect.objectContaining({
+          stepName: 'missingStep',
+        }),
       }),
       expect.anything()
     );
+    // The error payload is now SerializedData (Uint8Array). The wire-format
+    // message content is tested via the serialization test suite.
     expect(mockEventsCreate).toHaveBeenCalledWith(
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_failed',
         correlationId: 'step_abc',
         eventData: expect.objectContaining({
-          error: expect.stringContaining(
-            'Step "missingStep" is not registered'
-          ),
+          stepName: 'missingStep',
+          error: expect.any(Uint8Array),
         }),
       }),
       expect.anything()
@@ -668,12 +740,16 @@ describe('step-handler step not found', () => {
     );
 
     expect(result).toBeUndefined();
+    // The error payload is now SerializedData (Uint8Array) — its contents
+    // are tested via the serialization test suite. Here we just verify
+    // that step_failed was written with a binary error field.
     expect(mockEventsCreate).toHaveBeenCalledWith(
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_failed',
         eventData: expect.objectContaining({
-          error: expect.stringContaining('Step "badStep" is not registered'),
+          stepName: 'badStep',
+          error: expect.any(Uint8Array),
         }),
       }),
       expect.anything()
@@ -719,11 +795,595 @@ describe('step-handler step not found', () => {
     expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
       'Tried failing step for missing function, but step has already finished.',
       expect.objectContaining({
-        workflowRunId: 'wrun_test123',
-        stepId: 'step_abc',
+        errorName: 'EntityConflictError',
+        errorMessage: expect.stringContaining('Step already completed'),
       })
+    );
+    expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.any(String),
+      expect.objectContaining({ stepName: 'missingStep' })
     );
     // Should NOT re-queue the workflow since step was already resolved
     expect(mockQueueMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Regression gate for the most user-visible behavior change in this PR:
+ * fatal user errors (`FatalError`, `ContextViolationError`,
+ * `SerializationError`) should produce exactly one `step_failed` event
+ * — no retries — while a non-fatal user `Error` should retry up to
+ * `maxRetries`. Asserting on the live retry-loop wiring catches the
+ * silent-regression case where someone removes `fatal = true` later
+ * and the unit-level FatalError.is() tests stay green.
+ */
+describe('step-handler fatal vs retryable behavior', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'UnknownError',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    vi.mocked(getErrorName).mockImplementation((err: unknown) =>
+      err instanceof Error ? err.name : 'UnknownError'
+    );
+    vi.mocked(getErrorStack).mockImplementation((err: unknown) =>
+      err instanceof Error ? (err.stack ?? '') : ''
+    );
+    mockQueueMessage.mockResolvedValue(undefined);
+    vi.mocked(getWorld).mockResolvedValue({
+      events: { create: mockEventsCreate },
+      queue: mockQueue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    mockEventsCreate.mockReset().mockResolvedValue({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 1,
+        startedAt: new Date(),
+        input: [],
+      },
+      event: {},
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('emits exactly one step_failed and does not re-queue when the step throws an error with fatal=true', async () => {
+    // Simulates a `ContextViolationError` / `SerializationError` —
+    // both opt into the no-retry path via a `fatal: true` own property
+    // that `FatalError.is()` recognizes.
+    class FatalUserError extends Error {
+      readonly fatal = true;
+      name = 'FatalUserError';
+    }
+    mockStepFn.mockReset().mockRejectedValue(new FatalUserError('boom'));
+    mockStepFn.maxRetries = 3;
+
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    const stepFailedCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_failed'
+    );
+    expect(stepFailedCalls).toHaveLength(1);
+    // The retry path uses `step_retrying`; the fatal path skips it.
+    const stepRetryingCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_retrying'
+    );
+    expect(stepRetryingCalls).toHaveLength(0);
+  });
+
+  it('promotes an AbortError-shaped rejection to FatalError without retrying', async () => {
+    mockStepFn.mockReset().mockRejectedValue({
+      name: 'AbortError',
+      message: 'This operation was aborted',
+    });
+    mockStepFn.maxRetries = 3;
+
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    const stepRetryingCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_retrying'
+    );
+    expect(stepRetryingCalls).toHaveLength(0);
+    expect(dehydrateStepError).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'FatalError', fatal: true }),
+      'wrun_test123',
+      undefined,
+      [],
+      globalThis,
+      expect.any(Boolean)
+    );
+  });
+
+  it('schedules a retry (and does not fail the step) on the first attempt of a non-fatal Error', async () => {
+    mockStepFn
+      .mockReset()
+      .mockRejectedValue(new Error('Transient failure, will succeed later'));
+    mockStepFn.maxRetries = 3;
+
+    await capturedHandler(
+      createMessage(),
+      createMetadata('myStep', { attempt: 1 })
+    );
+
+    // Non-fatal first attempt: re-queue via step_retrying, no terminal failure.
+    const stepRetryingCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_retrying'
+    );
+    expect(stepRetryingCalls).toHaveLength(1);
+    const stepFailedCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_failed'
+    );
+    expect(stepFailedCalls).toHaveLength(0);
+  });
+
+  it('emits step_failed once the non-fatal retry budget is exhausted', async () => {
+    mockStepFn.mockReset().mockRejectedValue(new Error('Transient failure'));
+    mockStepFn.maxRetries = 3;
+    // Final attempt: total attempts = maxRetries + 1.
+    mockEventsCreate.mockReset().mockResolvedValueOnce({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 4,
+        startedAt: new Date(),
+        input: [],
+      },
+      event: {},
+    });
+    // Subsequent emissions (e.g. step_failed) get a generic ack.
+    mockEventsCreate.mockResolvedValue({ event: {} });
+
+    await capturedHandler(
+      createMessage(),
+      createMetadata('myStep', { attempt: 4 })
+    );
+
+    const stepFailedCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_failed'
+    );
+    expect(stepFailedCalls).toHaveLength(1);
+  });
+});
+
+describe('executeStep inline-delta threading', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        return Promise.resolve({ event: {} });
+      });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const baseParams = {
+    workflowRunId: 'wrun_test123',
+    workflowName: 'test-workflow',
+    workflowStartedAt: Date.now(),
+    stepId: 'step_abc',
+    stepName: 'myStep',
+  };
+
+  it('passes sinceCursor to the step_completed write and surfaces the returned delta', async () => {
+    const deltaEvents = [
+      { eventId: 'evnt_1', eventType: 'step_created' },
+      { eventId: 'evnt_2', eventType: 'step_started' },
+      { eventId: 'evnt_3', eventType: 'step_completed' },
+    ];
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          // The World returns the delta only because sinceCursor was passed.
+          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+          return Promise.resolve({
+            event: {},
+            events: deltaEvents,
+            cursor: 'cursor_post',
+            hasMore: false,
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toEqual({
+      events: deltaEvents,
+      cursor: 'cursor_post',
+      hasMore: false,
+    });
+  });
+
+  it('surfaces hasMore=true verbatim when the World returns a truncated delta', async () => {
+    // The World truncates a delta larger than one page and reports
+    // hasMore=true. executeStep must forward that flag unchanged so the
+    // runtime's consume gate (which only stashes a delta when !hasMore) falls
+    // back to the exhaustive events.list loop instead of consuming a partial
+    // page as the complete delta.
+    const truncatedEvents = [
+      { eventId: 'evnt_1', eventType: 'hook_received' },
+      { eventId: 'evnt_2', eventType: 'hook_received' },
+    ];
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+          return Promise.resolve({
+            event: {},
+            events: truncatedEvents,
+            cursor: 'cursor_mid',
+            hasMore: true,
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toEqual({
+      events: truncatedEvents,
+      cursor: 'cursor_mid',
+      hasMore: true,
+    });
+  });
+
+  it('does not pass sinceCursor or surface a delta when it is omitted', async () => {
+    let completedParams: unknown = 'unset';
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          completedParams = params;
+          // Even if a World returned events here, the runtime must ignore them
+          // when it never requested a delta.
+          return Promise.resolve({
+            event: {},
+            events: [{ eventId: 'evnt_x', eventType: 'step_completed' }],
+            cursor: 'cursor_post',
+          });
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(completedParams).toBeUndefined();
+    expect(result.inlineDelta).toBeUndefined();
+  });
+
+  it('surfaces no delta when a supporting cursor is requested but the World omits one', async () => {
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        // World ignores sinceCursor (returns no events/cursor) — backward compat.
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      inlineDeltaSinceCursor: 'cursor_pre',
+    });
+
+    expect(result.type).toBe('completed');
+    if (result.type !== 'completed') throw new Error('unreachable');
+    expect(result.inlineDelta).toBeUndefined();
+  });
+});
+
+describe('executeStep optimistic inline start', () => {
+  const baseParams = {
+    workflowRunId: 'wrun_test123',
+    workflowName: 'test-workflow',
+    workflowStartedAt: Date.now(),
+    stepId: 'step_abc',
+    stepName: 'myStep',
+    // Empty dehydrated input — the world round-trips this back as step.input.
+    lazyStepInput: [] as never,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Optimistic start is OFF by default — explicitly enable it so these tests
+    // exercise the optimistic path. (The disabled-path test overrides to '0'.)
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+  });
+
+  afterEach(() => {
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    vi.restoreAllMocks();
+  });
+
+  it('sends step_started carrying the input and completes (when enabled)', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) =>
+        Promise.resolve({ event: {} })
+      );
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result.type).toBe('completed');
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    // The lazy step_started carries the input so the world creates the step.
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_started',
+        correlationId: 'step_abc',
+        eventData: expect.objectContaining({ stepName: 'myStep', input: [] }),
+      })
+    );
+  });
+
+  it('runs the body optimistically but discards the result when step_started loses the create race (409)', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('lost create race'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    // The body ran (optimistic execution before the start was confirmed)...
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    // ...but we lost the race, so the result is discarded and no terminal
+    // event is written.
+    expect(result.type).toBe('skipped');
+    const completedWrites = mockEventsCreate.mock.calls.filter(
+      ([, event]) =>
+        (event as { eventType: string }).eventType === 'step_completed'
+    );
+    expect(completedWrites).toHaveLength(0);
+  });
+
+  it('returns throttled (discarding the body result) when step_started is throttled', async () => {
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(
+            new ThrottleError('slow down', { retryAfter: 7 })
+          );
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result).toEqual({ type: 'throttled', timeoutSeconds: 7 });
+  });
+
+  it('does NOT run the body before confirming start when the flag is disabled', async () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('already running'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    // Await-first path: the conflict short-circuits before the body runs.
+    expect(result.type).toBe('skipped');
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('forces optimistic start via forceOptimisticStart when the flag is unset', async () => {
+    // Turbo passes forceOptimisticStart; with the env var UNSET (off by default
+    // but not an explicit opt-out), turbo forces optimistic start on.
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('lost create race'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+    });
+
+    // Forced optimistic: the body ran before the (lost) create-claim resolved —
+    // unlike the env-disabled case above, where the body never runs.
+    expect(mockStepFn).toHaveBeenCalledTimes(1);
+    expect(result.type).toBe('skipped');
+  });
+
+  it('forceOptimisticStart defers to an EXPLICIT WORKFLOW_OPTIMISTIC_INLINE_START=0', async () => {
+    // An operator who explicitly set the flag to 0 has opted out of "body runs
+    // before start is confirmed"; that opt-out wins over turbo's force, so the
+    // step takes the await-then-run path and the body never runs on a 409.
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(new EntityConflictError('already running'));
+        }
+        return Promise.resolve({ event: {} });
+      });
+
+    const world = await getWorld();
+    const result = await executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+    });
+
+    expect(result.type).toBe('skipped');
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('holds the optimistic step_started until runReadyBarrier resolves, but runs the body immediately', async () => {
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    let release!: () => void;
+    const barrier = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls: string[] = [];
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, event: { eventType: string }) => {
+        calls.push(event.eventType);
+        return Promise.resolve({ event: {} });
+      });
+    mockStepFn.mockReset().mockImplementation(async () => {
+      calls.push('body');
+      return 'step-result';
+    });
+
+    const world = await getWorld();
+    const resultPromise = executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+      runReadyBarrier: barrier,
+    });
+
+    // The body runs immediately against synthesized state; step_started is NOT
+    // issued until the run-ready barrier resolves. Widen the default 1s
+    // vi.waitFor timeout — reaching the body can be slow on cold CI (Windows).
+    await vi.waitFor(() => expect(calls).toContain('body'), {
+      timeout: 15_000,
+    });
+    expect(calls).not.toContain('step_started');
+
+    release();
+    const result = await resultPromise;
+    expect(result.type).toBe('completed');
+    expect(calls).toContain('step_started');
+    expect(calls.indexOf('body')).toBeLessThan(calls.indexOf('step_started'));
   });
 });

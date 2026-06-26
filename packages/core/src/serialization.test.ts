@@ -1,13 +1,22 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
+import {
+  FatalError,
+  HookConflictError,
+  RetryableError,
+  RuntimeDecryptionError,
+} from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import {
+  cancelAbortReaders,
   decodeFormatPrefix,
+  dehydrateRunError,
   dehydrateStepArguments,
+  dehydrateStepError,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
@@ -16,7 +25,9 @@ import {
   getSerializeStream,
   getStreamType,
   getWorkflowReducers,
+  hydrateRunError,
   hydrateStepArguments,
+  hydrateStepError,
   hydrateStepReturnValue,
   hydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
@@ -25,8 +36,44 @@ import {
   maybeEncrypt,
   SerializationFormat,
 } from './serialization.js';
-import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
+import {
+  ABORT_HOOK_TOKEN,
+  ABORT_READER_CANCEL,
+  ABORT_STREAM_NAME,
+  STABLE_ULID,
+  STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
+} from './symbols.js';
 import { createContext } from './vm/index.js';
+
+const makeMockWorld = () => ({
+  streams: {
+    write: vi.fn().mockResolvedValue(undefined),
+    writeMulti: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+    get: vi.fn().mockResolvedValue(
+      new ReadableStream({
+        start(c) {
+          c.close();
+        },
+      })
+    ),
+    list: vi.fn().mockResolvedValue([]),
+    getInfo: vi.fn().mockResolvedValue(undefined),
+  },
+});
+
+vi.mock('./runtime/world.js', () => ({
+  getWorld: vi.fn(() => makeMockWorld()),
+}));
+
+// V2 step-side code paths use getWorldLazy. Mock it identically to getWorld
+// so tests that exercise stream writes (e.g. abort listener tests) work in
+// both the legacy and V2 paths.
+vi.mock('./runtime/get-world-lazy.js', () => ({
+  getWorldLazy: vi.fn(() => makeMockWorld()),
+}));
 
 const mockRunId = 'wrun_mockidnumber0001';
 const noEncryptionKey = undefined;
@@ -452,6 +499,164 @@ describe('workflow arguments', () => {
     expect(hydrated).toBeInstanceOf(OurWritableStream);
     const streamName = hydrated[STREAM_NAME_SYMBOL];
     expect(streamName).toMatch(/^strm_[0-9A-Z]{26}$/);
+  });
+
+  // When a user writable is already backed by a workflow server
+  // stream (because it was hydrated by a step-side reviver or created
+  // via step-context `getWritable()`), forwarding it across a
+  // `start()` boundary must emit the original `(runId, name)` in the
+  // dehydrated descriptor and MUST NOT install any pipe through the
+  // user's writable. The child run's step-side reviver then opens a
+  // server writable against the original `(runId, name)` directly,
+  // so writes survive for the full lifetime of the child run — not
+  // just for the dehydrating step's process.
+  it('forwards original (runId, name) for a tagged WritableStream', async () => {
+    const userWritable = new WritableStream();
+    Object.defineProperty(userWritable, STREAM_NAME_SYMBOL, {
+      value: 'strm_parentstreamname',
+      writable: false,
+    });
+    Object.defineProperty(userWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      value: 'wrun_parent',
+      writable: false,
+    });
+    Object.defineProperty(userWritable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: 'dpl_parent',
+      writable: false,
+    });
+
+    expect(userWritable.locked).toBe(false);
+    const serialized = await dehydrateWorkflowArguments(
+      userWritable,
+      'wrun_child',
+      noEncryptionKey,
+      []
+    );
+    // If the reducer had piped through the user's writable, the lock
+    // would be acquired here.
+    expect(userWritable.locked).toBe(false);
+    // The dehydrated descriptor should carry both the original name
+    // and the original runId so the child's reviver can open the
+    // writable against the parent's server stream directly.
+    const text = new TextDecoder().decode(serialized as Uint8Array);
+    expect(text).toContain('strm_parentstreamname');
+    expect(text).toContain('wrun_parent');
+    expect(text).toContain('dpl_parent');
+  });
+
+  it('uses the forwarded stream deployment to resolve its encryption key', async () => {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const getEncryptionKeyForRun = vi
+      .fn()
+      .mockResolvedValue(new Uint8Array(32).fill(7));
+    const runsGet = vi.fn();
+    const world = {
+      ...makeMockWorld(),
+      runs: { get: runsGet },
+      getEncryptionKeyForRun,
+    } as any;
+    vi.mocked(getWorldLazy).mockReturnValue(world);
+
+    try {
+      const parentWritable = new WritableStream();
+      Object.defineProperty(parentWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_parentstreamname',
+        writable: false,
+      });
+      Object.defineProperty(parentWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_parent',
+        writable: false,
+      });
+      Object.defineProperty(
+        parentWritable,
+        STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+        {
+          value: 'dpl_parent',
+          writable: false,
+        }
+      );
+
+      const serialized = await dehydrateStepArguments(
+        parentWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops,
+        globalThis,
+        {},
+        'dpl_child'
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('cross-deployment');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith('wrun_parent', {
+        deploymentId: 'dpl_parent',
+      });
+      expect(runsGet).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
+  });
+
+  it('loads the owner run for forwarded descriptors from older deployments', async () => {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const parentRun = {
+      runId: 'wrun_parent',
+      deploymentId: 'dpl_parent',
+    };
+    const getEncryptionKeyForRun = vi
+      .fn()
+      .mockResolvedValue(new Uint8Array(32).fill(9));
+    const runsGet = vi.fn().mockResolvedValue(parentRun);
+    const world = {
+      ...makeMockWorld(),
+      runs: { get: runsGet },
+      getEncryptionKeyForRun,
+    } as any;
+    vi.mocked(getWorldLazy).mockReturnValue(world);
+
+    try {
+      const legacyWritable = new WritableStream();
+      Object.defineProperty(legacyWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_legacyparent',
+        writable: false,
+      });
+      Object.defineProperty(legacyWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_parent',
+        writable: false,
+      });
+
+      const serialized = await dehydrateStepArguments(
+        legacyWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('legacy-descriptor');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(runsGet).toHaveBeenCalledWith('wrun_parent');
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith(parentRun);
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
   });
 
   it('should work with ReadableStream', async () => {
@@ -1779,7 +1984,10 @@ describe('workflow arguments', () => {
     }
     expect(err).toBeDefined();
     expect(err?.message).toContain(
-      `Ensure you're passing serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+      // Hint text comes from `formatSerializationError` and now points at
+      // the foundations docs instead of a hardcoded type list. See
+      // packages/core/src/serialization/errors.ts.
+      `Ensure you're passing workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
   });
 });
@@ -1795,7 +2003,7 @@ describe('workflow return value', () => {
     }
     expect(err).toBeDefined();
     expect(err?.message).toContain(
-      `Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+      `Ensure you're returning workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
   });
 });
@@ -1816,7 +2024,10 @@ describe('step arguments', () => {
     }
     expect(err).toBeDefined();
     expect(err?.message).toContain(
-      `Ensure you're passing serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+      // Hint text comes from `formatSerializationError` and now points at
+      // the foundations docs instead of a hardcoded type list. See
+      // packages/core/src/serialization/errors.ts.
+      `Ensure you're passing workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
   });
 });
@@ -1836,12 +2047,16 @@ describe('cross-VM Error serialization', () => {
   vmGlobalThis.WritableStream = globalThis.WritableStream;
 
   it('should serialize a host-context Error when using VM globalThis', async () => {
-    // This simulates the scenario where a FatalError (created in the host
+    // This simulates the scenario where an Error (created in the host
     // context) is passed as an argument to a step function. The serialization
     // uses VM's globalThis, so `instanceof vmGlobal.Error` would fail for
     // host-context errors. Using types.isNativeError() fixes this.
+    //
+    // The custom `name` is intentionally NOT one of the dedicated subclass
+    // names (FatalError, RetryableError, TypeError, …) so the value falls
+    // through to the generic Error reducer, which is the path under test.
     const hostError = new Error('host error');
-    hostError.name = 'FatalError';
+    hostError.name = 'CustomError';
 
     const serialized = await dehydrateStepArguments(
       [hostError],
@@ -1861,7 +2076,7 @@ describe('cross-VM Error serialization', () => {
 
     // The reviver creates errors with `new global.Error()` (VM's Error),
     // so `instanceof` against the host Error fails. Check duck-type instead.
-    expect((hydrated[0] as Error).name).toBe('FatalError');
+    expect((hydrated[0] as Error).name).toBe('CustomError');
     expect((hydrated[0] as Error).message).toBe('host error');
     // Verify it's an instance of the VM's Error
     vmGlobalThis.__testVal = hydrated[0];
@@ -1869,8 +2084,10 @@ describe('cross-VM Error serialization', () => {
   });
 
   it('should serialize a VM-context Error when using VM globalThis', async () => {
+    // See note on the previous test about the custom `name` being
+    // intentionally chosen to bypass the dedicated subclass reducers.
     const vmError = runInContext(
-      '(() => { const e = new Error("vm error"); e.name = "FatalError"; return e; })()',
+      '(() => { const e = new Error("vm error"); e.name = "CustomError"; return e; })()',
       context
     );
 
@@ -1892,7 +2109,7 @@ describe('cross-VM Error serialization', () => {
 
     // The reviver creates errors with `new global.Error()` (VM's Error),
     // so `instanceof` against the host Error fails. Check duck-type instead.
-    expect((hydrated[0] as Error).name).toBe('FatalError');
+    expect((hydrated[0] as Error).name).toBe('CustomError');
     expect((hydrated[0] as Error).message).toBe('vm error');
     // Verify it's an instance of the VM's Error
     vmGlobalThis.__testVal = hydrated[0];
@@ -1900,13 +2117,16 @@ describe('cross-VM Error serialization', () => {
   });
 
   it('should serialize Error subclass from host context through workflow reducers', async () => {
-    class FatalError extends Error {
+    // User-defined subclass with a non-special `name` so the value flows
+    // through the generic Error reducer (which uses `new global.Error(...)`)
+    // rather than one of the dedicated subclass reducers.
+    class CustomError extends Error {
       constructor(message: string) {
         super(message);
-        this.name = 'FatalError';
+        this.name = 'CustomError';
       }
     }
-    const error = new FatalError('step failed');
+    const error = new CustomError('step failed');
 
     const serialized = await dehydrateStepArguments(
       { error },
@@ -1925,7 +2145,7 @@ describe('cross-VM Error serialization', () => {
     )) as { error: Error };
 
     // The reviver creates errors with `new global.Error()` (VM's Error)
-    expect(hydrated.error.name).toBe('FatalError');
+    expect(hydrated.error.name).toBe('CustomError');
     expect(hydrated.error.message).toBe('step failed');
     // Verify it's an instance of the VM's Error
     vmGlobalThis.__testVal = hydrated.error;
@@ -1945,7 +2165,7 @@ describe('step return value', () => {
 
     expect(err).toBeDefined();
     expect(err?.message).toContain(
-      `Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+      `Ensure you're returning workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
   });
 });
@@ -2144,7 +2364,9 @@ describe('step function serialization', () => {
 
     expect(err).toBeDefined();
     expect(err?.message).toContain('Step function "nonExistentStep" not found');
-    expect(err?.message).toContain('Make sure the step function is registered');
+    expect(err?.message).toContain(
+      'Make sure the step file is included in your build'
+    );
   });
 
   it('should dehydrate step function passed as argument to a step', async () => {
@@ -2275,6 +2497,148 @@ describe('step function serialization', () => {
 
     // Verify the closure variables were accessible and used correctly
     expect(result).toBe('Result: 21');
+  });
+
+  it('should dehydrate and hydrate step function with closureVars + boundThis combined', async () => {
+    // The end-to-end shape exercised by the SWC plugin's lexical-`this`
+    // capture: a nested arrow step closes over both lexical `this` AND a
+    // surrounding closure variable. After serialization, the step-bundle
+    // reviver must run the registered body inside the closure-vars
+    // AsyncLocalStorage frame *and* invoke it with `apply(boundThis,
+    // args)`.
+    const stepName = 'step//workflows/test.ts//addToInstance';
+
+    const { __private_getClosureVars } = await import(
+      './step/get-closure-vars.js'
+    );
+    const { contextStorage } = await import('./step/context-storage.js');
+
+    const stepFn = async function (this: { value: number }, amount: number) {
+      const { delta } = __private_getClosureVars() as { delta: number };
+      return this.value + amount + delta;
+    };
+    registerStepFunction(stepName, stepFn);
+
+    Object.defineProperty(stepFn, 'stepId', {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    Object.defineProperty(stepFn, '__closureVarsFn', {
+      value: () => ({ delta: 7 }),
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    // Simulate the `__boundThis` marker that the step proxy's overridden
+    // `.bind` (in step.ts) would attach. Plain object instead of a real
+    // class instance so the test focuses on the reducer/reviver plumbing.
+    const instance = { value: 5 };
+    Object.defineProperty(stepFn, '__boundThis', {
+      value: instance,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    // Round-trip through the workflow→step serialization pipeline.
+    const dehydrated = await dehydrateStepArguments(
+      [stepFn, 3],
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+    const hydrated = (await hydrateStepArguments(
+      dehydrated,
+      'test-run-123',
+      noEncryptionKey,
+      []
+    )) as [(amount: number) => Promise<number>, number];
+
+    expect(typeof hydrated[0]).toBe('function');
+    expect(hydrated[1]).toBe(3);
+
+    // Invoke the rehydrated step function inside a step-context frame
+    // (otherwise the closure-vars wrapper throws). The wrapper must
+    // bind `this` to `instance` *and* expose `delta = 7` via
+    // `__private_getClosureVars()`.
+    const result = await contextStorage.run(
+      {
+        stepMetadata: {
+          stepName,
+          stepId: 'test-step',
+          stepStartedAt: new Date(),
+          attempt: 1,
+        },
+        workflowMetadata: {
+          workflowName: 'workflow//workflows/test.ts//testWorkflow',
+          workflowRunId: 'test-run',
+          workflowStartedAt: new Date(),
+          url: 'http://localhost:3000',
+          features: { encryption: false },
+        },
+        ops: [],
+      },
+      () => hydrated[0](3)
+    );
+
+    // value(5) + amount(3) + delta(7) = 15
+    expect(result).toBe(15);
+  });
+
+  it('should preserve `boundArgs` (partial application) across serialization', async () => {
+    // The step proxy's overridden `.bind` also stashes prefilled args
+    // (`useStep(...).bind(thisArg, x)`) so partial application survives
+    // the round trip. The SWC plugin only ever emits `.bind(this)` today,
+    // so this codifies the safety net for future hand-written callers.
+    const stepName = 'step//workflows/test.ts//partialApply';
+
+    const stepFn = async function (
+      this: { tag: string },
+      prefilled: number,
+      runtimeArg: number
+    ) {
+      return `${this.tag}:${prefilled}+${runtimeArg}`;
+    };
+    registerStepFunction(stepName, stepFn);
+
+    Object.defineProperty(stepFn, 'stepId', {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    Object.defineProperty(stepFn, '__boundThis', {
+      value: { tag: 'bound' },
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    Object.defineProperty(stepFn, '__boundArgs', {
+      value: [10],
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    const dehydrated = await dehydrateStepArguments(
+      [stepFn],
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+    const hydrated = (await hydrateStepArguments(
+      dehydrated,
+      'test-run-123',
+      noEncryptionKey,
+      []
+    )) as [(runtimeArg: number) => Promise<string>];
+
+    // The hydrated proxy should already have `prefilled = 10` baked in,
+    // so the caller only supplies `runtimeArg`.
+    const result = await hydrated[0](32);
+    expect(result).toBe('bound:10+32');
   });
 
   it('should serialize step function to object through reducer', () => {
@@ -3183,6 +3547,196 @@ describe('custom Error subclass serialization', () => {
   });
 });
 
+describe('built-in Error subclass serialization', () => {
+  const { context, globalThis: vmGlobalThis } = createContext({
+    seed: 'test-error-subclass',
+    fixedTimestamp: 1714857600000,
+  });
+  vmGlobalThis.Request = globalThis.Request;
+  vmGlobalThis.Response = globalThis.Response;
+  vmGlobalThis.ReadableStream = globalThis.ReadableStream;
+  vmGlobalThis.WritableStream = globalThis.WritableStream;
+
+  // Round-trip within the same (host) context — for testing type preservation
+  async function roundTrip(value: unknown) {
+    const serialized = await dehydrateStepReturnValue(
+      value,
+      mockRunId,
+      noEncryptionKey
+    );
+    return hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+  }
+
+  it('should round-trip TypeError', async () => {
+    const error = new TypeError('bad argument');
+    const hydrated = (await roundTrip(error)) as TypeError;
+    expect(hydrated).toBeInstanceOf(TypeError);
+    expect(hydrated.message).toBe('bad argument');
+    expect(hydrated.stack).toBeDefined();
+  });
+
+  it('should round-trip RangeError', async () => {
+    const error = new RangeError('out of bounds');
+    const hydrated = (await roundTrip(error)) as RangeError;
+    expect(hydrated).toBeInstanceOf(RangeError);
+    expect(hydrated.message).toBe('out of bounds');
+  });
+
+  it('should round-trip SyntaxError', async () => {
+    const error = new SyntaxError('unexpected token');
+    const hydrated = (await roundTrip(error)) as SyntaxError;
+    expect(hydrated).toBeInstanceOf(SyntaxError);
+    expect(hydrated.message).toBe('unexpected token');
+  });
+
+  it('should round-trip URIError', async () => {
+    const error = new URIError('bad URI');
+    const hydrated = (await roundTrip(error)) as URIError;
+    expect(hydrated).toBeInstanceOf(URIError);
+    expect(hydrated.message).toBe('bad URI');
+  });
+
+  it('should round-trip ReferenceError', async () => {
+    const error = new ReferenceError('x is not defined');
+    const hydrated = (await roundTrip(error)) as ReferenceError;
+    expect(hydrated).toBeInstanceOf(ReferenceError);
+    expect(hydrated.message).toBe('x is not defined');
+  });
+
+  it('should round-trip EvalError', async () => {
+    const error = new EvalError('eval failed');
+    const hydrated = (await roundTrip(error)) as EvalError;
+    expect(hydrated).toBeInstanceOf(EvalError);
+    expect(hydrated.message).toBe('eval failed');
+  });
+
+  it('should round-trip AggregateError', async () => {
+    const errors = [new Error('first'), new TypeError('second')];
+    const aggregate = new AggregateError(errors, 'multiple failures');
+    const hydrated = (await roundTrip(aggregate)) as AggregateError;
+    expect(hydrated).toBeInstanceOf(AggregateError);
+    expect(hydrated.message).toBe('multiple failures');
+    expect(hydrated.errors).toHaveLength(2);
+    expect(hydrated.errors[0]).toBeInstanceOf(Error);
+    expect((hydrated.errors[0] as Error).message).toBe('first');
+    expect(hydrated.errors[1]).toBeInstanceOf(TypeError);
+    expect((hydrated.errors[1] as Error).message).toBe('second');
+  });
+
+  it('should round-trip AggregateError with non-Error entries in errors array', async () => {
+    const aggregate = new AggregateError(
+      ['string error', 42, { code: 'ERR' }],
+      'mixed errors'
+    );
+    const hydrated = (await roundTrip(aggregate)) as AggregateError;
+    expect(hydrated).toBeInstanceOf(AggregateError);
+    expect(hydrated.errors).toHaveLength(3);
+    expect(hydrated.errors[0]).toBe('string error');
+    expect(hydrated.errors[1]).toBe(42);
+    expect(hydrated.errors[2]).toEqual({ code: 'ERR' });
+  });
+
+  it('should round-trip plain Error with custom name', async () => {
+    const error = new Error('something failed');
+    error.name = 'CustomError';
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.name).toBe('CustomError');
+    expect(hydrated.message).toBe('something failed');
+  });
+
+  it('should preserve cause on Error', async () => {
+    const cause = new TypeError('root cause');
+    const error = new Error('wrapper', { cause });
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.message).toBe('wrapper');
+    expect(hydrated.cause).toBeInstanceOf(TypeError);
+    expect((hydrated.cause as TypeError).message).toBe('root cause');
+  });
+
+  it('should preserve deeply nested cause chain', async () => {
+    const root = new ReferenceError('x is not defined');
+    const middle = new TypeError('invalid operation', { cause: root });
+    const outer = new Error('operation failed', { cause: middle });
+    const hydrated = (await roundTrip(outer)) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.message).toBe('operation failed');
+    const hydratedMiddle = hydrated.cause as TypeError;
+    expect(hydratedMiddle).toBeInstanceOf(TypeError);
+    expect(hydratedMiddle.message).toBe('invalid operation');
+    const hydratedRoot = hydratedMiddle.cause as ReferenceError;
+    expect(hydratedRoot).toBeInstanceOf(ReferenceError);
+    expect(hydratedRoot.message).toBe('x is not defined');
+  });
+
+  it('should preserve non-Error cause values', async () => {
+    const error = new Error('failed', { cause: 'string cause' });
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated.cause).toBe('string cause');
+  });
+
+  it('should not set cause on hydrated Error when original had no cause', async () => {
+    const error = new Error('no cause');
+    expect('cause' in error).toBe(false);
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated.message).toBe('no cause');
+    expect('cause' in hydrated).toBe(false);
+  });
+
+  it('should use specific serialization key for Error subclasses', async () => {
+    const error = new TypeError('test');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('TypeError');
+    expect(str).not.toMatch(/"Error"/);
+  });
+
+  it('should use generic Error key for unrecognized Error subclass', async () => {
+    class MyError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'MyError';
+      }
+    }
+    const error = new MyError('custom');
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.name).toBe('MyError');
+    expect(hydrated.message).toBe('custom');
+  });
+
+  it('should round-trip TypeError across VM boundaries', async () => {
+    const hostError = new TypeError('host type error');
+    const serialized = await dehydrateStepReturnValue(
+      hostError,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+    runInContext('var __testVal = null', context);
+    (vmGlobalThis as any).__testVal = hydrated;
+    expect(runInContext('__testVal instanceof TypeError', context)).toBe(true);
+    expect(runInContext('__testVal.message', context)).toBe('host type error');
+  });
+});
+
 describe('DOMException serialization', () => {
   const { context, globalThis: vmGlobalThis } = createContext({
     seed: 'test-domexception',
@@ -3305,6 +3859,551 @@ describe('DOMException serialization', () => {
     expect(result).toBeInstanceOf(DOMException);
     expect(result.name).toBe('AbortError');
     expect(result.message).toBe('test');
+  });
+});
+
+describe('Workflow error serialization', () => {
+  // FatalError, RetryableError, and HookConflictError are first-class serialization targets
+  // (handled by dedicated reducers/revivers in the common reducers module),
+  // so unlike user-defined classes they round-trip without any
+  // `registerSerializationClass` setup. This is what makes them usable
+  // from environments that don't run the SWC plugin (e.g. the vitest e2e
+  // runner, ad-hoc Node scripts, etc.).
+
+  async function roundTrip(value: unknown) {
+    const serialized = await dehydrateStepReturnValue(
+      value,
+      mockRunId,
+      noEncryptionKey
+    );
+    return hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+  }
+
+  it('should round-trip FatalError preserving type and message', async () => {
+    const error = new FatalError('step failed permanently');
+    const hydrated = (await roundTrip(error)) as FatalError;
+    expect(hydrated).toBeInstanceOf(FatalError);
+    expect(hydrated.message).toBe('step failed permanently');
+    expect(hydrated.fatal).toBe(true);
+    expect(hydrated.name).toBe('FatalError');
+    expect(FatalError.is(hydrated)).toBe(true);
+  });
+
+  it('should round-trip FatalError preserving stack', async () => {
+    const error = new FatalError('with stack');
+    const originalStack = error.stack;
+    const hydrated = (await roundTrip(error)) as FatalError;
+    expect(hydrated.stack).toBe(originalStack);
+  });
+
+  it('should serialize FatalError using its dedicated reducer key', async () => {
+    const error = new FatalError('test');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    // devalue marks reduced values with `["KeyName",N]` arrays. Asserting on
+    // the literal marker (not just the string "FatalError") proves the
+    // dedicated FatalError reducer matched, rather than the generic Error
+    // reducer producing a payload that happens to contain "FatalError" in
+    // the `name` field.
+    expect(str).toContain('["FatalError",');
+    expect(str).not.toContain('["Error",');
+    expect(str).not.toContain('Instance');
+  });
+
+  it('should round-trip RetryableError preserving type, message, and retryAfter', async () => {
+    const retryDate = new Date('2025-01-01T00:00:00.000Z');
+    const error = new RetryableError('temporary failure', {
+      retryAfter: retryDate,
+    });
+    const hydrated = (await roundTrip(error)) as RetryableError;
+    expect(hydrated).toBeInstanceOf(RetryableError);
+    expect(hydrated.message).toBe('temporary failure');
+    expect(hydrated.name).toBe('RetryableError');
+    expect(hydrated.retryAfter).toBeInstanceOf(Date);
+    expect(hydrated.retryAfter.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+    expect(RetryableError.is(hydrated)).toBe(true);
+  });
+
+  it('should round-trip RetryableError preserving stack', async () => {
+    const error = new RetryableError('with stack');
+    const originalStack = error.stack;
+    const hydrated = (await roundTrip(error)) as RetryableError;
+    expect(hydrated.stack).toBe(originalStack);
+  });
+
+  it('should serialize RetryableError using its dedicated reducer key', async () => {
+    const error = new RetryableError('test');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    // See note on the FatalError variant above: assert on the devalue
+    // marker `["KeyName",N]` to prove the dedicated reducer matched.
+    expect(str).toContain('["RetryableError",');
+    expect(str).not.toContain('["Error",');
+    expect(str).not.toContain('Instance');
+  });
+
+  it('should round-trip HookConflictError preserving token and conflicting run id', async () => {
+    const error = new HookConflictError('approval-token', 'wrun_conflicting');
+    const hydrated = (await roundTrip(error)) as HookConflictError;
+    expect(hydrated).toBeInstanceOf(HookConflictError);
+    expect(HookConflictError.is(hydrated)).toBe(true);
+    expect(hydrated.token).toBe('approval-token');
+    expect(hydrated.conflictingRunId).toBe('wrun_conflicting');
+    expect(hydrated.message).toContain('wrun_conflicting');
+  });
+
+  it('should serialize HookConflictError using its dedicated reducer key', async () => {
+    const error = new HookConflictError('approval-token', 'wrun_conflicting');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('["HookConflictError",');
+    expect(str).not.toContain('["Error",');
+    expect(str).not.toContain('Instance');
+  });
+
+  it('should preserve cause on FatalError when present', async () => {
+    const cause = new Error('underlying issue');
+    const error = new FatalError('fatal with cause');
+    (error as Error).cause = cause;
+    const hydrated = (await roundTrip(error)) as FatalError;
+    expect(hydrated).toBeInstanceOf(FatalError);
+    expect(hydrated.message).toBe('fatal with cause');
+    expect((hydrated as Error).cause).toBeInstanceOf(Error);
+    expect(((hydrated as Error).cause as Error).message).toBe(
+      'underlying issue'
+    );
+  });
+
+  it('should not set cause on hydrated FatalError when original had no cause', async () => {
+    const error = new FatalError('no cause');
+    expect('cause' in error).toBe(false);
+    const hydrated = (await roundTrip(error)) as FatalError;
+    expect('cause' in hydrated).toBe(false);
+  });
+
+  it('should preserve cause on RetryableError when present', async () => {
+    const cause = new Error('underlying retry issue');
+    const error = new RetryableError('retry with cause');
+    (error as Error).cause = cause;
+    const hydrated = (await roundTrip(error)) as RetryableError;
+    expect(hydrated).toBeInstanceOf(RetryableError);
+    expect(hydrated.message).toBe('retry with cause');
+    expect((hydrated as Error).cause).toBeInstanceOf(Error);
+    expect(((hydrated as Error).cause as Error).message).toBe(
+      'underlying retry issue'
+    );
+  });
+
+  it('should round-trip RetryableError with retryAfter Date that has specific value', async () => {
+    const retryDate = new Date('2099-12-31T23:59:59.999Z');
+    const error = new RetryableError('future retry', {
+      retryAfter: retryDate,
+    });
+    const hydrated = (await roundTrip(error)) as RetryableError;
+    expect(hydrated.retryAfter).toBeInstanceOf(Date);
+    expect(hydrated.retryAfter.getTime()).toBe(retryDate.getTime());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dehydrate/hydrate{Step,Run}Error helpers
+//
+// These dedicated helpers wrap the step/workflow reducers + format-prefix
+// encoding + optional encryption for the values that flow through
+// `step_failed` / `step_retrying` / `run_failed` events. The tests below
+// exercise the public API directly (rather than through a workflow context)
+// to lock down the round-trip contract.
+// ---------------------------------------------------------------------------
+describe('dehydrate/hydrateStepError', () => {
+  // FatalError needs to be registered (the SWC plugin does this in production
+  // by inlining the registration; in unit tests we register manually).
+  beforeAll(() => {
+    registerSerializationClass('@workflow/errors//FatalError', FatalError);
+    registerSerializationClass(
+      '@workflow/errors//RetryableError',
+      RetryableError
+    );
+  });
+
+  it('should round-trip a FatalError preserving class identity, message, and stack', async () => {
+    const original = new FatalError('boom');
+    original.stack = 'Error: boom\n    at someFn (file.js:1:1)';
+    const serialized = await dehydrateStepError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    expect(serialized).toBeInstanceOf(Uint8Array);
+
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as FatalError;
+
+    expect(hydrated).toBeInstanceOf(FatalError);
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('boom');
+    expect(hydrated.stack).toBe(original.stack);
+    expect(hydrated.fatal).toBe(true);
+  });
+
+  it('should round-trip a generic Error preserving name, message, and stack', async () => {
+    const original = new Error('plain error');
+    original.stack = 'Error: plain error\n    at somewhere (a.js:1:1)';
+    const serialized = await dehydrateStepError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as Error;
+
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.name).toBe('Error');
+    expect(hydrated.message).toBe('plain error');
+    expect(hydrated.stack).toBe(original.stack);
+  });
+
+  it('should round-trip a built-in Error subclass (TypeError) with its identity', async () => {
+    const original = new TypeError('bad type');
+    const serialized = await dehydrateStepError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as TypeError;
+
+    expect(hydrated).toBeInstanceOf(TypeError);
+    expect(hydrated.name).toBe('TypeError');
+    expect(hydrated.message).toBe('bad type');
+  });
+
+  it('should round-trip non-Error thrown values (string)', async () => {
+    // Steps may throw any JS value, not only Errors. Ensure the helper
+    // round-trips strings, numbers, and plain objects without coercion.
+    const serialized = await dehydrateStepError(
+      'thrown string',
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    );
+    expect(hydrated).toBe('thrown string');
+  });
+
+  it('should round-trip non-Error thrown values (plain object)', async () => {
+    const obj = { code: 'X', detail: { nested: true } };
+    const serialized = await dehydrateStepError(
+      obj,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as typeof obj;
+    expect(hydrated).toEqual(obj);
+    expect(hydrated).not.toBe(obj);
+  });
+
+  it('should round-trip an Error cause chain', async () => {
+    const root = new Error('root cause');
+    const wrapped = new FatalError('wrapped');
+    (wrapped as Error).cause = root;
+    const serialized = await dehydrateStepError(
+      wrapped,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as FatalError;
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('wrapped');
+    expect((hydrated as Error).cause).toBeInstanceOf(Error);
+    expect(((hydrated as Error).cause as Error).message).toBe('root cause');
+  });
+
+  it('should round-trip through encryption when a key is provided', async () => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
+    const original = new FatalError('encrypted');
+    const serialized = await dehydrateStepError(original, mockRunId, key);
+    expect(serialized).toBeInstanceOf(Uint8Array);
+    // The ciphertext should not contain the plaintext message.
+    expect(new TextDecoder().decode(serialized)).not.toContain('encrypted');
+
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      key
+    )) as FatalError;
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('encrypted');
+  });
+
+  it('should produce binary output prefixed with the DEVALUE_V1 format byte', async () => {
+    // Lock down the wire contract so storage backends keep working.
+    const serialized = await dehydrateStepError(
+      new Error('x'),
+      mockRunId,
+      noEncryptionKey
+    );
+    const { format } = decodeFormatPrefix(serialized);
+    expect(format).toBe(SerializationFormat.DEVALUE_V1);
+  });
+
+  it('should throw WorkflowRuntimeError when given an unserializable value', async () => {
+    // A class instance with no WORKFLOW_SERIALIZE/registration is not
+    // serializable and must surface a runtime error rather than producing
+    // bogus output.
+    class Unregistered {
+      foo = 'bar';
+    }
+    let err: WorkflowRuntimeError | undefined;
+    try {
+      await dehydrateStepError(new Unregistered(), mockRunId, noEncryptionKey);
+    } catch (e) {
+      err = e as WorkflowRuntimeError;
+    }
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('step error');
+  });
+
+  it('hydrateStepError should reject unknown format prefixes', async () => {
+    // Manufacture a payload with a bogus format byte to assert the
+    // helper rejects it instead of returning garbage.
+    const bogus = new Uint8Array([0xff, 0, 0, 0, 0]);
+    await expect(
+      hydrateStepError(bogus, mockRunId, noEncryptionKey)
+    ).rejects.toThrow(/(Unknown|Invalid) (serialization )?format/i);
+  });
+});
+
+describe('dehydrate/hydrateRunError', () => {
+  // The run-error helpers use the workflow reducers (vs. the step reducers
+  // used above), but the surface contract is the same. These tests cover the
+  // run-side specifically so the two pipelines can evolve independently.
+  beforeAll(() => {
+    registerSerializationClass('@workflow/errors//FatalError', FatalError);
+  });
+
+  it('should round-trip a FatalError preserving class identity', async () => {
+    const original = new FatalError('run-level fatal');
+    const serialized = await dehydrateRunError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    expect(serialized).toBeInstanceOf(Uint8Array);
+
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as FatalError;
+
+    expect(hydrated).toBeInstanceOf(FatalError);
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('run-level fatal');
+    expect(hydrated.fatal).toBe(true);
+  });
+
+  it('should round-trip a custom property bag thrown by the workflow', async () => {
+    // Workflows may throw arbitrary values; ensure plain object shape is
+    // preserved including nested structures.
+    const value = {
+      reason: 'bad-input',
+      attempted: [1, 2, 3],
+      meta: { user: 'alice' },
+    };
+    const serialized = await dehydrateRunError(
+      value,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    );
+    expect(hydrated).toEqual(value);
+  });
+
+  it('should round-trip through encryption when a key is provided', async () => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
+    const original = new Error('top-secret message');
+    const serialized = await dehydrateRunError(original, mockRunId, key);
+    expect(new TextDecoder().decode(serialized)).not.toContain('top-secret');
+
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      key
+    )) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.message).toBe('top-secret message');
+  });
+
+  it('should preserve the cause chain on a thrown FatalError', async () => {
+    const root = new TypeError('root type error');
+    const wrapped = new FatalError('outer fatal');
+    (wrapped as Error).cause = root;
+    const serialized = await dehydrateRunError(
+      wrapped,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as FatalError;
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('outer fatal');
+    const cause = (hydrated as Error).cause as Error;
+    expect(cause).toBeInstanceOf(TypeError);
+    expect(cause.message).toBe('root type error');
+  });
+
+  it('should round-trip a RuntimeDecryptionError preserving its diagnostic context', async () => {
+    // RuntimeDecryptionError self-registers on globalThis via Symbol.for
+    // when `@workflow/errors` is imported, so the reviver can resolve it.
+    const original = new RuntimeDecryptionError(
+      'AES-256-GCM decryption failed: The operation failed for an operation-specific reason',
+      {
+        cause: Object.assign(new Error('boom'), { name: 'OperationError' }),
+        context: {
+          operation: 'decrypt',
+          byteLength: 1234,
+          formatPrefix: 'encr',
+        },
+      }
+    );
+    const serialized = await dehydrateRunError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as RuntimeDecryptionError;
+
+    expect(RuntimeDecryptionError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toContain('AES-256-GCM decryption failed');
+    // The diagnostic context must survive the dehydrate → hydrate round trip.
+    expect(hydrated.context).toEqual({
+      operation: 'decrypt',
+      byteLength: 1234,
+      formatPrefix: 'encr',
+    });
+    // The underlying DOMException cause is preserved too.
+    const cause = (hydrated as Error).cause as Error;
+    expect(cause?.name).toBe('OperationError');
+  });
+
+  it('should produce DEVALUE_V1-prefixed binary output', async () => {
+    const serialized = await dehydrateRunError(
+      new Error('x'),
+      mockRunId,
+      noEncryptionKey
+    );
+    const { format } = decodeFormatPrefix(serialized);
+    expect(format).toBe(SerializationFormat.DEVALUE_V1);
+  });
+
+  it('should throw WorkflowRuntimeError when given an unserializable value', async () => {
+    class Unregistered {
+      foo = 'bar';
+    }
+    let err: WorkflowRuntimeError | undefined;
+    try {
+      await dehydrateRunError(new Unregistered(), mockRunId, noEncryptionKey);
+    } catch (e) {
+      err = e as WorkflowRuntimeError;
+    }
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('run error');
+  });
+});
+
+describe('encryption-failure propagation through dehydrate wrappers', () => {
+  // A CryptoKey imported with only the 'decrypt' usage makes subtle.encrypt()
+  // throw, which the encryption layer wraps as RuntimeDecryptionError. The
+  // dehydrate wrappers must NOT reframe that as a SerializationError, or the
+  // run-failure classifier would mislabel an SDK encryption failure as a
+  // USER_ERROR.
+  async function decryptOnlyKey() {
+    return importKey(crypto.getRandomValues(new Uint8Array(32)), ['decrypt']);
+  }
+
+  it('dehydrateWorkflowReturnValue preserves RuntimeDecryptionError', async () => {
+    const key = await decryptOnlyKey();
+    const error = await dehydrateWorkflowReturnValue(
+      { hello: 'world' },
+      mockRunId,
+      key
+    ).catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+    expect(error.context?.operation).toBe('encrypt');
+  });
+
+  it('dehydrateStepReturnValue preserves RuntimeDecryptionError', async () => {
+    const key = await decryptOnlyKey();
+    const error = await dehydrateStepReturnValue(
+      { hello: 'world' },
+      mockRunId,
+      key
+    ).catch((e: unknown) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+  });
+
+  it('dehydrateRunError preserves RuntimeDecryptionError', async () => {
+    const key = await decryptOnlyKey();
+    const error = await dehydrateRunError(
+      new Error('thrown by workflow'),
+      mockRunId,
+      key
+    ).catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
   });
 });
 
@@ -3433,7 +4532,7 @@ describe('format prefix system', () => {
         noEncryptionKey,
         vmGlobalThis
       )
-    ).rejects.toThrow(/Unknown serialization format/);
+    ).rejects.toThrow(/Unsupported serialization format/);
   });
 
   it('should throw error for data too short to contain format prefix', async () => {
@@ -3671,8 +4770,8 @@ describe('getDeserializeStream legacy fallback', () => {
     const { stringify } = await import('devalue');
     const encoder = new TextEncoder();
 
-    const line1 = stringify({ hello: 'world' }) + '\n';
-    const line2 = stringify(42) + '\n';
+    const line1 = `${stringify({ hello: 'world' })}\n`;
+    const line2 = `${stringify(42)}\n`;
     const legacyData = encoder.encode(line1 + line2);
 
     const results = await deserializeChunks([legacyData]);
@@ -3685,8 +4784,8 @@ describe('getDeserializeStream legacy fallback', () => {
     const { stringify } = await import('devalue');
     const encoder = new TextEncoder();
 
-    const chunk1 = encoder.encode(stringify('hello') + '\n');
-    const chunk2 = encoder.encode(stringify('world') + '\n');
+    const chunk1 = encoder.encode(`${stringify('hello')}\n`);
+    const chunk2 = encoder.encode(`${stringify('world')}\n`);
 
     const results = await deserializeChunks([chunk1, chunk2]);
     expect(results).toHaveLength(2);
@@ -3853,6 +4952,40 @@ describe('stream encryption round-trip', () => {
     await expect(readPromise).rejects.toThrow(
       'Encrypted stream data encountered but no encryption key is available'
     );
+  });
+
+  it('should error with a RuntimeDecryptionError carrying the encr prefix when a frame is tampered', async () => {
+    const encrypted = await encryptedSerialize([{ secret: true }]);
+    const frame = encrypted[0];
+
+    // Tamper with the last byte (inside the GCM auth tag) to force an
+    // auth-tag verification failure during stream decryption.
+    const tampered = new Uint8Array(frame);
+    tampered[tampered.length - 1] ^= 0xff;
+
+    const deserialize = getDeserializeStream(revivers, cryptoKey);
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    })();
+
+    const writer = deserialize.writable.getWriter();
+    // The write/close may reject because controller.error() aborts the stream.
+    await writer.write(tampered).catch(() => {});
+    await writer.close().catch(() => {});
+
+    const error = await readPromise.catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+    // The stream decrypt path must enrich the context with the real outer
+    // envelope prefix (`encr`), not the nonce bytes — mirroring the regular
+    // payload decryption path.
+    expect(error.context).toMatchObject({
+      operation: 'decrypt',
+      formatPrefix: 'encr',
+    });
   });
 
   it('should not encrypt when cryptoKey is undefined', async () => {
@@ -4420,6 +5553,1009 @@ describe('isEncrypted', () => {
 
   it('should return false for data shorter than prefix length', () => {
     expect(isEncrypted(new Uint8Array(2))).toBe(false);
+  });
+});
+
+// ============================================================================
+// AbortController / AbortSignal serialization
+// ============================================================================
+
+describe('AbortController serialization', () => {
+  const { context, globalThis: vmGlobalThis } = createContext({
+    seed: 'test-abort-serde',
+    fixedTimestamp: 1714857600000,
+  });
+  // The workflow VM does NOT use the real AbortController/AbortSignal
+  // (their prototypes have getter-only properties like `aborted`).
+  // The real workflow VM uses lightweight stubs from workflow/abort-controller.ts.
+  // Workflow revivers use Object.create(global.AbortController?.prototype ?? {})
+  // which falls back to a plain object when the VM doesn't have them set.
+
+  // Set up common web globals that workflow reducers check via instanceof
+  vmGlobalThis.Request = globalThis.Request;
+  vmGlobalThis.Response = globalThis.Response;
+  vmGlobalThis.Headers = globalThis.Headers;
+  vmGlobalThis.ReadableStream = globalThis.ReadableStream;
+  vmGlobalThis.WritableStream = globalThis.WritableStream;
+
+  describe('workflow arguments (external → workflow)', () => {
+    it('AbortController round-trip preserves type, signal.aborted === false', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000001';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        // Workflow revivers produce stubs with symbols and properties
+        expect(hydrated.signal).toBeDefined();
+        expect(hydrated.signal.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBeDefined();
+        expect((hydrated as any)[ABORT_HOOK_TOKEN]).toBeDefined();
+        expect((hydrated.signal as any)[ABORT_STREAM_NAME]).toBeDefined();
+        expect((hydrated.signal as any)[ABORT_HOOK_TOKEN]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('revived signal addEventListener fires when signal aborts (regression: was no-op stub)', async () => {
+      // Regression: workflow-VM revivers previously produced plain objects
+      // with addEventListener: () => {}. signal.addEventListener('abort', fn)
+      // after hydration silently dropped the listener. Now revivers use
+      // WorkflowAbortSignal so listeners actually fire.
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000ADD';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        let fired = 0;
+        hydrated.signal.addEventListener('abort', () => {
+          fired += 1;
+        });
+
+        // Drive the abort through _setAborted (the same path the events
+        // consumer uses on replay) — the listener must fire.
+        hydrated.signal._setAborted('addEventListener-fires-reason');
+
+        expect(fired).toBe(1);
+        expect(hydrated.signal.aborted).toBe(true);
+        expect(hydrated.signal.reason).toBe('addEventListener-fires-reason');
+
+        // throwIfAborted on the revived signal must throw with the reason
+        expect(() => hydrated.signal.throwIfAborted()).toThrow(
+          'addEventListener-fires-reason'
+        );
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('revived already-aborted signal fires addEventListener synchronously', async () => {
+      // Native AbortSignal fires addEventListener('abort', fn) microtask-async
+      // when already-aborted; WorkflowAbortSignal fires synchronously for
+      // deterministic replay. Either way, the listener must fire.
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000ADX';
+      try {
+        const controller = new AbortController();
+        controller.abort('pre-aborted');
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        let fired = 0;
+        hydrated.signal.addEventListener('abort', () => {
+          fired += 1;
+        });
+        // Synchronous on WorkflowAbortSignal (deterministic for replay).
+        expect(fired).toBe(1);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('already-aborted AbortController: signal.aborted === true after hydration', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000002';
+      try {
+        const controller = new AbortController();
+        controller.abort('test reason');
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.signal.aborted).toBe(true);
+        expect(hydrated.signal.reason).toBe('test reason');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal (standalone) round-trip', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000003';
+      try {
+        const controller = new AbortController();
+        const signal = controller.signal;
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBeDefined();
+        expect((hydrated as any)[ABORT_HOOK_TOKEN]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal.abort() static: serialized with aborted=true', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000004';
+      try {
+        // Use a string reason because the default DOMException from
+        // AbortSignal.abort() is not serializable (isNativeError returns
+        // false for DOMException)
+        const signal = AbortSignal.abort('aborted');
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.aborted).toBe(true);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal.abort("custom reason"): reason preserved through round-trip', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000005';
+      try {
+        const signal = AbortSignal.abort('custom reason');
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.aborted).toBe(true);
+        expect(hydrated.reason).toBe('custom reason');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+  });
+
+  describe('step arguments (workflow → step)', () => {
+    it('AbortController dehydrated with workflow reducers, hydrated with step revivers', async () => {
+      // Create a controller stub as the workflow VM would produce:
+      // a plain object with ABORT_STREAM_NAME/ABORT_HOOK_TOKEN symbols
+      // and a signal property (mimicking workflow revivers output)
+      const controller: any = {};
+      controller[ABORT_STREAM_NAME] = 'strm_01ABORT0000000000006_system_abort';
+      controller[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000006';
+      const signal: any = {};
+      signal[ABORT_STREAM_NAME] = 'strm_01ABORT0000000000006_system_abort';
+      signal[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000006';
+      signal.aborted = false;
+      signal.reason = undefined;
+      controller.signal = signal;
+
+      // The workflow reducers check instanceof, so we need the VM
+      // to recognize these as AbortController/AbortSignal. Set up
+      // simple constructors whose prototypes these objects inherit from.
+      const origAC = vmGlobalThis.AbortController;
+      const origAS = vmGlobalThis.AbortSignal;
+      function FakeAC() {}
+      function FakeAS() {}
+      Object.setPrototypeOf(controller, FakeAC.prototype);
+      Object.setPrototypeOf(signal, FakeAS.prototype);
+      vmGlobalThis.AbortController = FakeAC;
+      vmGlobalThis.AbortSignal = FakeAS;
+
+      const serialized = await dehydrateStepArguments(
+        controller,
+        mockRunId,
+        noEncryptionKey,
+        vmGlobalThis
+      );
+
+      const ops: Promise<void>[] = [];
+      const hydrated = await hydrateStepArguments(
+        serialized,
+        mockRunId,
+        noEncryptionKey,
+        ops
+      );
+
+      // Step revivers use reviveAbortController which creates a real AbortController
+      expect(hydrated).toBeInstanceOf(AbortController);
+      expect(hydrated.signal.aborted).toBe(false);
+      expect((hydrated as any)[ABORT_STREAM_NAME]).toBe(
+        'strm_01ABORT0000000000006_system_abort'
+      );
+      expect((hydrated as any)[ABORT_HOOK_TOKEN]).toBe(
+        'abrt_01ABORT0000000000006'
+      );
+
+      vmGlobalThis.AbortController = origAC;
+      vmGlobalThis.AbortSignal = origAS;
+    });
+
+    it('AbortSignal as standalone step argument', async () => {
+      // Create a signal stub as the workflow VM would produce
+      const signal: any = {};
+      signal[ABORT_STREAM_NAME] = 'strm_01ABORT0000000000007_system_abort';
+      signal[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000007';
+      signal.aborted = false;
+      signal.reason = undefined;
+
+      const origAS = vmGlobalThis.AbortSignal;
+      function FakeAS() {}
+      Object.setPrototypeOf(signal, FakeAS.prototype);
+      vmGlobalThis.AbortSignal = FakeAS;
+
+      const serialized = await dehydrateStepArguments(
+        signal,
+        mockRunId,
+        noEncryptionKey,
+        vmGlobalThis
+      );
+
+      const ops: Promise<void>[] = [];
+      const hydrated = await hydrateStepArguments(
+        serialized,
+        mockRunId,
+        noEncryptionKey,
+        ops
+      );
+
+      // Step revivers revive AbortSignal via reviveAbortController().signal
+      expect(hydrated).toBeInstanceOf(AbortSignal);
+      expect(hydrated.aborted).toBe(false);
+
+      vmGlobalThis.AbortSignal = origAS;
+    });
+
+    it('stream reader triggers abort when abort payload arrives', async () => {
+      // Override the global getWorld mock to return a readFromStream that
+      // delivers an actual abort payload, verifying the stream reader in
+      // reviveAbortController processes it correctly (not masked by the
+      // default immediately-closed stream mock).
+      const { getWorld } = await import('./runtime/world.js');
+      // Encode the payload through the same machinery the writer uses so
+      // hydrateStepArguments on the read side decodes to {reason: ...}.
+      const abortPayload = (await dehydrateStepArguments(
+        { aborted: true, reason: 'stream-abort-reason' },
+        mockRunId,
+        noEncryptionKey
+      )) as Uint8Array;
+      const getStreamMock = vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(abortPayload);
+            c.close();
+          },
+        })
+      );
+      const oneShotWorld = {
+        streams: {
+          write: vi.fn().mockResolvedValue(undefined),
+          writeMulti: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+          get: getStreamMock,
+          list: vi.fn().mockResolvedValue([]),
+          getInfo: vi.fn().mockResolvedValue(undefined),
+        },
+      } as any;
+      vi.mocked(getWorld).mockReturnValueOnce(oneShotWorld);
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      vi.mocked(getWorldLazy).mockReturnValueOnce(oneShotWorld);
+      const controller: any = {};
+      controller[ABORT_STREAM_NAME] = 'strm_01ABORT0000000000STRM_system_abort';
+      controller[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000STRM';
+      const signal: any = {};
+      signal[ABORT_STREAM_NAME] = 'strm_01ABORT0000000000STRM_system_abort';
+      signal[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000STRM';
+      signal.aborted = false;
+      signal.reason = undefined;
+      controller.signal = signal;
+
+      const origAC = vmGlobalThis.AbortController;
+      const origAS = vmGlobalThis.AbortSignal;
+      function FakeAC() {}
+      function FakeAS() {}
+      Object.setPrototypeOf(controller, FakeAC.prototype);
+      Object.setPrototypeOf(signal, FakeAS.prototype);
+      vmGlobalThis.AbortController = FakeAC;
+      vmGlobalThis.AbortSignal = FakeAS;
+
+      const serialized = await dehydrateStepArguments(
+        controller,
+        mockRunId,
+        noEncryptionKey,
+        vmGlobalThis
+      );
+
+      const ops: Promise<void>[] = [];
+      const hydrated = await hydrateStepArguments(
+        serialized,
+        mockRunId,
+        noEncryptionKey,
+        ops
+      );
+
+      expect(hydrated).toBeInstanceOf(AbortController);
+      expect(hydrated.signal.aborted).toBe(false);
+
+      // Wait for the stream reader op to process the abort payload
+      await Promise.all(ops);
+
+      expect(hydrated.signal.aborted).toBe(true);
+      expect(hydrated.signal.reason).toBe('stream-abort-reason');
+
+      vmGlobalThis.AbortController = origAC;
+      vmGlobalThis.AbortSignal = origAS;
+    });
+
+    it('aborting the original signal after serialization fires the listener and writes the abort packet', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORTEXT00000000001';
+
+      const writeMock = vi.fn().mockResolvedValue(undefined);
+      const { getWorld } = await import('./runtime/world.js');
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      const mockWorld = {
+        streams: {
+          write: writeMock,
+          writeMulti: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+          get: vi.fn().mockResolvedValue(
+            new ReadableStream({
+              start(c) {
+                c.close();
+              },
+            })
+          ),
+          list: vi.fn().mockResolvedValue([]),
+          getInfo: vi.fn().mockResolvedValue(undefined),
+        },
+      } as any;
+      vi.mocked(getWorld).mockReturnValue(mockWorld);
+      vi.mocked(getWorldLazy).mockReturnValue(mockWorld);
+
+      try {
+        // External (non-workflow) controller — native AbortController.
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        expect(controller.signal.aborted).toBe(false);
+        expect(writeMock).not.toHaveBeenCalled();
+
+        // Abort AFTER serialization. The reducer attached an `abort` listener
+        // that should fire here and push a stream-write op.
+        controller.abort('aborted-after-serialization');
+
+        await Promise.all(ops);
+
+        expect(writeMock).toHaveBeenCalled();
+        const [runIdArg, streamNameArg, chunks] = writeMock.mock.calls[0];
+        expect(runIdArg).toBe(mockRunId);
+        expect(String(streamNameArg)).toContain('_system_abort');
+        // writeMulti path flattens into chunks[]; write path passes a single
+        // Uint8Array. Normalize to a single Uint8Array and hydrate via the
+        // same machinery the real reader uses — the listener writes a
+        // dehydrated payload, not raw JSON.
+        const buffer = Array.isArray(chunks)
+          ? new Uint8Array(chunks.flatMap((c: Uint8Array) => Array.from(c)))
+          : (chunks as Uint8Array);
+        const hydrated = (await hydrateStepArguments(
+          buffer,
+          mockRunId,
+          noEncryptionKey
+        )) as { aborted: boolean; reason: unknown };
+        expect(hydrated).toEqual({
+          aborted: true,
+          reason: 'aborted-after-serialization',
+        });
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+        vi.mocked(getWorld).mockReset();
+        vi.mocked(getWorldLazy).mockReset();
+      }
+    });
+
+    it('listener-side abort writes a packet the reader can hydrate (regression: bare JSON.stringify did not survive hydrateStepArguments)', async () => {
+      // Regression: attachAbortListenerOnce previously wrote
+      //   JSON.stringify({ reason: signal.reason })
+      // but the reader hydrates with hydrateStepArguments, which expects the
+      // dehydrated envelope. With a structured reason (DOMException), the
+      // bare JSON.stringify path drops the reason entirely (string-coerces
+      // to "[object DOMException]") and the reader's catch falls back to
+      // controller.abort() with no reason. Exercise the round-trip end to end.
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORTDOMEX00000001';
+
+      let writtenPayload: Uint8Array | undefined;
+      const streamData = new Map<string, Uint8Array>();
+      const writeMock = vi
+        .fn()
+        .mockImplementation(async (...args: unknown[]) => {
+          const last = args[args.length - 1];
+          const payload =
+            last instanceof Uint8Array
+              ? last
+              : Array.isArray(last)
+                ? new Uint8Array(
+                    (last as Uint8Array[]).flatMap((c) => Array.from(c))
+                  )
+                : undefined;
+          if (payload) {
+            writtenPayload = payload;
+            streamData.set(String(args[1]), payload);
+          }
+        });
+      const getMock = vi.fn().mockImplementation(async (_runId, name) => {
+        const payload = streamData.get(String(name));
+        if (!payload) {
+          return new ReadableStream({
+            start(c) {
+              c.close();
+            },
+          });
+        }
+        return new ReadableStream({
+          start(c) {
+            c.enqueue(payload);
+            c.close();
+          },
+        });
+      });
+
+      const { getWorld } = await import('./runtime/world.js');
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      const mockWorld = {
+        streams: {
+          write: writeMock,
+          writeMulti: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+          get: getMock,
+          list: vi.fn().mockResolvedValue([]),
+          getInfo: vi.fn().mockResolvedValue(undefined),
+        },
+      } as any;
+      vi.mocked(getWorld).mockReturnValue(mockWorld);
+      vi.mocked(getWorldLazy).mockReturnValue(mockWorld);
+
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        // External → workflow reducer attaches the listener.
+        await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        // Now abort the *original* (external) controller with a DOMException.
+        // The bug was: the listener wrote bare JSON.stringify({reason}),
+        // which (a) string-coerces DOMException to "[object DOMException]"
+        // and (b) is not in the format `hydrateStepArguments` expects, so
+        // the reader's catch falls through to `controller.abort()` with no
+        // reason. The fix dehydrates via the same machinery the reader uses.
+        const reason = new DOMException('user cancelled', 'AbortError');
+        controller.abort(reason);
+
+        await Promise.all(ops);
+
+        expect(writeMock).toHaveBeenCalled();
+        expect(writtenPayload).toBeDefined();
+
+        // The written packet must hydrate cleanly with full type fidelity —
+        // not as raw JSON, and not with a stringified reason.
+        const decoded = (await hydrateStepArguments(
+          writtenPayload as Uint8Array,
+          mockRunId,
+          noEncryptionKey
+        )) as { aborted: boolean; reason: unknown };
+        expect(decoded.aborted).toBe(true);
+        expect(decoded.reason).toBeInstanceOf(DOMException);
+        expect((decoded.reason as DOMException).name).toBe('AbortError');
+        expect((decoded.reason as DOMException).message).toBe('user cancelled');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+        vi.mocked(getWorld).mockReset();
+        vi.mocked(getWorldLazy).mockReset();
+      }
+    });
+
+    it('cancelAbortReaders cancels the reader when the signal is nested inside a Request', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORTREQ0000000001';
+
+      try {
+        // Build a Request whose signal is tagged as workflow-managed so the
+        // Request reducer serializes it (plain native signals are stripped).
+        // The Request constructor copies the signal internally, so tag the
+        // Request's own signal after construction.
+        const controller = new AbortController();
+        const request = new Request('https://example.com/api', {
+          method: 'POST',
+          signal: controller.signal,
+        });
+        (request.signal as any)[ABORT_STREAM_NAME] =
+          'strm_01ABORTREQ0000000001_system_abort';
+        (request.signal as any)[ABORT_HOOK_TOKEN] = 'abrt_01ABORTREQ0000000001';
+
+        const ops: Promise<void>[] = [];
+        // external → workflow reducer tags + attaches listener; step reviver
+        // (via hydrateStepArguments) installs the stream reader.
+        const serialized = await dehydrateWorkflowArguments(
+          request,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateStepArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        )) as Request;
+
+        expect(hydrated).toBeInstanceOf(Request);
+        expect(hydrated.signal.aborted).toBe(false);
+        const hydratedSignal = hydrated.signal as AbortSignal & {
+          [K in typeof ABORT_READER_CANCEL]?: AbortController;
+        };
+        const readerCancel = hydratedSignal[ABORT_READER_CANCEL];
+        expect(readerCancel).toBeInstanceOf(AbortController);
+        expect(readerCancel?.signal.aborted).toBe(false);
+
+        // Simulate step completion — cancelAbortReaders walks the step args.
+        // The Request wraps the signal, so the walker must descend into it.
+        cancelAbortReaders(hydrated);
+
+        expect(readerCancel?.signal.aborted).toBe(true);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+  });
+
+  describe('step return value (step → workflow)', () => {
+    it('AbortController dehydrated with step reducers, hydrated with workflow revivers', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000008';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateStepReturnValue(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        // hydrateStepReturnValue uses workflow revivers (stubs)
+        const hydrated = await hydrateStepReturnValue(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.signal).toBeDefined();
+        expect(hydrated.signal.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal as standalone step return value', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000009';
+      try {
+        const controller = new AbortController();
+        const signal = controller.signal;
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateStepReturnValue(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateStepReturnValue(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+  });
+
+  describe('nested and compound structures', () => {
+    it('AbortController nested in object: { ctrl: new AbortController() }', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000A';
+      try {
+        const controller = new AbortController();
+        const data = { ctrl: controller, extra: 'hello' };
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          data,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        )) as { ctrl: any; extra: string };
+
+        expect(hydrated.ctrl.signal).toBeDefined();
+        expect(hydrated.ctrl.signal.aborted).toBe(false);
+        expect((hydrated.ctrl as any)[ABORT_STREAM_NAME]).toBeDefined();
+        expect(hydrated.extra).toBe('hello');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('array of controllers: [ctrl1, ctrl2] get distinct stream names', async () => {
+      let callCount = 0;
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => {
+        callCount++;
+        return `01ABORT00000000000${callCount.toString().padStart(2, '0')}`;
+      };
+      try {
+        const ctrl1 = new AbortController();
+        const ctrl2 = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          [ctrl1, ctrl2],
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        )) as any[];
+
+        // Both should have signal properties (workflow stubs)
+        expect(hydrated[0].signal).toBeDefined();
+        expect(hydrated[1].signal).toBeDefined();
+
+        // They should have distinct stream names
+        const name1 = (hydrated[0] as any)[ABORT_STREAM_NAME];
+        const name2 = (hydrated[1] as any)[ABORT_STREAM_NAME];
+        expect(name1).toBeDefined();
+        expect(name2).toBeDefined();
+        expect(name1).not.toBe(name2);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('same controller serialized twice reuses the same stream name (WeakMap dedup)', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000D';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        // Serialize the same controller in two different positions
+        const serialized = await dehydrateWorkflowArguments(
+          { a: controller, b: controller },
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        )) as { a: any; b: any };
+
+        // Both should share the same stream name (dedup via symbol on the original)
+        const nameA = (hydrated.a as any)[ABORT_STREAM_NAME];
+        const nameB = (hydrated.b as any)[ABORT_STREAM_NAME];
+        expect(nameA).toBeDefined();
+        expect(nameA).toBe(nameB);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+  });
+
+  describe('integration with Request', () => {
+    it('Request with workflow-managed signal preserves signal through step hydration', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000E';
+      try {
+        // The Request constructor copies the signal internally, so symbols
+        // set on the original controller.signal won't appear on request.signal.
+        // To test the Request+signal serialization path, set the symbol
+        // directly on the Request's own signal after construction.
+        const controller = new AbortController();
+        controller.abort('request cancelled');
+        const request = new Request('https://example.com/api', {
+          method: 'POST',
+          signal: controller.signal,
+        });
+        (request.signal as any)[ABORT_STREAM_NAME] =
+          'strm_01ABORT000000000000E_system_abort';
+        (request.signal as any)[ABORT_HOOK_TOKEN] = 'abrt_01ABORT000000000000E';
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          request,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateStepArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        )) as Request;
+
+        expect(hydrated).toBeInstanceOf(Request);
+        expect(hydrated.url).toBe('https://example.com/api');
+        expect(hydrated.method).toBe('POST');
+        expect(hydrated.signal).toBeDefined();
+        expect(hydrated.signal.aborted).toBe(true);
+        expect(hydrated.signal.reason).toBe('request cancelled');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('Request with already-aborted plain signal preserves abort state', async () => {
+      // When a signal has already aborted before serialization (e.g. the
+      // caller cancelled the request before sending it), the abort state
+      // must be preserved so the hydrated step sees aborted=true. Plain
+      // signals that are NOT aborted are dropped (covered by other tests)
+      // because forwarding fresh signals would mint stream infrastructure
+      // for the auto-generated signal on every `new Request(url)`.
+      const controller = new AbortController();
+      controller.abort('user timeout');
+      const request = new Request('https://example.com/api', {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      const ops: Promise<void>[] = [];
+
+      const serialized = await dehydrateWorkflowArguments(
+        request,
+        mockRunId,
+        noEncryptionKey,
+        ops
+      );
+
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        mockRunId,
+        noEncryptionKey,
+        ops
+      )) as Request;
+
+      expect(hydrated).toBeInstanceOf(Request);
+      expect(hydrated.url).toBe('https://example.com/api');
+      expect(hydrated.method).toBe('GET');
+      expect(hydrated.signal.aborted).toBe(true);
+      expect(hydrated.signal.reason).toBe('user timeout');
+    });
+  });
+
+  describe('encryption', () => {
+    const testKeyRaw = new Uint8Array([
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+      0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+      0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    ]);
+    let testKey: CryptoKey;
+    beforeAll(async () => {
+      testKey = await importKey(testKeyRaw);
+    });
+
+    it('AbortController round-trip with encryption enabled', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000F';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        const encrypted = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          testKey,
+          ops,
+          globalThis,
+          false
+        );
+
+        // Should have 'encr' prefix
+        expect(encrypted).toBeInstanceOf(Uint8Array);
+        const prefix = new TextDecoder().decode(
+          (encrypted as Uint8Array).subarray(0, 4)
+        );
+        expect(prefix).toBe('encr');
+
+        const decrypted = await hydrateWorkflowArguments(
+          encrypted,
+          mockRunId,
+          testKey,
+          vmGlobalThis,
+          {}
+        );
+
+        expect(decrypted.signal).toBeDefined();
+        expect(decrypted.signal.aborted).toBe(false);
+        expect((decrypted as any)[ABORT_STREAM_NAME]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal round-trip with encryption enabled', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000G';
+      try {
+        const signal = AbortSignal.abort('encrypted reason');
+        const ops: Promise<void>[] = [];
+
+        const encrypted = await dehydrateWorkflowArguments(
+          signal,
+          mockRunId,
+          testKey,
+          ops,
+          globalThis,
+          false
+        );
+
+        // Should have 'encr' prefix
+        expect(encrypted).toBeInstanceOf(Uint8Array);
+        const prefix = new TextDecoder().decode(
+          (encrypted as Uint8Array).subarray(0, 4)
+        );
+        expect(prefix).toBe('encr');
+
+        const decrypted = await hydrateWorkflowArguments(
+          encrypted,
+          mockRunId,
+          testKey,
+          vmGlobalThis,
+          {}
+        );
+
+        expect(decrypted.aborted).toBe(true);
+        expect(decrypted.reason).toBe('encrypted reason');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
   });
 });
 

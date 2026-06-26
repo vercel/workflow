@@ -25,6 +25,7 @@ export {
   type WebhookOptions,
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
+export { experimental_setAttributes } from './set-attributes.js';
 export { sleep } from './sleep.js';
 export {
   getStepMetadata,

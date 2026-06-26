@@ -1,26 +1,21 @@
 'use client';
 
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type { Event, Hook, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { isEncryptedMarker } from '../../lib/hydration';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { DecryptClickContext } from '../ui/data-inspector';
-import { DecryptButton } from '../ui/decrypt-button';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
+import { useSidebarDataOptional } from './sidebar-data-context';
+import {
+  type FetchSpanDetail,
+  useSelectedSpanDetail,
+} from './use-selected-span-detail';
 
-// Type guards for runtime validation of span attribute data
-function isStep(data: unknown): data is Step {
-  return data !== null && typeof data === 'object' && 'stepId' in data;
-}
-
-function isWorkflowRun(data: unknown): data is WorkflowRun {
-  return data !== null && typeof data === 'object' && 'runId' in data;
-}
-
+// Type guard for runtime validation of span attribute data
 function isHook(data: unknown): data is Hook {
   return data !== null && typeof data === 'object' && 'hookId' in data;
 }
@@ -58,10 +53,7 @@ export function EntityDetailPanel({
   run,
   onStreamClick,
   onRunClick,
-  spanDetailData,
-  spanDetailError,
-  spanDetailLoading,
-  onSpanSelect,
+  fetchSpanDetail,
   onWakeUpSleep,
   onLoadEventData,
   onResolveHook,
@@ -69,21 +61,13 @@ export function EntityDetailPanel({
   onDecrypt,
   isDecrypting = false,
   selectedSpan,
-  hasEncryptedData = false,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
   /** Callback when a run reference is clicked */
   onRunClick?: (runId: string) => void;
-  /** Pre-fetched span detail data for the selected span. */
-  spanDetailData: WorkflowRun | Step | Hook | Event | null;
-  /** Error from external span detail fetch. */
-  spanDetailError?: Error | null;
-  /** Loading state from external span detail fetch. */
-  spanDetailLoading?: boolean;
-  /** Callback when a span is selected. Use this to fetch data externally and pass via spanDetailData. */
-  onSpanSelect: (info: SpanSelectionInfo) => void;
+  fetchSpanDetail: FetchSpanDetail;
   /** Callback to wake up a pending sleep call. */
   onWakeUpSleep?: (
     runId: string,
@@ -108,8 +92,6 @@ export function EntityDetailPanel({
   isDecrypting?: boolean;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
-  /** Run-level hint: the run contains encrypted data (from probe). */
-  hasEncryptedData?: boolean;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -121,57 +103,22 @@ export function EntityDetailPanel({
     new Set()
   );
 
+  const sidebar = useSidebarDataOptional();
+  const hasEncryptedData = Boolean(sidebar?.hasEncryptedData && !encryptionKey);
+
   const data = selectedSpan?.data;
   const rawEvents = selectedSpan?.rawEvents;
   const rawEventsLength = rawEvents?.length ?? 0;
 
-  // Determine resource type, ID, and runId from the selected span
-  const { resource, resourceId, runId } = useMemo(() => {
-    if (!selectedSpan) {
-      return { resource: undefined, resourceId: undefined, runId: undefined };
-    }
-
-    const res = selectedSpan.resource;
-    if (res === 'step' && isStep(data)) {
-      return { resource: 'step', resourceId: data.stepId, runId: data.runId };
-    }
-    if (res === 'run' && isWorkflowRun(data)) {
-      return { resource: 'run', resourceId: data.runId, runId: undefined };
-    }
-    if (res === 'hook' && isHook(data)) {
-      return { resource: 'hook', resourceId: data.hookId, runId: undefined };
-    }
-    if (res === 'sleep') {
-      const waitData = data as { runId?: string } | undefined;
-      return {
-        resource: 'sleep',
-        resourceId: selectedSpan.spanId,
-        runId: waitData?.runId,
-      };
-    }
-    return { resource: undefined, resourceId: undefined, runId: undefined };
-  }, [selectedSpan, data]);
-
-  // Notify parent when span selection changes.
-  // Use a ref for the callback so the effect only fires when the actual
-  // selection values change, not when the callback identity changes due to
-  // parent re-renders from polling.
-  const onSpanSelectRef = useRef(onSpanSelect);
-  onSpanSelectRef.current = onSpanSelect;
-
-  useEffect(() => {
-    if (
-      resource &&
-      resourceId &&
-      ['run', 'step', 'hook', 'sleep'].includes(resource)
-    ) {
-      onSpanSelectRef.current({
-        resource: resource as 'run' | 'step' | 'hook' | 'sleep',
-        resourceId,
-        runId,
-      });
-    }
-  }, [resource, resourceId, runId]);
+  const {
+    status,
+    resource,
+    resourceId,
+    displayData,
+    detail: matchedSpanDetailData,
+    error,
+  } = useSelectedSpanDetail(selectedSpan, fetchSpanDetail);
+  const loading = status === 'loading';
 
   // Check if this sleep is still pending and can be woken up
   const canWakeUp = useMemo(() => {
@@ -213,33 +160,19 @@ export function EntityDetailPanel({
     resolvedHookIds,
   ]);
 
-  const error = spanDetailError ?? undefined;
-  const loading = spanDetailLoading ?? false;
-
-  const hasEncryptedFields = useMemo(() => {
-    if (!spanDetailData) return false;
-    const d = spanDetailData as Record<string, unknown>;
-    return (
-      isEncryptedMarker(d.input) ||
-      isEncryptedMarker(d.output) ||
-      isEncryptedMarker(d.error) ||
-      isEncryptedMarker(d.metadata)
-    );
-  }, [spanDetailData]);
-
   // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
     if (resource !== 'hook' || !resourceId) return undefined;
     // 1. Try the externally-fetched detail data first
-    if (isHook(spanDetailData) && spanDetailData.token) {
-      return spanDetailData.token;
+    if (isHook(matchedSpanDetailData) && matchedSpanDetailData.token) {
+      return matchedSpanDetailData.token;
     }
     // 2. Try the span's inline data (reconstructed from hook_created event)
     if (isHook(data) && (data as Hook).token) {
       return (data as Hook).token;
     }
     return undefined;
-  }, [resource, resourceId, spanDetailData, data]);
+  }, [resource, resourceId, matchedSpanDetailData, data]);
 
   useEffect(() => {
     if (error && selectedSpan && resource) {
@@ -301,7 +234,7 @@ export function EntityDetailPanel({
 
       try {
         setResolvingHook(true);
-        const candidate = spanDetailData ?? data;
+        const candidate = matchedSpanDetailData ?? data;
         const hook = isHook(candidate) ? candidate : undefined;
         await onResolveHook(hookToken, payload, hook);
         toast.success('Hook resolved', {
@@ -322,17 +255,8 @@ export function EntityDetailPanel({
         setResolvingHook(false);
       }
     },
-    [onResolveHook, hookToken, resolvingHook, spanDetailData, data]
+    [onResolveHook, hookToken, resolvingHook, matchedSpanDetailData, data]
   );
-
-  // Prefer externally-fetched details when available. For sleep spans, the
-  // host fetches full correlated events (withData=true) and materializes a wait
-  // entity, so this includes resumeAt/completedAt without bloating trace payloads.
-  const displayData = (spanDetailData ?? data) as
-    | WorkflowRun
-    | Step
-    | Hook
-    | Event;
 
   const moduleSpecifier = useMemo(() => {
     const displayRecord = displayData as Record<string, unknown>;
@@ -354,65 +278,18 @@ export function EntityDetailPanel({
     return null;
   }
 
-  const resourceLabel = resource.charAt(0).toUpperCase() + resource.slice(1);
   const hasPendingActions =
     (resource === 'sleep' && canWakeUp) ||
     (resource === 'hook' && canResolveHook);
-  const runStateLabel = run.completedAt ? 'Completed' : 'Live';
 
   return (
     <div className="flex h-full flex-col">
-      <div
-        className="border-b px-3 py-3"
-        style={{ borderColor: 'var(--ds-gray-200)' }}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-flex items-center rounded-full border px-2 py-0.5 text-[13px] font-medium"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                  color: 'var(--ds-gray-900)',
-                  backgroundColor: 'var(--ds-background-100)',
-                }}
-              >
-                {resourceLabel}
-              </span>
-              <span
-                className="text-[13px]"
-                style={{
-                  color: run.completedAt
-                    ? 'var(--ds-gray-700)'
-                    : 'var(--ds-green-800)',
-                }}
-              >
-                {runStateLabel}
-              </span>
-            </div>
-            <p
-              className="mt-1 truncate font-mono text-[13px]"
-              style={{ color: 'var(--ds-gray-700)' }}
-              title={resourceId}
-            >
-              {resourceId}
-            </p>
-          </div>
-          {(hasEncryptedFields || hasEncryptedData || encryptionKey) &&
-            onDecrypt && (
-              <DecryptButton
-                decrypted={!!encryptionKey}
-                loading={isDecrypting}
-                onClick={onDecrypt}
-              />
-            )}
-        </div>
-      </div>
-
       <DecryptClickContext.Provider
-        value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
+        value={
+          onDecrypt ? { onDecrypt, isDecrypting, hasEncryptedData } : undefined
+        }
       >
-        <div className="flex-1 overflow-y-auto px-3 pt-3 pb-8">
+        <div className="flex-1 overflow-y-auto px-4 pb-8">
           {hasPendingActions && (
             <div
               className="mb-4 rounded-lg border p-2"
@@ -477,38 +354,28 @@ export function EntityDetailPanel({
             </div>
           )}
 
-          <div className="space-y-4">
-            <section>
-              <h3
-                className="mb-2 text-[13px] font-medium uppercase tracking-wide"
-                style={{ color: 'var(--ds-gray-700)' }}
-              >
-                Details
-              </h3>
-              <AttributePanel
-                data={displayData}
-                moduleSpecifier={moduleSpecifier}
-                expiredAt={run.expiredAt}
-                isLoading={loading}
-                error={error ?? undefined}
-                onStreamClick={onStreamClick}
-                onRunClick={onRunClick}
-                onDecrypt={onDecrypt}
-                isDecrypting={isDecrypting}
-                resource={resource}
-              />
-            </section>
+          <AttributePanel
+            data={displayData}
+            moduleSpecifier={moduleSpecifier}
+            expiredAt={run.expiredAt}
+            isLoading={loading}
+            error={error ?? undefined}
+            onStreamClick={onStreamClick}
+            onRunClick={onRunClick}
+            onDecrypt={onDecrypt}
+            isDecrypting={isDecrypting}
+            resource={resource}
+          />
 
-            {resource !== 'run' && rawEvents && (
-              <section>
-                <EventsList
-                  events={rawEvents}
-                  onLoadEventData={onLoadEventData}
-                  encryptionKey={encryptionKey}
-                />
-              </section>
-            )}
-          </div>
+          {rawEvents && (
+            <EventsList
+              events={rawEvents}
+              onLoadEventData={onLoadEventData}
+              onStreamClick={onStreamClick}
+              onRunClick={onRunClick}
+              encryptionKey={encryptionKey}
+            />
+          )}
         </div>
       </DecryptClickContext.Provider>
 

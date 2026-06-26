@@ -1,4 +1,4 @@
-import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
+import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
@@ -8,7 +8,8 @@ import {
   type WorkflowOrchestratorContext,
 } from './private.js';
 import type { Serializable } from './schemas.js';
-import { hydrateStepReturnValue } from './serialization.js';
+import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
+import { getOrHydrateStepReturnValue } from './step-hydration-cache.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
@@ -78,6 +79,25 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
+        const eventStepName =
+          'eventData' in event &&
+          event.eventData &&
+          'stepName' in event.eventData
+            ? event.eventData.stepName
+            : undefined;
+
+        if (typeof eventStepName === 'string' && eventStepName !== stepName) {
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+            ctx.onWorkflowError(
+              new ReplayDivergenceError(
+                `Replay divergence: step event ${event.eventType} for ${correlationId} belongs to "${eventStepName}", but the current step consumer is "${stepName}"`,
+                { eventId: event.eventId }
+              )
+            );
+          });
+          return EventConsumerResult.Finished;
+        }
+
         if (event.eventType === 'step_created') {
           // Step has been created (registered for execution) - mark as having event
           // but keep in queue so suspension handler knows to queue execution without
@@ -88,8 +108,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             // but the step was never invoked in the workflow during replay.
             ctx.promiseQueue = ctx.promiseQueue.then(() => {
               reject(
-                new WorkflowRuntimeError(
-                  `Corrupted event log: step ${correlationId} (${stepName}) created but not found in invocation queue`
+                new ReplayDivergenceError(
+                  `Replay divergence: step ${correlationId} (${stepName}) created but not found in invocation queue`,
+                  { eventId: event.eventId }
                 )
               );
             });
@@ -117,26 +138,38 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.invocationsQueue.delete(event.correlationId);
           // Step failed - chain through promiseQueue to ensure
           // deterministic ordering of all promise resolutions/rejections.
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
-            const errorData = event.eventData.error;
-            const isErrorObject =
-              typeof errorData === 'object' && errorData !== null;
-
-            const errorMessage = isErrorObject
-              ? (errorData.message ?? 'Unknown error')
-              : typeof errorData === 'string'
-                ? errorData
-                : 'Unknown error';
-
-            const errorStack =
-              (isErrorObject ? errorData.stack : undefined) ??
-              event.eventData.stack;
-
-            const error = new FatalError(errorMessage);
-            if (errorStack) {
-              error.stack = errorStack;
+          // Hydrate the serialized thrown value from the event log so the
+          // original type identity and custom properties are preserved.
+          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+            try {
+              const hydrated = await hydrateStepError(
+                event.eventData.error,
+                ctx.runId,
+                ctx.encryptionKey,
+                ctx.globalThis
+              );
+              reject(hydrated);
+            } catch (hydrateErr) {
+              // If hydration fails for any reason, fall back to a generic
+              // FatalError so the workflow doesn't hang. This should be
+              // extremely rare in practice (corrupted event data).
+              stepLogger.error('Failed to hydrate step_failed error', {
+                correlationId: event.correlationId,
+                error:
+                  hydrateErr instanceof Error
+                    ? hydrateErr.message
+                    : String(hydrateErr),
+              });
+              reject(
+                new FatalError(
+                  `Failed to hydrate step error: ${
+                    hydrateErr instanceof Error
+                      ? hydrateErr.message
+                      : String(hydrateErr)
+                  }`
+                )
+              );
             }
-            reject(error);
           });
           return EventConsumerResult.Finished;
         }
@@ -151,14 +184,34 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // takes variable time, promises resolve in event log order.
           // Each step's hydration + resolve waits for all prior hydrations
           // to complete before executing, preserving deterministic ordering.
+          //
+          // Memoization: on every replay this consumer re-runs and would
+          // otherwise re-decrypt + re-parse the same serialized result — O(N²)
+          // across an invocation for a sequential N-step workflow. The
+          // per-run `stepHydrationCache` short-circuits that work on
+          // subsequent replays. Crucially, the cache lookup happens INSIDE
+          // this same promiseQueue slot (and still resolves via `resolve`),
+          // so a cache hit occupies the exact same position in the ordered
+          // delivery chain a re-hydrate would have — preserving the
+          // determinism that pendingDeliveries, the delivery barriers, and
+          // Promise.race/all replay depend on. Only primitive results are
+          // memoized; non-primitives re-hydrate fresh each replay so a shared
+          // reference can never carry a mutation between replays.
+          const completedEventId = event.eventId;
+          const serializedResult = event.eventData.result;
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const hydratedResult = await hydrateStepReturnValue(
-                event.eventData.result,
-                ctx.runId,
-                ctx.encryptionKey,
-                ctx.globalThis
+              const hydratedResult = await getOrHydrateStepReturnValue(
+                ctx.stepHydrationCache,
+                completedEventId,
+                () =>
+                  hydrateStepReturnValue(
+                    serializedResult,
+                    ctx.runId,
+                    ctx.encryptionKey,
+                    ctx.globalThis
+                  )
               );
               resolve(hydratedResult as Result);
             } catch (error) {
@@ -170,11 +223,12 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.Finished;
         }
 
-        // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+        // This replay installed a different consumer than the stored event needs.
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
-            new WorkflowRuntimeError(
-              `Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`
+            new ReplayDivergenceError(
+              `Replay divergence: Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`,
+              { eventId: event.eventId }
             )
           );
         });
@@ -208,6 +262,76 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         configurable: false,
       });
     }
+
+    // Override `.bind` so the bound function preserves the step proxy
+    // metadata that `getStepFunctionReducer` relies on for serialization.
+    // Without this override, `Function.prototype.bind` would return a new
+    // function that doesn't inherit `stepId`, `__closureVarsFn`, or any
+    // other own properties of the original proxy — so the StepFunction
+    // reducer would refuse to serialize it (it'd look like a plain
+    // function), and a `useStep(...).bind(this)` proxy that flowed
+    // through workflow serialization would silently break.
+    //
+    // The override stashes three pieces of state on the bound function so
+    // the round trip is faithful:
+    //   - `stepId`             — already set on the original proxy.
+    //   - `__closureVarsFn`    — only when the original proxy had one.
+    //   - `__boundThis`        — the receiver passed to `.bind(thisArg, …)`.
+    //                            Always set (even when `thisArg` is
+    //                            `null`/`undefined`) so the reducer can
+    //                            distinguish "was bound" from "wasn't".
+    //   - `__boundArgs`        — only when the user supplied prefilled
+    //                            arguments (`.bind(thisArg, x, y)`). The
+    //                            SWC plugin only ever emits `.bind(this)`
+    //                            today, so this is rare in practice; we
+    //                            still capture it so the partial args
+    //                            survive serialization rather than
+    //                            silently disappearing on the step side.
+    Object.defineProperty(stepFunction, 'bind', {
+      value: function (
+        this: typeof stepFunction,
+        thisArg: unknown,
+        ...partialArgs: unknown[]
+      ) {
+        const bound = Function.prototype.bind.call(
+          this,
+          thisArg,
+          ...partialArgs
+        );
+        Object.defineProperty(bound, 'stepId', {
+          value: stepName,
+          writable: false,
+          enumerable: false,
+          configurable: false,
+        });
+        if (closureVarsFn) {
+          Object.defineProperty(bound, '__closureVarsFn', {
+            value: closureVarsFn,
+            writable: false,
+            enumerable: false,
+            configurable: false,
+          });
+        }
+        Object.defineProperty(bound, '__boundThis', {
+          value: thisArg,
+          writable: false,
+          enumerable: false,
+          configurable: false,
+        });
+        if (partialArgs.length > 0) {
+          Object.defineProperty(bound, '__boundArgs', {
+            value: partialArgs,
+            writable: false,
+            enumerable: false,
+            configurable: false,
+          });
+        }
+        return bound;
+      },
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
 
     return stepFunction;
   };

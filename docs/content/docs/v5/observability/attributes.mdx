@@ -1,0 +1,87 @@
+---
+title: Attributes
+description: Attach experimental metadata to workflow runs for observability.
+type: reference
+summary: Add string attributes to a workflow run.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability
+  - /docs/api-reference/workflow/experimental-set-attributes
+  - /docs/api-reference/workflow-errors/workflow-world-error
+---
+
+<Callout type="warn">
+This feature is experimental and may change before the stable attributes API is released.
+</Callout>
+
+[`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) attaches plaintext string metadata to the current workflow run. These attributes are displayed in observability CLI/UI.
+In the future, you'll be able to search and filter runs by attributes.
+
+You can also seed any attributes directly when starting a run:
+
+{/* @skip-typecheck: abbreviated usage; orderWorkflow is defined below */}
+```typescript lineNumbers
+const run = await start(orderWorkflow, ["ord_123"], {
+  attributes: { source: "checkout" }, // [!code highlight]
+})
+```
+
+```typescript lineNumbers
+import { experimental_setAttributes } from "workflow"
+
+export async function orderWorkflow(orderId: string) {
+  "use workflow"
+
+  await experimental_setAttributes({ // [!code highlight]
+    phase: "received", // [!code highlight]
+    orderId, // [!code highlight]
+  }) // [!code highlight]
+
+  // ...work...
+
+  await experimental_setAttributes({ phase: "complete" }) // [!code highlight]
+}
+```
+
+## Usage
+
+Call [`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) from a `"use workflow"` function or a `"use step"` function. Plain application code is not supported because there is no active workflow run to attach attributes to.
+
+Values must be strings. Pass `undefined` to remove a key:
+
+```typescript lineNumbers
+import { experimental_setAttributes } from "workflow"
+
+export async function cleanupAttributes() {
+  "use workflow"
+
+  await experimental_setAttributes({ staleKey: undefined }) // [!code highlight]
+}
+```
+
+Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code.
+
+## Viewing attributes
+
+The run details panel in the observability UI shows the run's current attributes as key-value rows. Reserved `$`-prefixed keys are marked with a badge and sorted after user keys:
+
+![Run details panel showing the Attributes card with reserved keys badged](/screenshots/attributes/run-details-attributes.png)
+
+Each `experimental_setAttributes` call appears on the trace timeline as a diamond marker at the moment the attributes were written:
+
+![Trace timeline with attr_set diamond markers on the run row](/screenshots/attributes/trace-timeline.png)
+
+Expanding an `attr_set` event — in the run sidebar or the Events tab — shows the changed keys, removed keys, and whether the write came from the workflow body or a step (with the attempt number):
+
+![Expanded attr_set events showing changes and the writer](/screenshots/attributes/run-details-attr-set-events.png)
+
+## Experimental Behavior
+
+While attributes are experimental:
+
+- Attributes require a World implementing spec version 4 or later.
+- Writes from workflow and step bodies append native `attr_set` events and immediately materialize `run.attributes`.
+- Storage errors surface rather than being silently ignored: transient errors on workflow-body writes are retried, and a write the World rejects as invalid (for example, exceeding the per-run attribute cap across multiple calls) fails the run with the validation error.
+- Step-body storage errors throw from `experimental_setAttributes` like any other step-side network write. Catch the error inside the step if the attribute is best-effort.
+- Reading and querying attributes is not available yet. A query API is planned.

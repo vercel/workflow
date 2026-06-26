@@ -1,9 +1,14 @@
-import { notFound } from 'next/navigation';
-import { rewriteCookbookUrlsInText } from '@/lib/geistdocs/cookbook-source';
-import { getLLMText, source } from '@/lib/geistdocs/source';
+import { generateNotFoundMarkdown } from '@vercel/agent-readability';
+import {
+  getDocsTreeWithoutCookbook,
+  rewriteCookbookUrlsInText,
+} from '@/lib/geistdocs/cookbook-source';
 import { i18n } from '@/lib/geistdocs/i18n';
+import { getLLMText, source } from '@/lib/geistdocs/source';
 
 export const revalidate = false;
+
+const MARKDOWN_HEADERS = { 'Content-Type': 'text/markdown; charset=utf-8' };
 
 export async function GET(
   _req: Request,
@@ -13,13 +18,17 @@ export async function GET(
   const page = source.getPage(slug, lang);
 
   if (!page) {
-    notFound();
+    // Status 200 (not 404): agents commonly discard 404 response bodies.
+    const requestedPath = slug?.length ? `/${slug.join('/')}` : '/';
+    return new Response(generateNotFoundMarkdown(requestedPath), {
+      headers: MARKDOWN_HEADERS,
+    });
   }
 
   const sitemapPath =
     lang === i18n.defaultLanguage ? '/sitemap.md' : `/${lang}/sitemap.md`;
 
-  const text = await getLLMText(page);
+  const text = await getLLMText(page, getDocsTreeWithoutCookbook(lang, 'v4'));
 
   return new Response(
     rewriteCookbookUrlsInText(text) +
@@ -38,5 +47,8 @@ export const generateStaticParams = async ({
 }: RouteContext<'/[lang]/llms.mdx/[[...slug]]'>) => {
   const { lang } = await params;
 
-  return source.generateParams(lang);
+  // Exclude internal/preview-only pages from LLM scraping
+  return source
+    .generateParams(lang)
+    .filter((p) => !p.slug?.includes('internal'));
 };

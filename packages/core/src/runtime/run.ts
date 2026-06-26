@@ -13,15 +13,16 @@ import {
 import { type CryptoKey, importKey } from '../encryption.js';
 import {
   getExternalRevivers,
+  hydrateRunError,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import { getWorldLazy } from './get-world-lazy.js';
 import {
   type StopSleepOptions,
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
-import { getWorld } from './world.js';
 
 /**
  * A `ReadableStream` extended with workflow-specific helpers.
@@ -92,7 +93,7 @@ export class Run<TResult> {
    */
   #worldPromise: Promise<World> | undefined;
   get #lazyWorldPromise() {
-    if (!this.#worldPromise) this.#worldPromise = getWorld();
+    if (!this.#worldPromise) this.#worldPromise = getWorldLazy();
     return this.#worldPromise;
   }
 
@@ -133,6 +134,16 @@ export class Run<TResult> {
       })();
     }
     return this.#encryptionKeyPromise;
+  }
+
+  /**
+   * Defer fetching the run and its encryption key until serialized stream data
+   * is actually read. An empty or metadata-only stream must not start an
+   * unobserved run lookup.
+   * @internal
+   */
+  #getEncryptionKeyLazily(): () => Promise<CryptoKey | undefined> {
+    return () => this.#getEncryptionKey();
   }
 
   /**
@@ -263,15 +274,12 @@ export class Run<TResult> {
     'use step';
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    // Pass the key as a promise — it will be resolved lazily inside
-    // the first async transform() call of the deserialize stream.
-    const encryptionKey = this.#getEncryptionKey();
-    const stream = getExternalRevivers(
-      global,
-      ops,
-      this.runId,
-      encryptionKey
-    ).ReadableStream({
+    // The resolver starts only when the deserialize stream sees its first
+    // chunk, so creating or probing an empty stream cannot reject in the
+    // background.
+    const encryptionKey = this.#getEncryptionKeyLazily();
+    const stream = getExternalRevivers(global, ops, this.runId, encryptionKey)
+      .ReadableStream!({
       name,
       startIndex,
     }) as ReadableStream<R>;
@@ -304,6 +312,13 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
+    // NOTE: when this poll runs inside a step (e.g. the step that a parent
+    // workflow uses to await a child workflow's `returnValue`), it blocks
+    // a queue worker slot for as long as the child run takes to finish.
+    // Worker-based worlds like `world-postgres` must be sized to cover the
+    // peak number of such polls in flight — see the `queueConcurrency`
+    // default on the Postgres world and the notes in the eager-processing
+    // changelog for details.
     while (true) {
       try {
         const run = await world.runs.get(this.runId);
@@ -322,9 +337,29 @@ export class Run<TResult> {
         }
 
         if (run.status === 'failed') {
-          throw new WorkflowRunFailedError(this.runId, run.error);
+          // Hydrate the serialized run error so the original thrown value
+          // (with its type identity, cause chain, etc.) is set as the
+          // `cause` on WorkflowRunFailedError.
+          const encryptionKey = await this.#getEncryptionKey();
+          let hydratedError: unknown;
+          try {
+            hydratedError = await hydrateRunError(
+              run.error,
+              this.runId,
+              encryptionKey
+            );
+          } catch {
+            // If hydration fails, surface a generic fallback rather than
+            // leaving the user with a raw Uint8Array. The run's errorCode
+            // is still preserved on the thrown WorkflowRunFailedError.
+            hydratedError = new Error('Failed to hydrate workflow run error');
+          }
+          throw new WorkflowRunFailedError(this.runId, hydratedError, {
+            errorCode: run.errorCode,
+          });
         }
 
+        // Run not completed yet — sleep and poll again.
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {

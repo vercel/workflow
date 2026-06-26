@@ -1,0 +1,215 @@
+---
+title: defineHook
+description: Create type-safe hooks with consistent payload types and optional validation.
+type: reference
+summary: Use defineHook to create a reusable, type-safe hook definition with optional schema validation.
+prerequisites:
+  - /docs/foundations/hooks
+related:
+  - /docs/api-reference/workflow/create-hook
+---
+
+Creates a type-safe hook helper that ensures the payload type is consistent between hook creation and resumption.
+
+This is a lightweight wrapper around [`createHook()`](/docs/api-reference/workflow/create-hook) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid type mismatches. It also supports optional runtime validation and transformation of payloads using any [Standard Schema v1](https://standardschema.dev) compliant validator like Zod or Valibot.
+
+<Callout>
+We recommend using `defineHook()` over `createHook()` in production codebases for better type safety and optional runtime validation.
+</Callout>
+
+```ts lineNumbers
+import { defineHook } from "workflow";
+
+const nameHook = defineHook<{
+  name: string;
+}>();
+
+export async function nameWorkflow() {
+  "use workflow";
+
+  const hook = nameHook.create();  // [!code highlight]
+  const result = await hook; // Fully typed as { name: string }
+  console.log("Name:", result.name);
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { defineHook } from "workflow";
+export default defineHook;`}
+showSections={['parameters']}
+/>
+
+### Returns
+
+<TSDoc
+definition={`
+interface DefineHook<T> {
+  /**
+
+* Creates a new hook with the defined payload type.
+  */
+  create: (options?: HookOptions) => Hook<T>;
+
+  /**
+
+* Resumes a hook by sending a payload with the defined type.
+   */
+  resume: (token: string, payload: T) => Promise<HookEntity | null>;
+}
+export default DefineHook;`}
+/>
+
+## Examples
+
+### Basic Type-Safe Hook Definition
+
+By defining the hook once with a specific payload type, you can reuse it in multiple workflows and API routes with automatic type safety.
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+
+// Define once with a specific payload type
+const approvalHook = defineHook<{ // [!code highlight]
+  approved: boolean; // [!code highlight]
+  comment: string; // [!code highlight]
+}>(); // [!code highlight]
+
+// In your workflow
+export async function workflowWithApproval() {
+  "use workflow";
+
+  const hook = approvalHook.create();
+  const result = await hook; // Fully typed as { approved: boolean; comment: string }
+
+  console.log("Approved:", result.approved);
+  console.log("Comment:", result.comment);
+}
+```
+
+### Resuming with Type Safety
+
+Hooks can be resumed using the same defined hook and a token. By using the same hook, you can ensure that the payload matches the defined type when resuming a hook.
+
+```typescript lineNumbers
+// Use the same defined hook to resume
+export async function POST(request: Request) {
+  const { token, approved, comment } = await request.json();
+
+  // Type-safe resumption - TypeScript ensures the payload matches
+  const result = await approvalHook.resume(token, { // [!code highlight]
+    approved, // [!code highlight]
+    comment, // [!code highlight]
+  }); // [!code highlight]
+
+  if (!result) {
+    return Response.json({ error: "Hook not found" }, { status: 404 });
+  }
+
+  return Response.json({ success: true, runId: result.runId });
+}
+```
+
+### Validate and Transform with Schema
+
+You can provide runtime validation and transformation of hook payloads using the `schema` option. This option accepts any validator that conforms to the [Standard Schema v1](https://standardschema.dev) specification.
+
+<Callout type="info">
+Standard Schema is a standardized specification for schema validation libraries. Most popular validation libraries support it, including Zod, Valibot, ArkType, and Effect Schema. You can also write custom validators.
+</Callout>
+
+#### Using Zod with defineHook
+
+Here's an example using [Zod](https://zod.dev) to validate and transform hook payloads:
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+import { z } from "zod";
+
+export const approvalHook = defineHook({
+  schema: z.object({ // [!code highlight]
+    approved: z.boolean(), // [!code highlight]
+    comment: z.string().min(1).transform((value) => value.trim()), // [!code highlight]
+  }), // [!code highlight]
+});
+
+export async function approvalWorkflow(approvalId: string) {
+  "use workflow";
+
+  const hook = approvalHook.create({
+    token: `approval:${approvalId}`,
+  });
+
+  // Payload is automatically typed based on the schema
+  const { approved, comment } = await hook;
+  console.log("Approved:", approved);
+  console.log("Comment (trimmed):", comment);
+}
+```
+
+When resuming the hook from an API route, the schema validates and transforms the incoming payload before the workflow resumes:
+
+```typescript lineNumbers
+export async function POST(request: Request) {
+  // Incoming payload: { token: "...", approved: true, comment: "   Ready!   " }
+  const { token, approved, comment } = await request.json();
+
+  // The schema validates and transforms the payload:
+  // - Checks that `approved` is a boolean
+  // - Checks that `comment` is a non-empty string
+  // - Trims whitespace from the comment
+  // If validation fails, an error is thrown and the hook is not resumed
+  await approvalHook.resume(token, { // [!code highlight]
+    approved, // [!code highlight]
+    comment, // Automatically trimmed to "Ready!" // [!code highlight]
+  }); // [!code highlight]
+
+  return Response.json({ success: true });
+}
+```
+
+#### Using Other Standard Schema Libraries
+
+The same pattern works with any Standard Schema v1 compliant library. Here's an example with [Valibot](https://valibot.dev):
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+import * as v from "valibot";
+
+export const approvalHook = defineHook({
+  schema: v.object({ // [!code highlight]
+    approved: v.boolean(), // [!code highlight]
+    comment: v.pipe(v.string(), v.minLength(1), v.trim()), // [!code highlight]
+  }), // [!code highlight]
+});
+```
+
+### Customizing Tokens
+
+Tokens are used to identify a specific hook and for resuming a hook. You can customize the token to be more specific to a use case.
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+
+const slackHook = defineHook<{ text: string; userId: string }>();
+
+export async function slackBotWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = slackHook.create({
+    token: `slack:${channelId}`, // [!code highlight]
+  });
+
+  const message = await hook;
+  console.log(`Message from ${message.userId}: ${message.text}`);
+}
+```
+
+## Related Functions
+
+* [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
+* [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with a payload.

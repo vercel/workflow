@@ -1,4 +1,6 @@
+import { WorkflowRuntimeError } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
+import type { AttributeChange } from '@workflow/world';
 import type { Serializable } from './schemas.js';
 
 export interface StepInvocationQueueItem {
@@ -17,8 +19,13 @@ export interface HookInvocationQueueItem {
   token: string;
   metadata?: Serializable;
   hasCreatedEvent?: boolean;
+  /** Whether the workflow is awaiting `hook.getConflict()` for this hook */
+  hasConflictAwaiter?: boolean;
   disposed?: boolean;
   isWebhook?: boolean;
+  isSystem?: boolean;
+  abortRequested?: boolean;
+  abortReason?: unknown;
 }
 
 export interface WaitInvocationQueueItem {
@@ -28,10 +35,18 @@ export interface WaitInvocationQueueItem {
   hasCreatedEvent?: boolean;
 }
 
+export interface AttributeInvocationQueueItem {
+  type: 'attribute';
+  correlationId: string;
+  changes: AttributeChange[];
+  allowReservedAttributes?: true;
+}
+
 export type QueueItem =
   | StepInvocationQueueItem
   | HookInvocationQueueItem
-  | WaitInvocationQueueItem;
+  | WaitInvocationQueueItem
+  | AttributeInvocationQueueItem;
 
 /**
  * An error that is thrown when one or more operations (steps/hooks/etc.) are called but do
@@ -45,7 +60,9 @@ export class WorkflowSuspension extends Error {
   stepCount: number;
   hookCount: number;
   waitCount: number;
+  attributeCount: number;
   hookDisposedCount: number;
+  abortCount: number;
 
   constructor(stepsInput: Map<string, QueueItem>, global: typeof globalThis) {
     // Convert Map to array for iteration and storage
@@ -55,13 +72,17 @@ export class WorkflowSuspension extends Error {
     let stepCount = 0;
     let hookCount = 0;
     let waitCount = 0;
+    let attributeCount = 0;
     let hookDisposedCount = 0;
+    let abortCount = 0;
     for (const item of steps) {
       if (item.type === 'step') stepCount++;
       else if (item.type === 'hook') {
         if (item.disposed) hookDisposedCount++;
+        else if (item.abortRequested) abortCount++;
         else hookCount++;
       } else if (item.type === 'wait') waitCount++;
+      else if (item.type === 'attribute') attributeCount++;
     }
 
     // Build description parts
@@ -75,6 +96,11 @@ export class WorkflowSuspension extends Error {
     if (waitCount > 0) {
       parts.push(`${waitCount} ${pluralize('wait', 'waits', waitCount)}`);
     }
+    if (attributeCount > 0) {
+      parts.push(
+        `${attributeCount} ${pluralize('attribute write', 'attribute writes', attributeCount)}`
+      );
+    }
     if (hookDisposedCount > 0) {
       parts.push(
         `${hookDisposedCount} hook ${pluralize('disposal', 'disposals', hookDisposedCount)}`
@@ -82,13 +108,15 @@ export class WorkflowSuspension extends Error {
     }
 
     // Determine verb (has/have) and action (run/created/received)
-    const totalCount = stepCount + hookCount + waitCount + hookDisposedCount;
+    const totalCount =
+      stepCount + hookCount + waitCount + attributeCount + hookDisposedCount;
     const hasOrHave = pluralize('has', 'have', totalCount);
     // Pick action verb: use "processed" when mixed types are present
     const typeCount =
       (stepCount > 0 ? 1 : 0) +
       (hookCount > 0 ? 1 : 0) +
       (waitCount > 0 ? 1 : 0) +
+      (attributeCount > 0 ? 1 : 0) +
       (hookDisposedCount > 0 ? 1 : 0);
     let action: string;
     if (typeCount > 1) {
@@ -99,6 +127,8 @@ export class WorkflowSuspension extends Error {
       action = 'created';
     } else if (waitCount > 0) {
       action = 'created';
+    } else if (attributeCount > 0) {
+      action = 'written';
     } else if (hookDisposedCount > 0) {
       action = 'processed';
     } else {
@@ -116,7 +146,9 @@ export class WorkflowSuspension extends Error {
     this.stepCount = stepCount;
     this.hookCount = hookCount;
     this.waitCount = waitCount;
+    this.attributeCount = attributeCount;
     this.hookDisposedCount = hookDisposedCount;
+    this.abortCount = abortCount;
   }
 
   static is(value: unknown): value is WorkflowSuspension {
@@ -125,5 +157,7 @@ export class WorkflowSuspension extends Error {
 }
 
 export function ENOTSUP(): never {
-  throw new Error('Not supported in workflow functions');
+  throw new WorkflowRuntimeError(
+    'This API is not available inside a workflow function. Workflow functions run in a deterministic VM; move the call to a step function for full Node.js access.'
+  );
 }

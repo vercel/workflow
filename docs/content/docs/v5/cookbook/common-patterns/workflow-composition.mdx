@@ -1,0 +1,117 @@
+---
+title: Workflow Composition
+description: Call workflows from other workflows by direct await (flatten into the parent) or background spawn via start() (separate run).
+type: guide
+summary: Compose workflows two ways — direct await flattens the child into the parent's event log, while background spawn via start() runs the child as an independent run.
+related:
+  - /cookbook/advanced/child-workflows
+  - /cookbook/common-patterns/idempotency
+  - /docs/api-reference/workflow-api/start
+  - /docs/api-reference/workflow-api/get-run
+---
+
+Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or wants to fire the child off as an independent run (background spawn). For massive fan-out with hook-based waiting and partial-failure handling, see [Child Workflows](/cookbook/advanced/child-workflows).
+
+## When to use this
+
+- **Direct await** — the parent needs the child's result before continuing, and you want a single unified event log
+- **Background spawn** — the parent doesn't need to wait, and you want the child to be observable as a separate run with its own `runId`
+
+## Pattern
+
+### Direct await (flattening)
+
+Call a child workflow with `await` and the child's steps execute inline within the parent — they appear in the parent's event log as if you'd called them directly.
+
+```typescript lineNumbers
+declare function sendEmail(userId: string): Promise<void>; // @setup
+declare function sendPushNotification(userId: string): Promise<void>; // @setup
+declare function createAccount(userId: string): Promise<void>; // @setup
+declare function setupPreferences(userId: string): Promise<void>; // @setup
+
+// Child workflow
+export async function sendNotifications(userId: string) {
+  "use workflow";
+
+  await sendEmail(userId);
+  await sendPushNotification(userId);
+  return { notified: true };
+}
+
+// Parent workflow calls the child directly
+export async function onboardUser(userId: string) {
+  "use workflow";
+
+  await createAccount(userId);
+  await sendNotifications(userId); // [!code highlight]
+  await setupPreferences(userId);
+
+  return { userId, status: "onboarded" };
+}
+```
+
+The parent waits for the child to finish before continuing. Both functions share a single workflow run, a single retry boundary, and a single event log.
+
+### Background spawn via `start()`
+
+To run a child workflow independently without blocking the parent, call [`start()`](/docs/api-reference/workflow-api/start) from the parent workflow. This launches the child as a separate workflow run with its own `runId`.
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+
+declare function generateReport(reportId: string): Promise<void>; // @setup
+declare function fulfillOrder(orderId: string): Promise<{ id: string }>; // @setup
+declare function sendConfirmation(orderId: string): Promise<void>; // @setup
+
+export async function processOrder(orderId: string) {
+  "use workflow";
+
+  const order = await fulfillOrder(orderId);
+
+  const reportRun = await start(generateReport, [orderId]); // [!code highlight]
+
+  await sendConfirmation(orderId);
+
+  return { orderId, reportRunId: reportRun.runId };
+}
+```
+
+The parent continues immediately after `start()` returns. The child runs independently and can be monitored separately using the returned `runId` (e.g., via [`getRun()`](/docs/api-reference/workflow-api/get-run)).
+
+<Callout type="info">
+Each background spawn creates a separate run. If duplicate requests must route to one active child workflow, have the child create a deterministic hook token from the business key and use that hook as the idempotency point. If concurrent starts race, the losing child can detect the conflict early with `await hook.getConflict()`, which resolves with the active owner so the child can point callers at it. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
+<Callout type="info">
+If you want the child workflow to run on the latest deployment rather than the current one, pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) in the `start()` options. See [Versioning](/docs/foundations/versioning) for the full model. This is currently a Vercel-specific feature, and other Worlds may map the concept to their own deployment runtimes. Be aware that the child workflow's function name, file path, argument types, and return type must remain compatible across deployments — renaming the function or changing its location will change the workflow ID, and modifying expected inputs or outputs can cause serialization failures.
+</Callout>
+
+## How it works
+
+1. **Direct await flattens.** When a workflow function awaits another workflow function, the child's `"use workflow"` directive is treated as inline — the child's steps emit into the parent's event log and share the parent's run ID.
+2. **`start()` mints a new run.** The child gets its own `runId`, its own event log, and its own retry boundary. The parent only sees the `runId` returned by `start()`.
+3. **`start()` can run inside workflows.** In v5, `start()` is step-backed, so it can be called directly from a workflow function and still records a deterministic step boundary in the event log.
+
+## Choosing between the two modes
+
+| | Direct await | Background spawn (`start()`) |
+| --- | --- | --- |
+| Parent waits for child | Yes | No |
+| Has its own `runId` | No (shares parent's) | Yes |
+| Has its own event log | No | Yes |
+| Has its own retry boundary | No | Yes |
+| Best for | Sequential composition, helper workflows | Independent work, fire-and-forget, fan-out |
+
+## Adapting to your use case
+
+- **Spawn many children at once** — call `start()` in a loop from the workflow. For more advanced fan-out (chunking, hook-based waiting, partial-failure handling), graduate to the [Child Workflows](/cookbook/advanced/child-workflows) recipe.
+- **Wait for a background child to finish** — combine `start()` with a completion hook the child resumes when done. The [Child Workflows](/cookbook/advanced/child-workflows) page covers the recommended `startAndWait()` pattern.
+- **Pass results back from background children** — the wrapped child resumes the parent's hook in `finally` with `{ status, value | error }`; the parent awaits the hook instead of polling `getRun().status`.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/foundations/workflows-and-steps) — marks the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps) — marks functions with full Node.js access
+- [`start()`](/docs/api-reference/workflow-api/start) — spawn a child workflow as a separate run
+- [`getRun()`](/docs/api-reference/workflow-api/get-run) — retrieve a workflow run's status and return value
+- [Idempotency](/docs/foundations/idempotency) — deduplicate step side effects and workflow starts

@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeAll, describe, expect, test } from 'vitest';
-import { getWorkbenchAppPath } from './utils';
+import { afterEach, assert, beforeAll, describe, expect, test } from 'vitest';
+import { start } from '../src/runtime';
+import { getWorkbenchAppPath, getWorkflowMetadata, setupWorld } from './utils';
 
 export interface DevTestConfig {
   generatedStepPath: string;
@@ -35,6 +36,17 @@ export function createDevTests(config?: DevTestConfig) {
     );
   }
   describe('dev e2e', () => {
+    // Each prewarm/trigger fetch is hard-bounded by this so cleanup never hangs
+    // on a wedged dev server.
+    const PREWARM_FETCH_TIMEOUT_MS = 5_000;
+    // The afterEach cleanup can issue two *sequential* prewarms (before and
+    // after deleting an added file) while the dev server is mid-rebuild — the
+    // teardown of a test that added a workflow file and edited an import is
+    // exactly when both rebuild and respond slowly. Its budget must therefore
+    // exceed 2× PREWARM_FETCH_TIMEOUT_MS (plus file IO) with headroom, or it
+    // trips vitest's 10s default hook timeout. The bounded fetches mean this
+    // can't hang indefinitely, so a generous budget is safe.
+    const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
     const appPath = getWorkbenchAppPath();
     const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
@@ -44,9 +56,59 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
-    const supportsDeferredStepCopies = generatedStep.includes(
-      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+    const usesNextFlowRoute = generatedWorkflow.includes(
+      path.join('app', '.well-known', 'workflow', 'v1', 'flow', 'route.js')
     );
+    const workflowManifestPath = path.join(
+      appPath,
+      'app/.well-known/workflow/v1/manifest.json'
+    );
+    const readManifestStepFunctionNames = async (): Promise<string[]> => {
+      const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
+      const manifest = JSON.parse(manifestJson) as {
+        steps?: Record<string, Record<string, unknown>>;
+      };
+      return Object.values(manifest.steps || {}).flatMap((entry) =>
+        Object.keys(entry)
+      );
+    };
+    const readManifestWorkflowFunctionNames = async (): Promise<string[]> => {
+      const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
+      const manifest = JSON.parse(manifestJson) as {
+        workflows?: Record<string, Record<string, unknown>>;
+      };
+      return Object.values(manifest.workflows || {}).flatMap((entry) =>
+        Object.keys(entry)
+      );
+    };
+    const readFileIfExists = async (
+      filePath: string
+    ): Promise<string | null> => {
+      try {
+        return await fs.readFile(filePath, 'utf8');
+      } catch (error) {
+        if (
+          error &&
+          typeof error === 'object' &&
+          'code' in error &&
+          error.code === 'ENOENT'
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    };
+    const readGeneratedWorkflowOutput = async (): Promise<string> => {
+      const outputs = [await readFileIfExists(generatedWorkflow)].filter(
+        (output): output is string => output !== null
+      );
+
+      if (outputs.length === 0) {
+        throw new Error('Generated workflow outputs were not found');
+      }
+
+      return outputs.join('\n');
+    };
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const fetchWithTimeout = (pathname: string) => {
@@ -55,38 +117,8 @@ export function createDevTests(config?: DevTestConfig) {
       }
 
       return fetch(new URL(pathname, deploymentUrl), {
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(PREWARM_FETCH_TIMEOUT_MS),
       });
-    };
-
-    const triggerWorkflowRun = async (
-      workflowName: string,
-      args: unknown[] = []
-    ) => {
-      if (!deploymentUrl) {
-        return;
-      }
-
-      const response = await fetch(
-        new URL('/api/workflows/start', deploymentUrl),
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            workflowName,
-            args,
-          }),
-          signal: AbortSignal.timeout(5_000),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          `Failed to trigger workflow "${workflowName}": ${response.status}`
-        );
-      }
     };
 
     const prewarm = async () => {
@@ -134,23 +166,28 @@ export function createDevTests(config?: DevTestConfig) {
 
     beforeAll(async () => {
       await prewarm();
-    });
+    }, CLEANUP_HOOK_TIMEOUT_MS);
 
     afterEach(async () => {
+      // Restore file contents before deleting any files. If a deletion races
+      // ahead of an api-file restore, the dev server briefly sees an import
+      // pointing at a missing module and fails compilation. On Windows that
+      // failure can stick in Turbopack's generated workflow outputs, and every
+      // subsequent step request returns 500.
+      const toRestore = restoreFiles.filter((item) => item.content !== '');
+      const toDelete = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
-        restoreFiles.map(async (item) => {
-          if (item.content === '') {
-            await fs.unlink(item.path);
-          } else {
-            await fs.writeFile(item.path, item.content);
-          }
-        })
+        toRestore.map((item) => fs.writeFile(item.path, item.content))
       );
+      if (toDelete.length > 0) {
+        await prewarm();
+      }
+      await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
       await prewarm();
       restoreFiles.length = 0;
-    });
+    }, CLEANUP_HOOK_TIMEOUT_MS);
 
-    test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
+    test('should rebuild on workflow change', { timeout: 70_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(workflowFile, 'utf8');
@@ -169,14 +206,22 @@ export async function myNewWorkflow() {
 
       await pollUntil({
         description: 'generated workflow to include myNewWorkflow',
+        timeoutMs: usesNextFlowRoute ? 50_000 : 25_000,
         check: async () => {
-          const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
+          if (usesNextFlowRoute) {
+            const manifestFunctionNames =
+              await readManifestWorkflowFunctionNames();
+            expect(manifestFunctionNames).toContain('myNewWorkflow');
+            return;
+          }
+
+          const workflowContent = await readGeneratedWorkflowOutput();
           expect(workflowContent).toContain('myNewWorkflow');
         },
       });
     });
 
-    test('should rebuild on step change', { timeout: 30_000 }, async () => {
+    test('should rebuild on step change', { timeout: 70_000 }, async () => {
       const stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(stepFile, 'utf8');
@@ -192,96 +237,84 @@ export async function myNewStep() {
 `
       );
       restoreFiles.push({ path: stepFile, content });
-      const copiedStepDir = path.join(
-        path.dirname(generatedStep),
-        '__workflow_step_files__'
-      );
-
       await pollUntil({
         description: 'generated step outputs to include myNewStep',
+        timeoutMs: usesNextFlowRoute ? 50_000 : 25_000,
         check: async () => {
-          const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
-          if (stepRouteContent.includes('myNewStep')) {
+          const stepRouteContent = await readFileIfExists(generatedStep);
+          if (stepRouteContent?.includes('myNewStep')) {
             return;
           }
 
-          const copiedStepFileNames = await fs.readdir(copiedStepDir);
-          const copiedStepContents = await Promise.all(
-            copiedStepFileNames.map(async (copiedStepFileName) => {
-              const copiedStepFilePath = path.join(
-                copiedStepDir,
-                copiedStepFileName
-              );
-              const copiedStepStats = await fs.stat(copiedStepFilePath);
-              if (!copiedStepStats.isFile()) {
-                return '';
-              }
-              return await fs.readFile(copiedStepFilePath, 'utf8');
-            })
-          );
-          expect(
-            copiedStepContents.some((content) => content.includes('myNewStep'))
-          ).toBe(true);
+          // Next flow-route builders regenerate manifest.json on every
+          // rebuild. The bundled file may not preserve function names as
+          // plain text.
+          if (usesNextFlowRoute) {
+            const manifestFunctionNames = await readManifestStepFunctionNames();
+            expect(manifestFunctionNames).toContain('myNewStep');
+            return;
+          }
+
+          throw new Error('myNewStep not found in generated step outputs');
         },
       });
     });
 
-    test.skipIf(!supportsDeferredStepCopies)(
-      'should rebuild on imported step dependency change',
-      { timeout: 60_000 },
+    test.runIf(process.env.APP_NAME === 'vite')(
+      'should execute updated step logic after HMR',
+      { timeout: 70_000 },
       async () => {
-        const importedStepFile = path.join(
-          appPath,
-          workflowsDir,
-          '_imported_step_only.ts'
+        assert(deploymentUrl);
+        setupWorld(deploymentUrl);
+
+        const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
+        const content = await fs.readFile(workflowFile, 'utf8');
+        const before = 'before HMR';
+        const after = 'after HMR';
+        const fixture = `
+export async function hmrWorkflow() {
+  'use workflow';
+  return hmrStep();
+}
+
+async function hmrStep() {
+  'use step';
+  return '${before}';
+}
+`;
+
+        await fs.writeFile(workflowFile, content + fixture);
+        restoreFiles.push({ path: workflowFile, content });
+
+        await pollUntil({
+          description: 'generated step output to include the HMR fixture',
+          check: async () => {
+            expect(await fs.readFile(generatedStep, 'utf8')).toContain(before);
+          },
+        });
+
+        const workflow = await getWorkflowMetadata(
+          deploymentUrl,
+          `workflows/${testWorkflowFile}`,
+          'hmrWorkflow'
         );
-        const content = await fs.readFile(importedStepFile, 'utf8');
-        const marker = 'importedStepOnlyHotReloadMarker';
+        const runBefore = await start<[], string>(workflow, []);
+        expect(await runBefore.returnValue).toBe(before);
 
         await fs.writeFile(
-          importedStepFile,
-          `${content}
-
-export async function ${marker}() {
-  'use step'
-  return 'updated'
-}
-`
-        );
-        restoreFiles.push({ path: importedStepFile, content });
-
-        const copiedStepDir = path.join(
-          path.dirname(generatedStep),
-          '__workflow_step_files__'
+          workflowFile,
+          (content + fixture).replace(before, after)
         );
 
         await pollUntil({
-          description:
-            'copied deferred step files to include imported step hot-reload marker',
-          timeoutMs: 50_000,
+          description: 'generated step output to include the HMR update',
           check: async () => {
-            await triggerWorkflowRun('importedStepOnlyWorkflow');
-            const copiedStepFileNames = await fs.readdir(copiedStepDir);
-            const copiedStepContents = await Promise.all(
-              copiedStepFileNames.map(async (copiedStepFileName) => {
-                const copiedStepFilePath = path.join(
-                  copiedStepDir,
-                  copiedStepFileName
-                );
-                const copiedStepStats = await fs.stat(copiedStepFilePath);
-                if (!copiedStepStats.isFile()) {
-                  return '';
-                }
-                return await fs.readFile(copiedStepFilePath, 'utf8');
-              })
-            );
-            expect(
-              copiedStepContents.some((copiedStepContent) =>
-                copiedStepContent.includes(marker)
-              )
-            ).toBe(true);
+            expect(await fs.readFile(generatedStep, 'utf8')).toContain(after);
           },
         });
+
+        const runAfter = await start<[], string>(workflow, []);
+        expect(await runAfter.returnValue).toBe(after);
       }
     );
 
@@ -319,152 +352,25 @@ ${apiFileContent}`
           description: 'generated workflow to include newWorkflowFile',
           timeoutMs: 50_000,
           check: async () => {
+            if (usesNextFlowRoute) {
+              const manifestJson = await fs.readFile(
+                workflowManifestPath,
+                'utf8'
+              );
+              const manifest = JSON.parse(manifestJson) as {
+                workflows?: Record<string, Record<string, unknown>>;
+              };
+              expect(
+                Object.values(manifest.workflows || {}).some((workflows) =>
+                  Object.hasOwn(workflows, 'newWorkflowFile')
+                )
+              ).toBe(true);
+              return;
+            }
+
             await fetchWithTimeout('/api/chat');
-            const workflowContent = await fs.readFile(
-              generatedWorkflow,
-              'utf8'
-            );
+            const workflowContent = await readGeneratedWorkflowOutput();
             expect(workflowContent).toContain('newWorkflowFile');
-          },
-        });
-      }
-    );
-
-    test.skipIf(!supportsDeferredStepCopies)(
-      'should include steps discovered from workflow imports',
-      { timeout: 30_000 },
-      async () => {
-        const workflowFile = path.join(
-          appPath,
-          workflowsDir,
-          'discovered-via-workflow.ts'
-        );
-        const stepFile = path.join(
-          appPath,
-          workflowsDir,
-          'discovered-via-workflow-step.ts'
-        );
-
-        await fs.writeFile(
-          workflowFile,
-          `'use workflow';
-import { discoveredViaWorkflowStep } from './discovered-via-workflow-step';
-
-export async function discoveredViaWorkflow() {
-  await discoveredViaWorkflowStep();
-  return 'ok';
-}
-`
-        );
-        await fs.writeFile(
-          stepFile,
-          `'use step';
-
-export async function discoveredViaWorkflowStep() {
-  return 'ok';
-}
-`
-        );
-        restoreFiles.push({ path: workflowFile, content: '' });
-        restoreFiles.push({ path: stepFile, content: '' });
-
-        const apiFile = path.join(appPath, finalConfig.apiFilePath);
-        const apiFileContent = await fs.readFile(apiFile, 'utf8');
-        restoreFiles.push({ path: apiFile, content: apiFileContent });
-
-        await fs.writeFile(
-          apiFile,
-          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/discovered-via-workflow';
-${apiFileContent}`
-        );
-
-        const copiedStepDir = path.join(
-          path.dirname(generatedStep),
-          '__workflow_step_files__'
-        );
-
-        await pollUntil({
-          description:
-            'copied deferred step files to include discoveredViaWorkflowStep',
-          timeoutMs: 25_000,
-          check: async () => {
-            await fetchWithTimeout('/api/chat');
-            const copiedStepFileNames = await fs.readdir(copiedStepDir);
-            const copiedStepContents = await Promise.all(
-              copiedStepFileNames.map(async (copiedStepFileName) => {
-                const copiedStepFilePath = path.join(
-                  copiedStepDir,
-                  copiedStepFileName
-                );
-                const copiedStepStats = await fs.stat(copiedStepFilePath);
-                if (!copiedStepStats.isFile()) {
-                  return '';
-                }
-                return await fs.readFile(copiedStepFilePath, 'utf8');
-              })
-            );
-            expect(
-              copiedStepContents.some((content) =>
-                content.includes('discoveredViaWorkflowStep')
-              )
-            ).toBe(true);
-          },
-        });
-      }
-    );
-
-    test.skipIf(!supportsDeferredStepCopies)(
-      'should copy package step sources discovered via manifest entries',
-      { timeout: 30_000 },
-      async () => {
-        const workflowManifestPath = path.join(
-          appPath,
-          'app/.well-known/workflow/v1/manifest.json'
-        );
-        const copiedStepDir = path.join(
-          path.dirname(generatedStep),
-          '__workflow_step_files__'
-        );
-
-        await pollUntil({
-          description:
-            'copied deferred step files to include @workflow/ai package steps',
-          timeoutMs: 25_000,
-          check: async () => {
-            await fetchWithTimeout('/api/chat');
-            const manifestJson = await fs.readFile(
-              workflowManifestPath,
-              'utf8'
-            );
-            const manifest = JSON.parse(manifestJson) as {
-              steps?: Record<string, unknown>;
-            };
-            const manifestStepFiles = Object.keys(manifest.steps || {});
-            expect(
-              manifestStepFiles.some((filePath) =>
-                filePath.includes('ai/dist/agent/durable-agent.js')
-              )
-            ).toBe(true);
-
-            const copiedStepFileNames = await fs.readdir(copiedStepDir);
-            const copiedStepContents = await Promise.all(
-              copiedStepFileNames.map(async (copiedStepFileName) => {
-                const copiedStepFilePath = path.join(
-                  copiedStepDir,
-                  copiedStepFileName
-                );
-                const copiedStepStats = await fs.stat(copiedStepFilePath);
-                if (!copiedStepStats.isFile()) {
-                  return '';
-                }
-                return await fs.readFile(copiedStepFilePath, 'utf8');
-              })
-            );
-            expect(
-              copiedStepContents.some((content) =>
-                content.includes('async function closeStream')
-              )
-            ).toBe(true);
           },
         });
       }

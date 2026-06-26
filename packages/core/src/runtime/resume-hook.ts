@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 import {
   ERROR_SLUGS,
   HookNotFoundError,
@@ -9,11 +8,13 @@ import {
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
 import { getRunCapabilities } from '../capabilities.js';
 import { type CryptoKey, importKey } from '../encryption.js';
+import { runtimeLogger } from '../logger.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -21,10 +22,10 @@ import {
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
-import { waitedUntil } from '../util.js';
+import { linkToTraceCarrier, trace } from '../telemetry.js';
+import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
-import { getWorld } from './world.js';
+import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /**
  * Internal helper that returns the hook, the associated workflow run,
@@ -35,7 +36,7 @@ async function getHookByTokenWithKey(token: string): Promise<{
   run: WorkflowRun;
   encryptionKey: CryptoKey | undefined;
 }> {
-  const world = await getWorld();
+  const world = await getWorldLazy();
   const hook = await world.hooks.getByToken(token);
   const run = await world.runs.get(hook.runId);
   const rawKey = await world.getEncryptionKeyForRun?.(run);
@@ -98,7 +99,7 @@ export async function resumeHook<T = any>(
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
-      const world = await getWorld();
+      const world = await getWorldLazy();
 
       try {
         let hook: Hook;
@@ -129,14 +130,22 @@ export async function resumeHook<T = any>(
         // Check the target run's capabilities to ensure we encode the
         // payload in a format the run's deployment can decode. For example,
         // runs created before encryption support was added cannot decode
-        // the 'encr' serialization format.
+        // the 'encr' serialization format, and runs created before
+        // byte-stream framing support cannot decode framed byte streams.
         const rawVersion = workflowRun.executionContext?.workflowCoreVersion;
-        const { supportedFormats } = getRunCapabilities(
+        const capabilities = getRunCapabilities(
           typeof rawVersion === 'string' ? rawVersion : undefined
         );
-        if (!supportedFormats.has(SerializationFormat.ENCRYPTED)) {
+        if (!capabilities.supportedFormats.has(SerializationFormat.ENCRYPTED)) {
           encryptionKey = undefined;
         }
+
+        // Compress the payload only when the target run is marked as
+        // possibly containing compressed payloads (specVersion >= 5) AND
+        // its deployment can decode the 'gzip' format.
+        const compression =
+          (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION &&
+          capabilities.supportedFormats.has(SerializationFormat.GZIP);
 
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
@@ -147,14 +156,24 @@ export async function resumeHook<T = any>(
           encryptionKey,
           ops,
           globalThis,
-          v1Compat
+          v1Compat,
+          capabilities.framedByteStreams,
+          compression
         );
-        // NOTE: Workaround instead of injecting catching undefined unhandled rejections in webhook bundle
-        waitUntil(
-          Promise.all(ops).catch((err) => {
-            if (err !== undefined) throw err;
-          })
-        );
+        // These payload-stream ops are flushed in the background; the
+        // promise handed to waitUntil must never reject (an unconsumed
+        // waitUntil rejection crashes the process as unhandledRejection),
+        // so unexpected failures are logged instead.
+        // NOTE: rejections with `undefined` are an expected artifact of the
+        // webhook bundle and are ignored entirely.
+        safeWaitUntil(Promise.all(ops), (err) => {
+          if (err === undefined) return;
+          runtimeLogger.warn('Background flush of hook payload ops failed', {
+            workflowRunId: hook.runId,
+            hookId: hook.hookId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
 
         // Create a hook_received event with the payload
         await world.events.create(
@@ -164,6 +183,7 @@ export async function resumeHook<T = any>(
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: hook.hookId,
             eventData: {
+              ...(v1Compat ? {} : { token: hook.token }),
               payload: dehydratedPayload,
             },
           },
@@ -174,13 +194,13 @@ export async function resumeHook<T = any>(
           ...Attribute.WorkflowName(workflowRun.workflowName),
         });
 
-        const traceCarrier = workflowRun.executionContext?.traceCarrier;
-
-        if (traceCarrier) {
-          const context = await getSpanContextForTraceCarrier(traceCarrier);
-          if (context) {
-            span?.addLink?.({ context });
-          }
+        // Link to the run-origin context from the workflow run's stored
+        // trace carrier (skipped when absent or invalid).
+        const originLink = await linkToTraceCarrier(
+          workflowRun.executionContext?.traceCarrier
+        );
+        if (originLink) {
+          span?.addLink?.(originLink);
         }
 
         // Re-trigger the workflow against the deployment ID associated

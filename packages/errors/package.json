@@ -1,7 +1,7 @@
 {
   "name": "@workflow/errors",
   "description": "A package for standardizing errors in Workflow SDK",
-  "version": "5.0.0-beta.1",
+  "version": "5.0.0-beta.8",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -20,19 +20,25 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./ansi": {
+      "types": "./dist/ansi.d.ts",
+      "default": "./dist/ansi.js"
     }
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run src",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/ms": "2.1.0",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "@workflow/world": "workspace:*"
+    "@workflow/world": "workspace:*",
+    "vitest": "catalog:"
   },
   "dependencies": {
     "@workflow/utils": "workspace:*",

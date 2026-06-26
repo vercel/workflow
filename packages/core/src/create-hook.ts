@@ -1,3 +1,5 @@
+import { throwNotInWorkflowContext } from './context-errors.js';
+import type { Run } from './runtime/run.js';
 import type { Serializable } from './schemas.js';
 
 /**
@@ -27,6 +29,43 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * The token used to identify this hook.
    */
   token: string;
+
+  /**
+   * Returns a promise that resolves with the conflicting {@link Run} if
+   * another active hook already owns this hook's token, or `null` once
+   * the hook has been registered and is ready to receive payloads.
+   *
+   * Calling `createHook()` alone does not register the hook — registration
+   * only happens when the workflow suspends. Awaiting `getConflict()`
+   * suspends the workflow to commit the hook registration, so it can be
+   * used to claim the token (and detect token conflicts early) without
+   * waiting for payload data.
+   *
+   * When a conflict is detected, the resolved `Run` is the run that
+   * currently owns the token. The workflow can decide how to handle the
+   * duplicate in code: return or log `conflict.runId`, inspect
+   * `await conflict.status`, await `conflict.returnValue`, or cancel the
+   * owner with `await conflict.cancel()` and continue in the current run.
+   *
+   * Note that awaiting the hook's payload (`await hook`) when the token is
+   * already owned by another active hook still rejects with
+   * `HookConflictError`. In the rare case where the conflicting run cannot
+   * be identified (a `hook_conflict` event persisted by an old world that
+   * did not record the owning run's ID), `getConflict()` also rejects with
+   * `HookConflictError` rather than resolving with an incomplete value.
+   *
+   * @example
+   * ```ts
+   * using hook = createHook({ token: `order:${orderId}` });
+   * const conflict = await hook.getConflict();
+   * if (conflict) {
+   *   // another run already owns this token
+   *   return { dedupedTo: conflict.runId };
+   * }
+   * // token is now claimed, without waiting for payload data
+   * ```
+   */
+  getConflict(): Promise<Run<unknown> | null>;
 
   /**
    * Disposes the hook, releasing its token for reuse by other workflows.
@@ -93,7 +132,9 @@ export interface HookOptions {
    * tokens are always randomly generated to prevent unauthorized access
    * to the public webhook endpoint.
    *
-   * If not provided, a randomly generated token will be assigned.
+   * If provided, the token must be a non-empty string; passing an empty
+   * string throws. If not provided (or `undefined`), a randomly generated
+   * token will be assigned.
    *
    * @example
    *
@@ -177,8 +218,10 @@ export interface WebhookOptions
  */
 // @ts-expect-error `options` is here for types/docs
 export function createHook<T = any>(options?: HookOptions): Hook<T> {
-  throw new Error(
-    '`createHook()` can only be called inside a workflow function'
+  throwNotInWorkflowContext(
+    'createHook()',
+    'https://workflow-sdk.dev/docs/api-reference/workflow/create-hook',
+    createHook
   );
 }
 
@@ -197,7 +240,9 @@ export function createWebhook(
   // @ts-expect-error `options` is here for types/docs
   options?: WebhookOptions
 ): Webhook<Request> | Webhook<RequestWithResponse> {
-  throw new Error(
-    '`createWebhook()` can only be called inside a workflow function'
+  throwNotInWorkflowContext(
+    'createWebhook()',
+    'https://workflow-sdk.dev/docs/api-reference/workflow/create-webhook',
+    createWebhook
   );
 }

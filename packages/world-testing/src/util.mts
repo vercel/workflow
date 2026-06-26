@@ -20,7 +20,10 @@ type Control = z.infer<typeof Control>;
 type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
 
-export async function startServer(opts: { world: string }) {
+export async function startServer(opts: {
+  world: string;
+  env?: Record<string, string | undefined>;
+}) {
   let serverPath = new URL('./server.mts', import.meta.url);
 
   if (!existsSync(serverPath)) {
@@ -33,6 +36,7 @@ export async function startServer(opts: { world: string }) {
       ...process.env,
       WORKFLOW_TARGET_WORLD: opts.world,
       CONTROL_FD: '3',
+      ...(opts.env ?? {}),
     },
   });
   onTestFinished(() => {
@@ -40,11 +44,18 @@ export async function startServer(opts: { world: string }) {
   });
 
   const stdio = [] as { stream: ChalkInstance; chunk: string }[];
+  // Accumulated raw server output — used by tests that want to inspect
+  // debug logs (e.g., count runtime iterations, event loads, etc.).
+  const outputBuffer: string[] = [];
   proc.stdout?.on('data', (chunk) => {
-    stdio.push({ stream: chalk.white, chunk: chunk.toString() });
+    const str = chunk.toString();
+    stdio.push({ stream: chalk.white, chunk: str });
+    outputBuffer.push(str);
   });
   proc.stderr?.on('data', (chunk) => {
-    stdio.push({ stream: chalk.red, chunk: chunk.toString() });
+    const str = chunk.toString();
+    stdio.push({ stream: chalk.red, chunk: str });
+    outputBuffer.push(str);
   });
 
   onTestFailed(() => {
@@ -60,7 +71,11 @@ export async function startServer(opts: { world: string }) {
   assert(fd3, 'fd3 should be defined');
 
   for await (const chunk of fd3.pipe(jsonlines.parse())) {
-    return Control.parse(chunk);
+    const control = Control.parse(chunk);
+    return {
+      ...control,
+      getOutput: () => outputBuffer.join(''),
+    };
   }
 
   throw new Error('Server did not start correctly');
@@ -87,6 +102,13 @@ export function createFetcher(control: Control) {
         console.error('Workflow run:', data.runId);
       });
       return data;
+    },
+    async getFlowInvocationCount(runId: string): Promise<number> {
+      const x = await fetch(
+        `http://localhost:${control.info.port}/_flow-invocations/${encodeURIComponent(runId)}`
+      );
+      const data = (await x.json()) as { count: number };
+      return data.count;
     },
     async getRun(id: string) {
       const x = await fetch(

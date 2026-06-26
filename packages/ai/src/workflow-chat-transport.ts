@@ -30,6 +30,16 @@ export interface ReconnectToStreamOptions {
   startIndex?: number;
 }
 
+function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
+  return (
+    abortSignal?.aborted === true ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'name' in error &&
+      error.name === 'AbortError')
+  );
+}
+
 type OnChatSendMessage<UI_MESSAGE extends UIMessage> = (
   response: Response,
   options: SendMessagesOptions<UI_MESSAGE>
@@ -261,6 +271,9 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
         }
       }
     } catch (error) {
+      if (isAbortError(error, abortSignal)) {
+        return;
+      }
       console.error('Error in chat POST stream', error);
     }
 
@@ -400,6 +413,9 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
         // Reset consecutive error count only after successful stream parsing
         consecutiveErrors = 0;
       } catch (error) {
+        if (isAbortError(error, options.abortSignal)) {
+          return;
+        }
         console.error('Error in chat GET reconnectToStream', error);
         consecutiveErrors++;
 

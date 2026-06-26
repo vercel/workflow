@@ -23,6 +23,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useSidebarContext } from '@/hooks/geistdocs/use-sidebar';
 import { SearchButton } from './search';
+import { VersionSwitcher } from './version-switcher';
 
 // Map of URL suffixes to badges shown inline next to the sidebar item name.
 const SIDEBAR_ITEM_BADGES: Array<{ suffix: string; label: string }> = [
@@ -70,6 +71,7 @@ export const Sidebar = () => {
       data-sidebar-placeholder
     >
       <div className="h-full overflow-y-auto px-4 pt-12 pb-4">
+        <VersionSwitcher />
         <Fragment key={root.$id}>{renderSidebarList(root.children)}</Fragment>
       </div>
       <Sheet onOpenChange={setIsOpen} open={isOpen}>
@@ -82,6 +84,7 @@ export const Sidebar = () => {
             <SearchButton onClick={() => setIsOpen(false)} />
           </SheetHeader>
           <div className="flex-1 overflow-y-auto px-4 pb-4">
+            <VersionSwitcher />
             {renderSidebarList(root.children)}
           </div>
         </SheetContent>
@@ -101,7 +104,7 @@ export const Folder: SidebarPageTreeComponents['Folder'] = ({
     <SidebarFolder defaultOpen={defaultOpen}>
       {item.index ? (
         <SidebarFolderLink
-          className="flex items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground data-[active=true]:text-foreground [&_svg]:size-3.5"
+          className="flex w-full items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground data-[active=true]:text-foreground [&_svg]:size-3.5"
           external={item.index.external}
           href={item.index.url}
         >
@@ -109,7 +112,7 @@ export const Folder: SidebarPageTreeComponents['Folder'] = ({
           {item.name}
         </SidebarFolderLink>
       ) : (
-        <SidebarFolderTrigger className="flex items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground [&_svg]:size-3.5">
+        <SidebarFolderTrigger className="flex w-full items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground [&_svg]:size-3.5">
           {item.icon}
           {item.name}
         </SidebarFolderTrigger>

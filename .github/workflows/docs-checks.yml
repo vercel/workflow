@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -47,6 +47,11 @@ jobs:
     name: Docs Preview Smoke Checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+      deployments: read
+      statuses: read
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -55,7 +60,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -68,18 +73,31 @@ jobs:
 
       - name: Waiting for the Docs Vercel deployment
         id: waitForDocsDeployment
-        uses: ./.github/actions/wait-for-vercel-project
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
-          team-id: "team_nLlpyC6REAqxydlFKbrMDlud"
-          project-id: "prj_aLMkVj1S4Alk08AThC76nXgwbLEB"
-          vercel-token: ${{ secrets.VERCEL_DOCS_TOKEN }}
+          project-slug: workflow-docs
           timeout: 1000
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
       - name: Verify OpenGraph images and sitemap
+        if: steps.waitForDocsDeployment.outputs.deployment-state == 'success'
         run: pnpm --filter docs test:smoke
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-          VERCEL_DOCS_TOKEN: ${{ secrets.VERCEL_DOCS_TOKEN }}
+          # Trusted-sources OIDC token is minted on demand by
+          # scripts/trusted-sources-headers.mjs via the runner's
+          # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars (auto-set when
+          # `permissions: id-token: write` is on the job).
+          # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
+
+      - name: Verify rendered docs links
+        if: steps.waitForDocsDeployment.outputs.deployment-state == 'success'
+        run: pnpm --filter docs lint:rendered-links
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
+          # Trusted-sources OIDC token is minted on demand by
+          # scripts/trusted-sources-headers.mjs via the runner's
+          # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars (auto-set when
+          # `permissions: id-token: write` is on the job).
+          # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources

@@ -48,6 +48,8 @@ describe('queue timeout re-enqueue', () => {
 
   afterEach(async () => {
     await localQueue.close();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('createQueueHandler returns 200 with timeoutSeconds in the body', async () => {
@@ -142,6 +144,27 @@ describe('queue timeout re-enqueue', () => {
     });
   });
 
+  it('routes namespaced queues to namespaced direct handlers', async () => {
+    const handlerImpl = vi.fn(
+      async (_message: unknown, metadata: { queueName: string }) => {
+        expect(metadata.queueName).toBe('__custom_wkf_step_test');
+        return undefined;
+      }
+    );
+    const handler = localQueue.createQueueHandler(
+      '__custom_wkf_step_',
+      handlerImpl
+    );
+
+    localQueue.registerHandler('__custom_wkf_step_', handler);
+
+    await localQueue.queue('__custom_wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(handlerImpl).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('queue retries immediately when handler returns timeoutSeconds: 0', async () => {
     const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
     vi.mocked(mockSetTimeout).mockClear();
@@ -164,6 +187,160 @@ describe('queue timeout re-enqueue', () => {
     });
 
     // setTimeout should NOT have been called for timeoutSeconds: 0
+    expect(mockSetTimeout).not.toHaveBeenCalled();
+  });
+
+  it('logs actionable guidance for detached ArrayBuffer proxy failures', async () => {
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const fetchError = new TypeError('fetch failed');
+    (fetchError as TypeError & { cause?: unknown }).cause = new TypeError(
+      'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer'
+    );
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchError));
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining(
+          '[local world] Queue operation failed: detected "Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer"'
+        ),
+        expect.objectContaining({
+          queueName: '__wkf_step_test',
+          runId: 'run_01ABC',
+          stepId: 'step_01ABC',
+          originalError: fetchError,
+        })
+      );
+    });
+  });
+});
+
+describe('queue delaySeconds', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+  });
+
+  it('honors delaySeconds before delivering the message', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler('__wkf_step_', async () => {
+      callCount++;
+      return undefined;
+    });
+
+    localQueue.registerHandler('__wkf_step_', handler);
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload, {
+      delaySeconds: 7,
+    });
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(1);
+    });
+
+    // setTimeout should have been called with the delay (7s = 7000ms)
+    // before the message was delivered, cancellable on close().
+    expect(mockSetTimeout).toHaveBeenCalledWith(7000, undefined, {
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('close() aborts a pending delayed message without delivering it', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+    // Real-ish sleep: never resolves, rejects with AbortError on signal
+    // abort — mirrors node:timers/promises semantics for long delays.
+    vi.mocked(mockSetTimeout).mockImplementationOnce(
+      (_delay?: number, value?: unknown, opts?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }) as never
+    );
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler('__wkf_step_', async () => {
+      callCount++;
+      return undefined;
+    });
+
+    localQueue.registerHandler('__wkf_step_', handler);
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload, {
+      delaySeconds: 3600,
+    });
+
+    await localQueue.close();
+    // Give the aborted delivery promise a chance to settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(callCount).toBe(0);
+    // The AbortError must be swallowed silently — no spurious
+    // "[local world] Queue operation failed" noise on shutdown.
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it('does not call setTimeout for delaySeconds: 0', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler('__wkf_step_', async () => {
+      callCount++;
+      return undefined;
+    });
+
+    localQueue.registerHandler('__wkf_step_', handler);
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload, {
+      delaySeconds: 0,
+    });
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(1);
+    });
+
+    // setTimeout should NOT have been called for delaySeconds: 0 (the
+    // delay-honoring branch is gated on `delaySeconds > 0`).
+    expect(mockSetTimeout).not.toHaveBeenCalled();
+  });
+
+  it('does not call setTimeout when delaySeconds is omitted', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler('__wkf_step_', async () => {
+      callCount++;
+      return undefined;
+    });
+
+    localQueue.registerHandler('__wkf_step_', handler);
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(1);
+    });
+
     expect(mockSetTimeout).not.toHaveBeenCalled();
   });
 });

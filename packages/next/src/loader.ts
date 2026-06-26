@@ -1,19 +1,6 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { connect, type Socket } from 'node:net';
 import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
-import {
-  parseMessage,
-  type SocketMessage,
-  serializeMessage,
-} from './socket-server.js';
-import {
-  DEFERRED_STEP_SOURCE_METADATA_PREFIX,
-  isDeferredStepCopyFilePath,
-  parseDeferredStepSourceMetadata,
-  parseInlineSourceMapComment,
-} from './step-copy-utils.js';
 
 type DecoratorOptionsWithConfigPath =
   import('@workflow/builders').DecoratorOptionsWithConfigPath;
@@ -32,65 +19,12 @@ type LoaderStaticDependencies = {
 };
 let cachedLoaderStaticDependencies: LoaderStaticDependencies | null = null;
 
-type DiscoveredPatternState = {
-  hasWorkflow: boolean;
-  hasStep: boolean;
-  hasSerde: boolean;
-};
-const discoveredPatternStateByFilePath = new Map<
-  string,
-  DiscoveredPatternState
->();
-
-// Cache socket connection to avoid reconnecting on every file.
-let socketClientPromise: Promise<Socket | null> | null = null;
-let socketClient: Socket | null = null;
-let socketClientKey: string | null = null;
-
-type SocketCredentials = {
-  port: number;
-  authToken: string;
-};
-
-const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
-const ROUTE_STUB_BUILD_WAIT_TIMEOUT_MS = 120_000;
-let pendingDeferredRouteStubBuildPromise: Promise<void> | null = null;
-
 function registerFileDependency(
   loaderContext: WorkflowLoaderContext,
   dependencyPath: string
 ): void {
   loaderContext.addDependency?.(dependencyPath);
   loaderContext.addBuildDependency?.(dependencyPath);
-}
-
-function updateDiscoveredPatternState(
-  filePath: string,
-  nextState: DiscoveredPatternState
-): { shouldNotify: boolean; previousState?: DiscoveredPatternState } {
-  const previousState = discoveredPatternStateByFilePath.get(filePath);
-  const hasAnyPattern =
-    nextState.hasWorkflow || nextState.hasStep || nextState.hasSerde;
-
-  if (!hasAnyPattern) {
-    if (!previousState) {
-      return { shouldNotify: false };
-    }
-    discoveredPatternStateByFilePath.delete(filePath);
-    return { shouldNotify: true, previousState };
-  }
-
-  if (
-    previousState &&
-    previousState.hasWorkflow === nextState.hasWorkflow &&
-    previousState.hasStep === nextState.hasStep &&
-    previousState.hasSerde === nextState.hasSerde
-  ) {
-    return { shouldNotify: false, previousState };
-  }
-
-  discoveredPatternStateByFilePath.set(filePath, nextState);
-  return { shouldNotify: true, previousState };
 }
 
 function addIfExists(files: Set<string>, dependencyPath: string): void {
@@ -120,8 +54,6 @@ function resolveLoaderStaticDependencies(): LoaderStaticDependencies {
 
   const files = new Set<string>([
     __filename,
-    require.resolve('./socket-server'),
-    require.resolve('./step-copy-utils'),
     swcPluginPath,
     swcPluginBuildHashPath,
     workflowBuildersPath,
@@ -145,350 +77,6 @@ function registerTransformDependencies(
   }
 
   return staticDependencies.swcPluginPath;
-}
-
-function resetSocketClient(cachedSocket?: Socket): void {
-  if (cachedSocket && socketClient && socketClient !== cachedSocket) {
-    return;
-  }
-
-  socketClientPromise = null;
-  socketClient = null;
-  socketClientKey = null;
-}
-
-async function writeSocketMessage(
-  socket: Socket,
-  message: string
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    socket.write(message, (error?: Error | null) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
-function getSocketInfoFilePath(): string | null {
-  const configuredPath = process.env.WORKFLOW_SOCKET_INFO_PATH;
-  if (configuredPath) {
-    return configuredPath;
-  }
-
-  // Fallback for worker processes that don't inherit dynamic env updates
-  // from the process that created the socket server.
-  const distDir = process.env.WORKFLOW_NEXT_DIST_DIR || '.next';
-  const cwdFallbackPath = join(
-    process.cwd(),
-    distDir,
-    'cache',
-    'workflow-socket.json'
-  );
-  const projectRoot = process.env.WORKFLOW_PROJECT_ROOT;
-  if (projectRoot) {
-    const projectRootFallbackPath = join(
-      projectRoot,
-      distDir,
-      'cache',
-      'workflow-socket.json'
-    );
-    if (existsSync(projectRootFallbackPath)) {
-      return projectRootFallbackPath;
-    }
-  }
-  return cwdFallbackPath;
-}
-
-function getSocketCredentialsFromEnv(): SocketCredentials | null {
-  const socketPort = process.env.WORKFLOW_SOCKET_PORT;
-  const authToken = process.env.WORKFLOW_SOCKET_AUTH;
-  if (!socketPort || !authToken) {
-    return null;
-  }
-
-  const port = Number.parseInt(socketPort, 10);
-  if (Number.isNaN(port)) {
-    return null;
-  }
-  return { port, authToken };
-}
-
-async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null> {
-  const socketInfoFilePath = getSocketInfoFilePath();
-  if (!socketInfoFilePath) {
-    return null;
-  }
-  if (!existsSync(socketInfoFilePath)) {
-    return null;
-  }
-
-  try {
-    const raw = await readFile(socketInfoFilePath, 'utf8');
-    const parsed = JSON.parse(raw) as {
-      port?: unknown;
-      authToken?: unknown;
-    };
-    const authToken =
-      typeof parsed.authToken === 'string' ? parsed.authToken : null;
-    const numericPort =
-      typeof parsed.port === 'number'
-        ? parsed.port
-        : Number.parseInt(String(parsed.port), 10);
-
-    if (!authToken || Number.isNaN(numericPort)) {
-      return null;
-    }
-    return {
-      port: numericPort,
-      authToken,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function getSocketCredentials(): Promise<SocketCredentials | null> {
-  const envCredentials = getSocketCredentialsFromEnv();
-  if (envCredentials) {
-    return envCredentials;
-  }
-  return await getSocketCredentialsFromFile();
-}
-
-async function getSocketClient(): Promise<Socket | null> {
-  const socketCredentials = await getSocketCredentials();
-  if (!socketCredentials) {
-    return null;
-  }
-
-  if (socketClient?.destroyed) {
-    resetSocketClient(socketClient);
-  }
-
-  const currentSocketKey = `${socketCredentials.port}:${socketCredentials.authToken}`;
-  if (socketClientKey && socketClientKey !== currentSocketKey) {
-    if (socketClient) {
-      resetSocketClient(socketClient);
-    } else {
-      resetSocketClient();
-    }
-  }
-
-  if (!socketClientPromise) {
-    socketClientPromise = (async () => {
-      try {
-        const socket = connect({
-          port: socketCredentials.port,
-          host: '127.0.0.1',
-        });
-
-        // Wait for connection
-        await new Promise<void>((resolve, reject) => {
-          const onConnect = () => {
-            socket.setNoDelay(true);
-            cleanup();
-            resolve();
-          };
-          const onError = (error: Error) => {
-            cleanup();
-            reject(error);
-          };
-          const timeout = setTimeout(() => {
-            cleanup();
-            socket.destroy();
-            reject(new Error('Socket connection timeout'));
-          }, 1000);
-          const cleanup = () => {
-            clearTimeout(timeout);
-            socket.off('connect', onConnect);
-            socket.off('error', onError);
-          };
-
-          socket.on('connect', onConnect);
-          socket.on('error', onError);
-        });
-
-        socket.on('close', () => {
-          resetSocketClient(socket);
-        });
-        socket.on('error', () => {
-          resetSocketClient(socket);
-        });
-
-        socketClient = socket;
-        socketClientKey = currentSocketKey;
-        return socket;
-      } catch (error) {
-        resetSocketClient();
-        throw error;
-      }
-    })();
-  }
-  return socketClientPromise;
-}
-
-async function notifySocketServer(
-  filename: string,
-  hasWorkflow: boolean,
-  hasStep: boolean,
-  hasSerde: boolean
-): Promise<void> {
-  const socketCredentials = await getSocketCredentials();
-  if (!socketCredentials) {
-    return;
-  }
-
-  const socket = await getSocketClient();
-  if (!socket) {
-    throw new Error('Invariant: missing workflow socket connection');
-  }
-
-  const message: SocketMessage = {
-    type: 'file-discovered',
-    filePath: filename,
-    hasWorkflow,
-    hasStep,
-    hasSerde,
-  };
-  const serializedMessage = serializeMessage(
-    message,
-    socketCredentials.authToken
-  );
-
-  try {
-    await writeSocketMessage(socket, serializedMessage);
-  } catch (error) {
-    resetSocketClient(socket);
-    const reconnectedSocket = await getSocketClient();
-    if (!reconnectedSocket) {
-      throw error;
-    }
-    await writeSocketMessage(reconnectedSocket, serializedMessage);
-  }
-}
-
-function isWorkflowRouteStubSource(source: string): boolean {
-  return source.includes(ROUTE_STUB_FILE_MARKER);
-}
-
-async function createSocketConnection(
-  socketCredentials: SocketCredentials,
-  timeoutMs = 1_000
-): Promise<Socket> {
-  return await new Promise<Socket>((resolve, reject) => {
-    const socket = connect({
-      port: socketCredentials.port,
-      host: '127.0.0.1',
-    });
-    const timeout = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(new Error('Socket connection timeout'));
-    }, timeoutMs);
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.off('connect', onConnect);
-      socket.off('error', onError);
-    };
-    const onConnect = () => {
-      socket.setNoDelay(true);
-      cleanup();
-      resolve(socket);
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      socket.destroy();
-      reject(error);
-    };
-
-    socket.on('connect', onConnect);
-    socket.on('error', onError);
-  });
-}
-
-async function waitForDeferredBuildComplete(
-  socket: Socket,
-  authToken: string,
-  timeoutMs = ROUTE_STUB_BUILD_WAIT_TIMEOUT_MS
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    let buffer = '';
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(
-        new Error('Timed out waiting for deferred route build completion')
-      );
-    }, timeoutMs);
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.off('data', onData);
-      socket.off('error', onError);
-      socket.off('close', onClose);
-      socket.off('end', onClose);
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-    const onClose = () => {
-      cleanup();
-      reject(new Error('Socket closed before deferred route build completed'));
-    };
-    const onData = (chunk: Buffer) => {
-      buffer += chunk.toString();
-      let newlineIndex = buffer.indexOf('\n');
-      while (newlineIndex !== -1) {
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        newlineIndex = buffer.indexOf('\n');
-
-        const message = parseMessage(line, authToken);
-        if (message?.type === 'build-complete') {
-          cleanup();
-          resolve();
-          return;
-        }
-      }
-    };
-
-    socket.on('data', onData);
-    socket.on('error', onError);
-    socket.on('close', onClose);
-    socket.on('end', onClose);
-  });
-}
-
-async function triggerDeferredRouteStubBuildAndWait(): Promise<void> {
-  const socketCredentials = await getSocketCredentials();
-  if (!socketCredentials) {
-    return;
-  }
-  const socket = await createSocketConnection(socketCredentials);
-  try {
-    await writeSocketMessage(
-      socket,
-      serializeMessage({ type: 'trigger-build' }, socketCredentials.authToken)
-    );
-    await waitForDeferredBuildComplete(socket, socketCredentials.authToken);
-  } finally {
-    socket.destroy();
-  }
-}
-
-async function ensureDeferredRouteStubBuildAndWait(): Promise<void> {
-  if (pendingDeferredRouteStubBuildPromise) {
-    return pendingDeferredRouteStubBuildPromise;
-  }
-  const pendingPromise = triggerDeferredRouteStubBuildAndWait();
-  pendingDeferredRouteStubBuildPromise = pendingPromise.finally(() => {
-    if (pendingDeferredRouteStubBuildPromise === pendingPromise) {
-      pendingDeferredRouteStubBuildPromise = null;
-    }
-  });
-  return pendingDeferredRouteStubBuildPromise;
 }
 
 async function getBuildersModule(): Promise<
@@ -608,15 +196,9 @@ async function getRelativeFilenameForSwc(
   return relativeFilename;
 }
 
-function stripDeferredStepSourceMetadataComment(source: string): string {
-  const metadataPattern = new RegExp(
-    `^\\s*//\\s*${DEFERRED_STEP_SOURCE_METADATA_PREFIX}[A-Za-z0-9+/=]+\\s*\\r?\\n?`
-  );
-  return source.replace(metadataPattern, '');
-}
-
 // This loader applies the "use workflow"/"use step" transform.
-// Deferred step-copy files are transformed in step mode; all other files also use step mode.
+// All files use step mode; the SWC plugin decides per-function whether
+// to emit workflow or step bindings based on the source's directives.
 type WorkflowLoaderContext = {
   resourcePath: string;
   async?: () => (
@@ -639,84 +221,20 @@ export default function workflowLoader(
     const normalizedSource = source.toString();
     const workingDir = process.cwd();
     const swcPluginPath = registerTransformDependencies(this);
-    const isDeferredStepCopyFile = isDeferredStepCopyFilePath(filename);
-    const deferredStepSourceMetadata = isDeferredStepCopyFile
-      ? parseDeferredStepSourceMetadata(normalizedSource)
-      : null;
-    const sourceWithoutDeferredMetadata = isDeferredStepCopyFile
-      ? stripDeferredStepSourceMetadataComment(normalizedSource)
-      : normalizedSource;
-    const deferredSourceMapResult = isDeferredStepCopyFile
-      ? parseInlineSourceMapComment(sourceWithoutDeferredMetadata)
-      : {
-          sourceWithoutMapComment: sourceWithoutDeferredMetadata,
-          sourceMap: null,
-        };
-    const sourceForTransform = deferredSourceMapResult.sourceWithoutMapComment;
-    const discoveryFilePath =
-      deferredStepSourceMetadata?.absolutePath || filename;
-
-    if (deferredStepSourceMetadata?.absolutePath) {
-      // Ensure edits to the original source invalidate deferred step copies.
-      registerFileDependency(this, deferredStepSourceMetadata.absolutePath);
-    }
+    const sourceForTransform = normalizedSource;
 
     const isGeneratedWorkflowFile = await checkGeneratedFile(filename);
-    // Skip generated workflow route files to avoid re-processing them, except
-    // deferred route stubs which must wait for generated route output.
-    if (isGeneratedWorkflowFile && !isDeferredStepCopyFile) {
-      if (
-        process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1' &&
-        isWorkflowRouteStubSource(normalizedSource)
-      ) {
-        try {
-          await ensureDeferredRouteStubBuildAndWait();
-          const refreshedSource = await readFile(filename, 'utf8');
-          if (!isWorkflowRouteStubSource(refreshedSource)) {
-            return { code: refreshedSource, map: sourceMap };
-          }
-        } catch (error) {
-          console.warn(
-            `[workflow] Failed waiting for deferred route build for ${filename}, using stub output`,
-            error
-          );
-        }
-      }
+    // Skip generated workflow route files to avoid re-processing them.
+    if (isGeneratedWorkflowFile) {
       return { code: normalizedSource, map: sourceMap };
     }
 
     // Detect workflow patterns in the source code.
     const patterns = await detectPatterns(sourceForTransform);
-    // Always notify discovery tracking, even for `false/false`, so files that
-    // previously had workflow/step usage are removed from the tracked sets.
-    // Deferred step copy files must report using their original source path so
-    // deferred rebuilds can react to source edits outside generated artifacts.
-    if (!isDeferredStepCopyFile || deferredStepSourceMetadata?.absolutePath) {
-      const hasSerde = patterns.hasSerde;
-      const nextPatternState: DiscoveredPatternState = {
-        hasWorkflow: patterns.hasUseWorkflow,
-        hasStep: patterns.hasUseStep,
-        hasSerde,
-      };
-      const { shouldNotify } = updateDiscoveredPatternState(
-        discoveryFilePath,
-        nextPatternState
-      );
-      if (shouldNotify) {
-        await notifySocketServer(
-          discoveryFilePath,
-          nextPatternState.hasWorkflow,
-          nextPatternState.hasStep,
-          nextPatternState.hasSerde
-        );
-      }
-    }
 
-    if (!isDeferredStepCopyFile) {
-      // Check if file needs transformation based on patterns and path
-      if (!(await checkShouldTransform(filename, patterns))) {
-        return { code: normalizedSource, map: sourceMap };
-      }
+    // Check if file needs transformation based on patterns and path
+    if (!(await checkShouldTransform(filename, patterns))) {
+      return { code: normalizedSource, map: sourceMap };
     }
 
     const isTypeScript =
@@ -727,9 +245,10 @@ export default function workflowLoader(
 
     // Calculate relative filename for SWC plugin
     // The SWC plugin uses filename to generate workflowId, so it must be relative
-    const relativeFilename =
-      deferredStepSourceMetadata?.relativeFilename ||
-      (await getRelativeFilenameForSwc(filename, workingDir));
+    const relativeFilename = await getRelativeFilenameForSwc(
+      filename,
+      workingDir
+    );
 
     // Get decorator options from tsconfig (cached per working directory)
     const { options: decoratorOptions, configPath } =
@@ -739,10 +258,7 @@ export default function workflowLoader(
     }
 
     // Resolve module specifier for packages (node_modules or workspace packages)
-    const moduleSpecifier = await getModuleSpecifier(
-      deferredStepSourceMetadata?.absolutePath || filename,
-      workingDir
-    );
+    const moduleSpecifier = await getModuleSpecifier(filename, workingDir);
     const mode = 'step';
 
     // Transform with SWC
@@ -764,6 +280,7 @@ export default function workflowLoader(
         },
         target: 'es2022',
         experimental: {
+          cacheRoot: join(workingDir, '.swc'),
           plugins: [[swcPluginPath, { mode, moduleSpecifier }]],
         },
         transform: {
@@ -775,9 +292,7 @@ export default function workflowLoader(
         },
       },
       minify: false,
-      inputSourceMap: isDeferredStepCopyFile
-        ? deferredSourceMapResult.sourceMap || sourceMap
-        : sourceMap,
+      inputSourceMap: sourceMap,
       sourceMaps: true,
       inlineSourcesContent: true,
     });
