@@ -163,6 +163,37 @@ export const createWorld = async (): Promise<World> => {
 
 export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;
 
+function isPostgresTargetWorld(targetWorld: string): boolean {
+  return (
+    targetWorld === 'postgres' || targetWorld === '@workflow/world-postgres'
+  );
+}
+
+function getCachedWorld(): World | undefined {
+  return globalSymbols[WorldCache] ?? globalSymbols[StubbedWorldCache];
+}
+
+async function hasPostgresDeploymentId(world: World | undefined) {
+  return (
+    world !== undefined &&
+    typeof world.getDeploymentId === 'function' &&
+    (await world.getDeploymentId()) === 'postgres'
+  );
+}
+
+export async function getPostgresRegistrationWorld() {
+  const cachedWorld = getCachedWorld();
+  if (await hasPostgresDeploymentId(cachedWorld)) {
+    return cachedWorld;
+  }
+
+  if (isPostgresTargetWorld(resolveWorkflowTargetWorld())) {
+    return getWorld();
+  }
+
+  return undefined;
+}
+
 /**
  * Some functions from the world are needed at build time, but we do NOT want
  * to cache the world in those instances for general use, since we don't have

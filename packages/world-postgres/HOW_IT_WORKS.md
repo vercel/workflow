@@ -12,14 +12,14 @@ If you want to use any other ORM, query builder or underlying database client, y
 graph LR
     Client --> PG[graphile-worker queue]
     PG --> Worker[Embedded Worker]
-    Worker --> HTTP[Workflow HTTP routes]
-    HTTP --> Handler[Workflow or Step Handler]
+    Worker --> Handler[Registered Queue Handler]
+    Route[Workflow HTTP route] --> Handler
 
     PG -.-> F["${prefix}flows<br/>(workflows)"]
     PG -.-> S["${prefix}steps<br/>(steps)"]
 ```
 
-Jobs include retry logic (3 attempts), idempotency keys, durable delayed rescheduling, and configurable worker concurrency (default: 10).
+Jobs include retry logic (3 attempts), idempotency keys, durable delayed rescheduling, and configurable worker concurrency (default: 50).
 
 ## Streaming
 
@@ -33,14 +33,18 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 
 ## Setup
 
-Call `world.start()` to initialize graphile-worker workers. When `.start()` is called, workers begin listening to graphile-worker queues. When a job arrives, the worker executes the queue message over the workflow HTTP routes and awaits completion before acknowledging the Graphile job.
+Call `world.start()` to initialize graphile-worker utilities and migrations. Startup can durably enqueue work before the application HTTP listener is accepting connections.
+
+Graphile workers begin consuming jobs after the generated workflow route registers its queue handler. Standalone step routes register a second handler when present. When a job arrives, the worker deserializes the queue payload, calls the registered queue handler directly in-process, and awaits completion before acknowledging the Graphile job.
+
+If `world.start()` runs before the generated route module has loaded, the queue probes `/.well-known/workflow/v1/flow?__health` in the background. That probe lets the application finish binding its HTTP listener, then loads the route so it can register the in-process handler. The legacy step health route is probed opportunistically when present.
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
 
-The worker targets the HTTP-compatible workflow endpoints directly: `.well-known/workflow/v1/flow` for workflows and `.well-known/workflow/v1/step` for steps.
+The generated HTTP routes still use the same queue handler wrapper for external route requests. Embedded Graphile workers do not fetch loopback workflow URLs; explicit `WORKFLOW_LOCAL_BASE_URL` worker processes keep using those routes as a remote execution fallback.
 
 
-In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):
+In **Next.js**, add the `world.start()` call to `instrumentation.ts|js` so Graphile is initialized and active runs are re-enqueued during application startup. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):
 
 ```ts
 // instrumentation.ts

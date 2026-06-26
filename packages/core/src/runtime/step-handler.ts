@@ -58,7 +58,12 @@ import {
   withHealthCheck,
 } from './helpers.js';
 import { safeWaitUntil } from './wait-until.js';
-import { getWorld, getWorldHandlers, type WorldHandlers } from './world.js';
+import {
+  getPostgresRegistrationWorld,
+  getWorld,
+  getWorldHandlers,
+  type WorldHandlers,
+} from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
@@ -1160,11 +1165,42 @@ const stepHandler = createStepHandler();
  * appropriate step function. We may eventually want to create different bundles
  * for each step, this is temporary.
  */
-let cachedStepHandler: ((req: Request) => Promise<Response>) | undefined;
+let stepHandlerPromise:
+  | Promise<(req: Request) => Promise<Response>>
+  | undefined;
+
+async function loadStepWorldHandlers() {
+  return (await getPostgresRegistrationWorld()) ?? getWorldHandlers();
+}
+
+async function getStepHandler(worldHandlers?: WorldHandlers) {
+  if (!stepHandlerPromise) {
+    stepHandlerPromise = (async () =>
+      stepHandler(worldHandlers ?? (await loadStepWorldHandlers())))().catch(
+      (err) => {
+        stepHandlerPromise = undefined;
+        throw err;
+      }
+    );
+  }
+  return stepHandlerPromise;
+}
+
+async function registerPostgresStepHandler() {
+  const world = await getPostgresRegistrationWorld();
+  if (world) {
+    await getStepHandler(world);
+  }
+}
+
 export const stepEntrypoint: (req: Request) => Promise<Response> =
-  /* @__PURE__ */ withHealthCheck(async (req) => {
-    if (!cachedStepHandler) {
-      cachedStepHandler = stepHandler(await getWorldHandlers());
+  /* @__PURE__ */ withHealthCheck(
+    async (req) => {
+      return (await getStepHandler())(req);
+    },
+    {
+      onPostHealthCheck: () => {
+        void registerPostgresStepHandler().catch(() => {});
+      },
     }
-    return cachedStepHandler(req);
-  });
+  );

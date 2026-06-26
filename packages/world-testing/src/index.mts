@@ -5,11 +5,14 @@ import { idempotency } from './idempotency.mjs';
 import { inlineExecution } from './inline-execution.mjs';
 import { nullByte } from './null-byte.mjs';
 
-export function createTestSuite(pkgName: string) {
+export function createTestSuite(
+  pkgName: string,
+  options?: { directQueueExecution?: boolean }
+) {
   addition(pkgName);
   idempotency(pkgName);
   hooks(pkgName);
   nullByte(pkgName);
   errors(pkgName);
-  inlineExecution(pkgName);
+  inlineExecution(pkgName, options);
 }

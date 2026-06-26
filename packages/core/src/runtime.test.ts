@@ -129,11 +129,149 @@ describe('workflowEntrypoint replay guards', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   const getWorkflowTransformCode = (workflowName: string) =>
     `;globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
+
+  it('eagerly registers the workflow queue handler for Postgres worlds', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@workflow/world-postgres');
+    const createQueueHandler = vi.fn(
+      (
+        _prefix: string,
+        _handler: (message: unknown, metadata: unknown) => Promise<unknown>
+      ) =>
+        async () =>
+          new Response(null, { status: 204 })
+    );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => 'local'),
+      createQueueHandler,
+    } as any);
+
+    workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    );
+
+    await vi.waitFor(() => {
+      expect(createQueueHandler).toHaveBeenCalledWith(
+        '__wkf_workflow_',
+        expect.any(Function)
+      );
+    });
+  });
+
+  it('registers the workflow queue handler during Postgres POST health probes', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@workflow/world-postgres');
+    const createQueueHandler = vi.fn(
+      (
+        _prefix: string,
+        _handler: (message: unknown, metadata: unknown) => Promise<unknown>
+      ) =>
+        async () =>
+          new Response(null, { status: 204 })
+    );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler,
+    } as any);
+
+    const response = await workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    )(
+      new Request(
+        'https://example.test/.well-known/workflow/v1/flow?__health',
+        {
+          method: 'POST',
+        }
+      )
+    );
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(createQueueHandler).toHaveBeenCalledWith(
+        '__wkf_workflow_',
+        expect.any(Function)
+      );
+    });
+  });
+
+  it('does not register the workflow queue handler during local POST health probes', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', 'local');
+    const createQueueHandler = vi.fn(
+      (
+        _prefix: string,
+        _handler: (message: unknown, metadata: unknown) => Promise<unknown>
+      ) =>
+        async () =>
+          new Response(null, { status: 204 })
+    );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler,
+    } as any);
+
+    const response = await workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    )(
+      new Request(
+        'https://example.test/.well-known/workflow/v1/flow?__health',
+        {
+          method: 'POST',
+        }
+      )
+    );
+
+    expect(response.status).toBe(200);
+    expect(createQueueHandler).not.toHaveBeenCalled();
+  });
+
+  it('registers an injected Postgres world during POST health probes', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', 'local');
+    const createQueueHandler = vi.fn(
+      (
+        _prefix: string,
+        _handler: (message: unknown, metadata: unknown) => Promise<unknown>
+      ) =>
+        async () =>
+          new Response(null, { status: 204 })
+    );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => 'postgres'),
+      createQueueHandler,
+    } as any);
+
+    const response = await workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    )(
+      new Request(
+        'https://example.test/.well-known/workflow/v1/flow?__health',
+        {
+          method: 'POST',
+        }
+      )
+    );
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(createQueueHandler).toHaveBeenCalledWith(
+        '__wkf_workflow_',
+        expect.any(Function)
+      );
+    });
+  });
 
   it('records run_failed when run_started response schema validation fails', async () => {
     const createdEvents: unknown[] = [];

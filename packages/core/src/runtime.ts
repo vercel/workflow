@@ -54,6 +54,7 @@ import { executeStep } from './runtime/step-executor.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
+  getPostgresRegistrationWorld,
   getWorld,
   getWorldHandlers,
   type WorldHandlers,
@@ -2060,7 +2061,10 @@ export function workflowEntrypoint(
       }
     );
 
-  let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  const shouldEagerlyRegisterFromEnv =
+    process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres' ||
+    process.env.WORKFLOW_TARGET_WORLD === 'postgres';
+  let handlerPromise: Promise<(req: Request) => Promise<Response>> | undefined;
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
   const routeModuleBodyInitMs =
@@ -2068,48 +2072,89 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  return withHealthCheck(async (req) => {
-    invocationCount += 1;
-    const handlerCached = cachedHandler !== undefined;
-    const spanKind = await getSpanKind('SERVER');
+  const loadWorldHandlers = (withSpan: boolean) => {
+    if (shouldEagerlyRegisterFromEnv) {
+      return getWorld();
+    }
+    if (withSpan) {
+      return trace('workflow.route.get_world_handlers', async () =>
+        getWorldHandlers()
+      );
+    }
+    return getWorldHandlers();
+  };
 
-    return trace(
-      'workflow.route.flow',
-      {
-        kind: spanKind,
-        attributes: {
-          ...Attribute.WorkflowRouteType('flow'),
-          ...Attribute.WorkflowRouteHandlerCached(handlerCached),
-          ...Attribute.WorkflowRouteInvocationCount(invocationCount),
-          ...Attribute.WorkflowRouteEntrypointAgeMs(
-            Date.now() - entrypointCreatedAt
-          ),
-          ...(routeModuleBodyInitMs === undefined
-            ? {}
-            : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
-          ...Attribute.HttpRequestMethod(req.method),
-          ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+  const getHandler = (
+    withInitTrace: boolean,
+    worldHandlers?: WorldHandlers
+  ) => {
+    if (!handlerPromise) {
+      handlerPromise = (async () => {
+        return handler(
+          worldHandlers ?? (await loadWorldHandlers(withInitTrace))
+        );
+      })().catch((err) => {
+        handlerPromise = undefined;
+        throw err;
+      });
+    }
+    return handlerPromise;
+  };
+
+  const registerPostgresHandler = async () => {
+    const world = await getPostgresRegistrationWorld();
+    if (world) {
+      await getHandler(false, world);
+    }
+  };
+
+  void registerPostgresHandler().catch(() => {});
+
+  return withHealthCheck(
+    async (req) => {
+      invocationCount += 1;
+      const handlerCached = handlerPromise !== undefined;
+      const spanKind = await getSpanKind('SERVER');
+
+      return trace(
+        'workflow.route.flow',
+        {
+          kind: spanKind,
+          attributes: {
+            ...Attribute.WorkflowRouteType('flow'),
+            ...Attribute.WorkflowRouteHandlerCached(handlerCached),
+            ...Attribute.WorkflowRouteInvocationCount(invocationCount),
+            ...Attribute.WorkflowRouteEntrypointAgeMs(
+              Date.now() - entrypointCreatedAt
+            ),
+            ...(routeModuleBodyInitMs === undefined
+              ? {}
+              : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
+            ...Attribute.HttpRequestMethod(req.method),
+            ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+          },
         },
-      },
-      async (span) => {
-        if (!cachedHandler) {
-          cachedHandler = await trace('workflow.route.init', async () => {
-            const worldHandlers = await trace(
-              'workflow.route.get_world_handlers',
-              async () => getWorldHandlers()
-            );
-            return handler(worldHandlers);
-          });
-        }
+        async (span) => {
+          const routeHandler = handlerCached
+            ? await getHandler(true)
+            : await trace('workflow.route.init', async () => {
+                return getHandler(true);
+              });
 
-        const response = await cachedHandler(req);
-        if (response instanceof Response) {
-          span?.setAttributes(
-            Attribute.HttpResponseStatusCode(response.status)
-          );
+          const response = await routeHandler(req);
+          if (response instanceof Response) {
+            span?.setAttributes(
+              Attribute.HttpResponseStatusCode(response.status)
+            );
+          }
+          return response;
         }
-        return response;
-      }
-    );
-  });
+      );
+    },
+    {
+      onPostHealthCheck: () => {
+        void registerPostgresHandler().catch(() => {});
+      },
+    }
+  );
 }
