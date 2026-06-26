@@ -271,8 +271,14 @@ async function consumeAndVerifyStreams(
   // Return a summary stream so the bench harness can measure TTFB/slurp
   const encoder = new TextEncoder();
   const summary = JSON.stringify({ totalBytes, streamCount: streams.length });
+  let sent = false;
   return new ReadableStream<Uint8Array>({
-    start(controller) {
+    pull(controller) {
+      if (sent) {
+        controller.close();
+        return;
+      }
+      sent = true;
       controller.enqueue(encoder.encode(summary));
       controller.close();
     },

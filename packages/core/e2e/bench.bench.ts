@@ -343,7 +343,8 @@ async function consumeReturnedStreamWithMetrics(
   value: unknown,
   run: Run<unknown>,
   startedAt: string | undefined,
-  minBytes = 1
+  minBytes = 1,
+  waitForDone = minBytes > 1
 ): ReturnType<typeof consumeStreamWithMetrics> {
   const deadline = Date.now() + STREAM_READ_TIMEOUT_MS;
   let result: Awaited<ReturnType<typeof consumeStreamWithMetrics>> | undefined;
@@ -353,15 +354,12 @@ async function consumeReturnedStreamWithMetrics(
     if (result.totalBytes >= minBytes) {
       return result;
     }
-    await waitForReturnedStreamRetry(value, run, deadline, minBytes > 1);
+    await waitForReturnedStreamRetry(value, run, deadline, waitForDone);
     value = await run.returnValue;
   }
 
-  return (
-    result ?? {
-      totalBytes: 0,
-      chunks: [],
-    }
+  throw new Error(
+    `Timed out waiting for returned stream bytes: expected at least ${minBytes}, got ${result?.totalBytes ?? 0}`
   );
 }
 
@@ -651,7 +649,8 @@ describe('Workflow Performance Benchmarks', () => {
             value,
             run,
             timings.startedAt,
-            summaryStream ? 1 : expectedTotalBytes
+            summaryStream ? 1 : expectedTotalBytes,
+            summaryStream === true
           );
 
         if (summaryStream) {
