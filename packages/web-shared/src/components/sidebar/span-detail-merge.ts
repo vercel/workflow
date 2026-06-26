@@ -3,12 +3,6 @@ const hasField = (
   key: string
 ): value is Record<string, unknown> => key in value;
 
-/**
- * Resources whose input/output is loaded by a downstream fetch (the trace
- * strips those heavy fields from the span). Hooks are intentionally excluded:
- * their fetch is disabled and the panel renders them from inline span data, so
- * they are considered ready immediately.
- */
 const RESOURCES_WITH_FETCHED_DETAIL = new Set(['run', 'step', 'sleep']);
 
 export function resourceNeedsFetchedDetail(
@@ -21,23 +15,11 @@ export type SpanDetailStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 export interface SpanDetailView {
   status: SpanDetailStatus;
-  /** Inline span data merged with the matching fetched detail (if any). */
   displayData: Record<string, unknown>;
-  /** The fetched detail that matches the current selection, else null. */
   detail: unknown;
-  /** Error for the current selection, if the fetch failed. */
   error: Error | undefined;
 }
 
-/**
- * Derive the detail view-model for the selected span. `status` is a pure
- * function of (selection, fetched detail), so it can't lag the selection — the
- * panel reports `loading` from the first render after a new span is picked
- * until its matching detail arrives.
- *
- * `fetchedError` must already be scoped to the current selection by the caller
- * (a fetch error for a previously selected span must not surface here).
- */
 export function deriveSpanDetailView(args: {
   resource: string | undefined;
   resourceId: string | undefined;
@@ -71,7 +53,6 @@ export function deriveSpanDetailView(args: {
       error: fetchedError,
     };
   }
-  // Hooks have no fetch step — inline data is authoritative.
   if (!resourceNeedsFetchedDetail(resource)) {
     return {
       status: 'ready',

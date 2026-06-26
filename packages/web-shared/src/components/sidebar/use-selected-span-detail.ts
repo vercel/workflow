@@ -14,19 +14,10 @@ import {
 
 export type DetailResource = WorkflowRun | Step | Hook | Event;
 
-/**
- * Loads the full detail (input/output/metadata) for a selected span. Injected
- * by the host app, which owns the RPC/hydration/encryption layer — see
- * `fetchSpanDetailResource` in `@workflow/web`.
- */
 export type FetchSpanDetail = (
   selection: SpanSelectionInfo
 ) => Promise<DetailResource>;
 
-/**
- * Resolve a selected span to the `{ resource, resourceId, runId }` needed to
- * fetch its detail. Returns null for spans we can't (or don't need to) resolve.
- */
 function deriveSpanSelection(
   selectedSpan: SelectedSpanInfo | null
 ): SpanSelectionInfo | null {
@@ -75,19 +66,11 @@ export interface SelectedSpanDetailResult {
   resource: SpanSelectionInfo['resource'] | undefined;
   resourceId: string | undefined;
   runId: string | undefined;
-  /** Inline span data merged with the matching fetched detail. */
   displayData: Record<string, unknown>;
-  /** The fetched detail matching the current selection, else null. */
   detail: DetailResource | null;
-  /** Error for the current selection, if the fetch failed. */
   error: Error | undefined;
 }
 
-/**
- * Single source of truth for the selected span's detail: derives the selection
- * synchronously and fetches its detail directly (no notify-effect round-trip
- * through the host page), returning the `deriveSpanDetailView` view-model.
- */
 export function useSelectedSpanDetail(
   selectedSpan: SelectedSpanInfo | null,
   fetchSpanDetail: FetchSpanDetail
@@ -109,9 +92,6 @@ export function useSelectedSpanDetail(
     errorKey: string | null;
   }>({ detail: null, error: null, errorKey: null });
 
-  // Monotonic token so superseded / out-of-order responses are dropped. This
-  // is what lets us safely fetch directly off the selection: a slow response
-  // for a previously selected span can never overwrite the current one.
   const tokenRef = useRef(0);
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
@@ -138,13 +118,8 @@ export function useSelectedSpanDetail(
           errorKey: selectionKey,
         });
       });
-    // `selectionKey` + `runId` capture the selection identity. `fetchSpanDetail`
-    // changes only when env / encryption key change (e.g. Decrypt), which
-    // should refetch while keeping prior data visible.
   }, [selectionKey, runId, needsFetch, fetchSpanDetail]);
 
-  // Only surface an error that belongs to the current selection; a stale error
-  // from a previously selected span must not bleed into the new one.
   const scopedError = fetched.errorKey === selectionKey ? fetched.error : null;
 
   const view = useMemo(

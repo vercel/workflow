@@ -10,7 +10,6 @@ interface RunTraceViewProps {
   events: Event[];
   isLoading?: boolean;
   error?: Error | null;
-  /** Loads the full detail (input/output/metadata) for the selected span. */
   fetchSpanDetail: FetchSpanDetail;
   onWakeUpSleep?: (
     runId: string,

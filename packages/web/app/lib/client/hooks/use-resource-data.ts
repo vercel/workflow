@@ -55,14 +55,6 @@ async function fetchResourceWithCorrelationId(
   return { data: resourceData, correlationId };
 }
 
-/**
- * Fetch the full detail (input/output/metadata, sleep resumeAt) for a selected
- * span's resource, hydrating — and decrypting when an `encryptionKey` is
- * provided. This is a plain async function with no React state, so it can be
- * injected into the trace viewer and driven directly by the current selection
- * (see `useSelectedSpanDetail` in `@workflow/web-shared`). `useWorkflowResourceData`
- * below is a thin stateful wrapper around it for callers that prefer a hook.
- */
 export async function fetchSpanDetailResource(
   env: EnvMap,
   selection: {

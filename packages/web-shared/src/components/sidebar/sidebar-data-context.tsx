@@ -7,11 +7,6 @@ import type { FetchSpanDetail } from './use-selected-span-detail';
 export interface SidebarDataContextValue {
   run: WorkflowRun;
   events: Event[];
-  /**
-   * Loads the full detail (input/output/metadata) for a selected span. The
-   * trace viewer owns the loading/ready/error state internally (see
-   * `useSelectedSpanDetail`); the host only injects how to fetch.
-   */
   fetchSpanDetail: FetchSpanDetail;
   onStreamClick?: (streamId: string) => void;
   onRunClick?: (runId: string) => void;

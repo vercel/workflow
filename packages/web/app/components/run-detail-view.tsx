@@ -373,9 +373,6 @@ export function RunDetailView({
     enabled: activeTab === 'events',
   });
 
-  // How to load a selected span's full detail; the trace viewer owns the
-  // loading state. Closing over encryptionKey makes Decrypt re-fetch the open
-  // span with the key.
   const fetchSpanDetail = useCallback<FetchSpanDetail>(
     (selection) =>
       fetchSpanDetailResource(env, selection, {
@@ -387,8 +384,6 @@ export function RunDetailView({
   const [isDecrypting, setIsDecrypting] = useState(false);
 
   const handleDecrypt = useCallback(async () => {
-    // The key is fetched once and reused; once present every selection (and a
-    // re-fetch of the open span) hydrates with it automatically.
     if (encryptionKey) {
       return;
     }

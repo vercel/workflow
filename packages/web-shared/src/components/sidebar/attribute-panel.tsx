@@ -768,11 +768,6 @@ export const AttributePanel = ({
 
     if (resource === 'sleep') return present;
 
-    // The span's inline data has no input/output — those load lazily. While
-    // `useSelectedSpanDetail` reports `loading` (a signal now kept in phase
-    // with the selection, so it can't drop out mid-navigation), render the
-    // Input/Output section placeholders in their natural position so they hold
-    // their place instead of vanishing and popping back in.
     const loadingPlaceholders = ['input', 'output'];
     for (const key of loadingPlaceholders) {
       if (!present.includes(key)) {

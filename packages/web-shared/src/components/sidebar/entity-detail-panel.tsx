@@ -67,7 +67,6 @@ export function EntityDetailPanel({
   onStreamClick?: (streamId: string) => void;
   /** Callback when a run reference is clicked */
   onRunClick?: (runId: string) => void;
-  /** Loads the full detail (input/output/metadata) for the selected span. */
   fetchSpanDetail: FetchSpanDetail;
   /** Callback to wake up a pending sleep call. */
   onWakeUpSleep?: (
@@ -111,8 +110,6 @@ export function EntityDetailPanel({
   const rawEvents = selectedSpan?.rawEvents;
   const rawEventsLength = rawEvents?.length ?? 0;
 
-  // Selected span's detail (input/output/metadata) plus a loading status kept
-  // in phase with the selection. See useSelectedSpanDetail.
   const {
     status,
     resource,
