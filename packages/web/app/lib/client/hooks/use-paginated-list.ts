@@ -1,11 +1,11 @@
-import type { Hook, WorkflowRun, WorkflowRunStatus } from '@workflow/world';
+import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   unwrapOrThrow,
   WorkflowWebAPIError,
 } from '~/lib/client/workflow-errors';
 import { fetchHooks, fetchRuns } from '~/lib/rpc-client';
-import type { EnvMap, PaginatedResult } from '~/lib/types';
+import type { EnvMap, HookListItem, PaginatedResult } from '~/lib/types';
 import { getPaginationDisplay } from '~/lib/utils';
 
 export interface PageResult<T> {
@@ -271,7 +271,7 @@ export function useWorkflowHooks(
     limit?: number;
     sortOrder?: 'asc' | 'desc';
   }
-): PaginatedList<Hook> {
+): PaginatedList<HookListItem> {
   const { runId, limit = 10, sortOrder = 'desc' } = params;
 
   const fetchFn = useCallback(
