@@ -3,7 +3,6 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3ToolCall,
   LanguageModelV3ToolResultPart,
-  SharedV3ProviderOptions,
 } from '@ai-sdk/provider';
 import type {
   FinishReason,
@@ -622,16 +621,15 @@ function buildStepResult(
         uint8Array: data,
       };
     } else {
-      // Data is a base64 string. (URL is not currently supported here —
-      // matches prior behavior in chunksToStep.)
-      const binaryString = atob(data as string);
+      // Data is a base64 string.
+      const binaryString = atob(data);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
       return {
         mediaType: file.mediaType,
-        base64: data as string,
+        base64: data,
         uint8Array: bytes,
       };
     }
@@ -668,13 +666,7 @@ function buildStepResult(
       ...toolCalls.map(mapToolCall),
     ],
     text: raw.text,
-    reasoning: reasoning.map((r) => ({
-      type: 'reasoning' as const,
-      text: r.text,
-      ...(r.providerOptions != null
-        ? { providerOptions: r.providerOptions as SharedV3ProviderOptions }
-        : {}),
-    })),
+    reasoning,
     reasoningText: reasoningText || undefined,
     files,
     sources: raw.sources,

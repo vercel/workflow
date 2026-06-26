@@ -60,12 +60,15 @@ export interface RawReasoningPart {
 }
 
 /**
- * File chunk captured during streaming. The `data` field is the raw value
- * emitted by the model — base64/URL string, URL object, or Uint8Array.
+ * File chunk captured during streaming. `data` is the raw value emitted by the
+ * model — a base64 string or a Uint8Array. The type is derived from the V3 file
+ * stream part so it tracks the SDK: if a future provider version widens it (e.g.
+ * a URL), `buildStepResult`'s base64 decode path stops type-checking and forces
+ * us to handle the new shape rather than silently corrupting it.
  */
 export interface RawFile {
   mediaType: string;
-  data: Uint8Array | string | URL;
+  data: Extract<LanguageModelV3StreamPart, { type: 'file' }>['data'];
 }
 
 /**
