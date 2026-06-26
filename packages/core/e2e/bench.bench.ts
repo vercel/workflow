@@ -6,7 +6,7 @@ import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-heade
 import type { Run } from '../src/runtime';
 import { setWorld, start } from '../src/runtime';
 import { getWorldLazy } from '../src/runtime/get-world-lazy';
-import { STREAM_NAME_SYMBOL } from '../src/symbols';
+import { STREAM_CLIENT_NAME_SYMBOL } from '../src/symbols';
 import { getWorkbenchAppPath, isLocalDeployment } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -373,7 +373,7 @@ async function waitForReturnedStreamRetry(
 ): Promise<void> {
   const name =
     value instanceof ReadableStream
-      ? (value as Record<symbol, unknown>)[STREAM_NAME_SYMBOL]
+      ? (value as Record<symbol, unknown>)[STREAM_CLIENT_NAME_SYMBOL]
       : undefined;
 
   if (typeof name !== 'string') {

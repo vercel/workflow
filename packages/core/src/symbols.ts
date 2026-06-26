@@ -9,9 +9,17 @@ export const STREAM_NAME_SYMBOL = Symbol.for('WORKFLOW_STREAM_NAME');
 export const STREAM_TYPE_SYMBOL = Symbol.for('WORKFLOW_STREAM_TYPE');
 export const STREAM_FRAMING_SYMBOL = Symbol.for('WORKFLOW_STREAM_FRAMING');
 /**
- * Stamped on real stream handles (for example, the user-visible
- * `serialize.writable` returned from a step-side reviver or step-context
- * `getWritable()`) to
+ * Stamped on externally hydrated readable streams for diagnostics and retry
+ * helpers. Keep this distinct from `STREAM_NAME_SYMBOL`: reducers use that
+ * symbol as a durable-handle fast path, which would be incorrect for a client
+ * stream that may have already been consumed.
+ */
+export const STREAM_CLIENT_NAME_SYMBOL = Symbol.for(
+  'WORKFLOW_STREAM_CLIENT_NAME'
+);
+/**
+ * Stamped on a real `WritableStream` (the user-visible `serialize.writable`
+ * returned from a step-side reviver or step-context `getWritable()`) to
  * record the `runId` of the workflow run that owns the underlying server
  * stream. Used together with `STREAM_NAME_SYMBOL`.
  *

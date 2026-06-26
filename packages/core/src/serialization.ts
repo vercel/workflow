@@ -75,6 +75,7 @@ import {
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
+  STREAM_CLIENT_NAME_SYMBOL,
   STREAM_FLUSH_PROMISE_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
@@ -943,20 +944,12 @@ import type {
   SerializableSpecial,
 } from './serialization/types.js';
 
-function tagReadableStreamHandle<T extends ReadableStream>(
+function tagExternalReadableStream<T extends ReadableStream>(
   stream: T,
   value: Extract<SerializableSpecial['ReadableStream'], { name: string }>
 ): T {
-  Object.defineProperty(stream, STREAM_NAME_SYMBOL, {
+  Object.defineProperty(stream, STREAM_CLIENT_NAME_SYMBOL, {
     value: value.name,
-    writable: false,
-  });
-  Object.defineProperty(stream, STREAM_TYPE_SYMBOL, {
-    value: value.type,
-    writable: false,
-  });
-  Object.defineProperty(stream, STREAM_FRAMING_SYMBOL, {
-    value: value.framing,
     writable: false,
   });
   return stream;
@@ -1987,7 +1980,7 @@ export function getExternalRevivers(
         // Start polling to detect when user releases lock
         pollReadableLock(userReadable, state);
 
-        return tagReadableStreamHandle(userReadable, value);
+        return tagExternalReadableStream(userReadable, value);
       } else {
         // Non-byte streams carry length-prefixed frames, so we can count
         // completed frames and transparently reconnect when the server
@@ -2012,7 +2005,7 @@ export function getExternalRevivers(
         // Start polling to detect when user releases lock
         pollReadableLock(transform.readable, state);
 
-        return tagReadableStreamHandle(transform.readable, value);
+        return tagExternalReadableStream(transform.readable, value);
       }
     },
     WritableStream: (value) => {
@@ -2402,7 +2395,7 @@ function getStepRevivers(
         // Start polling to detect when user releases lock
         pollReadableLock(userReadable, state);
 
-        return tagReadableStreamHandle(userReadable, value);
+        return userReadable;
       } else {
         const transform = getDeserializeStream(
           getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
@@ -2419,7 +2412,7 @@ function getStepRevivers(
         // Start polling to detect when user releases lock
         pollReadableLock(transform.readable, state);
 
-        return tagReadableStreamHandle(transform.readable, value);
+        return transform.readable;
       }
     },
     WritableStream: (value) => {

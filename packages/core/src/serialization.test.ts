@@ -42,11 +42,10 @@ import {
   ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
   STABLE_ULID,
-  STREAM_FRAMING_SYMBOL,
+  STREAM_CLIENT_NAME_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
-  STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
@@ -722,16 +721,49 @@ describe('workflow arguments', () => {
       noEncryptionKey
     );
 
-    expect(hydrated[STREAM_NAME_SYMBOL]).toBe(
+    expect(hydrated[STREAM_CLIENT_NAME_SYMBOL]).toBe(
       workflowHandle[STREAM_NAME_SYMBOL]
     );
-    expect(hydrated[STREAM_TYPE_SYMBOL]).toBe(
-      workflowHandle[STREAM_TYPE_SYMBOL]
-    );
-    expect(hydrated[STREAM_FRAMING_SYMBOL]).toBe(
-      workflowHandle[STREAM_FRAMING_SYMBOL]
-    );
+    expect(hydrated[STREAM_NAME_SYMBOL]).toBeUndefined();
     await Promise.all(ops);
+  });
+
+  it('does not tag step-hydrated ReadableStreams as reusable handles', async () => {
+    const ops: Promise<void>[] = [];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+    const stepSerialized = await dehydrateStepReturnValue(
+      stream,
+      mockRunId,
+      noEncryptionKey,
+      ops,
+      globalThis,
+      false,
+      true
+    );
+    const workflowHandle = await hydrateStepReturnValue(
+      stepSerialized,
+      mockRunId,
+      noEncryptionKey
+    );
+    const stepArgs = await dehydrateStepArguments(
+      workflowHandle,
+      mockRunId,
+      noEncryptionKey
+    );
+    const stepOps: Promise<void>[] = [];
+    const hydrated = await hydrateStepArguments(
+      stepArgs,
+      mockRunId,
+      noEncryptionKey,
+      stepOps
+    );
+
+    expect(hydrated[STREAM_NAME_SYMBOL]).toBeUndefined();
+    await Promise.all([...ops, ...stepOps]);
   });
 
   it('should work with Headers', async () => {
