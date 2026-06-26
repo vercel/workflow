@@ -1033,7 +1033,7 @@ type AbortInternals = {
 type AbortSignalLike = AbortInternals & {
   aborted: boolean;
   reason?: unknown;
-  addEventListener?: Function;
+  addEventListener?: AbortSignal['addEventListener'];
 };
 
 type AbortHolder = AbortInternals & { signal?: AbortInternals };
@@ -2020,7 +2020,12 @@ export function getExternalRevivers(
       ops.push(state.promise);
 
       // Start the flushable pipe in the background
-      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+      const pipePromise = flushablePipe(
+        serialize.readable,
+        serverWritable,
+        state
+      );
+      pipePromise.catch(() => {
         // Errors are handled via state.reject
       });
 
@@ -2046,7 +2051,7 @@ export function getExternalRevivers(
         );
       }
       Object.defineProperty(serialize.writable, STREAM_FLUSH_PROMISE_SYMBOL, {
-        value: state.promise,
+        value: pipePromise,
         writable: false,
       });
 
@@ -2324,23 +2329,12 @@ function getStepRevivers(
           )[STREAM_FLUSH_PROMISE_SYMBOL];
           const responseWrite = (async () => {
             const writer = responseWritable.getWriter();
+            writer.closed.catch(() => {});
             await writer.write(response);
             await writer.close();
-            if (responseFlush) {
-              await responseFlush.catch(() => {
-                // Best-effort response stream write. Awaiting this before
-                // step completion preserves ordering when it succeeds, but
-                // the hook/request machinery owns retries and diagnostics.
-              });
-            }
+            await responseFlush;
           })();
-          if (ctx) {
-            ctx.preCompletionOps.push(
-              responseWrite.catch(() => {
-                // Preserve the StepContext.preCompletionOps no-reject contract.
-              })
-            );
-          }
+          ctx?.preCompletionOps.push(responseWrite.catch(() => {}));
           await responseWrite;
         };
       }
@@ -2448,7 +2442,12 @@ function getStepRevivers(
       ops.push(state.promise);
 
       // Start the flushable pipe in the background
-      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+      const pipePromise = flushablePipe(
+        serialize.readable,
+        serverWritable,
+        state
+      );
+      pipePromise.catch(() => {
         // Errors are handled via state.reject
       });
 
@@ -2480,7 +2479,7 @@ function getStepRevivers(
         );
       }
       Object.defineProperty(serialize.writable, STREAM_FLUSH_PROMISE_SYMBOL, {
-        value: state.promise,
+        value: pipePromise,
         writable: false,
       });
 

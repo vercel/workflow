@@ -1,6 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { createVercelWorld } from '@workflow/world-vercel';
-import fs from 'fs';
-import path from 'path';
 import { bench, describe } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
@@ -338,21 +338,23 @@ async function consumeStreamWithMetrics(
  * opening the returned stream in that window can produce an empty reader.
  */
 async function consumeReturnedStreamWithMetrics(
+  value: unknown,
   run: Run<unknown>,
   startedAt: string | undefined,
-  { minBytes = 1 }: { minBytes?: number } = {}
+  minBytes = 1
 ): ReturnType<typeof consumeStreamWithMetrics> {
   const deadline = Date.now() + STREAM_READ_TIMEOUT_MS;
   let result: Awaited<ReturnType<typeof consumeStreamWithMetrics>> | undefined;
 
   while (Date.now() < deadline) {
-    result = await consumeStreamWithMetrics(await run.returnValue, startedAt);
+    result = await consumeStreamWithMetrics(value, startedAt);
     if (result.totalBytes >= minBytes) {
       return result;
     }
     await new Promise((resolve) =>
       setTimeout(resolve, STREAM_READ_RETRY_INTERVAL_MS)
     );
+    value = await run.returnValue;
   }
 
   return (
@@ -421,10 +423,10 @@ describe('Workflow Performance Benchmarks', () => {
     'workflow with stream',
     async () => {
       const run = await start(await benchWf('streamWorkflow'), []);
-      await run.returnValue;
+      const value = await run.returnValue;
       const timings = await getRunTimings(run);
       const { firstByteTimeMs, slurpTimeMs, totalBytes } =
-        await consumeReturnedStreamWithMetrics(run, timings.startedAt);
+        await consumeReturnedStreamWithMetrics(value, run, timings.startedAt);
       // Correctness: stream should produce ~5KB (50 chunks * ~100 bytes)
       if (totalBytes === 0) {
         throw new Error(
@@ -605,12 +607,15 @@ describe('Workflow Performance Benchmarks', () => {
       name,
       async () => {
         const run = await start(await benchWf(workflow), args);
-        await run.returnValue;
+        const value = await run.returnValue;
         const timings = await getRunTimings(run);
         const { firstByteTimeMs, slurpTimeMs, totalBytes, chunks } =
-          await consumeReturnedStreamWithMetrics(run, timings.startedAt, {
-            minBytes: summaryStream ? 1 : expectedTotalBytes,
-          });
+          await consumeReturnedStreamWithMetrics(
+            value,
+            run,
+            timings.startedAt,
+            summaryStream ? 1 : expectedTotalBytes
+          );
 
         if (summaryStream) {
           // Parallel/fan-out workflows return a JSON summary stream;

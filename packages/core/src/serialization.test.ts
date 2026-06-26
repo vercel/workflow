@@ -2011,6 +2011,75 @@ describe('workflow return value', () => {
 });
 
 describe('step arguments', () => {
+  const webhookResponseStreamName = 'strm_manual_webhook_response';
+
+  async function hydrateManualWebhookRequest(world = makeMockWorld()) {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    const responseWritable = new WritableStream();
+    Object.defineProperty(responseWritable, STREAM_NAME_SYMBOL, {
+      value: webhookResponseStreamName,
+      writable: false,
+    });
+    Object.defineProperty(responseWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      value: mockRunId,
+      writable: false,
+    });
+
+    const request = new Request('https://example.com/webhook', {
+      method: 'POST',
+    });
+    (request as any)[WEBHOOK_RESPONSE_WRITABLE] = responseWritable;
+
+    const serialized = await dehydrateStepArguments(
+      request,
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+    const ops: Promise<void>[] = [];
+    const hydrated = (await hydrateStepArguments(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      ops,
+      globalThis
+    )) as Request & { respondWith(response: Response): Promise<void> };
+
+    const preCompletionOps: Promise<void>[] = [];
+    const stepContext: StepContext = {
+      stepMetadata: {
+        stepName: 'sendWebhookResponse',
+        stepId: 'step_manual_webhook_response',
+        stepStartedAt: new Date(),
+        attempt: 1,
+      },
+      workflowMetadata: {
+        workflowName: 'webhookWorkflow',
+        workflowRunId: mockRunId,
+        workflowStartedAt: new Date(),
+        url: 'https://example.com',
+        features: { encryption: false },
+      },
+      ops,
+      preCompletionOps,
+      encryptionKey: undefined,
+    };
+
+    return {
+      hydrated,
+      ops,
+      preCompletionOps,
+      resetWorld: () =>
+        vi
+          .mocked(getWorldLazy)
+          .mockImplementation(() => makeMockWorld() as any),
+      stepContext,
+      world,
+    };
+  }
+
   it('should throw error for an unsupported type', async () => {
     class Foo {}
     let err: WorkflowRuntimeError | undefined;
@@ -2035,7 +2104,6 @@ describe('step arguments', () => {
 
   it('waits for manual webhook response streams to flush before respondWith resolves', async () => {
     const { contextStorage } = await import('./step/context-storage.js');
-    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
 
     let resolveWrite!: () => void;
     const writeGate = new Promise<void>((resolve) => {
@@ -2048,58 +2116,14 @@ describe('step arguments', () => {
       }
       return Promise.resolve();
     });
-    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+    const { hydrated, preCompletionOps, resetWorld, stepContext } =
+      await hydrateManualWebhookRequest(world);
 
     try {
-      const responseWritable = new WritableStream();
-      Object.defineProperty(responseWritable, STREAM_NAME_SYMBOL, {
-        value: 'strm_manual_webhook_response',
-        writable: false,
-      });
-      Object.defineProperty(responseWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
-        value: mockRunId,
-        writable: false,
-      });
-
-      const request = new Request('https://example.com/webhook', {
-        method: 'POST',
-      });
-      (request as any)[WEBHOOK_RESPONSE_WRITABLE] = responseWritable;
-
-      const serialized = await dehydrateStepArguments(
-        request,
-        mockRunId,
-        noEncryptionKey,
-        globalThis
-      );
-      const ops: Promise<void>[] = [];
-      const hydrated = (await hydrateStepArguments(
-        serialized,
-        mockRunId,
-        noEncryptionKey,
-        ops,
-        globalThis
-      )) as Request & { respondWith(response: Response): Promise<void> };
-
-      const preCompletionOps: Promise<void>[] = [];
-      const stepContext: StepContext = {
-        stepMetadata: {
-          stepName: 'sendWebhookResponse',
-          stepId: 'step_manual_webhook_response',
-          stepStartedAt: new Date(),
-          attempt: 1,
-        },
-        workflowMetadata: {
-          workflowName: 'webhookWorkflow',
-          workflowRunId: mockRunId,
-          workflowStartedAt: new Date(),
-          url: 'https://example.com',
-          features: { encryption: false },
-        },
-        ops,
-        preCompletionOps,
-        encryptionKey: undefined,
-      };
+      // Let the writable lock poller observe the idle stream before the
+      // response is written. respondWith must still wait for this specific
+      // write/close, not for a stale idle-state promise.
+      await new Promise((resolve) => setTimeout(resolve, 30));
 
       let responded = false;
       const respondPromise = contextStorage
@@ -2113,7 +2137,7 @@ describe('step arguments', () => {
       await vi.waitFor(() => {
         expect(world.streams.write).toHaveBeenCalledWith(
           mockRunId,
-          'strm_manual_webhook_response',
+          webhookResponseStreamName,
           expect.any(Uint8Array)
         );
       });
@@ -2129,10 +2153,54 @@ describe('step arguments', () => {
       expect(responded).toBe(true);
       expect(world.streams.close).toHaveBeenCalledWith(
         mockRunId,
-        'strm_manual_webhook_response'
+        webhookResponseStreamName
       );
     } finally {
-      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+      resetWorld();
+    }
+  });
+
+  it('rejects manual webhook respondWith when response stream write fails', async () => {
+    const { contextStorage } = await import('./step/context-storage.js');
+
+    const streamError = new Error('manual webhook response write failed');
+    let rejectWrite!: (reason?: unknown) => void;
+    const writeFailure = new Promise<void>((_resolve, reject) => {
+      rejectWrite = reject;
+    });
+    writeFailure.catch(() => {});
+    const world = makeMockWorld();
+    world.streams.write.mockImplementation((_runId, name) => {
+      if (name === webhookResponseStreamName) {
+        return writeFailure;
+      }
+      return Promise.resolve();
+    });
+    const { hydrated, ops, preCompletionOps, resetWorld, stepContext } =
+      await hydrateManualWebhookRequest(world);
+    const opsDone = Promise.all(ops).catch(() => undefined);
+
+    try {
+      const respondPromise = contextStorage.run(stepContext, () =>
+        hydrated.respondWith(new Response('Hello from webhook!'))
+      );
+
+      await vi.waitFor(() => {
+        expect(world.streams.write).toHaveBeenCalledWith(
+          mockRunId,
+          webhookResponseStreamName,
+          expect.any(Uint8Array)
+        );
+      });
+      rejectWrite(streamError);
+
+      await expect(respondPromise).rejects.toThrow(streamError.message);
+
+      expect(preCompletionOps).toHaveLength(1);
+      await expect(Promise.all(preCompletionOps)).resolves.toEqual([undefined]);
+      await opsDone;
+    } finally {
+      resetWorld();
     }
   });
 });
@@ -2772,7 +2840,7 @@ describe('step function serialization', () => {
     const stepId = 'step//workflows/test.ts//addNumbers';
 
     // Create a VM context like the workflow runner does
-    const { context, globalThis: vmGlobalThis } = createContext({
+    const { globalThis: vmGlobalThis } = createContext({
       seed: 'test',
       fixedTimestamp: 1714857600000,
     });
@@ -2834,7 +2902,7 @@ describe('step function serialization', () => {
     const stepId = 'step//workflows/test.ts//missingUseStep';
 
     // Create a VM context WITHOUT setting up WORKFLOW_USE_STEP
-    const { context, globalThis: vmGlobalThis } = createContext({
+    const { globalThis: vmGlobalThis } = createContext({
       seed: 'test',
       fixedTimestamp: 1714857600000,
     });
@@ -5666,7 +5734,7 @@ describe('isEncrypted', () => {
 // ============================================================================
 
 describe('AbortController serialization', () => {
-  const { context, globalThis: vmGlobalThis } = createContext({
+  const { globalThis: vmGlobalThis } = createContext({
     seed: 'test-abort-serde',
     fixedTimestamp: 1714857600000,
   });
