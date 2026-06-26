@@ -1211,18 +1211,39 @@ describe('e2e', () => {
       const payload = `hello-from-child-${Date.now()}\n`;
       const run = await start(await e2e(workflowName), [payload]);
 
-      const reader = run.getReadable().getReader();
+      const returnValue = await run.returnValue;
       // `fatal: true` makes the decoder throw on any invalid UTF-8
       // sequence, so a successful decode is itself a round-trip
       // assertion that the bytes survived intact.
       const decoder = new TextDecoder('utf-8', { fatal: true });
+      const readDeadline = Date.now() + STREAM_READ_TIMEOUT_MS;
+      let reader: ReadableStreamDefaultReader<unknown> | undefined;
+      let value: unknown;
 
       // The child step performs exactly one write of `payload` as
       // UTF-8 bytes, so we should receive a single chunk containing
-      // exactly those bytes before the stream closes.
-      const { value, done } = await reader.read();
-      expect(done).toBeFalsy();
-      assert(value);
+      // exactly those bytes before the stream closes. On distributed
+      // Vercel runs, the run can complete just before the readable
+      // endpoint sees the forwarded stream chunk, so reopen until the
+      // persisted output is visible.
+      while (Date.now() < readDeadline) {
+        reader = run.getReadable().getReader();
+        const result = await reader.read();
+
+        if (!result.done && result.value) {
+          value = result.value;
+          break;
+        }
+
+        reader.releaseLock();
+        reader = undefined;
+        await sleep(1_000);
+      }
+
+      assert(
+        value,
+        `Timed out waiting for forwarded writable chunk from ${workflowName}`
+      );
       assert(value instanceof Uint8Array);
 
       const expectedBytes = new TextEncoder().encode(payload);
@@ -1231,9 +1252,10 @@ describe('e2e', () => {
 
       // Default stream should close cleanly after the parent closes its
       // writable.
+      assert(reader, 'Expected an open reader for forwarded writable stream');
       expect((await reader.read()).done).toBe(true);
+      reader.releaseLock();
 
-      const returnValue = await run.returnValue;
       expect(returnValue).toMatchObject({
         childRunId: expect.stringMatching(/^wrun_/),
       });
