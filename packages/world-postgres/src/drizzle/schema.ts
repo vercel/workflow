@@ -136,7 +136,7 @@ export const events = schema.table(
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
-    Cborized<Event & { eventData?: undefined }, 'eventData'>
+    Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
   >,
   (tb) => [
     index().on(tb.runId),

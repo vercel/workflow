@@ -30,7 +30,7 @@ import {
 } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
-import { getDispatcher } from './http-client.js';
+import { getEventsDispatcher } from './http-client.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
@@ -44,6 +44,12 @@ import { type APIConfig, getHttpConfig } from './utils.js';
  * custom undici dispatcher restores visibility. The dispatcher itself does
  * not affect instrumentation — the v3 `makeRequest` path has always passed
  * one (see utils.ts) and stayed visible.
+ *
+ * The events API uses its own HTTP/2-enabled dispatcher
+ * (`getEventsDispatcher`): these reads/writes are plain request/response (or a
+ * streamed LIST response) and benefit from multiplexing. The default dispatcher
+ * stays on HTTP/1.1 because H2 deadlocks the queue's webhook respondWith
+ * mechanism — see http-client.ts.
  */
 async function fetchV4(
   url: string,
@@ -69,7 +75,7 @@ async function fetchV4(
     headers: init.headers,
     body: init.body,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-    dispatcher: getDispatcher(config),
+    dispatcher: getEventsDispatcher(config),
   } as any);
 }
 
@@ -103,6 +109,8 @@ export interface CreateEventV4Input {
   specVersion: number;
   correlationId?: string;
   vercelId?: string;
+  /** Client-side time at which the event occurred. */
+  occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
   deploymentId?: string;
   workflowName?: string;
@@ -144,6 +152,11 @@ export interface CreateEventV4Input {
    *  other event types; older servers ignore it entirely (the runtime then
    *  falls back to events.list). */
   sinceCursor?: string;
+  /** Run-started preload opt-out. Turbo backgrounds run_started as a write
+   *  barrier only and never reads the preloaded log, so it asks the server to
+   *  skip the list+resolve. Acted on by the server only for run_started;
+   *  older servers ignore it and preload as before. */
+  skipPreload?: boolean;
 }
 
 export interface CreateEventV4Result {
@@ -187,6 +200,7 @@ function buildPostFrameMeta(
   if (input.correlationId !== undefined)
     meta.correlationId = input.correlationId;
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
+  if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
   }
@@ -211,6 +225,7 @@ function buildPostFrameMeta(
     meta.allowReservedAttributes = input.allowReservedAttributes;
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
+  if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   return meta;
 }
 
@@ -346,6 +361,7 @@ export interface DecodedV4Event {
   eventType: string;
   correlationId?: string;
   createdAt: Date | string;
+  occurredAt?: Date | string;
   specVersion?: number;
   eventData?: Record<string, unknown>;
 }

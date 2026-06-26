@@ -5,6 +5,7 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
+import { getStreamDispatcher } from './http-client.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -18,14 +19,36 @@ import {
  */
 export const MAX_CHUNKS_PER_REQUEST = 1000;
 
-// Streaming calls use plain fetch() without the undici dispatcher.
-// The dispatcher's retry logic doesn't apply well to streaming operations
-// (partial writes, long-lived reads), and duplex streams are incompatible
-// with undici's experimental H2 support.
+// Stream writes (the PUT write/close path) go through the H2 stream
+// dispatcher (see getStreamDispatcher): they send a fully-buffered body (or
+// none), so they benefit from H2 multiplexing without hitting the duplex
+// issues that keep the long-lived live-read (GET) on plain fetch. Because
+// stream appends aren't idempotent, that stream dispatcher uses a deliberately
+// narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only on
+// transient connection errors and HTTP 429 — both of which guarantee the chunk
+// was never persisted — and never on 5xx, so a retry can't duplicate an
+// already-applied write. Snapshot reads (chunks/info) go
+// through makeRequest (default H1 dispatcher); the live-read and list use
+// plain fetch().
 
+// Writes (PUT) and stream completion use the v2 stream endpoint.
 function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
+}
+
+// The live-read (GET) endpoint is versioned at v3: on a max-duration timeout
+// (or a mid-stream connection drop) the server errors the response body
+// instead of closing it cleanly, which is what lets the reconnecting reader
+// (`createReconnectingFramedStream`) resume from the next chunk rather than
+// treating the timeout as end-of-stream. Reading from v2 would silently
+// truncate long-lived streams at the server's 2-minute limit. Only the live
+// read is affected by the timeout — writes, completion, and snapshot reads
+// (chunks/info/list) stay on v2.
+function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
 }
 
@@ -125,7 +148,9 @@ export function createStreamer(config?: APIConfig): Streamer {
           method: 'PUT',
           body: chunk,
           headers: httpConfig.headers,
-        });
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+          dispatcher: getStreamDispatcher(config),
+        } as any);
         const text = await response.text();
         if (!response.ok) {
           throw createStreamRequestError('write', url, response, text);
@@ -163,7 +188,9 @@ export function createStreamer(config?: APIConfig): Streamer {
             method: 'PUT',
             body,
             headers: httpConfig.headers,
-          });
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+            dispatcher: getStreamDispatcher(config),
+          } as any);
           const text = await response.text();
           if (!response.ok) {
             throw createStreamRequestError('write', url, response, text);
@@ -181,7 +208,9 @@ export function createStreamer(config?: APIConfig): Streamer {
         const response = await fetch(url, {
           method: 'PUT',
           headers: httpConfig.headers,
-        });
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+          dispatcher: getStreamDispatcher(config),
+        } as any);
         const text = await response.text();
         if (!response.ok) {
           throw createStreamRequestError('close', url, response, text);
@@ -190,7 +219,7 @@ export function createStreamer(config?: APIConfig): Streamer {
 
       async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, runId, httpConfig);
+        const url = getStreamReadUrl(name, runId, httpConfig);
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }

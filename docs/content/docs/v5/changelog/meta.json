@@ -4,7 +4,8 @@
     "index",
     "eager-processing",
     "resilient-start",
-    "lazy-event-creation"
+    "lazy-event-creation",
+    "turbo-mode"
   ],
   "defaultOpen": false
 }

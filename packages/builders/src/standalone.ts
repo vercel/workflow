@@ -20,7 +20,7 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.ensureDirectory(stepsBundlePath);
     await this.ensureDirectory(workflowBundlePath);
 
-    console.log('Creating combined bundle');
+    this.logBaseBuilderInfo('Creating combined bundle');
 
     const { manifest } = await this.createCombinedBundle({
       inputFiles,
@@ -43,7 +43,10 @@ export class StandaloneBuilder extends BaseBuilder {
   }
 
   private async buildWebhookFunction(): Promise<void> {
-    console.log('Creating webhook bundle at', this.config.webhookBundlePath);
+    this.logBaseBuilderInfo(
+      'Creating webhook bundle at',
+      this.config.webhookBundlePath
+    );
 
     const webhookBundlePath = this.resolvePath(this.config.webhookBundlePath);
     await this.ensureDirectory(webhookBundlePath);

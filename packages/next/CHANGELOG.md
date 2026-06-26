@@ -1,5 +1,57 @@
 # @workflow/next
 
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- Updated dependencies [[`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba)]:
+  - @workflow/builders@5.0.0-beta.24
+  - @workflow/core@5.0.0-beta.24
+
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
+  - @workflow/core@5.0.0-beta.23
+  - @workflow/builders@5.0.0-beta.23
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2538](https://github.com/vercel/workflow/pull/2538) [`22b2728`](https://github.com/vercel/workflow/commit/22b2728394b3a3dbfa4e32984e2feba28b4136a9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Prewarm the Workflow SWC plugin cache before Next.js starts parallel loader workers.
+
+- [#2564](https://github.com/vercel/workflow/pull/2564) [`332c63c`](https://github.com/vercel/workflow/commit/332c63ce3c63f1505025d4b35cab44d21533d26d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Discover workflows imported by Next.js instrumentation, middleware, and proxy entrypoints.
+
+- Updated dependencies [[`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626)]:
+  - @workflow/core@5.0.0-beta.22
+  - @workflow/builders@5.0.0-beta.22
+
+## 5.0.0-beta.21
+
+### Minor Changes
+
+- [#2545](https://github.com/vercel/workflow/pull/2545) [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3) Thanks [@ijjk](https://github.com/ijjk)! - Remove the Next.js lazy discovery/deferred builder path and the `workflows.lazyDiscovery` option.
+
+  Fall back to direct generated-file overwrites on Windows when atomic rename is blocked by Next.js dev server file handles.
+
+### Patch Changes
+
+- [#2546](https://github.com/vercel/workflow/pull/2546) [`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc) Thanks [@ijjk](https://github.com/ijjk)! - Optimize eager workflow discovery and improve default eager build compatibility.
+
+- Updated dependencies [[`6de5ea5`](https://github.com/vercel/workflow/commit/6de5ea5c2f32b474274f5dabe5f3663e03622ac5), [`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc), [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615), [`b713d84`](https://github.com/vercel/workflow/commit/b713d8417b1334abd1e30bdc50701d0d96dee39d), [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3), [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055)]:
+  - @workflow/core@5.0.0-beta.21
+  - @workflow/builders@5.0.0-beta.21
+
+## 5.0.0-beta.20
+
+### Patch Changes
+
+- Updated dependencies [[`7aee0d4`](https://github.com/vercel/workflow/commit/7aee0d4e4aae627d900068a4740fd69e651d1a2f), [`16b3670`](https://github.com/vercel/workflow/commit/16b36703e2b1102df33bb301e8b19d7031dbb70f), [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca), [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9), [`722bb7c`](https://github.com/vercel/workflow/commit/722bb7c6a20a7f255757280739d8b51661ed7792), [`de91f20`](https://github.com/vercel/workflow/commit/de91f20f6828904a2da1d80c9f6ae729438a453b), [`ab2e9b8`](https://github.com/vercel/workflow/commit/ab2e9b8d0740c457f80e05f05c1fd907bcf4f027), [`84ccd40`](https://github.com/vercel/workflow/commit/84ccd40ea3e12ba6b67967a4ff9f0b84b2393c48), [`939890d`](https://github.com/vercel/workflow/commit/939890d4c2998823d95732dbc310712709618bc9), [`a92c16d`](https://github.com/vercel/workflow/commit/a92c16debd46f3804b01682eadfbfc355f03921c), [`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a), [`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a)]:
+  - @workflow/core@5.0.0-beta.20
+  - @workflow/builders@5.0.0-beta.20
+
 ## 5.0.0-beta.19
 
 ### Patch Changes

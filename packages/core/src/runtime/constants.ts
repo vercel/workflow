@@ -202,6 +202,44 @@ export function isOptimisticInlineStartEnabled(): boolean {
   return raw === '1' || raw.toLowerCase() === 'true';
 }
 
+/**
+ * Whether an operator has **explicitly disabled** optimistic inline start via
+ * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Distinct from "unset": unset
+ * leaves the optimization off by default but lets turbo force it on; an explicit
+ * `0`/`false` is an operator opt-out that turbo must honor (turbo's forced
+ * optimistic start still runs a step body before `step_started`/`run_started` is
+ * confirmed, the property such an operator is opting out of), so
+ * `forceOptimisticStart` defers to this. Reads the env var lazily.
+ */
+export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
+  const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+  if (raw === undefined || raw === '') return false;
+  return raw === '0' || raw.toLowerCase() === 'false';
+}
+
+/**
+ * Whether "turbo mode" is enabled. Turbo mode fast-paths the *first delivery of
+ * the first invocation* of a run (detected by the entrypoint via `runInput`
+ * presence + `metadata.attempt === 1`): it backgrounds the `run_started` event
+ * creation, skips the initial event-log load (nothing has been written yet),
+ * and forces optimistic inline step start for that invocation — independent of
+ * `WORKFLOW_OPTIMISTIC_INLINE_START`.
+ *
+ * Forcing optimistic start is safe here because the first delivery has no
+ * concurrent peer handler to race the step create-claim, so a step body runs
+ * exactly once. That single-handler guarantee ends as soon as the run creates a
+ * hook or wait (which introduce resume/parallel invocations), so the runtime
+ * exits turbo at that point.
+ *
+ * Reads `process.env.WORKFLOW_TURBO` lazily. Default **ON**; disabled only by an
+ * explicit `'0'` / `'false'` (case-insensitive).
+ */
+export function isTurboEnabled(): boolean {
+  const raw = process.env.WORKFLOW_TURBO;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
 // A replay-consumer mismatch can be caused by a transient divergent replay
 // rather than an invalid persisted history. Queue bounded recovery replays
 // before recording terminal corruption for a run that cannot replay.

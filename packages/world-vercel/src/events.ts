@@ -433,6 +433,14 @@ function buildEventFromV4(
       decoded.createdAt instanceof Date
         ? decoded.createdAt
         : new Date(decoded.createdAt),
+    ...(decoded.occurredAt !== undefined
+      ? {
+          occurredAt:
+            decoded.occurredAt instanceof Date
+              ? decoded.occurredAt
+              : new Date(decoded.occurredAt),
+        }
+      : {}),
     ...(decoded.correlationId ? { correlationId: decoded.correlationId } : {}),
     eventData,
     ...(decoded.specVersion !== undefined
@@ -598,6 +606,7 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before
       // this write so the server can return the authoritative event-log
       // delta on the response (events/cursor/hasMore), letting the inline
@@ -605,6 +614,11 @@ async function createWorkflowRunEventInner(
       // step_completed/step_failed; older servers ignore it and the runtime
       // falls back to events.list.
       ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
+      // Run-started preload opt-out: turbo backgrounds run_started as a write
+      // barrier only and never reads the preloaded log, so tell the server to
+      // skip the list+resolve. The server only acts on it for run_started;
+      // older servers ignore it and simply preload as before.
+      ...(params?.skipPreload ? { skipPreload: true } : {}),
       remoteRefBehavior,
       payload,
       ...meta,

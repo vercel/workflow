@@ -66,7 +66,7 @@ export default Hook;`}
 
 The returned `Hook` object also implements `AsyncIterable<T>`, which allows you to iterate over incoming payloads using `for await...of` syntax.
 
-Use `hook.getConflict()` to check whether the hook token is already claimed by another active hook, without waiting for hook payload data. Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the registration, then resolves with `null` once `hook_created` is recorded, or with `{ runId }` identifying the conflicting run if another active hook already owns the same token.
+Use `hook.getConflict()` (available starting in `workflow@4.5.0`) to check whether the hook token is already claimed by another active hook, without waiting for hook payload data. Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the registration, then resolves with `null` once `hook_created` is recorded, or with `{ runId }` identifying the conflicting run if another active hook already owns the same token.
 
 ## Examples
 
@@ -117,7 +117,7 @@ export async function slackBotWorkflow(channelId: string) {
 
 ### Detecting Token Conflicts
 
-Use `hook.getConflict()` when the workflow needs to claim a hook token before doing other work, but does not need a payload yet:
+Use `hook.getConflict()` (available starting in `workflow@4.5.0`) when the workflow needs to claim a hook token before doing other work, but does not need a payload yet:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";

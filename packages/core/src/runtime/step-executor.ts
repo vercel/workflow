@@ -33,7 +33,10 @@ import {
   promoteAbortErrorToFatal,
 } from '../types.js';
 
-import { isOptimisticInlineStartEnabled } from './constants.js';
+import {
+  isOptimisticInlineStartEnabled,
+  isOptimisticInlineStartExplicitlyDisabled,
+} from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import { safeWaitUntil } from './wait-until.js';
@@ -99,6 +102,23 @@ export interface StepExecutorParams {
    * handler is the sole inline writer for the run on this iteration.
    */
   inlineDeltaSinceCursor?: string;
+  /**
+   * Force optimistic inline start regardless of
+   * `WORKFLOW_OPTIMISTIC_INLINE_START`. Set by turbo mode on the first delivery
+   * of the first invocation, where forcing it is safe: there is no concurrent
+   * peer handler to race the create-claim, so the body runs exactly once. Only
+   * meaningful together with `lazyStepInput` (a brand-new lazy step).
+   */
+  forceOptimisticStart?: boolean;
+  /**
+   * Turbo mode only: a promise that resolves once the backgrounded
+   * `run_started` has landed. When set, the lazy/optimistic `step_started` is
+   * chained on it so the step is never created before its run exists. The body
+   * still runs immediately against locally-synthesized state — only the network
+   * write waits — so the `run_started` round-trip overlaps the body. `undefined`
+   * outside turbo, where `run_started` was already awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>;
 }
 
 /**
@@ -201,6 +221,13 @@ export async function executeStep(
       // return `skipped` and never write the failure twice.
       if (params.lazyStepInput !== undefined) {
         try {
+          // Turbo: this lazy `step_started` must not precede the backgrounded
+          // `run_started`. Order it after the run-ready barrier (best-effort —
+          // a barrier rejection means the run doesn't exist, and the create
+          // below surfaces the real error). No-op outside turbo.
+          if (params.runReadyBarrier) {
+            await params.runReadyBarrier.catch(() => {});
+          }
           await world.events.create(workflowRunId, {
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
@@ -310,8 +337,18 @@ export async function executeStep(
     // discard the body result. Running the body before confirming ownership can
     // execute a step more than once when handlers race — inline step bodies
     // must be idempotent; disable via WORKFLOW_OPTIMISTIC_INLINE_START=0.
+    //
+    // Turbo mode passes `forceOptimisticStart` to enable this regardless of the
+    // env flag (its single-handler guarantee removes the race). But it still
+    // defers to an *explicit* `WORKFLOW_OPTIMISTIC_INLINE_START=0`: forced
+    // optimistic start runs the body before `step_started`/`run_started` is
+    // confirmed, which is exactly the property an operator opts out of with that
+    // flag, so an explicit opt-out wins over turbo's force.
     const optimisticStart =
-      params.lazyStepInput !== undefined && isOptimisticInlineStartEnabled();
+      params.lazyStepInput !== undefined &&
+      (isOptimisticInlineStartEnabled() ||
+        (params.forceOptimisticStart === true &&
+          !isOptimisticInlineStartExplicitlyDisabled()));
 
     let step: Step;
     // Settled outcome of the in-flight optimistic `step_started`. Handlers are
@@ -338,12 +375,20 @@ export async function executeStep(
     };
 
     if (optimisticStart) {
-      const startedPromise = world.events.create(workflowRunId, {
-        eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: stepId,
-        eventData: { stepName, workflowName, input: params.lazyStepInput },
-      });
+      // Chain the lazy `step_started` on the run-ready barrier (turbo mode):
+      // the step can't be created before its run exists, but the body below
+      // runs immediately against synthesized state, so the `run_started`
+      // round-trip overlaps the body rather than blocking it. Outside turbo the
+      // barrier is undefined and this is a plain create.
+      const startedPromise = (params.runReadyBarrier ?? Promise.resolve()).then(
+        () =>
+          world.events.create(workflowRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: { stepName, workflowName, input: params.lazyStepInput },
+          })
+      );
       optimisticStartSettled = startedPromise.then(
         () => ({ ok: true as const }),
         (err) => ({ ok: false as const, err })
@@ -474,6 +519,11 @@ export async function executeStep(
       return { type: 'failed' };
     }
 
+    // Ops that must be durably committed before step completion (e.g. a
+    // step-initiated abort's hook_received event). See StepContext. Declared
+    // outside the try so the failure path below can also drain them.
+    const preCompletionOps: Promise<void>[] = [];
+
     try {
       const attempt = step.attempt;
 
@@ -535,8 +585,16 @@ export async function executeStep(
             },
             workflowDeploymentId: params.workflowDeploymentId,
             ops,
+            preCompletionOps,
             closureVars: hydratedInput.closureVars,
             encryptionKey,
+            // Turbo optimistic start runs this body before `run_started` is
+            // durable. Expose the barrier so a direct step-body world write
+            // (e.g. `experimental_setAttributes`) can order itself after the
+            // run exists. Undefined on the await path (run already durable).
+            runReadyBarrier: optimisticStart
+              ? params.runReadyBarrier
+              : undefined,
           },
           () => stepFn.apply(thisVal, args)
         );
@@ -557,7 +615,11 @@ export async function executeStep(
           globalThis,
           false,
           false,
-          compression
+          compression,
+          // Turbo optimistic start: a returned stream is piped to the server
+          // after the body but within this same op flush, so gate its first
+          // write on the run-ready barrier. Undefined on the await path.
+          optimisticStart ? params.runReadyBarrier : undefined
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({
@@ -608,9 +670,29 @@ export async function executeStep(
       // Optimistic start: the body ran before `step_started` was confirmed.
       // Reconcile it now — if we lost the create-claim (or the run is
       // gone/throttled) discard this result and don't write step_completed.
+      // Reconcile before draining preCompletionOps: a discarded result means
+      // the winning handler owns the outcome (and re-fires any abort
+      // idempotently), so there's no point paying the abort-commit latency.
       if (optimisticStart) {
         const reconcile = await reconcileOptimisticStart();
         if (reconcile) return reconcile;
+      }
+
+      // Commit must-be-durable ops (e.g. a step-initiated abort's
+      // hook_received event) before writing step_completed, so any workflow
+      // continuation triggered by that event observes the abort rather than
+      // racing it. These ops swallow their own errors, so awaiting only
+      // enforces ordering (the `.catch()` defends the no-reject contract on
+      // StepContext.preCompletionOps).
+      //
+      // Tradeoff: correctness requires the hook be durable before completion,
+      // so — unlike the background `ops` flush above — this cannot be capped
+      // with a resolve-on-timeout race. A slow resume therefore adds its
+      // latency to a step that aborts a controller, and a true hang holds
+      // completion until the platform/queue execution timeout fires; the queue
+      // then redelivers and the step retries, re-firing the abort idempotently.
+      if (preCompletionOps.length > 0) {
+        await Promise.all(preCompletionOps).catch(() => {});
       }
 
       // Create step_completed event. When the caller supplied a
@@ -682,10 +764,21 @@ export async function executeStep(
       // Optimistic start: the body threw before `step_started` was confirmed.
       // Reconcile first — if we lost the create-claim (or the run is
       // gone/throttled) the body error is moot; discard it and don't write a
-      // terminal event (the winning handler owns the outcome).
+      // terminal event (the winning handler owns the outcome). Reconcile
+      // before draining preCompletionOps for the same reason as the success
+      // path: a discarded outcome doesn't need the abort committed here.
       if (optimisticStart) {
         const reconcile = await reconcileOptimisticStart();
         if (reconcile) return reconcile;
+      }
+
+      // Order any must-be-durable ops (e.g. a step-initiated abort's
+      // hook_received event) ahead of step_failed too — a step that aborts and
+      // then throws must still have the abort recorded before the failure
+      // continuation observes it. Same latency tradeoff and no-reject contract
+      // as the success path above. See StepContext.preCompletionOps.
+      if (preCompletionOps.length > 0) {
+        await Promise.all(preCompletionOps).catch(() => {});
       }
 
       const effectiveErr = promoteAbortErrorToFatal(err);

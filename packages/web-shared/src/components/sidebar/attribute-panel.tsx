@@ -218,6 +218,7 @@ type AttributeKey =
   | keyof WorkflowRun
   | keyof Hook
   | keyof Event
+  | 'occurredAt'
   | 'moduleSpecifier'
   | 'eventData'
   | 'resumeAt'
@@ -252,6 +253,7 @@ const attributeOrder: AttributeKey[] = [
   'projectId',
   'environment',
   'executionContext',
+  'occurredAt',
   'createdAt',
   'startedAt',
   'updatedAt',
@@ -292,6 +294,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   deploymentId: 'Deployment ID',
   specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
+  occurredAt: 'Occurred',
   createdAt: 'Created',
   startedAt: 'Started',
   updatedAt: 'Updated',
@@ -417,6 +420,7 @@ const attributeToDisplayFn: Record<
     return <RunAttributesCard attributes={value as Record<string, string>} />;
   },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  occurredAt: timestampWithTooltipOrNull,
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
   updatedAt: (_value: unknown) => null,
