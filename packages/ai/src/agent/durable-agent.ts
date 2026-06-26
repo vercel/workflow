@@ -1394,20 +1394,85 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
  * Filter tools to only include the specified active tools.
  */
 /**
- * Aggregate token usage across all steps.
+ * Add two token counts, preserving `undefined` when both operands are absent
+ * (so missing details aren't coerced to 0). Mirrors the AI SDK's internal
+ * `addTokenCounts`.
+ */
+function addTokenCounts(
+  a: number | undefined,
+  b: number | undefined
+): number | undefined {
+  return a == null && b == null ? undefined : (a ?? 0) + (b ?? 0);
+}
+
+/**
+ * Sum two `LanguageModelUsage` values across every field, including the v6
+ * nested `inputTokenDetails`/`outputTokenDetails` and the deprecated flat
+ * `reasoningTokens`/`cachedInputTokens`. Mirrors the AI SDK's internal
+ * `addLanguageModelUsage` so aggregated usage matches `streamText`/ToolLoopAgent.
+ */
+function addLanguageModelUsage(
+  a: LanguageModelUsage,
+  b: LanguageModelUsage
+): LanguageModelUsage {
+  return {
+    inputTokens: addTokenCounts(a.inputTokens, b.inputTokens),
+    inputTokenDetails: {
+      noCacheTokens: addTokenCounts(
+        a.inputTokenDetails?.noCacheTokens,
+        b.inputTokenDetails?.noCacheTokens
+      ),
+      cacheReadTokens: addTokenCounts(
+        a.inputTokenDetails?.cacheReadTokens,
+        b.inputTokenDetails?.cacheReadTokens
+      ),
+      cacheWriteTokens: addTokenCounts(
+        a.inputTokenDetails?.cacheWriteTokens,
+        b.inputTokenDetails?.cacheWriteTokens
+      ),
+    },
+    outputTokens: addTokenCounts(a.outputTokens, b.outputTokens),
+    outputTokenDetails: {
+      textTokens: addTokenCounts(
+        a.outputTokenDetails?.textTokens,
+        b.outputTokenDetails?.textTokens
+      ),
+      reasoningTokens: addTokenCounts(
+        a.outputTokenDetails?.reasoningTokens,
+        b.outputTokenDetails?.reasoningTokens
+      ),
+    },
+    totalTokens: addTokenCounts(a.totalTokens, b.totalTokens),
+    reasoningTokens: addTokenCounts(a.reasoningTokens, b.reasoningTokens),
+    cachedInputTokens: addTokenCounts(a.cachedInputTokens, b.cachedInputTokens),
+  };
+}
+
+/**
+ * Aggregate token usage across all steps, preserving the full AI SDK v6 usage
+ * shape (nested token details and deprecated flat fields) so consumers reading
+ * `result.totalUsage` see the same data as `streamText`/ToolLoopAgent.
  */
 function aggregateUsage(steps: StepResult<any>[]): LanguageModelUsage {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  for (const step of steps) {
-    inputTokens += step.usage?.inputTokens ?? 0;
-    outputTokens += step.usage?.outputTokens ?? 0;
-  }
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-  } as LanguageModelUsage;
+  return steps.reduce<LanguageModelUsage>(
+    (total, step) => addLanguageModelUsage(total, step.usage),
+    {
+      inputTokens: undefined,
+      inputTokenDetails: {
+        noCacheTokens: undefined,
+        cacheReadTokens: undefined,
+        cacheWriteTokens: undefined,
+      },
+      outputTokens: undefined,
+      outputTokenDetails: {
+        textTokens: undefined,
+        reasoningTokens: undefined,
+      },
+      totalTokens: undefined,
+      reasoningTokens: undefined,
+      cachedInputTokens: undefined,
+    }
+  );
 }
 
 function filterTools<TTools extends ToolSet>(

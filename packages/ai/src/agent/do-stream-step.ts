@@ -836,6 +836,10 @@ function chunksToStep(
           totalTokens:
             (finish.usage.inputTokens?.total ?? 0) +
             (finish.usage.outputTokens?.total ?? 0),
+          // Deprecated flat aliases, kept in sync with the nested details so
+          // step.usage matches the AI SDK's asLanguageModelUsage shape.
+          reasoningTokens: finish.usage.outputTokens?.reasoning,
+          cachedInputTokens: finish.usage.inputTokens?.cacheRead,
         }
       : {
           inputTokens: 0,
