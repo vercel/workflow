@@ -449,6 +449,7 @@ export async function executeStep(
     });
 
     let result: unknown;
+    let propagateStepCompletedError = false;
 
     // Check max retries AFTER step_started (attempt was just incremented).
     // Only enforce when the step has a previous error — this distinguishes
@@ -707,6 +708,7 @@ export async function executeStep(
             stepCompleted409 = true;
             return undefined;
           }
+          propagateStepCompletedError = true;
           throw err;
         });
 
@@ -737,6 +739,8 @@ export async function executeStep(
       // and queue a continuation so waitUntil can flush them.
       return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
     } catch (err: unknown) {
+      if (propagateStepCompletedError && !RunExpiredError.is(err)) throw err;
+
       // Optimistic start: the body threw before `step_started` was confirmed.
       // Reconcile first — if we lost the create-claim (or the run is
       // gone/throttled) the body error is moot; discard it and don't write a

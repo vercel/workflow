@@ -2,4 +2,4 @@
 '@workflow/core': patch
 ---
 
-Flush step stream writes briefly before step completion to reduce returned-stream races.
+Harden inline step completion against stream flush and transient persistence races.

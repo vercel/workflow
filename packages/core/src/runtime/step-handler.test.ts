@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   FatalError,
+  RunExpiredError,
   ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -283,7 +284,6 @@ describe('step-handler 409 handling', () => {
   describe('step_completed 409', () => {
     it('should warn and return when step_completed gets a 409', async () => {
       // step_started succeeds, step function succeeds, step_completed returns 409
-      let callCount = 0;
       mockEventsCreate.mockImplementation(
         (_runId: string, event: { eventType: string }) => {
           if (event.eventType === 'step_started') {
@@ -299,7 +299,6 @@ describe('step-handler 409 handling', () => {
             });
           }
           if (event.eventType === 'step_completed') {
-            callCount++;
             return Promise.reject(
               new EntityConflictError(
                 'Cannot complete step because it is already completed'
@@ -537,7 +536,7 @@ describe('step-handler 409 handling', () => {
           event.eventType === 'step_started'
       );
       expect(startedCall).toBeDefined();
-      expect(startedCall![2]).toEqual(
+      expect(startedCall?.[2]).toEqual(
         expect.objectContaining({ requestId: 'iad1::req-abc' })
       );
     });
@@ -553,7 +552,7 @@ describe('step-handler 409 handling', () => {
           event.eventType === 'step_completed'
       );
       expect(completedCall).toBeDefined();
-      expect(completedCall![2]).toEqual(
+      expect(completedCall?.[2]).toEqual(
         expect.objectContaining({ requestId: 'iad1::req-abc' })
       );
     });
@@ -566,7 +565,7 @@ describe('step-handler 409 handling', () => {
           event.eventType === 'step_started'
       );
       expect(startedCall).toBeDefined();
-      expect(startedCall![2]).toEqual(
+      expect(startedCall?.[2]).toEqual(
         expect.objectContaining({ requestId: undefined })
       );
     });
@@ -647,7 +646,7 @@ describe('step-handler max deliveries', () => {
   });
 
   it('should not trigger max deliveries check when under limit', async () => {
-    const result = await capturedHandler(createMessage(), {
+    await capturedHandler(createMessage(), {
       ...createMetadata('myStep'),
       attempt: MAX_QUEUE_DELIVERIES,
     });
@@ -1175,6 +1174,74 @@ describe('executeStep inline-delta threading', () => {
     if (result.type !== 'completed') throw new Error('unreachable');
     expect(result.inlineDelta).toBeUndefined();
   });
+
+  it('rethrows step_completed write failures without recording a step failure', async () => {
+    const completionError = new Error('fetch failed');
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          return Promise.reject(completionError);
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    await expect(
+      executeStep({ world: world as never, ...baseParams })
+    ).rejects.toBe(completionError);
+
+    expect(
+      mockEventsCreate.mock.calls.map(
+        ([, event]) => (event as { eventType: string }).eventType
+      )
+    ).toEqual(['step_started', 'step_completed']);
+  });
+
+  it('treats a RunExpiredError from step_completed as gone', async () => {
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_completed') {
+          return Promise.reject(new RunExpiredError('run already completed'));
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result).toEqual({ type: 'gone' });
+    expect(
+      mockEventsCreate.mock.calls.map(
+        ([, event]) => (event as { eventType: string }).eventType
+      )
+    ).toEqual(['step_started', 'step_completed']);
+  });
 });
 
 describe('executeStep optimistic inline start', () => {
@@ -1213,7 +1280,7 @@ describe('executeStep optimistic inline start', () => {
   it('sends step_started carrying the input and completes (when enabled)', async () => {
     mockEventsCreate
       .mockReset()
-      .mockImplementation((_runId: string, event: { eventType: string }) =>
+      .mockImplementation((_runId: string, _event: { eventType: string }) =>
         Promise.resolve({ event: {} })
       );
 
