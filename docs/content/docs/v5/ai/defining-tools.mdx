@@ -14,11 +14,11 @@ related:
 
 This page covers the details for some common patterns when defining tools for AI agents using Workflow SDK.
 
-Using DurableAgent, we model most tools as steps. These can be anything from a simple function call to a entire multi-day long workflow.
+Using WorkflowAgent, we model most tools as steps. These can be anything from a simple function call to a entire multi-day long workflow.
 
 ## Accessing message context in tools
 
-Just like in regular AI SDK tool definitions, tool in DurableAgent are called with a first argument of the tool's input parameters, and a second argument of the tool call context.
+Just like in regular AI SDK tool definitions, tool in WorkflowAgent are called with a first argument of the tool's input parameters, and a second argument of the tool call context.
 
 When you tool needs access to the full message history, you can access it via the `messages` property of the tool call context:
 

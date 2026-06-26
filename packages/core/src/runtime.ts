@@ -56,6 +56,10 @@ import {
 } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
+import {
+  createStepHydrationCache,
+  type StepHydrationCache,
+} from './step-hydration-cache.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
   buildInvocationSpanLinks,
@@ -283,7 +287,7 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string }
+  options?: { namespace?: string; routeModuleBodyStartedAt?: number }
 ): (req: Request) => Promise<Response> {
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
@@ -457,7 +461,9 @@ export function workflowEntrypoint(
           return await withWorkflowBaggage(
             { workflowRunId: runId, workflowName },
             async () => {
-              const world = await getWorld();
+              const world = await trace('workflow.route.get_world', async () =>
+                getWorld()
+              );
               return trace(
                 `workflow.execute ${workflowDisplayName(workflowName)}`,
                 { kind: spanKind, links: spanLinks },
@@ -483,6 +489,16 @@ export function workflowEntrypoint(
                   // we fetch only events created after the last known cursor.
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
+
+                  // Per-run cache of hydrated step return values, shared across
+                  // every replay iteration of THIS invocation. Each iteration
+                  // builds a fresh workflow context, so the cache is owned here
+                  // (outside that context) and threaded into runWorkflow. It
+                  // turns the otherwise O(N²) re-decrypt + re-parse of completed
+                  // step results across N replays into O(N). Scoped to this run
+                  // only — never reused across runs. See step-hydration-cache.ts.
+                  const stepHydrationCache: StepHydrationCache =
+                    createStepHydrationCache();
 
                   // Inline-delta optimization: when an inline step's terminal
                   // write returns the event-log delta since the pre-write
@@ -522,6 +538,7 @@ export function workflowEntrypoint(
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
                     !replayDivergence;
+                  span?.setAttributes(Attribute.WorkflowTurbo(turbo));
 
                   // Turbo mode only: resolves once the backgrounded
                   // `run_started` has landed (or rejects if it failed). Threaded
@@ -752,6 +769,13 @@ export function workflowEntrypoint(
                           }
                         : {}),
                     };
+                    const recordRunStartedCreateStart = (
+                      skipPreload: boolean
+                    ) => {
+                      span?.addEvent('workflow.run_started.create.start', {
+                        'workflow.run_started.skip_preload': skipPreload,
+                      });
+                    };
 
                     if (turbo && runInput) {
                       // Turbo: background `run_started` and synthesize the run
@@ -762,10 +786,18 @@ export function workflowEntrypoint(
                       // barrier is consumed by every downstream write (suspension
                       // handler, optimistic step_started, terminal run writes) so
                       // nothing is written before the run exists.
+                      recordRunStartedCreateStart(true);
                       const startedPromise = world.events.create(
                         runId,
                         runStartedEvent,
-                        { requestId }
+                        // We background this purely as a write barrier and
+                        // never read its preloaded events (preloadedEvents is
+                        // forced to [] below), so tell the World to skip the
+                        // run_started event-log preload. That trims the
+                        // run_started request the chained first step_started
+                        // waits on — shortening time-to-second-step — and the
+                        // wasted list+resolve it would otherwise compute.
+                        { requestId, skipPreload: true }
                       );
                       runReadyBarrier = startedPromise;
                       // Attach a no-op rejection handler so an early failure
@@ -814,6 +846,7 @@ export function workflowEntrypoint(
                       });
                     } else {
                       try {
+                        recordRunStartedCreateStart(false);
                         const result = await world.events.create(
                           runId,
                           runStartedEvent,
@@ -1213,7 +1246,8 @@ export function workflowEntrypoint(
                         workflowCode,
                         workflowRun,
                         events,
-                        encryptionKey
+                        encryptionKey,
+                        stepHydrationCache
                       );
                       runtimeLogger.debug('Workflow replay completed', {
                         workflowRunId: runId,
@@ -1990,10 +2024,55 @@ export function workflowEntrypoint(
     );
 
   let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  let invocationCount = 0;
+  const entrypointCreatedAt = Date.now();
+  const routeModuleBodyInitMs =
+    typeof options?.routeModuleBodyStartedAt === 'number'
+      ? entrypointCreatedAt - options.routeModuleBodyStartedAt
+      : undefined;
+
   return withHealthCheck(async (req) => {
-    if (!cachedHandler) {
-      cachedHandler = handler(await getWorldHandlers());
-    }
-    return cachedHandler(req);
+    invocationCount += 1;
+    const handlerCached = cachedHandler !== undefined;
+    const spanKind = await getSpanKind('SERVER');
+
+    return trace(
+      'workflow.route.flow',
+      {
+        kind: spanKind,
+        attributes: {
+          ...Attribute.WorkflowRouteType('flow'),
+          ...Attribute.WorkflowRouteHandlerCached(handlerCached),
+          ...Attribute.WorkflowRouteInvocationCount(invocationCount),
+          ...Attribute.WorkflowRouteEntrypointAgeMs(
+            Date.now() - entrypointCreatedAt
+          ),
+          ...(routeModuleBodyInitMs === undefined
+            ? {}
+            : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
+          ...Attribute.HttpRequestMethod(req.method),
+          ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+        },
+      },
+      async (span) => {
+        if (!cachedHandler) {
+          cachedHandler = await trace('workflow.route.init', async () => {
+            const worldHandlers = await trace(
+              'workflow.route.get_world_handlers',
+              async () => getWorldHandlers()
+            );
+            return handler(worldHandlers);
+          });
+        }
+
+        const response = await cachedHandler(req);
+        if (response instanceof Response) {
+          span?.setAttributes(
+            Attribute.HttpResponseStatusCode(response.status)
+          );
+        }
+        return response;
+      }
+    );
   });
 }

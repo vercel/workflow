@@ -8,6 +8,7 @@ import type { ComponentProps } from 'react';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { AskAI } from '@/components/geistdocs/ask-ai';
+import { AutoCards } from '@/components/geistdocs/auto-cards';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
   DocsBody,
@@ -25,13 +26,21 @@ import { PreviewInstallServer } from '@/components/preview-install-server';
 import * as AccordionComponents from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
+import {
+  getDocsTreeWithoutCookbook,
+  rewriteCookbookUrl,
+} from '@/lib/geistdocs/cookbook-source';
+import { resolveSectionChildren } from '@/lib/geistdocs/section-children';
 import {
   getLLMText,
   getPageImage,
   source,
   v5Source,
 } from '@/lib/geistdocs/source';
+import {
+  getDocsTreeForVersion,
+  PRE_RELEASE_VERSION,
+} from '@/lib/geistdocs/version-source';
 import { TSDoc } from '@/lib/tsdoc';
 
 const WorldTestingPerformanceNoop = () => null;
@@ -50,7 +59,15 @@ const Page = async ({ params }: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
     notFound();
   }
 
-  const markdown = await getLLMText(page);
+  // Cards render in the v5 URL space (`/v5/docs/...`), matching the sidebar tree
+  // so hrefs don't escape to the v4 route. The markdown export, however, mirrors
+  // the page's own `/docs/...` URL space, so it uses the raw (un-rewritten) tree.
+  const cardsTree = getDocsTreeForVersion(lang, PRE_RELEASE_VERSION);
+  const sectionUrl = `${PRE_RELEASE_VERSION.prefix}${page.url}`;
+  const markdown = await getLLMText(
+    page,
+    getDocsTreeWithoutCookbook(lang, 'v5')
+  );
   const MDX = page.data.body;
 
   // Inline MDX links use /docs/... paths (matching the source baseUrl). When
@@ -100,6 +117,11 @@ const Page = async ({ params }: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
           components={getMDXComponents({
             a: v5Link,
             Card: V5Card,
+            AutoCards: () => (
+              <AutoCards
+                items={resolveSectionChildren(cardsTree, sectionUrl)}
+              />
+            ),
             AgentTraces,
             FluidComputeCallout,
             Badge,

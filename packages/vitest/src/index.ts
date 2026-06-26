@@ -36,10 +36,6 @@ class VitestBuilder extends BaseBuilder {
     this.#outDir = outDir;
   }
 
-  protected override get shouldLogBaseBuilderInfo(): boolean {
-    return false;
-  }
-
   override async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });

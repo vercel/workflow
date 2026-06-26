@@ -1,4 +1,4 @@
-import { decode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { describe, expect, it } from 'vitest';
 import {
   type DecodedFrame,
@@ -39,29 +39,6 @@ async function drainFrames(
   const out: DecodedFrame[] = [];
   for await (const f of decodeFrames(source)) out.push(f);
   return out;
-}
-
-/** A stream that stays open after delivering its payload (never signals EOF),
- *  like a kept-alive HTTP socket, and records whether cancel() ran — the
- *  signal undici uses to release the connection. highWaterMark: 0 suppresses
- *  the pull-ahead that would otherwise auto-close a toy stream. */
-function spyStream(payload: Uint8Array) {
-  let sent = false;
-  let cancelled = false;
-  const stream = new ReadableStream<Uint8Array>(
-    {
-      pull(controller) {
-        if (sent) return;
-        controller.enqueue(payload);
-        sent = true;
-      },
-      cancel() {
-        cancelled = true;
-      },
-    },
-    { highWaterMark: 0 }
-  );
-  return { stream, wasCancelled: () => cancelled };
 }
 
 describe('encodeFrame', () => {
@@ -230,51 +207,6 @@ describe('decodeFrames from an AsyncIterable source', () => {
     });
     expect(frames[0].body).toEqual(body);
     expect(frames[1].meta).toEqual({ _end: 1, next: 'cursor-1' });
-  });
-});
-
-describe('decodeFrames releases the stream on early exit', () => {
-  // Regression: a consumer that stops before EOF (getEventV4 returns after
-  // the first frame; consumeListFrameStream breaks at the sentinel) must
-  // cancel the body, or its undici socket stays pinned out of the pool.
-  function twoFramesThenEnd(): Uint8Array {
-    return new Uint8Array([
-      ...encodeFrame({ eventId: 'a' }, new Uint8Array([1, 2, 3])),
-      ...encodeFrame({ eventId: 'b' }, new Uint8Array([4, 5, 6])),
-      ...encodeEndFrame(),
-    ]);
-  }
-
-  it('cancels the underlying stream when the consumer breaks early', async () => {
-    const { stream, wasCancelled } = spyStream(twoFramesThenEnd());
-    for await (const f of decodeFrames(stream)) {
-      expect(f.meta).toEqual({ eventId: 'a' });
-      break; // mirrors getEventV4 returning after the first frame
-    }
-    expect(wasCancelled()).toBe(true);
-  });
-
-  it('cancels via the reader path when the source is not async-iterable', async () => {
-    const { stream, wasCancelled } = spyStream(twoFramesThenEnd());
-    // A bare { getReader } object forces the readerToIterator branch (a real
-    // ReadableStream is already async-iterable in Node).
-    const source = {
-      getReader: () => stream.getReader(),
-    } as unknown as ReadableStream<Uint8Array>;
-    for await (const f of decodeFrames(source)) {
-      expect(f.meta).toEqual({ eventId: 'a' });
-      break;
-    }
-    expect(wasCancelled()).toBe(true);
-  });
-
-  it('still decodes every frame when fully consumed', async () => {
-    const frames = await drainFrames(spyStream(twoFramesThenEnd()).stream);
-    expect(frames.map((f) => f.meta)).toEqual([
-      { eventId: 'a' },
-      { eventId: 'b' },
-      { _end: 1 },
-    ]);
   });
 });
 

@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web-shared",
   "description": "Shared components for Workflow Observability UI",
-  "version": "5.0.0-beta.20",
+  "version": "5.0.0-beta.24",
   "private": false,
   "files": [
     "dist",
@@ -60,7 +60,6 @@
     "lucide-react": "0.575.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "react-inspector": "9.0.0",
     "react-use-measure": "2.1.1",
     "react-virtuoso": "4.18.1",
     "shiki": "4.0.0",

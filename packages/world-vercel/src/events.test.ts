@@ -1,5 +1,5 @@
 import type { AnyEventRequest } from '@workflow/world';
-import { encode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
 import {
@@ -15,6 +15,19 @@ function mockAgent() {
   const agent = new MockAgent();
   agent.disableNetConnect();
   return agent;
+}
+
+function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
+  const bytes =
+    typeof rawBody === 'string'
+      ? new TextEncoder().encode(rawBody)
+      : new Uint8Array(rawBody as ArrayBufferLike);
+  const metaLen = new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength
+  ).getUint32(0, false);
+  return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
 }
 
 /**
@@ -215,6 +228,52 @@ describe('splitEventDataForV4 attribute fields', () => {
 });
 
 describe('createWorkflowRunEvent response coercion', () => {
+  it('sends occurredAt in the v4 frame meta', async () => {
+    const agent = mockAgent();
+    const occurredAt = new Date('2026-06-10T00:00:03.000Z');
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({
+            run: {
+              runId: 'wrun_1',
+              status: 'running',
+              startedAt: new Date('2026-06-10T00:00:04.000Z'),
+            },
+          });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:04.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      { occurredAt },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.occurredAt).toBeInstanceOf(Date);
+    expect((capturedMeta?.occurredAt as Date).getTime()).toBe(
+      occurredAt.getTime()
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
   it('coerces ISO-string dates in the returned event and preloaded events', async () => {
     // Persisted events store nested eventData dates as ISO strings
     // (the backend's entity layer converts Date → toISOString on write with
@@ -242,6 +301,7 @@ describe('createWorkflowRunEvent response coercion', () => {
             runId: 'wrun_1',
             eventType: 'run_started',
             createdAt: '2026-06-10T00:00:01.000Z',
+            occurredAt: '2026-06-10T00:00:00.500Z',
             eventData: {},
           },
           events: [
@@ -251,6 +311,7 @@ describe('createWorkflowRunEvent response coercion', () => {
               eventType: 'wait_created',
               correlationId: 'wait_1',
               createdAt: '2026-06-10T00:00:02.000Z',
+              occurredAt: '2026-06-10T00:00:01.500Z',
               specVersion: 2,
               eventData: { resumeAt: '2026-06-10T01:00:00.000Z' },
             },
@@ -275,11 +336,14 @@ describe('createWorkflowRunEvent response coercion', () => {
     );
 
     expect(result.event?.createdAt).toBeInstanceOf(Date);
+    expect(result.event?.occurredAt).toBeInstanceOf(Date);
     const preloaded = result.events?.[0] as {
       createdAt: Date;
+      occurredAt: Date;
       eventData: { resumeAt: Date };
     };
     expect(preloaded.createdAt).toBeInstanceOf(Date);
+    expect(preloaded.occurredAt).toBeInstanceOf(Date);
     expect(preloaded.eventData.resumeAt).toBeInstanceOf(Date);
     expect(preloaded.eventData.resumeAt.getTime()).toBe(
       new Date('2026-06-10T01:00:00.000Z').getTime()

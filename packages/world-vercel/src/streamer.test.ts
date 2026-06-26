@@ -190,7 +190,7 @@ describe('streams.get', () => {
     vi.restoreAllMocks();
   });
 
-  it('includes runId in the fetch URL', async () => {
+  it('reads the live stream from the v3 endpoint (error-on-timeout)', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockImplementation(
@@ -202,10 +202,12 @@ describe('streams.get', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
-    expect(url.pathname).toBe('/v2/runs/run-123/stream/my-stream');
+    // v3, not v2: the reconnecting reader relies on the server erroring the
+    // body on a max-duration timeout rather than closing it cleanly.
+    expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
   });
 
-  it('passes startIndex as a query parameter', async () => {
+  it('passes startIndex as a query parameter on the v3 read', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockImplementation(
@@ -216,7 +218,7 @@ describe('streams.get', () => {
     await streamer.streams.get('run-123', 'my-stream', 5);
 
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
-    expect(url.pathname).toBe('/v2/runs/run-123/stream/my-stream');
+    expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
     expect(url.searchParams.get('startIndex')).toBe('5');
   });
 });

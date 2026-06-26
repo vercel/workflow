@@ -130,12 +130,6 @@ export function hasStepSourceMaps(): boolean {
   if (appName === 'nextjs-turbopack') {
     return false;
   }
-  // Webpack's Next flow route executes steps from the generated
-  // __step_registrations.js bundle, which does not preserve source filenames
-  // in local dev stacks.
-  if (appName === 'nextjs-webpack') {
-    return false;
-  }
   // V2 carve-out: the V2 combined flow handler does not yet wire up inline
   // source maps for step bundles across the framework integrations on Vercel.
   // To unblock CI while V2 source-map coverage catches up, treat every

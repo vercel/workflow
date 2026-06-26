@@ -25,13 +25,13 @@ afterEach(() => {
 });
 
 describe('hasStepSourceMaps', () => {
-  test('does not expect source filenames for webpack local dev', () => {
+  test('expects source filenames for webpack local dev', () => {
     setStepSourceMapEnv({
       appName: 'nextjs-webpack',
       dev: true,
     });
 
-    expect(hasStepSourceMaps()).toBe(false);
+    expect(hasStepSourceMaps()).toBe(true);
   });
 
   test('does not expect source filenames for turbopack local dev', () => {

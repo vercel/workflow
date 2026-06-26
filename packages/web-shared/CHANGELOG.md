@@ -1,5 +1,46 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- [#2608](https://github.com/vercel/workflow/pull/2608) [`b9a10d8`](https://github.com/vercel/workflow/commit/b9a10d87e12e70657ac5c356c6ac121c53958951) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Thread workflow event occurrence timestamps into derived observability entity data.
+
+- Updated dependencies [[`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba)]:
+  - @workflow/core@5.0.0-beta.24
+
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- [#2595](https://github.com/vercel/workflow/pull/2595) [`5a57547`](https://github.com/vercel/workflow/commit/5a57547512b96438b7d54da203e580ad10f314e1) Thanks [@mitul-s](https://github.com/mitul-s)! - Use text-gray-900 for trace shortcut helper text.
+
+- Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
+  - @workflow/core@5.0.0-beta.23
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2582](https://github.com/vercel/workflow/pull/2582) [`6855282`](https://github.com/vercel/workflow/commit/685528259ddf93c17f544c2bed841088d0973dcb) Thanks [@mitul-s](https://github.com/mitul-s)! - Add helper text that indicates keyboard shortcuts
+
+- [#2434](https://github.com/vercel/workflow/pull/2434) [`6512d38`](https://github.com/vercel/workflow/commit/6512d38df529984a587ecca8d68d7d060d7b7ca1) Thanks [@mitul-s](https://github.com/mitul-s)! - Export `serializeForClipboard` from the copyable data block and add unit tests covering its clipboard serialization and the `CopyableDataBlock`/`EncryptedDataBlock` rendering.
+
+- [#2434](https://github.com/vercel/workflow/pull/2434) [`6512d38`](https://github.com/vercel/workflow/commit/6512d38df529984a587ecca8d68d7d060d7b7ca1) Thanks [@mitul-s](https://github.com/mitul-s)! - Rework the data inspector's JSON rendering: bracket notation (`{ … }` / `[ … ]`), colored keys, typed value colors, `▸`/`▾` disclosure icons, trailing commas, and a `...` collapsed indicator. Replaces the `react-inspector` engine with an in-house tree renderer while keeping the workflow-specific value handling (StreamRef/RunRef badges, encrypted markers, decoded byte streams, dates, class instances).
+
+- [#2581](https://github.com/vercel/workflow/pull/2581) [`0964b83`](https://github.com/vercel/workflow/commit/0964b831d30165d2f1273930abebd9732d3b8ade) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Show event occurrence timestamps in the trace detail panel when present.
+
+- Updated dependencies [[`25c3df7`](https://github.com/vercel/workflow/commit/25c3df74f88726f9336ca20e6c48fd3366c40749), [`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626)]:
+  - @workflow/world@5.0.0-beta.13
+  - @workflow/core@5.0.0-beta.22
+
+## 5.0.0-beta.21
+
+### Patch Changes
+
+- Updated dependencies [[`6de5ea5`](https://github.com/vercel/workflow/commit/6de5ea5c2f32b474274f5dabe5f3663e03622ac5), [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615), [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055)]:
+  - @workflow/core@5.0.0-beta.21
+
 ## 5.0.0-beta.20
 
 ### Patch Changes

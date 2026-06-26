@@ -98,12 +98,13 @@ async function makeRunningRun(runId: string): Promise<WorkflowRun> {
  * Drives the workflow queue handler once with the given trace carrier,
  * inside an active "delivery" span (simulating the span the platform/queue
  * consumer creates around the delivery request). Returns the finished
- * WORKFLOW_V2 span, the delivery span, and all queued messages.
+ * route and WORKFLOW_V2 spans, the delivery span, and all queued messages.
  */
 async function driveHandler(opts: {
   runId: string;
   workflowCode: string;
   traceCarrier?: Record<string, string>;
+  routeModuleBodyStartedAt?: number;
 }) {
   const workflowRun = await makeRunningRun(opts.runId);
   const queuedMessages: any[] = [];
@@ -165,7 +166,12 @@ async function driveHandler(opts: {
     getEncryptionKeyForRun: vi.fn(async () => undefined),
   } as any);
 
-  const handler = workflowEntrypoint(opts.workflowCode);
+  const handler = workflowEntrypoint(
+    opts.workflowCode,
+    opts.routeModuleBodyStartedAt === undefined
+      ? undefined
+      : { routeModuleBodyStartedAt: opts.routeModuleBodyStartedAt }
+  );
 
   // Invoke inside an active "delivery" span so linkToCurrentContext()
   // observes a live delivery context, as it would in production.
@@ -183,8 +189,28 @@ async function driveHandler(opts: {
   const workflowSpan = exporter
     .getFinishedSpans()
     .find((s) => s.name === 'workflow.execute workflow');
+  const routeSpan = exporter
+    .getFinishedSpans()
+    .find((s) => s.name === 'workflow.route.flow');
+  const routeInitSpan = exporter
+    .getFinishedSpans()
+    .find((s) => s.name === 'workflow.route.init');
+  const getWorldHandlersSpan = exporter
+    .getFinishedSpans()
+    .find((s) => s.name === 'workflow.route.get_world_handlers');
+  const getWorldSpan = exporter
+    .getFinishedSpans()
+    .find((s) => s.name === 'workflow.route.get_world');
 
-  return { workflowSpan, deliverySpan, queuedMessages };
+  return {
+    workflowSpan,
+    routeSpan,
+    routeInitSpan,
+    getWorldHandlersSpan,
+    getWorldSpan,
+    deliverySpan,
+    queuedMessages,
+  };
 }
 
 function linkTraceIds(span: ReadableSpan | undefined): string[] {
@@ -221,17 +247,48 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
-  it('linked (default): nests under the delivery context with a link to the run-origin context', async () => {
-    const { workflowSpan, deliverySpan } = await driveHandler({
+  it('linked (default): nests under the flow route context with a link to the run-origin context', async () => {
+    const {
+      workflowSpan,
+      routeSpan,
+      routeInitSpan,
+      getWorldHandlersSpan,
+      getWorldSpan,
+      deliverySpan,
+    } = await driveHandler({
       runId: 'wrun_trace_linked',
       workflowCode: simpleWorkflow,
       traceCarrier: ORIGIN_CARRIER,
+      routeModuleBodyStartedAt: Date.now(),
     });
 
+    expect(routeSpan).toBeDefined();
+    expect(routeSpan?.parentSpanId).toBe(deliverySpan.spanContext().spanId);
+    expect(routeSpan?.attributes['workflow.route.type']).toBe('flow');
+    expect(routeSpan?.attributes['workflow.route.handler_cached']).toBe(false);
+    expect(routeSpan?.attributes['workflow.route.invocation_count']).toBe(1);
+    const moduleBodyInitMs =
+      routeSpan?.attributes['workflow.route.module_body_init_ms'];
+    expect(typeof moduleBodyInitMs).toBe('number');
+    expect(moduleBodyInitMs as number).toBeGreaterThanOrEqual(0);
+    expect(routeSpan?.attributes['http.route']).toBe(
+      '/.well-known/workflow/v1/flow'
+    );
+    expect(routeSpan?.attributes['http.response.status_code']).toBe(204);
+
+    expect(routeInitSpan).toBeDefined();
+    expect(routeInitSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
+    expect(getWorldHandlersSpan).toBeDefined();
+    expect(getWorldHandlersSpan?.parentSpanId).toBe(
+      routeInitSpan?.spanContext().spanId
+    );
+    expect(getWorldSpan).toBeDefined();
+    expect(getWorldSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
+
     expect(workflowSpan).toBeDefined();
-    // Child of the local delivery (flow-route) span — same trace, so one
+    // Child of the local /flow route span — same trace, so one
     // invocation is a single bounded trace rather than a new root.
-    expect(workflowSpan?.parentSpanId).toBe(deliverySpan.spanContext().spanId);
+    expect(workflowSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
     expect(workflowSpan?.spanContext().traceId).toBe(
       deliverySpan.spanContext().traceId
     );
@@ -247,6 +304,14 @@ describe('workflowEntrypoint trace modes', () => {
 
     expect(workflowSpan?.attributes['workflow.trace.mode']).toBe('linked');
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(true);
+    expect(workflowSpan?.attributes['workflow.turbo']).toBe(false);
+    const runStartedCreateEvent = workflowSpan?.events.find(
+      (e) => e.name === 'workflow.run_started.create.start'
+    );
+    expect(runStartedCreateEvent).toBeDefined();
+    expect(
+      runStartedCreateEvent?.attributes['workflow.run_started.skip_preload']
+    ).toBe(false);
 
     // Queue-delivered invocation spans use the CONSUMER kind, matching
     // queue-delivered step.execute spans.
@@ -254,32 +319,119 @@ describe('workflowEntrypoint trace modes', () => {
   });
 
   it('linked: treats an empty trace carrier ({}) like an absent one', async () => {
-    const { workflowSpan, deliverySpan } = await driveHandler({
+    const { workflowSpan, routeSpan } = await driveHandler({
       runId: 'wrun_trace_linked_empty_carrier',
       workflowCode: simpleWorkflow,
       traceCarrier: {},
     });
 
     expect(workflowSpan).toBeDefined();
-    // Still nested under the delivery context...
-    expect(workflowSpan?.parentSpanId).toBe(deliverySpan.spanContext().spanId);
+    // Still nested under the local /flow route context...
+    expect(workflowSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
     // ...but no run-origin link is derived from `{}`.
     expect(workflowSpan?.links ?? []).toHaveLength(0);
     // An empty carrier does not count as propagated trace context.
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(false);
   });
 
-  it('linked: without an incoming carrier, nests under the delivery context with no links', async () => {
-    const { workflowSpan, deliverySpan } = await driveHandler({
+  it('linked: without an incoming carrier, nests under the flow route context with no links', async () => {
+    const { workflowSpan, routeSpan } = await driveHandler({
       runId: 'wrun_trace_linked_no_carrier',
       workflowCode: simpleWorkflow,
       traceCarrier: undefined,
     });
 
     expect(workflowSpan).toBeDefined();
-    expect(workflowSpan?.parentSpanId).toBe(deliverySpan.spanContext().spanId);
+    expect(workflowSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
     expect(workflowSpan?.links ?? []).toHaveLength(0);
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(false);
+  });
+
+  it('traces route initialization only on the first flow request', async () => {
+    const workflowRun = await makeRunningRun('wrun_trace_route_cache');
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) => {
+          return async () => {
+            await handler(
+              {
+                runId: workflowRun.runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              },
+              {
+                requestId: 'req_test',
+                attempt: 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_test',
+              }
+            );
+            return new Response(null, { status: 204 });
+          };
+        }
+      ),
+      events: {
+        create: vi.fn(async (_runId: string, data: any) => {
+          if (data.eventType === 'run_started') {
+            return { run: workflowRun, events: [] as Event[] };
+          }
+          return {
+            event: {
+              eventId: `event-${Math.random()}`,
+              runId: workflowRun.runId,
+              createdAt: new Date(),
+              ...data,
+            },
+          };
+        }),
+        list: vi.fn(async () => ({
+          data: [] as Event[],
+          hasMore: false,
+          cursor: 'cursor_test',
+        })),
+      },
+      runs: {
+        get: vi.fn(async () => workflowRun),
+      },
+      queue: vi.fn(async () => ({ messageId: null })),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handler = workflowEntrypoint(simpleWorkflow);
+    const tracer = otelTrace.getTracer('test');
+    await tracer.startActiveSpan('queue delivery', async (span) => {
+      try {
+        await handler(new Request('https://example.test'));
+        await handler(new Request('https://example.test'));
+      } finally {
+        span.end();
+      }
+    });
+
+    const spans = exporter.getFinishedSpans();
+    const routeSpans = spans.filter((s) => s.name === 'workflow.route.flow');
+    const routeInitSpans = spans.filter(
+      (s) => s.name === 'workflow.route.init'
+    );
+
+    expect(routeSpans).toHaveLength(2);
+    expect(routeInitSpans).toHaveLength(1);
+    expect(routeSpans[0]?.attributes['workflow.route.handler_cached']).toBe(
+      false
+    );
+    expect(routeSpans[0]?.attributes['workflow.route.invocation_count']).toBe(
+      1
+    );
+    expect(routeSpans[1]?.attributes['workflow.route.handler_cached']).toBe(
+      true
+    );
+    expect(routeSpans[1]?.attributes['workflow.route.invocation_count']).toBe(
+      2
+    );
   });
 
   it('continuous: preserves the legacy shape — parented to the run-origin context with a delivery link', async () => {

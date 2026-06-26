@@ -12,6 +12,10 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
+<Callout type="warn">
+`WorkflowChatTransport` now ships in AI SDK as a 1:1 port — import it from `@ai-sdk/workflow` (the `@workflow/ai` export is deprecated). See [Resumable Streaming with `WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) for the full reference.
+</Callout>
+
 When building chat interfaces, it's common to run into network interruptions, page refreshes, or serverless function timeouts, which can break the connection to an in-progress agent.
 
 Where a standard chat implementation would require the user to resend their message and wait for the entire response again, workflow runs are durable, and so are the streams attached to them. This means a stream can be resumed at any point, optionally only syncing the data that was missed since the last connection.
@@ -109,7 +113,7 @@ Replace the default transport in AI-SDK's `useChat` with [`WorkflowChatTransport
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { WorkflowChatTransport } from "@ai-sdk/workflow"; // [!code highlight]
 import { useMemo, useState } from "react";
 
 export default function ChatPage() {

@@ -5,3 +5,4 @@
 # Test data
 .workflow-data/
 .workflow-vitest/
+/.swc
