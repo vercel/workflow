@@ -280,7 +280,6 @@ async function consumeAndVerifyStreams(
 }
 
 // Workflow 1: Pipeline — generate 1 stream, pipe through N XOR transform steps
-// Returns the final transformed stream (same size as input)
 export async function streamPipelineWorkflow(
   steps: number,
   totalBytes: number
@@ -290,7 +289,7 @@ export async function streamPipelineWorkflow(
   for (let i = 0; i < steps; i++) {
     stream = await transformStreamXor(stream, (i + 1) % 256);
   }
-  return stream;
+  return await consumeAndVerifyStreams(totalBytes, stream);
 }
 
 // Workflow 2: N steps generate streams in parallel, one step consumes + verifies all

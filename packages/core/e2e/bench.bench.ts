@@ -580,8 +580,7 @@ describe('Workflow Performance Benchmarks', () => {
       skip: false,
       time: 60000,
       expectedTotalBytes: 1024 * 1024,
-      // Pipeline returns the actual data stream
-      summaryStream: false,
+      summaryStream: true,
     },
     {
       name: 'stream pipeline with 10 transform steps (1MB)',
@@ -590,7 +589,7 @@ describe('Workflow Performance Benchmarks', () => {
       skip: !fullSuite,
       time: 120000,
       expectedTotalBytes: 1024 * 1024,
-      summaryStream: false,
+      summaryStream: true,
     },
     {
       name: '10 parallel streams (1MB each)',
@@ -675,7 +674,7 @@ describe('Workflow Performance Benchmarks', () => {
             );
           }
         } else {
-          // Pipeline workflows return the actual data stream
+          // Non-summary workflows return the actual data stream.
           if (totalBytes !== expectedTotalBytes) {
             throw new Error(
               `Stream correctness failure: expected ${expectedTotalBytes} bytes but got ${totalBytes}`

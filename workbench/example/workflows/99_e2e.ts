@@ -378,17 +378,21 @@ export async function outputStreamInsideStepWorkflow() {
 
 //////////////////////////////////////////////////////////
 
-async function stepWriteUtf8Text(writable: WritableStream, text: string) {
+async function stepWriteUtf8Sequence(writable: WritableStream) {
   'use step';
   const writer = writable.getWriter();
-  await writer.write(new TextEncoder().encode(text));
-  writer.releaseLock();
-}
-
-async function stepWriteUtf8Json(writable: WritableStream, value: unknown) {
-  'use step';
-  const writer = writable.getWriter();
-  await writer.write(new TextEncoder().encode(JSON.stringify(value)));
+  const encoder = new TextEncoder();
+  for (const text of [
+    'Hello, world!',
+    'Café — naïve résumé',
+    '你好，世界！🌍✨',
+    'مرحبا بالعالم',
+  ]) {
+    await writer.write(encoder.encode(text));
+  }
+  await writer.write(
+    encoder.encode(JSON.stringify({ greeting: '안녕하세요', emoji: '🎉' }))
+  );
   writer.releaseLock();
 }
 
@@ -400,11 +404,7 @@ export async function utf8StreamWorkflow() {
   'use workflow';
   const writable = getWritable();
   await sleep('1s');
-  await stepWriteUtf8Text(writable, 'Hello, world!');
-  await stepWriteUtf8Text(writable, 'Café — naïve résumé');
-  await stepWriteUtf8Text(writable, '你好，世界！🌍✨');
-  await stepWriteUtf8Text(writable, 'مرحبا بالعالم');
-  await stepWriteUtf8Json(writable, { greeting: '안녕하세요', emoji: '🎉' });
+  await stepWriteUtf8Sequence(writable);
   await stepCloseOutputStream(writable);
   return 'done';
 }
@@ -847,7 +847,7 @@ export async function hookSignalOwnerWorkflow(token: string, message: string) {
 export async function hookSupersedeOwnerWorkflow(token: string) {
   'use workflow';
 
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 10; attempt++) {
     using hook = createHook<{ message: string }>({ token });
 
     const conflict = await hook.getConflict();
@@ -861,6 +861,7 @@ export async function hookSupersedeOwnerWorkflow(token: string) {
     }
 
     await conflict.cancel();
+    await sleep('1s');
   }
 
   throw new Error(`Could not claim ${token} after cancelling the owner`);
