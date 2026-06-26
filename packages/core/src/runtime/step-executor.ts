@@ -523,6 +523,8 @@ export async function executeStep(
     // step-initiated abort's hook_received event). See StepContext. Declared
     // outside the try so the failure path below can also drain them.
     const preCompletionOps: Promise<void>[] = [];
+    const ops: Promise<void>[] = [];
+    let opsSettled = true;
 
     try {
       const attempt = step.attempt;
@@ -533,7 +535,6 @@ export async function executeStep(
         );
       }
       const stepStartedAt = step.startedAt;
-      const ops: Promise<void>[] = [];
       // Use the provided encryption key when available, otherwise resolve
       // through the memoized accessor declared at the top of this trace.
       const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
@@ -636,7 +637,6 @@ export async function executeStep(
       // settle within ~200ms (100ms lock-release polling + HTTP flush).
       // If ops don't settle in 500ms (e.g., WritableStream kept open
       // across steps), waitUntil handles the rest.
-      let opsSettled = true;
       if (ops.length > 0) {
         const opsPromise = Promise.all(ops);
         // The race below surfaces failures inline when ops settle quickly;
@@ -694,72 +694,6 @@ export async function executeStep(
       if (preCompletionOps.length > 0) {
         await Promise.all(preCompletionOps).catch(() => {});
       }
-
-      // Create step_completed event. When the caller supplied a
-      // sinceCursor (inline sequential execution), thread it through so a
-      // supporting World returns the event-log delta on the result,
-      // letting the inline loop skip the next events.list round-trip.
-      let stepCompleted409 = false;
-      const completedResult = await world.events
-        .create(
-          workflowRunId,
-          {
-            eventType: 'step_completed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              workflowName,
-              result: result as Uint8Array,
-            },
-          },
-          params.inlineDeltaSinceCursor !== undefined
-            ? { sinceCursor: params.inlineDeltaSinceCursor }
-            : undefined
-        )
-        .catch((err) => {
-          if (EntityConflictError.is(err)) {
-            runtimeLogger.info(
-              'Tried completing step, but step has already finished.',
-              {
-                workflowRunId,
-                stepId,
-                stepName,
-                message: err.message,
-              }
-            );
-            stepCompleted409 = true;
-            return undefined;
-          }
-          throw err;
-        });
-
-      if (stepCompleted409) {
-        return { type: 'skipped' };
-      }
-
-      const inlineDelta = completedResult
-        ? extractInlineDelta(
-            completedResult,
-            params.inlineDeltaSinceCursor !== undefined
-          )
-        : undefined;
-
-      span?.setAttributes({
-        ...Attribute.StepStatus('completed'),
-        ...Attribute.StepResultType(typeof result),
-      });
-
-      if (ops.length > 0) {
-        stepLogger.debug('Step has pending ops', {
-          workflowRunId,
-          stepName,
-          opsCount: ops.length,
-        });
-      }
-      // hasPendingOps signals the V2 handler to break the loop
-      // and queue a continuation so waitUntil can flush them.
-      return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
     } catch (err: unknown) {
       // Optimistic start: the body threw before `step_started` was confirmed.
       // Reconcile first — if we lost the create-claim (or the run is
@@ -1006,5 +940,71 @@ export async function executeStep(
 
       return { type: 'retry', timeoutSeconds };
     }
+
+    // Create step_completed event outside the step execution failure path:
+    // persistence failures are infrastructure errors and should redeliver the
+    // queue message, not become user step_retrying/step_failed events.
+    let completedResult: Awaited<ReturnType<typeof world.events.create>>;
+    try {
+      completedResult = await world.events.create(
+        workflowRunId,
+        {
+          eventType: 'step_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            workflowName,
+            result: result as Uint8Array,
+          },
+        },
+        params.inlineDeltaSinceCursor !== undefined
+          ? { sinceCursor: params.inlineDeltaSinceCursor }
+          : undefined
+      );
+    } catch (err) {
+      if (EntityConflictError.is(err)) {
+        runtimeLogger.info(
+          'Tried completing step, but step has already finished.',
+          {
+            workflowRunId,
+            stepId,
+            stepName,
+            message: err.message,
+          }
+        );
+        return { type: 'skipped' };
+      }
+      if (RunExpiredError.is(err)) {
+        stepLogger.info('Workflow run already completed, skipping step', {
+          workflowRunId,
+          stepId,
+          message: err.message,
+        });
+        return { type: 'gone' };
+      }
+      throw err;
+    }
+
+    const inlineDelta = extractInlineDelta(
+      completedResult,
+      params.inlineDeltaSinceCursor !== undefined
+    );
+
+    span?.setAttributes({
+      ...Attribute.StepStatus('completed'),
+      ...Attribute.StepResultType(typeof result),
+    });
+
+    if (ops.length > 0) {
+      stepLogger.debug('Step has pending ops', {
+        workflowRunId,
+        stepName,
+        opsCount: ops.length,
+      });
+    }
+    // hasPendingOps signals the V2 handler to break the loop
+    // and queue a continuation so waitUntil can flush them.
+    return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
   });
 }
