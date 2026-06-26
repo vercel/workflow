@@ -469,6 +469,263 @@ describe('WorkflowChatTransport', () => {
     });
   });
 
+  describe('orphan UI chunk filter on negative startIndex resume', () => {
+    function makeSSEStream(...events: string[]) {
+      return new ReadableStream({
+        start(controller) {
+          for (const event of events) {
+            controller.enqueue(new TextEncoder().encode(`data: ${event}\n\n`));
+          }
+          controller.close();
+        },
+      });
+    }
+
+    async function collect(stream: ReadableStream<unknown>) {
+      const reader = stream.getReader();
+      const out: unknown[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out.push(value);
+      }
+      return out;
+    }
+
+    it('drops orphan reasoning-delta / reasoning-end when no prior reasoning-start', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -50,
+      });
+
+      // Reproduces the exact pattern from issue #1835: a resume that lands
+      // inside an open reasoning-0 part. The deltas + end for it should be
+      // dropped; everything after the next start-step should flow through.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'x-workflow-stream-tail-index': '99' }),
+        body: makeSSEStream(
+          '{"type":"reasoning-delta","id":"reasoning-0","delta":" space"}',
+          '{"type":"reasoning-delta","id":"reasoning-0","delta":"."}',
+          '{"type":"reasoning-end","id":"reasoning-0"}',
+          '{"type":"finish-step"}',
+          '{"type":"start-step"}',
+          '{"type":"reasoning-start","id":"reasoning-1"}',
+          '{"type":"reasoning-delta","id":"reasoning-1","delta":"hello"}',
+          '{"type":"reasoning-end","id":"reasoning-1"}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      const types = chunks.map((c) => c.type);
+      expect(types).toEqual([
+        // orphan reasoning-0 deltas+end dropped
+        'finish-step',
+        'start-step',
+        'reasoning-start',
+        'reasoning-delta',
+        'reasoning-end',
+        'finish',
+      ]);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Dropping orphan UI chunk')
+      );
+      // Warning is emitted only once per resume even if multiple chunks drop.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      warnSpy.mockRestore();
+    });
+
+    it('drops orphan text-delta and text-end without a prior text-start', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'x-workflow-stream-tail-index': '50' }),
+        body: makeSSEStream(
+          '{"type":"text-delta","id":"text-0","delta":"orphan"}',
+          '{"type":"text-end","id":"text-0"}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      expect(chunks.map((c) => c.type)).toEqual(['finish']);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      warnSpy.mockRestore();
+    });
+
+    it('drops orphan tool-input-delta / tool-output-available without a prior tool-input-start', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'x-workflow-stream-tail-index': '50' }),
+        body: makeSSEStream(
+          '{"type":"tool-input-delta","toolCallId":"call_1","inputTextDelta":"x"}',
+          '{"type":"tool-output-available","toolCallId":"call_1","output":{}}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      expect(chunks.map((c) => c.type)).toEqual(['finish']);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      warnSpy.mockRestore();
+    });
+
+    it('passes through non-streamed tool calls (bare tool-input-available) and their outputs', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      // Non-streamed tool calls have no tool-input-start at all — the AI SDK
+      // emits a self-contained tool-input-available and creates the part from
+      // it. The filter must not treat these as orphans.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'x-workflow-stream-tail-index': '50' }),
+        body: makeSSEStream(
+          '{"type":"tool-input-available","toolCallId":"call_1","toolName":"grep","input":{}}',
+          '{"type":"tool-output-available","toolCallId":"call_1","output":{"ok":true}}',
+          '{"type":"tool-input-error","toolCallId":"call_2","toolName":"grep","input":{},"errorText":"bad input"}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      expect(chunks.map((c) => c.type)).toEqual([
+        'tool-input-available',
+        'tool-output-available',
+        'tool-input-error',
+        'finish',
+      ]);
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it('recovers a streamed tool call when the resume lands between start and input-available', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      // tool-input-start fell outside the resumed window, so the orphan
+      // deltas drop — but tool-input-available carries the full input and
+      // re-establishes the part, so it and the output pass through.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'x-workflow-stream-tail-index': '50' }),
+        body: makeSSEStream(
+          '{"type":"tool-input-delta","toolCallId":"call_1","inputTextDelta":"x"}',
+          '{"type":"tool-input-available","toolCallId":"call_1","toolName":"grep","input":{"q":"x"}}',
+          '{"type":"tool-output-available","toolCallId":"call_1","output":{"ok":true}}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      expect(chunks.map((c) => c.type)).toEqual([
+        'tool-input-available',
+        'tool-output-available',
+        'finish',
+      ]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      warnSpy.mockRestore();
+    });
+
+    it('passes through chunks whose *-start was emitted in the resumed window', async () => {
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      // tool-input-start IS in the resumed window, so its later
+      // tool-output-available should pass through untouched.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'x-workflow-stream-tail-index': '50' }),
+        body: makeSSEStream(
+          '{"type":"tool-input-start","toolCallId":"call_1","toolName":"grep"}',
+          '{"type":"tool-input-available","toolCallId":"call_1","toolName":"grep","input":{}}',
+          '{"type":"tool-output-available","toolCallId":"call_1","output":{"ok":true}}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      expect(chunks.map((c) => c.type)).toEqual([
+        'tool-input-start',
+        'tool-input-available',
+        'tool-output-available',
+        'finish',
+      ]);
+    });
+
+    it('does not activate the filter for non-negative startIndex', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        // Default initialStartIndex = 0 → filter inactive.
+      });
+
+      // Even orphan-looking deltas should pass through unchanged because the
+      // caller didn't ask for a tail-only resume.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers(),
+        body: makeSSEStream(
+          '{"type":"reasoning-delta","id":"reasoning-0","delta":"x"}',
+          '{"type":"finish"}'
+        ),
+      });
+
+      const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
+      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+
+      expect(chunks.map((c) => c.type)).toEqual(['reasoning-delta', 'finish']);
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+  });
+
   describe('reconnection error formatting', () => {
     it('should format object errors with JSON instead of [object Object]', async () => {
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
