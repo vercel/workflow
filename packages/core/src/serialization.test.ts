@@ -36,6 +36,7 @@ import {
   maybeEncrypt,
   SerializationFormat,
 } from './serialization.js';
+import type { StepContext } from './step/context-storage.js';
 import {
   ABORT_HOOK_TOKEN,
   ABORT_READER_CANCEL,
@@ -44,6 +45,7 @@ import {
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
+  WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
 
@@ -2029,6 +2031,109 @@ describe('step arguments', () => {
       // packages/core/src/serialization/errors.ts.
       `Ensure you're passing workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
+  });
+
+  it('waits for manual webhook response streams to flush before respondWith resolves', async () => {
+    const { contextStorage } = await import('./step/context-storage.js');
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+
+    let resolveWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      resolveWrite = resolve;
+    });
+    const world = makeMockWorld();
+    world.streams.write.mockImplementation((_runId, name) => {
+      if (name === 'strm_manual_webhook_response') {
+        return writeGate;
+      }
+      return Promise.resolve();
+    });
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    try {
+      const responseWritable = new WritableStream();
+      Object.defineProperty(responseWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_manual_webhook_response',
+        writable: false,
+      });
+      Object.defineProperty(responseWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: mockRunId,
+        writable: false,
+      });
+
+      const request = new Request('https://example.com/webhook', {
+        method: 'POST',
+      });
+      (request as any)[WEBHOOK_RESPONSE_WRITABLE] = responseWritable;
+
+      const serialized = await dehydrateStepArguments(
+        request,
+        mockRunId,
+        noEncryptionKey,
+        globalThis
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        mockRunId,
+        noEncryptionKey,
+        ops,
+        globalThis
+      )) as Request & { respondWith(response: Response): Promise<void> };
+
+      const preCompletionOps: Promise<void>[] = [];
+      const stepContext: StepContext = {
+        stepMetadata: {
+          stepName: 'sendWebhookResponse',
+          stepId: 'step_manual_webhook_response',
+          stepStartedAt: new Date(),
+          attempt: 1,
+        },
+        workflowMetadata: {
+          workflowName: 'webhookWorkflow',
+          workflowRunId: mockRunId,
+          workflowStartedAt: new Date(),
+          url: 'https://example.com',
+          features: { encryption: false },
+        },
+        ops,
+        preCompletionOps,
+        encryptionKey: undefined,
+      };
+
+      let responded = false;
+      const respondPromise = contextStorage
+        .run(stepContext, () =>
+          hydrated.respondWith(new Response('Hello from webhook!'))
+        )
+        .then(() => {
+          responded = true;
+        });
+
+      await vi.waitFor(() => {
+        expect(world.streams.write).toHaveBeenCalledWith(
+          mockRunId,
+          'strm_manual_webhook_response',
+          expect.any(Uint8Array)
+        );
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(responded).toBe(false);
+      expect(preCompletionOps).toHaveLength(1);
+
+      resolveWrite();
+      await respondPromise;
+      await Promise.all(preCompletionOps);
+
+      expect(responded).toBe(true);
+      expect(world.streams.close).toHaveBeenCalledWith(
+        mockRunId,
+        'strm_manual_webhook_response'
+      );
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
   });
 });
 

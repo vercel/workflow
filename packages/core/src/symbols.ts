@@ -34,6 +34,15 @@ export const STREAM_SERVER_RUN_ID_SYMBOL = Symbol.for(
 export const STREAM_SERVER_DEPLOYMENT_ID_SYMBOL = Symbol.for(
   'WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID'
 );
+/**
+ * Stamped on user-visible stream handles revived from server-backed writable
+ * descriptors. Awaiting this promise waits for that handle's background pipe
+ * to flush/close, without tying callers to unrelated stream ops in the same
+ * step.
+ */
+export const STREAM_FLUSH_PROMISE_SYMBOL = Symbol.for(
+  'WORKFLOW_STREAM_FLUSH_PROMISE'
+);
 export const BODY_INIT_SYMBOL = Symbol.for('BODY_INIT');
 export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
   'WEBHOOK_RESPONSE_WRITABLE'

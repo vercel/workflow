@@ -75,6 +75,7 @@ import {
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
+  STREAM_FLUSH_PROMISE_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
@@ -1036,6 +1037,10 @@ type AbortSignalLike = AbortInternals & {
 };
 
 type AbortHolder = AbortInternals & { signal?: AbortInternals };
+
+type FlushableWritableStream<T> = WritableStream<T> & {
+  [STREAM_FLUSH_PROMISE_SYMBOL]?: Promise<void>;
+};
 
 /**
  * Shared logic for AbortController/AbortSignal reducers in external and step
@@ -2040,6 +2045,10 @@ export function getExternalRevivers(
           }
         );
       }
+      Object.defineProperty(serialize.writable, STREAM_FLUSH_PROMISE_SYMBOL, {
+        value: state.promise,
+        writable: false,
+      });
 
       return serialize.writable;
     },
@@ -2309,9 +2318,30 @@ function getStepRevivers(
       if (value.signal) copyAbortInternals(value.signal, request.signal);
       if (responseWritable) {
         request.respondWith = async (response: Response) => {
-          const writer = responseWritable.getWriter();
-          await writer.write(response);
-          await writer.close();
+          const ctx = contextStorage.getStore();
+          const responseFlush = (
+            responseWritable as FlushableWritableStream<Response>
+          )[STREAM_FLUSH_PROMISE_SYMBOL];
+          const responseWrite = (async () => {
+            const writer = responseWritable.getWriter();
+            await writer.write(response);
+            await writer.close();
+            if (responseFlush) {
+              await responseFlush.catch(() => {
+                // Best-effort response stream write. Awaiting this before
+                // step completion preserves ordering when it succeeds, but
+                // the hook/request machinery owns retries and diagnostics.
+              });
+            }
+          })();
+          if (ctx) {
+            ctx.preCompletionOps.push(
+              responseWrite.catch(() => {
+                // Preserve the StepContext.preCompletionOps no-reject contract.
+              })
+            );
+          }
+          await responseWrite;
         };
       }
       return request;
@@ -2449,6 +2479,10 @@ function getStepRevivers(
           }
         );
       }
+      Object.defineProperty(serialize.writable, STREAM_FLUSH_PROMISE_SYMBOL, {
+        value: state.promise,
+        writable: false,
+      });
 
       return serialize.writable;
     },
