@@ -479,6 +479,11 @@ export async function getNextBuilderEager(
           addedFiles.length > 0 ||
           modifiedFiles.length > 0 ||
           removedFiles.length > 0;
+        const logDevHmr = (...args: unknown[]) => {
+          if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
+            console.log(...args);
+          }
+        };
 
         await refreshSourceSnapshots();
         previousTimeInfo = await readInitialTimeInfoEntries();
@@ -519,19 +524,19 @@ export async function getNextBuilderEager(
                 sourceSnapshots,
               });
               if (decision.kind === 'none') {
-                console.log('workflow dev hmr: skip');
+                logDevHmr('workflow dev hmr: skip');
                 for (const [file, snapshot] of decision.snapshots || []) {
                   sourceSnapshots.set(file, snapshot);
                 }
                 return;
               }
               if (decision.kind === 'full') {
-                console.log('workflow dev hmr: full rediscovery');
+                logDevHmr('workflow dev hmr: full rediscovery');
                 await fullRebuild();
                 return;
               }
 
-              console.log(
+              logDevHmr(
                 `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
               );
               await hotRebuild(decision.refreshStepRegistrations);
@@ -546,7 +551,7 @@ export async function getNextBuilderEager(
           directories: [this.config.workingDir],
           startTime: Date.now(),
         });
-        console.log('workflow dev hmr: ready');
+        logDevHmr('workflow dev hmr: ready');
       }
     }
 

@@ -124,6 +124,8 @@ export function createDevTests(config?: DevTestConfig) {
     const restoreFiles: Array<{ path: string; content: string }> = [];
     const restoreDirectories: string[] = [];
     const devServerLogPath = process.env.DEV_SERVER_LOG_PATH;
+    const shouldAssertDevHmrLogs =
+      process.env.WORKFLOW_DEV_HMR_LOGS === '1';
     const hmrLogMessages = {
       skip: 'workflow dev hmr: skip',
       hot: 'workflow dev hmr: hot rebuild',
@@ -154,7 +156,9 @@ export function createDevTests(config?: DevTestConfig) {
       return await fs.readFile(devServerLogPath, 'utf8').catch(() => '');
     };
     const readDevServerLogCursor = async () =>
-      devServerLogPath ? (await readDevServerLog()).length : undefined;
+      devServerLogPath && shouldAssertDevHmrLogs
+        ? (await readDevServerLog()).length
+        : undefined;
     const countLogMessage = (log: string, message: string) =>
       log.split(message).length - 1;
     const expectHmrLogCounts = async (
@@ -218,7 +222,7 @@ export function createDevTests(config?: DevTestConfig) {
       );
     };
     const waitForHmrReady = async () => {
-      if (!devServerLogPath) {
+      if (!devServerLogPath || !shouldAssertDevHmrLogs) {
         return;
       }
       await pollUntil({

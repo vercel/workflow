@@ -208,6 +208,7 @@ jobs:
           APP_NAME: ${{ inputs.app-name }}
           WORLD_ID: ${{ inputs.world-id }}
           DEPLOYMENT_URL: "http://localhost:3000"
+          WORKFLOW_DEV_HMR_LOGS: "1"
         run: |
           DEV_TEST_CONFIG="$(jq -nc --arg name "$APP_NAME" '{name:$name,project:"workbench-\($name)-workflow",generatedStepPath:"app/.well-known/workflow/v1/flow/__step_registrations.js",generatedWorkflowPath:"app/.well-known/workflow/v1/flow/route.js",apiFilePath:"app/api/chat/route.ts",apiFileImportPath:"../../.."}')"
           export DEV_TEST_CONFIG
