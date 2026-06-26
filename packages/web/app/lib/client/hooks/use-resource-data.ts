@@ -1,6 +1,5 @@
 import {
-  hydrateResourceIO,
-  hydrateResourceIOWithKey,
+  hydrateResourceIOAsync,
   waitEventsToWaitEntity,
 } from '@workflow/web-shared';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
@@ -67,9 +66,7 @@ export async function fetchSpanDetailResource(
   const { resource, resourceId, runId } = selection;
   const { encryptionKey } = options;
   const hydrate = async <T>(value: T): Promise<T> =>
-    encryptionKey
-      ? hydrateResourceIOWithKey(value, encryptionKey)
-      : hydrateResourceIO(value);
+    hydrateResourceIOAsync(value, encryptionKey);
 
   if (resource === 'hook') {
     const result = await unwrapOrThrow(fetchHook(env, resourceId, 'all'));
@@ -86,12 +83,10 @@ export async function fetchSpanDetailResource(
     const result = await unwrapOrThrow(
       fetchEvents(env, runId, { sortOrder: 'asc', limit: 1000, withData: true })
     );
-    const allEvents = (result.data as unknown as Event[]).map(
-      hydrateResourceIO
+    const allEvents = await Promise.all(
+      (result.data as unknown as Event[]).map(hydrate)
     );
-    const waitEvents = await Promise.all(
-      allEvents.filter((e) => e.correlationId === resourceId).map(hydrate)
-    );
+    const waitEvents = allEvents.filter((e) => e.correlationId === resourceId);
     const data = waitEventsToWaitEntity(waitEvents);
     if (data === null) {
       throw new WorkflowWebAPIError(

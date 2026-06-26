@@ -4,8 +4,7 @@ import {
   DecryptButton,
   ErrorBoundary,
   EventListView,
-  hydrateResourceIO,
-  hydrateResourceIOWithKey,
+  hydrateResourceIOAsync,
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
@@ -301,9 +300,10 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      const fullEvent = await hydrateResourceIOAsync(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
@@ -321,9 +321,10 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      const fullEvent = await hydrateResourceIOAsync(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }

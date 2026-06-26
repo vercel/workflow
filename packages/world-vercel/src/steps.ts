@@ -11,6 +11,7 @@ import {
   type UpdateStepRequest,
 } from '@workflow/world';
 import { z } from 'zod';
+import { normalizeStepData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -58,7 +59,7 @@ export function deserializeStep(wireStep: any): Step {
   if (errorSource !== undefined && errorSource !== null) {
     result.error = errorSource;
   }
-  return result as Step;
+  return normalizeStepData(result) as Step;
 }
 
 // Overloaded function signatures for filterStepData

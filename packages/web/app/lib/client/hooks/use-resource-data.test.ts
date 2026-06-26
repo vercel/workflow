@@ -4,6 +4,7 @@ import { useWorkflowResourceData } from './use-resource-data';
 
 vi.mock('@workflow/web-shared', () => ({
   hydrateResourceIO: <T>(x: T): T => x,
+  hydrateResourceIOAsync: async <T>(x: T): Promise<T> => x,
   waitEventsToWaitEntity: vi.fn(),
 }));
 
@@ -79,7 +80,7 @@ describe('useWorkflowResourceData', () => {
       expect(result.current.error).not.toBeNull();
     });
 
-    expect(result.current.error!.message).toBe('not found');
+    expect(result.current.error?.message).toBe('not found');
   });
 
   it('shows hook data after loading', async () => {
@@ -158,7 +159,7 @@ describe('useWorkflowResourceData', () => {
       expect(result.current.error).not.toBeNull();
     });
 
-    expect(result.current.error!.message).toContain(
+    expect(result.current.error?.message).toContain(
       'missing required event data'
     );
   });

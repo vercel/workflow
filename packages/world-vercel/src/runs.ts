@@ -14,6 +14,7 @@ import {
   type WorkflowRunWithoutData,
 } from '@workflow/world';
 import { z } from 'zod';
+import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -61,28 +62,35 @@ const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
 });
 
 // Overloaded function signatures for filterRunData
-function filterRunData(run: any, resolveData: 'none'): WorkflowRunWithoutData;
-function filterRunData(run: any, resolveData: 'all'): WorkflowRun;
-function filterRunData(
+export function filterRunData(
+  run: any,
+  resolveData: 'none'
+): WorkflowRunWithoutData;
+export function filterRunData(run: any, resolveData: 'all'): WorkflowRun;
+export function filterRunData(
   run: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData;
 
 // Implementation
-function filterRunData(
+export function filterRunData(
   run: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
-    const deserialized = deserializeError<WorkflowRun>(rest);
+    const deserialized = normalizeWorkflowRunData(
+      deserializeError<WorkflowRun>(rest) as unknown as Record<string, unknown>
+    );
     return {
       ...deserialized,
       input: undefined,
       output: undefined,
     } as WorkflowRunWithoutData;
   }
-  return deserializeError<WorkflowRun>(run);
+  return normalizeWorkflowRunData(
+    deserializeError<WorkflowRun>(run) as unknown as Record<string, unknown>
+  ) as unknown as WorkflowRun;
 }
 
 // Functions
