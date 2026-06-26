@@ -1,5 +1,43 @@
 # @workflow/world
 
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2580](https://github.com/vercel/workflow/pull/2580) [`25c3df7`](https://github.com/vercel/workflow/commit/25c3df74f88726f9336ca20e6c48fd3366c40749) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Send optional client-side event occurrence timestamps through world event creation.
+
+- [#2569](https://github.com/vercel/workflow/pull/2569) [`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Turbo mode now tells world-vercel to skip the run_started event-log preload it never reads, reducing request time.
+
+## 5.0.0-beta.12
+
+### Patch Changes
+
+- [#2475](https://github.com/vercel/workflow/pull/2475) [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip the per-step incremental `events.list` round-trip in the inline sequential loop by consuming an event-log delta returned from the step's terminal write (gated to the single-step case with no open hooks or waits).
+
+  Add the opt-in `CreateEventParams.sinceCursor` contract so a step-terminal `events.create` can return the event-log delta since that cursor (via `EventResult.events`/`cursor`/`hasMore`).
+
+  Return the inline delta from a step-terminal write when `sinceCursor` is supplied, computed identically to `events.list` so the consumed prefix cannot skew from the server log.
+
+  Forward `sinceCursor` over the v4 wire in `@workflow/world-vercel` so the server can return the delta on a step-terminal response; older servers ignore it and the runtime falls back to `events.list`.
+
+- [#2478](https://github.com/vercel/workflow/pull/2478) [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9) Thanks [@pranaygp](https://github.com/pranaygp)! - Lazy inline step start: the owned-inline runtime path now sends a single `step_started` carrying the step input, letting the world create the step on the fly and saving one round-trip per inline step.
+
+  `@workflow/world`: `step_started` event data accepts an optional `input`, and `EventResult` gains a `stepCreated` ownership signal.
+
+  `@workflow/world-local`: `step_started` with input atomically creates the step plus a synthetic `step_created` event; a lazy `step_started` for an already-existing step throws `EntityConflictError` so concurrent losers skip (exactly-once).
+
+  `@workflow/world-postgres`: same lazy-create + exactly-once create-claim for the Postgres backend.
+
+  `@workflow/world-vercel`: sends the step input on `step_started` over the v4 wire and threads the server's `stepCreated` signal into `EventResult`.
+
+- [#2511](https://github.com/vercel/workflow/pull/2511) [`ab2e9b8`](https://github.com/vercel/workflow/commit/ab2e9b8d0740c457f80e05f05c1fd907bcf4f027) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Emit `workflowName` on per-step events (`step_created`, `step_completed`, and lazy-start `step_started`) so Worlds can access it without additional queries
+
+## 5.0.0-beta.11
+
+### Minor Changes
+
+- [#2394](https://github.com/vercel/workflow/pull/2394) [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump `SPEC_VERSION_CURRENT` to 5 (`SPEC_VERSION_SUPPORTS_COMPRESSION`): runs at spec 5+ may contain gzip-compressed payloads, and older SDKs reject them via `requiresNewerWorld()` instead of failing on individual payloads.
+
 ## 5.0.0-beta.10
 
 ### Minor Changes

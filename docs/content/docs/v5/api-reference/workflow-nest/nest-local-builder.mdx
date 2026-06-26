@@ -45,7 +45,7 @@ console.log(`Workflow bundles written to ${builder.outDir}`);
 | `watch` | `boolean` | `false` | Enable watch mode for development. |
 | `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. When `'commonjs'`, the builder rewrites externalized imports in the steps bundle to use `require()` via `createRequire`, avoiding ESM/CJS named-export interop issues with SWC's output. |
 | `distDir` | `string` | `'dist'` | Directory where NestJS compiles `.ts` source files to `.js` (relative to `workingDir`). Used when `moduleType` is `'commonjs'` to resolve compiled file paths. Should match the `outDir` in your `tsconfig.json`. |
-| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
 
 ### Methods
 

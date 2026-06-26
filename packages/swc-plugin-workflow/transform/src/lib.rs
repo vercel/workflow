@@ -2156,6 +2156,27 @@ impl StepTransform {
         naming::format_name(prefix, &self.get_module_path(), &fn_name)
     }
 
+    fn record_object_property_step_metadata(&mut self, parent_var_name: &str, prop_key: &str) {
+        let step_id = self.create_object_property_id(
+            parent_var_name,
+            prop_key,
+            false,
+            self.current_workflow_function_name.as_deref(),
+        );
+        if self.object_property_workflow_conversions.iter().any(
+            |(parent, prop, existing_step_id)| {
+                parent == parent_var_name && prop == prop_key && existing_step_id == &step_id
+            },
+        ) {
+            return;
+        }
+        self.object_property_workflow_conversions.push((
+            parent_var_name.to_string(),
+            prop_key.to_string(),
+            step_id,
+        ));
+    }
+
     // Process object properties for step functions
     fn process_object_properties_for_step_functions(
         &mut self,
@@ -2185,6 +2206,14 @@ impl StepTransform {
                         };
 
                         if should_transform {
+                            if matches!(self.mode, TransformMode::Detect) {
+                                self.record_object_property_step_metadata(
+                                    parent_var_name,
+                                    &prop_key,
+                                );
+                                continue;
+                            }
+
                             // Process the transformation
                             match &mut *kv_prop.value {
                                 Expr::Arrow(arrow_expr) => {
@@ -2316,6 +2345,14 @@ impl StepTransform {
                         };
 
                         if self.has_use_step_directive(&method_prop.function.body) {
+                            if matches!(self.mode, TransformMode::Detect) {
+                                self.record_object_property_step_metadata(
+                                    parent_var_name,
+                                    &prop_key,
+                                );
+                                continue;
+                            }
+
                             // Remove the directive first
                             self.remove_use_step_directive(&mut method_prop.function.body);
 
@@ -2423,6 +2460,14 @@ impl StepTransform {
                                     .emit()
                             });
                         } else if has_step {
+                            if matches!(self.mode, TransformMode::Detect) {
+                                self.record_object_property_step_metadata(
+                                    parent_var_name,
+                                    &prop_key,
+                                );
+                                continue;
+                            }
+
                             // Getters don't need async validation (they can't be async syntactically)
 
                             // Remove the directive from the getter body
@@ -2551,13 +2596,6 @@ impl StepTransform {
         prop_key: &str,
         _span: swc_core::common::Span,
     ) {
-        let step_id = self.create_object_property_id(
-            parent_var_name,
-            prop_key,
-            false,
-            self.current_workflow_function_name.as_deref(),
-        );
-
         match self.mode {
             TransformMode::Step => {
                 // Replace with reference to hoisted variable so the stepId
@@ -2575,22 +2613,22 @@ impl StepTransform {
                     SyntaxContext::empty(),
                 ));
                 // Track for metadata generation
-                self.object_property_workflow_conversions.push((
-                    parent_var_name.to_string(),
-                    prop_key.to_string(),
-                    step_id,
-                ));
+                self.record_object_property_step_metadata(parent_var_name, prop_key);
             }
             TransformMode::Workflow => {
+                let step_id = self.create_object_property_id(
+                    parent_var_name,
+                    prop_key,
+                    false,
+                    self.current_workflow_function_name.as_deref(),
+                );
                 // Replace with initializer call
                 *kv_prop.value = self.create_step_initializer(&step_id);
-                self.object_property_workflow_conversions.push((
-                    parent_var_name.to_string(),
-                    prop_key.to_string(),
-                    step_id,
-                ));
+                self.record_object_property_step_metadata(parent_var_name, prop_key);
             }
-            TransformMode::Detect => {}
+            TransformMode::Detect => {
+                self.record_object_property_step_metadata(parent_var_name, prop_key);
+            }
         }
     }
 
@@ -4998,14 +5036,77 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
             }
         }
 
-        // Only visit the initializer, not the variable name pattern
-        // This prevents marking the variable name itself as "used"
+        // Only visit the initializer, not the variable name pattern, to avoid
+        // marking the binding name itself as "used". However, destructuring
+        // patterns can embed default-value initializer expressions (e.g. the
+        // `TTL` in `const { ttl = TTL } = options;`) that reference other
+        // declarations. Those references live inside the name pattern, so they
+        // must be counted as uses or DCE will strip the still-referenced
+        // declaration and produce a runtime ReferenceError (issue #2396).
+        self.visit_pat_default_initializers(&mut var_decl.name);
         if let Some(init) = &mut var_decl.init {
             init.visit_mut_with(self);
         }
     }
 
     noop_visit_mut_type!();
+}
+
+impl<'a> ComprehensiveUsageCollector<'a> {
+    /// Visit only the default-value initializer expressions (and computed keys)
+    /// embedded in a binding pattern, without marking the pattern's binding
+    /// names as "used". Destructuring defaults such as the `TTL` in
+    /// `const { ttl = TTL } = options;` would otherwise be invisible to the
+    /// usage collector, causing DCE to strip the referenced declaration.
+    fn visit_pat_default_initializers(&mut self, pat: &mut Pat) {
+        match pat {
+            // A plain binding name has no embedded initializer to visit, and we
+            // deliberately do not mark the binding name itself as used.
+            Pat::Ident(_) => {}
+            Pat::Array(array) => {
+                for elem in array.elems.iter_mut().flatten() {
+                    self.visit_pat_default_initializers(elem);
+                }
+            }
+            Pat::Object(obj) => {
+                for prop in &mut obj.props {
+                    match prop {
+                        ObjectPatProp::KeyValue(kv) => {
+                            // A computed key (e.g. `{ [k]: v }`) references identifiers.
+                            if let PropName::Computed(computed) = &mut kv.key {
+                                computed.expr.visit_mut_with(self);
+                            }
+                            self.visit_pat_default_initializers(&mut kv.value);
+                        }
+                        // `{ ttl = TTL }` — `key` is the binding name (skip),
+                        // `value` is the default initializer expression.
+                        ObjectPatProp::Assign(assign) => {
+                            if let Some(value) = &mut assign.value {
+                                value.visit_mut_with(self);
+                            }
+                        }
+                        ObjectPatProp::Rest(rest) => {
+                            self.visit_pat_default_initializers(&mut rest.arg);
+                        }
+                    }
+                }
+            }
+            // `[a = TTL]` / `{ x: y = TTL }` — `left` is the binding pattern
+            // (which may itself contain defaults), `right` is the default value.
+            Pat::Assign(assign) => {
+                self.visit_pat_default_initializers(&mut assign.left);
+                assign.right.visit_mut_with(self);
+            }
+            Pat::Rest(rest) => {
+                self.visit_pat_default_initializers(&mut rest.arg);
+            }
+            // Expression patterns (e.g. `[obj.prop] = ...`) reference identifiers.
+            Pat::Expr(expr) => {
+                expr.visit_mut_with(self);
+            }
+            Pat::Invalid(_) => {}
+        }
+    }
 }
 
 impl VisitMut for StepTransform {

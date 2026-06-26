@@ -132,7 +132,9 @@ export interface HookOptions {
    * tokens are always randomly generated to prevent unauthorized access
    * to the public webhook endpoint.
    *
-   * If not provided, a randomly generated token will be assigned.
+   * If provided, the token must be a non-empty string; passing an empty
+   * string throws. If not provided (or `undefined`), a randomly generated
+   * token will be assigned.
    *
    * @example
    *

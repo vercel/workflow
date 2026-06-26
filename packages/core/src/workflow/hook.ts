@@ -57,6 +57,18 @@ function createConflictingRun(
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
+    // Reject an explicit empty-string token. A token must either be omitted
+    // (or `undefined`/`null`) to get a randomly generated one, or be an
+    // explicit non-empty string. An empty string is almost always an
+    // accidental value (e.g. an unset variable) and would otherwise slip
+    // through the `??` below — which only falls back for nullish values — and
+    // be used as a meaningless, non-deterministic token.
+    if (options.token === '') {
+      throw new Error(
+        '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+      );
+    }
+
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();

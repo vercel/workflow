@@ -68,7 +68,6 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
-      WORKFLOW_NEXT_LAZY_DISCOVERY: '0'
 
     steps:
       - name: Checkout Repo

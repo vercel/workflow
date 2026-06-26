@@ -3,6 +3,75 @@ const hasField = (
   key: string
 ): value is Record<string, unknown> => key in value;
 
+const RESOURCES_WITH_FETCHED_DETAIL = new Set(['run', 'step', 'sleep']);
+
+export function resourceNeedsFetchedDetail(
+  resource: string | undefined
+): boolean {
+  return resource !== undefined && RESOURCES_WITH_FETCHED_DETAIL.has(resource);
+}
+
+export type SpanDetailStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+export interface SpanDetailView {
+  status: SpanDetailStatus;
+  displayData: Record<string, unknown>;
+  detail: unknown;
+  error: Error | undefined;
+}
+
+export function deriveSpanDetailView(args: {
+  resource: string | undefined;
+  resourceId: string | undefined;
+  inlineData: unknown;
+  fetchedDetail: unknown;
+  fetchedError: Error | null;
+}): SpanDetailView {
+  const { resource, resourceId, inlineData, fetchedDetail, fetchedError } =
+    args;
+
+  const matchedDetail = spanDetailMatchesSelection(
+    fetchedDetail,
+    resource,
+    resourceId
+  )
+    ? fetchedDetail
+    : null;
+  const displayData = mergeSpanDetail(inlineData, matchedDetail) as Record<
+    string,
+    unknown
+  >;
+
+  if (!resource || !resourceId) {
+    return { status: 'idle', displayData, detail: null, error: undefined };
+  }
+  if (fetchedError) {
+    return {
+      status: 'error',
+      displayData,
+      detail: matchedDetail,
+      error: fetchedError,
+    };
+  }
+  if (!resourceNeedsFetchedDetail(resource)) {
+    return {
+      status: 'ready',
+      displayData,
+      detail: matchedDetail,
+      error: undefined,
+    };
+  }
+  if (matchedDetail !== null) {
+    return {
+      status: 'ready',
+      displayData,
+      detail: matchedDetail,
+      error: undefined,
+    };
+  }
+  return { status: 'loading', displayData, detail: null, error: undefined };
+}
+
 /**
  * Returns true when the fetched `detail` belongs to the current selection.
  * The fetch lags selection, so it can briefly hold a previously selected span

@@ -1,9 +1,9 @@
 'use client';
 
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type { Event, Hook, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { DecryptClickContext } from '../ui/data-inspector';
 import { AttributePanel } from './attribute-panel';
@@ -11,19 +11,11 @@ import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
 import { useSidebarDataOptional } from './sidebar-data-context';
 import {
-  mergeSpanDetail,
-  spanDetailMatchesSelection,
-} from './span-detail-merge';
+  type FetchSpanDetail,
+  useSelectedSpanDetail,
+} from './use-selected-span-detail';
 
-// Type guards for runtime validation of span attribute data
-function isStep(data: unknown): data is Step {
-  return data !== null && typeof data === 'object' && 'stepId' in data;
-}
-
-function isWorkflowRun(data: unknown): data is WorkflowRun {
-  return data !== null && typeof data === 'object' && 'runId' in data;
-}
-
+// Type guard for runtime validation of span attribute data
 function isHook(data: unknown): data is Hook {
   return data !== null && typeof data === 'object' && 'hookId' in data;
 }
@@ -61,10 +53,7 @@ export function EntityDetailPanel({
   run,
   onStreamClick,
   onRunClick,
-  spanDetailData,
-  spanDetailError,
-  spanDetailLoading,
-  onSpanSelect,
+  fetchSpanDetail,
   onWakeUpSleep,
   onLoadEventData,
   onResolveHook,
@@ -78,14 +67,7 @@ export function EntityDetailPanel({
   onStreamClick?: (streamId: string) => void;
   /** Callback when a run reference is clicked */
   onRunClick?: (runId: string) => void;
-  /** Pre-fetched span detail data for the selected span. */
-  spanDetailData: WorkflowRun | Step | Hook | Event | null;
-  /** Error from external span detail fetch. */
-  spanDetailError?: Error | null;
-  /** Loading state from external span detail fetch. */
-  spanDetailLoading?: boolean;
-  /** Callback when a span is selected. Use this to fetch data externally and pass via spanDetailData. */
-  onSpanSelect: (info: SpanSelectionInfo) => void;
+  fetchSpanDetail: FetchSpanDetail;
   /** Callback to wake up a pending sleep call. */
   onWakeUpSleep?: (
     runId: string,
@@ -128,53 +110,15 @@ export function EntityDetailPanel({
   const rawEvents = selectedSpan?.rawEvents;
   const rawEventsLength = rawEvents?.length ?? 0;
 
-  // Determine resource type, ID, and runId from the selected span
-  const { resource, resourceId, runId } = useMemo(() => {
-    if (!selectedSpan) {
-      return { resource: undefined, resourceId: undefined, runId: undefined };
-    }
-
-    const res = selectedSpan.resource;
-    if (res === 'step' && isStep(data)) {
-      return { resource: 'step', resourceId: data.stepId, runId: data.runId };
-    }
-    if (res === 'run' && isWorkflowRun(data)) {
-      return { resource: 'run', resourceId: data.runId, runId: undefined };
-    }
-    if (res === 'hook' && isHook(data)) {
-      return { resource: 'hook', resourceId: data.hookId, runId: undefined };
-    }
-    if (res === 'sleep') {
-      const waitData = data as { runId?: string } | undefined;
-      return {
-        resource: 'sleep',
-        resourceId: selectedSpan.spanId,
-        runId: waitData?.runId,
-      };
-    }
-    return { resource: undefined, resourceId: undefined, runId: undefined };
-  }, [selectedSpan, data]);
-
-  // Notify parent when span selection changes.
-  // Use a ref for the callback so the effect only fires when the actual
-  // selection values change, not when the callback identity changes due to
-  // parent re-renders from polling.
-  const onSpanSelectRef = useRef(onSpanSelect);
-  onSpanSelectRef.current = onSpanSelect;
-
-  useEffect(() => {
-    if (
-      resource &&
-      resourceId &&
-      ['run', 'step', 'hook', 'sleep'].includes(resource)
-    ) {
-      onSpanSelectRef.current({
-        resource: resource as 'run' | 'step' | 'hook' | 'sleep',
-        resourceId,
-        runId,
-      });
-    }
-  }, [resource, resourceId, runId]);
+  const {
+    status,
+    resource,
+    resourceId,
+    displayData,
+    detail: matchedSpanDetailData,
+    error,
+  } = useSelectedSpanDetail(selectedSpan, fetchSpanDetail);
+  const loading = status === 'loading';
 
   // Check if this sleep is still pending and can be woken up
   const canWakeUp = useMemo(() => {
@@ -215,17 +159,6 @@ export function EntityDetailPanel({
     run.status,
     resolvedHookIds,
   ]);
-
-  const error = spanDetailError ?? undefined;
-  const loading = spanDetailLoading ?? false;
-
-  const matchedSpanDetailData = useMemo(
-    () =>
-      spanDetailMatchesSelection(spanDetailData, resource, resourceId)
-        ? spanDetailData
-        : null,
-    [spanDetailData, resource, resourceId]
-  );
 
   // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
@@ -323,16 +256,6 @@ export function EntityDetailPanel({
       }
     },
     [onResolveHook, hookToken, resolvingHook, matchedSpanDetailData, data]
-  );
-
-  const displayData = useMemo(
-    () =>
-      mergeSpanDetail(data, matchedSpanDetailData) as
-        | WorkflowRun
-        | Step
-        | Hook
-        | Event,
-    [data, matchedSpanDetailData]
   );
 
   const moduleSpecifier = useMemo(() => {

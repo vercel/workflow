@@ -3,12 +3,14 @@
  * This mirrors world-vercel's implementation for consistent observability.
  */
 import {
-  trace,
   getSpanKind,
   PeerService,
-  RpcSystem,
-  RpcService,
   RpcMethod,
+  RpcService,
+  RpcSystem,
+  StepId,
+  trace,
+  WorkflowRunId,
 } from './telemetry.js';
 
 /** Configuration for peer service attribution */
@@ -17,6 +19,20 @@ const WORLD_LOCAL_SERVICE = {
   rpcSystem: 'local',
   rpcService: 'world-local',
 };
+
+const RUN_ID_ARG_INDEX_BY_METHOD: Record<string, number> = {
+  'world.runs.get': 0,
+  'world.runs.experimentalSetAttributes': 0,
+  'world.steps.get': 0,
+  'world.events.create': 0,
+  'world.events.get': 0,
+};
+
+const RUN_ID_PARAM_METHODS = new Set([
+  'world.steps.list',
+  'world.events.list',
+  'world.hooks.list',
+]);
 
 /**
  * Extracts the event type from arguments for events.create calls.
@@ -30,6 +46,68 @@ function extractEventType(args: unknown[]): string | undefined {
     }
   }
   return undefined;
+}
+
+function getStringArg(args: unknown[], index: number): string | undefined {
+  return typeof args[index] === 'string' ? args[index] : undefined;
+}
+
+function getRunIdFromParams(params: unknown): string | undefined {
+  if (typeof params !== 'object' || params === null) {
+    return undefined;
+  }
+  const runId = (params as Record<string, unknown>).runId;
+  return typeof runId === 'string' ? runId : undefined;
+}
+
+function getRunIdFromResult(result: unknown): string | undefined {
+  if (typeof result !== 'object' || result === null) {
+    return undefined;
+  }
+
+  const record = result as Record<string, unknown>;
+  if (typeof record.runId === 'string') {
+    return record.runId;
+  }
+
+  for (const key of ['run', 'step', 'hook', 'wait']) {
+    const entity = record[key];
+    if (typeof entity === 'object' && entity !== null) {
+      const runId = (entity as Record<string, unknown>).runId;
+      if (typeof runId === 'string') {
+        return runId;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function extractWorkflowAttributes(
+  prefix: string,
+  methodName: string,
+  args: unknown[]
+): Record<string, string> {
+  const methodKey = `${prefix}.${methodName}`;
+  const attributes: Record<string, string> = {};
+
+  const runIdArgIndex = RUN_ID_ARG_INDEX_BY_METHOD[methodKey];
+  const runId =
+    runIdArgIndex === undefined
+      ? RUN_ID_PARAM_METHODS.has(methodKey)
+        ? getRunIdFromParams(args[0])
+        : undefined
+      : getStringArg(args, runIdArgIndex);
+  if (runId) {
+    Object.assign(attributes, WorkflowRunId(runId));
+  }
+
+  if (methodKey === 'world.steps.get') {
+    const stepId = getStringArg(args, 1);
+    if (stepId) Object.assign(attributes, StepId(stepId));
+  }
+
+  return attributes;
 }
 
 /**
@@ -68,8 +146,14 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
               ...RpcSystem(WORLD_LOCAL_SERVICE.rpcSystem),
               ...RpcService(WORLD_LOCAL_SERVICE.rpcService),
               ...RpcMethod(spanName),
+              ...extractWorkflowAttributes(prefix, methodName, args),
             });
-            return f(...args);
+            const result = await f(...args);
+            const resultRunId = getRunIdFromResult(result);
+            if (resultRunId) {
+              span?.setAttributes(WorkflowRunId(resultRunId));
+            }
+            return result;
           }
         );
       };

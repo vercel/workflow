@@ -1,5 +1,71 @@
 # @workflow/astro
 
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- Updated dependencies [[`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba)]:
+  - @workflow/builders@5.0.0-beta.24
+  - @workflow/rollup@5.0.0-beta.24
+  - @workflow/vite@5.0.0-beta.24
+
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
+  - @workflow/builders@5.0.0-beta.23
+  - @workflow/rollup@5.0.0-beta.23
+  - @workflow/vite@5.0.0-beta.23
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.22
+  - @workflow/rollup@5.0.0-beta.22
+  - @workflow/vite@5.0.0-beta.22
+
+## 5.0.0-beta.21
+
+### Patch Changes
+
+- Updated dependencies [[`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc), [`b713d84`](https://github.com/vercel/workflow/commit/b713d8417b1334abd1e30bdc50701d0d96dee39d), [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3)]:
+  - @workflow/builders@5.0.0-beta.21
+  - @workflow/rollup@5.0.0-beta.21
+  - @workflow/vite@5.0.0-beta.21
+
+## 5.0.0-beta.20
+
+### Patch Changes
+
+- Updated dependencies [[`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a)]:
+  - @workflow/builders@5.0.0-beta.20
+  - @workflow/rollup@5.0.0-beta.20
+  - @workflow/vite@5.0.0-beta.20
+
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.19
+  - @workflow/rollup@5.0.0-beta.19
+  - @workflow/vite@5.0.0-beta.19
+
+## 5.0.0-beta.18
+
+### Patch Changes
+
+- [#2457](https://github.com/vercel/workflow/pull/2457) [`b92dfbb`](https://github.com/vercel/workflow/commit/b92dfbb94dabdeefd53bd9499a78174ac6bb2156) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump the `astro` dev dependency to 6.4.6 to resolve CVE-2026-54299 (GHSA-2pvr-wf23-7pc7, host header SSRF in prerendered error page fetch).
+
+- Updated dependencies [[`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998), [`da37349`](https://github.com/vercel/workflow/commit/da373493d211c09056f745332b18f55ef801da2b), [`53ede30`](https://github.com/vercel/workflow/commit/53ede3079c19494c53e181917f26c2499a19e012)]:
+  - @workflow/builders@5.0.0-beta.18
+  - @workflow/swc-plugin@5.0.0-beta.5
+  - @workflow/rollup@5.0.0-beta.18
+  - @workflow/vite@5.0.0-beta.18
+
 ## 5.0.0-beta.17
 
 ### Patch Changes

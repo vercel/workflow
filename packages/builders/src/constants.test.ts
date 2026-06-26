@@ -48,4 +48,15 @@ describe('createWorkflowEntrypointOptionsCode', () => {
       ', { namespace: "custom" }'
     );
   });
+
+  it('inlines route module timing with namespace options', () => {
+    expect(
+      createWorkflowEntrypointOptionsCode({
+        namespace: 'custom',
+        routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+      })
+    ).toBe(
+      ', { namespace: "custom", routeModuleBodyStartedAt: workflowRouteModuleBodyStartedAt }'
+    );
+  });
 });

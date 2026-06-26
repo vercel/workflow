@@ -30,6 +30,10 @@ export interface Logger {
   ) => Logger;
 }
 
+type LoggerOptions = {
+  debugNamespace?: string;
+};
+
 /**
  * Lightweight `DEBUG=` pattern matcher. Replaces the `debug` package, which
  * was previously a static dependency of this module — that import path
@@ -67,10 +71,13 @@ function matchesDebugNamespace(
   return enabled;
 }
 
-function createLogger(namespace: string): Logger {
+function createLogger(namespace: string, options: LoggerOptions = {}): Logger {
   const build = (parentMetadata: LogMetadata): Logger => {
+    const getDebugNamespace = (level: string) =>
+      options.debugNamespace ?? `workflow:${namespace}:${level}`;
+
     const logger = (level: string): LogFn => {
-      const debugNamespace = `workflow:${namespace}:${level}`;
+      const debugNamespace = getDebugNamespace(level);
 
       return (message, metadata) => {
         const hasParent = Object.keys(parentMetadata).length > 0;
@@ -136,3 +143,6 @@ export const runtimeLogger = createLogger('runtime');
 export const webhookLogger = createLogger('webhook');
 export const eventsLogger = createLogger('events');
 export const adapterLogger = createLogger('adapter');
+export const buildLogger = createLogger('build', {
+  debugNamespace: 'workflow:build',
+});

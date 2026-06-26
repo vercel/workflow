@@ -23,6 +23,11 @@ on:
         description: 'NPM package name for the world'
         required: true
         type: string
+      package-version:
+        description: 'Optional npm version/dist-tag to pin the world package to (empty = latest)'
+        required: false
+        type: string
+        default: ''
       app-name:
         description: 'App to test (default: nextjs-turbopack)'
         required: false
@@ -34,10 +39,15 @@ on:
         type: string
         default: '{}'
       service-type:
-        description: 'Service container to run (none, mongodb, redis)'
+        description: 'Service container to run (none, mongodb, redis, docker)'
         required: false
         type: string
         default: 'none'
+      services:
+        description: 'JSON array of service definitions from the manifest (used when service-type is docker)'
+        required: false
+        type: string
+        default: '[]'
 
 jobs:
   e2e:
@@ -83,6 +93,58 @@ jobs:
             sleep 2
           done
 
+      - name: Start Docker services
+        if: ${{ inputs.service-type == 'docker' }}
+        # Services start serially in manifest order. Each service's health check
+        # must pass before the next one starts, so any service that depends on
+        # another (e.g. a workflow service that needs postgres) must be listed
+        # AFTER its dependency in the manifest's `services` array.
+        #
+        # `healthCheck.cmd` is executed via `sh -c` below, which means the
+        # manifest is a shell-execution surface. Safe here because
+        # `worlds-manifest.json` is in-repo and PR-reviewed.
+        run: |
+          set -euo pipefail
+          SERVICES='${{ inputs.services }}'
+          count=$(echo "$SERVICES" | jq '. | length')
+          for idx in $(seq 0 $((count - 1))); do
+            svc=$(echo "$SERVICES" | jq -c ".[$idx]")
+            name=$(echo "$svc" | jq -r '.name')
+            image=$(echo "$svc" | jq -r '.image')
+            health_cmd=$(echo "$svc" | jq -r '.healthCheck.cmd // empty')
+            retries=$(echo "$svc" | jq -r '.healthCheck.retries // 10')
+
+            # Build docker run as an array so env values with spaces/quotes
+            # survive intact (no shell re-interpretation via eval).
+            args=(docker run -d --name "$name" --network host)
+            env_lines=$(echo "$svc" | jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"')
+            if [ -n "$env_lines" ]; then
+              while IFS= read -r line; do
+                args+=(-e "$line")
+              done <<< "$env_lines"
+            fi
+            args+=("$image")
+
+            echo "Starting $name ($image)..."
+            "${args[@]}"
+
+            # Health check runs on the host (--network host shares the network).
+            if [ -n "$health_cmd" ]; then
+              echo "Waiting for $name to be ready..."
+              for i in $(seq 1 "$retries"); do
+                if sh -c "$health_cmd" &>/dev/null; then
+                  echo "$name is ready"
+                  break
+                fi
+                if [ "$i" -eq "$retries" ]; then
+                  echo "ERROR: $name health check did not pass after $retries retries"
+                  exit 1
+                fi
+                sleep 2
+              done
+            fi
+          done
+
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
@@ -111,7 +173,10 @@ jobs:
         env:
           APP_NAME: ${{ inputs.app-name }}
           WORLD_PACKAGE: ${{ inputs.world-package }}
-        run: pnpm --filter "$APP_NAME" add "$WORLD_PACKAGE"
+          WORLD_PACKAGE_VERSION: ${{ inputs.package-version }}
+        run: |
+          SPEC="${WORLD_PACKAGE}${WORLD_PACKAGE_VERSION:+@$WORLD_PACKAGE_VERSION}"
+          pnpm --filter "$APP_NAME" add "$SPEC"
 
       # Per-world setup. Hardcoded (not taken from the matrix) so a malicious
       # fork PR cannot smuggle arbitrary shell through matrix.world.setup-command.
@@ -175,3 +240,8 @@ jobs:
         run: |
           docker stop mongodb 2>/dev/null || true
           docker stop redis 2>/dev/null || true
+          if [ '${{ inputs.service-type }}' = 'docker' ]; then
+            echo '${{ inputs.services }}' | jq -r '.[].name' 2>/dev/null | while read -r name; do
+              docker stop "$name" 2>/dev/null || true
+            done
+          fi

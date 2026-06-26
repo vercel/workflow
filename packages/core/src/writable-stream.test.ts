@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowServerWritableStream } from './serialization.js';
 import { setWorld } from './runtime/world.js';
+import {
+  dehydrateStepReturnValue,
+  WorkflowServerWritableStream,
+} from './serialization.js';
 
 describe('WorkflowServerWritableStream', () => {
   let mockStreams: {
@@ -292,6 +295,166 @@ describe('WorkflowServerWritableStream', () => {
       expect(mockStreams.write).toHaveBeenCalledTimes(1);
 
       await writer.close();
+    });
+  });
+
+  describe('runReadyBarrier (turbo optimistic start)', () => {
+    it('holds the first server write until the run-ready barrier resolves', async () => {
+      const order: string[] = [];
+      mockStreams.write.mockImplementation(async () => {
+        order.push('write');
+      });
+
+      let releaseBarrier!: () => void;
+      const runReadyBarrier = new Promise<void>((resolve) => {
+        releaseBarrier = () => {
+          order.push('barrier');
+          resolve();
+        };
+      });
+
+      const stream = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream',
+        runReadyBarrier
+      );
+      const writer = stream.getWriter();
+      const writePromise = writer.write(new Uint8Array([1, 2, 3]));
+
+      // The body wrote a chunk before run_started is durable: the flush timer
+      // may fire, but the server write must not happen until the run exists.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockStreams.write).not.toHaveBeenCalled();
+
+      releaseBarrier();
+      await writePromise;
+
+      // The chunk reaches the server strictly after the barrier resolves.
+      expect(order).toEqual(['barrier', 'write']);
+
+      await writer.close();
+    });
+
+    it('only awaits the barrier once — later flushes are not gated', async () => {
+      const runReadyBarrier = Promise.resolve();
+      const stream = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream',
+        runReadyBarrier
+      );
+      const writer = stream.getWriter();
+
+      await writer.write(new Uint8Array([1]));
+      await writer.write(new Uint8Array([2]));
+      await writer.write(new Uint8Array([3]));
+
+      expect(mockStreams.write).toHaveBeenCalledTimes(3);
+
+      await writer.close();
+    });
+
+    it('still writes when the barrier rejects (write surfaces the real error)', async () => {
+      const runReadyBarrier = Promise.reject(new Error('run_started failed'));
+      runReadyBarrier.catch(() => {});
+
+      const stream = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream',
+        runReadyBarrier
+      );
+      const writer = stream.getWriter();
+
+      await writer.write(new Uint8Array([1, 2, 3]));
+
+      // Barrier rejection is swallowed for ordering only — the write still
+      // fires and would surface a genuine run-not-found error from the World.
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+
+      await writer.close();
+    });
+
+    it('gates the first write of a stream RETURNED from a turbo first step', async () => {
+      // Regression: getWritable()/setAttributes are gated while the step
+      // context is active, but a step that *returns* a fresh ReadableStream
+      // is serialized after the body via dehydrateStepReturnValue(), whose
+      // sink must also wait for run_started before the first chunk lands.
+      const order: string[] = [];
+      mockStreams.write.mockImplementation(async () => {
+        order.push('write');
+      });
+
+      let releaseBarrier!: () => void;
+      const runReadyBarrier = new Promise<void>((resolve) => {
+        releaseBarrier = () => {
+          order.push('barrier');
+          resolve();
+        };
+      });
+
+      const returned = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1, 2, 3]));
+          controller.close();
+        },
+      });
+
+      const ops: Promise<unknown>[] = [];
+      await dehydrateStepReturnValue(
+        returned,
+        'run-123',
+        undefined, // encryption key
+        ops,
+        globalThis,
+        false, // v1Compat
+        false, // framedByteStreams
+        false, // compression
+        runReadyBarrier
+      );
+
+      // The pipe is queued but must not have written before the run exists.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockStreams.write).not.toHaveBeenCalled();
+
+      releaseBarrier();
+      await Promise.all(ops);
+
+      // The returned stream's first chunk reaches the server only after the
+      // run-ready barrier resolves.
+      expect(order[0]).toBe('barrier');
+      expect(mockStreams.write).toHaveBeenCalled();
+    });
+
+    it('gates a close that is itself the first write to a new stream', async () => {
+      const order: string[] = [];
+      mockStreams.close.mockImplementation(async () => {
+        order.push('close');
+      });
+
+      let releaseBarrier!: () => void;
+      const runReadyBarrier = new Promise<void>((resolve) => {
+        releaseBarrier = () => {
+          order.push('barrier');
+          resolve();
+        };
+      });
+
+      const stream = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream',
+        runReadyBarrier
+      );
+      const writer = stream.getWriter();
+
+      // Close with no chunks written: flush() short-circuits on the empty
+      // buffer, so close() must apply the barrier itself.
+      const closePromise = writer.close();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockStreams.close).not.toHaveBeenCalled();
+
+      releaseBarrier();
+      await closePromise;
+
+      expect(order).toEqual(['barrier', 'close']);
     });
   });
 });

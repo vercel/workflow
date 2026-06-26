@@ -224,7 +224,7 @@ function getDashboardUrl(runId: string): string | undefined {
   if (!projectSlug || !env) return undefined;
 
   const environment = env === 'production' ? 'production' : 'preview';
-  return `https://vercel.com/vercel-labs/${projectSlug}/observability/workflows/runs/${runId}?environment=${environment}`;
+  return `https://vercel.com/vercel-labs/${projectSlug}/workflows/runs/${runId}?environment=${environment}`;
 }
 
 function classifyFailure(errorCode: string | undefined): Outcome {

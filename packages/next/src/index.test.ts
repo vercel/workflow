@@ -14,7 +14,7 @@ const {
   buildMock,
   builderConfigs,
   getNextBuilderMock,
-  shouldUseDeferredBuilderMock,
+  prewarmWorkflowSwcPluginCacheMock,
 } = vi.hoisted(() => {
   const buildMock = vi.fn(async () => {});
   const builderConfigs: Record<string, unknown>[] = [];
@@ -27,35 +27,27 @@ const {
       }
     };
   });
-  const shouldUseDeferredBuilderMock = vi.fn(() => false);
+  const prewarmWorkflowSwcPluginCacheMock = vi.fn();
 
   return {
     buildMock,
     builderConfigs,
     getNextBuilderMock,
-    shouldUseDeferredBuilderMock,
+    prewarmWorkflowSwcPluginCacheMock,
   };
 });
 
 vi.mock('./builder.js', () => ({
   getNextBuilder: getNextBuilderMock,
-  shouldUseDeferredBuilder: shouldUseDeferredBuilderMock,
-  WORKFLOW_DEFERRED_ENTRIES: [
-    '/.well-known/workflow/v1/flow',
-    '/.well-known/workflow/v1/step',
-    '/.well-known/workflow/v1/webhook/[token]',
-  ],
+}));
+
+vi.mock('./swc-plugin-cache.js', () => ({
+  prewarmWorkflowSwcPluginCache: prewarmWorkflowSwcPluginCacheMock,
 }));
 
 import { withWorkflow } from './index.js';
 
-const loaderStubPath = join(
-  process.cwd(),
-  'packages',
-  'next',
-  'src',
-  'loader.js'
-);
+const loaderStubPath = join(__dirname, 'loader.js');
 const hadLoaderStub = existsSync(loaderStubPath);
 const realTmpDir = realpathSync(tmpdir());
 
@@ -70,7 +62,6 @@ describe('withWorkflow builder config', () => {
     PORT: process.env.PORT,
     VERCEL_DEPLOYMENT_ID: process.env.VERCEL_DEPLOYMENT_ID,
     WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
-    WORKFLOW_NEXT_LAZY_DISCOVERY: process.env.WORKFLOW_NEXT_LAZY_DISCOVERY,
     WORKFLOW_NEXT_PRIVATE_BUILT: process.env.WORKFLOW_NEXT_PRIVATE_BUILT,
     WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
   };
@@ -79,7 +70,7 @@ describe('withWorkflow builder config', () => {
     buildMock.mockClear();
     builderConfigs.length = 0;
     getNextBuilderMock.mockClear();
-    shouldUseDeferredBuilderMock.mockClear();
+    prewarmWorkflowSwcPluginCacheMock.mockClear();
 
     if (!hadLoaderStub) {
       writeFileSync(loaderStubPath, 'module.exports = {};\n', 'utf-8');
@@ -88,7 +79,6 @@ describe('withWorkflow builder config', () => {
     delete process.env.PORT;
     delete process.env.VERCEL_DEPLOYMENT_ID;
     delete process.env.WORKFLOW_LOCAL_DATA_DIR;
-    delete process.env.WORKFLOW_NEXT_LAZY_DISCOVERY;
     delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
     delete process.env.WORKFLOW_TARGET_WORLD;
   });
@@ -111,9 +101,10 @@ describe('withWorkflow builder config', () => {
     }
   });
 
-  it('uses outputFileTracingRoot as the builder projectRoot when configured', async () => {
+  it('uses outputFileTracingRoot for tracing without changing module specifier root', async () => {
     const config = withWorkflow({
       outputFileTracingRoot: '/repo',
+      pageExtensions: ['page.ts'],
     });
 
     await config('phase-production-build', {
@@ -124,24 +115,34 @@ describe('withWorkflow builder config', () => {
     expect(buildMock).toHaveBeenCalledOnce();
     expect(builderConfigs).toHaveLength(1);
     expect(builderConfigs[0]).toMatchObject({
+      dirs: ['.'],
+      pageExtensions: ['page.ts'],
       projectRoot: '/repo',
+      moduleSpecifierRoot: process.cwd(),
       workingDir: process.cwd(),
     });
   });
 
-  it('enables lazyDiscovery by default', async () => {
-    withWorkflow({});
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
+  it.each([
+    'phase-production-build',
+    'phase-development-server',
+  ])('prewarms the SWC plugin cache during %s', async (phase) => {
+    const config = withWorkflow({});
+
+    await config(phase, { defaultConfig: {} });
+
+    expect(prewarmWorkflowSwcPluginCacheMock).toHaveBeenCalledOnce();
+    expect(prewarmWorkflowSwcPluginCacheMock).toHaveBeenCalledWith(
+      process.cwd()
+    );
   });
 
-  it('enables lazyDiscovery when explicitly set to true', async () => {
-    withWorkflow({}, { workflows: { lazyDiscovery: true } });
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
-  });
+  it('does not prewarm the SWC plugin cache for the production server', async () => {
+    const config = withWorkflow({});
 
-  it('disables lazyDiscovery when explicitly set to false', async () => {
-    withWorkflow({}, { workflows: { lazyDiscovery: false } });
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBeUndefined();
+    await config('phase-production-server', { defaultConfig: {} });
+
+    expect(prewarmWorkflowSwcPluginCacheMock).not.toHaveBeenCalled();
   });
 
   it('configures diagnostics inside the default Next.js dist dir', async () => {
@@ -216,36 +217,6 @@ describe('withWorkflow builder config', () => {
 
     expect(userWebpack).toHaveBeenCalledOnce();
     expect(webpackConfig?.externals).toEqual([{ react: 'commonjs react' }]);
-  });
-
-  it('preserves an explicit lazyDiscovery disable override', () => {
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '0';
-
-    withWorkflow(
-      {},
-      {
-        workflows: {
-          lazyDiscovery: true,
-        },
-      }
-    );
-
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('0');
-  });
-
-  it('treats an empty lazyDiscovery env override as unset', () => {
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '';
-
-    withWorkflow(
-      {},
-      {
-        workflows: {
-          lazyDiscovery: true,
-        },
-      }
-    );
-
-    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
   });
 
   it('removes workflow packages from serverExternalPackages for this build', async () => {
