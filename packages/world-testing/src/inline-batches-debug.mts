@@ -1,5 +1,5 @@
-import { expect, test, vi } from 'vitest';
 import { hydrateWorkflowReturnValue } from '@workflow/core/serialization';
+import { expect, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
@@ -13,7 +13,7 @@ import { createFetcher, startServer } from './util.mjs';
  *   - unconsumed-event skips
  *
  * Not part of the default suite; run with:
- *   pnpm vitest run packages/world-testing/test/inline-batches-debug.test.ts
+ *   WORKFLOW_INLINE_BATCHES_DEBUG=1 pnpm vitest run packages/world-testing/test/inline-batches-debug.test.ts
  */
 export function inlineBatchesDebug(world: string) {
   test(
