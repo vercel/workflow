@@ -5,6 +5,8 @@ import { bench, describe } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { setWorld, start } from '../src/runtime';
+import { getWorldLazy } from '../src/runtime/get-world-lazy';
+import { STREAM_NAME_SYMBOL } from '../src/symbols';
 import { getWorkbenchAppPath, isLocalDeployment } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -351,9 +353,7 @@ async function consumeReturnedStreamWithMetrics(
     if (result.totalBytes >= minBytes) {
       return result;
     }
-    await new Promise((resolve) =>
-      setTimeout(resolve, STREAM_READ_RETRY_INTERVAL_MS)
-    );
+    await waitForReturnedStreamRetry(value, run, deadline, minBytes > 1);
     value = await run.returnValue;
   }
 
@@ -362,6 +362,44 @@ async function consumeReturnedStreamWithMetrics(
       totalBytes: 0,
       chunks: [],
     }
+  );
+}
+
+async function waitForReturnedStreamRetry(
+  value: unknown,
+  run: Run<unknown>,
+  deadline: number,
+  waitForDone: boolean
+): Promise<void> {
+  const name =
+    value instanceof ReadableStream
+      ? (value as Record<symbol, unknown>)[STREAM_NAME_SYMBOL]
+      : undefined;
+
+  if (typeof name !== 'string') {
+    await sleepUntilNextRetry(deadline);
+    return;
+  }
+
+  const world = await getWorldLazy();
+  while (Date.now() < deadline) {
+    const info = await world.streams.getInfo(run.runId, name).catch(() => null);
+    if (info && (waitForDone ? info.done : info.tailIndex >= 0)) {
+      return;
+    }
+    await sleepUntilNextRetry(deadline);
+  }
+}
+
+function sleepUntilNextRetry(deadline: number): Promise<void> {
+  return new Promise((resolve) =>
+    setTimeout(
+      resolve,
+      Math.max(
+        0,
+        Math.min(STREAM_READ_RETRY_INTERVAL_MS, deadline - Date.now())
+      )
+    )
   );
 }
 

@@ -9,8 +9,9 @@ export const STREAM_NAME_SYMBOL = Symbol.for('WORKFLOW_STREAM_NAME');
 export const STREAM_TYPE_SYMBOL = Symbol.for('WORKFLOW_STREAM_TYPE');
 export const STREAM_FRAMING_SYMBOL = Symbol.for('WORKFLOW_STREAM_FRAMING');
 /**
- * Stamped on a real `WritableStream` (the user-visible `serialize.writable`
- * returned from a step-side reviver or step-context `getWritable()`) to
+ * Stamped on real stream handles (for example, the user-visible
+ * `serialize.writable` returned from a step-side reviver or step-context
+ * `getWritable()`) to
  * record the `runId` of the workflow run that owns the underlying server
  * stream. Used together with `STREAM_NAME_SYMBOL`.
  *

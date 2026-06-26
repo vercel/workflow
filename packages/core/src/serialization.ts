@@ -943,6 +943,25 @@ import type {
   SerializableSpecial,
 } from './serialization/types.js';
 
+function tagReadableStreamHandle<T extends ReadableStream>(
+  stream: T,
+  value: Extract<SerializableSpecial['ReadableStream'], { name: string }>
+): T {
+  Object.defineProperty(stream, STREAM_NAME_SYMBOL, {
+    value: value.name,
+    writable: false,
+  });
+  Object.defineProperty(stream, STREAM_TYPE_SYMBOL, {
+    value: value.type,
+    writable: false,
+  });
+  Object.defineProperty(stream, STREAM_FRAMING_SYMBOL, {
+    value: value.framing,
+    writable: false,
+  });
+  return stream;
+}
+
 // ---- Composed reducers ----
 // Composes modular reducers (common, class, step-function) with
 // mode-specific Request/Response/Stream reducers below.
@@ -1968,7 +1987,7 @@ export function getExternalRevivers(
         // Start polling to detect when user releases lock
         pollReadableLock(userReadable, state);
 
-        return userReadable;
+        return tagReadableStreamHandle(userReadable, value);
       } else {
         // Non-byte streams carry length-prefixed frames, so we can count
         // completed frames and transparently reconnect when the server
@@ -1993,7 +2012,7 @@ export function getExternalRevivers(
         // Start polling to detect when user releases lock
         pollReadableLock(transform.readable, state);
 
-        return transform.readable;
+        return tagReadableStreamHandle(transform.readable, value);
       }
     },
     WritableStream: (value) => {
@@ -2383,7 +2402,7 @@ function getStepRevivers(
         // Start polling to detect when user releases lock
         pollReadableLock(userReadable, state);
 
-        return userReadable;
+        return tagReadableStreamHandle(userReadable, value);
       } else {
         const transform = getDeserializeStream(
           getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
@@ -2400,7 +2419,7 @@ function getStepRevivers(
         // Start polling to detect when user releases lock
         pollReadableLock(transform.readable, state);
 
-        return transform.readable;
+        return tagReadableStreamHandle(transform.readable, value);
       }
     },
     WritableStream: (value) => {

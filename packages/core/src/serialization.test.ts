@@ -42,9 +42,11 @@ import {
   ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
   STABLE_ULID,
+  STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
+  STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
@@ -686,6 +688,50 @@ describe('workflow arguments', () => {
     expect(hydrated).toBeInstanceOf(OurReadableStream);
     const streamName = hydrated[STREAM_NAME_SYMBOL];
     expect(streamName).toMatch(/^strm_[0-9A-Z]{26}$/);
+  });
+
+  it('preserves returned ReadableStream metadata for external hydration', async () => {
+    const ops: Promise<void>[] = [];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+    const stepSerialized = await dehydrateStepReturnValue(
+      stream,
+      mockRunId,
+      noEncryptionKey,
+      ops,
+      globalThis,
+      false,
+      true
+    );
+    const workflowHandle = await hydrateStepReturnValue(
+      stepSerialized,
+      mockRunId,
+      noEncryptionKey
+    );
+    const workflowSerialized = await dehydrateWorkflowReturnValue(
+      workflowHandle,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateWorkflowReturnValue(
+      workflowSerialized,
+      mockRunId,
+      noEncryptionKey
+    );
+
+    expect(hydrated[STREAM_NAME_SYMBOL]).toBe(
+      workflowHandle[STREAM_NAME_SYMBOL]
+    );
+    expect(hydrated[STREAM_TYPE_SYMBOL]).toBe(
+      workflowHandle[STREAM_TYPE_SYMBOL]
+    );
+    expect(hydrated[STREAM_FRAMING_SYMBOL]).toBe(
+      workflowHandle[STREAM_FRAMING_SYMBOL]
+    );
+    await Promise.all(ops);
   });
 
   it('should work with Headers', async () => {
