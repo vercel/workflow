@@ -52,8 +52,17 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
+const isVercelE2E = !!process.env.WORKFLOW_VERCEL_ENV;
+const SHORT_TEST_TIMEOUT_MS = isVercelE2E ? 60_000 : 30_000;
+const DEFAULT_TEST_TIMEOUT_MS = isVercelE2E ? 120_000 : 60_000;
+const LONG_TEST_TIMEOUT_MS = isVercelE2E ? 180_000 : 90_000;
+const EXTRA_LONG_TEST_TIMEOUT_MS = isVercelE2E ? 240_000 : 120_000;
+const VERY_LONG_TEST_TIMEOUT_MS = isVercelE2E ? 300_000 : 180_000;
+const HOOK_WAIT_TIMEOUT_MS = isVercelE2E ? 90_000 : 30_000;
+const EVENT_WAIT_TIMEOUT_MS = isVercelE2E ? 60_000 : 30_000;
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
-const STREAM_READ_TIMEOUT_MS = 90_000;
+const STREAM_READ_TIMEOUT_MS = isVercelE2E ? 90_000 : 60_000;
+const STREAM_TEST_TIMEOUT_MS = isVercelE2E ? 180_000 : 120_000;
 
 function expectElapsedAtLeast(actualMs: number, expectedMs: number) {
   // Vercel e2e compares timestamps from different invocations and services.
@@ -126,7 +135,7 @@ async function waitForHook(
     runId?: string;
   } = {}
 ): Promise<Awaited<ReturnType<typeof getHookByToken>>> {
-  const { timeoutMs = 30_000, intervalMs = 250, runId } = options;
+  const { timeoutMs = HOOK_WAIT_TIMEOUT_MS, intervalMs = 250, runId } = options;
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown = new Error(
     `waitForHook(${token}) timed out before any attempt`
@@ -164,7 +173,7 @@ async function waitForRunEvents(
   } = {}
 ): Promise<WorkflowEvent[]> {
   const {
-    timeoutMs = 30_000,
+    timeoutMs = EVENT_WAIT_TIMEOUT_MS,
     intervalMs = 250,
     minCount = 1,
     description = 'matching event',
@@ -260,39 +269,43 @@ describe('e2e', () => {
       workflowFile: 'workflows/98_duplicate_case.ts',
       workflowFn: 'addTenWorkflow',
     },
-  ])('addTenWorkflow', { timeout: 60_000 }, async (workflow) => {
-    const run = await start(
-      await getWorkflowMetadata(
-        deploymentUrl,
-        workflow.workflowFile,
-        workflow.workflowFn
-      ),
-      [123]
-    );
+  ])(
+    'addTenWorkflow',
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
+    async (workflow) => {
+      const run = await start(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          workflow.workflowFile,
+          workflow.workflowFn
+        ),
+        [123]
+      );
 
-    const returnValue = await run.returnValue;
-    expect(returnValue).toBe(133);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe(133);
 
-    const { json } = await cliInspectJson(`runs ${run.runId} --withData`);
-    expect(json).toMatchObject({
-      runId: run.runId,
-      workflowName: expect.any(String),
-      status: 'completed',
-      input: [123],
-      output: 133,
-    });
-    // Workflow ID format: workflow//./{path-without-extension}//{functionName}
-    // Different workbenches have different directory structures:
-    // - workflows/ (standard)
-    // - src/workflows/ (some frameworks)
-    // - example/workflows/ (example app)
-    const fileWithoutExt = workflow.workflowFile.replace(/\.tsx?$/, '');
-    expect(json.workflowName).toMatch(
-      new RegExp(
-        `^workflow//\\./(?:src/|example/)?${fileWithoutExt}//${workflow.workflowFn}$`
-      )
-    );
-  });
+      const { json } = await cliInspectJson(`runs ${run.runId} --withData`);
+      expect(json).toMatchObject({
+        runId: run.runId,
+        workflowName: expect.any(String),
+        status: 'completed',
+        input: [123],
+        output: 133,
+      });
+      // Workflow ID format: workflow//./{path-without-extension}//{functionName}
+      // Different workbenches have different directory structures:
+      // - workflows/ (standard)
+      // - src/workflows/ (some frameworks)
+      // - example/workflows/ (example app)
+      const fileWithoutExt = workflow.workflowFile.replace(/\.tsx?$/, '');
+      expect(json.workflowName).toMatch(
+        new RegExp(
+          `^workflow//\\./(?:src/|example/)?${fileWithoutExt}//${workflow.workflowFn}$`
+        )
+      );
+    }
+  );
 
   // `deploymentId: 'latest'` only resolves to a different deployment in
   // worlds with atomic, immutable deployments (Vercel). In local dev and
@@ -304,7 +317,7 @@ describe('e2e', () => {
   // 'latest' actually hits the resolve API.
   test.skipIf(!!process.env.WORKFLOW_VERCEL_ENV)(
     "deploymentId: 'latest' is a no-op in non-Vercel worlds",
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const run = await start(await e2e('addTenWorkflow'), [123], {
         deploymentId: 'latest',
@@ -329,7 +342,7 @@ describe('e2e', () => {
   const isNextApp = process.env.APP_NAME?.includes('nextjs');
   test.skipIf(!isNextApp)(
     'wellKnownAgentWorkflow (.well-known/agent)',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const run = await start(
         await getWorkflowMetadata(
@@ -370,19 +383,23 @@ describe('e2e', () => {
     }
   );
 
-  test('promiseAllWorkflow', { timeout: 60_000 }, async () => {
+  test('promiseAllWorkflow', { timeout: DEFAULT_TEST_TIMEOUT_MS }, async () => {
     const run = await start(await e2e('promiseAllWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue).toBe('ABC');
   });
 
-  test('promiseRaceWorkflow', { timeout: 60_000 }, async () => {
-    const run = await start(await e2e('promiseRaceWorkflow'), []);
-    const returnValue = await run.returnValue;
-    expect(returnValue).toBe('B');
-  });
+  test(
+    'promiseRaceWorkflow',
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
+    async () => {
+      const run = await start(await e2e('promiseRaceWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe('B');
+    }
+  );
 
-  test('promiseAnyWorkflow', { timeout: 60_000 }, async () => {
+  test('promiseAnyWorkflow', { timeout: DEFAULT_TEST_TIMEOUT_MS }, async () => {
     const run = await start(await e2e('promiseAnyWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue).toBe('B');
@@ -390,7 +407,7 @@ describe('e2e', () => {
 
   test.skipIf(!isNext)(
     'importedStepOnlyWorkflow',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const run = await start(await e2e('importedStepOnlyWorkflow'), []);
       const returnValue = await run.returnValue;
@@ -398,40 +415,44 @@ describe('e2e', () => {
     }
   );
 
-  test('readableStreamWorkflow', { timeout: 180_000 }, async () => {
-    const run = await start(await e2e('readableStreamWorkflow'), []);
-    const returnValue = await run.returnValue;
-    expect(returnValue).toBeInstanceOf(ReadableStream);
+  test(
+    'readableStreamWorkflow',
+    { timeout: STREAM_TEST_TIMEOUT_MS },
+    async () => {
+      const run = await start(await e2e('readableStreamWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBeInstanceOf(ReadableStream);
 
-    const expected = '0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n';
-    const decoder = new TextDecoder();
-    let contents = '';
-    // Read chunks until we have all expected content or hit a timeout.
-    // On Vercel, the final chunk or close event can be delayed, so we stop
-    // once we have the expected data rather than waiting for stream closure.
-    const reader = returnValue.getReader();
-    const readDeadline = Date.now() + STREAM_READ_TIMEOUT_MS;
-    try {
-      while (Date.now() < readDeadline) {
-        const { done, value } = await Promise.race([
-          reader.read(),
-          sleep(STREAM_READ_TIMEOUT_MS).then(() => ({
-            done: true,
-            value: undefined,
-          })),
-        ]);
-        if (value) {
-          contents += decoder.decode(value, { stream: true });
+      const expected = '0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n';
+      const decoder = new TextDecoder();
+      let contents = '';
+      // Read chunks until we have all expected content or hit a timeout.
+      // On Vercel, the final chunk or close event can be delayed, so we stop
+      // once we have the expected data rather than waiting for stream closure.
+      const reader = returnValue.getReader();
+      const readDeadline = Date.now() + STREAM_READ_TIMEOUT_MS;
+      try {
+        while (Date.now() < readDeadline) {
+          const { done, value } = await Promise.race([
+            reader.read(),
+            sleep(STREAM_READ_TIMEOUT_MS).then(() => ({
+              done: true,
+              value: undefined,
+            })),
+          ]);
+          if (value) {
+            contents += decoder.decode(value, { stream: true });
+          }
+          if (done || contents.length >= expected.length) break;
         }
-        if (done || contents.length >= expected.length) break;
+      } finally {
+        reader.releaseLock();
       }
-    } finally {
-      reader.releaseLock();
+      expect(contents).toBe(expected);
     }
-    expect(contents).toBe(expected);
-  });
+  );
 
-  test('hookWorkflow', { timeout: 60_000 }, async () => {
+  test('hookWorkflow', { timeout: DEFAULT_TEST_TIMEOUT_MS }, async () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);
 
@@ -483,7 +504,7 @@ describe('e2e', () => {
 
   test(
     'hookWorkflow is not resumable via public webhook endpoint',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -521,7 +542,7 @@ describe('e2e', () => {
     }
   );
 
-  test('webhookWorkflow', { timeout: 120_000 }, async () => {
+  test('webhookWorkflow', { timeout: EXTRA_LONG_TEST_TIMEOUT_MS }, async () => {
     const run = await start(await e2e('webhookWorkflow'), []);
 
     // Poll until all 3 webhooks are registered.
@@ -646,7 +667,7 @@ describe('e2e', () => {
     !!process.env.WORKFLOW_TARGET_WORLD?.includes('postgres');
   test.skipIf(isPostgresWorld)(
     'parallelStepsThenWebhookWorkflow - no hook_conflict from same-tick replay race',
-    { timeout: 120_000 },
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
     async () => {
       // Regression test for https://github.com/vercel/workflow/issues/1665
       // and https://github.com/vercel/workflow/issues/2283.
@@ -765,135 +786,155 @@ describe('e2e', () => {
     }
   );
 
-  test('webhook route with invalid token', { timeout: 60_000 }, async () => {
-    const invalidWebhookUrl = new URL(
-      `/.well-known/workflow/v1/webhook/${encodeURIComponent('invalid')}`,
-      deploymentUrl
-    );
-    const res = await fetch(invalidWebhookUrl, {
-      method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(404);
-    const body = await res.text();
-    expect(body).toBe('');
-  });
+  test(
+    'webhook route with invalid token',
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
+    async () => {
+      const invalidWebhookUrl = new URL(
+        `/.well-known/workflow/v1/webhook/${encodeURIComponent('invalid')}`,
+        deploymentUrl
+      );
+      const res = await fetch(invalidWebhookUrl, {
+        method: 'POST',
+        headers: await getTrustedSourcesHeaders(),
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(404);
+      const body = await res.text();
+      expect(body).toBe('');
+    }
+  );
 
-  test('sleepingWorkflow', { timeout: 60_000 }, async () => {
+  test('sleepingWorkflow', { timeout: DEFAULT_TEST_TIMEOUT_MS }, async () => {
     const run = await start(await e2e('sleepingWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
     expectElapsedAtLeast(returnValue.endTime - returnValue.startTime, 10_000);
   });
 
-  test('parallelSleepWorkflow', { timeout: 60_000 }, async () => {
-    const run = await start(await e2e('parallelSleepWorkflow'), []);
-    const returnValue = await run.returnValue;
-    // 10 parallel sleep('1s') should complete in ~1s, not 10x (sequential).
-    // On Vercel, cold starts and queue round-trips add latency, so we use a
-    // generous upper bound. The key assertion is parallel < sequential (10s+).
-    const elapsed = returnValue.endTime - returnValue.startTime;
-    expectElapsedAtLeast(elapsed, 1_000);
-    // Sequential would be ~10s+ per sleep. Allow up to 20s for parallel on
-    // Vercel with cold start overhead, but fail if it looks sequential (>25s).
-    expect(elapsed).toBeLessThan(25_000);
-  });
+  test(
+    'parallelSleepWorkflow',
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
+    async () => {
+      const run = await start(await e2e('parallelSleepWorkflow'), []);
+      const returnValue = await run.returnValue;
+      // 10 parallel sleep('1s') should complete in ~1s, not 10x (sequential).
+      // On Vercel, cold starts and queue round-trips add latency, so we use a
+      // generous upper bound. The key assertion is parallel < sequential (10s+).
+      const elapsed = returnValue.endTime - returnValue.startTime;
+      expectElapsedAtLeast(elapsed, 1_000);
+      // Sequential would be ~10s+ per sleep. Allow up to 20s for parallel on
+      // Vercel with cold start overhead, but fail if it looks sequential (>25s).
+      expect(elapsed).toBeLessThan(25_000);
+    }
+  );
 
-  test('sleepWinsRaceWorkflow', { timeout: 60_000 }, async () => {
-    const run = await start(await e2e('sleepWinsRaceWorkflow'), []);
-    const returnValue = await run.returnValue;
-    expect(returnValue.winner).toBe('sleep');
-    // Sleep is 1s; step would take 10s. Keep this below the losing branch
-    // without depending on exact remote queue/cold-start overhead.
-    expect(returnValue.durationMs).toBeLessThan(9_000);
-  });
+  test(
+    'sleepWinsRaceWorkflow',
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
+    async () => {
+      const run = await start(await e2e('sleepWinsRaceWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue.winner).toBe('sleep');
+      // Sleep is 1s; step would take 10s. Keep this below the losing branch
+      // without depending on exact remote queue/cold-start overhead.
+      expect(returnValue.durationMs).toBeLessThan(9_000);
+    }
+  );
 
-  test('stepWinsRaceWorkflow', { timeout: 60_000 }, async () => {
-    const run = await start(await e2e('stepWinsRaceWorkflow'), []);
-    const returnValue = await run.returnValue;
-    expect(returnValue.winner).toBe('step');
-    // Step is 1s; sleep would take 10s. Keep this below the losing branch
-    // without depending on exact remote queue/cold-start overhead.
-    expect(returnValue.durationMs).toBeLessThan(9_000);
-  });
+  test(
+    'stepWinsRaceWorkflow',
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
+    async () => {
+      const run = await start(await e2e('stepWinsRaceWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue.winner).toBe('step');
+      // Step is 1s; sleep would take 10s. Keep this below the losing branch
+      // without depending on exact remote queue/cold-start overhead.
+      expect(returnValue.durationMs).toBeLessThan(9_000);
+    }
+  );
 
-  test('nullByteWorkflow', { timeout: 60_000 }, async () => {
+  test('nullByteWorkflow', { timeout: DEFAULT_TEST_TIMEOUT_MS }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue).toBe('null byte \0');
   });
 
-  test('workflowAndStepMetadataWorkflow', { timeout: 60_000 }, async () => {
-    const run = await start(await e2e('workflowAndStepMetadataWorkflow'), []);
-    const returnValue = await run.returnValue;
+  test(
+    'workflowAndStepMetadataWorkflow',
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
+    async () => {
+      const run = await start(await e2e('workflowAndStepMetadataWorkflow'), []);
+      const returnValue = await run.returnValue;
 
-    expect(returnValue).toHaveProperty('workflowMetadata');
-    expect(returnValue).toHaveProperty('stepMetadata');
-    expect(returnValue).toHaveProperty('innerWorkflowMetadata');
+      expect(returnValue).toHaveProperty('workflowMetadata');
+      expect(returnValue).toHaveProperty('stepMetadata');
+      expect(returnValue).toHaveProperty('innerWorkflowMetadata');
 
-    // workflow and context
+      // workflow and context
 
-    expect(returnValue.workflowMetadata).toStrictEqual(
-      returnValue.innerWorkflowMetadata
-    );
+      expect(returnValue.workflowMetadata).toStrictEqual(
+        returnValue.innerWorkflowMetadata
+      );
 
-    // workflow context should have workflowName and stepMetadata shouldn't
-    expect(typeof returnValue.workflowMetadata.workflowName).toBe('string');
-    expect(returnValue.workflowMetadata.workflowName).toBe(
-      returnValue.innerWorkflowMetadata.workflowName
-    );
-    expect(returnValue.stepMetadata.workflowName).toBeUndefined();
+      // workflow context should have workflowName and stepMetadata shouldn't
+      expect(typeof returnValue.workflowMetadata.workflowName).toBe('string');
+      expect(returnValue.workflowMetadata.workflowName).toBe(
+        returnValue.innerWorkflowMetadata.workflowName
+      );
+      expect(returnValue.stepMetadata.workflowName).toBeUndefined();
 
-    // workflow context should have workflowRunId and stepMetadata shouldn't
-    expect(returnValue.workflowMetadata.workflowRunId).toBe(run.runId);
-    expect(returnValue.innerWorkflowMetadata.workflowRunId).toBe(run.runId);
-    expect(returnValue.stepMetadata.workflowRunId).toBeUndefined();
+      // workflow context should have workflowRunId and stepMetadata shouldn't
+      expect(returnValue.workflowMetadata.workflowRunId).toBe(run.runId);
+      expect(returnValue.innerWorkflowMetadata.workflowRunId).toBe(run.runId);
+      expect(returnValue.stepMetadata.workflowRunId).toBeUndefined();
 
-    // workflow context should have workflowStartedAt and stepMetadata shouldn't
-    // Note: workflowStartedAt may be a Date object (when using run.returnValue directly)
-    // or a string (when serialized through JSON via HTTP)
-    expect(returnValue.workflowMetadata.workflowStartedAt).toBeDefined();
-    expect(returnValue.innerWorkflowMetadata.workflowStartedAt).toBeDefined();
-    expect(String(returnValue.innerWorkflowMetadata.workflowStartedAt)).toBe(
-      String(returnValue.workflowMetadata.workflowStartedAt)
-    );
-    expect(returnValue.stepMetadata.workflowStartedAt).toBeUndefined();
+      // workflow context should have workflowStartedAt and stepMetadata shouldn't
+      // Note: workflowStartedAt may be a Date object (when using run.returnValue directly)
+      // or a string (when serialized through JSON via HTTP)
+      expect(returnValue.workflowMetadata.workflowStartedAt).toBeDefined();
+      expect(returnValue.innerWorkflowMetadata.workflowStartedAt).toBeDefined();
+      expect(String(returnValue.innerWorkflowMetadata.workflowStartedAt)).toBe(
+        String(returnValue.workflowMetadata.workflowStartedAt)
+      );
+      expect(returnValue.stepMetadata.workflowStartedAt).toBeUndefined();
 
-    // workflow context should have url and stepMetadata shouldn't
-    expect(typeof returnValue.workflowMetadata.url).toBe('string');
-    expect(typeof returnValue.innerWorkflowMetadata.url).toBe('string');
-    expect(returnValue.innerWorkflowMetadata.url).toBe(
-      returnValue.workflowMetadata.url
-    );
-    expect(returnValue.stepMetadata.url).toBeUndefined();
+      // workflow context should have url and stepMetadata shouldn't
+      expect(typeof returnValue.workflowMetadata.url).toBe('string');
+      expect(typeof returnValue.innerWorkflowMetadata.url).toBe('string');
+      expect(returnValue.innerWorkflowMetadata.url).toBe(
+        returnValue.workflowMetadata.url
+      );
+      expect(returnValue.stepMetadata.url).toBeUndefined();
 
-    // workflow context should have features and stepMetadata shouldn't
-    expect(returnValue.workflowMetadata.features).toBeDefined();
-    expect(typeof returnValue.workflowMetadata.features.encryption).toBe(
-      'boolean'
-    );
-    expect(returnValue.innerWorkflowMetadata.features).toStrictEqual(
-      returnValue.workflowMetadata.features
-    );
-    expect(returnValue.stepMetadata.features).toBeUndefined();
+      // workflow context should have features and stepMetadata shouldn't
+      expect(returnValue.workflowMetadata.features).toBeDefined();
+      expect(typeof returnValue.workflowMetadata.features.encryption).toBe(
+        'boolean'
+      );
+      expect(returnValue.innerWorkflowMetadata.features).toStrictEqual(
+        returnValue.workflowMetadata.features
+      );
+      expect(returnValue.stepMetadata.features).toBeUndefined();
 
-    // workflow context shouldn't have stepId, stepStartedAt, or attempt
-    expect(returnValue.workflowMetadata.stepId).toBeUndefined();
-    expect(returnValue.workflowMetadata.stepStartedAt).toBeUndefined();
-    expect(returnValue.workflowMetadata.attempt).toBeUndefined();
+      // workflow context shouldn't have stepId, stepStartedAt, or attempt
+      expect(returnValue.workflowMetadata.stepId).toBeUndefined();
+      expect(returnValue.workflowMetadata.stepStartedAt).toBeUndefined();
+      expect(returnValue.workflowMetadata.attempt).toBeUndefined();
 
-    // step context
+      // step context
 
-    // stepName should be a string
-    expect(typeof returnValue.stepMetadata.stepName).toBe('string');
+      // stepName should be a string
+      expect(typeof returnValue.stepMetadata.stepName).toBe('string');
 
-    // Attempt should be atleast 1
-    expect(returnValue.stepMetadata.attempt).toBeGreaterThanOrEqual(1);
+      // Attempt should be atleast 1
+      expect(returnValue.stepMetadata.attempt).toBeGreaterThanOrEqual(1);
 
-    // stepStartedAt should be a Date or date string
-    expect(returnValue.stepMetadata.stepStartedAt).toBeDefined();
-  });
+      // stepStartedAt should be a Date or date string
+      expect(returnValue.stepMetadata.stepStartedAt).toBeDefined();
+    }
+  );
 
   // outputStreamWorkflow writes 2 chunks to the default stream:
   //   chunk 0: binary "Hello, world!"
@@ -937,7 +978,7 @@ describe('e2e', () => {
     ] as const;
 
     for (const tc of startIndexCases) {
-      test(tc.name, { timeout: 60_000 }, async () => {
+      test(tc.name, { timeout: DEFAULT_TEST_TIMEOUT_MS }, async () => {
         const run = await start(await e2e('outputStreamWorkflow'), []);
 
         if (tc.waitForCompletion) {
@@ -989,7 +1030,7 @@ describe('e2e', () => {
     test(
       'getTailIndex returns correct index after stream completes',
       {
-        timeout: 60_000,
+        timeout: DEFAULT_TEST_TIMEOUT_MS,
       },
       async () => {
         const run = await start(await e2e('outputStreamWorkflow'), []);
@@ -1006,7 +1047,7 @@ describe('e2e', () => {
     test(
       'getTailIndex returns -1 before any chunks are written',
       {
-        timeout: 60_000,
+        timeout: DEFAULT_TEST_TIMEOUT_MS,
       },
       async () => {
         const run = await start(await e2e('outputStreamWorkflow'), []);
@@ -1023,7 +1064,7 @@ describe('e2e', () => {
     test(
       'getChunks returns same content as reading the stream',
       {
-        timeout: 60_000,
+        timeout: DEFAULT_TEST_TIMEOUT_MS,
       },
       async () => {
         const run = await start(await e2e('outputStreamWorkflow'), []);
@@ -1065,7 +1106,7 @@ describe('e2e', () => {
 
   test(
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const run = await start(await e2e('outputStreamInsideStepWorkflow'), []);
       const reader = run.getReadable().getReader();
@@ -1112,40 +1153,44 @@ describe('e2e', () => {
   // Extended, CJK, emoji, RTL) round-trip end-to-end as bytes that decode
   // back to the original strings — the same property that the web inspector
   // relies on to render decoded text for typed-array stream chunks.
-  test('utf8StreamWorkflow', { timeout: 120_000 }, async () => {
-    const run = await start(await e2e('utf8StreamWorkflow'), []);
-    const reader = run.getReadable().getReader();
+  test(
+    'utf8StreamWorkflow',
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
+    async () => {
+      const run = await start(await e2e('utf8StreamWorkflow'), []);
+      const reader = run.getReadable().getReader();
 
-    // `fatal: true` makes the decoder throw on any invalid UTF-8 sequence,
-    // so a successful decode is itself a round-trip assertion.
-    const decoder = new TextDecoder('utf-8', { fatal: true });
+      // `fatal: true` makes the decoder throw on any invalid UTF-8 sequence,
+      // so a successful decode is itself a round-trip assertion.
+      const decoder = new TextDecoder('utf-8', { fatal: true });
 
-    const expectedTexts = [
-      'Hello, world!',
-      'Café — naïve résumé',
-      '你好，世界！🌍✨',
-      'مرحبا بالعالم',
-    ];
+      const expectedTexts = [
+        'Hello, world!',
+        'Café — naïve résumé',
+        '你好，世界！🌍✨',
+        'مرحبا بالعالم',
+      ];
 
-    for (const expected of expectedTexts) {
-      const { value } = await reader.read();
-      assert(value);
-      assert(value instanceof Uint8Array);
-      expect(decoder.decode(value)).toBe(expected);
+      for (const expected of expectedTexts) {
+        const { value } = await reader.read();
+        assert(value);
+        assert(value instanceof Uint8Array);
+        expect(decoder.decode(value)).toBe(expected);
+      }
+
+      // Final chunk: UTF-8 encoded JSON document. The web inspector also
+      // re-parses decoded text as JSON when possible, so we exercise that
+      // shape here too.
+      const expectedJson = { greeting: '안녕하세요', emoji: '🎉' };
+      const { value: jsonValue } = await reader.read();
+      assert(jsonValue);
+      assert(jsonValue instanceof Uint8Array);
+      expect(JSON.parse(decoder.decode(jsonValue))).toEqual(expectedJson);
+
+      expect((await reader.read()).done).toBe(true);
+      expect(await run.returnValue).toEqual('done');
     }
-
-    // Final chunk: UTF-8 encoded JSON document. The web inspector also
-    // re-parses decoded text as JSON when possible, so we exercise that
-    // shape here too.
-    const expectedJson = { greeting: '안녕하세요', emoji: '🎉' };
-    const { value: jsonValue } = await reader.read();
-    assert(jsonValue);
-    assert(jsonValue instanceof Uint8Array);
-    expect(JSON.parse(decoder.decode(jsonValue))).toEqual(expectedJson);
-
-    expect((await reader.read()).done).toBe(true);
-    expect(await run.returnValue).toEqual('done');
-  });
+  );
 
   // A WritableStream passed as a workflow argument to start() should
   // land raw bytes on the parent's output stream when the child step
@@ -1159,39 +1204,43 @@ describe('e2e', () => {
   test.each([
     'writableForwardedFromWorkflowWorkflow',
     'writableForwardedFromStepWorkflow',
-  ] as const)('%s', { timeout: 120_000 }, async (workflowName) => {
-    const payload = `hello-from-child-${Date.now()}\n`;
-    const run = await start(await e2e(workflowName), [payload]);
+  ] as const)(
+    '%s',
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
+    async (workflowName) => {
+      const payload = `hello-from-child-${Date.now()}\n`;
+      const run = await start(await e2e(workflowName), [payload]);
 
-    const reader = run.getReadable().getReader();
-    // `fatal: true` makes the decoder throw on any invalid UTF-8
-    // sequence, so a successful decode is itself a round-trip
-    // assertion that the bytes survived intact.
-    const decoder = new TextDecoder('utf-8', { fatal: true });
+      const reader = run.getReadable().getReader();
+      // `fatal: true` makes the decoder throw on any invalid UTF-8
+      // sequence, so a successful decode is itself a round-trip
+      // assertion that the bytes survived intact.
+      const decoder = new TextDecoder('utf-8', { fatal: true });
 
-    // The child step performs exactly one write of `payload` as
-    // UTF-8 bytes, so we should receive a single chunk containing
-    // exactly those bytes before the stream closes.
-    const { value, done } = await reader.read();
-    expect(done).toBeFalsy();
-    assert(value);
-    assert(value instanceof Uint8Array);
+      // The child step performs exactly one write of `payload` as
+      // UTF-8 bytes, so we should receive a single chunk containing
+      // exactly those bytes before the stream closes.
+      const { value, done } = await reader.read();
+      expect(done).toBeFalsy();
+      assert(value);
+      assert(value instanceof Uint8Array);
 
-    const expectedBytes = new TextEncoder().encode(payload);
-    expect(value.byteLength).toBe(expectedBytes.byteLength);
-    expect(decoder.decode(value)).toBe(payload);
+      const expectedBytes = new TextEncoder().encode(payload);
+      expect(value.byteLength).toBe(expectedBytes.byteLength);
+      expect(decoder.decode(value)).toBe(payload);
 
-    // Default stream should close cleanly after the parent closes its
-    // writable.
-    expect((await reader.read()).done).toBe(true);
+      // Default stream should close cleanly after the parent closes its
+      // writable.
+      expect((await reader.read()).done).toBe(true);
 
-    const returnValue = await run.returnValue;
-    expect(returnValue).toMatchObject({
-      childRunId: expect.stringMatching(/^wrun_/),
-    });
-  });
+      const returnValue = await run.returnValue;
+      expect(returnValue).toMatchObject({
+        childRunId: expect.stringMatching(/^wrun_/),
+      });
+    }
+  );
 
-  test('fetchWorkflow', { timeout: 60_000 }, async () => {
+  test('fetchWorkflow', { timeout: DEFAULT_TEST_TIMEOUT_MS }, async () => {
     const run = await start(await e2e('fetchWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue).toMatchObject({
@@ -1202,12 +1251,16 @@ describe('e2e', () => {
     });
   });
 
-  test('promiseRaceStressTestWorkflow', { timeout: 60_000 }, async () => {
-    const run = await start(await e2e('promiseRaceStressTestWorkflow'), []);
-    const returnValue = await run.returnValue;
-    // Completion order can vary across worlds and scheduling environments.
-    expect([...returnValue].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
-  });
+  test(
+    'promiseRaceStressTestWorkflow',
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
+    async () => {
+      const run = await start(await e2e('promiseRaceStressTestWorkflow'), []);
+      const returnValue = await run.returnValue;
+      // Completion order can vary across worlds and scheduling environments.
+      expect([...returnValue].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
+    }
+  );
 
   // ==================== ERROR HANDLING TESTS ====================
   describe('error handling', () => {
@@ -1215,7 +1268,7 @@ describe('e2e', () => {
       describe('workflow errors', () => {
         test(
           'nested function calls preserve message and stack trace',
-          { timeout: 60_000 },
+          { timeout: DEFAULT_TEST_TIMEOUT_MS },
           async () => {
             const run = await start(await e2e('errorWorkflowNested'), []);
             const error = await run.returnValue.catch((e: unknown) => e);
@@ -1250,7 +1303,7 @@ describe('e2e', () => {
 
         test(
           'cross-file imports preserve message and stack trace',
-          { timeout: 60_000 },
+          { timeout: DEFAULT_TEST_TIMEOUT_MS },
           async () => {
             const run = await start(await e2e('errorWorkflowCrossFile'), []);
             const error = await run.returnValue.catch((e: unknown) => e);
@@ -1281,7 +1334,7 @@ describe('e2e', () => {
       describe('step errors', () => {
         test(
           'basic step error preserves message and stack trace',
-          { timeout: 60_000 },
+          { timeout: DEFAULT_TEST_TIMEOUT_MS },
           async () => {
             const run = await start(await e2e('errorStepBasic'), []);
             const result = await run.returnValue;
@@ -1337,7 +1390,7 @@ describe('e2e', () => {
 
         test(
           'cross-file step error preserves message and function names in stack',
-          { timeout: 60_000 },
+          { timeout: DEFAULT_TEST_TIMEOUT_MS },
           async () => {
             const run = await start(await e2e('errorStepCrossFile'), []);
             const result = await run.returnValue;
@@ -1398,7 +1451,7 @@ describe('e2e', () => {
     describe('retry behavior', () => {
       test(
         'regular Error retries until success',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           const run = await start(await e2e('errorRetrySuccess'), []);
           const result = await run.returnValue;
@@ -1418,7 +1471,7 @@ describe('e2e', () => {
 
       test(
         'FatalError fails immediately without retries',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           const run = await start(await e2e('errorRetryFatal'), []);
           const error = await run.returnValue.catch((e: unknown) => e);
@@ -1444,7 +1497,7 @@ describe('e2e', () => {
 
       test(
         'RetryableError respects custom retryAfter delay',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           const run = await start(await e2e('errorRetryCustomDelay'), []);
           const result = await run.returnValue;
@@ -1454,19 +1507,23 @@ describe('e2e', () => {
         }
       );
 
-      test('maxRetries=0 disables retries', { timeout: 60_000 }, async () => {
-        const run = await start(await e2e('errorRetryDisabled'), []);
-        const result = await run.returnValue;
+      test(
+        'maxRetries=0 disables retries',
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
+        async () => {
+          const run = await start(await e2e('errorRetryDisabled'), []);
+          const result = await run.returnValue;
 
-        expect(result.failed).toBe(true);
-        expect(result.attempt).toBe(1);
-      });
+          expect(result.failed).toBe(true);
+          expect(result.attempt).toBe(1);
+        }
+      );
     });
 
     describe('catchability', () => {
       test(
         'FatalError can be caught and detected with FatalError.is()',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           const run = await start(await e2e('errorFatalCatchable'), []);
           const result = await run.returnValue;
@@ -1482,7 +1539,7 @@ describe('e2e', () => {
 
       test(
         'step throw round-trips FatalError with cause chain to workflow catch',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           // A step throws a FatalError whose `.cause` is a TypeError. The
           // workflow catches the rejection and inspects the hydrated value.
@@ -1514,7 +1571,7 @@ describe('e2e', () => {
 
       test(
         'workflow throw round-trips FatalError + cause through run_failed event',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           // A workflow itself throws a FatalError with a RangeError cause.
           // Verifies that run_failed events go through the new
@@ -1561,7 +1618,7 @@ describe('e2e', () => {
 
       test(
         'workflow throw of a non-Error value round-trips verbatim as cause',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           // Workflows may throw any JS value. Verify a plain object thrown
           // from a workflow surfaces verbatim as WorkflowRunFailedError.cause
@@ -1589,7 +1646,7 @@ describe('e2e', () => {
 
       test(
         'step throw of a non-Error value preserves it as cause on the wrapping FatalError',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           // Steps may also throw any JS value. Non-Error throws aren't
           // recognized as `FatalError` (they have no `name === 'FatalError'`)
@@ -1627,7 +1684,7 @@ describe('e2e', () => {
     describe('not registered', () => {
       test(
         'WorkflowNotRegisteredError fails the run when workflow does not exist',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           // Start a run with a workflowId that doesn't exist in the deployment bundle.
           // This simulates starting a run against a deployment that doesn't have the workflow.
@@ -1652,7 +1709,7 @@ describe('e2e', () => {
 
       test(
         'StepNotRegisteredError fails the step but workflow can catch it',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           const run = await start(await e2e('stepNotRegisteredCatchable'), []);
           const result = await run.returnValue;
@@ -1678,7 +1735,7 @@ describe('e2e', () => {
 
       test(
         'StepNotRegisteredError fails the run when not caught in workflow',
-        { timeout: 60_000 },
+        { timeout: DEFAULT_TEST_TIMEOUT_MS },
         async () => {
           const run = await start(await e2e('stepNotRegisteredUncaught'), []);
           const error = await run.returnValue.catch((e: unknown) => e);
@@ -1695,7 +1752,7 @@ describe('e2e', () => {
 
   test(
     'stepDirectCallWorkflow - calling step functions directly outside workflow context',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // Call the API route that directly calls a step function (no workflow context)
       const url = new URL('/api/test-direct-step-call', deploymentUrl);
@@ -1725,7 +1782,7 @@ describe('e2e', () => {
 
   test(
     'hookCleanupTestWorkflow - hook token reuse after workflow completion',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -1787,7 +1844,7 @@ describe('e2e', () => {
 
   test(
     'concurrent hook token conflict - two workflows cannot use the same hook token simultaneously',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -1886,7 +1943,7 @@ describe('e2e', () => {
     },
   ])(
     '$workflow - hook.getConflict() does not block step execution',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async ({ workflow, hookGetConflictTestData }) => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -1917,7 +1974,7 @@ describe('e2e', () => {
 
   test(
     'hookGetConflictThenStepParallelWorkflow - hook.getConflict() continuation step runs alongside other steps',
-    { timeout: 90_000 },
+    { timeout: LONG_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -1949,7 +2006,7 @@ describe('e2e', () => {
 
   test(
     'hookGetConflictWorkflow - hook.getConflict() resolves with the conflicting run when token is already registered',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -1998,7 +2055,7 @@ describe('e2e', () => {
 
   test(
     'hookClaimOnlyMutexWorkflow - hook works as a pure run mutex without payload data',
-    { timeout: 90_000 },
+    { timeout: LONG_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
 
@@ -2062,7 +2119,7 @@ describe('e2e', () => {
 
   test(
     'hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue',
-    { timeout: 120_000 },
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
 
@@ -2123,7 +2180,7 @@ describe('e2e', () => {
 
   test(
     'hookSignalOwnerWorkflow - duplicate forwards its payload to the owner via resumeHook',
-    { timeout: 90_000 },
+    { timeout: LONG_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
 
@@ -2157,7 +2214,7 @@ describe('e2e', () => {
 
   test(
     'hookSupersedeOwnerWorkflow - duplicate cancels the owner and claims the released token',
-    { timeout: 90_000 },
+    { timeout: LONG_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
 
@@ -2171,7 +2228,10 @@ describe('e2e', () => {
       const run2 = await start(await e2e('hookSupersedeOwnerWorkflow'), [
         token,
       ]);
-      await waitForHook(token, { runId: run2.runId, timeoutMs: 60_000 });
+      await waitForHook(token, {
+        runId: run2.runId,
+        timeoutMs: HOOK_WAIT_TIMEOUT_MS,
+      });
 
       // The superseded owner ends up cancelled — assert via both the
       // rejected returnValue (also prevents an unhandled rejection from
@@ -2193,7 +2253,7 @@ describe('e2e', () => {
 
   test(
     'resume-or-start route pattern - resumeHook retried after start() reaches the new run',
-    { timeout: 90_000 },
+    { timeout: LONG_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
 
@@ -2238,7 +2298,7 @@ describe('e2e', () => {
 
   test(
     'hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running',
-    { timeout: 90_000 },
+    { timeout: LONG_TEST_TIMEOUT_MS },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
@@ -2329,7 +2389,7 @@ describe('e2e', () => {
 
   test(
     'stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // This workflow passes a step function reference to another step
       // The receiving step calls the passed function and returns the result
@@ -2361,7 +2421,7 @@ describe('e2e', () => {
 
   test(
     'stepFunctionWithClosureWorkflow - step function with closure variables passed as argument',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // This workflow creates a nested step function with closure variables,
       // then passes it to another step which invokes it.
@@ -2386,7 +2446,7 @@ describe('e2e', () => {
 
   test(
     'closureVariableWorkflow - nested step functions with closure variables',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // This workflow uses a nested step function that references closure variables
       // from the parent workflow scope (multiplier, prefix, baseValue)
@@ -2400,7 +2460,7 @@ describe('e2e', () => {
 
   test(
     'spawnWorkflowFromStepWorkflow - spawning a child workflow using start() inside a step',
-    { timeout: 120_000 },
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
     async () => {
       // This workflow spawns another workflow using start() inside a step function
       // This is the recommended pattern for spawning workflows from within workflows
@@ -2445,7 +2505,7 @@ describe('e2e', () => {
 
   test(
     'runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries',
-    { timeout: 120_000 },
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
     async () => {
       const inputValue = 21;
       const run = await start(await e2e('runClassSerializationWorkflow'), [
@@ -2484,7 +2544,7 @@ describe('e2e', () => {
 
   test(
     'startFromWorkflow - calling start() directly inside a workflow function with hook communication',
-    { timeout: 120_000 },
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
     async () => {
       const inputValue = 42;
       const run = await start(await e2e('startFromWorkflow'), [inputValue]);
@@ -2506,7 +2566,7 @@ describe('e2e', () => {
 
   test(
     'fibonacciWorkflow - recursive workflow composition via start()',
-    { timeout: 180_000 },
+    { timeout: VERY_LONG_TEST_TIMEOUT_MS },
     async () => {
       // fib(6) = 8, spawns a tree of child workflow runs
       const run = await start(await e2e('fibonacciWorkflow'), [6]);
@@ -2522,7 +2582,7 @@ describe('e2e', () => {
   // bypasses protection by sending messages through the Queue infrastructure.
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
-    { timeout: 30_000 },
+    { timeout: SHORT_TEST_TIMEOUT_MS },
     async () => {
       // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
       // This approach requires direct HTTP access and works when running locally (for port detection)
@@ -2558,7 +2618,7 @@ describe('e2e', () => {
 
   test(
     'health check (queue-based) - workflow endpoint responds to health check messages',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // Tests the queue-based health check using healthCheck() directly.
       // This bypasses Vercel Deployment Protection by sending messages
@@ -2579,7 +2639,7 @@ describe('e2e', () => {
 
   test(
     'health check (CLI) - workflow health command reports healthy endpoints',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // NOTE: This tests the `workflow health` CLI command which uses the
       // queue-based health check under the hood. The CLI provides a convenient
@@ -2602,7 +2662,7 @@ describe('e2e', () => {
 
   test(
     'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // This workflow uses a step that calls a helper function imported via @repo/* path alias
       // which resolves to a file outside the workbench directory (../../lib/steps/paths-alias-test.ts)
@@ -2626,7 +2686,7 @@ describe('e2e', () => {
 
   test(
     'Calculator.calculate - static workflow method using static step methods from another class',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // Calculator.calculate(5, 3) should:
       // 1. MathService.add(5, 3) = 8
@@ -2648,7 +2708,7 @@ describe('e2e', () => {
 
   test(
     'AllInOneService.processNumber - static workflow method using sibling static step methods',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // AllInOneService.processNumber(10) should:
       // 1. AllInOneService.double(10) = 20
@@ -2671,7 +2731,7 @@ describe('e2e', () => {
 
   test(
     'ChainableService.processWithThis - static step methods using `this` to reference the class',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // ChainableService.processWithThis(5) should:
       // - ChainableService.multiplyByClassValue(5) uses `this.multiplier` (10) -> 5 * 10 = 50
@@ -2705,7 +2765,7 @@ describe('e2e', () => {
 
   test(
     'thisSerializationWorkflow - step function invoked with .call() and .apply()',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // thisSerializationWorkflow(10) should:
       // 1. multiplyByFactor.call({ factor: 2 }, 10) = 20
@@ -2728,7 +2788,7 @@ describe('e2e', () => {
 
   test(
     'customSerializationWorkflow - custom class serialization with WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // This workflow tests custom serialization of user-defined class instances.
       // The Point class uses WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE symbols
@@ -2765,7 +2825,7 @@ describe('e2e', () => {
 
   test(
     'instanceMethodStepWorkflow - instance methods with "use step" directive',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // This workflow tests instance methods marked with "use step".
       // The Counter class has custom serialization so the `this` context
@@ -2860,7 +2920,7 @@ describe('e2e', () => {
 
   test(
     'crossContextSerdeWorkflow - classes defined in step code are deserializable in workflow context',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // This is a critical test for the cross-context class registration feature.
       //
@@ -2913,7 +2973,7 @@ describe('e2e', () => {
 
   test(
     'errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // Round-trips one instance of each Error subclass that has a dedicated
       // reducer/reviver pair (built-in subclasses + FatalError/RetryableError
@@ -3028,7 +3088,7 @@ describe('e2e', () => {
 
   test(
     'stepFunctionAsStartArgWorkflow - step function reference passed as start() argument',
-    { timeout: 120_000 },
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
     async () => {
       // This test verifies that step function references can be:
       // 1. Serialized in the client bundle (the SWC plugin sets stepId property on the function)
@@ -3093,7 +3153,7 @@ describe('e2e', () => {
   // ==================== CANCEL TESTS ====================
   test(
     'cancelRun - cancelling a running workflow',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // Start a long-running workflow with a 30s sleep to provide a wide
       // window for the cancel to arrive while the workflow is still running.
@@ -3126,7 +3186,7 @@ describe('e2e', () => {
 
   test(
     'cancelRun via CLI - cancelling a running workflow',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // Start a long-running workflow with a 30s sleep to provide a wide
       // window for the cancel to arrive while the workflow is still running.
@@ -3162,22 +3222,26 @@ describe('e2e', () => {
     process.env.APP_NAME === 'nextjs-webpack';
 
   describe.skipIf(!isNextJsApp)('pages router', () => {
-    test('addTenWorkflow via pages router', { timeout: 60_000 }, async () => {
-      const run = await startWorkflowViaHttp(
-        {
-          workflowFile: 'workflows/99_e2e.ts',
-          workflowFn: 'addTenWorkflow',
-        },
-        [123],
-        '/api/trigger-pages'
-      );
-      const returnValue = await run.returnValue;
-      expect(returnValue).toBe(133);
-    });
+    test(
+      'addTenWorkflow via pages router',
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
+      async () => {
+        const run = await startWorkflowViaHttp(
+          {
+            workflowFile: 'workflows/99_e2e.ts',
+            workflowFn: 'addTenWorkflow',
+          },
+          [123],
+          '/api/trigger-pages'
+        );
+        const returnValue = await run.returnValue;
+        expect(returnValue).toBe(133);
+      }
+    );
 
     test(
       'promiseAllWorkflow via pages router',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await startWorkflowViaHttp(
           'promiseAllWorkflow',
@@ -3189,21 +3253,28 @@ describe('e2e', () => {
       }
     );
 
-    test('sleepingWorkflow via pages router', { timeout: 60_000 }, async () => {
-      const run = await startWorkflowViaHttp(
-        'sleepingWorkflow',
-        [],
-        '/api/trigger-pages'
-      );
-      const returnValue = await run.returnValue;
-      expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
-      expectElapsedAtLeast(returnValue.endTime - returnValue.startTime, 10_000);
-    });
+    test(
+      'sleepingWorkflow via pages router',
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
+      async () => {
+        const run = await startWorkflowViaHttp(
+          'sleepingWorkflow',
+          [],
+          '/api/trigger-pages'
+        );
+        const returnValue = await run.returnValue;
+        expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
+        expectElapsedAtLeast(
+          returnValue.endTime - returnValue.startTime,
+          10_000
+        );
+      }
+    );
   });
 
   test(
     'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
-    { timeout: 90_000 },
+    { timeout: LONG_TEST_TIMEOUT_MS },
     async () => {
       // Regression test: when a hook and sleep run concurrently, multiple
       // hook_received events should all be processed even though the sleep
@@ -3262,7 +3333,7 @@ describe('e2e', () => {
 
   test(
     'hookWithSleepFinalStepWorkflow - step only on final payload',
-    { timeout: 120_000 },
+    { timeout: EXTRA_LONG_TEST_TIMEOUT_MS },
     async () => {
       // Regression test for the v0chat incident. Mirrors the production
       // shape: a hook + fire-and-forget sleep, where the step runs only
@@ -3304,7 +3375,7 @@ describe('e2e', () => {
 
   test(
     'sleepInLoopWorkflow - sleep inside loop with steps actually delays each iteration',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const run = await start(await e2e('sleepInLoopWorkflow'), []);
       const returnValue = await run.returnValue;
@@ -3322,7 +3393,7 @@ describe('e2e', () => {
 
   test(
     'sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // Control test: proves that void sleep('1d').then() does NOT break
       // sequential step execution. Steps have per-event consumption so the
@@ -3348,7 +3419,7 @@ describe('e2e', () => {
   describe('AbortController', () => {
     test(
       'abortTimeoutWorkflow: timeout cancels long-running step',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortTimeoutWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3383,7 +3454,7 @@ describe('e2e', () => {
 
     test(
       'abortParallelWorkflow: abort cancels all parallel steps',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortParallelWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3398,7 +3469,7 @@ describe('e2e', () => {
 
     test(
       'abortFromStepWorkflow: step abort cancels an in-flight sibling step',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortFromStepWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3419,7 +3490,7 @@ describe('e2e', () => {
 
     test(
       'abortAlreadyAbortedWorkflow: pre-aborted signal seen by step',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortAlreadyAbortedWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3433,7 +3504,7 @@ describe('e2e', () => {
 
     test(
       'abortReasonWorkflow: abort reason preserved across boundaries',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortReasonWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3447,7 +3518,7 @@ describe('e2e', () => {
 
     test(
       'abortAfterCompletionWorkflow: abort after step completes is a no-op',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortAfterCompletionWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3461,7 +3532,7 @@ describe('e2e', () => {
 
     test(
       'abortViaHookWorkflow: external hook triggers abort on in-flight step',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const token = Math.random().toString(36).slice(2);
         const run = await start(await e2e('abortViaHookWorkflow'), [token]);
@@ -3481,7 +3552,7 @@ describe('e2e', () => {
 
     test(
       'abortExternalSignalWorkflow: signal passed as workflow input',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         // Pass a pre-aborted AbortController to the workflow.
         // The workflow receives the signal and passes it to a step.
@@ -3501,7 +3572,7 @@ describe('e2e', () => {
 
     test(
       'abortExternalSignalInFlightWorkflow: external abort fires mid-flight, propagates to nested steps',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         // Source controller starts NOT aborted. The serialization-time
         // listener attached during start() must write the cancellation packet
@@ -3542,7 +3613,7 @@ describe('e2e', () => {
 
     test(
       'abortAnyInWorkflowWorkflow: AbortSignal.any composes signals inside the workflow VM',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortAnyInWorkflowWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3560,7 +3631,7 @@ describe('e2e', () => {
 
     test(
       'abortAnyInStepWorkflow: AbortSignal.any inside a step composes deserialized signals',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortAnyInStepWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3578,7 +3649,7 @@ describe('e2e', () => {
 
     test(
       'abortSurvivesReplayWorkflow: controller state consistent across replay',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortSurvivesReplayWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3593,7 +3664,7 @@ describe('e2e', () => {
 
     test(
       'abortThrowIfAbortedWorkflow: throwIfAborted causes FatalError, no retries',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortThrowIfAbortedWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3607,7 +3678,7 @@ describe('e2e', () => {
 
     test(
       'abortReasonTypesWorkflow: various abort reason types propagate correctly',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortReasonTypesWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3630,7 +3701,7 @@ describe('e2e', () => {
 
     test(
       'abortFetchUncaughtWorkflow: uncaught fetch AbortError is FatalError, no retries',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortFetchUncaughtWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3650,7 +3721,7 @@ describe('e2e', () => {
 
     test(
       'abortFetchInFlightWorkflow: aborting cancels an in-flight fetch',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         // The workflow kicks off a fetch against a slow endpoint, races it
         // against a 2s sleep, and aborts when the sleep wins. The fetch must
@@ -3676,7 +3747,7 @@ describe('e2e', () => {
 
     test(
       'abortVoidSleepTimeoutWorkflow: documented `void sleep().then(abort)` pattern works',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         // Validates the simplified timeout pattern documented on the
         // abort-signal-timeout-in-workflow error page:
@@ -3702,7 +3773,7 @@ describe('e2e', () => {
 
     test(
       'abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('abortDeterministicBranchWorkflow'),
@@ -3721,7 +3792,7 @@ describe('e2e', () => {
 
     test(
       'abortListenerWorkflow: signal.addEventListener fires on the deserialized step signal',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(await e2e('abortListenerWorkflow'), []);
         const returnValue = await run.returnValue;
@@ -3737,7 +3808,7 @@ describe('e2e', () => {
 
     test(
       'abortThrowIfAbortedMidFlightWorkflow: throwIfAborted in a polling loop bails when abort fires',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('abortThrowIfAbortedMidFlightWorkflow'),
@@ -3756,7 +3827,7 @@ describe('e2e', () => {
 
     test(
       'abortDeterministicBranchFromStepWorkflow: branches stay consistent when abort comes from a step',
-      { timeout: 60_000 },
+      { timeout: DEFAULT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('abortDeterministicBranchFromStepWorkflow'),
@@ -3815,7 +3886,7 @@ describe('e2e', () => {
     } of orderingVariants) {
       test(
         `abortHookOrderingWorkflow [${variant}]: ${description}`,
-        { timeout: 90_000 },
+        { timeout: LONG_TEST_TIMEOUT_MS },
         async () => {
           const token = `ordering-${variant}-${Math.random().toString(36).slice(2)}`;
           const run = await start(await e2e('abortHookOrderingWorkflow'), [
@@ -3859,7 +3930,7 @@ describe('e2e', () => {
 
   test(
     'importMetaUrlWorkflow - import.meta.url is available in step bundles',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const run = await start(await e2e('importMetaUrlWorkflow'), []);
       const returnValue = await run.returnValue;
@@ -3873,7 +3944,7 @@ describe('e2e', () => {
 
   test(
     'metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const run = await start(await e2e('metadataFromHelperWorkflow'), [
         'smoke-test',
@@ -3895,7 +3966,7 @@ describe('e2e', () => {
   // over the queue boundary.
   test(
     'resilient start: addTenWorkflow completes when run_created returns 500',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // Get the real world and wrap it so the first events.create call
       // (run_created) throws a 500 server error. The queue should still
@@ -3940,7 +4011,7 @@ describe('e2e', () => {
 
   test(
     'getterStepWorkflow - getter functions with "use step" directive',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       // This workflow tests getter functions marked with "use step".
       // The Sensor class has custom serialization so the `this` context
@@ -3978,7 +4049,7 @@ describe('e2e', () => {
   // ============================================================
   test(
     'distributedAbortController - manual abort triggers signal',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const controllerId = `test-abort-${Math.random().toString(36).slice(2)}`;
 
@@ -4014,7 +4085,7 @@ describe('e2e', () => {
 
   test(
     'distributedAbortController - TTL expiration triggers signal',
-    { timeout: 30_000 },
+    { timeout: SHORT_TEST_TIMEOUT_MS },
     async () => {
       const controllerId = `test-expire-${Math.random().toString(36).slice(2)}`;
 
@@ -4042,7 +4113,7 @@ describe('e2e', () => {
 
   test(
     'distributedAbortController - reconnect to existing controller',
-    { timeout: 60_000 },
+    { timeout: DEFAULT_TEST_TIMEOUT_MS },
     async () => {
       const controllerId = `test-reconnect-${Math.random().toString(36).slice(2)}`;
       const token = `distributed-abort:${controllerId}`;
@@ -4077,7 +4148,7 @@ describe('e2e', () => {
   describe('experimental_setAttributes', () => {
     test(
       'start: initial attributes are seeded on run creation',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('experimentalSetAttributesWorkflow'),
@@ -4097,7 +4168,7 @@ describe('e2e', () => {
 
     test(
       'start: reserved-prefix initial attributes are seeded with allowReservedAttributes',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('experimentalSetAttributesWorkflow'),
@@ -4124,7 +4195,7 @@ describe('e2e', () => {
 
     test(
       'experimentalSetAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('experimentalSetAttributesWorkflow'),
@@ -4152,7 +4223,7 @@ describe('e2e', () => {
 
     test(
       'experimentalSetAttributesInsideStepWorkflow: step-body calls append attributed native events',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('experimentalSetAttributesInsideStepWorkflow'),
@@ -4182,7 +4253,7 @@ describe('e2e', () => {
 
     test(
       'fire-and-forget: void experimental_setAttributes lands without awaiting',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('experimentalSetAttributesFireAndForgetWorkflow'),
@@ -4200,7 +4271,7 @@ describe('e2e', () => {
 
     test(
       'Promise.all of disjoint-key writes: every key lands',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('experimentalSetAttributesParallelWorkflow'),
@@ -4220,7 +4291,7 @@ describe('e2e', () => {
 
     test(
       'workflow throws after awaited setAttributes: attribute still persists on the failed run',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('experimentalSetAttributesThrowsAfterWorkflow'),
@@ -4247,7 +4318,7 @@ describe('e2e', () => {
 
     test(
       'validation DX: invalid writes throw catchable FatalErrors naming rule and limit',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const run = await start(
           await e2e('experimentalSetAttributesValidationWorkflow'),
@@ -4285,7 +4356,7 @@ describe('e2e', () => {
 
     test(
       'start: invalid initial attributes are rejected before a run is created',
-      { timeout: 30_000 },
+      { timeout: SHORT_TEST_TIMEOUT_MS },
       async () => {
         const workflow = await e2e('experimentalSetAttributesWorkflow');
         await expect(
