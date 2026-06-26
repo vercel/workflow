@@ -73,8 +73,8 @@ function log(msg: string): void {
   console.error(`[restart-recovery +${Date.now() - T0}ms] ${msg}`);
 }
 
-function spawnServer(): ChildProcess {
-  const child = spawn('pnpm', ['start'], {
+function spawnServer(command: 'start' | 'dev' = 'start'): ChildProcess {
+  const child = spawn('pnpm', [command], {
     cwd: getWorkbenchAppPath(),
     // detached so we can SIGKILL the whole process group (`next start` may
     // spawn child processes) and simulate a hard crash.
@@ -283,6 +283,37 @@ async function waitForCompleted(runId: string): Promise<void> {
   );
 }
 
+/** Wait until the run reaches `target` status; fail on any other terminal status. */
+async function waitForStatus(
+  runId: string,
+  target: 'completed' | 'cancelled'
+): Promise<void> {
+  const world = await getWorld();
+  const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
+  const terminal = new Set(['completed', 'failed', 'cancelled']);
+  let lastStatus = 'unknown';
+  while (Date.now() < deadline) {
+    try {
+      const run = await world.runs.get(runId);
+      if (run.status !== lastStatus) log(`run status -> ${run.status}`);
+      lastStatus = run.status;
+      if (run.status === target) return;
+      if (terminal.has(run.status)) {
+        throw new Error(
+          `Run ${runId} reached terminal status '${run.status}', expected '${target}'`
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && /expected/.test(err.message)) throw err;
+      // run not readable yet
+    }
+    await sleep(1_000);
+  }
+  throw new Error(
+    `Run ${runId} did not reach '${target}' within ${RECOVERY_TIMEOUT_MS}ms (last status: ${lastStatus}).`
+  );
+}
+
 /**
  * Poll until `untilMs`, failing if the run completes before then. Proves a
  * recovered sleeping run honors its REMAINING sleep: recovery re-enqueues the
@@ -426,6 +457,49 @@ describe.skipIf(!enabled)('restart recovery', () => {
 
       await waitForCompleted(runId);
       log('run completed');
+    }
+  );
+
+  test(
+    'dev restart cancels in-flight runs instead of recovering them',
+    {
+      timeout:
+        RECOVERY_TIMEOUT_MS +
+        WAIT_CREATED_TIMEOUT_MS +
+        SERVER_READY_TIMEOUT_MS * 2,
+    },
+    async () => {
+      // In DEVELOPMENT, the server's startup wiring (ensureWorldStarted, which
+      // detects dev via NODE_ENV / framework flags) must CANCEL runs left in
+      // flight by a previous dev session rather than re-enqueue them — their
+      // workflow code may have changed since they started, so replaying them is
+      // unsafe. `pnpm dev` sets NODE_ENV=development, so the restarted dev server
+      // cancels the sleeping run on boot.
+      server = spawnServer('dev');
+      await waitForServerReady(server);
+      log('dev server #1 ready');
+      const runId = await startWorkflowOnServer(
+        'sleepingWorkflow',
+        [SLEEP_MS],
+        /sleepingWorkflow/
+      );
+      log(`started run ${runId}`);
+
+      await waitForWaitCreated(runId);
+      log('run is sleeping (wait_created)');
+
+      await killServer(server);
+      server = undefined;
+      log('dev server #1 killed (port free)');
+
+      // Restart the dev server and issue NO workflow operation — startup alone
+      // must cancel the prior in-flight run (not recover it to completion).
+      server = spawnServer('dev');
+      await waitForServerReady(server);
+      log('dev server #2 ready');
+
+      await waitForStatus(runId, 'cancelled');
+      log('run cancelled on dev restart (not recovered)');
     }
   );
 });

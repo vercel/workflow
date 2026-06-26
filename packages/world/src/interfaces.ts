@@ -271,6 +271,30 @@ export interface Storage {
 }
 
 /**
+ * What a World's `start()` should do with runs that were in flight
+ * (`pending`/`running`) when the process last stopped:
+ *
+ * - `recover` — re-enqueue them so they resume (production default).
+ * - `cancel`  — cancel them with a reason (development default: the workflow
+ *   code has likely changed since they started, so replaying them is unsafe).
+ * - `ignore`  — leave them untouched (e.g. test harnesses that manage runs
+ *   themselves).
+ */
+export type OnRestart = 'recover' | 'cancel' | 'ignore';
+
+/**
+ * Options for {@link World.start}.
+ */
+export interface StartOptions {
+  /**
+   * How to handle runs that were in flight when the process last stopped.
+   * Defaults to `recover` when omitted. The shared `ensureWorldStarted()` helper
+   * sets this to `cancel` in development and `recover` in production.
+   */
+  onRestart?: OnRestart;
+}
+
+/**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
@@ -314,9 +338,12 @@ export interface World extends Queue, Streamer, Storage {
    * Framework integrations are expected to call this exactly once at server
    * startup (e.g. from a Next.js `instrumentation.ts`, a Nitro server plugin,
    * a SvelteKit `init` hook). Beyond starting background workers, this is also
-   * where a World performs **restart recovery**: re-enqueuing `pending`/`running`
-   * runs that were in flight when the process last stopped (see
-   * `reenqueueActiveRuns`). Because of this, `start()`:
+   * where a World performs **restart recovery** on runs that were in flight
+   * (`pending`/`running`) when the process last stopped. What it does with those
+   * runs is governed by `options.onRestart` (see {@link StartOptions}):
+   * `recover` re-enqueues them (see `reenqueueActiveRuns`), `cancel` cancels them
+   * (see `cancelActiveRuns` — the development default, since the workflow code may
+   * have changed), and `ignore` leaves them untouched. Because of this, `start()`:
    *
    * - MUST be idempotent. The shared `ensureWorldStarted()` helper guards
    *   against repeated invocation per process, but implementations should also
@@ -326,8 +353,10 @@ export interface World extends Queue, Streamer, Storage {
    *   need no boot recovery — durability comes from the queue's at-least-once
    *   redelivery, not from a long-lived process re-scanning storage — so they
    *   implement an empty `start()` purely for interface compliance.
+   * - SHOULD accept `options` but MAY ignore it (a no-op `start()` taking no
+   *   arguments still satisfies this signature).
    */
-  start?(): Promise<void>;
+  start?(options?: StartOptions): Promise<void>;
 
   /**
    * Release any resources held by the World implementation (connection pools, listeners, etc.).

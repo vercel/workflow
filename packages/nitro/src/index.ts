@@ -384,13 +384,19 @@ const STARTUP_PLUGIN_VIRTUAL_ID = '#workflow/start-world-plugin';
  *
  * Not registered for Vercel deploys (the Vercel World's start() is a no-op, and
  * there is nothing to recover at boot for a push-based world).
+ *
+ * The dev flag is baked in from `nitro.options.dev` at build time — Nitro's
+ * authoritative dev/prod signal — so `ensureWorldStarted()` cancels previous
+ * in-flight runs in `nitro dev` (their workflow code likely changed) and
+ * recovers them in a production build, with zero configuration.
  */
 function addStartupPlugin(nitro: Nitro) {
+  const dev = nitro.options.dev === true;
   nitro.options.virtual ||= {};
   nitro.options.virtual[STARTUP_PLUGIN_VIRTUAL_ID] = /* js */ `
     export default () => {
       import('workflow/runtime')
-        .then(({ ensureWorldStarted }) => ensureWorldStarted())
+        .then(({ ensureWorldStarted }) => ensureWorldStarted({ dev: ${dev} }))
         .catch((error) => {
           console.error('[workflow] Failed to start World on server startup:', error);
         });

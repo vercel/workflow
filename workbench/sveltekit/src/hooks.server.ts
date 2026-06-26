@@ -1,3 +1,4 @@
+import { dev } from '$app/environment';
 import type { ServerInit } from '@sveltejs/kit';
 import { registerOTel } from '@vercel/otel';
 
@@ -21,7 +22,10 @@ registerOTel({
 export const init: ServerInit = async () => {
   // Start the World once at server boot so in-flight runs are recovered after a
   // restart without needing a workflow operation. No-op on the Vercel World;
-  // runs recovery for the local/postgres worlds.
+  // runs recovery for the local/postgres worlds. `dev` comes from SvelteKit's
+  // `$app/environment` (its authoritative dev/prod flag): in dev, previous
+  // in-flight runs are cancelled rather than recovered (their code may have
+  // changed); in a production build they are recovered.
   const { ensureWorldStarted } = await import('workflow/runtime');
-  await ensureWorldStarted();
+  await ensureWorldStarted({ dev });
 };

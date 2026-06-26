@@ -120,6 +120,7 @@ export {
 export {
   createWorld,
   ensureWorldStarted,
+  type EnsureWorldStartedOptions,
   getWorld,
   getWorldHandlers,
   setWorld,

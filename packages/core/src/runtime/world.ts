@@ -193,6 +193,15 @@ export const getWorld = async (): Promise<World> => {
  * start the World only once. Safe to call regardless of the target World — for
  * push-based Worlds (Vercel) `world.start()` is a no-op.
  *
+ * Development vs production: in production, in-flight runs are recovered
+ * (re-enqueued). In development they are **cancelled** instead — the workflow
+ * code has likely changed since they started, so replaying them would diverge.
+ * Pass `options.dev` from your framework's authoritative dev flag (e.g. Nitro's
+ * `nitro.options.dev`, SvelteKit's `$app/environment` `dev`, Astro's
+ * `import.meta.env.DEV`); when omitted it falls back to
+ * `process.env.NODE_ENV === 'development'`. Set `WORKFLOW_RECOVER_IN_DEV=1` to
+ * force recovery even in development (e.g. to debug recovery itself).
+ *
  * Fail-open: this never throws. Boot-time recovery is best-effort, so a
  * transient failure (e.g. the database is briefly unreachable at startup) must
  * not prevent the server from coming up — runs are durable and will be
@@ -201,11 +210,25 @@ export const getWorld = async (): Promise<World> => {
  * retries rather than reusing the rejection. Callers (and the docs samples)
  * can therefore `await ensureWorldStarted()` unguarded.
  */
-export const ensureWorldStarted = async (): Promise<void> => {
+export interface EnsureWorldStartedOptions {
+  /**
+   * Whether this is a development server. In dev, in-flight runs from a previous
+   * session are cancelled rather than recovered (their workflow code may have
+   * changed). Defaults to `process.env.NODE_ENV === 'development'`.
+   */
+  dev?: boolean;
+}
+
+export const ensureWorldStarted = async (
+  options?: EnsureWorldStartedOptions
+): Promise<void> => {
+  const isDev = options?.dev ?? process.env.NODE_ENV === 'development';
+  const recoverInDev = process.env.WORKFLOW_RECOVER_IN_DEV === '1';
+  const onRestart = isDev && !recoverInDev ? 'cancel' : 'recover';
   if (!globalSymbols[WorldStartPromise]) {
     globalSymbols[WorldStartPromise] = (async () => {
       const world = await getWorld();
-      await world.start?.();
+      await world.start?.({ onRestart });
     })().catch((err) => {
       globalSymbols[WorldStartPromise] = undefined;
       console.error(

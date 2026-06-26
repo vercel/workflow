@@ -188,4 +188,38 @@ describe('re-enqueue active runs on start', () => {
 
     await world.close();
   });
+
+  it('cancels active runs (no re-enqueue) with start({ onRestart: "cancel" })', async () => {
+    mockRunsList({
+      pending: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
+      running: [{ runId: 'wrun_BBB', workflowName: 'wfB' }],
+    });
+    const eventsCreate = vi.fn(async () => ({}) as any);
+    vi.mocked(createEventsStorage).mockReturnValue({
+      create: eventsCreate,
+    } as any);
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.start({ onRestart: 'cancel' });
+
+    // Each active run gets a run_cancelled event carrying a reason; nothing is
+    // re-enqueued.
+    expect(eventsCreate).toHaveBeenCalledTimes(2);
+    expect(eventsCreate).toHaveBeenCalledWith(
+      'wrun_AAA',
+      expect.objectContaining({
+        eventType: 'run_cancelled',
+        reason: expect.stringContaining('dev server restart'),
+      }),
+      expect.anything()
+    );
+    expect(eventsCreate).toHaveBeenCalledWith(
+      'wrun_BBB',
+      expect.objectContaining({ eventType: 'run_cancelled' }),
+      expect.anything()
+    );
+    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+
+    await world.close();
+  });
 });

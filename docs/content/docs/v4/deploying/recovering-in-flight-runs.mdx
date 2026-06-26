@@ -29,6 +29,29 @@ It is **idempotent** — it starts the World at most once per process, so it is 
 
 You can call this regardless of which World you target. On the [Vercel World](/docs/deploying/world/vercel-world) it is a no-op — delivery is push-based and the queue redelivers in-flight messages on its own, so there is no long-lived process to recover.
 
+## Development vs production
+
+What `start()` does with the in-flight runs depends on whether you're running a **production** build or a **development** server:
+
+- **Production** — runs are **recovered** (re-enqueued) so they resume where they left off.
+- **Development** — runs from a previous session are **cancelled** instead, with a reason recorded on the `run_cancelled` event (and an info log: `Dev mode: cancelled N in-flight run(s)…`). In dev your workflow code changes constantly, and recovery works by replaying the event log against the _current_ code — replaying a run that started on now-changed code would diverge. Cancelling these ephemeral dev runs is safer than resuming them.
+
+`ensureWorldStarted()` chooses the mode from a `dev` flag. Pass your framework's authoritative dev signal where one exists; otherwise it falls back to `process.env.NODE_ENV === 'development'`:
+
+| Framework | Dev signal |
+| --- | --- |
+| Nitro / Nuxt / Express / Hono / Fastify | `nitro.options.dev` — baked in automatically, no action needed |
+| SvelteKit | `import { dev } from '$app/environment'` |
+| Astro | `import.meta.env.DEV` |
+| Next.js | `process.env.NODE_ENV` (set reliably by `next dev` / `next build`) |
+| NestJS | none — derive from `process.env.NODE_ENV` (and make sure it's set) |
+
+To force recovery even in development (e.g. to debug recovery itself), set `WORKFLOW_RECOVER_IN_DEV=1`.
+
+<Callout type="warn">
+This dev cancellation only happens at server **restart**. If you edit a workflow while a run is in flight and your framework hot-reloads the module _without_ restarting the process (HMR / Fast Refresh), that running invocation can replay against the changed code mid-session — `start()` never re-runs, so the cancellation doesn't fire. If you hit a [replay divergence](/docs/errors/replay-divergence) after editing a workflow with a run in progress, restart the dev server (which then cancels the stale run) or cancel the run manually.
+</Callout>
+
 ## Multi-instance deployments
 
 `start()` re-enqueues **every** `pending`/`running` run it finds in storage — it does not filter by which instance owns a run. On a horizontally-scaled or rolling deployment, each booting instance therefore re-enqueues all in-flight runs cluster-wide, including runs that are healthily in progress on another instance. This is safe, but worth understanding:
@@ -61,39 +84,40 @@ No action required — the `@workflow/nitro` integration registers a Nitro serve
 
 ### SvelteKit
 
-Use the [`init`](https://svelte.dev/docs/kit/hooks#Shared-hooks-init) server hook:
+Use the [`init`](https://svelte.dev/docs/kit/hooks#Shared-hooks-init) server hook, passing SvelteKit's `dev` flag:
 
 ```ts title="src/hooks.server.ts"
+import { dev } from '$app/environment';
 import type { ServerInit } from '@sveltejs/kit';
 
 export const init: ServerInit = async () => {
   const { ensureWorldStarted } = await import('workflow/runtime');
-  await ensureWorldStarted();
+  await ensureWorldStarted({ dev });
 };
 ```
 
 ### NestJS
 
-Call it in your `bootstrap()` before listening:
+Call it in your `bootstrap()` before listening. NestJS exposes no build-time dev flag, so derive `dev` from `NODE_ENV` (and make sure it's set):
 
 ```ts title="src/main.ts"
 async function bootstrap() {
   const { ensureWorldStarted } = await import('workflow/runtime');
-  await ensureWorldStarted();
+  await ensureWorldStarted({ dev: process.env.NODE_ENV !== 'production' });
   // ...create and listen
 }
 ```
 
 ### Astro
 
-Astro has no startup hook that works across all adapters, so start the World from middleware. `ensureWorldStarted()` is idempotent, so it only does real work on the first request:
+Astro has no startup hook that works across all adapters, so start the World from middleware. `ensureWorldStarted()` is idempotent, so it only does real work on the first request. Pass Astro's `import.meta.env.DEV` as the dev flag:
 
 ```ts title="src/middleware.ts"
 import { defineMiddleware } from 'astro:middleware';
 
 export const onRequest = defineMiddleware(async (_context, next) => {
   const { ensureWorldStarted } = await import('workflow/runtime');
-  await ensureWorldStarted();
+  await ensureWorldStarted({ dev: import.meta.env.DEV });
   return next();
 });
 ```

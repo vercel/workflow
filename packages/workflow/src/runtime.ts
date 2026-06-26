@@ -1,6 +1,7 @@
 export {
   createWorld,
   ensureWorldStarted,
+  type EnsureWorldStartedOptions,
   getWorld,
   getWorldHandlers,
   type HealthCheckEndpoint,

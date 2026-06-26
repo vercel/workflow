@@ -8,7 +8,10 @@ import { defineMiddleware } from 'astro:middleware';
 // (`reenqueueActiveRuns`) for the local/postgres worlds so in-flight runs
 // resume after a restart; it is a no-op on the Vercel World.
 export const onRequest = defineMiddleware(async (_context, next) => {
+  // `import.meta.env.DEV` is Astro's (Vite's) authoritative dev/prod flag: in
+  // dev, previous in-flight runs are cancelled rather than recovered (their
+  // workflow code may have changed); in a production build they are recovered.
   const { ensureWorldStarted } = await import('workflow/runtime');
-  await ensureWorldStarted();
+  await ensureWorldStarted({ dev: import.meta.env.DEV });
   return next();
 });

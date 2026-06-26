@@ -30,6 +30,12 @@ await ensureWorldStarted();
 
 Where to call this depends on your framework — see [Recovering in-flight runs](/docs/deploying/recovering-in-flight-runs).
 
+In **development**, `ensureWorldStarted()` cancels in-flight runs from the previous session instead of recovering them (your workflow code has likely changed, so replaying old runs would diverge). Pass your framework's dev flag so it can tell dev from production — see [Development vs production](/docs/deploying/recovering-in-flight-runs#development-vs-production).
+
+<Callout type="warn">
+The dev cancellation runs only when the server process **restarts**. If you edit a workflow while a run is in flight and the dev server hot-reloads the module without restarting (HMR / Fast Refresh), that run can replay against the changed code and hit a [replay divergence](/v5/docs/errors/replay-divergence). Restart the dev server (which cancels the stale run) or cancel the run manually if that happens.
+</Callout>
+
 ## Observability
 
 The `workflow` CLI uses the local world by default. Running these commands inside your workflow project will show your local development workflows:

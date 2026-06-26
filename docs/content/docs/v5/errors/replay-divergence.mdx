@@ -22,6 +22,12 @@ The runtime automatically queues another replay when an invocation reports `REPL
 
 If recovery replays continue to diverge after the retry budget is exhausted, the runtime marks the run as failed with `CORRUPTED_EVENT_LOG` and records the latest divergent event for diagnosis.
 
+## Local development
+
+A common cause in development is editing a workflow **while one of its runs is in flight**. Recovery and replay run your _current_ code against the run's recorded event log, so changing the workflow's shape (adding, removing, or reordering steps, sleeps, or hooks) mid-run can make replay diverge.
+
+To avoid replaying stale runs against changed code, the dev server cancels in-flight runs from the previous session when it **restarts** (see [Recovering in-flight runs](/v5/docs/deploying/recovering-in-flight-runs#development-vs-production)). This does **not** cover hot-module reload: if your framework swaps the edited module without restarting the process (HMR / Fast Refresh), an already-running invocation keeps replaying against the new code and can diverge. If you see this after editing a workflow with a run in progress, restart the dev server (which cancels the stale run) or cancel the run manually.
+
 ## What To Do
 
 Most replay divergence signals recover without action. If a run ultimately fails with `CORRUPTED_EVENT_LOG`, update to the latest `workflow` package and report the run ID and error details if the failure persists.
