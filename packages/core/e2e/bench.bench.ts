@@ -343,9 +343,9 @@ async function consumeReturnedStreamWithMetrics(
   value: unknown,
   run: Run<unknown>,
   startedAt: string | undefined,
-  minBytes = 1,
-  waitForDone = minBytes > 1
+  options: { minBytes?: number; waitForDone?: boolean } = {}
 ): ReturnType<typeof consumeStreamWithMetrics> {
+  const { minBytes = 1, waitForDone = minBytes > 1 } = options;
   const deadline = Date.now() + STREAM_READ_TIMEOUT_MS;
   let result: Awaited<ReturnType<typeof consumeStreamWithMetrics>> | undefined;
 
@@ -649,8 +649,10 @@ describe('Workflow Performance Benchmarks', () => {
             value,
             run,
             timings.startedAt,
-            summaryStream ? 1 : expectedTotalBytes,
-            summaryStream === true
+            {
+              minBytes: summaryStream ? 1 : expectedTotalBytes,
+              waitForDone: summaryStream === true,
+            }
           );
 
         if (summaryStream) {

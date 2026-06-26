@@ -87,14 +87,15 @@ async function readWithDeadline<T>(
     return { done: true, value: undefined, timedOut: true };
   }
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  const readPromise = reader.read().then(
+    (result): DeadlineReadResult<T> => ({
+      ...result,
+      timedOut: false,
+    })
+  );
   try {
-    return await Promise.race<DeadlineReadResult<T>>([
-      reader.read().then(
-        (result): DeadlineReadResult<T> => ({
-          ...result,
-          timedOut: false,
-        })
-      ),
+    const result = await Promise.race<DeadlineReadResult<T>>([
+      readPromise,
       new Promise<DeadlineReadResult<T>>((resolve) => {
         timeout = setTimeout(() => {
           resolve({ done: true, value: undefined, timedOut: true });
@@ -102,6 +103,11 @@ async function readWithDeadline<T>(
         (timeout as { unref?: () => void }).unref?.();
       }),
     ]);
+    if (result.timedOut) {
+      await reader.cancel().catch(() => {});
+      await readPromise.catch(() => {});
+    }
+    return result;
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -215,22 +221,38 @@ async function waitForRunEvents(
   } = options;
   const world = await getWorld();
   const deadline = Date.now() + timeoutMs;
-  let latestMatches: WorkflowEvent[] = [];
+  const matches: WorkflowEvent[] = [];
+  const seenEventIds = new Set<string>();
+  let cursor: string | undefined;
 
   while (Date.now() < deadline) {
-    const { data: events } = await world.events.list({
+    const page = await world.events.list({
       runId,
       resolveData: 'none',
+      pagination: {
+        sortOrder: 'asc',
+        cursor,
+      },
     });
-    latestMatches = events.filter(predicate);
-    if (latestMatches.length >= minCount) {
-      return latestMatches;
+    for (const event of page.data) {
+      if (seenEventIds.has(event.eventId)) continue;
+      seenEventIds.add(event.eventId);
+      if (predicate(event)) matches.push(event);
+    }
+    if (matches.length >= minCount) {
+      return matches;
+    }
+    if (page.cursor) {
+      cursor = page.cursor;
+    }
+    if (page.hasMore) {
+      continue;
     }
     await sleep(intervalMs);
   }
 
   throw new Error(
-    `Timed out waiting for ${minCount} ${description} for run ${runId}; saw ${latestMatches.length}`
+    `Timed out waiting for ${minCount} ${description} for run ${runId}; saw ${matches.length}`
   );
 }
 
@@ -1236,13 +1258,16 @@ describe('e2e', () => {
     // Default stream should close cleanly after the parent closes its
     // writable.
     assert(reader, 'Expected an open reader for forwarded writable stream');
-    const closeResult = await readWithDeadline(
-      reader,
-      Date.now() + STREAM_READ_TIMEOUT_MS
-    );
-    expect(closeResult.timedOut).toBe(false);
-    expect(closeResult.done).toBe(true);
-    reader.releaseLock();
+    try {
+      const closeResult = await readWithDeadline(
+        reader,
+        Date.now() + STREAM_READ_TIMEOUT_MS
+      );
+      expect(closeResult.timedOut).toBe(false);
+      expect(closeResult.done).toBe(true);
+    } finally {
+      reader.releaseLock();
+    }
 
     expect(returnValue).toMatchObject({
       childRunId: expect.stringMatching(/^wrun_/),

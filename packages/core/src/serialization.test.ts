@@ -2189,7 +2189,7 @@ describe('step arguments', () => {
     });
     const world = makeMockWorld();
     world.streams.write.mockImplementation((_runId, name) => {
-      if (name === 'strm_manual_webhook_response') {
+      if (name === webhookResponseStreamName) {
         return writeGate;
       }
       return Promise.resolve();

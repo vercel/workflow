@@ -4,6 +4,14 @@ export function waitUntil(promise: Promise<unknown>): void {
   });
 }
 
+export function isExpectedClientDisconnectError(err: unknown): boolean {
+  const name =
+    typeof err === 'object' && err !== null && 'name' in err
+      ? (err as { name?: unknown }).name
+      : undefined;
+  return name === 'AbortError' || name === 'ResponseAborted';
+}
+
 /**
  * Schedule a background promise via `waitUntil`, guaranteeing that the
  * promise handed to `waitUntil` can never reject. Nothing consumes a
@@ -20,9 +28,7 @@ export function safeWaitUntil(
 ): void {
   waitUntil(
     promise.catch((err) => {
-      const isAbortError =
-        err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-      if (!isAbortError) {
+      if (!isExpectedClientDisconnectError(err)) {
         try {
           onError(err);
         } catch {
@@ -31,6 +37,40 @@ export function safeWaitUntil(
       }
     })
   );
+}
+
+/**
+ * Schedule a background promise and wait a short window for quick success or
+ * failure. Returns false when the timeout wins so callers can queue a
+ * continuation while `waitUntil` keeps the background work alive.
+ */
+export async function waitForBackgroundOps(
+  promise: Promise<unknown>,
+  {
+    onError,
+    timeoutMs = 500,
+  }: { onError: (err: unknown) => void; timeoutMs?: number }
+): Promise<boolean> {
+  safeWaitUntil(promise, onError);
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(
+        () => true as const,
+        (err) => {
+          if (isExpectedClientDisconnectError(err)) return true as const;
+          throw err;
+        }
+      ),
+      new Promise<false>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 /**

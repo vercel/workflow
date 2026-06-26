@@ -57,7 +57,7 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
-import { safeWaitUntil } from './wait-until.js';
+import { waitForBackgroundOps } from './wait-until.js';
 import { getWorld, getWorldHandlers, type WorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -1082,25 +1082,16 @@ function createStepHandler(namespace?: string) {
             // (Dehydration already happened above and is accounted for in the
             // userCodeFailed path.)
             if (ops.length > 0) {
-              const opsPromise = Promise.all(ops);
               // Match inline step execution: surface quick stream flush failures
               // before step_completed, but leave slow/open streams to waitUntil.
-              safeWaitUntil(opsPromise, (err) => {
-                stepRuntimeLogger.warn(
-                  'Background flush of step stream ops failed',
-                  { error: err instanceof Error ? err.message : String(err) }
-                );
+              await waitForBackgroundOps(Promise.all(ops), {
+                onError: (err) => {
+                  stepRuntimeLogger.warn(
+                    'Background flush of step stream ops failed',
+                    { error: err instanceof Error ? err.message : String(err) }
+                  );
+                },
               });
-              await Promise.race([
-                opsPromise.catch((err) => {
-                  const isAbortError =
-                    err?.name === 'AbortError' ||
-                    err?.name === 'ResponseAborted';
-                  if (isAbortError) return;
-                  throw err;
-                }),
-                new Promise<void>((resolve) => setTimeout(resolve, 500)),
-              ]);
             }
 
             // Run step_completed and trace serialization concurrently;
