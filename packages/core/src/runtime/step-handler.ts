@@ -1081,16 +1081,27 @@ function createStepHandler(namespace?: string) {
             // resilient to the below code not executing on a failed step.
             // (Dehydration already happened above and is accounted for in the
             // userCodeFailed path.)
-            // These stream ops are flushed in the background; the promise
-            // handed to waitUntil must never reject (an unconsumed waitUntil
-            // rejection crashes the process as unhandledRejection), so
-            // unexpected failures are logged instead.
-            safeWaitUntil(Promise.all(ops), (err) => {
-              stepRuntimeLogger.warn(
-                'Background flush of step stream ops failed',
-                { error: err instanceof Error ? err.message : String(err) }
-              );
-            });
+            if (ops.length > 0) {
+              const opsPromise = Promise.all(ops);
+              // Match inline step execution: surface quick stream flush failures
+              // before step_completed, but leave slow/open streams to waitUntil.
+              safeWaitUntil(opsPromise, (err) => {
+                stepRuntimeLogger.warn(
+                  'Background flush of step stream ops failed',
+                  { error: err instanceof Error ? err.message : String(err) }
+                );
+              });
+              await Promise.race([
+                opsPromise.catch((err) => {
+                  const isAbortError =
+                    err?.name === 'AbortError' ||
+                    err?.name === 'ResponseAborted';
+                  if (isAbortError) return;
+                  throw err;
+                }),
+                new Promise<void>((resolve) => setTimeout(resolve, 500)),
+              ]);
+            }
 
             // Run step_completed and trace serialization concurrently;
             // the trace carrier is used in the final queueMessage call below
