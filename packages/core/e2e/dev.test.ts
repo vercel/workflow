@@ -289,9 +289,46 @@ export function createDevTests(config?: DevTestConfig) {
     }, CLEANUP_HOOK_TIMEOUT_MS);
 
     test('should rebuild on workflow change', { timeout: 70_000 }, async () => {
-      const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
+      if (usesNextFlowRoute) {
+        await waitForHmrReady();
+      }
 
-      const content = await fs.readFile(workflowFile, 'utf8');
+      let workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
+      let content = await fs.readFile(workflowFile, 'utf8');
+
+      if (usesNextFlowRoute) {
+        workflowFile = path.join(
+          appPath,
+          workflowsDir,
+          'dev-test-workflow-change.ts'
+        );
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+        restoreFiles.push({ path: workflowFile, content: '' });
+
+        content = `export async function devTestWorkflowChangeBase() {
+  'use workflow';
+  return 'base';
+}
+`;
+        await fs.writeFile(workflowFile, content);
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/dev-test-workflow-change';
+${apiFileContent}`
+        );
+        await pollUntil({
+          description: 'workflow-change fixture to appear in manifest',
+          timeoutMs: 50_000,
+          check: async () => {
+            await prewarm();
+            expect(await readManifestWorkflowFunctionNames()).toContain(
+              'devTestWorkflowChangeBase'
+            );
+          },
+        });
+      }
 
       await fs.writeFile(
         workflowFile,
@@ -303,7 +340,9 @@ export async function myNewWorkflow() {
 }
 `
       );
-      restoreFiles.push({ path: workflowFile, content });
+      if (!usesNextFlowRoute) {
+        restoreFiles.push({ path: workflowFile, content });
+      }
 
       await pollUntil({
         description: 'generated workflow to include myNewWorkflow',
@@ -324,9 +363,42 @@ export async function myNewWorkflow() {
     });
 
     test('should rebuild on step change', { timeout: 70_000 }, async () => {
-      const stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
+      if (usesNextFlowRoute) {
+        await waitForHmrReady();
+      }
 
-      const content = await fs.readFile(stepFile, 'utf8');
+      let stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
+      let content = await fs.readFile(stepFile, 'utf8');
+
+      if (usesNextFlowRoute) {
+        stepFile = path.join(appPath, workflowsDir, 'dev-test-step-change.ts');
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+        restoreFiles.push({ path: stepFile, content: '' });
+
+        content = `export async function devTestStepChangeBase() {
+  'use step';
+  return 'base';
+}
+`;
+        await fs.writeFile(stepFile, content);
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/dev-test-step-change';
+${apiFileContent}`
+        );
+        await pollUntil({
+          description: 'step-change fixture to appear in manifest',
+          timeoutMs: 50_000,
+          check: async () => {
+            await prewarm();
+            expect(await readManifestStepFunctionNames()).toContain(
+              'devTestStepChangeBase'
+            );
+          },
+        });
+      }
 
       await fs.writeFile(
         stepFile,
@@ -338,7 +410,9 @@ export async function myNewStep() {
 }
 `
       );
-      restoreFiles.push({ path: stepFile, content });
+      if (!usesNextFlowRoute) {
+        restoreFiles.push({ path: stepFile, content });
+      }
       await pollUntil({
         description: 'generated step outputs to include myNewStep',
         timeoutMs: usesNextFlowRoute ? 50_000 : 25_000,
@@ -425,6 +499,10 @@ async function hmrStep() {
       'should rebuild on adding workflow file',
       { timeout: 60_000 },
       async () => {
+        if (usesNextFlowRoute) {
+          await waitForHmrReady();
+        }
+
         const workflowFile = path.join(
           appPath,
           workflowsDir,

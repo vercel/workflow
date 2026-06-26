@@ -238,6 +238,35 @@ const addedFilesRequireFullRebuild = async ({
   return false;
 };
 
+const modifiedFilesRequireFullRebuild = async ({
+  modifiedFiles,
+  readSnapshot,
+  sourceSnapshots,
+}: {
+  modifiedFiles: string[];
+  readSnapshot: (file: string) => Promise<SourceSnapshot>;
+  sourceSnapshots: Map<string, SourceSnapshot>;
+}) => {
+  for (const file of unique(modifiedFiles)) {
+    try {
+      const nextSnapshot = await readSnapshot(file);
+      const previousSnapshot = sourceSnapshots.get(file);
+      if (!previousSnapshot) {
+        if (nextSnapshot.hasDirective || nextSnapshot.hasSerde) {
+          return true;
+        }
+        continue;
+      }
+      if (didSourceSnapshotChange(previousSnapshot, nextSnapshot)) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
+};
+
 const getChangedRelevantFiles = ({
   discoveredEntries,
   fileChanges,
@@ -368,6 +397,11 @@ export const classifyRebuild = async ({
     (await addedFilesRequireFullRebuild({
       addedFiles: fileChanges.addedFiles,
       readSnapshot,
+    })) ||
+    (await modifiedFilesRequireFullRebuild({
+      modifiedFiles: fileChanges.modifiedFiles,
+      readSnapshot,
+      sourceSnapshots,
     }))
   ) {
     return { kind: 'full' };
