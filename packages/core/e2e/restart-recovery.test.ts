@@ -49,11 +49,13 @@ const multiWorkerEnabled =
 const deploymentUrl = process.env.DEPLOYMENT_URL ?? 'http://localhost:3000';
 const port = Number(new URL(deploymentUrl).port || '3000');
 
-// How long the workflow sleeps. Long enough that the run is reliably still
-// sleeping when we detect it and kill the server, short enough that by the time
-// the restarted server recovers it, the sleep deadline has typically already
-// passed (so it completes promptly on replay).
-const SLEEP_MS = 8_000;
+// How long the workflow sleeps. Deliberately long enough that the sleep
+// deadline is still comfortably in the FUTURE after the kill/restart cycle
+// completes — so the test can assert the recovered run honors its REMAINING
+// sleep (does not wake early) rather than completing the moment recovery
+// re-enqueues it. The restart cycle (kill + port-reclaim + `next start` ready)
+// is typically ~15-35s, so 60s leaves a healthy window to observe.
+const SLEEP_MS = 60_000;
 
 // How long the single step in `longStepWorkflow` runs. Long enough that the
 // step's queue job is reliably still locked when we detect it and kill the
@@ -281,6 +283,38 @@ async function waitForCompleted(runId: string): Promise<void> {
   );
 }
 
+/**
+ * Poll until `untilMs`, failing if the run completes before then. Proves a
+ * recovered sleeping run honors its REMAINING sleep: recovery re-enqueues the
+ * run before its deadline, and replay must re-evaluate the recorded deadline
+ * and keep sleeping — not wake early and run to completion. Without this, a
+ * recovery that woke runs immediately would still pass the completion check.
+ */
+async function assertNotCompletedBefore(
+  runId: string,
+  untilMs: number
+): Promise<void> {
+  const world = await getWorld();
+  while (Date.now() < untilMs) {
+    let status = 'unknown';
+    try {
+      status = (await world.runs.get(runId)).status;
+    } catch {
+      // not readable yet — treat as still in-flight
+    }
+    if (status === 'completed') {
+      throw new Error(
+        `Run ${runId} completed ~${untilMs - Date.now()}ms before its sleep ` +
+          'deadline — recovery woke it early instead of honoring the remaining sleep.'
+      );
+    }
+    if (status === 'failed' || status === 'cancelled') {
+      throw new Error(`Run ${runId} ended in ${status} before its deadline`);
+    }
+    await sleep(1_000);
+  }
+}
+
 describe.skipIf(!enabled)('restart recovery', () => {
   beforeAll(() => {
     setupWorld(deploymentUrl);
@@ -306,12 +340,17 @@ describe.skipIf(!enabled)('restart recovery', () => {
       server = spawnServer();
       await waitForServerReady(server);
       log('server #1 ready');
+      const startedAt = Date.now();
       const runId = await startWorkflowOnServer(
         'sleepingWorkflow',
         [SLEEP_MS],
         /sleepingWorkflow/
       );
       log(`started run ${runId}`);
+      // The run's sleep deadline is strictly AFTER this lower bound: the server
+      // received the start and called sleep() some time after we recorded
+      // startedAt, so the true deadline > startedAt + SLEEP_MS.
+      const deadlineLowerBound = startedAt + SLEEP_MS;
 
       // 2. Wait until the run is durably sleeping (server scheduled the wait).
       await waitForWaitCreated(runId);
@@ -329,7 +368,19 @@ describe.skipIf(!enabled)('restart recovery', () => {
       await waitForServerReady(server);
       log('server #2 ready');
 
-      // 5. The run should resume and complete purely from boot-time recovery.
+      // 5. Recovery has now re-enqueued the run, but its sleep deadline is still
+      //    in the future. The run must honor the REMAINING sleep (not wake
+      //    early) — poll until the deadline and fail if it completes prematurely.
+      if (Date.now() < deadlineLowerBound) {
+        await assertNotCompletedBefore(runId, deadlineLowerBound);
+        log('run stayed asleep until its deadline (no early wake on replay)');
+      } else {
+        log(
+          'WARNING: restart outlasted the sleep deadline; skipping early-wake assertion'
+        );
+      }
+
+      // 6. After the deadline the run should resume and complete.
       await waitForCompleted(runId);
       log('run completed');
     }

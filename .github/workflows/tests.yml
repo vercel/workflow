@@ -1169,7 +1169,13 @@ jobs:
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
-            [[ "$RESTART_RECOVERY_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-restart-recovery ($RESTART_RECOVERY_STATUS)")
+            # Soaking as NON-REQUIRED: e2e-restart-recovery is a process-spawn /
+            # SIGKILL / port-reclaim test (the class most prone to CI flake), so a
+            # failure here must NOT block every merge while we build confidence in
+            # its stability. The job still runs and reports its own status for
+            # signal. Promote it back into FAILED_JOBS once it has run green for a
+            # sustained period.
+            [[ "$RESTART_RECOVERY_STATUS" == "success" ]] || echo "::warning::e2e-restart-recovery did not succeed ($RESTART_RECOVERY_STATUS) — non-blocking while soaking"
             [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
           fi
 

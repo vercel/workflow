@@ -190,9 +190,16 @@ export const getWorld = async (): Promise<World> => {
  *
  * Idempotent: the start promise is cached on `globalThis` and reused, so
  * repeated calls (e.g. Next.js invoking `register()` for multiple runtimes)
- * start the World only once. On failure the cached promise is cleared so a
- * later call can retry. Safe to call regardless of the target World — for
+ * start the World only once. Safe to call regardless of the target World — for
  * push-based Worlds (Vercel) `world.start()` is a no-op.
+ *
+ * Fail-open: this never throws. Boot-time recovery is best-effort, so a
+ * transient failure (e.g. the database is briefly unreachable at startup) must
+ * not prevent the server from coming up — runs are durable and will be
+ * recovered on a later start() or, for queue-backed Worlds, the next enqueue.
+ * Failures are logged and the cached promise is cleared so a subsequent call
+ * retries rather than reusing the rejection. Callers (and the docs samples)
+ * can therefore `await ensureWorldStarted()` unguarded.
  */
 export const ensureWorldStarted = async (): Promise<void> => {
   if (!globalSymbols[WorldStartPromise]) {
@@ -201,7 +208,12 @@ export const ensureWorldStarted = async (): Promise<void> => {
       await world.start?.();
     })().catch((err) => {
       globalSymbols[WorldStartPromise] = undefined;
-      throw err;
+      console.error(
+        '[workflow] Failed to start the World for boot-time recovery. ' +
+          'In-flight runs may not resume until the next successful start; ' +
+          'this is non-fatal and the server will continue to start.',
+        err
+      );
     });
   }
   await globalSymbols[WorldStartPromise];

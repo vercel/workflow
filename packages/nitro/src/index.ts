@@ -286,6 +286,12 @@ export default {
       // runs recover after a restart without needing a workflow operation.
       // Covers self-hosted Nitro apps (Nitro v2/v3, Nuxt). Skipped on Vercel:
       // the Vercel World's start() is a no-op (push-based — VQS redelivers).
+      //
+      // Note: this gates on the *deploy target*, not the configured World. A
+      // (rare, non-default) Postgres-World-on-Vercel-via-Nitro deployment would
+      // therefore get no boot-time recovery here and would rely on queue
+      // redelivery / the next enqueue instead. Out of scope for the default
+      // Vercel path, which uses the push-based Vercel World.
       if (!isVercelDeploy) {
         addStartupPlugin(nitro);
       }

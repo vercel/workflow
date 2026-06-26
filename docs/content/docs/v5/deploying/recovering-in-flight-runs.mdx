@@ -29,7 +29,18 @@ It is **idempotent** — it starts the World at most once per process, so it is 
 
 You can call this regardless of which World you target. On the [Vercel World](/docs/deploying/world/vercel-world) it is a no-op — delivery is push-based and the queue redelivers in-flight messages on its own, so there is no long-lived process to recover.
 
+## Multi-instance deployments
+
+`start()` re-enqueues **every** `pending`/`running` run it finds in storage — it does not filter by which instance owns a run. On a horizontally-scaled or rolling deployment, each booting instance therefore re-enqueues all in-flight runs cluster-wide, including runs that are healthily in progress on another instance. This is safe, but worth understanding:
+
+- **Steps still execute exactly once.** A re-enqueued run replays from its event log, and each `"use step"` is guarded by a step-level idempotency claim — a booting instance that races a step already running elsewhere loses the claim and skips execution. This does not depend on a queue-level lock, so it holds whether the run was mid-step or sleeping when it was re-enqueued.
+- **A sleeping run may wake early.** Re-enqueuing a run that is sleeping (or waiting on a hook) can deliver it before its deadline. On replay the workflow re-evaluates the sleep against the recorded deadline and sleeps for the remaining time, so the total sleep is still honored — the early delivery just costs an extra replay.
+
+Owner-aware recovery — re-enqueuing only the runs a booting instance is responsible for — is a planned refinement. Until then the redundant cluster-wide re-enqueues are harmless; if you want to avoid them entirely, call `ensureWorldStarted()` from a single designated instance.
+
 ## Wiring it per framework
+
+Only the `@workflow/nitro` integration wires this up automatically. Every other framework needs the one-time manual setup below — a framework package handling your workflow routes does **not** imply it starts the World for you. (Astro is wired through middleware, so its recovery runs on the first request after boot rather than at boot itself.)
 
 ### Next.js
 
