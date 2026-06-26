@@ -38,7 +38,7 @@ function fetchReturning(chunks: UIMessageChunk[]): typeof fetch {
 /**
  * Drives a transport-produced stream through the real AI SDK consumer
  * (the same state machine that backs `useChat`). Returns the final assembled
- * text and any framing error the consumer reported.
+ * text, reasoning, and any framing error the consumer reported.
  */
 async function consume(stream: ReadableStream<UIMessageChunk>) {
   let consumerError: Error | undefined;
@@ -51,11 +51,18 @@ async function consume(stream: ReadableStream<UIMessageChunk>) {
   })) {
     lastMessage = message;
   }
-  const text = (lastMessage?.parts ?? [])
+  const parts = lastMessage?.parts ?? [];
+  const text = parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
     .join('');
-  return { consumerError, text };
+  const reasoning = parts
+    .filter(
+      (p): p is { type: 'reasoning'; text: string } => p.type === 'reasoning'
+    )
+    .map((p) => p.text)
+    .join('');
+  return { consumerError, text, reasoning };
 }
 
 async function sendAndConsume(chunks: UIMessageChunk[]) {
@@ -149,5 +156,44 @@ describe('WorkflowChatTransport UI message stream repair (issue #2422)', () => {
     const { consumerError, text } = await sendAndConsume(WELL_FORMED);
     expect(consumerError).toBeUndefined();
     expect(text).toBe('onetwo');
+  });
+
+  // Reasoning parts have the same fragility as text (the consumer resets
+  // activeReasoningParts on finish-step and ids are reused), so the repair must
+  // cover them too. Drives the real consumer rather than asserting structurally.
+  const INTERLEAVED_REASONING: UIMessageChunk[] = [
+    { type: 'start', messageId: 'm1' },
+    { type: 'start-step' },
+    { type: 'reasoning-start', id: '0' },
+    { type: 'reasoning-delta', id: '0', delta: 'Think' },
+    // finish-step from a duplicated execution resets activeReasoningParts,
+    // orphaning the rest of id "0".
+    { type: 'finish-step' },
+    { type: 'reasoning-delta', id: '0', delta: 'ing...' },
+    { type: 'reasoning-end', id: '0' },
+    { type: 'finish' },
+  ];
+
+  it('demonstrates the raw interleaved reasoning stream is fatal to the consumer', async () => {
+    const raw = new ReadableStream<UIMessageChunk>({
+      start(controller) {
+        for (const chunk of INTERLEAVED_REASONING) {
+          controller.enqueue(chunk);
+        }
+        controller.close();
+      },
+    });
+    const { consumerError } = await consume(raw);
+    expect(consumerError?.message).toContain(
+      'Received reasoning-delta for missing reasoning part with ID "0"'
+    );
+  });
+
+  it('repairs an interleaved reasoning stream with no content lost', async () => {
+    const { consumerError, reasoning } = await sendAndConsume(
+      INTERLEAVED_REASONING
+    );
+    expect(consumerError).toBeUndefined();
+    expect(reasoning).toBe('Thinking...');
   });
 });

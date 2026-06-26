@@ -91,6 +91,16 @@ function* repairPart(
  *   open or ended in the current step (reconnect/replay overlap).
  *
  * A well-formed stream passes through unchanged.
+ *
+ * ## Scope: text and reasoning only
+ *
+ * `tool-input-delta` raises the same class of fatal error (`Received
+ * tool-input-delta for missing tool call ...`), but tool parts are deliberately
+ * left untouched: the consumer does not reset its tool-call map on `finish-step`
+ * and tool-call ids are unique, so the step-boundary id-reuse orphaning that
+ * makes text/reasoning fragile does not apply to them. If a future duplication
+ * mode is found to orphan tool-input parts, extend the same machine to that
+ * family rather than special-casing it.
  */
 export async function* normalizeUIMessageStreamParts(
   source: AsyncIterable<UIMessageChunk>
