@@ -367,6 +367,13 @@ export async function getReleaseLine(changeset, type, options) {
     console.warn(
       `[changelog] upstream getReleaseLine failed, using offline fallback: ${formatError(err)}`,
     );
-    return offlineReleaseLine(rewritten, options);
+    // Use the ORIGINAL changeset, not `rewritten`. The backport rewrite
+    // prepends `pr:`/`commit:` directive lines that the upstream generator
+    // strips before rendering — but `offlineReleaseLine` renders the summary
+    // verbatim, so feeding it `rewritten` would leak those directives into
+    // the changelog (the entry title would become literally `pr: #N`). The
+    // rewrite only touches `summary`; `changeset.commit` is unchanged, so the
+    // offline commit link is identical either way.
+    return offlineReleaseLine(changeset, options);
   }
 }
