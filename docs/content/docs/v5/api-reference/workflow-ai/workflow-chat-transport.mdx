@@ -254,6 +254,45 @@ export default function ChatWithCustomConfig() {
 }
 ```
 
+## Mid-part resumes
+
+A workflow stream is a flat sequence of chunks, but the AI SDK's UI protocol groups chunks into logical parts: a `text-start` opens a text part that subsequent `text-delta`s extend and a `text-end` closes, and the same shape applies to `reasoning-*` and `tool-input-*`. The AI SDK client enforces that grammar — a `reasoning-delta` whose `reasoning-start` was never seen throws and breaks the chat.
+
+A non-zero `startIndex` (in particular a negative `initialStartIndex`) resolves to a chunk offset with no awareness of those part boundaries, so it can land in the middle of an open part. When that happens, `WorkflowChatTransport` will **drop chunks that reference a part it didn't see a start for** and log a one-time warning. The chat keeps working, but any partial part overlapping the resume cursor is discarded. Tool calls are an exception: `tool-input-available` / `tool-input-error` chunks are self-contained (they carry the full input), so a tool call is recovered as soon as one of those chunks appears in the resumed window — only its streamed input deltas are lost.
+
+To preserve those partial parts, rewind to a step boundary on the server before returning the readable. `start-step` / `finish-step` chunks are the natural seams — no UI part is ever open across them. Sketch:
+
+{/*@skip-typecheck: incomplete code sample*/}
+
+```typescript title="app/api/chat/[id]/stream/route.ts"
+const run = getRun(id);
+const tailIndex = await run.getReadable().getTailIndex();
+
+let resolved = startIndex < 0
+  ? Math.max(0, tailIndex + 1 + startIndex)
+  : startIndex;
+
+if (startIndex !== 0) {
+  // Walk back from `resolved` to the most recent start-step (or chunk 0),
+  // capping the lookback so a single huge step can't trigger an unbounded scan.
+  const LOOKBACK = 200;
+  const probe = run.getReadable({ startIndex: Math.max(0, resolved - LOOKBACK) });
+  let i = Math.max(0, resolved - LOOKBACK);
+  let lastBoundary = i;
+  for await (const chunk of probe as unknown as AsyncIterable<{ type: string }>) {
+    if (i >= resolved) break;
+    if (chunk.type === "start-step") lastBoundary = i;
+    i++;
+  }
+  resolved = lastBoundary;
+}
+
+return createUIMessageStreamResponse({
+  stream: run.getReadable({ startIndex: resolved }),
+  headers: { "x-workflow-stream-tail-index": String(tailIndex) },
+});
+```
+
 ## See Also
 
 - [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - Building durable, resumable AI agents (replaces `DurableAgent`)

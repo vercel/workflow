@@ -198,6 +198,10 @@ This avoids replaying potentially thousands of chunks and lets the UI render fas
 When using a negative `initialStartIndex`, the reconnection endpoint **must** return the `x-workflow-stream-tail-index` header (as shown in [Step 2](#add-a-stream-reconnection-endpoint) above). The transport uses this header to compute absolute chunk positions so that retries after a disconnect resume from the correct position. If the header is missing, the transport falls back to `startIndex: 0` (replaying the entire stream) and logs a warning.
 </Callout>
 
+### Mid-part resumes
+
+A workflow stream is a flat sequence of chunks, but the AI SDK's UI protocol groups chunks into logical parts (`text-*`, `reasoning-*`, `tool-input-*`) that must be opened with a `*-start` before any `*-delta` or `*-end`. A non-zero `startIndex` can land in the middle of an open part. See [`WorkflowChatTransport` → Mid-part resumes](/docs/api-reference/workflow-ai/workflow-chat-transport#mid-part-resumes) for how this is handled and an example of rewinding to a step boundary on the server.
+
 ## Related Documentation
 
 - [`WorkflowChatTransport` API Reference](/docs/api-reference/workflow-ai/workflow-chat-transport) - Full configuration options
