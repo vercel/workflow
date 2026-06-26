@@ -581,6 +581,15 @@ export interface DurableAgentStreamOptions<
   includeRawChunks?: boolean;
 
   /**
+   * If true, suppresses incremental `tool-input-delta` UI stream chunks.
+   *
+   * This only affects UI stream persistence/transport. The raw model stream,
+   * final parsed tool input, tool execution, and conversation state are
+   * preserved.
+   */
+  suppressToolInputDeltas?: boolean;
+
+  /**
    * A function that attempts to repair a tool call that failed to parse.
    */
   experimental_repairToolCall?: ToolCallRepairFunction<TTools>;
@@ -1012,6 +1021,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       experimental_context: experimentalContext,
       experimental_telemetry: effectiveTelemetry,
       includeRawChunks: options.includeRawChunks ?? false,
+      suppressToolInputDeltas: options.suppressToolInputDeltas ?? false,
       experimental_transform: options.experimental_transform as
         | StreamTextTransform<ToolSet>
         | Array<StreamTextTransform<ToolSet>>,
