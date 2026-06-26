@@ -74,6 +74,18 @@ export function formatDuration(ms: number, compact = false): string {
   return parts.join(' ');
 }
 
+/**
+ * Formats the gap between two consecutive events as a signed, compact label
+ * (e.g. "+380ms", "+1m 30s", "+26h"). A zero gap renders as "+0ms" rather
+ * than the bare "0s" {@link formatDuration} would produce, so adjacent events
+ * that share a millisecond timestamp still read as a delta.
+ *
+ * @param deltaMs - Non-negative gap in milliseconds since the previous event.
+ */
+export function formatEventGap(deltaMs: number): string {
+  return deltaMs === 0 ? '+0ms' : `+${formatDuration(deltaMs, true)}`;
+}
+
 // Locale-aware formatter that always renders exactly two fraction digits.
 // Used for the seconds component of precise durations so values are never
 // snapped to a whole second (and thousands separators stay correct).
