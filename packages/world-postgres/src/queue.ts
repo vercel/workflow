@@ -1,4 +1,6 @@
+import { connect } from 'node:net';
 import * as Stream from 'node:stream';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
@@ -62,6 +64,9 @@ type HttpExecutionResult =
       text: string;
       headers: Record<string, string>;
     };
+
+type RunnerStart = { controller: AbortController; promise: Promise<void> };
+type LoopbackTarget = { hosts: string[]; port: number };
 
 /**
  * The Postgres queue works by creating two job types in graphile-worker:
@@ -142,6 +147,8 @@ export function createQueue(
   >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
+  let runnerStart: RunnerStart | null = null;
+  let closing = false;
   let startPromise: Promise<void> | null = null;
 
   function markMessageCompleted(idempotencyKey: string) {
@@ -204,7 +211,7 @@ export function createQueue(
     );
   }
 
-  async function resolveExecutionBaseUrl(): Promise<string> {
+  async function getExecutionBaseUrl(): Promise<string | undefined> {
     if (process.env.WORKFLOW_LOCAL_BASE_URL) {
       return process.env.WORKFLOW_LOCAL_BASE_URL;
     }
@@ -222,7 +229,104 @@ export function createQueue(
       return `http://localhost:${detectedPort}`;
     }
 
-    throw new Error('Unable to resolve base URL for workflow queue.');
+    return undefined;
+  }
+
+  function getLoopbackHosts(hostname: string): string[] {
+    if (hostname === 'localhost') {
+      return ['127.0.0.1', '::1'];
+    }
+    if (hostname === '[::1]') {
+      return ['::1'];
+    }
+    return hostname === '127.0.0.1' || hostname === '::1' ? [hostname] : [];
+  }
+
+  function getLoopbackTarget(baseUrl: string | undefined) {
+    if (!baseUrl) {
+      return undefined;
+    }
+
+    const url = new URL(baseUrl);
+    const hosts = getLoopbackHosts(url.hostname);
+    if (hosts.length === 0) {
+      return undefined;
+    }
+
+    return {
+      hosts,
+      port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)),
+    };
+  }
+
+  async function canConnectToLoopbackTarget(
+    target: LoopbackTarget
+  ): Promise<boolean> {
+    for (const host of target.hosts) {
+      const reachable = await new Promise<boolean>((resolve) => {
+        const socket = connect({ host, port: target.port });
+        socket.unref();
+        const finish = (isReachable: boolean) => {
+          socket.destroy();
+          resolve(isReachable);
+        };
+
+        socket.setTimeout(200, () => finish(false));
+        socket.once('connect', () => finish(true));
+        socket.once('error', () => finish(false));
+      });
+
+      if (reachable) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async function startRunnerUnlessAborted(controller: AbortController) {
+    if (controller.signal.aborted) {
+      return;
+    }
+
+    await setupListeners();
+  }
+
+  async function waitForLoopbackAndStartRunner(
+    controller: AbortController,
+    target: LoopbackTarget
+  ) {
+    while (
+      !controller.signal.aborted &&
+      !(await canConnectToLoopbackTarget(target))
+    ) {
+      await sleep(50, undefined, {
+        ref: false,
+      });
+    }
+
+    await startRunnerUnlessAborted(controller);
+  }
+
+  function deferRunnerStart(
+    controller: AbortController,
+    target: LoopbackTarget
+  ) {
+    const promise = waitForLoopbackAndStartRunner(controller, target)
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          console.warn(
+            '[world-postgres] Failed to start Graphile Worker after local workflow executor became reachable:',
+            err
+          );
+        }
+      })
+      .finally(() => {
+        if (runnerStart?.promise === promise) {
+          runnerStart = null;
+        }
+      });
+    runnerStart = { controller, promise };
   }
 
   function getQueueRoute(queueName: ValidQueueName): 'flow' | 'step' {
@@ -249,7 +353,10 @@ export function createQueue(
       'x-vqs-message-id': messageId,
       'x-vqs-message-attempt': String(attempt),
     };
-    const baseUrl = await resolveExecutionBaseUrl();
+    const baseUrl = await getExecutionBaseUrl();
+    if (!baseUrl) {
+      throw new Error('Unable to resolve base URL for workflow queue.');
+    }
     const pathname = getQueueRoute(queueName);
 
     const response = await fetch(
@@ -329,7 +436,43 @@ export function createQueue(
     }
   }
 
+  async function startRunnerWhenExecutorIsReady(): Promise<void> {
+    if (closing || runner || runnerStart) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const promise = (async () => {
+      const target = getLoopbackTarget(await getExecutionBaseUrl());
+      if (!target) {
+        await startRunnerUnlessAborted(controller);
+        return;
+      }
+
+      if (await canConnectToLoopbackTarget(target)) {
+        await startRunnerUnlessAborted(controller);
+        return;
+      }
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      deferRunnerStart(controller, target);
+    })().finally(() => {
+      if (runnerStart?.promise === promise) {
+        runnerStart = null;
+      }
+    });
+    runnerStart = { controller, promise };
+    await promise;
+  }
+
   async function start(): Promise<void> {
+    if (closing) {
+      return;
+    }
+
     if (!startPromise) {
       startPromise = (async () => {
         try {
@@ -339,7 +482,7 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          await setupListeners();
+          await startRunnerWhenExecutorIsReady();
         } catch (err) {
           startPromise = null;
           throw err;
@@ -347,6 +490,9 @@ export function createQueue(
       })();
     }
     await startPromise;
+    if (!closing && !runner && !runnerStart) {
+      await startRunnerWhenExecutorIsReady();
+    }
   }
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
@@ -519,6 +665,13 @@ export function createQueue(
     queue,
     start,
     async close() {
+      closing = true;
+      if (runnerStart) {
+        runnerStart.controller.abort();
+        await runnerStart.promise;
+        runnerStart = null;
+      }
+      await startPromise?.catch(() => {});
       if (runner) {
         await runner.stop();
         runner = null;
