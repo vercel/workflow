@@ -11,18 +11,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Nitro } from 'nitro/types';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
-
-let testRoot: string | undefined;
-
-afterEach(async () => {
-  if (testRoot) {
-    await rm(testRoot, { recursive: true, force: true });
-    testRoot = undefined;
-  }
-});
 
 function createNitroStub({ routing }: { routing: boolean }): Nitro {
   return {
@@ -73,7 +64,11 @@ describe('@workflow/nitro virtual handlers', () => {
 
 describe('@workflow/nitro Vercel Build Output API', () => {
   it('routes workflow HTTP endpoints through Nitro and keeps queue functions trigger-only', async () => {
-    testRoot = await mkdtemp(join(tmpdir(), 'workflow-nitro-vercel-'));
+    const testRoot = await mkdtemp(join(tmpdir(), 'workflow-nitro-vercel-'));
+    onTestFinished(async () => {
+      await rm(testRoot, { recursive: true, force: true });
+    });
+
     const outputDir = join(testRoot, '.vercel/output');
     const functionsDir = join(outputDir, 'functions');
     const serverDest = '/__fallback';

@@ -12,6 +12,7 @@ const FLOW_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/flow$';
 const STEP_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/step$';
 const WEBHOOK_ROUTE =
   '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$';
+const SERVER_FUNCTIONS = ['__server.func', '__fallback.func'] as const;
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
@@ -35,8 +36,9 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     );
     const workflowFunctionsDir = join(functionsDir, '.well-known/workflow');
     const originalConfig = JSON.parse(await readFile(configPath, 'utf-8'));
-    const serverFunc = (await readdir(functionsDir)).find(
-      (name) => name === '__server.func' || name === '__fallback.func'
+    const functionNames = await readdir(functionsDir);
+    const serverFunc = SERVER_FUNCTIONS.find((name) =>
+      functionNames.includes(name)
     );
     assert(serverFunc);
     const serverDest = `/${serverFunc.replace(/\.func$/, '')}`;

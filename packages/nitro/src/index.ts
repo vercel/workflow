@@ -56,12 +56,23 @@ export default {
 
     const localBuilder = new LocalBuilder(nitro);
 
+    nitro.hooks.hook('build:before', async () => {
+      await localBuilder.build();
+
+      // For prod: write the manifest handler file with inlined content
+      // now that the builder has generated the manifest. Rollup will
+      // bundle this file into the compiled output.
+      if (
+        !isVercelDeploy &&
+        !nitro.options.dev &&
+        process.env.WORKFLOW_PUBLIC_MANIFEST === '1'
+      ) {
+        writeManifestHandler(nitro);
+      }
+    });
+
     // Generate functions for vercel build
     if (isVercelDeploy) {
-      nitro.hooks.hook('build:before', async () => {
-        await localBuilder.build();
-      });
-
       nitro.hooks.hook('compiled', async () => {
         await new VercelBuilder(nitro).build();
       });
@@ -70,20 +81,6 @@ export default {
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
       let isInitialBuild = true;
-
-      nitro.hooks.hook('build:before', async () => {
-        await localBuilder.build();
-
-        // For prod: write the manifest handler file with inlined content
-        // now that the builder has generated the manifest. Rollup will
-        // bundle this file into the compiled output.
-        if (
-          !nitro.options.dev &&
-          process.env.WORKFLOW_PUBLIC_MANIFEST === '1'
-        ) {
-          writeManifestHandler(nitro);
-        }
-      });
 
       // Allows for HMR - but skip the first dev:reload since build:before already ran
       if (nitro.options.dev) {
