@@ -275,15 +275,12 @@ export interface Storage {
  */
 export interface World extends Queue, Streamer, Storage {
   /**
-   * The highest spec version this World supports.
+   * The Workflow protocol spec version this World implements.
    *
-   * When set, `start()` creates runs at this version so world-specific
-   * features (e.g., CBOR queue transport) are enabled automatically.
-   * When omitted, runs default to `SPEC_VERSION_SUPPORTS_EVENT_SOURCING` (2),
-   * the safe baseline that all worlds — including community worlds on
-   * older @workflow/world versions — are expected to handle.
+   * Current runtimes require this to exactly match their
+   * `SPEC_VERSION_CURRENT` before they create or replay runs.
    */
-  specVersion?: number;
+  specVersion: number;
 
   /**
    * Whether calling `process.exit(1)` from a queue handler is observed by

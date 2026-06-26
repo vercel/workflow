@@ -1,4 +1,5 @@
 import { FatalError } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { experimental_setAttributes } from './set-attributes.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
@@ -61,6 +62,7 @@ describe('experimental_setAttributes (host-side)', () => {
   it('posts normalized changes as a native event when called from a step', async () => {
     const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       name: 'test-world',
       events: { create },
     };
@@ -87,6 +89,7 @@ describe('experimental_setAttributes (host-side)', () => {
   it('forwards allowReservedAttributes for step-side reserved namespace writes', async () => {
     const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       events: { create },
     };
 
@@ -117,6 +120,7 @@ describe('experimental_setAttributes (host-side)', () => {
       return {};
     });
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       events: { create },
     };
 
@@ -146,6 +150,7 @@ describe('experimental_setAttributes (host-side)', () => {
   it('still posts when the runReadyBarrier rejects (write surfaces the real error)', async () => {
     const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       events: { create },
     };
 
@@ -165,6 +170,7 @@ describe('experimental_setAttributes (host-side)', () => {
   it('rejects validation errors before posting from a step', async () => {
     const create = vi.fn();
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       events: { create },
     };
 

@@ -1,3 +1,4 @@
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setWorld } from './runtime/world.js';
 import {
@@ -12,6 +13,7 @@ describe('WorkflowServerWritableStream', () => {
     close: ReturnType<typeof vi.fn>;
   };
   let mockWorld: {
+    specVersion: typeof SPEC_VERSION_CURRENT;
     streams: typeof mockStreams;
     streamFlushIntervalMs?: number;
   };
@@ -23,7 +25,7 @@ describe('WorkflowServerWritableStream', () => {
       close: vi.fn().mockResolvedValue(undefined),
     };
 
-    mockWorld = { streams: mockStreams };
+    mockWorld = { specVersion: SPEC_VERSION_CURRENT, streams: mockStreams };
 
     setWorld(mockWorld as any);
   });

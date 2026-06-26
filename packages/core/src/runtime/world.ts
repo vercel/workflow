@@ -7,6 +7,7 @@ import {
 import type { World } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
+import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
 function getRuntimeRequire() {
   // Resolve from the app root (process.cwd()) so custom world packages
@@ -174,6 +175,7 @@ export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;
  */
 export const getWorldHandlers = async (): Promise<WorldHandlers> => {
   if (globalSymbols[StubbedWorldCache]) {
+    assertWorldSupportsRuntimeProtocol(globalSymbols[StubbedWorldCache]);
     return globalSymbols[StubbedWorldCache];
   }
   // Store the promise immediately to prevent race conditions with concurrent calls.
@@ -185,6 +187,7 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
     });
   }
   const _world = await globalSymbols[StubbedWorldCachePromise];
+  assertWorldSupportsRuntimeProtocol(_world);
   globalSymbols[StubbedWorldCache] = _world;
   return {
     createQueueHandler: _world.createQueueHandler,
@@ -194,6 +197,7 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
 
 export const getWorld = async (): Promise<World> => {
   if (globalSymbols[WorldCache]) {
+    assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
     return globalSymbols[WorldCache];
   }
   // Store the promise immediately to prevent race conditions with concurrent calls.
@@ -205,6 +209,7 @@ export const getWorld = async (): Promise<World> => {
     });
   }
   globalSymbols[WorldCache] = await globalSymbols[WorldCachePromise];
+  assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
   return globalSymbols[WorldCache];
 };
 
