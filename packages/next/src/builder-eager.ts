@@ -1,19 +1,38 @@
-import { constants } from 'node:fs';
-import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
-import { extname, join, relative, resolve } from 'node:path';
+import { constants, type Dirent } from 'node:fs';
+import {
+  access,
+  copyFile,
+  mkdir,
+  readdir,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
   WorkflowManifest,
 } from '@workflow/builders';
 import type { NextConfig as ProjectNextConfig } from 'next';
 import Watchpack from 'watchpack';
+import {
+  classifyRebuild,
+  createSourceSnapshot,
+  replaceSourceSnapshots,
+  type FileChanges,
+  type SourceSnapshot,
+} from './watch-rebuild.js';
 
 let CachedNextBuilderEager: any;
+const importEsm = new Function('specifier', 'return import(specifier)') as <T>(
+  specifier: string
+) => Promise<T>;
 
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
 // Exported as getNextBuilderEager() to allow CommonJS modules to import from
 // the ESM @workflow/builders package via dynamic import at runtime.
-export async function getNextBuilderEager() {
+export async function getNextBuilderEager(
+  buildersModule?: typeof import('@workflow/builders')
+) {
   if (CachedNextBuilderEager) {
     return CachedNextBuilderEager;
   }
@@ -21,10 +40,10 @@ export async function getNextBuilderEager() {
   const {
     BaseBuilder: BaseBuilderClass,
     WORKFLOW_QUEUE_TRIGGER,
-    // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
-  } = (await eval(
-    'import("@workflow/builders")'
-  )) as typeof import('@workflow/builders');
+    detectWorkflowPatterns,
+    parentHasChild,
+  } = buildersModule ??
+  (await importEsm<typeof import('@workflow/builders')>('@workflow/builders'));
 
   class NextBuilder extends BaseBuilderClass {
     protected declare config: BuilderNextConfig & {
@@ -106,19 +125,26 @@ export async function getNextBuilderEager() {
           interimBundleCtx: combinedResult.interimBundleCtx,
           bundleFinal: combinedResult.bundleFinal,
         };
+        let discoveredEntries = combinedResult.discoveredEntries;
+        let stepsManifest = combinedResult.stepsManifest;
+        let workflowsManifest = combinedResult.workflowsManifest;
+        const stepsOutfile = join(
+          workflowGeneratedDir,
+          'flow',
+          '__step_registrations.js'
+        );
 
         const normalizePath = (pathname: string) =>
-          pathname.replace(/\\/g, '/');
+          (isAbsolute(pathname)
+            ? pathname
+            : resolve(this.config.workingDir, pathname)
+          ).replace(/\\/g, '/');
         type WatchpackTimeInfoEntry = {
           safeTime: number;
           timestamp?: number;
         };
-        type FileChanges = {
-          addedFiles: string[];
-          modifiedFiles: string[];
-          removedFiles: string[];
-        };
         let previousTimeInfo = new Map<string, WatchpackTimeInfoEntry>();
+        const sourceSnapshots = new Map<string, SourceSnapshot>();
 
         const watchableExtensions = new Set([
           '.js',
@@ -154,6 +180,18 @@ export async function getNextBuilderEager() {
         process.env.WATCHPACK_WATCHER_LIMIT =
           process.platform === 'darwin' ? '20' : undefined;
 
+        const hasIgnoredPathFragment = (normalizedPath: string) => {
+          if (normalizedPath.startsWith(normalizedGeneratedDir)) {
+            return true;
+          }
+          for (const fragment of ignoredPathFragments) {
+            if (normalizedPath.includes(fragment)) {
+              return true;
+            }
+          }
+          return false;
+        };
+
         const watcher = new Watchpack({
           // Watchpack default is 200ms which adds 200ms of dead time on bootup.
           aggregateTimeout: 5,
@@ -163,15 +201,7 @@ export async function getNextBuilderEager() {
             if (extension && !watchableExtensions.has(extension)) {
               return true;
             }
-            if (normalizedPath.startsWith(normalizedGeneratedDir)) {
-              return true;
-            }
-            for (const fragment of ignoredPathFragments) {
-              if (normalizedPath.includes(fragment)) {
-                return true;
-              }
-            }
-            return false;
+            return hasIgnoredPathFragment(normalizedPath);
           },
         });
 
@@ -196,6 +226,58 @@ export async function getNextBuilderEager() {
           return rebuildQueue;
         };
 
+        const readSourceSnapshot = (file: string) =>
+          createSourceSnapshot({ file, detectWorkflowPatterns });
+
+        const refreshSourceSnapshots = () =>
+          replaceSourceSnapshots({
+            discoveredEntries,
+            inputFiles: options.inputFiles,
+            normalizePath,
+            readSnapshot: readSourceSnapshot,
+            sourceSnapshots,
+          });
+
+        const mergeCombinedManifest = (
+          nextStepsManifest: WorkflowManifest
+        ): WorkflowManifest => ({
+          ...nextStepsManifest,
+          workflows: {
+            ...nextStepsManifest.workflows,
+            ...workflowsManifest.workflows,
+          },
+          classes: {
+            ...nextStepsManifest.classes,
+            ...workflowsManifest.classes,
+          },
+        });
+
+        const hotRebuild = async (refreshStepRegistrations: boolean) => {
+          if (refreshStepRegistrations) {
+            if (stepsCtx) {
+              await stepsCtx.rebuild();
+            } else {
+              stepsManifest = await this.createStepSourceRegistrationFile({
+                inputFiles: options.inputFiles,
+                outfile: stepsOutfile,
+                tsconfigPath,
+                discoveredEntries,
+              });
+            }
+          }
+
+          const workflowResult = await workflowsCtx.interimBundleCtx.rebuild();
+          const workflowOutput = workflowResult.outputFiles?.[0]?.text;
+          if (!workflowOutput) {
+            throw new Error(
+              'Invariant: expected workflow output from hot rebuild'
+            );
+          }
+
+          await workflowsCtx.bundleFinal(workflowOutput);
+          await writeManifest(mergeCombinedManifest(stepsManifest));
+        };
+
         const fullRebuild = async () => {
           this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
@@ -206,6 +288,9 @@ export async function getNextBuilderEager() {
 
           const newCombined = await this.buildCombinedFunction(options);
           stepsCtx = newCombined.stepsContext;
+          discoveredEntries = newCombined.discoveredEntries;
+          stepsManifest = newCombined.stepsManifest;
+          workflowsManifest = newCombined.workflowsManifest;
 
           if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
             throw new Error(
@@ -218,10 +303,62 @@ export async function getNextBuilderEager() {
           };
 
           await writeManifest(newCombined.manifest);
+          await refreshSourceSnapshots();
         };
 
         const isWatchableFile = (path: string) =>
           watchableExtensions.has(extname(path));
+
+        const readInitialTimeInfoEntries = async () => {
+          const entries = new Map<string, WatchpackTimeInfoEntry>();
+
+          const visit = async (directory: string): Promise<void> => {
+            let dirents: Dirent<string>[];
+            try {
+              dirents = await readdir(directory, { withFileTypes: true });
+            } catch {
+              return;
+            }
+
+            await Promise.all(
+              dirents.map(async (dirent) => {
+                const filePath = normalizePath(join(directory, dirent.name));
+                if (hasIgnoredPathFragment(filePath)) {
+                  return;
+                }
+
+                if (dirent.isDirectory()) {
+                  await visit(filePath);
+                  return;
+                }
+
+                let stats: Awaited<ReturnType<typeof stat>>;
+                try {
+                  stats = await stat(filePath);
+                } catch {
+                  return;
+                }
+
+                if (stats.isDirectory()) {
+                  await visit(filePath);
+                  return;
+                }
+
+                if (!stats.isFile() || !isWatchableFile(filePath)) {
+                  return;
+                }
+
+                entries.set(filePath, {
+                  safeTime: stats.mtimeMs,
+                  timestamp: stats.mtimeMs,
+                });
+              })
+            );
+          };
+
+          await visit(this.config.workingDir);
+          return entries;
+        };
 
         const normalizeWatchpackPaths = (paths?: Iterable<string>) => {
           const normalizedPaths: string[] = [];
@@ -343,7 +480,8 @@ export async function getNextBuilderEager() {
           modifiedFiles.length > 0 ||
           removedFiles.length > 0;
 
-        let isInitial = true;
+        await refreshSourceSnapshots();
+        previousTimeInfo = await readInitialTimeInfoEntries();
 
         watcher.on(
           'aggregated',
@@ -366,22 +504,40 @@ export async function getNextBuilderEager() {
 
             previousTimeInfo = currentEntries;
 
-            if (isInitial) {
-              isInitial = false;
-              if (
-                eventChangedFiles.length === 0 &&
-                eventRemovedFiles.length === 0
-              ) {
-                return;
-              }
-            }
-
             if (!hasFileChanges(fileChanges)) {
               return;
             }
 
             enqueue(async () => {
-              await fullRebuild();
+              const decision = await classifyRebuild({
+                discoveredEntries,
+                fileChanges,
+                inputFiles: options.inputFiles,
+                normalizePath,
+                parentHasChild,
+                readSnapshot: readSourceSnapshot,
+                sourceSnapshots,
+              });
+              if (decision.kind === 'none') {
+                console.log('workflow dev hmr: skip');
+                for (const [file, snapshot] of decision.snapshots || []) {
+                  sourceSnapshots.set(file, snapshot);
+                }
+                return;
+              }
+              if (decision.kind === 'full') {
+                console.log('workflow dev hmr: full rediscovery');
+                await fullRebuild();
+                return;
+              }
+
+              console.log(
+                `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
+              );
+              await hotRebuild(decision.refreshStepRegistrations);
+              for (const [file, snapshot] of decision.snapshots) {
+                sourceSnapshots.set(file, snapshot);
+              }
             });
           }
         );
@@ -390,6 +546,7 @@ export async function getNextBuilderEager() {
           directories: [this.config.workingDir],
           startTime: Date.now(),
         });
+        console.log('workflow dev hmr: ready');
       }
     }
 

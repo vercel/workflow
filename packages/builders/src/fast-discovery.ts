@@ -49,6 +49,12 @@ export interface DiscoveredEntries {
   discoveredSteps: Set<string>;
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
+  /**
+   * All JS/TS files visited while walking the workflow import graph.
+   * Watch-mode integrations use this to distinguish relevant HMR changes from
+   * unrelated application file edits.
+   */
+  discoveredFiles?: Set<string>;
 }
 
 interface FastDiscoverEntriesOptions {
@@ -909,4 +915,6 @@ export async function fastDiscoverEntries({
     await Promise.race(inFlight);
     scheduleFiles();
   }
+
+  state.discoveredFiles = processedFiles;
 }

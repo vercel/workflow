@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, assert, beforeAll, describe, expect, test } from 'vitest';
 import { start } from '../src/runtime';
 import { getWorkbenchAppPath, getWorkflowMetadata, setupWorld } from './utils';
@@ -85,6 +86,13 @@ export function createDevTests(config?: DevTestConfig) {
         Object.keys(entry)
       );
     };
+    const readGeneratedArtifactSnapshot = async () => ({
+      stepMtimeMs: (await fs.stat(generatedStep)).mtimeMs,
+      workflowMtimeMs: (await fs.stat(generatedWorkflow)).mtimeMs,
+      manifestMtimeMs: usesNextFlowRoute
+        ? (await fs.stat(workflowManifestPath)).mtimeMs
+        : undefined,
+    });
     const readFileIfExists = async (
       filePath: string
     ): Promise<string | null> => {
@@ -115,6 +123,12 @@ export function createDevTests(config?: DevTestConfig) {
     };
     const restoreFiles: Array<{ path: string; content: string }> = [];
     const restoreDirectories: string[] = [];
+    const devServerLogPath = process.env.DEV_SERVER_LOG_PATH;
+    const hmrLogMessages = {
+      skip: 'workflow dev hmr: skip',
+      hot: 'workflow dev hmr: hot rebuild',
+      full: 'workflow dev hmr: full rediscovery',
+    };
 
     const fetchWithTimeout = (pathname: string) => {
       if (!deploymentUrl) {
@@ -132,6 +146,41 @@ export function createDevTests(config?: DevTestConfig) {
         fetchWithTimeout('/').catch(() => {}),
         fetchWithTimeout('/api/chat').catch(() => {}),
       ]);
+    };
+    const readDevServerLog = async (): Promise<string> => {
+      if (!devServerLogPath) {
+        return '';
+      }
+      return await fs.readFile(devServerLogPath, 'utf8').catch(() => '');
+    };
+    const readDevServerLogCursor = async () =>
+      devServerLogPath ? (await readDevServerLog()).length : undefined;
+    const countLogMessage = (log: string, message: string) =>
+      log.split(message).length - 1;
+    const expectHmrLogCounts = async (
+      cursor: number | undefined,
+      expected: { skip?: number; hot?: number; full?: number }
+    ) => {
+      if (cursor === undefined) {
+        return;
+      }
+      await pollUntil({
+        description: 'dev server HMR logs to match expected rebuild counts',
+        timeoutMs: 20_000,
+        intervalMs: 250,
+        check: async () => {
+          const log = (await readDevServerLog()).slice(cursor);
+          expect(countLogMessage(log, hmrLogMessages.skip)).toBe(
+            expected.skip ?? 0
+          );
+          expect(countLogMessage(log, hmrLogMessages.hot)).toBe(
+            expected.hot ?? 0
+          );
+          expect(countLogMessage(log, hmrLogMessages.full)).toBe(
+            expected.full ?? 0
+          );
+        },
+      });
     };
 
     const pollUntil = async ({
@@ -168,6 +217,45 @@ export function createDevTests(config?: DevTestConfig) {
         `Timed out after ${timeoutMs}ms waiting for ${description}.${lastErrorSuffix}`
       );
     };
+    const waitForHmrReady = async () => {
+      if (!devServerLogPath) {
+        return;
+      }
+      await pollUntil({
+        description: 'dev server HMR watcher to be ready',
+        timeoutMs: 50_000,
+        intervalMs: 250,
+        check: async () => {
+          expect(await readDevServerLog()).toContain('workflow dev hmr: ready');
+        },
+      });
+    };
+    const waitForGeneratedArtifactStability = async () => {
+      await prewarm();
+      let previous = await readGeneratedArtifactSnapshot();
+      for (let i = 0; i < 5; i++) {
+        await sleep(1_000);
+        const next = await readGeneratedArtifactSnapshot();
+        if (
+          previous.stepMtimeMs === next.stepMtimeMs &&
+          previous.workflowMtimeMs === next.workflowMtimeMs
+        ) {
+          return next;
+        }
+        previous = next;
+      }
+      return previous;
+    };
+    const expectGeneratedArtifactsUnchanged = async (
+      before: Awaited<ReturnType<typeof readGeneratedArtifactSnapshot>>
+    ) => {
+      await prewarm();
+      await sleep(3_000);
+      const after = await readGeneratedArtifactSnapshot();
+      expect(after.stepMtimeMs).toBe(before.stepMtimeMs);
+      expect(after.workflowMtimeMs).toBe(before.workflowMtimeMs);
+      return after;
+    };
 
     beforeAll(async () => {
       await prewarm();
@@ -187,7 +275,9 @@ export function createDevTests(config?: DevTestConfig) {
       if (toDelete.length > 0) {
         await prewarm();
       }
-      await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
+      await Promise.all(
+        toDelete.map((item) => fs.rm(item.path, { force: true }))
+      );
       await Promise.all(
         restoreDirectories.map((dir) =>
           fs.rm(dir, { recursive: true, force: true })
@@ -220,6 +310,7 @@ export async function myNewWorkflow() {
         timeoutMs: usesNextFlowRoute ? 50_000 : 25_000,
         check: async () => {
           if (usesNextFlowRoute) {
+            await prewarm();
             const manifestFunctionNames =
               await readManifestWorkflowFunctionNames();
             expect(manifestFunctionNames).toContain('myNewWorkflow');
@@ -261,6 +352,7 @@ export async function myNewStep() {
           // rebuild. The bundled file may not preserve function names as
           // plain text.
           if (usesNextFlowRoute) {
+            await prewarm();
             const manifestFunctionNames = await readManifestStepFunctionNames();
             expect(manifestFunctionNames).toContain('myNewStep');
             return;
@@ -479,11 +571,500 @@ ${apiFileContent}`
           },
         });
 
-        const devServerLogPath = process.env.DEV_SERVER_LOG_PATH;
         if (devServerLogPath) {
           const log = await fs.readFile(devServerLogPath, 'utf8');
           expect(log).not.toContain(SOURCE_MAP_WARNING);
         }
+      }
+    );
+
+    test.runIf(usesNextFlowRoute)(
+      'should follow Next flow-route HMR rebuild rules for body-only changes',
+      { timeout: 120_000 },
+      async () => {
+        assert(deploymentUrl);
+        setupWorld(deploymentUrl);
+
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+
+        const files = {
+          workflow: path.join(appPath, workflowsDir, 'hmr-fuzz-workflow.ts'),
+          workflowHelper: path.join(
+            appPath,
+            workflowsDir,
+            'hmr-fuzz-workflow-helper.ts'
+          ),
+          step: path.join(appPath, workflowsDir, 'hmr-fuzz-step.ts'),
+          stepHelper: path.join(
+            appPath,
+            workflowsDir,
+            'hmr-fuzz-step-helper.ts'
+          ),
+          sharedHelper: path.join(
+            appPath,
+            workflowsDir,
+            'hmr-fuzz-shared-helper.ts'
+          ),
+          serde: path.join(appPath, workflowsDir, 'hmr-fuzz-serde.ts'),
+          importHelper: path.join(
+            appPath,
+            workflowsDir,
+            'hmr-fuzz-import-helper.ts'
+          ),
+          addedWorkflow: path.join(
+            appPath,
+            workflowsDir,
+            'hmr-fuzz-added-workflow.ts'
+          ),
+          unrelated: path.join(appPath, workflowsDir, 'hmr-fuzz-unrelated.ts'),
+        };
+        for (const file of Object.values(files)) {
+          restoreFiles.push({ path: file, content: '' });
+        }
+
+        await waitForHmrReady();
+
+        const writeFuzzSources = async (iteration: number) => {
+          await Promise.all([
+            fs.writeFile(
+              files.workflow,
+              `import { HmrFuzzBox } from './hmr-fuzz-serde';
+import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
+import { hmrFuzzStep } from './hmr-fuzz-step';
+import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
+
+export async function hmrFuzzWorkflow() {
+  'use workflow';
+  const stepValue = await hmrFuzzStep();
+  const workflowValue = hmrFuzzWorkflowHelper(
+    new HmrFuzzBox(hmrFuzzSharedHelper('workflow-${iteration}'))
+  );
+  return { stepValue, workflowValue };
+}
+`
+            ),
+            fs.writeFile(
+              files.workflowHelper,
+              `import { HmrFuzzBox } from './hmr-fuzz-serde';
+
+export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
+  return value.label + '-workflow-helper-${iteration}';
+}
+`
+            ),
+            fs.writeFile(
+              files.step,
+              `import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
+import { hmrFuzzStepHelper } from './hmr-fuzz-step-helper';
+
+export async function hmrFuzzStep() {
+  'use step';
+  return hmrFuzzSharedHelper(hmrFuzzStepHelper()) + '-step-${iteration}';
+}
+`
+            ),
+            fs.writeFile(
+              files.stepHelper,
+              `export function hmrFuzzStepHelper() {
+  return 'step-helper-${iteration}';
+}
+`
+            ),
+            fs.writeFile(
+              files.sharedHelper,
+              `export function hmrFuzzSharedHelper(value: string) {
+  return value + '-shared-${iteration}';
+}
+`
+            ),
+            fs.writeFile(
+              files.serde,
+              `export class HmrFuzzBox {
+  static classId = 'HmrFuzzBox';
+
+  constructor(public label: string) {}
+
+  static [Symbol.for('workflow-serialize')](value: HmrFuzzBox) {
+    return { label: value.label + '-serde-${iteration}' };
+  }
+
+  static [Symbol.for('workflow-deserialize')](value: { label: string }) {
+    return new HmrFuzzBox(value.label);
+  }
+}
+`
+            ),
+          ]);
+        };
+
+        await writeFuzzSources(0);
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/hmr-fuzz-step';
+import '${finalConfig.apiFileImportPath}/${workflowsDir}/hmr-fuzz-workflow';
+${apiFileContent}`
+        );
+
+        await pollUntil({
+          description: 'HMR fuzz fixture to appear in the Next manifest',
+          timeoutMs: 50_000,
+          check: async () => {
+            await prewarm();
+            expect(await readManifestStepFunctionNames()).toContain(
+              'hmrFuzzStep'
+            );
+            expect(await readManifestWorkflowFunctionNames()).toContain(
+              'hmrFuzzWorkflow'
+            );
+          },
+        });
+
+        const workflow = await getWorkflowMetadata(
+          deploymentUrl,
+          `${workflowsDir}/hmr-fuzz-workflow.ts`,
+          'hmrFuzzWorkflow'
+        );
+        const runWorkflow = async () => {
+          const run = await start<
+            [],
+            { stepValue: string; workflowValue: string }
+          >(workflow, []);
+          return await run.returnValue;
+        };
+        const expectWorkflowResult = async ({
+          description,
+          stepValue,
+          workflowValue,
+        }: {
+          description: string;
+          stepValue?: string;
+          workflowValue?: string;
+        }) => {
+          await pollUntil({
+            description,
+            timeoutMs: 50_000,
+            intervalMs: 500,
+            check: async () => {
+              const result = await runWorkflow();
+              if (stepValue) {
+                expect(result.stepValue).toContain(stepValue);
+              }
+              if (workflowValue) {
+                expect(result.workflowValue).toContain(workflowValue);
+              }
+            },
+          });
+        };
+
+        let snapshot = await waitForGeneratedArtifactStability();
+        let seed = 0x1234abcd;
+        const random = () => {
+          seed = (seed * 1664525 + 1013904223) >>> 0;
+          return seed / 0x100000000;
+        };
+        const cases = [
+          {
+            file: files.step,
+            kind: 'none',
+            expectedLogCounts: { skip: 1 },
+            expectedStepValue: (iteration: number) => `step-only-${iteration}`,
+            source: (
+              iteration: number
+            ) => `import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
+import { hmrFuzzStepHelper } from './hmr-fuzz-step-helper';
+
+export async function hmrFuzzStep() {
+  'use step';
+  return hmrFuzzSharedHelper(hmrFuzzStepHelper()) + '-step-only-${iteration}';
+}
+`,
+          },
+          {
+            file: files.stepHelper,
+            kind: 'none',
+            expectedLogCounts: { skip: 1 },
+            expectedStepValue: (iteration: number) =>
+              `step-helper-only-${iteration}`,
+            source: (
+              iteration: number
+            ) => `export function hmrFuzzStepHelper() {
+  return 'step-helper-only-${iteration}';
+}
+`,
+          },
+          {
+            file: files.workflow,
+            kind: 'workflow',
+            expectedLogCounts: { hot: 1 },
+            expectedWorkflowValue: (iteration: number) =>
+              `workflow-body-${iteration}`,
+            source: (
+              iteration: number
+            ) => `import { HmrFuzzBox } from './hmr-fuzz-serde';
+import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
+import { hmrFuzzStep } from './hmr-fuzz-step';
+import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
+
+export async function hmrFuzzWorkflow() {
+  'use workflow';
+  const stepValue = await hmrFuzzStep();
+  const workflowValue = hmrFuzzWorkflowHelper(
+    new HmrFuzzBox(hmrFuzzSharedHelper('workflow-body-${iteration}'))
+  );
+  return { stepValue, workflowValue };
+}
+`,
+          },
+          {
+            file: files.workflowHelper,
+            kind: 'workflow',
+            expectedLogCounts: { hot: 1 },
+            expectedWorkflowValue: (iteration: number) =>
+              `workflow-helper-body-${iteration}`,
+            source: (
+              iteration: number
+            ) => `import { HmrFuzzBox } from './hmr-fuzz-serde';
+
+export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
+  return value.label + '-workflow-helper-body-${iteration}';
+}
+`,
+          },
+          {
+            file: files.sharedHelper,
+            kind: 'workflow',
+            expectedLogCounts: { hot: 1 },
+            expectedStepValue: (iteration: number) =>
+              `shared-body-${iteration}`,
+            expectedWorkflowValue: (iteration: number) =>
+              `shared-body-${iteration}`,
+            source: (
+              iteration: number
+            ) => `export function hmrFuzzSharedHelper(value: string) {
+  return value + '-shared-body-${iteration}';
+}
+`,
+          },
+          {
+            file: files.serde,
+            kind: 'serde',
+            expectedLogCounts: { hot: 1 },
+            source: (iteration: number) => `export class HmrFuzzBox {
+  static classId = 'HmrFuzzBox';
+
+  constructor(public label: string) {}
+
+  static [Symbol.for('workflow-serialize')](value: HmrFuzzBox) {
+    return { label: value.label + '-serde-body-${iteration}' };
+  }
+
+  static [Symbol.for('workflow-deserialize')](value: { label: string }) {
+    return new HmrFuzzBox(value.label);
+  }
+}
+`,
+          },
+        ] as const;
+
+        for (let iteration = 1; iteration <= 12; iteration++) {
+          const testCase = cases[Math.floor(random() * cases.length)];
+          const previousSnapshot = snapshot;
+          const logCursor = await readDevServerLogCursor();
+          await fs.writeFile(testCase.file, testCase.source(iteration));
+
+          await expectWorkflowResult({
+            description: `${testCase.kind} HMR update to affect workflow execution`,
+            stepValue:
+              'expectedStepValue' in testCase
+                ? testCase.expectedStepValue(iteration)
+                : undefined,
+            workflowValue:
+              'expectedWorkflowValue' in testCase
+                ? testCase.expectedWorkflowValue(iteration)
+                : undefined,
+          });
+
+          if (testCase.kind === 'none') {
+            snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
+            continue;
+          }
+
+          snapshot = await waitForGeneratedArtifactStability();
+          if (testCase.kind === 'workflow') {
+            expect(snapshot.stepMtimeMs).toBe(previousSnapshot.stepMtimeMs);
+          } else {
+            expect(snapshot.stepMtimeMs).toBeGreaterThanOrEqual(
+              previousSnapshot.stepMtimeMs
+            );
+          }
+          await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
+        }
+
+        const fullCases = [
+          {
+            description: 'workflow import graph change',
+            write: async (iteration: number) => {
+              await fs.writeFile(
+                files.importHelper,
+                `export const hmrFuzzImportedValue = 'imported-${iteration}';\n`
+              );
+              await fs.writeFile(
+                files.workflow,
+                `import { hmrFuzzImportedValue } from './hmr-fuzz-import-helper';
+import { HmrFuzzBox } from './hmr-fuzz-serde';
+import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
+import { hmrFuzzStep } from './hmr-fuzz-step';
+import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
+
+export async function hmrFuzzWorkflow() {
+  'use workflow';
+  const stepValue = await hmrFuzzStep();
+  const workflowValue = hmrFuzzWorkflowHelper(
+    new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzImportedValue))
+  );
+  return { stepValue, workflowValue };
+}
+`
+              );
+            },
+            assert: async (iteration: number) => {
+              await expectWorkflowResult({
+                description:
+                  'workflow import graph full rediscovery to affect execution',
+                workflowValue: `imported-${iteration}`,
+              });
+            },
+          },
+          {
+            description: 'step definition added',
+            write: async (iteration: number) => {
+              await fs.writeFile(
+                files.step,
+                `import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
+import { hmrFuzzStepHelper } from './hmr-fuzz-step-helper';
+
+export async function hmrFuzzStep() {
+  'use step';
+  return hmrFuzzSharedHelper(hmrFuzzStepHelper()) + '-step-full-${iteration}';
+}
+
+export async function hmrFuzzAddedStep() {
+  'use step';
+  return 'added-step-${iteration}';
+}
+`
+              );
+            },
+            assert: async () => {
+              await pollUntil({
+                description: 'added step definition to appear in manifest',
+                timeoutMs: 50_000,
+                intervalMs: 500,
+                check: async () => {
+                  await prewarm();
+                  expect(await readManifestStepFunctionNames()).toContain(
+                    'hmrFuzzAddedStep'
+                  );
+                },
+              });
+            },
+          },
+          {
+            description: 'workflow definition added',
+            write: async (iteration: number) => {
+              await fs.writeFile(
+                files.workflow,
+                `import { hmrFuzzImportedValue } from './hmr-fuzz-import-helper';
+import { HmrFuzzBox } from './hmr-fuzz-serde';
+import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
+import { hmrFuzzStep } from './hmr-fuzz-step';
+import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
+
+export async function hmrFuzzWorkflow() {
+  'use workflow';
+  const stepValue = await hmrFuzzStep();
+  const workflowValue = hmrFuzzWorkflowHelper(
+    new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzImportedValue))
+  );
+  return { stepValue, workflowValue };
+}
+
+export async function hmrFuzzAddedWorkflow() {
+  'use workflow';
+  return 'added-workflow-${iteration}';
+}
+`
+              );
+            },
+            assert: async () => {
+              await pollUntil({
+                description: 'added workflow definition to appear in manifest',
+                timeoutMs: 50_000,
+                intervalMs: 500,
+                check: async () => {
+                  await prewarm();
+                  expect(await readManifestWorkflowFunctionNames()).toContain(
+                    'hmrFuzzAddedWorkflow'
+                  );
+                },
+              });
+            },
+          },
+          {
+            description: 'workflow file added through API import',
+            write: async (iteration: number) => {
+              await fs.writeFile(
+                files.addedWorkflow,
+                `export async function hmrFuzzAddedFileWorkflow() {
+  'use workflow';
+  return 'added-file-workflow-${iteration}';
+}
+`
+              );
+              await fs.writeFile(
+                apiFile,
+                `import '${finalConfig.apiFileImportPath}/${workflowsDir}/hmr-fuzz-added-workflow';
+import '${finalConfig.apiFileImportPath}/${workflowsDir}/hmr-fuzz-step';
+import '${finalConfig.apiFileImportPath}/${workflowsDir}/hmr-fuzz-workflow';
+${apiFileContent}`
+              );
+            },
+            assert: async () => {
+              await pollUntil({
+                description: 'added workflow file to appear in manifest',
+                timeoutMs: 50_000,
+                intervalMs: 500,
+                check: async () => {
+                  await prewarm();
+                  expect(await readManifestWorkflowFunctionNames()).toContain(
+                    'hmrFuzzAddedFileWorkflow'
+                  );
+                },
+              });
+            },
+          },
+        ] as const;
+
+        for (let index = 0; index < fullCases.length; index++) {
+          const fullCase = fullCases[index];
+          const logCursor = await readDevServerLogCursor();
+          await fullCase.write(index + 1);
+          await fullCase.assert(index + 1);
+          await expectHmrLogCounts(logCursor, { full: 1 });
+          snapshot = await waitForGeneratedArtifactStability();
+        }
+
+        const unrelatedLogCursor = await readDevServerLogCursor();
+        await fs.writeFile(files.unrelated, 'export const unrelated = true;\n');
+        snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
+        await expectHmrLogCounts(unrelatedLogCursor, { skip: 1 });
+
+        const unrelatedRemovalLogCursor = await readDevServerLogCursor();
+        await fs.unlink(files.unrelated);
+        snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
+        await expectHmrLogCounts(unrelatedRemovalLogCursor, { skip: 1 });
       }
     );
   });

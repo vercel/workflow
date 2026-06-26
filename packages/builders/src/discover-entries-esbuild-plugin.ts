@@ -58,8 +58,17 @@ export const importParents = new Map<string, Set<string>>();
 // check if a parent has a child in its import chain
 // e.g. if a dependency needs to be bundled because it has
 // a 'use workflow/'use step' directive in it
-export function parentHasChild(parent: string, childToFind: string): boolean {
+export function parentHasChild(
+  parent: string,
+  childToFind: string,
+  {
+    excludedRoots,
+  }: {
+    excludedRoots?: Iterable<string>;
+  } = {}
+): boolean {
   const visited = new Set<string>();
+  const excluded = new Set(excludedRoots);
   const queue: string[] = [parent];
 
   while (queue.length > 0) {
@@ -76,6 +85,9 @@ export function parentHasChild(parent: string, childToFind: string): boolean {
     }
 
     for (const child of children) {
+      if (excluded.has(child)) {
+        continue;
+      }
       if (child === childToFind) {
         return true;
       }
