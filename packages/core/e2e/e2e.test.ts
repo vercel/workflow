@@ -2225,7 +2225,7 @@ describe('e2e', () => {
       const run2 = await start(await e2e('hookSupersedeOwnerWorkflow'), [
         token,
       ]);
-      await waitForHook(token, {
+      const run2Hook = await waitForHook(token, {
         runId: run2.runId,
         timeoutMs: HOOK_WAIT_TIMEOUT_MS,
       });
@@ -2239,7 +2239,7 @@ describe('e2e', () => {
       expect(run1Data.status).toBe('cancelled');
 
       // The new owner receives payloads on the reclaimed token.
-      await resumeHook(token, { message: 'post-supersede' });
+      await resumeHook(run2Hook, { message: 'post-supersede' });
       const run2Result = await run2.returnValue;
       expect(run2Result).toMatchObject({
         role: 'owner',
