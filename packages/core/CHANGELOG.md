@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- [#2565](https://github.com/vercel/workflow/pull/2565) [`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba) Thanks [@ijjk](https://github.com/ijjk)! - Collapse default workflow build output to a single completion summary and move detailed progress logs behind DEBUG=workflow:build.
+
 ## 5.0.0-beta.23
 
 ### Patch Changes

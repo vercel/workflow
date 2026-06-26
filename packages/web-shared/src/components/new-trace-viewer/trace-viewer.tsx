@@ -39,14 +39,14 @@ import {
   TooltipTrigger,
 } from '../ui/tooltip';
 import EventList from './components/event-list';
-import { TraceShortcutHelper } from './components/trace-shortcut-helper';
-import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { SplitPane } from './components/split-pane';
 import {
   TIMELINE_PADDING_PX,
   Timeline,
   TimelineHeader,
 } from './components/timeline';
+import { TraceShortcutHelper } from './components/trace-shortcut-helper';
+import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
 import type { TraceWithMeta } from './types';
@@ -822,10 +822,7 @@ function NewTraceViewerContent({
                 run={sidebar.run}
                 onStreamClick={sidebar.onStreamClick}
                 onRunClick={sidebar.onRunClick}
-                spanDetailData={sidebar.spanDetailData}
-                spanDetailError={sidebar.spanDetailError}
-                spanDetailLoading={sidebar.spanDetailLoading}
-                onSpanSelect={sidebar.onSpanSelect}
+                fetchSpanDetail={sidebar.fetchSpanDetail}
                 onWakeUpSleep={sidebar.onWakeUpSleep}
                 onLoadEventData={sidebar.onLoadEventData}
                 onResolveHook={sidebar.onResolveHook}

@@ -768,10 +768,8 @@ export const AttributePanel = ({
 
     if (resource === 'sleep') return present;
 
-    // During loading, ensure sections appear so their skeletons render
-    // in the correct position (above the events section).
-    const loadingDefaults = ['input', 'output'];
-    for (const key of loadingDefaults) {
+    const loadingPlaceholders = ['input', 'output'];
+    for (const key of loadingPlaceholders) {
       if (!present.includes(key)) {
         present.push(key);
       }

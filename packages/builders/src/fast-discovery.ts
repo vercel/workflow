@@ -158,11 +158,11 @@ function shouldSkipFastDiscoveryImport(specifier: string): boolean {
   }
 
   const pathLikeSpecifier = stripImportSpecifierQuery(specifier);
-  if (
-    !pathLikeSpecifier.startsWith('.') &&
-    !isAbsolute(pathLikeSpecifier) &&
-    !pathLikeSpecifier.includes('/')
-  ) {
+  if (isRelativeOrAbsoluteSpecifier(pathLikeSpecifier)) {
+    return false;
+  }
+
+  if (!pathLikeSpecifier.includes('/')) {
     return false;
   }
 
@@ -634,11 +634,8 @@ export async function fastDiscoverEntries({
       ? strippedSpecifier
       : resolve(dirname(importer), strippedSpecifier);
     const extension = extname(basePath);
-    if (extension !== '') {
-      return FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extension) &&
-        (await fileExists(basePath))
-        ? normalizePath(basePath)
-        : null;
+    if (FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extension)) {
+      return (await fileExists(basePath)) ? normalizePath(basePath) : null;
     }
 
     for (const candidate of [
