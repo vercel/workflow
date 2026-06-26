@@ -10,3 +10,4 @@ _workflows.ts
 
 # Nitro
 .output
+/.swc

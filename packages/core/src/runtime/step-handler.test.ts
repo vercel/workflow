@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   FatalError,
+  RunExpiredError,
   ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -283,7 +284,6 @@ describe('step-handler 409 handling', () => {
   describe('step_completed 409', () => {
     it('should warn and return when step_completed gets a 409', async () => {
       // step_started succeeds, step function succeeds, step_completed returns 409
-      let callCount = 0;
       mockEventsCreate.mockImplementation(
         (_runId: string, event: { eventType: string }) => {
           if (event.eventType === 'step_started') {
@@ -299,7 +299,6 @@ describe('step-handler 409 handling', () => {
             });
           }
           if (event.eventType === 'step_completed') {
-            callCount++;
             return Promise.reject(
               new EntityConflictError(
                 'Cannot complete step because it is already completed'
@@ -647,7 +646,7 @@ describe('step-handler max deliveries', () => {
   });
 
   it('should not trigger max deliveries check when under limit', async () => {
-    const result = await capturedHandler(createMessage(), {
+    await capturedHandler(createMessage(), {
       ...createMetadata('myStep'),
       attempt: MAX_QUEUE_DELIVERIES,
     });
@@ -968,23 +967,7 @@ describe('executeStep inline-delta threading', () => {
     );
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
-    mockEventsCreate
-      .mockReset()
-      .mockImplementation((_runId: string, event: { eventType: string }) => {
-        if (event.eventType === 'step_started') {
-          return Promise.resolve({
-            step: {
-              stepId: 'step_abc',
-              status: 'running',
-              attempt: 1,
-              startedAt: new Date(),
-              input: [],
-            },
-            event: {},
-          });
-        }
-        return Promise.resolve({ event: {} });
-      });
+    mockEventsCreate.mockReset().mockImplementation(defaultEventsCreate);
   });
 
   afterEach(() => {
@@ -999,39 +982,55 @@ describe('executeStep inline-delta threading', () => {
     stepName: 'myStep',
   };
 
+  function defaultEventsCreate(_runId: string, event: { eventType: string }) {
+    if (event.eventType === 'step_started') {
+      return Promise.resolve({
+        step: {
+          stepId: 'step_abc',
+          status: 'running',
+          attempt: 1,
+          startedAt: new Date(),
+          input: [],
+        },
+        event: {},
+      });
+    }
+    return Promise.resolve({ event: {} });
+  }
+
+  function mockStepCompleted(handler: (params: unknown) => Promise<unknown>) {
+    mockEventsCreate.mockImplementation(
+      (runId: string, event: { eventType: string }, params?: unknown) => {
+        if (event.eventType === 'step_completed') {
+          return handler(params);
+        }
+        return defaultEventsCreate(runId, event);
+      }
+    );
+  }
+
+  function createdEventTypes() {
+    return mockEventsCreate.mock.calls.map(
+      ([, event]) => (event as { eventType: string }).eventType
+    );
+  }
+
   it('passes sinceCursor to the step_completed write and surfaces the returned delta', async () => {
     const deltaEvents = [
       { eventId: 'evnt_1', eventType: 'step_created' },
       { eventId: 'evnt_2', eventType: 'step_started' },
       { eventId: 'evnt_3', eventType: 'step_completed' },
     ];
-    mockEventsCreate.mockImplementation(
-      (_runId: string, event: { eventType: string }, params?: unknown) => {
-        if (event.eventType === 'step_started') {
-          return Promise.resolve({
-            step: {
-              stepId: 'step_abc',
-              status: 'running',
-              attempt: 1,
-              startedAt: new Date(),
-              input: [],
-            },
-            event: {},
-          });
-        }
-        if (event.eventType === 'step_completed') {
-          // The World returns the delta only because sinceCursor was passed.
-          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
-          return Promise.resolve({
-            event: {},
-            events: deltaEvents,
-            cursor: 'cursor_post',
-            hasMore: false,
-          });
-        }
-        return Promise.resolve({ event: {} });
-      }
-    );
+    mockStepCompleted(async (params) => {
+      // The World returns the delta only because sinceCursor was passed.
+      expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+      return {
+        event: {},
+        events: deltaEvents,
+        cursor: 'cursor_post',
+        hasMore: false,
+      };
+    });
 
     const world = await getWorld();
     const result = await executeStep({
@@ -1059,32 +1058,15 @@ describe('executeStep inline-delta threading', () => {
       { eventId: 'evnt_1', eventType: 'hook_received' },
       { eventId: 'evnt_2', eventType: 'hook_received' },
     ];
-    mockEventsCreate.mockImplementation(
-      (_runId: string, event: { eventType: string }, params?: unknown) => {
-        if (event.eventType === 'step_started') {
-          return Promise.resolve({
-            step: {
-              stepId: 'step_abc',
-              status: 'running',
-              attempt: 1,
-              startedAt: new Date(),
-              input: [],
-            },
-            event: {},
-          });
-        }
-        if (event.eventType === 'step_completed') {
-          expect(params).toEqual({ sinceCursor: 'cursor_pre' });
-          return Promise.resolve({
-            event: {},
-            events: truncatedEvents,
-            cursor: 'cursor_mid',
-            hasMore: true,
-          });
-        }
-        return Promise.resolve({ event: {} });
-      }
-    );
+    mockStepCompleted(async (params) => {
+      expect(params).toEqual({ sinceCursor: 'cursor_pre' });
+      return {
+        event: {},
+        events: truncatedEvents,
+        cursor: 'cursor_mid',
+        hasMore: true,
+      };
+    });
 
     const world = await getWorld();
     const result = await executeStep({
@@ -1104,33 +1086,16 @@ describe('executeStep inline-delta threading', () => {
 
   it('does not pass sinceCursor or surface a delta when it is omitted', async () => {
     let completedParams: unknown = 'unset';
-    mockEventsCreate.mockImplementation(
-      (_runId: string, event: { eventType: string }, params?: unknown) => {
-        if (event.eventType === 'step_started') {
-          return Promise.resolve({
-            step: {
-              stepId: 'step_abc',
-              status: 'running',
-              attempt: 1,
-              startedAt: new Date(),
-              input: [],
-            },
-            event: {},
-          });
-        }
-        if (event.eventType === 'step_completed') {
-          completedParams = params;
-          // Even if a World returned events here, the runtime must ignore them
-          // when it never requested a delta.
-          return Promise.resolve({
-            event: {},
-            events: [{ eventId: 'evnt_x', eventType: 'step_completed' }],
-            cursor: 'cursor_post',
-          });
-        }
-        return Promise.resolve({ event: {} });
-      }
-    );
+    mockStepCompleted(async (params) => {
+      completedParams = params;
+      // Even if a World returned events here, the runtime must ignore them
+      // when it never requested a delta.
+      return {
+        event: {},
+        events: [{ eventId: 'evnt_x', eventType: 'step_completed' }],
+        cursor: 'cursor_post',
+      };
+    });
 
     const world = await getWorld();
     const result = await executeStep({
@@ -1145,25 +1110,6 @@ describe('executeStep inline-delta threading', () => {
   });
 
   it('surfaces no delta when a supporting cursor is requested but the World omits one', async () => {
-    mockEventsCreate.mockImplementation(
-      (_runId: string, event: { eventType: string }) => {
-        if (event.eventType === 'step_started') {
-          return Promise.resolve({
-            step: {
-              stepId: 'step_abc',
-              status: 'running',
-              attempt: 1,
-              startedAt: new Date(),
-              input: [],
-            },
-            event: {},
-          });
-        }
-        // World ignores sinceCursor (returns no events/cursor) — backward compat.
-        return Promise.resolve({ event: {} });
-      }
-    );
-
     const world = await getWorld();
     const result = await executeStep({
       world: world as never,
@@ -1174,6 +1120,30 @@ describe('executeStep inline-delta threading', () => {
     expect(result.type).toBe('completed');
     if (result.type !== 'completed') throw new Error('unreachable');
     expect(result.inlineDelta).toBeUndefined();
+  });
+
+  it('rethrows step_completed write failures without recording a step failure', async () => {
+    const completionError = new Error('fetch failed');
+    mockStepCompleted(() => Promise.reject(completionError));
+
+    const world = await getWorld();
+    await expect(
+      executeStep({ world: world as never, ...baseParams })
+    ).rejects.toBe(completionError);
+
+    expect(createdEventTypes()).toEqual(['step_started', 'step_completed']);
+  });
+
+  it('treats a RunExpiredError from step_completed as gone', async () => {
+    mockStepCompleted(() =>
+      Promise.reject(new RunExpiredError('run already completed'))
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result).toEqual({ type: 'gone' });
+    expect(createdEventTypes()).toEqual(['step_started', 'step_completed']);
   });
 });
 
@@ -1213,7 +1183,7 @@ describe('executeStep optimistic inline start', () => {
   it('sends step_started carrying the input and completes (when enabled)', async () => {
     mockEventsCreate
       .mockReset()
-      .mockImplementation((_runId: string, event: { eventType: string }) =>
+      .mockImplementation((_runId: string, _event: { eventType: string }) =>
         Promise.resolve({ event: {} })
       );
 

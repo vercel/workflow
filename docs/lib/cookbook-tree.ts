@@ -134,17 +134,10 @@ export const recipes: Record<string, Recipe> = {
   // Agent Patterns
   'durable-agent': {
     slug: 'durable-agent',
-    title: 'Durable Agent',
+    title: 'WorkflowAgent',
     description:
-      'Replace a stateless AI agent with a durable one that survives crashes, retries tool calls, and streams output.',
+      "Build durable, resumable AI agents with AI SDK's WorkflowAgent.",
     category: 'agent-patterns',
-    versionOverrides: {
-      v5: {
-        title: 'WorkflowAgent',
-        description:
-          "Build durable, resumable AI agents with AI SDK's WorkflowAgent.",
-      },
-    },
   },
   'human-in-the-loop': {
     slug: 'human-in-the-loop',

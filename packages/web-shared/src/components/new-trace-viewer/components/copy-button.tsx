@@ -2,7 +2,7 @@
 
 import { Check, Copy } from 'lucide-react';
 import { type JSX, useEffect, useRef, useState } from 'react';
-import { cn } from '../../../lib/utils';
+import { cn } from '../../../lib/cn';
 
 interface CopyButtonProps {
   copyText: string;

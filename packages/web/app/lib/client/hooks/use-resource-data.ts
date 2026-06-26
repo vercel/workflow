@@ -7,7 +7,6 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   unwrapOrThrow,
-  unwrapServerActionResult,
   WorkflowWebAPIError,
 } from '~/lib/client/workflow-errors';
 import { fetchEvents, fetchHook, fetchRun, fetchStep } from '~/lib/rpc-client';
@@ -56,6 +55,64 @@ async function fetchResourceWithCorrelationId(
   return { data: resourceData, correlationId };
 }
 
+export async function fetchSpanDetailResource(
+  env: EnvMap,
+  selection: {
+    resource: 'run' | 'step' | 'hook' | 'sleep';
+    resourceId: string;
+    runId?: string;
+  },
+  options: { encryptionKey?: Uint8Array } = {}
+): Promise<WorkflowRun | Step | Hook | Event> {
+  const { resource, resourceId, runId } = selection;
+  const { encryptionKey } = options;
+  const hydrate = async <T>(value: T): Promise<T> =>
+    encryptionKey
+      ? hydrateResourceIOWithKey(value, encryptionKey)
+      : hydrateResourceIO(value);
+
+  if (resource === 'hook') {
+    const result = await unwrapOrThrow(fetchHook(env, resourceId, 'all'));
+    return hydrate(result);
+  }
+
+  if (resource === 'sleep') {
+    if (!runId) {
+      throw new WorkflowWebAPIError(
+        'runId is required for loading sleep details',
+        { layer: 'client' }
+      );
+    }
+    const result = await unwrapOrThrow(
+      fetchEvents(env, runId, { sortOrder: 'asc', limit: 1000, withData: true })
+    );
+    const allEvents = (result.data as unknown as Event[]).map(
+      hydrateResourceIO
+    );
+    const waitEvents = await Promise.all(
+      allEvents.filter((e) => e.correlationId === resourceId).map(hydrate)
+    );
+    const data = waitEventsToWaitEntity(waitEvents);
+    if (data === null) {
+      throw new WorkflowWebAPIError(
+        `Failed to load ${resource} details: missing required event data`,
+        { layer: 'client' }
+      );
+    }
+    return data as unknown as Event;
+  }
+
+  const { data } = await fetchResourceWithCorrelationId(
+    env,
+    resource,
+    resourceId,
+    {
+      runId,
+    }
+  );
+  return hydrate(data);
+}
+
 /**
  * Returns (and keeps up-to-date) data inherent to a specific run/step/hook,
  * resolving input/output/metadata, AND loading all related events with full event data.
@@ -81,15 +138,6 @@ export function useWorkflowResourceData(
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<Error | null>(null);
 
-  // Hydrate a resource, decrypting if an encryption key is available
-  const hydrate = useCallback(
-    async <T>(resource: T): Promise<T> =>
-      encryptionKey
-        ? hydrateResourceIOWithKey(resource, encryptionKey)
-        : hydrateResourceIO(resource),
-    [encryptionKey]
-  );
-
   const prevSelectionRef = useRef('');
 
   const fetchData = useCallback(async () => {
@@ -108,95 +156,19 @@ export function useWorkflowResourceData(
     }
     setError(null);
     setLoading(true);
-    if (resource === 'hook') {
-      try {
-        const { error, result } = await unwrapServerActionResult(
-          fetchHook(env, resourceId, 'all')
-        );
-        if (error) {
-          setError(error);
-          return;
-        }
-        try {
-          setData(await hydrate(result));
-        } catch (hydrateError) {
-          setError(
-            hydrateError instanceof Error
-              ? hydrateError
-              : new Error(String(hydrateError))
-          );
-        }
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-    if (resource === 'sleep') {
-      try {
-        if (!runId) {
-          setError(new Error('runId is required for loading sleep details'));
-          return;
-        }
-        const { error, result } = await unwrapServerActionResult(
-          fetchEvents(env, runId, {
-            sortOrder: 'asc',
-            limit: 1000,
-            withData: true,
-          })
-        );
-        if (error) {
-          setError(error);
-          return;
-        }
-        try {
-          const allEvents = (result.data as unknown as Event[]).map(
-            hydrateResourceIO
-          );
-          const waitEvents = await Promise.all(
-            allEvents.filter((e) => e.correlationId === resourceId).map(hydrate)
-          );
-          const data = waitEventsToWaitEntity(waitEvents);
-          if (data === null) {
-            setError(
-              new Error(
-                `Failed to load ${resource} details: missing required event data`
-              )
-            );
-            return;
-          }
-          setData(data as unknown as Hook | Event);
-        } catch (hydrateError) {
-          setError(
-            hydrateError instanceof Error
-              ? hydrateError
-              : new Error(String(hydrateError))
-          );
-        }
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-    // Fetch resource with full data
     try {
-      const { data: resourceData } = await fetchResourceWithCorrelationId(
+      const result = await fetchSpanDetailResource(
         env,
-        resource,
-        resourceId,
-        { runId }
+        { resource, resourceId, runId },
+        { encryptionKey }
       );
-      setData(await hydrate(resourceData));
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        setError(error);
-      } else {
-        setError(new Error(String(error)));
-      }
-      return;
+      setData(result);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err : new Error(String(err)));
     } finally {
       setLoading(false);
     }
-  }, [env, resource, resourceId, runId, enabled, hydrate]);
+  }, [env, resource, resourceId, runId, enabled, encryptionKey]);
 
   // Initial load
   useEffect(() => {

@@ -822,10 +822,7 @@ function NewTraceViewerContent({
                 run={sidebar.run}
                 onStreamClick={sidebar.onStreamClick}
                 onRunClick={sidebar.onRunClick}
-                spanDetailData={sidebar.spanDetailData}
-                spanDetailError={sidebar.spanDetailError}
-                spanDetailLoading={sidebar.spanDetailLoading}
-                onSpanSelect={sidebar.onSpanSelect}
+                fetchSpanDetail={sidebar.fetchSpanDetail}
                 onWakeUpSleep={sidebar.onWakeUpSleep}
                 onLoadEventData={sidebar.onLoadEventData}
                 onResolveHook={sidebar.onResolveHook}
