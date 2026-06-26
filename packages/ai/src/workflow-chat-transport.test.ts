@@ -705,8 +705,12 @@ describe('WorkflowChatTransport', () => {
         // Default initialStartIndex = 0 → filter inactive.
       });
 
-      // Even orphan-looking deltas should pass through unchanged because the
-      // caller didn't ask for a tail-only resume.
+      // Orphan-looking deltas are NOT dropped because the caller didn't ask for
+      // a tail-only resume. The framing normalizer still runs on every reconnect
+      // stream (it repairs damaged framing to keep the AI SDK consumer alive),
+      // so the orphan reasoning-delta survives and gets a synthesized
+      // reasoning-start prepended — rather than being silently discarded the way
+      // the negative-resume orphan filter would.
       mockFetch.mockResolvedValueOnce({
         ok: true,
         headers: new Headers(),
@@ -717,9 +721,20 @@ describe('WorkflowChatTransport', () => {
       });
 
       const stream = await transport.reconnectToStream({ chatId: 'test-chat' });
-      const chunks = (await collect(stream!)) as Array<{ type: string }>;
+      const chunks = (await collect(stream!)) as Array<{
+        type: string;
+        id?: string;
+      }>;
 
-      expect(chunks.map((c) => c.type)).toEqual(['reasoning-delta', 'finish']);
+      // If the drop filter had activated, the delta would be gone entirely
+      // (`['finish']`). It surviving — repaired, not dropped — proves the filter
+      // stayed inactive for the non-negative resume.
+      expect(chunks.map((c) => c.type)).toEqual([
+        'reasoning-start',
+        'reasoning-delta',
+        'finish',
+      ]);
+      expect(chunks[0].id).toBe('reasoning-0');
       expect(warnSpy).not.toHaveBeenCalled();
 
       warnSpy.mockRestore();
