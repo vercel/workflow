@@ -232,7 +232,6 @@ export abstract class BaseBuilder {
    */
   private warnedExternalPackages = new Set<string>();
   private workflowBuildStartTime: number | undefined;
-  private workflowBuildSummaryCount = 0;
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
 
   constructor(config: WorkflowConfig) {
@@ -263,10 +262,15 @@ export abstract class BaseBuilder {
     this.workflowBuildStartTime = undefined;
   }
 
-  private getWorkflowBuildSummaryPrefix(): string {
-    return this.workflowBuildSummaryCount === 0
-      ? 'workflows build complete'
-      : 'workflows rebuilt';
+  private getWorkflowBuildSummary({
+    stepCount,
+    workflowCount,
+  }: {
+    stepCount: number;
+    workflowCount: number;
+  }): string {
+    const counts = `${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}`;
+    return `✓ Compiled workflows in ${formatBuildDuration(this.getWorkflowBuildDuration())} (${counts})`;
   }
 
   private logCreateWorkflowsBundleInfo(...args: unknown[]): void {
@@ -2294,10 +2298,12 @@ export const OPTIONS = handler;`;
 
       if (!this.config.suppressCreateManifestLogs) {
         console.log(
-          `${this.getWorkflowBuildSummaryPrefix()} (${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, time ${formatBuildDuration(this.getWorkflowBuildDuration())})`
+          this.getWorkflowBuildSummary({
+            stepCount,
+            workflowCount,
+          })
         );
       }
-      this.workflowBuildSummaryCount += 1;
       this.resetWorkflowBuildTimer();
 
       return manifestJson;
