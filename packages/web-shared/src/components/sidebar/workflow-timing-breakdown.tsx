@@ -10,6 +10,7 @@ import {
   type WorkflowSpanTimingAttempt,
 } from '../../lib/workflow-span-timing';
 import { Skeleton } from '../ui/skeleton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { DetailCard } from './detail-card';
 
 const TIMING_LABELS = {
@@ -29,24 +30,59 @@ const TIMING_LABELS = {
 };
 
 const MODULE_INIT_WARNING_THRESHOLD_MS = 50;
+const MODULE_INIT_WARNING_DESCRIPTION =
+  'Module loading took over 50ms. Move expensive imports or startup work out of module scope, or lazy-load them before making Workflow requests.';
 
 function formatDuration(value: number | undefined): string | null {
   return value === undefined ? null : formatDurationPrecise(value);
 }
 
+function TimingInfoTooltip({
+  label,
+  description,
+}: {
+  label: string;
+  description: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={`${label} timing info`}
+          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-gray-700 transition-colors hover:text-gray-1000 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-800"
+          type="button"
+        >
+          <Info aria-hidden className="h-3 w-3" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs text-left">
+        {description}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ModuleInitWarningBadge() {
   return (
-    <span
-      className="shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium leading-none"
-      style={{
-        borderColor: 'var(--ds-red-400)',
-        backgroundColor: 'var(--ds-red-100)',
-        color: 'var(--ds-red-900)',
-      }}
-      title="Module loading took over 50ms. Check module-level imports and initialization code."
-    >
-      Check code
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label="High module init timing"
+          className="shrink-0 cursor-help rounded-sm border px-1.5 py-0.5 text-[10px] font-medium leading-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-900"
+          style={{
+            borderColor: 'var(--ds-red-400)',
+            backgroundColor: 'var(--ds-red-100)',
+            color: 'var(--ds-red-900)',
+          }}
+          type="button"
+        >
+          High
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs text-left">
+        {MODULE_INIT_WARNING_DESCRIPTION}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -67,12 +103,9 @@ function TimingRow({
 
   return (
     <div className="flex min-h-8 items-center justify-between gap-4 border-t border-gray-alpha-400 first:border-t-0">
-      <span
-        className="inline-flex min-w-0 items-center gap-1.5 text-label-13 text-gray-900"
-        title={description}
-      >
+      <span className="inline-flex min-w-0 items-center gap-1.5 text-label-13 text-gray-900">
         <span className="truncate">{label}</span>
-        <Info aria-hidden className="h-3 w-3 shrink-0 text-gray-700" />
+        <TimingInfoTooltip description={description} label={label} />
         {badge}
       </span>
       <span
