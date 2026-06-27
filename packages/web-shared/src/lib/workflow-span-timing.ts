@@ -6,6 +6,8 @@ export const WORKFLOW_SPAN_TIMING_ATTRIBUTE = 'workflowTiming';
 export type WorkflowTimingTimeValue = Date | number | string;
 
 export interface WorkflowQueuedTiming {
+  /** Whether timing data is currently being fetched for this span. */
+  isLoading?: boolean;
   /** Vercel request id for the function invocation that produced this timing. */
   requestId?: string;
   /** Timestamp for the start of the function invocation. */

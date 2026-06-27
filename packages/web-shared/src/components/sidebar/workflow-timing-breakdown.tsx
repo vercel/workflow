@@ -8,6 +8,7 @@ import {
   type WorkflowSpanTiming,
   type WorkflowSpanTimingAttempt,
 } from '../../lib/workflow-span-timing';
+import { Skeleton } from '../ui/skeleton';
 import { DetailCard } from './detail-card';
 
 const TIMING_LABELS = {
@@ -109,6 +110,26 @@ function TimingRows({
   );
 }
 
+function TimingRowsSkeleton() {
+  return (
+    <div className="rounded-md border border-gray-alpha-400 bg-background-200 px-3 py-1">
+      {[
+        TIMING_LABELS.coldStart.label,
+        TIMING_LABELS.moduleInit.label,
+        TIMING_LABELS.workflowOverhead.label,
+      ].map((label) => (
+        <div
+          className="flex min-h-8 items-center justify-between gap-4 border-t border-gray-alpha-400 first:border-t-0"
+          key={label}
+        >
+          <span className="text-label-13 text-gray-900">{label}</span>
+          <Skeleton className="h-4 w-14" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function WorkflowTimingBreakdown({
   timing,
   resource,
@@ -116,11 +137,21 @@ export function WorkflowTimingBreakdown({
   timing?: WorkflowSpanTiming;
   resource?: string;
 }) {
-  if (!timing || (resource !== 'run' && resource !== 'step')) {
+  if (resource !== 'run' && resource !== 'step') {
     return null;
   }
 
-  const attempts = timing.attempts?.length ? timing.attempts : [timing];
+  const isLoading = Boolean(timing?.isLoading);
+
+  if (!timing && !isLoading) {
+    return null;
+  }
+
+  const attempts = timing?.attempts?.length
+    ? timing.attempts
+    : timing
+      ? [timing]
+      : [];
   const breakdowns = attempts
     .map((attempt, index) => ({
       attempt,
@@ -137,60 +168,37 @@ export function WorkflowTimingBreakdown({
       } => item.breakdown !== null
     );
 
-  if (breakdowns.length === 0) {
+  if (breakdowns.length === 0 && !isLoading) {
     return null;
   }
 
-  const showAttemptLabels = hasRepeatedAttemptLabel(
-    timing,
-    breakdowns.map((item) => item.breakdown)
-  );
-  const summaryDuration =
-    breakdowns.length === 1
-      ? formatDuration(
-          breakdowns[0].breakdown.firstWorkflowRequestStartOffsetMs ??
-            breakdowns[0].breakdown.queuedDurationMs
-        )
-      : null;
+  const showAttemptLabels = timing
+    ? hasRepeatedAttemptLabel(
+        timing,
+        breakdowns.map((item) => item.breakdown)
+      )
+    : false;
 
   return (
     <DetailCard
       contentClassName="mb-4"
-      defaultOpen
-      summary={
-        <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-          <span className="truncate">Queued</span>
-          {summaryDuration ? (
-            <span className="shrink-0 text-label-13 font-normal tabular-nums text-gray-900">
-              {summaryDuration}
-            </span>
-          ) : null}
-        </span>
-      }
+      summary={<span className="min-w-0 flex-1 truncate">Queued</span>}
     >
       <div className="space-y-3">
-        {breakdowns.map(({ attempt, breakdown, index }) => {
-          const attemptStartOffset = formatDuration(
-            breakdown.firstWorkflowRequestStartOffsetMs
-          );
-          return (
-            <div key={`${attemptLabel(attempt, index)}-${index}`}>
-              {showAttemptLabels ? (
-                <div className="mb-2 flex items-center justify-between gap-3 text-label-13 text-gray-900">
-                  <span className="truncate">
+        {isLoading ? <TimingRowsSkeleton /> : null}
+        {!isLoading &&
+          breakdowns.map(({ attempt, breakdown, index }) => {
+            return (
+              <div key={`${attemptLabel(attempt, index)}-${index}`}>
+                {showAttemptLabels ? (
+                  <div className="mb-2 text-label-13 text-gray-900">
                     {attemptLabel(attempt, index)}
-                  </span>
-                  {attemptStartOffset ? (
-                    <span className="shrink-0 tabular-nums">
-                      {attemptStartOffset}
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
-              <TimingRows breakdown={breakdown} />
-            </div>
-          );
-        })}
+                  </div>
+                ) : null}
+                <TimingRows breakdown={breakdown} />
+              </div>
+            );
+          })}
       </div>
     </DetailCard>
   );
