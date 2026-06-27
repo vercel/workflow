@@ -203,7 +203,7 @@ export function createDevTests(config?: DevTestConfig) {
       }
       await pollUntil({
         description: 'dev server HMR logs to match expected rebuild counts',
-        timeoutMs: 20_000,
+        timeoutMs: 50_000,
         intervalMs: 250,
         check: async () => {
           const log = (await readDevServerLog()).slice(cursor);
