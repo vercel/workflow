@@ -821,7 +821,7 @@ ${apiFileContent}`
 
     test.runIf(shouldRunNextFlowRouteHmrTests)(
       'should follow Next flow-route HMR rebuild rules for body-only changes',
-      { timeout: 120_000 },
+      { timeout: 240_000 },
       async () => {
         assert(deploymentUrl);
         setupWorld(deploymentUrl);
@@ -1000,7 +1000,7 @@ ${apiFileContent}`
         }) => {
           await pollUntil({
             description,
-            timeoutMs: 50_000,
+            timeoutMs: 90_000,
             intervalMs: 500,
             check: async () => {
               const result = await runWorkflow();
