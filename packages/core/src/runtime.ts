@@ -1247,7 +1247,12 @@ export function workflowEntrypoint(
                         workflowRun,
                         events,
                         encryptionKey,
-                        stepHydrationCache
+                        stepHydrationCache,
+                        // Turbo: the end-of-run drain inside runWorkflow commits
+                        // fire-and-forget `*_created` events before the terminal
+                        // `awaitRunReady()` below, so gate those writes on the
+                        // backgrounded run_started too. Undefined outside turbo.
+                        runReadyBarrier
                       );
                       runtimeLogger.debug('Workflow replay completed', {
                         workflowRunId: runId,

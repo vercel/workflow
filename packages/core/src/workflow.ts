@@ -84,7 +84,17 @@ async function drainPendingQueueItems(
   pendingQueue: Map<string, QueueItem>,
   vmGlobalThis: typeof globalThis,
   workflowRun: WorkflowRun,
-  outcome: 'completed' | 'failed'
+  outcome: 'completed' | 'failed',
+  /**
+   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
+   * The drain runs at workflow completion *inside* `runWorkflow`, before the
+   * caller's terminal `awaitRunReady()` — so a workflow that creates a
+   * fire-and-forget hook (or wait/attribute) and then returns synchronously
+   * would otherwise have its `*_created` write race ahead of `run_started`.
+   * Threading the barrier into the suspension handler gates those writes the
+   * same way the normal suspension path is gated. Undefined outside turbo.
+   */
+  runReadyBarrier?: Promise<unknown>
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
@@ -110,6 +120,7 @@ async function drainPendingQueueItems(
       suspension: synthesized,
       world,
       run: workflowRun,
+      runReadyBarrier,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -134,7 +145,14 @@ export async function runWorkflow(
    * step results to turn O(N²) replay hydration into O(N). Omitted by callers
    * that replay only once (then there is nothing to reuse).
    */
-  stepHydrationCache?: StepHydrationCache
+  stepHydrationCache?: StepHydrationCache,
+  /**
+   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
+   * Threaded into the end-of-run drain so fire-and-forget `*_created` writes
+   * committed at workflow completion order after the run's creation. Undefined
+   * outside turbo, where `run_started` is awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -885,7 +903,8 @@ export async function runWorkflow(
         workflowContext.invocationsQueue,
         vmGlobalThis,
         workflowRun,
-        'completed'
+        'completed',
+        runReadyBarrier
       );
 
       return dehydrated;
@@ -901,7 +920,8 @@ export async function runWorkflow(
         workflowContext.invocationsQueue,
         vmGlobalThis,
         workflowRun,
-        'failed'
+        'failed',
+        runReadyBarrier
       );
 
       throw err;
