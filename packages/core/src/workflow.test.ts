@@ -5445,6 +5445,14 @@ describe('runWorkflow', () => {
         return 'done';
       }`;
 
+    // `void sleep(...)` is the wait equivalent: it enqueues a wait_created the
+    // workflow never awaits, drained the same way as the hook above.
+    const FIRE_AND_FORGET_WAIT = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+      async function workflow() {
+        void sleep('1d');
+        return 'done';
+      }`;
+
     async function makeRun(): Promise<WorkflowRun> {
       const ops: Promise<any>[] = [];
       return {
@@ -5512,6 +5520,50 @@ describe('runWorkflow', () => {
       expect(create).toHaveBeenCalledTimes(1);
       expect(create.mock.calls[0][1]).toMatchObject({
         eventType: 'hook_created',
+      });
+    });
+
+    it('does not write wait_created until the runReadyBarrier resolves', async () => {
+      let releaseBarrier: () => void = () => {};
+      const runReadyBarrier = new Promise<void>((resolve) => {
+        releaseBarrier = resolve;
+      });
+
+      const create = vi.fn(async () => ({
+        event: { eventType: 'wait_created' as const },
+      }));
+      setWorld({
+        events: { create },
+        streams: { write: vi.fn(), close: vi.fn() },
+      } as any);
+
+      const runPromise = runWorkflow(
+        `${FIRE_AND_FORGET_WAIT}${getWorkflowTransformCode('workflow')}`,
+        await makeRun(),
+        [],
+        noEncryptionKey,
+        undefined,
+        runReadyBarrier
+      ).then(() => 'completed' as const);
+
+      // Same gating as the hook case: a fire-and-forget wait drained at
+      // completion must not write wait_created before the backgrounded
+      // run_started lands.
+      const winner = await Promise.race([
+        runPromise,
+        new Promise<'pending'>((resolve) =>
+          setTimeout(() => resolve('pending'), 250)
+        ),
+      ]);
+      expect(winner).toBe('pending');
+      expect(create).not.toHaveBeenCalled();
+
+      releaseBarrier();
+      expect(await runPromise).toBe('completed');
+
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create.mock.calls[0][1]).toMatchObject({
+        eventType: 'wait_created',
       });
     });
 
