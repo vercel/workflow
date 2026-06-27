@@ -9,12 +9,13 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { formatStepName, pluralize } from '@workflow/utils';
+import { formatStepName, pluralize, stepDisplayName } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type Step,
   StepInvokePayloadSchema,
 } from '@workflow/world';
@@ -31,9 +32,11 @@ import {
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import {
+  buildInvocationSpanLinks,
+  getNextTraceCarrier,
   getSpanKind,
-  linkToCurrentContext,
-  serializeTraceCarrier,
+  getWorkflowTraceMode,
+  isUsableTraceCarrier,
   trace,
   withTraceContext,
 } from '../telemetry.js';
@@ -84,10 +87,29 @@ function createStepHandler(namespace?: string) {
         workflowRunId,
         workflowStartedAt,
         stepId,
-        traceCarrier: traceContext,
+        traceCarrier: incomingTraceCarrier,
         requestedAt,
       } = StepInvokePayloadSchema.parse(message_);
       const { requestId } = metadata;
+      // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
+      // or no span is active — treat an empty carrier the same as an absent
+      // one so linked mode falls back to a fresh origin instead of
+      // forwarding a useless `{}` forever.
+      const traceContext = isUsableTraceCarrier(incomingTraceCarrier)
+        ? incomingTraceCarrier
+        : undefined;
+
+      // --- Trace correlation mode ---
+      // 'linked' (default): the STEP span below starts a NEW root trace with
+      // span links to the delivery context and the run-origin context from
+      // the message's trace carrier. 'continuous': legacy behavior — the
+      // restored run-origin context parents this invocation's spans.
+      const traceMode = getWorkflowTraceMode();
+
+      // Trace carrier to attach to messages this invocation enqueues — see
+      // getNextTraceCarrier for the linked/continuous semantics.
+      const nextTraceCarrier = (): Promise<Record<string, string>> =>
+        getNextTraceCarrier(traceMode, traceContext);
 
       // --- Max delivery check ---
       // Enforce max delivery limit before any infrastructure calls.
@@ -141,7 +163,7 @@ function createStepHandler(namespace?: string) {
             getWorkflowQueueName(workflowName, resolvedNamespace),
             {
               runId: workflowRunId,
-              traceCarrier: await serializeTraceCarrier(),
+              traceCarrier: await nextTraceCarrier(),
               requestedAt: new Date(),
             }
           );
@@ -168,9 +190,18 @@ function createStepHandler(namespace?: string) {
         return;
       }
 
-      const spanLinks = await linkToCurrentContext();
-      // Execute step within the propagated trace context
-      return await withTraceContext(traceContext, async () => {
+      // In linked mode the only span link is to the run-origin context; the
+      // step.execute span stays a child of the local delivery (flow-route)
+      // context. In continuous mode the link points at the delivery context.
+      const spanLinks = await buildInvocationSpanLinks(traceMode, traceContext);
+
+      // Execute step within the propagated trace context (continuous mode
+      // only — in linked mode the run-origin is NOT restored as the parent,
+      // so withTraceContext is a passthrough and the step.execute span stays
+      // a child of the local delivery context, linked to the run origin).
+      const parentTraceCarrier =
+        traceMode === 'continuous' ? traceContext : undefined;
+      return await withTraceContext(parentTraceCarrier, async () => {
         // Extract the step name from the topic name
         const stepName = metadata.queueName.slice(stepPrefix.length);
         const world = await getWorld();
@@ -192,7 +223,7 @@ function createStepHandler(namespace?: string) {
         ]);
 
         return trace(
-          `STEP ${stepName}`,
+          `step.execute ${stepDisplayName(stepName)}`,
           { kind: spanKind, links: spanLinks },
           async (span) => {
             span?.setAttributes({
@@ -216,6 +247,7 @@ function createStepHandler(namespace?: string) {
               ...Attribute.WorkflowRunId(workflowRunId),
               ...Attribute.StepId(stepId),
               ...Attribute.StepTracePropagated(!!traceContext),
+              ...Attribute.WorkflowTraceMode(traceMode),
             });
 
             // step_started validates state and returns the step entity, so no separate
@@ -224,6 +256,14 @@ function createStepHandler(namespace?: string) {
             // - retryAfter timestamp reached (returns 425 with Retry-After header)
             // - Workflow still active (returns 410 if completed)
             let step!: Step;
+            // Gate payload compression on the step entity's specVersion
+            // (stamped by the same-deployment orchestrator that created the
+            // step, so spec >= 5 implies every reader of this run's payloads
+            // understands the 'gzip' format). Returns false on the early
+            // failure paths where step_started didn't return an entity.
+            const compressionForStep = () =>
+              ((step as Step | undefined)?.specVersion ?? 0) >=
+              SPEC_VERSION_SUPPORTS_COMPRESSION;
             try {
               const startResult = await world.events.create(
                 workflowRunId,
@@ -289,7 +329,7 @@ function createStepHandler(namespace?: string) {
                   getWorkflowQueueName(workflowName, resolvedNamespace),
                   {
                     runId: workflowRunId,
-                    traceCarrier: await serializeTraceCarrier(),
+                    traceCarrier: await nextTraceCarrier(),
                     requestedAt: new Date(),
                   }
                 );
@@ -360,7 +400,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         err,
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -393,7 +436,7 @@ function createStepHandler(namespace?: string) {
                 getWorkflowQueueName(workflowName, resolvedNamespace),
                 {
                   runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
+                  traceCarrier: await nextTraceCarrier(),
                   requestedAt: new Date(),
                 }
               );
@@ -460,7 +503,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         wrappedError,
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -493,7 +539,7 @@ function createStepHandler(namespace?: string) {
                 getWorkflowQueueName(workflowName, resolvedNamespace),
                 {
                   runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
+                  traceCarrier: await nextTraceCarrier(),
                   requestedAt: new Date(),
                 }
               );
@@ -527,7 +573,10 @@ function createStepHandler(namespace?: string) {
                       error: await dehydrateStepError(
                         new FatalError(errorMessage),
                         workflowRunId,
-                        await getEncryptionKey()
+                        await getEncryptionKey(),
+                        [],
+                        globalThis,
+                        compressionForStep()
                       ),
                     },
                   },
@@ -545,7 +594,7 @@ function createStepHandler(namespace?: string) {
                 getWorkflowQueueName(workflowName, resolvedNamespace),
                 {
                   runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
+                  traceCarrier: await nextTraceCarrier(),
                   requestedAt: new Date(),
                 }
               );
@@ -566,6 +615,9 @@ function createStepHandler(namespace?: string) {
             // operations (e.g., stream loading) are added to `ops` and executed later
             // via Promise.all(ops) - their timing is not included in this measurement.
             const ops: Promise<void>[] = [];
+            // Ops that must be durably committed before step completion (e.g. a
+            // step-initiated abort's hook_received event). See StepContext.
+            const preCompletionOps: Promise<void>[] = [];
             const hydratedInput = await trace(
               'step.hydrate',
               {},
@@ -623,6 +675,7 @@ function createStepHandler(namespace?: string) {
                     },
                     workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                     ops,
+                    preCompletionOps,
                     closureVars: hydratedInput.closureVars,
                     encryptionKey,
                   },
@@ -636,6 +689,19 @@ function createStepHandler(namespace?: string) {
             const executionTimeMs = Date.now() - executionStartTime;
 
             cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
+
+            // Commit must-be-durable ops (e.g. a step-initiated abort's
+            // hook_received event) before writing step_completed/step_failed,
+            // so any workflow continuation triggered by that event observes the
+            // abort rather than racing it. Producers swallow their own errors
+            // per the no-reject contract on StepContext.preCompletionOps; the
+            // `.catch()` defends it, since this await sits outside the
+            // user-code try/catch (a stray rejection here would otherwise
+            // surface as an infra error → queue re-delivery, not a step
+            // failure). The await only enforces ordering.
+            if (preCompletionOps.length > 0) {
+              await Promise.all(preCompletionOps).catch(() => {});
+            }
 
             span?.setAttributes({
               ...Attribute.QueueExecutionTimeMs(executionTimeMs),
@@ -666,7 +732,8 @@ function createStepHandler(namespace?: string) {
                       ops,
                       globalThis,
                       false,
-                      true
+                      true,
+                      compressionForStep()
                     );
                     const durationMs = Date.now() - startTime;
                     dehydrateSpan?.setAttributes({
@@ -777,7 +844,10 @@ function createStepHandler(namespace?: string) {
                         error: await dehydrateStepError(
                           effectiveErr,
                           workflowRunId,
-                          encryptionKey
+                          encryptionKey,
+                          [],
+                          globalThis,
+                          compressionForStep()
                         ),
                       },
                     },
@@ -862,7 +932,10 @@ function createStepHandler(namespace?: string) {
                           error: await dehydrateStepError(
                             wrappedError,
                             workflowRunId,
-                            encryptionKey
+                            encryptionKey,
+                            [],
+                            globalThis,
+                            compressionForStep()
                           ),
                         },
                       },
@@ -931,7 +1004,10 @@ function createStepHandler(namespace?: string) {
                           error: await dehydrateStepError(
                             err,
                             workflowRunId,
-                            encryptionKey
+                            encryptionKey,
+                            [],
+                            globalThis,
+                            compressionForStep()
                           ),
                           ...(RetryableError.is(err) && {
                             retryAfter: err.retryAfter,
@@ -988,7 +1064,7 @@ function createStepHandler(namespace?: string) {
                 getWorkflowQueueName(workflowName, resolvedNamespace),
                 {
                   runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
+                  traceCarrier: await nextTraceCarrier(),
                   requestedAt: new Date(),
                 }
               );
@@ -1049,7 +1125,7 @@ function createStepHandler(namespace?: string) {
                   }
                   throw err;
                 }),
-              serializeTraceCarrier(),
+              nextTraceCarrier(),
             ]);
 
             if (stepCompleted409) {

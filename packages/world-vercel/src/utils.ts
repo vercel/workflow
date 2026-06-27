@@ -18,6 +18,7 @@ import {
   getSpanKind,
   HttpRequestMethod,
   HttpResponseStatusCode,
+  injectTraceContextIntoHeaders,
   PeerService,
   RpcService,
   RpcSystem,
@@ -133,6 +134,13 @@ export interface APIConfig {
    * bundled with each `@types/node` major), so a concrete type would reject a
    * dispatcher from a different undici version. Callers may pass any undici
    * version's dispatcher, or any object implementing the dispatcher contract.
+   *
+   * Note: when provided, this dispatcher replaces *every* default — including
+   * the one used for stream writes (the `PUT` write/close path). Stream appends
+   * are not idempotent, and undici's `RetryAgent` retries `PUT` on 5xx by
+   * default, which can duplicate a chunk the server already persisted. A custom
+   * dispatcher used with stream writes should therefore not retry `PUT` on 5xx
+   * (the built-in stream dispatcher retries only on transient errors and 429).
    */
   dispatcher?: unknown;
   projectConfig?: {
@@ -331,6 +339,13 @@ export async function makeRequest<T>({
       });
 
       headers.set('Accept', 'application/cbor');
+
+      // Explicitly propagate the active trace context (traceparent /
+      // tracestate / baggage) onto the outgoing request so workflow-server
+      // can parent its spans to this client span — without relying on the
+      // customer app having undici auto-instrumentation. No-ops when no
+      // OTEL SDK is registered.
+      await injectTraceContextIntoHeaders(headers);
 
       // Encode body as CBOR if data is provided
       let body: Buffer | undefined;

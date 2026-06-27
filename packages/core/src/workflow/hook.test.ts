@@ -1172,6 +1172,33 @@ describe('createCreateHook', () => {
       expect(queueItem.isWebhook).toBe(true);
     }
   });
+
+  it('should throw when an empty string token is provided', () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+
+    expect(() => createHook({ token: '' })).toThrow(
+      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+    );
+
+    // The rejected hook must not be registered in the invocations queue.
+    expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
+  it('should auto-generate a non-empty token when none is provided', () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook();
+
+    expect(hook.token).toBeTruthy();
+    expect(hook.token.length).toBeGreaterThan(0);
+
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.token).toBe(hook.token);
+    }
+  });
 });
 
 describe('createWebhook', () => {

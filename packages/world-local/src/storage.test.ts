@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
-import { stripEventDataRefs } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
@@ -683,6 +683,189 @@ describe('Storage', () => {
       });
     });
 
+    describe('lazy step start', () => {
+      it('creates the step on the fly when step_started carries input', async () => {
+        const result = await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_1',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([7, 8, 9]),
+          },
+        });
+
+        // Returns a running step at attempt 1, just as a normal
+        // step_created → step_started pair would.
+        expect(result.step?.stepId).toBe('lazy_step_1');
+        expect(result.step?.stepName).toBe('lazy-step');
+        expect(result.step?.status).toBe('running');
+        expect(result.step?.attempt).toBe(1);
+        expect(result.step?.input).toEqual(new Uint8Array([7, 8, 9]));
+        // The world reports that THIS call created the step (ownership signal).
+        expect(result.stepCreated).toBe(true);
+
+        // The step entity is persisted and readable.
+        const persisted = await storage.steps.get(testRunId, 'lazy_step_1');
+        expect(persisted.status).toBe('running');
+        expect(persisted.input).toEqual(new Uint8Array([7, 8, 9]));
+      });
+
+      it('writes a synthetic step_created event so replay observes it', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_2',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+          },
+        });
+
+        const events = await storage.events.listByCorrelationId({
+          correlationId: 'lazy_step_2',
+        });
+        const types = events.data.map((e) => e.eventType);
+        // Both a step_created (synthetic) and a step_started must be present:
+        // the client replay consumer flips hasCreatedEvent only on step_created.
+        expect(types).toContain('step_created');
+        expect(types).toContain('step_started');
+
+        // The synthetic step_created carries the input; the step_started row
+        // carries stepName but not input (it lives on step_created).
+        const created = events.data.find((e) => e.eventType === 'step_created');
+        expect(
+          (created?.eventData as { input?: unknown } | undefined)?.input
+        ).toBeDefined();
+        const started = events.data.find((e) => e.eventType === 'step_started');
+        expect(
+          (started?.eventData as { input?: unknown } | undefined)?.input
+        ).toBeUndefined();
+      });
+
+      it('still rejects a bare step_started (no input) on a missing step', async () => {
+        await expect(
+          storage.events.create(testRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: 'never_created',
+            eventData: { stepName: 'legacy-step' },
+          })
+        ).rejects.toThrow('not found');
+      });
+
+      it('rejects a lazy step_started on a terminal run', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
+
+        await expect(
+          storage.events.create(testRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: 'lazy_on_terminal',
+            eventData: {
+              stepName: 'lazy-step',
+              input: new Uint8Array([1]),
+            },
+          })
+        ).rejects.toThrow('terminal state');
+      });
+
+      it('rejects a second lazy step_started for an existing step (concurrent loser)', async () => {
+        // First lazy call creates + starts (attempt 1) and reports ownership.
+        const first = await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_3',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+          },
+        });
+        expect(first.step?.attempt).toBe(1);
+        expect(first.stepCreated).toBe(true);
+
+        // A lazy step_started is only ever sent for a brand-new step (the
+        // owned-inline path defers step_created only for steps with no prior
+        // step_created event). So if the step already exists when a lazy
+        // step_started arrives, this caller LOST the create race and must not
+        // run the body. The world surfaces EntityConflictError, which
+        // executeStep maps to `skipped`. This is the exactly-one-owner gate.
+        await expect(
+          storage.events.create(testRunId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: 'lazy_step_3',
+            eventData: {
+              stepName: 'lazy-step',
+              input: new Uint8Array([1]),
+            },
+          })
+        ).rejects.toThrow('already created');
+      });
+
+      it('crash recovery re-starts via a non-lazy step_started on the existing step', async () => {
+        // Owner creates + starts the step lazily (attempt 1), then "crashes"
+        // before completing. On recovery the step already exists with its
+        // step_created event, so the step is re-queued and re-run via a
+        // NON-lazy step_started (no input). That path re-starts the running
+        // step, bumping the attempt counter — at-least-once execution.
+        await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_4',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+          },
+        });
+
+        const rerun = await updateStep(
+          storage,
+          testRunId,
+          'lazy_step_4',
+          'step_started',
+          {}
+        );
+        expect(rerun.status).toBe('running');
+        expect(rerun.attempt).toBe(2);
+      });
+
+      it('a lazy step_started followed by step_failed marks the step failed', async () => {
+        // Regression guard for the unregistered-step path on the lazy inline
+        // route. When a step's function isn't registered, executeStep must
+        // first send the lazy step_started (to materialize the step the
+        // suspension handler deferred) and only THEN write step_failed.
+        // Writing step_failed against a never-created step would hit the
+        // "step must exist" ordering guard and wedge the run. This asserts the
+        // create-then-fail sequence the runtime relies on.
+        await storage.events.create(testRunId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'lazy_step_fail',
+          eventData: {
+            stepName: 'ghost-step',
+            input: new Uint8Array([1]),
+          },
+        });
+
+        const failed = await updateStep(
+          storage,
+          testRunId,
+          'lazy_step_fail',
+          'step_failed',
+          { error: new Uint8Array([2, 3]) }
+        );
+        expect(failed.status).toBe('failed');
+        expect(failed.attempt).toBe(1);
+
+        const persisted = await storage.steps.get(testRunId, 'lazy_step_fail');
+        expect(persisted.status).toBe('failed');
+      });
+    });
+
     describe('list', () => {
       it('should list all steps for a run', async () => {
         const step1 = await createStep(storage, testRunId, {
@@ -999,6 +1182,220 @@ describe('Storage', () => {
 
         expect(event.eventType).toBe('run_completed');
         expect(event.correlationId).toBeUndefined();
+      });
+    });
+
+    // Inline-delta optimization: a step-terminal write carrying
+    // `sinceCursor` returns the event-log delta since that cursor so the
+    // inline runtime loop can skip an incremental events.list round-trip.
+    describe('inline delta (sinceCursor)', () => {
+      // Capture the cursor as of the latest event in the run — what the
+      // runtime would hold before it begins writing the next step's events.
+      async function currentCursor(): Promise<string> {
+        const listed = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+        const cursor = listed.cursor;
+        if (!cursor) throw new Error('expected a cursor');
+        return cursor;
+      }
+
+      it('returns the events written since the cursor on step_completed, matching events.list', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        const sinceCursor = await currentCursor();
+
+        // A sequential step: create -> started -> completed. The terminal
+        // write carries sinceCursor and should return all three.
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq', 'step_started', {
+          stepName: 'seq-step',
+        });
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_completed' as const,
+            correlationId: 'corr_seq',
+            eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+          },
+          { sinceCursor }
+        );
+
+        // The delta is exactly what a fresh events.list(sinceCursor) returns.
+        const fetched = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+
+        expect(result.events).toBeDefined();
+        expect(result.events?.map((e) => e.eventType)).toEqual([
+          'step_created',
+          'step_started',
+          'step_completed',
+        ]);
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          fetched.data.map((e) => e.eventId)
+        );
+        expect(result.cursor).toBe(fetched.cursor);
+        expect(result.hasMore).toBe(fetched.hasMore);
+      });
+
+      it('captures in-band events (hook_received) interleaved before the terminal write', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        // An open hook exists; an external party delivers a payload while the
+        // step is running. The delta MUST include the hook_received so the
+        // inline loop does not drop it and skew from the server log.
+        await createHook(storage, testRunId, {
+          hookId: 'corr_hook',
+          token: 'tok_inband',
+        });
+        const sinceCursor = await currentCursor();
+
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq2',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq2', 'step_started', {
+          stepName: 'seq-step',
+        });
+        // In-band hook delivery lands between step_started and step_completed.
+        await storage.events.create(testRunId, {
+          eventType: 'hook_received' as const,
+          correlationId: 'corr_hook',
+          eventData: { token: 'tok_inband', payload: new Uint8Array([9]) },
+        });
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_completed' as const,
+            correlationId: 'corr_seq2',
+            eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+          },
+          { sinceCursor }
+        );
+
+        const fetched = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+
+        expect(result.events?.map((e) => e.eventType)).toContain(
+          'hook_received'
+        );
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          fetched.data.map((e) => e.eventId)
+        );
+        expect(result.cursor).toBe(fetched.cursor);
+      });
+
+      it('truncates the delta and surfaces hasMore=true when it exceeds one page, matching events.list', async () => {
+        // Safety property the runtime relies on (see the limit/hasMore/fallback
+        // contract at events-storage.ts and the consume gate in runtime.ts):
+        // the inline-delta query uses paginatedFileSystemQuery's default page
+        // size, so a delta larger than one page is truncated and MUST report
+        // hasMore=true. The runtime refuses to consume a truncated delta and
+        // falls back to the exhaustive events.list loop, so a partial page can
+        // never be mistaken for the complete delta.
+        await updateRun(storage, testRunId, 'run_started');
+
+        // Open many hooks BEFORE the cursor so they are not part of the delta;
+        // their in-band deliveries (below) are.
+        const HOOK_COUNT = 25; // > paginatedFileSystemQuery default limit (20)
+        for (let i = 0; i < HOOK_COUNT; i++) {
+          await createHook(storage, testRunId, {
+            hookId: `corr_hook_${i}`,
+            token: `tok_${i}`,
+          });
+        }
+        const sinceCursor = await currentCursor();
+
+        // A burst of in-band hook deliveries lands while the step runs, then
+        // the sequential step itself — together far more than one page.
+        for (let i = 0; i < HOOK_COUNT; i++) {
+          await storage.events.create(testRunId, {
+            eventType: 'hook_received' as const,
+            correlationId: `corr_hook_${i}`,
+            eventData: { token: `tok_${i}`, payload: new Uint8Array([i]) },
+          });
+        }
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq_big',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq_big', 'step_started', {
+          stepName: 'seq-step',
+        });
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_completed' as const,
+            correlationId: 'corr_seq_big',
+            eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+          },
+          { sinceCursor }
+        );
+
+        // The delta is truncated: it carries exactly the first page and signals
+        // that more remains — byte-identical to events.list(sinceCursor).
+        const firstPage = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+
+        expect(result.hasMore).toBe(true);
+        expect(firstPage.hasMore).toBe(true);
+        expect(result.events?.length).toBeLessThan(HOOK_COUNT + 3);
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          firstPage.data.map((e) => e.eventId)
+        );
+        expect(result.cursor).toBe(firstPage.cursor);
+      });
+
+      it('does not return a delta when sinceCursor is omitted', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq3',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(storage, testRunId, 'corr_seq3', 'step_started', {
+          stepName: 'seq-step',
+        });
+        const result = await storage.events.create(testRunId, {
+          eventType: 'step_completed' as const,
+          correlationId: 'corr_seq3',
+          eventData: { stepName: 'seq-step', result: new Uint8Array([1]) },
+        });
+        expect(result.events).toBeUndefined();
+        expect(result.cursor).toBeUndefined();
+      });
+
+      it('does not return a delta for non-terminal step events', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        const sinceCursor = await currentCursor();
+        await createStep(storage, testRunId, {
+          stepId: 'corr_seq4',
+          stepName: 'seq-step',
+          input: new Uint8Array(),
+        });
+        // step_started carries sinceCursor but is not a loop boundary, so the
+        // World should not compute a delta for it.
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'step_started' as const,
+            correlationId: 'corr_seq4',
+            eventData: { stepName: 'seq-step' },
+          },
+          { sinceCursor }
+        );
+        expect(result.events).toBeUndefined();
       });
     });
 

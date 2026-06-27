@@ -4,6 +4,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
@@ -11,6 +12,7 @@ import {
   ROOT_RUN_ID_ATTRIBUTE,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -19,7 +21,10 @@ import { getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
-import { dehydrateWorkflowArguments } from '../serialization.js';
+import {
+  dehydrateWorkflowArguments,
+  SerializationFormat,
+} from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
@@ -65,6 +70,22 @@ function resolveLineageAttributes(): Record<string, string> | undefined {
   };
 }
 
+// `deploymentId: 'latest'` is a no-op in Worlds without atomic deployments.
+// The warning that explains this only needs to fire once per process: a
+// workflow that hardcodes 'latest' for its Vercel deployment would otherwise
+// log it on every local/Postgres run, flooding tight dev loops.
+let hasWarnedLatestNoOp = false;
+
+/**
+ * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only —
+ * exported so unit tests can exercise the warn path across `start()` calls.
+ *
+ * @internal
+ */
+export function _resetLatestNoOpWarnForTests(): void {
+  hasWarnedLatestNoOp = false;
+}
+
 export interface StartOptionsBase {
   /**
    * The world to use for the workflow run creation,
@@ -108,7 +129,10 @@ export interface StartOptionsWithDeploymentId extends StartOptionsBase {
    *
    * Set to `'latest'` to automatically resolve the most recent deployment
    * for the current environment (same production target or git branch).
-   * This is currently a Vercel-specific feature.
+   * This is only meaningful in worlds with atomic, immutable deployments
+   * (currently Vercel). In other worlds (local dev, Postgres) there is no
+   * notion of multiple deployments to resolve between, so `'latest'` has no
+   * effect — a warning is logged and the run targets the current deployment.
    *
    * **Note:** When `deploymentId` is provided, the argument and return types become `unknown`
    * since there is no guarantee the types will be consistent across deployments.
@@ -190,7 +214,8 @@ export async function start<TArgs extends unknown[], TResult>(
       );
     }
 
-    return trace(`workflow.start ${workflowName}`, async (span) => {
+    const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
+    return trace(spanName, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -215,13 +240,29 @@ export async function start<TArgs extends unknown[], TResult>(
       // When 'latest' is requested, resolve the actual latest deployment ID
       // for the current deployment's environment (same production target or
       // same git branch for preview deployments).
+      //
+      // Resolving 'latest' only means something in worlds with atomic,
+      // immutable deployments (e.g. Vercel), which implement
+      // resolveLatestDeploymentId(). Worlds without that concept (local dev,
+      // self-hosted Postgres) have nothing to resolve between, so rather than
+      // fail a run that works fine on Vercel, we warn and fall back to the
+      // current deployment — making 'latest' an effective no-op there.
       if (deploymentId === 'latest') {
-        if (!world.resolveLatestDeploymentId) {
-          throw new WorkflowRuntimeError(
-            "deploymentId 'latest' requires a World that implements resolveLatestDeploymentId()"
-          );
+        if (world.resolveLatestDeploymentId) {
+          deploymentId = await world.resolveLatestDeploymentId();
+        } else {
+          // Warn once per process — see hasWarnedLatestNoOp above.
+          if (!hasWarnedLatestNoOp) {
+            hasWarnedLatestNoOp = true;
+            runtimeLogger.warn(
+              "deploymentId: 'latest' has no effect in this world and was ignored. " +
+                'It is only supported by worlds with atomic deployments, such as Vercel. ' +
+                'The run will target the current deployment.',
+              { currentDeploymentId }
+            );
+          }
+          deploymentId = currentDeploymentId;
         }
-        deploymentId = await world.resolveLatestDeploymentId();
       }
 
       // Decide whether to write byte streams in the framed wire format.
@@ -236,18 +277,23 @@ export async function start<TArgs extends unknown[], TResult>(
       // Worlds that don't expose the `streams` API (e.g. minimal test
       // mocks) can't service health checks, so we skip the probe for them.
       let framedByteStreams: boolean;
+      let targetSupportsCompression: boolean;
       if (deploymentId === currentDeploymentId) {
         framedByteStreams = true;
+        targetSupportsCompression = true;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
+        targetSupportsCompression = false;
       } else {
         const probe = await healthCheck(world, 'workflow', {
           deploymentId,
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
         }).catch(() => undefined);
-        framedByteStreams = getRunCapabilities(
-          probe?.workflowCoreVersion
-        ).framedByteStreams;
+        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
+        framedByteStreams = capabilities.framedByteStreams;
+        targetSupportsCompression = capabilities.supportedFormats.has(
+          SerializationFormat.GZIP
+        );
       }
 
       const ops: Promise<void>[] = [];
@@ -330,6 +376,13 @@ export async function start<TArgs extends unknown[], TResult>(
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
+      // Compress workflow arguments only when the run itself is marked as
+      // possibly containing compressed payloads (specVersion >= 5) AND the
+      // target deployment can decode them (same-deployment, or probed
+      // capability for cross-deployment starts).
+      const compression =
+        targetSupportsCompression &&
+        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -337,7 +390,8 @@ export async function start<TArgs extends unknown[], TResult>(
         ops,
         globalThis,
         v1Compat,
-        framedByteStreams
+        framedByteStreams,
+        compression
       );
 
       const executionContext = {

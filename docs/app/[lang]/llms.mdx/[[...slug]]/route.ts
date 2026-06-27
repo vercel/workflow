@@ -1,7 +1,10 @@
 import { generateNotFoundMarkdown } from '@vercel/agent-readability';
-import { rewriteCookbookUrlsInText } from '@/lib/geistdocs/cookbook-source';
-import { getLLMText, source } from '@/lib/geistdocs/source';
+import {
+  getDocsTreeWithoutCookbook,
+  rewriteCookbookUrlsInText,
+} from '@/lib/geistdocs/cookbook-source';
 import { i18n } from '@/lib/geistdocs/i18n';
+import { getLLMText, source } from '@/lib/geistdocs/source';
 
 export const revalidate = false;
 
@@ -25,7 +28,7 @@ export async function GET(
   const sitemapPath =
     lang === i18n.defaultLanguage ? '/sitemap.md' : `/${lang}/sitemap.md`;
 
-  const text = await getLLMText(page);
+  const text = await getLLMText(page, getDocsTreeWithoutCookbook(lang, 'v4'));
 
   return new Response(
     rewriteCookbookUrlsInText(text) +

@@ -9,6 +9,7 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import type { Span } from '../components/trace-viewer/types';
 import {
+  getEventTimestamp,
   hookToSpan,
   runToSpan,
   stepToSpan,
@@ -132,7 +133,7 @@ export function groupEventsByCorrelation(events: Event[]): GroupedEvents {
 function computeLatestKnownTime(events: Event[], run: WorkflowRun): Date {
   let latest = new Date(run.createdAt).getTime();
   for (const event of events) {
-    const t = new Date(event.createdAt).getTime();
+    const t = (getEventTimestamp(event) ?? new Date(event.createdAt)).getTime();
     if (t > latest) latest = t;
   }
   return new Date(latest);

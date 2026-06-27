@@ -8,9 +8,13 @@
  */
 
 import { FatalError } from '@workflow/errors';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  dehydrateStepArguments,
+  hydrateStepArguments,
+} from './serialization.js';
+import { contextStorage, type StepContext } from './step/context-storage.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from './symbols.js';
-import { contextStorage } from './step/context-storage.js';
 
 // ============================================================================
 // Mocks
@@ -173,6 +177,10 @@ function createStepContext(ops: Promise<void>[]) {
       workflowId: 'wf_test',
     },
     ops,
+    // The mock reviveAbortController above routes everything (stream write +
+    // hook resume) into `ops`, so this stays empty; the real routing into
+    // preCompletionOps is covered by the dedicated suite at the end of the file.
+    preCompletionOps: [],
   };
 }
 
@@ -577,6 +585,120 @@ describe('AbortSignal deserialized in step context', () => {
       const regularError = new Error('network timeout');
       expect(regularError).not.toBeInstanceOf(FatalError);
       expect((regularError as any).fatal).toBeUndefined();
+    });
+  });
+});
+
+/**
+ * Exercises the REAL `reviveAbortController` (via `hydrateStepArguments`) rather
+ * than the mock copy above, to lock in where a step-initiated abort routes its
+ * two async operations.
+ *
+ * Regression: a step that aborts a controller must record the durable
+ * `hook_received` event BEFORE it completes. If that hook resume is flushed in
+ * the background (`ctx.ops`), the workflow continuation enqueued by
+ * `step_completed` can advance past the abort — dispatching a later step with a
+ * stale, non-aborted `signal` — before the event exists (the abortFromStep E2E
+ * flake). The hook resume must land in `ctx.preCompletionOps`, which the step
+ * handler awaits before writing `step_completed`. The real-time stream write
+ * (which reaches an in-flight sibling) stays in the background `ctx.ops`.
+ */
+describe('step-initiated abort: durable hook resume is committed before completion', () => {
+  beforeEach(() => {
+    mockResumeHook.mockClear();
+    mockStreamReads.readResults.clear();
+    mockStreamReads.writeLog = [];
+    mockStreamReads.closeLog = [];
+  });
+
+  async function reviveControllerInStep(): Promise<{
+    controller: AbortController;
+    ops: Promise<void>[];
+    preCompletionOps: Promise<void>[];
+  }> {
+    // A controller carrying the abort symbols serializes through the workflow
+    // reducer with a streamName + hookToken — the shape a step receives.
+    const source = new AbortController();
+    (source as any)[ABORT_STREAM_NAME] = 'strm_pre_completion_abort';
+    (source as any)[ABORT_HOOK_TOKEN] = 'abrt_pre_completion';
+    (source.signal as any)[ABORT_STREAM_NAME] = 'strm_pre_completion_abort';
+    (source.signal as any)[ABORT_HOOK_TOKEN] = 'abrt_pre_completion';
+
+    const dehydrated = await dehydrateStepArguments(
+      [source],
+      'wrun_test',
+      undefined
+    );
+
+    const ops: Promise<void>[] = [];
+    const preCompletionOps: Promise<void>[] = [];
+    const store: StepContext = {
+      stepMetadata: {
+        stepName: 'aborter',
+        stepId: 'step_test',
+        stepStartedAt: new Date(),
+        attempt: 1,
+      },
+      workflowMetadata: {
+        workflowName: 'wf',
+        workflowRunId: 'wrun_test',
+        workflowStartedAt: new Date(),
+        features: { encryption: false },
+      },
+      ops,
+      preCompletionOps,
+      encryptionKey: undefined,
+    };
+
+    const controller = await contextStorage.run(store, async () => {
+      const [revived] = (await hydrateStepArguments(
+        dehydrated,
+        'wrun_test',
+        undefined,
+        ops
+      )) as [AbortController];
+      return revived;
+    });
+
+    return { controller, ops, preCompletionOps };
+  }
+
+  it('routes the hook resume to preCompletionOps, not the background ops', async () => {
+    const { controller, preCompletionOps } = await reviveControllerInStep();
+    expect(controller.signal.aborted).toBe(false);
+
+    const store: StepContext = {
+      stepMetadata: {
+        stepName: 'aborter',
+        stepId: 'step_test',
+        stepStartedAt: new Date(),
+        attempt: 1,
+      },
+      workflowMetadata: {
+        workflowName: 'wf',
+        workflowRunId: 'wrun_test',
+        workflowStartedAt: new Date(),
+        features: { encryption: false },
+      },
+      ops: [],
+      preCompletionOps,
+      encryptionKey: undefined,
+    };
+
+    // abort() reads the step context at call time.
+    contextStorage.run(store, () => controller.abort('aborted from step'));
+
+    expect(controller.signal.aborted).toBe(true);
+    // The durable hook resume is queued for pre-completion draining.
+    expect(preCompletionOps.length).toBe(1);
+
+    // Draining preCompletionOps (what the step handler awaits before
+    // step_completed) actually fires the resume with the correct payload.
+    await Promise.all(preCompletionOps);
+    expect(mockResumeHook).toHaveBeenCalledTimes(1);
+    expect(mockResumeHook).toHaveBeenCalledWith('abrt_pre_completion', {
+      aborted: true,
+      reason: 'aborted from step',
     });
   });
 });

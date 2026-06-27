@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -26,6 +26,46 @@ function isNitroV2(nitro: Nitro): boolean {
   return !nitro.routing;
 }
 
+/**
+ * Prepend a `createRequire`-backed global `require` to every server chunk so
+ * undici's bundled `require('node:http2')` resolves the real builtin instead of
+ * throwing (which would make undici fall back to a stub without
+ * `http2.connect`, breaking HTTP/2). The guard keeps it idempotent across
+ * chunks, and `node:module` is always available in the Node server runtime.
+ *
+ * This is a Node-server-runtime-only shim (callers gate it to the production
+ * server build). Note the deliberate global side effect: defining
+ * `globalThis.require` makes `typeof require` truthy for *every* bundled
+ * dependency in this ESM server output, so any library that feature-detects
+ * `require` will take its CJS path here. That is safe because (a) it never
+ * touches the client bundle, (b) the `typeof require === 'undefined'` guard
+ * makes it a no-op in CJS chunks where a real `require` already exists, and
+ * (c) the `require` we install is a working `createRequire`, so a library that
+ * switches to the require path gets a functional `require`, not a broken stub.
+ * The behavior to watch for is a bundled lib that, on seeing `require`, does
+ * `require()` of an ESM-only dependency on a Node version without `require(ESM)`
+ * support.
+ */
+function addNodeRequireBanner(config: RollupConfig): void {
+  const banner =
+    "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+  const output = config.output;
+  if (output == null) {
+    config.output = { banner };
+    return;
+  }
+  const outputs = Array.isArray(output) ? output : [output];
+  for (const o of outputs) {
+    const existing = o.banner;
+    o.banner =
+      existing == null
+        ? banner
+        : typeof existing === 'function'
+          ? async (chunk: unknown) => `${banner}\n${await existing(chunk)}`
+          : `${banner}\n${existing}`;
+  }
+}
+
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
@@ -46,6 +86,19 @@ export default {
           exclude: [workflowBuildDir],
         })
       );
+
+      // Nitro bundles undici (via the world adapter) into the ESM server
+      // output. undici loads most node: builtins as ESM imports, but pulls in
+      // `node:http2` lazily via a bare `require('node:http2')` inside a
+      // try/catch — which the bundler leaves un-wired, so in the ESM bundle the
+      // require throws and undici silently falls back to a stub whose
+      // `http2.connect` is undefined. That breaks any HTTP/2 request (the
+      // workflow flow-route callback fails with "fetch failed", so runs never
+      // start). Prepend a working CJS `require` to the server chunks so the
+      // real `node:http2` resolves. Skipped in dev (Vite SSR provides require).
+      if (!nitro.options.dev) {
+        addNodeRequireBanner(config);
+      }
     });
 
     // NOTE: Temporary workaround for debug unenv mock
@@ -360,7 +413,13 @@ function addDashboardHandler(nitro: Nitro) {
   }
 }
 
-function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
+type VirtualHandlerPath = 'workflow/webhook.mjs' | 'workflow/workflows.mjs';
+
+function addVirtualHandler(
+  nitro: Nitro,
+  route: string,
+  buildPath: VirtualHandlerPath
+) {
   nitro.options.handlers.push({
     route,
     handler: `#${buildPath}`,
@@ -368,6 +427,13 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
   const handlerImportPath = JSON.stringify(
     join(nitro.options.buildDir, buildPath)
   );
+  const stepsImportPath = JSON.stringify(
+    join(nitro.options.buildDir, 'workflow/steps.mjs')
+  );
+  const preloadSteps: Record<VirtualHandlerPath, string> = {
+    'workflow/webhook.mjs': '',
+    'workflow/workflows.mjs': `await import(/* @vite-ignore */ pathToFileURL(${stepsImportPath}).href + "?t=" + version);`,
+  };
 
   if (nitro.options.dev) {
     // Dev mode: load generated workflow bundles from disk at request time.
@@ -389,6 +455,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
         if (version !== currentVersion) {
           currentVersion = version;
           currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
+          ${preloadSteps[buildPath]}
         }
         return (await import(currentImportPath)).POST;
       }
@@ -412,6 +479,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
         if (version !== currentVersion) {
           currentVersion = version;
           currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
+          ${preloadSteps[buildPath]}
         }
         return (await import(currentImportPath)).POST;
       }

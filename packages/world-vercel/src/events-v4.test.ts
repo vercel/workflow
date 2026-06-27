@@ -5,9 +5,9 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { encode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEventV4,
   getWorkflowRunEventsV4,
@@ -132,6 +132,74 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('captures an explicit hasMore from the sentinel, independent of next', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    // The regression shape: a final page still carries a trailing `next`
+    // cursor (incremental-load resume point) but hasMore is false.
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        new Uint8Array(0)
+      ),
+      encodeFrame(
+        { _end: 1, next: 'eid:last', hasMore: false },
+        new Uint8Array(0)
+      ),
+    ]);
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.next).toBe('eid:last');
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('leaves hasMore undefined for a legacy sentinel without the flag', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    const frames = encodeFrame(
+      { _end: 1, next: 'cursor-2' },
+      new Uint8Array(0)
+    );
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.next).toBe('cursor-2');
+    expect(result.hasMore).toBeUndefined();
+  });
+
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
     const origin = 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -165,6 +233,53 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow(/end-of-stream sentinel/);
+  });
+});
+
+/**
+ * Regression: v4 requests must go through the global `fetch`, not undici's
+ * `request()`. Vercel's observability log viewer instruments the global
+ * `fetch`; calling `undici.request()` directly bypassed it, so outgoing v4
+ * event traffic stopped appearing in the log viewer (queue traffic, on
+ * `fetch`, kept showing). See the beta.16 regression. This test fails if the
+ * transport ever reverts to `undici.request()`.
+ */
+describe('v4 transport uses global fetch (observability)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('routes a v4 LIST through globalThis.fetch', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(200, encodeFrame({ _end: 1 }, new Uint8Array(0)), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    // Spy passes through to the real fetch (which MockAgent intercepts at
+    // the dispatcher layer) so we only assert the entry point was used.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = fetchSpy.mock.calls[0];
+    expect(String(calledUrl)).toContain('/api/v4/runs/wrun_1/events');
+    agent.assertNoPendingInterceptors();
+
+    // Cache-busting header must be set so Next.js fetch memoization / Data
+    // Cache can't serve a stale/truncated event page (replay correctness).
+    // See https://github.com/vercel/workflow/issues/618.
+    const sentHeaders = new Headers(calledInit?.headers as HeadersInit);
+    expect(sentHeaders.get('x-request-time')).toBeTruthy();
   });
 });
 
@@ -205,6 +320,112 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(result.runId).toBe('wrun_1');
     expect(result.createdAt).toBe('2026-06-10T00:00:00.000Z');
     expect(result.body.step).toMatchObject({ stepId: 'step_1' });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('forwards skipPreload in the run_started frame meta (turbo preload opt-out)', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    // Decode the posted frame's CBOR meta block:
+    //   u32_be(meta_len) || cbor_meta || u32_be(body_len) || body
+    let capturedMeta: Record<string, unknown> | undefined;
+    const captureMeta = (rawBody: unknown) => {
+      const bytes =
+        typeof rawBody === 'string'
+          ? new TextEncoder().encode(rawBody)
+          : new Uint8Array(rawBody as ArrayBufferLike);
+      const metaLen = new DataView(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength
+      ).getUint32(0, false);
+      capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+        string,
+        unknown
+      >;
+    };
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          captureMeta(opts.body);
+          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'run_started',
+        specVersion: 5,
+        skipPreload: true,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('run_started');
+    expect(capturedMeta?.skipPreload).toBe(true);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('omits skipPreload from the frame meta when not set (default / old SDK parity)', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      { runId: 'wrun_1', eventType: 'run_started', specVersion: 5 },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('run_started');
+    expect('skipPreload' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 });

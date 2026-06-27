@@ -1,5 +1,98 @@
 # @workflow/sveltekit
 
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60) - Fix HTTP/2 requests failing in SvelteKit production builds (undici's bundled `node:http2` could not load, falling back to a stub).
+
+- Updated dependencies [[`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3)]:
+  - @workflow/builders@5.0.0-beta.25
+  - @workflow/rollup@5.0.0-beta.25
+  - @workflow/vite@5.0.0-beta.25
+
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- Updated dependencies [[`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba)]:
+  - @workflow/builders@5.0.0-beta.24
+  - @workflow/rollup@5.0.0-beta.24
+  - @workflow/vite@5.0.0-beta.24
+
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
+  - @workflow/builders@5.0.0-beta.23
+  - @workflow/rollup@5.0.0-beta.23
+  - @workflow/vite@5.0.0-beta.23
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.22
+  - @workflow/rollup@5.0.0-beta.22
+  - @workflow/vite@5.0.0-beta.22
+
+## 5.0.0-beta.21
+
+### Patch Changes
+
+- Updated dependencies [[`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc), [`b713d84`](https://github.com/vercel/workflow/commit/b713d8417b1334abd1e30bdc50701d0d96dee39d), [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3)]:
+  - @workflow/builders@5.0.0-beta.21
+  - @workflow/rollup@5.0.0-beta.21
+  - @workflow/vite@5.0.0-beta.21
+
+## 5.0.0-beta.20
+
+### Patch Changes
+
+- Updated dependencies [[`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a)]:
+  - @workflow/builders@5.0.0-beta.20
+  - @workflow/rollup@5.0.0-beta.20
+  - @workflow/vite@5.0.0-beta.20
+
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.19
+  - @workflow/rollup@5.0.0-beta.19
+  - @workflow/vite@5.0.0-beta.19
+
+## 5.0.0-beta.18
+
+### Patch Changes
+
+- Updated dependencies [[`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998), [`da37349`](https://github.com/vercel/workflow/commit/da373493d211c09056f745332b18f55ef801da2b), [`53ede30`](https://github.com/vercel/workflow/commit/53ede3079c19494c53e181917f26c2499a19e012)]:
+  - @workflow/builders@5.0.0-beta.18
+  - @workflow/swc-plugin@5.0.0-beta.5
+  - @workflow/rollup@5.0.0-beta.18
+  - @workflow/vite@5.0.0-beta.18
+
+## 5.0.0-beta.17
+
+### Patch Changes
+
+- Updated dependencies [[`c48d27b`](https://github.com/vercel/workflow/commit/c48d27b4f83996e68d1a48eeeeebe4a58a045a61)]:
+  - @workflow/builders@5.0.0-beta.17
+  - @workflow/rollup@5.0.0-beta.17
+  - @workflow/vite@5.0.0-beta.17
+
+## 5.0.0-beta.16
+
+### Patch Changes
+
+- Updated dependencies [[`011d482`](https://github.com/vercel/workflow/commit/011d482808793e8deb0e8523a9c16af129490ee6)]:
+  - @workflow/builders@5.0.0-beta.16
+  - @workflow/rollup@5.0.0-beta.16
+  - @workflow/vite@5.0.0-beta.16
+
 ## 5.0.0-beta.15
 
 ### Patch Changes
