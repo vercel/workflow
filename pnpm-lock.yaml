@@ -766,12 +766,12 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
+      chokidar:
+        specifier: 4.0.3
+        version: 4.0.3
       semver:
         specifier: 'catalog:'
         version: 7.7.4
-      watchpack:
-        specifier: 2.5.1
-        version: 2.5.1
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -779,9 +779,6 @@ importers:
       '@types/semver':
         specifier: 7.7.1
         version: 7.7.1
-      '@types/watchpack':
-        specifier: 2.4.4
-        version: 2.4.4
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig

@@ -14,9 +14,17 @@ function getRuntimeRequire() {
   // dependencies of @workflow/core. Using import.meta.url would resolve
   // from core's location, missing app-level packages.
   try {
-    return createRequire(pathToFileURL(process.cwd() + '/package.json').href);
+    return createRequire(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      pathToFileURL(process.cwd() + '/package.json').href
+    );
   } catch {
-    return createRequire(import.meta.url);
+    return createRequire(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      import.meta.url
+    );
   }
 }
 
@@ -48,17 +56,31 @@ function resolveModulePath(specifier: string): string {
   }
   // Absolute path - convert to file:// URL
   if (specifier.startsWith('/')) {
-    return pathToFileURL(specifier).href;
+    return pathToFileURL(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      specifier
+    ).href;
   }
   // Relative path - resolve relative to cwd and convert to file:// URL
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
     return pathToFileURL(
-      /* turbopackIgnore: true */ process.cwd() + '/' + specifier
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      process.cwd() + '/' + specifier
     ).href;
   }
   // Package specifier - use require.resolve to find the package
   try {
-    return pathToFileURL(getRuntimeRequire().resolve(specifier)).href;
+    return pathToFileURL(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      getRuntimeRequire().resolve(
+        /* webpackIgnore: true */
+        /* turbopackIgnore: true */
+        specifier
+      )
+    ).href;
   } catch {
     return specifier;
   }
@@ -113,10 +135,18 @@ export const createWorld = async (): Promise<World> => {
   // dynamic import() for ESM-only packages.
   let mod: any;
   try {
-    mod = getRuntimeRequire()(targetWorld);
+    mod = getRuntimeRequire()(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      targetWorld
+    );
   } catch {
     const resolvedPath = resolveModulePath(targetWorld);
-    mod = await import(/* webpackIgnore: true */ resolvedPath);
+    mod = await import(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      resolvedPath
+    );
   }
   if (typeof mod === 'function') {
     return mod() as World;

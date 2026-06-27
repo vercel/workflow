@@ -49,6 +49,127 @@ const serdeClassPattern =
 
 const defaultNormalizePath = (pathname: string) => pathname.replace(/\\/g, '/');
 
+const REGEX_PREFIX_CHARS = new Set([
+  '(',
+  '{',
+  '[',
+  '=',
+  ':',
+  ',',
+  ';',
+  '!',
+  '?',
+  '&',
+  '|',
+  '+',
+  '-',
+  '*',
+  '~',
+  '^',
+  '<',
+  '>',
+  '%',
+]);
+const REGEX_PREFIX_KEYWORDS =
+  /\b(?:return|throw|case|delete|void|typeof|instanceof|in|yield|await)$/;
+
+const canStartRegexLiteral = (output: string) => {
+  const previous = output.trimEnd();
+  if (previous.length === 0) {
+    return true;
+  }
+  const previousChar = previous[previous.length - 1];
+  return (
+    REGEX_PREFIX_CHARS.has(previousChar) || REGEX_PREFIX_KEYWORDS.test(previous)
+  );
+};
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the string/comment/regex scanner local and allocation-light.
+export const stripCommentsFromSource = (source: string) => {
+  let output = '';
+  let index = 0;
+  let quote: '"' | "'" | '`' | undefined;
+  let regex = false;
+  let regexCharClass = false;
+  let escaped = false;
+
+  while (index < source.length) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (quote || regex) {
+      output += char;
+      index++;
+
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (quote && char === quote) {
+        quote = undefined;
+      } else if (regex && char === '[') {
+        regexCharClass = true;
+      } else if (regex && char === ']') {
+        regexCharClass = false;
+      } else if (regex && char === '/' && !regexCharClass) {
+        regex = false;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      output += char;
+      index++;
+      continue;
+    }
+
+    if (
+      char === '/' &&
+      next !== '/' &&
+      next !== '*' &&
+      canStartRegexLiteral(output)
+    ) {
+      regex = true;
+      output += char;
+      index++;
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      output += '  ';
+      index += 2;
+      while (index < source.length && source[index] !== '\n') {
+        output += ' ';
+        index++;
+      }
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      output += '  ';
+      index += 2;
+      while (index < source.length) {
+        const blockChar = source[index];
+        const blockNext = source[index + 1];
+        if (blockChar === '*' && blockNext === '/') {
+          output += '  ';
+          index += 2;
+          break;
+        }
+        output += blockChar === '\n' ? '\n' : ' ';
+        index++;
+      }
+      continue;
+    }
+
+    output += char;
+    index++;
+  }
+
+  return output;
+};
+
 const sourceMayContainImportSpecifiers = (source: string) =>
   source.includes('import') ||
   source.includes('require') ||
@@ -91,11 +212,12 @@ export const createSourceSnapshotFromSource = (
   source: string,
   detectWorkflowPatterns: SourcePatternDetector
 ): SourceSnapshot => {
-  const patterns = detectWorkflowPatterns(source);
+  const sourceWithoutComments = stripCommentsFromSource(source);
+  const patterns = detectWorkflowPatterns(sourceWithoutComments);
 
   return {
-    importSignature: extractImportSignature(source),
-    definitionSignature: extractDefinitionSignature(source),
+    importSignature: extractImportSignature(sourceWithoutComments),
+    definitionSignature: extractDefinitionSignature(sourceWithoutComments),
     hasDirective: patterns.hasDirective,
     hasSerde: patterns.hasSerde,
   };
@@ -238,6 +360,40 @@ const addedFilesRequireFullRebuild = async ({
   return false;
 };
 
+const pruneStaleAddedFiles = async ({
+  addedFiles,
+  readSnapshot,
+  sourceSnapshots,
+}: {
+  addedFiles: string[];
+  readSnapshot: (file: string) => Promise<SourceSnapshot>;
+  sourceSnapshots: Map<string, SourceSnapshot>;
+}) => {
+  const nextAddedFiles: string[] = [];
+  const snapshots = new Map<string, SourceSnapshot>();
+
+  for (const file of unique(addedFiles)) {
+    const previousSnapshot = sourceSnapshots.get(file);
+    if (!previousSnapshot) {
+      nextAddedFiles.push(file);
+      continue;
+    }
+
+    try {
+      const nextSnapshot = await readSnapshot(file);
+      if (didSourceSnapshotChange(previousSnapshot, nextSnapshot)) {
+        nextAddedFiles.push(file);
+        continue;
+      }
+      snapshots.set(file, nextSnapshot);
+    } catch {
+      nextAddedFiles.push(file);
+    }
+  }
+
+  return { addedFiles: nextAddedFiles, snapshots };
+};
+
 const modifiedFilesRequireFullRebuild = async ({
   modifiedFiles,
   readSnapshot,
@@ -252,7 +408,12 @@ const modifiedFilesRequireFullRebuild = async ({
       const nextSnapshot = await readSnapshot(file);
       const previousSnapshot = sourceSnapshots.get(file);
       if (!previousSnapshot) {
-        if (nextSnapshot.hasDirective || nextSnapshot.hasSerde) {
+        if (
+          nextSnapshot.importSignature ||
+          nextSnapshot.definitionSignature ||
+          nextSnapshot.hasDirective ||
+          nextSnapshot.hasSerde
+        ) {
           return true;
         }
         continue;
@@ -387,19 +548,29 @@ export const classifyRebuild = async ({
   readSnapshot: (file: string) => Promise<SourceSnapshot>;
   sourceSnapshots: Map<string, SourceSnapshot>;
 }): Promise<RebuildDecision> => {
+  const prunedAddedFiles = await pruneStaleAddedFiles({
+    addedFiles: fileChanges.addedFiles,
+    readSnapshot,
+    sourceSnapshots,
+  });
+  const normalizedFileChanges = {
+    ...fileChanges,
+    addedFiles: prunedAddedFiles.addedFiles,
+  };
+
   if (
     removedFilesRequireFullRebuild({
       discoveredEntries,
       inputFiles,
       normalizePath,
-      removedFiles: fileChanges.removedFiles,
+      removedFiles: normalizedFileChanges.removedFiles,
     }) ||
     (await addedFilesRequireFullRebuild({
-      addedFiles: fileChanges.addedFiles,
+      addedFiles: normalizedFileChanges.addedFiles,
       readSnapshot,
     })) ||
     (await modifiedFilesRequireFullRebuild({
-      modifiedFiles: fileChanges.modifiedFiles,
+      modifiedFiles: normalizedFileChanges.modifiedFiles,
       readSnapshot,
       sourceSnapshots,
     }))
@@ -409,12 +580,14 @@ export const classifyRebuild = async ({
 
   const changedRelevantFiles = getChangedRelevantFiles({
     discoveredEntries,
-    fileChanges,
+    fileChanges: normalizedFileChanges,
     inputFiles,
     normalizePath,
   });
   if (changedRelevantFiles.length === 0) {
-    return { kind: 'none' };
+    return prunedAddedFiles.snapshots.size > 0
+      ? { kind: 'none', snapshots: prunedAddedFiles.snapshots }
+      : { kind: 'none' };
   }
 
   try {

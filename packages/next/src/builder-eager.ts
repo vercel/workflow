@@ -4,6 +4,7 @@ import {
   copyFile,
   mkdir,
   readdir,
+  realpath,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -12,13 +13,14 @@ import type {
   NextConfig as BuilderNextConfig,
   WorkflowManifest,
 } from '@workflow/builders';
+import chokidar from 'chokidar';
 import type { NextConfig as ProjectNextConfig } from 'next';
-import Watchpack from 'watchpack';
 import {
   classifyRebuild,
   createSourceSnapshot,
-  replaceSourceSnapshots,
   type FileChanges,
+  getRelevantFiles,
+  replaceSourceSnapshots,
   type SourceSnapshot,
 } from './watch-rebuild.js';
 
@@ -139,11 +141,6 @@ export async function getNextBuilderEager(
             ? pathname
             : resolve(this.config.workingDir, pathname)
           ).replace(/\\/g, '/');
-        type WatchpackTimeInfoEntry = {
-          safeTime: number;
-          timestamp?: number;
-        };
-        let previousTimeInfo = new Map<string, WatchpackTimeInfoEntry>();
         const sourceSnapshots = new Map<string, SourceSnapshot>();
 
         const watchableExtensions = new Set([
@@ -174,12 +171,6 @@ export async function getNextBuilderEager(
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
         ignoredPathFragments.push(normalizedGeneratedDir);
 
-        // There is a node.js bug on MacOS which causes closing file watchers to be really slow.
-        // This limits the number of watchers to mitigate the issue.
-        // https://github.com/nodejs/node/issues/29949
-        process.env.WATCHPACK_WATCHER_LIMIT =
-          process.platform === 'darwin' ? '20' : undefined;
-
         const hasIgnoredPathFragment = (normalizedPath: string) => {
           if (normalizedPath.startsWith(normalizedGeneratedDir)) {
             return true;
@@ -190,31 +181,6 @@ export async function getNextBuilderEager(
             }
           }
           return false;
-        };
-
-        const watcher = new Watchpack({
-          // Watchpack default is 200ms which adds 200ms of dead time on bootup.
-          aggregateTimeout: 5,
-          ignored: (pathname: string) => {
-            const normalizedPath = pathname.replace(/\\/g, '/');
-            const extension = extname(normalizedPath);
-            if (extension && !watchableExtensions.has(extension)) {
-              return true;
-            }
-            return hasIgnoredPathFragment(normalizedPath);
-          },
-        });
-
-        const readTimeInfoEntries = () => {
-          const rawEntries = watcher.getTimeInfoEntries() as Map<
-            string,
-            WatchpackTimeInfoEntry
-          >;
-          const normalizedEntries = new Map<string, WatchpackTimeInfoEntry>();
-          for (const [path, info] of rawEntries) {
-            normalizedEntries.set(normalizePath(path), info);
-          }
-          return normalizedEntries;
         };
 
         let rebuildQueue = Promise.resolve();
@@ -309,8 +275,29 @@ export async function getNextBuilderEager(
         const isWatchableFile = (path: string) =>
           watchableExtensions.has(extname(path));
 
-        const readInitialTimeInfoEntries = async () => {
-          const entries = new Map<string, WatchpackTimeInfoEntry>();
+        const readKnownFiles = async () => {
+          const files = new Set<string>();
+          const aliases = new Map<string, string>();
+          const relevantFiles = getRelevantFiles({
+            discoveredEntries,
+            inputFiles: options.inputFiles,
+            normalizePath,
+          });
+
+          const addKnownFile = async (filePath: string) => {
+            let realFilePath = filePath;
+            try {
+              realFilePath = normalizePath(await realpath(filePath));
+            } catch {}
+
+            const canonicalPath = relevantFiles.has(realFilePath)
+              ? realFilePath
+              : filePath;
+            files.add(canonicalPath);
+            aliases.set(filePath, canonicalPath);
+            aliases.set(realFilePath, canonicalPath);
+            return canonicalPath;
+          };
 
           const visit = async (directory: string): Promise<void> => {
             let dirents: Dirent<string>[];
@@ -348,128 +335,60 @@ export async function getNextBuilderEager(
                   return;
                 }
 
-                entries.set(filePath, {
-                  safeTime: stats.mtimeMs,
-                  timestamp: stats.mtimeMs,
-                });
+                await addKnownFile(filePath);
               })
             );
           };
 
           await visit(this.config.workingDir);
-          return entries;
+          return { files, aliases, addKnownFile };
         };
 
-        const normalizeWatchpackPaths = (paths?: Iterable<string>) => {
-          const normalizedPaths: string[] = [];
-          if (!paths) {
-            return normalizedPaths;
-          }
-
-          for (const path of paths) {
-            const normalizedPath = normalizePath(path);
-            if (isWatchableFile(normalizedPath)) {
-              normalizedPaths.push(normalizedPath);
-            }
-          }
-
-          return normalizedPaths;
-        };
+        const mergeFileChanges = (
+          left: FileChanges,
+          right: FileChanges
+        ): FileChanges => ({
+          addedFiles: unique([...left.addedFiles, ...right.addedFiles]),
+          modifiedFiles: unique([
+            ...left.modifiedFiles,
+            ...right.modifiedFiles,
+          ]),
+          removedFiles: unique([...left.removedFiles, ...right.removedFiles]),
+        });
 
         const unique = (paths: string[]) => [...new Set(paths)];
 
-        const getComparableTimestamp = (entry: WatchpackTimeInfoEntry) =>
-          entry.timestamp ?? entry.safeTime;
+        const classifyFileChanges = ({
+          changedFiles,
+          knownFiles,
+          removedFiles,
+        }: {
+          changedFiles: string[];
+          knownFiles: Set<string>;
+          removedFiles: string[];
+        }): FileChanges => {
+          const addedFiles: string[] = [];
+          const modifiedFiles: string[] = [];
 
-        const findRemovedFiles = (
-          currentEntries: Map<string, WatchpackTimeInfoEntry>,
-          previousEntries: Map<string, WatchpackTimeInfoEntry>
-        ) => {
-          const removed: string[] = [];
-          for (const path of previousEntries.keys()) {
-            if (!currentEntries.has(path) && isWatchableFile(path)) {
-              removed.push(path);
-            }
-          }
-          return removed;
-        };
-
-        const findAddedAndModifiedFiles = (
-          currentEntries: Map<string, WatchpackTimeInfoEntry>,
-          previousEntries: Map<string, WatchpackTimeInfoEntry>
-        ) => {
-          const added: string[] = [];
-          const modified: string[] = [];
-
-          for (const [path, info] of currentEntries) {
-            if (!isWatchableFile(path)) {
-              continue;
-            }
-
-            const previous = previousEntries.get(path);
-            if (!previous) {
-              added.push(path);
-              continue;
-            }
-
-            if (
-              getComparableTimestamp(info) !== getComparableTimestamp(previous)
-            ) {
-              modified.push(path);
+          for (const file of unique(changedFiles)) {
+            if (knownFiles.has(file)) {
+              modifiedFiles.push(file);
+            } else {
+              addedFiles.push(file);
+              knownFiles.add(file);
             }
           }
 
-          return { added, modified };
-        };
-
-        const determineFileChanges = (
-          currentEntries: Map<string, WatchpackTimeInfoEntry>,
-          previousEntries: Map<string, WatchpackTimeInfoEntry>
-        ): FileChanges => {
-          const removedFiles = findRemovedFiles(
-            currentEntries,
-            previousEntries
-          );
-          const { added, modified } = findAddedAndModifiedFiles(
-            currentEntries,
-            previousEntries
-          );
+          for (const file of removedFiles) {
+            knownFiles.delete(file);
+          }
 
           return {
-            addedFiles: added,
-            modifiedFiles: modified,
-            removedFiles,
+            addedFiles,
+            modifiedFiles,
+            removedFiles: unique(removedFiles),
           };
         };
-
-        const mergeFileChanges = ({
-          currentEntries,
-          previousEntries,
-          timestampChanges,
-          eventChangedFiles,
-          eventRemovedFiles,
-        }: {
-          currentEntries: Map<string, WatchpackTimeInfoEntry>;
-          previousEntries: Map<string, WatchpackTimeInfoEntry>;
-          timestampChanges: FileChanges;
-          eventChangedFiles: string[];
-          eventRemovedFiles: string[];
-        }): FileChanges => ({
-          addedFiles: unique([
-            ...timestampChanges.addedFiles,
-            ...eventChangedFiles.filter(
-              (path) => currentEntries.has(path) && !previousEntries.has(path)
-            ),
-          ]),
-          modifiedFiles: unique([
-            ...timestampChanges.modifiedFiles,
-            ...eventChangedFiles,
-          ]),
-          removedFiles: unique([
-            ...timestampChanges.removedFiles,
-            ...eventRemovedFiles,
-          ]),
-        });
 
         const hasFileChanges = ({
           addedFiles,
@@ -486,72 +405,181 @@ export async function getNextBuilderEager(
         };
 
         await refreshSourceSnapshots();
-        previousTimeInfo = await readInitialTimeInfoEntries();
+        let {
+          files: knownFiles,
+          aliases: knownFileAliases,
+          addKnownFile: rememberKnownFile,
+        } = await readKnownFiles();
 
-        watcher.on(
-          'aggregated',
-          (changes?: Set<string>, removals?: Set<string>) => {
-            const currentEntries = readTimeInfoEntries();
-            const eventChangedFiles = normalizeWatchpackPaths(changes);
-            const eventRemovedFiles = normalizeWatchpackPaths(removals);
-            const timestampChanges = determineFileChanges(
-              currentEntries,
-              previousTimeInfo
-            );
+        const refreshKnownFiles = async () => {
+          const nextKnown = await readKnownFiles();
+          knownFiles = nextKnown.files;
+          knownFileAliases = nextKnown.aliases;
+          rememberKnownFile = nextKnown.addKnownFile;
+        };
 
-            const fileChanges = mergeFileChanges({
-              currentEntries,
-              previousEntries: previousTimeInfo,
-              timestampChanges,
-              eventChangedFiles,
-              eventRemovedFiles,
-            });
-
-            previousTimeInfo = currentEntries;
-
-            if (!hasFileChanges(fileChanges)) {
-              return;
-            }
-
-            enqueue(async () => {
-              const decision = await classifyRebuild({
-                discoveredEntries,
-                fileChanges,
-                inputFiles: options.inputFiles,
-                normalizePath,
-                parentHasChild,
-                readSnapshot: readSourceSnapshot,
-                sourceSnapshots,
-              });
-              if (decision.kind === 'none') {
-                logDevHmr('workflow dev hmr: skip');
-                for (const [file, snapshot] of decision.snapshots || []) {
-                  sourceSnapshots.set(file, snapshot);
-                }
-                return;
-              }
-              if (decision.kind === 'full') {
-                logDevHmr('workflow dev hmr: full rediscovery');
-                await fullRebuild();
-                return;
-              }
-
-              logDevHmr(
-                `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
-              );
-              await hotRebuild(decision.refreshStepRegistrations);
-              for (const [file, snapshot] of decision.snapshots) {
-                sourceSnapshots.set(file, snapshot);
-              }
-            });
+        const processFileChanges = async (fileChanges: FileChanges) => {
+          if (!hasFileChanges(fileChanges)) {
+            return;
           }
-        );
 
-        watcher.watch({
-          directories: [this.config.workingDir],
-          startTime: Date.now(),
+          const decision = await classifyRebuild({
+            discoveredEntries,
+            fileChanges,
+            inputFiles: options.inputFiles,
+            normalizePath,
+            parentHasChild,
+            readSnapshot: readSourceSnapshot,
+            sourceSnapshots,
+          });
+          if (decision.kind === 'none') {
+            logDevHmr('workflow dev hmr: skip');
+            for (const [file, snapshot] of decision.snapshots || []) {
+              sourceSnapshots.set(file, snapshot);
+            }
+            return;
+          }
+          if (decision.kind === 'full') {
+            logDevHmr('workflow dev hmr: full rediscovery');
+            await fullRebuild();
+            await refreshKnownFiles();
+            return;
+          }
+
+          logDevHmr(
+            `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
+          );
+          await hotRebuild(decision.refreshStepRegistrations);
+          for (const [file, snapshot] of decision.snapshots) {
+            sourceSnapshots.set(file, snapshot);
+          }
+        };
+
+        let pendingFileChanges: FileChanges = {
+          addedFiles: [],
+          modifiedFiles: [],
+          removedFiles: [],
+        };
+        let flushTimer: ReturnType<typeof setTimeout> | undefined;
+
+        const scheduleFileChanges = (fileChanges: FileChanges) => {
+          pendingFileChanges = mergeFileChanges(
+            pendingFileChanges,
+            fileChanges
+          );
+          if (flushTimer) {
+            return;
+          }
+          flushTimer = setTimeout(() => {
+            const fileChanges = pendingFileChanges;
+            pendingFileChanges = {
+              addedFiles: [],
+              modifiedFiles: [],
+              removedFiles: [],
+            };
+            flushTimer = undefined;
+            enqueue(() => processFileChanges(fileChanges));
+          }, 10);
+        };
+
+        const resolveExistingEventPath = async (pathname: string) => {
+          const normalizedPath = normalizePath(pathname);
+          if (!isWatchableFile(normalizedPath)) {
+            return;
+          }
+
+          const knownPath = knownFileAliases.get(normalizedPath);
+          if (knownPath) {
+            return knownPath;
+          }
+
+          try {
+            const realFilePath = normalizePath(await realpath(normalizedPath));
+            return knownFileAliases.get(realFilePath) ?? normalizedPath;
+          } catch {
+            return normalizedPath;
+          }
+        };
+
+        const handleFileAdded = async (pathname: string) => {
+          const normalizedPath = normalizePath(pathname);
+          if (!isWatchableFile(normalizedPath)) {
+            return;
+          }
+
+          const existingPath = await resolveExistingEventPath(normalizedPath);
+          const wasKnown = existingPath ? knownFiles.has(existingPath) : false;
+          const canonicalPath = await rememberKnownFile(normalizedPath);
+          knownFiles.add(canonicalPath);
+          scheduleFileChanges({
+            addedFiles: wasKnown ? [] : [canonicalPath],
+            modifiedFiles: wasKnown ? [canonicalPath] : [],
+            removedFiles: [],
+          });
+        };
+
+        const handleFileChanged = async (pathname: string) => {
+          const canonicalPath = await resolveExistingEventPath(pathname);
+          if (!canonicalPath) {
+            return;
+          }
+
+          const fileChanges = classifyFileChanges({
+            changedFiles: [canonicalPath],
+            knownFiles,
+            removedFiles: [],
+          });
+          if (!knownFileAliases.has(canonicalPath)) {
+            await rememberKnownFile(canonicalPath);
+          }
+          scheduleFileChanges(fileChanges);
+        };
+
+        const handleFileRemoved = (pathname: string) => {
+          const normalizedPath = normalizePath(pathname);
+          if (!isWatchableFile(normalizedPath)) {
+            return;
+          }
+
+          const canonicalPath =
+            knownFileAliases.get(normalizedPath) ?? normalizedPath;
+          const fileChanges = classifyFileChanges({
+            changedFiles: [],
+            knownFiles,
+            removedFiles: [canonicalPath],
+          });
+          knownFileAliases.delete(normalizedPath);
+          scheduleFileChanges(fileChanges);
+        };
+
+        const watcher = chokidar.watch(this.config.workingDir, {
+          ignoreInitial: true,
+          followSymlinks: true,
+          ignored: (pathname) => {
+            const normalizedPath = normalizePath(String(pathname));
+            const extension = extname(normalizedPath);
+            if (extension && !watchableExtensions.has(extension)) {
+              return true;
+            }
+            return hasIgnoredPathFragment(normalizedPath);
+          },
         });
-        logDevHmr('workflow dev hmr: ready');
+
+        watcher.on('add', (pathname) => {
+          void handleFileAdded(pathname);
+        });
+        watcher.on('change', (pathname) => {
+          void handleFileChanged(pathname);
+        });
+        watcher.on('unlink', (pathname) => {
+          handleFileRemoved(pathname);
+        });
+        watcher.on('error', (error) => {
+          console.error('Workflow dev watcher error', error);
+        });
+        watcher.on('ready', () => {
+          logDevHmr('workflow dev hmr: ready');
+        });
       }
     }
 

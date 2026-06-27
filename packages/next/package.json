@@ -38,13 +38,12 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "semver": "catalog:",
-    "watchpack": "2.5.1"
+    "chokidar": "4.0.3",
+    "semver": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@types/semver": "7.7.1",
-    "@types/watchpack": "2.4.4",
     "@workflow/tsconfig": "workspace:*",
     "next": "16.2.1",
     "vitest": "catalog:"
