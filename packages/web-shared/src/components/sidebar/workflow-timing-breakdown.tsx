@@ -34,15 +34,14 @@ function TimingRow({
   label,
   description,
   value,
+  fallback = 'None',
 }: {
   label: string;
   description: string;
   value: number | undefined;
+  fallback?: string;
 }) {
   const formatted = formatDuration(value);
-  if (!formatted) {
-    return null;
-  }
 
   return (
     <div className="flex min-h-8 items-center justify-between gap-4 border-t border-gray-alpha-400 first:border-t-0">
@@ -53,8 +52,12 @@ function TimingRow({
         <span className="truncate">{label}</span>
         <Info aria-hidden className="h-3 w-3 shrink-0 text-gray-700" />
       </span>
-      <span className="shrink-0 text-label-13 font-medium tabular-nums text-gray-1000">
-        {formatted}
+      <span
+        className={`shrink-0 text-label-13 font-medium tabular-nums ${
+          formatted ? 'text-gray-1000' : 'text-gray-900'
+        }`}
+      >
+        {formatted ?? fallback}
       </span>
     </div>
   );
