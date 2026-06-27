@@ -9,6 +9,29 @@ import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
 
+type NitroOptionsWithExternals = Nitro['options'] & {
+  externals?: {
+    external?: Array<(id: string) => boolean>;
+  };
+};
+
+function configureDevWorkflowBuildDir(
+  nitro: Nitro,
+  workflowBuildDir: string
+): void {
+  nitro.options.watchOptions ||= {};
+  const ignored = nitro.options.watchOptions.ignored;
+  const workflowBuildGlob = `${workflowBuildDir}/**`;
+  nitro.options.watchOptions.ignored = ignored
+    ? [ignored, workflowBuildGlob].flat()
+    : [workflowBuildGlob];
+
+  const options = nitro.options as NitroOptionsWithExternals;
+  options.externals ||= {};
+  options.externals.external ||= [];
+  options.externals.external.push((id) => id.startsWith(workflowBuildDir));
+}
+
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
@@ -36,12 +59,9 @@ export default {
       nitro.options.alias['debug'] ??= 'debug';
     }
 
-    // NOTE: Externalize .nitro/workflow to prevent dev reloads
+    // NOTE: Keep generated workflow files out of Nitro dev rebuilds.
     if (nitro.options.dev) {
-      nitro.options.externals ||= {};
-      nitro.options.externals.external ||= [];
-      const outDir = join(nitro.options.buildDir, 'workflow');
-      nitro.options.externals.external.push((id) => id.startsWith(outDir));
+      configureDevWorkflowBuildDir(nitro, workflowBuildDir);
     }
 
     // Add tsConfig plugin

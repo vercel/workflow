@@ -15,14 +15,19 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 
-function createNitroStub({ routing }: { routing: boolean }): Nitro {
+function createNitroStub({
+  dev,
+  routing,
+}: {
+  dev: boolean;
+  routing: boolean;
+}): Nitro {
   return {
     routing,
     options: {
       alias: {},
       buildDir: '/tmp/.nitro',
-      dev: false,
-      externals: {},
+      dev,
       handlers: [],
       preset: 'node-server',
       rootDir: '/tmp/project',
@@ -38,7 +43,7 @@ function createNitroStub({ routing }: { routing: boolean }): Nitro {
 
 describe('@workflow/nitro virtual handlers', () => {
   it('preserves side effects from generated step modules in Nitro v2 handlers', async () => {
-    const nitro = createNitroStub({ routing: false });
+    const nitro = createNitroStub({ dev: false, routing: false });
 
     await nitroModule.setup(nitro);
 
@@ -50,7 +55,7 @@ describe('@workflow/nitro virtual handlers', () => {
   });
 
   it('preserves side effects from generated step modules in Nitro v3 handlers', async () => {
-    const nitro = createNitroStub({ routing: true });
+    const nitro = createNitroStub({ dev: false, routing: true });
 
     await nitroModule.setup(nitro);
 
@@ -59,6 +64,24 @@ describe('@workflow/nitro virtual handlers', () => {
     expect(source).toContain(
       'import { POST } from "/tmp/.nitro/workflow/steps.mjs";'
     );
+  });
+
+  it('keeps generated workflow files out of Nitro dev rebuilds', async () => {
+    const nitro = createNitroStub({ dev: true, routing: true });
+
+    await nitroModule.setup(nitro);
+
+    expect(nitro.options.watchOptions?.ignored).toEqual([
+      '/tmp/.nitro/workflow/**',
+    ]);
+
+    const external = (
+      nitro.options as unknown as {
+        externals: { external: Array<(id: string) => boolean> };
+      }
+    ).externals.external[0];
+    expect(external('/tmp/.nitro/workflow/steps.mjs')).toBe(true);
+    expect(external('/tmp/.nitro/other.mjs')).toBe(false);
   });
 });
 
