@@ -61,6 +61,7 @@ export function EntityDetailPanel({
   onDecrypt,
   isDecrypting = false,
   selectedSpan,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -92,6 +93,8 @@ export function EntityDetailPanel({
   isDecrypting?: boolean;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -374,6 +377,9 @@ export function EntityDetailPanel({
               onStreamClick={onStreamClick}
               onRunClick={onRunClick}
               encryptionKey={encryptionKey}
+              showSeparateEventOccurrenceTimestamps={
+                showSeparateEventOccurrenceTimestamps
+              }
             />
           )}
         </div>

@@ -27,6 +27,8 @@ export interface SidebarDataContextValue {
   onDecrypt?: () => void;
   isDecrypting?: boolean;
   hasEncryptedData?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }
 
 const SidebarDataContext = createContext<SidebarDataContextValue | null>(null);

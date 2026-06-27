@@ -830,6 +830,9 @@ function NewTraceViewerContent({
                 onDecrypt={sidebar.onDecrypt}
                 isDecrypting={sidebar.isDecrypting}
                 selectedSpan={selectedSpan}
+                showSeparateEventOccurrenceTimestamps={
+                  sidebar.showSeparateEventOccurrenceTimestamps
+                }
               />
             </ErrorBoundary>
           </div>

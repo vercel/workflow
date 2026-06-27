@@ -1,5 +1,20 @@
 # @workflow/nitro
 
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2572](https://github.com/vercel/workflow/pull/2572) [`6f4dd0e`](https://github.com/vercel/workflow/commit/6f4dd0e7169c5b3eb48e920a2e86e61450a565d3) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Reload rebuilt step bundles during Vite development.
+
+- [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60) - Fix HTTP/2 requests failing in production builds (Vite/Nitro, TanStack Start) where undici's bundled `node:http2` could not load and fell back to a stub.
+
+- Updated dependencies [[`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b), [`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3), [`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e), [`7c1e2a2`](https://github.com/vercel/workflow/commit/7c1e2a2c7e837ef76bafc771811c8f320d8c4053)]:
+  - @workflow/web@5.0.0-beta.25
+  - @workflow/builders@5.0.0-beta.25
+  - @workflow/core@5.0.0-beta.25
+  - @workflow/rollup@5.0.0-beta.25
+  - @workflow/vite@5.0.0-beta.25
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

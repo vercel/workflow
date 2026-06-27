@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2666](https://github.com/vercel/workflow/pull/2666) [`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retry inline step completion persistence failures instead of recording them as step failures.
+
+- [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e) - Fix a turbo-mode race where step-body writes (`experimental_setAttributes` and stream writes via `getWritable`) could reach the server before the workflow run was created.
+
+- Updated dependencies [[`5977694`](https://github.com/vercel/workflow/commit/59776946a095c56c68254dcb0761d5dec48ccdf6), [`d4e6c5b`](https://github.com/vercel/workflow/commit/d4e6c5ba34a1a3df0e07cc1891837e1435a697a8), [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60), [`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/world-local@5.0.0-beta.22
+  - @workflow/world-vercel@5.0.0-beta.21
+  - @workflow/world@5.0.0-beta.14
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

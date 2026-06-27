@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b) - Fix the run trace detail panel flickering its Input/Output sections when navigating between spans. Span detail is now driven by a single selection-derived state machine (`useSelectedSpanDetail`) whose loading state stays in phase with the selected span, replacing the fetch flag that lagged selection by a few renders.
+
+- [#2632](https://github.com/vercel/workflow/pull/2632) [`7c1e2a2`](https://github.com/vercel/workflow/commit/7c1e2a2c7e837ef76bafc771811c8f320d8c4053) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix run and event observability pages hanging (~16s) and showing no data in the bundled server build, caused by HTTP/2 requests failing to reach `node:http2`.
+
 ## 5.0.0-beta.24
 
 ## 5.0.0-beta.23
