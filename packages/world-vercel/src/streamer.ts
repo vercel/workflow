@@ -5,7 +5,7 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
-import { getStreamDispatcher } from './http-client.js';
+import { fetchWithH2Fallback } from './http-client.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -19,17 +19,18 @@ import {
  */
 export const MAX_CHUNKS_PER_REQUEST = 1000;
 
-// Stream writes (the PUT write/close path) go through the H2 stream
-// dispatcher (see getStreamDispatcher): they send a fully-buffered body (or
-// none), so they benefit from H2 multiplexing without hitting the duplex
-// issues that keep the long-lived live-read (GET) on plain fetch. Because
-// stream appends aren't idempotent, that stream dispatcher uses a deliberately
-// narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only on
-// transient connection errors and HTTP 429 — both of which guarantee the chunk
-// was never persisted — and never on 5xx, so a retry can't duplicate an
-// already-applied write. Snapshot reads (chunks/info) go
-// through makeRequest (default H1 dispatcher); the live-read and list use
-// plain fetch().
+// Stream writes (the PUT write/close path) go through fetchWithH2Fallback with
+// the H2 stream dispatcher: they send a fully-buffered body (or none), so they
+// benefit from H2 multiplexing without hitting the duplex issues that keep the
+// long-lived live-read (GET) on plain fetch — and because the body is buffered
+// they can be safely replayed on the H1 fallback if undici can't negotiate H2
+// in this bundle (see fetchWithH2Fallback). Because stream appends aren't
+// idempotent, that dispatcher uses a deliberately narrowed retry policy (see
+// STREAM_RETRY_OPTIONS): it retries only on transient connection errors and
+// HTTP 429 — both of which guarantee the chunk was never persisted — and never
+// on 5xx, so a retry can't duplicate an already-applied write; the H1 fallback
+// preserves that same policy. Snapshot reads (chunks/info) go through
+// makeRequest (default H1 dispatcher); the live-read and list use plain fetch().
 
 // Writes (PUT) and stream completion use the v2 stream endpoint.
 function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
@@ -144,13 +145,12 @@ export function createStreamer(config?: APIConfig): Streamer {
 
         const httpConfig = await getHttpConfig(config);
         const url = getStreamUrl(name, resolvedRunId, httpConfig);
-        const response = await fetch(url, {
-          method: 'PUT',
-          body: chunk,
-          headers: httpConfig.headers,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-          dispatcher: getStreamDispatcher(config),
-        } as any);
+        const response = await fetchWithH2Fallback(
+          'stream',
+          url,
+          { method: 'PUT', body: chunk, headers: httpConfig.headers },
+          config
+        );
         const text = await response.text();
         if (!response.ok) {
           throw createStreamRequestError('write', url, response, text);
@@ -184,13 +184,12 @@ export function createStreamer(config?: APIConfig): Streamer {
           const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
           const body = encodeMultiChunks(batch);
           const url = getStreamUrl(name, resolvedRunId, httpConfig);
-          const response = await fetch(url, {
-            method: 'PUT',
-            body,
-            headers: httpConfig.headers,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-            dispatcher: getStreamDispatcher(config),
-          } as any);
+          const response = await fetchWithH2Fallback(
+            'stream',
+            url,
+            { method: 'PUT', body, headers: httpConfig.headers },
+            config
+          );
           const text = await response.text();
           if (!response.ok) {
             throw createStreamRequestError('write', url, response, text);
@@ -205,12 +204,12 @@ export function createStreamer(config?: APIConfig): Streamer {
         const httpConfig = await getHttpConfig(config);
         httpConfig.headers.set('X-Stream-Done', 'true');
         const url = getStreamUrl(name, resolvedRunId, httpConfig);
-        const response = await fetch(url, {
-          method: 'PUT',
-          headers: httpConfig.headers,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-          dispatcher: getStreamDispatcher(config),
-        } as any);
+        const response = await fetchWithH2Fallback(
+          'stream',
+          url,
+          { method: 'PUT', headers: httpConfig.headers },
+          config
+        );
         const text = await response.text();
         if (!response.ok) {
           throw createStreamRequestError('close', url, response, text);

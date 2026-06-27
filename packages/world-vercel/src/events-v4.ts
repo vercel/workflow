@@ -30,7 +30,7 @@ import {
 } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
-import { getEventsDispatcher } from './http-client.js';
+import { fetchWithH2Fallback } from './http-client.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
@@ -70,13 +70,16 @@ async function fetchV4(
   // without this v4 event traffic from the flow route would not propagate
   // context to workflow-server. No-ops when no OTEL SDK is registered.
   await injectTraceContextIntoHeaders(init.headers);
-  return fetch(url, {
-    method: init.method,
-    headers: init.headers,
-    body: init.body,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-    dispatcher: getEventsDispatcher(config),
-  } as any);
+  // Use the H2 events dispatcher with a transparent HTTP/1.1 fallback: if
+  // undici can't negotiate H2 in this bundle, the request retries on H1 rather
+  // than hanging (the v4 bodies are buffered, so a pre-send connect failure is
+  // safe to replay). See fetchWithH2Fallback in http-client.ts.
+  return fetchWithH2Fallback(
+    'events',
+    url,
+    { method: init.method, headers: init.headers, body: init.body },
+    config
+  );
 }
 
 /** Flatten a fetch `Headers` into the record shape throwForErrorResponse

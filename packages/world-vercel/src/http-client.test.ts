@@ -2,13 +2,23 @@ import { createSecureServer, type Http2SecureServer } from 'node:http2';
 import type { AddressInfo } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import { Agent } from 'undici';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   DEFAULT_AGENT_OPTIONS,
   EVENTS_AGENT_OPTIONS,
   getDispatcher,
   getEventsDispatcher,
   getStreamDispatcher,
+  isHttp2ConnectUnavailableError,
   STREAM_RETRY_OPTIONS,
 } from './http-client.js';
 
@@ -71,6 +81,176 @@ describe('agent transport', () => {
   it('enables HTTP/2 for the events API only', () => {
     expect(EVENTS_AGENT_OPTIONS.allowH2).toBe(true);
     expect(DEFAULT_AGENT_OPTIONS.allowH2).toBe(false);
+  });
+});
+
+describe('isHttp2ConnectUnavailableError', () => {
+  // The exact signature undici produces when node:http2 didn't load and it
+  // falls back to a stub whose `connect` is undefined: the first H2 connect
+  // throws `http2.connect is not a function`, which the global `fetch` wraps as
+  // `TypeError: fetch failed` with that TypeError as `cause`. Captured from a
+  // real reproduction (undici 7 + a stubbed node:http2.connect).
+  it('matches the wrapped fetch-failed -> http2.connect cause chain', () => {
+    const err = new TypeError('fetch failed');
+    (err as { cause?: unknown }).cause = new TypeError(
+      'http2.connect is not a function'
+    );
+    expect(isHttp2ConnectUnavailableError(err)).toBe(true);
+  });
+
+  it('matches even if a minifier renamed the http2 binding', () => {
+    // Minifiers rename the local `http2` binding but never the `.connect`
+    // property access, so the message becomes e.g. `e.connect is not a
+    // function`. We match on the `connect is not a function` suffix for this.
+    expect(
+      isHttp2ConnectUnavailableError(
+        new TypeError('e.connect is not a function')
+      )
+    ).toBe(true);
+  });
+
+  it('does not match transient network connect errors', () => {
+    const err = new TypeError('fetch failed');
+    const cause = new Error('connect ECONNREFUSED 127.0.0.1:443');
+    (cause as { code?: string }).code = 'ECONNREFUSED';
+    (err as { cause?: unknown }).cause = cause;
+    expect(isHttp2ConnectUnavailableError(err)).toBe(false);
+  });
+
+  it('does not match unrelated "is not a function" errors or nullish input', () => {
+    expect(
+      isHttp2ConnectUnavailableError(new TypeError('foo.bar is not a function'))
+    ).toBe(false);
+    expect(isHttp2ConnectUnavailableError(null)).toBe(false);
+    expect(isHttp2ConnectUnavailableError(undefined)).toBe(false);
+  });
+});
+
+describe('fetchWithH2Fallback', () => {
+  // Fresh module per test so the process-wide `_h2Disabled` latch (set on the
+  // first H2 connect failure) doesn't leak across cases.
+  let mod: typeof import('./http-client.js');
+  let calls: { dispatcher: unknown }[];
+
+  const h2ConnectError = () => {
+    const err = new TypeError('fetch failed');
+    (err as { cause?: unknown }).cause = new TypeError(
+      'http2.connect is not a function'
+    );
+    return err;
+  };
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mod = await import('./http-client.js');
+    calls = [];
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('retries on a distinct H1 dispatcher when H2 cannot be negotiated', async () => {
+    const ok = new Response('ok', { status: 200 });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: unknown, init: { dispatcher: unknown }) => {
+        calls.push({ dispatcher: init.dispatcher });
+        if (calls.length === 1) return Promise.reject(h2ConnectError());
+        return Promise.resolve(ok);
+      })
+    );
+
+    const res = await mod.fetchWithH2Fallback('events', 'https://x/y', {
+      method: 'POST',
+    });
+
+    expect(res).toBe(ok);
+    expect(calls).toHaveLength(2);
+    // First attempt uses the H2 dispatcher; the retry uses the H1 fallback —
+    // a different dispatcher instance.
+    expect(calls[0].dispatcher).not.toBe(calls[1].dispatcher);
+  });
+
+  it('latches the downgrade so later requests skip the dead H2 attempt', async () => {
+    const ok = new Response('ok', { status: 200 });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: unknown, init: { dispatcher: unknown }) => {
+        calls.push({ dispatcher: init.dispatcher });
+        if (calls.length === 1) return Promise.reject(h2ConnectError());
+        return Promise.resolve(ok);
+      })
+    );
+
+    await mod.fetchWithH2Fallback('events', 'https://x/y', { method: 'POST' });
+    await mod.fetchWithH2Fallback('events', 'https://x/y', { method: 'POST' });
+
+    // 1: H2 (fails) -> 2: H1 retry -> 3: H1 directly (no second H2 attempt).
+    expect(calls).toHaveLength(3);
+    expect(calls[2].dispatcher).toBe(calls[1].dispatcher);
+  });
+
+  it('preserves the non-idempotent stream retry policy on the H1 fallback', async () => {
+    // The stream fallback must NOT reuse the default dispatcher (which retries
+    // 5xx and would risk duplicating a non-idempotent append). It pairs an H1
+    // agent with STREAM_RETRY_OPTIONS, so its dispatcher differs from both the
+    // events H1 fallback (the default dispatcher) and the stream H2 dispatcher.
+    const ok = new Response('ok', { status: 200 });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: unknown, init: { dispatcher: unknown }) => {
+        calls.push({ dispatcher: init.dispatcher });
+        if (calls.length === 1) return Promise.reject(h2ConnectError());
+        return Promise.resolve(ok);
+      })
+    );
+
+    await mod.fetchWithH2Fallback('stream', 'https://x/y', { method: 'PUT' });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].dispatcher).not.toBe(mod.getDispatcher());
+    expect(calls[1].dispatcher).not.toBe(calls[0].dispatcher);
+  });
+
+  it('rethrows non-H2 errors without retrying', async () => {
+    const boom = new TypeError('fetch failed');
+    (boom as { cause?: unknown }).cause = new Error('ECONNRESET');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: unknown, init: { dispatcher: unknown }) => {
+        calls.push({ dispatcher: init.dispatcher });
+        return Promise.reject(boom);
+      })
+    );
+
+    await expect(
+      mod.fetchWithH2Fallback('events', 'https://x/y', { method: 'POST' })
+    ).rejects.toBe(boom);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('uses a caller-supplied dispatcher verbatim with no fallback', async () => {
+    const custom = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: unknown, init: { dispatcher: unknown }) => {
+        calls.push({ dispatcher: init.dispatcher });
+        return Promise.reject(h2ConnectError());
+      })
+    );
+
+    await expect(
+      mod.fetchWithH2Fallback(
+        'events',
+        'https://x/y',
+        { method: 'POST' },
+        { dispatcher: custom }
+      )
+    ).rejects.toThrow('fetch failed');
+    // Override is honored verbatim: used once, no H1 retry.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].dispatcher).toBe(custom);
   });
 });
 
