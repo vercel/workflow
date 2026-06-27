@@ -969,9 +969,22 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             allowReservedAttributes: eventData.allowReservedAttributes === true,
           }
         );
-        const runValues = eventData.experimentalStartHook
+        const pendingRun = {
+          runId: effectiveRunId,
+          deploymentId: eventData.deploymentId,
+          workflowName: eventData.workflowName,
+          // Propagate specVersion from the event to the run entity
+          specVersion: effectiveSpecVersion,
+          input: eventData.input as SerializedContent,
+          executionContext: eventData.executionContext as
+            | SerializedContent
+            | undefined,
+          attributes: eventData.attributes,
+          status: 'pending' as const,
+        };
+        const startHook = eventData.experimentalStartHook;
+        const runValues = startHook
           ? await (async () => {
-              const startHook = eventData.experimentalStartHook!;
               const [existingHook] = await getHookByToken.execute({
                 token: startHook.token,
               });
@@ -1003,19 +1016,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
                   const insertedRuns = await drizzle
                     .insert(Schema.runs)
-                    .values({
-                      runId: effectiveRunId,
-                      deploymentId: eventData.deploymentId,
-                      workflowName: eventData.workflowName,
-                      // Propagate specVersion from the event to the run entity
-                      specVersion: effectiveSpecVersion,
-                      input: eventData.input as SerializedContent,
-                      executionContext: eventData.executionContext as
-                        | SerializedContent
-                        | undefined,
-                      attributes: eventData.attributes,
-                      status: 'pending',
-                    })
+                    .values(pendingRun)
                     .onConflictDoNothing()
                     .returning();
                   if (!insertedRuns[0]) {
@@ -1056,19 +1057,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
                 const insertedRuns = await tx
                   .insert(Schema.runs)
-                  .values({
-                    runId: effectiveRunId,
-                    deploymentId: eventData.deploymentId,
-                    workflowName: eventData.workflowName,
-                    // Propagate specVersion from the event to the run entity
-                    specVersion: effectiveSpecVersion,
-                    input: eventData.input as SerializedContent,
-                    executionContext: eventData.executionContext as
-                      | SerializedContent
-                      | undefined,
-                    attributes: eventData.attributes,
-                    status: 'pending',
-                  })
+                  .values(pendingRun)
                   .onConflictDoNothing()
                   .returning();
                 if (!insertedRuns[0]) {
@@ -1094,19 +1083,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             })()
           : await drizzle
               .insert(Schema.runs)
-              .values({
-                runId: effectiveRunId,
-                deploymentId: eventData.deploymentId,
-                workflowName: eventData.workflowName,
-                // Propagate specVersion from the event to the run entity
-                specVersion: effectiveSpecVersion,
-                input: eventData.input as SerializedContent,
-                executionContext: eventData.executionContext as
-                  | SerializedContent
-                  | undefined,
-                attributes: eventData.attributes,
-                status: 'pending',
-              })
+              .values(pendingRun)
               .onConflictDoNothing()
               .returning();
         const [runValue] = runValues;
