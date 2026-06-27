@@ -13,8 +13,10 @@ import type {
   UIMessageChunk,
 } from 'ai';
 import {
+  type DoStreamStepRawResult,
   doStreamStep,
   type ModelStopCondition,
+  normalizeFinishReason as normalizeFinishReasonStrict,
   type ProviderExecutedToolResult,
 } from './do-stream-step.js';
 import type {
@@ -24,13 +26,13 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
+import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import {
   createSpan,
   endSpan,
   runInContext,
   type SpanHandle,
 } from './telemetry.js';
-import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -295,8 +297,7 @@ export async function* streamTextIterator({
         const modelTools = await toolsToModelTools(effectiveTools);
         const {
           toolCalls,
-          finish,
-          step,
+          raw,
           uiChunks: stepUIChunks,
           providerExecutedToolResults,
         } = await runInContext(outerSpanHandle, () =>
@@ -311,6 +312,9 @@ export async function* streamTextIterator({
             collectUIChunks,
           })
         );
+        // Reconstruct the full StepResult outside the step boundary so the
+        // event log doesn't carry StepResult's redundant copies.
+        const step = buildStepResult(raw, toolCalls, conversationPrompt);
         isFirstIteration = false;
         stepNumber++;
         steps.push(step);
@@ -325,7 +329,7 @@ export async function* streamTextIterator({
         ];
 
         // Normalize finishReason - AI SDK v6 returns { unified, raw }, v5 returns a string
-        const finishReason = normalizeFinishReason(finish?.finishReason);
+        const finishReason = normalizeFinishReason(raw.rawFinishReason);
 
         if (finishReason === 'tool-calls') {
           lastStepWasToolCalls = true;
@@ -444,7 +448,7 @@ export async function* streamTextIterator({
           done = true;
         } else {
           throw new Error(
-            `Unexpected finish reason: ${typeof finish?.finishReason === 'object' ? JSON.stringify(finish?.finishReason) : finish?.finishReason}`
+            `Unexpected finish reason: ${typeof raw.rawFinishReason === 'object' ? JSON.stringify(raw.rawFinishReason) : raw.rawFinishReason}`
           );
         }
 
@@ -566,4 +570,163 @@ function normalizeFinishReason(raw: unknown): FinishReason | undefined {
     return obj.unified ?? obj.type ?? 'other';
   }
   return undefined;
+}
+
+/**
+ * Convert a Uint8Array to a base64 string safely.
+ * Uses a loop instead of spread operator to avoid stack overflow on large arrays.
+ */
+function uint8ArrayToBase64(data: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < data.length; i++) {
+    binary += String.fromCharCode(data[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Reconstruct a full `StepResult` from the minimal raw aggregates returned
+ * by `doStreamStep`. Runs outside the step boundary so StepResult's
+ * redundant fields (duplicate tool-call lists, content, reasoningText,
+ * dual base64+uint8Array file encoding, request body) don't cross it.
+ *
+ * The shape returned matches what the AI SDK's `streamText` would expose
+ * to user callbacks (`onStepFinish`, the `steps` array).
+ */
+function buildStepResult(
+  raw: DoStreamStepRawResult,
+  toolCalls: LanguageModelV3ToolCall[],
+  conversationPrompt: LanguageModelV3Prompt
+): StepResult<any> {
+  const reasoning = raw.reasoning.map((r) => ({
+    type: 'reasoning' as const,
+    text: r.text,
+    ...(r.providerMetadata != null
+      ? { providerOptions: r.providerMetadata }
+      : {}),
+  }));
+
+  const reasoningText = raw.reasoning.map((r) => r.text).join('');
+
+  // Expand each file to the AI SDK's GeneratedFile shape (base64 + uint8Array).
+  // The dual encoding doubles the file payload, so we only do it here, after
+  // crossing the step boundary.
+  const files = raw.files.map((file) => {
+    const data = file.data;
+    if (data instanceof Uint8Array) {
+      const base64 = uint8ArrayToBase64(data);
+      return {
+        mediaType: file.mediaType,
+        base64,
+        uint8Array: data,
+      };
+    } else {
+      // Data is a base64 string.
+      const binaryString = atob(data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return {
+        mediaType: file.mediaType,
+        base64: data,
+        uint8Array: bytes,
+      };
+    }
+  });
+
+  // Extract the raw finish reason from the V3 finish reason object/string.
+  const rawFinish = raw.rawFinishReason;
+  const rawFinishReason =
+    typeof rawFinish === 'object' && rawFinish !== null
+      ? (rawFinish as { raw?: string }).raw
+      : typeof rawFinish === 'string'
+        ? rawFinish
+        : undefined;
+
+  const mapToolCall = (toolCall: LanguageModelV3ToolCall) => ({
+    type: 'tool-call' as const,
+    toolCallId: toolCall.toolCallId,
+    toolName: toolCall.toolName,
+    input: safeParseToolCallInput(toolCall.input),
+    dynamic: true as const,
+  });
+
+  return {
+    stepNumber: 0, // Will be overridden by the caller
+    model: {
+      provider: raw.responseMetadata?.modelId?.split(':')[0] ?? 'unknown',
+      modelId: raw.responseMetadata?.modelId ?? 'unknown',
+    },
+    functionId: undefined,
+    metadata: undefined,
+    experimental_context: undefined,
+    content: [
+      ...(raw.text ? [{ type: 'text' as const, text: raw.text }] : []),
+      ...toolCalls.map(mapToolCall),
+    ],
+    text: raw.text,
+    reasoning,
+    reasoningText: reasoningText || undefined,
+    files,
+    sources: raw.sources,
+    toolCalls: toolCalls.map(mapToolCall),
+    staticToolCalls: [],
+    dynamicToolCalls: toolCalls.map(mapToolCall),
+    toolResults: [],
+    staticToolResults: [],
+    dynamicToolResults: [],
+    finishReason: normalizeFinishReasonStrict(raw.rawFinishReason),
+    rawFinishReason,
+    usage: raw.usage
+      ? {
+          inputTokens: raw.usage.inputTokens?.total ?? 0,
+          inputTokenDetails: {
+            noCacheTokens: raw.usage.inputTokens?.noCache,
+            cacheReadTokens: raw.usage.inputTokens?.cacheRead,
+            cacheWriteTokens: raw.usage.inputTokens?.cacheWrite,
+          },
+          outputTokens: raw.usage.outputTokens?.total ?? 0,
+          outputTokenDetails: {
+            textTokens: raw.usage.outputTokens?.text,
+            reasoningTokens: raw.usage.outputTokens?.reasoning,
+          },
+          totalTokens:
+            (raw.usage.inputTokens?.total ?? 0) +
+            (raw.usage.outputTokens?.total ?? 0),
+        }
+      : {
+          inputTokens: 0,
+          inputTokenDetails: {
+            noCacheTokens: undefined,
+            cacheReadTokens: undefined,
+            cacheWriteTokens: undefined,
+          },
+          outputTokens: 0,
+          outputTokenDetails: {
+            textTokens: undefined,
+            reasoningTokens: undefined,
+          },
+          totalTokens: 0,
+        },
+    warnings: raw.warnings,
+    request: {
+      body: JSON.stringify({
+        prompt: conversationPrompt,
+        tools: toolCalls.map(mapToolCall),
+      }),
+    },
+    response: {
+      id: raw.responseMetadata?.id ?? 'unknown',
+      timestamp:
+        raw.responseMetadata?.timestamp instanceof Date
+          ? raw.responseMetadata.timestamp
+          : raw.responseMetadata?.timestamp != null
+            ? new Date(raw.responseMetadata.timestamp)
+            : new Date(),
+      modelId: raw.responseMetadata?.modelId ?? 'unknown',
+      messages: [],
+    },
+    providerMetadata: raw.providerMetadata || {},
+  };
 }
