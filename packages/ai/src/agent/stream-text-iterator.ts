@@ -694,6 +694,10 @@ function buildStepResult(
           totalTokens:
             (raw.usage.inputTokens?.total ?? 0) +
             (raw.usage.outputTokens?.total ?? 0),
+          // Deprecated flat aliases, kept in sync with the nested details so
+          // step.usage matches the AI SDK's asLanguageModelUsage shape.
+          reasoningTokens: raw.usage.outputTokens?.reasoning,
+          cachedInputTokens: raw.usage.inputTokens?.cacheRead,
         }
       : {
           inputTokens: 0,
