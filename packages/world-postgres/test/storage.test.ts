@@ -1,9 +1,12 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { EntityConflictError, HookConflictError } from '@workflow/errors';
 import type { Hook, Step, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
+import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
+import { monotonicFactory } from 'ulid';
 import {
   afterAll,
   beforeAll,
@@ -34,6 +37,7 @@ async function createRun(
     input: Uint8Array;
     executionContext?: Record<string, unknown>;
     attributes?: Record<string, string>;
+    experimentalStartHook?: { token: string; ttlSeconds: number };
   }
 ): Promise<WorkflowRun> {
   const result = await events.create(null, {
@@ -1489,6 +1493,409 @@ describe('Storage (Postgres integration)', () => {
         );
         // No hook entity should be created
         expect(result.hook).toBeUndefined();
+      });
+
+      it('should reject duplicate start hook claims before hook materialization', async () => {
+        const token = 'postgres-start-claim-token';
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 60 },
+        });
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-456',
+            workflowName: 'test-workflow-2',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          })
+        ).rejects.toThrow(HookConflictError);
+
+        await expect(
+          events.create(first.runId, {
+            eventType: 'hook_created' as const,
+            correlationId: 'hook_start',
+            eventData: { token },
+          })
+        ).resolves.toMatchObject({
+          event: { eventType: 'hook_created' },
+          hook: {
+            runId: first.runId,
+            hookId: 'hook_start',
+            token,
+          },
+        });
+      });
+
+      it('should reserve start hook claims during resilient run_started bootstrap', async () => {
+        const token = 'postgres-resilient-start-claim-token';
+        const runId = `wrun_${monotonicFactory()()}`;
+
+        const started = await events.create(runId, {
+          eventType: 'run_started' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          },
+        });
+
+        expect(started.run?.runId).toBe(runId);
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-456',
+            workflowName: 'test-workflow-2',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          })
+        ).rejects.toThrow(HookConflictError);
+
+        await expect(
+          events.create(runId, {
+            eventType: 'hook_created' as const,
+            correlationId: 'hook_resilient_start',
+            eventData: { token },
+          })
+        ).resolves.toMatchObject({
+          event: { eventType: 'hook_created' },
+          hook: { runId, hookId: 'hook_resilient_start', token },
+        });
+      });
+
+      it('should materialize only one hook for a reserved start hook token', async () => {
+        const token = 'postgres-concurrent-start-claim-materialize-token';
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 60 },
+        });
+
+        const results = await Promise.all([
+          events.create(first.runId, {
+            eventType: 'hook_created' as const,
+            correlationId: 'hook_start_a',
+            eventData: { token },
+          }),
+          events.create(first.runId, {
+            eventType: 'hook_created' as const,
+            correlationId: 'hook_start_b',
+            eventData: { token },
+          }),
+        ]);
+
+        expect(results.map((result) => result.event.eventType).sort()).toEqual([
+          'hook_conflict',
+          'hook_created',
+        ]);
+        const persistedHooks = await drizzle
+          .select()
+          .from(DrizzleSchema.hooks)
+          .where(eq(DrizzleSchema.hooks.token, token));
+        expect(persistedHooks).toHaveLength(1);
+      });
+
+      it('should reject experimental starts when an active ordinary hook owns the token', async () => {
+        const token = 'postgres-active-ordinary-hook-token';
+        await createHook(events, testRunId, {
+          hookId: 'hook_active_ordinary',
+          token,
+        });
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-456',
+            workflowName: 'test-workflow-2',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          })
+        ).rejects.toThrow(HookConflictError);
+      });
+
+      it('should treat a same-run start hook retry as a run conflict', async () => {
+        const token = 'postgres-same-run-start-claim-token';
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 60 },
+        });
+
+        await expect(
+          events.create(first.runId, {
+            eventType: 'run_created' as const,
+            eventData: {
+              deploymentId: 'deployment-123',
+              workflowName: 'test-workflow',
+              input: new Uint8Array(),
+              experimentalStartHook: { token, ttlSeconds: 60 },
+            },
+          })
+        ).rejects.toThrow(EntityConflictError);
+      });
+
+      it('should repair a same-run start hook claim when the run_created event is missing', async () => {
+        const token = 'postgres-missing-run-created-start-claim-token';
+        const runId = `wrun_${monotonicFactory()()}`;
+
+        await drizzle.insert(DrizzleSchema.runs).values({
+          runId,
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          status: 'pending',
+          input: new Uint8Array(),
+          attributes: {},
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        await drizzle.insert(DrizzleSchema.hookClaims).values({
+          token,
+          runId,
+          phase: 'start_claim',
+          ttlSeconds: 60,
+        });
+
+        await expect(
+          events.create(runId, {
+            eventType: 'run_created' as const,
+            eventData: {
+              deploymentId: 'deployment-123',
+              workflowName: 'test-workflow',
+              input: new Uint8Array(),
+              experimentalStartHook: { token, ttlSeconds: 60 },
+            },
+          })
+        ).resolves.toMatchObject({
+          event: { eventType: 'run_created' },
+          run: { runId },
+        });
+
+        const repairedEvents = await drizzle
+          .select()
+          .from(DrizzleSchema.events)
+          .where(eq(DrizzleSchema.events.runId, runId));
+        expect(repairedEvents).toHaveLength(1);
+      });
+
+      it('should retain a disposed start hook claim until ttl expiry', async () => {
+        const token = 'postgres-disposed-start-claim-token';
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 60 },
+        });
+
+        await events.create(first.runId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'hook_start_disposed',
+          eventData: { token },
+        });
+        await events.create(first.runId, {
+          eventType: 'hook_disposed' as const,
+          correlationId: 'hook_start_disposed',
+        });
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-456',
+            workflowName: 'test-workflow-2',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          })
+        ).rejects.toThrow(HookConflictError);
+      });
+
+      it('should not materialize a retained start hook claim again', async () => {
+        const token = 'postgres-retained-start-claim-token';
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 60 },
+        });
+
+        await events.create(first.runId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'hook_start_retained',
+          eventData: { token },
+        });
+        await events.create(first.runId, {
+          eventType: 'hook_disposed' as const,
+          correlationId: 'hook_start_retained',
+        });
+
+        const result = await events.create(first.runId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'hook_start_retained_again',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_conflict');
+        expect(result.hook).toBeUndefined();
+      });
+
+      it('should retain a recovered start hook claim after orphaned hook row materialization', async () => {
+        const token = 'postgres-recovered-start-claim-token';
+        const hookId = 'hook_recovered_start_claim';
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 60 },
+        });
+
+        await drizzle.insert(DrizzleSchema.hooks).values({
+          runId: first.runId,
+          hookId,
+          token,
+          ownerId: '',
+          projectId: '',
+          environment: '',
+          specVersion: SPEC_VERSION_CURRENT,
+          isWebhook: false,
+          isSystem: false,
+        });
+
+        await expect(
+          events.create(first.runId, {
+            eventType: 'hook_created' as const,
+            correlationId: hookId,
+            eventData: { token },
+          })
+        ).resolves.toMatchObject({
+          event: { eventType: 'hook_created' },
+          hook: { hookId, token },
+        });
+
+        const [materializedClaim] = await drizzle
+          .select()
+          .from(DrizzleSchema.hookClaims)
+          .where(eq(DrizzleSchema.hookClaims.token, token))
+          .limit(1);
+        expect(materializedClaim).toMatchObject({
+          runId: first.runId,
+          hookId,
+          phase: 'materialized',
+        });
+
+        await updateRun(events, first.runId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        const [retainedClaim] = await drizzle
+          .select()
+          .from(DrizzleSchema.hookClaims)
+          .where(eq(DrizzleSchema.hookClaims.token, token))
+          .limit(1);
+        expect(retainedClaim).toMatchObject({
+          runId: first.runId,
+          hookId,
+          phase: 'retained',
+        });
+        expect(retainedClaim?.expiresAt?.getTime()).toBeGreaterThan(Date.now());
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-456',
+            workflowName: 'test-workflow-2',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          })
+        ).rejects.toThrow(HookConflictError);
+      });
+
+      it('should retain an unmaterialized start hook claim until ttl expiry', async () => {
+        const token = 'postgres-cancelled-unmaterialized-start-claim-token';
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 60 },
+        });
+
+        await events.create(first.runId, {
+          eventType: 'run_cancelled' as const,
+        });
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-456',
+            workflowName: 'test-workflow-2',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          })
+        ).rejects.toThrow(HookConflictError);
+
+        const past = new Date(Date.now() - 2_000);
+        await drizzle
+          .update(DrizzleSchema.hookClaims)
+          .set({ createdAt: past, expiresAt: past })
+          .where(eq(DrizzleSchema.hookClaims.token, token));
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-789',
+            workflowName: 'test-workflow-3',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          })
+        ).resolves.toMatchObject({
+          workflowName: 'test-workflow-3',
+        });
+      });
+
+      it('should keep an expired disposed start hook claim while the run is active', async () => {
+        const token = 'postgres-active-expired-start-claim-token';
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 1 },
+        });
+
+        await events.create(first.runId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'hook_start_expired_active',
+          eventData: { token },
+        });
+        await events.create(first.runId, {
+          eventType: 'hook_disposed' as const,
+          correlationId: 'hook_start_expired_active',
+        });
+
+        const past = new Date(Date.now() - 2_000);
+        await drizzle
+          .update(DrizzleSchema.hookClaims)
+          .set({ createdAt: past, expiresAt: past })
+          .where(eq(DrizzleSchema.hookClaims.token, token));
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-456',
+            workflowName: 'test-workflow-2',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 1 },
+          })
+        ).rejects.toThrow(HookConflictError);
+
+        await updateRun(events, first.runId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        await expect(
+          createRun(events, {
+            deploymentId: 'deployment-789',
+            workflowName: 'test-workflow-3',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 1 },
+          })
+        ).resolves.toMatchObject({
+          workflowName: 'test-workflow-3',
+        });
       });
 
       it('should allow token reuse after hook is disposed', async () => {

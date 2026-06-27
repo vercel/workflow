@@ -214,6 +214,12 @@ type MetaSourceField =
   | 'writer'
   | 'allowReservedAttributes';
 
+// Vercel start-hook admission cannot be enabled until workflow-server and
+// VQS enqueue are one recoverable backend operation. `createVercelWorld`
+// does not advertise the capability, so core `start()` rejects before this
+// field could reach the v4 event path.
+type UnsupportedSourceField = 'experimentalStartHook';
+
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
  * against the @workflow/world event schemas.
@@ -228,7 +234,10 @@ type MetaSourceField =
  * the constraint '[never, never]'` — the historical "silently dropped"
  * footgun, now a build break that names the field.
  */
-type Unhandled = Exclude<EventDataField, PayloadField | MetaSourceField>;
+type Unhandled = Exclude<
+  EventDataField,
+  PayloadField | MetaSourceField | UnsupportedSourceField
+>;
 type Stale = Exclude<MetaSourceField, EventDataField>;
 function assertEventDataWireContractExhaustive<
   _Check extends [never, never],

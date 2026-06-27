@@ -219,6 +219,22 @@ export const hooks = schema.table(
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );
 
+export const hookClaims = schema.table(
+  'workflow_hook_claims',
+  {
+    token: varchar('token').primaryKey(),
+    runId: varchar('run_id').notNull(),
+    hookId: varchar('hook_id'),
+    phase: varchar('phase')
+      .$type<'start_claim' | 'materialized' | 'retained'>()
+      .notNull(),
+    ttlSeconds: integer('ttl_seconds').notNull(),
+    expiresAt: timestamp('expires_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (tb) => [index().on(tb.runId), index().on(tb.expiresAt)]
+);
+
 export const waits = schema.table(
   'workflow_waits',
   {

@@ -1790,6 +1790,38 @@ describe('e2e', () => {
     }
   );
 
+  test.skipIf(!!process.env.WORKFLOW_VERCEL_ENV)(
+    'experimentalWithHook rejects duplicate starts before hook materialization',
+    { timeout: 60_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const workflow = await e2e('experimentalStartHookWorkflow');
+      const startOptions = {
+        experimentalWithHook: {
+          token,
+          experimentalTtl: 60_000,
+        },
+      };
+
+      const run = await start(workflow, [token], startOptions);
+
+      const duplicateError = await start(workflow, [token], startOptions).catch(
+        (error: unknown) => error
+      );
+      expect(HookConflictError.is(duplicateError)).toBe(true);
+      assert(HookConflictError.is(duplicateError));
+      expect(duplicateError.conflictingRunId).toBe(run.runId);
+
+      const hook = await waitForHook(token, { runId: run.runId });
+      await resumeHook(hook, { message: 'accepted' });
+
+      await expect(run.returnValue).resolves.toEqual({
+        role: 'owner',
+        message: 'accepted',
+      });
+    }
+  );
+
   test('hookGetConflictWorkflow - awaiting hook.getConflict() registers hook without payload', async () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);

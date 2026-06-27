@@ -778,6 +778,26 @@ export async function hookClaimOnlyMutexWorkflow(
   };
 }
 
+export async function experimentalStartHookWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+    };
+  }
+
+  const payload = await hook;
+  return {
+    role: 'owner' as const,
+    message: payload.message,
+  };
+}
+
 /**
  * "Adopt the owner's result" strategy: the duplicate run waits for the
  * active owner to finish and returns the owner's result, so callers

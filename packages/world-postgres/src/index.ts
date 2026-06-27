@@ -58,6 +58,7 @@ export function createWorld(
 
   return {
     specVersion: SPEC_VERSION_CURRENT,
+    supportsExperimentalStartHook: true,
     ...storage,
     ...streamer,
     ...queue,

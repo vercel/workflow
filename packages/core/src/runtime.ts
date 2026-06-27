@@ -763,6 +763,8 @@ export function workflowEntrypoint(
                               workflowName: runInput.workflowName,
                               executionContext: runInput.executionContext,
                               attributes: runInput.attributes,
+                              experimentalStartHook:
+                                runInput.experimentalStartHook,
                               allowReservedAttributes:
                                 runInput.allowReservedAttributes,
                             },

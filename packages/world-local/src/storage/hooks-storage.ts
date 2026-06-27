@@ -8,6 +8,7 @@ import type {
   Storage,
 } from '@workflow/world';
 import { HookSchema } from '@workflow/world';
+import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
@@ -16,9 +17,58 @@ import {
   paginatedFileSystemQuery,
   readJSON,
   readJSONWithFallback,
+  writeJSON,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
 import { hashToken, hookRecoveryMarkerPath } from './helpers.js';
+
+const HookTokenClaimSchema = z.object({
+  token: z.string().optional(),
+  hookId: z.string().optional(),
+  runId: z.string(),
+  eventId: z.string().optional(),
+  ttlSeconds: z.number().int().positive().optional(),
+  startEventId: z.string().optional(),
+  createdAt: z.coerce.date().optional(),
+  expiresAt: z.coerce.date().optional(),
+  phase: z.enum(['start_claim', 'materialized', 'retained']).optional(),
+  tag: z.string().optional(),
+});
+
+async function retainStartHookClaim(
+  constraintPath: string,
+  claim: z.infer<typeof HookTokenClaimSchema>,
+  now: Date,
+  hookCreatedAt?: Date
+): Promise<void> {
+  if (!claim.ttlSeconds) return;
+
+  const ttlBase = hookCreatedAt ?? claim.createdAt ?? now;
+  const expiresAt = new Date(
+    Math.max(
+      ttlBase.getTime() + claim.ttlSeconds * 1000,
+      claim.expiresAt?.getTime() ?? 0,
+      now.getTime()
+    )
+  );
+
+  await writeJSON(
+    constraintPath,
+    {
+      token: claim.token,
+      hookId: claim.hookId,
+      runId: claim.runId,
+      eventId: claim.eventId,
+      ttlSeconds: claim.ttlSeconds,
+      startEventId: claim.startEventId,
+      createdAt: claim.createdAt,
+      phase: 'retained',
+      tag: claim.tag,
+      expiresAt,
+    },
+    { overwrite: true }
+  );
+}
 
 /**
  * Creates a hooks storage implementation using the filesystem.
@@ -120,6 +170,8 @@ export async function deleteAllHooksForRun(
 ): Promise<void> {
   const hooksDir = path.join(basedir, 'hooks');
   const files = await listJSONFiles(hooksDir);
+  const tokensDir = path.join(hooksDir, 'tokens');
+  const now = new Date();
 
   for (const file of files) {
     const hookPath = path.join(hooksDir, `${file}.json`);
@@ -136,11 +188,30 @@ export async function deleteAllHooksForRun(
         'tokens',
         `${hashToken(hook.token)}.json`
       );
-      await deleteJSON(constraintPath);
+      const claim = await readJSON(constraintPath, HookTokenClaimSchema);
+      if (claim?.runId === runId && claim.ttlSeconds) {
+        await retainStartHookClaim(
+          constraintPath,
+          { ...claim, token: hook.token },
+          now,
+          hook.createdAt
+        );
+      } else {
+        await deleteJSON(constraintPath);
+      }
       await deleteJSON(
         hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
       );
       await deleteJSON(hookPath);
+    }
+  }
+
+  for (const file of await listJSONFiles(tokensDir)) {
+    if (file.endsWith('.recovery')) continue;
+    const constraintPath = path.join(tokensDir, `${file}.json`);
+    const claim = await readJSON(constraintPath, HookTokenClaimSchema);
+    if (claim?.runId === runId && claim.ttlSeconds) {
+      await retainStartHookClaim(constraintPath, claim, now);
     }
   }
 }

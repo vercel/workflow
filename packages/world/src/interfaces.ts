@@ -286,6 +286,12 @@ export interface World extends Queue, Streamer, Storage {
   specVersion?: number;
 
   /**
+   * Whether this World atomically reserves `run_created.eventData.experimentalStartHook`
+   * tokens with run admission.
+   */
+  supportsExperimentalStartHook?: true;
+
+  /**
    * Whether calling `process.exit(1)` from a queue handler is observed by
    * the World as a delivery failure that will be retried.
    *

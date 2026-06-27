@@ -276,6 +276,11 @@ const AttrSetEventSchema = BaseEventSchema.extend({
   }),
 });
 
+const ExperimentalStartHookSchema = z.object({
+  token: z.string().min(1),
+  ttlSeconds: z.number().int().positive(),
+});
+
 // =============================================================================
 // Run lifecycle events
 // =============================================================================
@@ -293,6 +298,7 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
     executionContext: z.record(z.string(), z.any()).optional(),
     attributes: z.record(z.string(), z.string()).optional(),
     allowReservedAttributes: z.literal(true).optional(),
+    experimentalStartHook: ExperimentalStartHookSchema.optional(),
   }),
 });
 
@@ -315,6 +321,7 @@ const RunStartedEventSchema = BaseEventSchema.extend({
       executionContext: z.record(z.string(), z.any()).optional(),
       attributes: z.record(z.string(), z.string()).optional(),
       allowReservedAttributes: z.literal(true).optional(),
+      experimentalStartHook: ExperimentalStartHookSchema.optional(),
     })
     .optional(),
 });

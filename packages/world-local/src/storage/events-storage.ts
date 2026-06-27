@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   EntityConflictError,
+  HookConflictError,
   HookNotFoundError,
   RunExpiredError,
   RunNotSupportedError,
@@ -83,6 +84,7 @@ import { withRunFileLock } from './runs-storage.js';
 // semantics without spawning subprocesses.
 
 const HookTokenClaimSchema = z.object({
+  token: z.string().optional(),
   // The token-claim writer below has always persisted `hookId`, but
   // this read schema previously omitted it, which is the bug fixed
   // by https://github.com/vercel/workflow/issues/2283. `optional()`
@@ -100,7 +102,15 @@ const HookTokenClaimSchema = z.object({
   // marker upgrade path, which atomically pins a canonical eventId
   // via a sidecar marker (also a `writeExclusive`).
   eventId: z.string().optional(),
+  ttlSeconds: z.number().int().positive().optional(),
+  startEventId: z.string().optional(),
+  createdAt: z.coerce.date().optional(),
+  expiresAt: z.coerce.date().optional(),
+  phase: z.enum(['start_claim', 'materialized', 'retained']).optional(),
+  tag: z.string().optional(),
 });
+
+const START_HOOK_MATERIALIZE_LOCK_STALE_MS = 30_000;
 
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
@@ -133,6 +143,191 @@ async function readHookTokenClaim(
       return null;
     }
     throw error;
+  }
+}
+
+function hookTokenClaimPath(basedir: string, token: string): string {
+  return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
+}
+
+function hookTokenReclaimLockPath(
+  basedir: string,
+  token: string,
+  tag: string | undefined
+): string {
+  const lockName = tag
+    ? `${hashToken(token)}.reclaim.${tag}`
+    : `${hashToken(token)}.reclaim`;
+  return resolveWithinBase(basedir, '.locks', 'hooks', lockName);
+}
+
+function hookTokenMaterializeLockPath(
+  basedir: string,
+  token: string,
+  tag: string | undefined
+): string {
+  const lockName = tag
+    ? `${hashToken(token)}.materialize.${tag}`
+    : `${hashToken(token)}.materialize`;
+  return resolveWithinBase(basedir, '.locks', 'hooks', lockName);
+}
+
+async function canReuseExpiredStartClaim(
+  basedir: string,
+  tag: string | undefined,
+  claim: z.infer<typeof HookTokenClaimSchema>
+): Promise<boolean> {
+  const expiresAt =
+    claim.expiresAt ??
+    (claim.createdAt && claim.ttlSeconds
+      ? new Date(claim.createdAt.getTime() + claim.ttlSeconds * 1000)
+      : undefined);
+  if (!expiresAt || expiresAt > new Date()) return false;
+
+  const run = await readJSONWithFallback(
+    basedir,
+    'runs',
+    claim.runId,
+    WorkflowRunSchema,
+    claim.tag ?? tag
+  );
+  if (!run) return true;
+  return ['completed', 'failed', 'cancelled'].includes(run.status);
+}
+
+async function replaceExpiredStartClaim(
+  basedir: string,
+  tag: string | undefined,
+  token: string,
+  nextClaim: z.infer<typeof HookTokenClaimSchema>
+): Promise<boolean> {
+  const lockPath = hookTokenReclaimLockPath(basedir, token, undefined);
+  let locked = await writeExclusive(lockPath, '');
+  if (!locked) {
+    const stat = await fs.stat(lockPath).catch(() => undefined);
+    if (
+      stat &&
+      Date.now() - stat.mtimeMs > START_HOOK_MATERIALIZE_LOCK_STALE_MS
+    ) {
+      await fs.unlink(lockPath).catch(() => {});
+      locked = await writeExclusive(lockPath, '');
+    }
+  }
+  if (!locked) return false;
+
+  try {
+    const constraintPath = hookTokenClaimPath(basedir, token);
+    const latestClaim = await readHookTokenClaim(constraintPath);
+    if (
+      !latestClaim ||
+      !(await canReuseExpiredStartClaim(basedir, tag, latestClaim))
+    ) {
+      return false;
+    }
+    await writeJSON(constraintPath, nextClaim, { overwrite: true });
+    return true;
+  } finally {
+    await fs.unlink(lockPath).catch(() => {});
+  }
+}
+
+async function materializeStartHookClaim(
+  basedir: string,
+  tag: string | undefined,
+  token: string,
+  nextClaim: z.infer<typeof HookTokenClaimSchema>
+): Promise<boolean> {
+  const lockPath = hookTokenMaterializeLockPath(basedir, token, tag);
+  let locked = await writeExclusive(lockPath, '');
+  if (!locked) {
+    const stat = await fs.stat(lockPath).catch(() => undefined);
+    if (
+      stat &&
+      Date.now() - stat.mtimeMs > START_HOOK_MATERIALIZE_LOCK_STALE_MS
+    ) {
+      await fs.unlink(lockPath).catch(() => {});
+      locked = await writeExclusive(lockPath, '');
+    }
+  }
+  if (!locked) return false;
+
+  try {
+    const constraintPath = hookTokenClaimPath(basedir, token);
+    const latestClaim = await readHookTokenClaim(constraintPath);
+    if (
+      !latestClaim ||
+      latestClaim.runId !== nextClaim.runId ||
+      latestClaim.hookId !== undefined ||
+      latestClaim.phase === 'retained'
+    ) {
+      return false;
+    }
+    await writeJSON(constraintPath, nextClaim, { overwrite: true });
+    return true;
+  } finally {
+    await fs.unlink(lockPath).catch(() => {});
+  }
+}
+
+async function claimStartHookToken(
+  basedir: string,
+  runId: string,
+  eventId: string,
+  startHook: { token: string; ttlSeconds: number },
+  tag?: string
+): Promise<boolean> {
+  const constraintPath = hookTokenClaimPath(basedir, startHook.token);
+  const createdAt = new Date();
+  const claimed = await writeExclusive(
+    constraintPath,
+    JSON.stringify({
+      token: startHook.token,
+      runId,
+      ttlSeconds: startHook.ttlSeconds,
+      startEventId: eventId,
+      createdAt,
+      phase: 'start_claim',
+      tag,
+    })
+  );
+  if (claimed) return true;
+
+  const existingClaim = await readHookTokenClaim(constraintPath);
+  if (existingClaim?.runId === runId) return false;
+  if (
+    existingClaim &&
+    (await replaceExpiredStartClaim(basedir, tag, startHook.token, {
+      token: startHook.token,
+      runId,
+      ttlSeconds: startHook.ttlSeconds,
+      startEventId: eventId,
+      createdAt,
+      phase: 'start_claim',
+      tag,
+    }))
+  ) {
+    return true;
+  }
+
+  const currentClaim = await readHookTokenClaim(constraintPath);
+  throw new HookConflictError(startHook.token, currentClaim?.runId);
+}
+
+async function deleteOwnedStartHookClaim(
+  basedir: string,
+  token: string,
+  runId: string,
+  eventId: string
+): Promise<void> {
+  const constraintPath = hookTokenClaimPath(basedir, token);
+  const latestClaim = await readHookTokenClaim(constraintPath);
+  if (
+    latestClaim?.runId === runId &&
+    latestClaim.startEventId === eventId &&
+    latestClaim.phase === 'start_claim' &&
+    !latestClaim.hookId
+  ) {
+    await deleteJSON(constraintPath);
   }
 }
 
@@ -548,6 +743,10 @@ export function createEventsStorage(
               executionContext?: Record<string, any>;
               attributes?: Record<string, string>;
               allowReservedAttributes?: true;
+              experimentalStartHook?: {
+                token: string;
+                ttlSeconds: number;
+              };
             };
             if (
               runInputData.deploymentId &&
@@ -583,6 +782,17 @@ export function createEventsStorage(
                 createdAt: now,
                 updatedAt: now,
               };
+              const runCreatedEventId = `evnt_${monotonicUlid()}`;
+              let ownsStartHookClaim = false;
+              if (runInputData.experimentalStartHook) {
+                ownsStartHookClaim = await claimStartHookToken(
+                  basedir,
+                  effectiveRunId,
+                  runCreatedEventId,
+                  runInputData.experimentalStartHook,
+                  tag
+                );
+              }
               const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
               const created = await writeExclusive(
                 runPath,
@@ -591,7 +801,6 @@ export function createEventsStorage(
 
               if (created) {
                 // We created the run — also write the run_created event.
-                const runCreatedEventId = `evnt_${monotonicUlid()}`;
                 const runCreatedEvent: Event = {
                   eventType: 'run_created',
                   runId: effectiveRunId,
@@ -606,6 +815,7 @@ export function createEventsStorage(
                     attributes: runInputData.attributes,
                     allowReservedAttributes:
                       runInputData.allowReservedAttributes,
+                    experimentalStartHook: runInputData.experimentalStartHook,
                   },
                 };
                 const createdCompositeKey = `${effectiveRunId}-${runCreatedEventId}`;
@@ -615,6 +825,14 @@ export function createEventsStorage(
                 );
                 currentRun = createdRun;
               } else {
+                if (ownsStartHookClaim && runInputData.experimentalStartHook) {
+                  await deleteOwnedStartHookClaim(
+                    basedir,
+                    runInputData.experimentalStartHook.token,
+                    effectiveRunId,
+                    runCreatedEventId
+                  );
+                }
                 // Run already exists (concurrent run_created won the
                 // race). Re-read it so downstream logic sees the real state.
                 currentRun = await readJSONWithFallback(
@@ -899,6 +1117,10 @@ export function createEventsStorage(
             executionContext?: Record<string, any>;
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
+            experimentalStartHook?: {
+              token: string;
+              ttlSeconds: number;
+            };
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -909,6 +1131,16 @@ export function createEventsStorage(
               allowReservedAttributes: runData.allowReservedAttributes === true,
             }
           );
+          let ownsStartHookClaim = false;
+          if (runData.experimentalStartHook) {
+            ownsStartHookClaim = await claimStartHookToken(
+              basedir,
+              effectiveRunId,
+              eventId,
+              runData.experimentalStartHook,
+              tag
+            );
+          }
           run = {
             runId: effectiveRunId,
             deploymentId: runData.deploymentId,
@@ -936,9 +1168,74 @@ export function createEventsStorage(
             JSON.stringify(run, jsonReplacer, 2)
           );
           if (!created) {
-            throw new EntityConflictError(
-              `Workflow run "${effectiveRunId}" already exists`
-            );
+            const startHookClaim = runData.experimentalStartHook
+              ? await readHookTokenClaim(
+                  hookTokenClaimPath(
+                    basedir,
+                    runData.experimentalStartHook.token
+                  )
+                )
+              : null;
+            const startEventId = startHookClaim?.startEventId;
+            const existingRun =
+              runData.experimentalStartHook &&
+              !ownsStartHookClaim &&
+              startHookClaim?.runId === effectiveRunId &&
+              startHookClaim.phase === 'start_claim' &&
+              startEventId
+                ? await readJSONWithFallback(
+                    basedir,
+                    'runs',
+                    effectiveRunId,
+                    WorkflowRunSchema,
+                    tag
+                  )
+                : null;
+
+            if (
+              existingRun &&
+              runData.experimentalStartHook &&
+              startHookClaim &&
+              startEventId
+            ) {
+              eventId = startEventId;
+              event = {
+                eventType: 'run_created',
+                runId: effectiveRunId,
+                eventId,
+                createdAt: ulidToDate(eventId.replace(/^evnt_/, '')) ?? now,
+                specVersion: effectiveSpecVersion,
+                eventData: {
+                  deploymentId: existingRun.deploymentId,
+                  workflowName: existingRun.workflowName,
+                  input: existingRun.input,
+                  executionContext: existingRun.executionContext,
+                  attributes: existingRun.attributes,
+                  ...(runData.allowReservedAttributes
+                    ? { allowReservedAttributes: true as const }
+                    : {}),
+                  experimentalStartHook: {
+                    token: runData.experimentalStartHook.token,
+                    ttlSeconds:
+                      startHookClaim.ttlSeconds ??
+                      runData.experimentalStartHook.ttlSeconds,
+                  },
+                },
+              };
+              run = existingRun;
+            } else {
+              if (ownsStartHookClaim && runData.experimentalStartHook) {
+                await deleteOwnedStartHookClaim(
+                  basedir,
+                  runData.experimentalStartHook.token,
+                  effectiveRunId,
+                  eventId
+                );
+              }
+              throw new EntityConflictError(
+                `Workflow run "${effectiveRunId}" already exists`
+              );
+            }
           }
         } else if (data.eventType === 'run_started') {
           // Reuse currentRun from validation (already read above)
@@ -1451,17 +1748,12 @@ export function createEventsStorage(
 
           // Atomically claim the token using an exclusive-create constraint file.
           // This avoids the TOCTOU race of the previous read-all-then-check approach.
-          const constraintPath = path.join(
-            basedir,
-            'hooks',
-            'tokens',
-            `${hashToken(hookData.token)}.json`
-          );
+          const constraintPath = hookTokenClaimPath(basedir, hookData.token);
           // Persist `eventId` in the claim so concurrent / cross-
           // process retries can converge on a single canonical
           // `hook_created` event path. See the recovery comment
           // below.
-          const tokenClaimed = await writeExclusive(
+          let tokenClaimed = await writeExclusive(
             constraintPath,
             JSON.stringify({
               token: hookData.token,
@@ -1513,7 +1805,44 @@ export function createEventsStorage(
 
             if (
               existingClaim?.runId === effectiveRunId &&
-              existingClaim.hookId === data.correlationId
+              existingClaim.hookId === undefined &&
+              existingClaim.phase !== 'retained'
+            ) {
+              tokenClaimed = await materializeStartHookClaim(
+                basedir,
+                tag,
+                hookData.token,
+                {
+                  token: hookData.token,
+                  hookId: data.correlationId,
+                  runId: effectiveRunId,
+                  eventId,
+                  ttlSeconds: existingClaim.ttlSeconds,
+                  startEventId: existingClaim.startEventId,
+                  createdAt: existingClaim.createdAt,
+                  phase: 'materialized',
+                  tag: existingClaim.tag,
+                }
+              );
+            }
+            if (
+              !tokenClaimed &&
+              existingClaim?.phase === 'retained' &&
+              (await replaceExpiredStartClaim(basedir, tag, hookData.token, {
+                token: hookData.token,
+                hookId: data.correlationId,
+                runId: effectiveRunId,
+                eventId,
+              }))
+            ) {
+              tokenClaimed = true;
+            }
+
+            if (
+              !tokenClaimed &&
+              existingClaim?.runId === effectiveRunId &&
+              existingClaim.hookId === data.correlationId &&
+              existingClaim.phase !== 'retained'
             ) {
               // Adopt a canonical eventId for the recovery write. The
               // outer event publish (`writeExclusive(eventPath)`)
@@ -1617,7 +1946,7 @@ export function createEventsStorage(
                 specVersion: effectiveSpecVersion,
               };
               writeHookEntityWithOverwrite = true;
-            } else {
+            } else if (!tokenClaimed) {
               // Cross-hook / cross-run conflict: a different
               // (runId, hookId) holds this token. Create a
               // hook_conflict event so the workflow can fail
@@ -1730,19 +2059,40 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Delete the token constraint file to free up the token
-            // for reuse, and delete this hook's recovery marker (if
-            // any) for disk hygiene. The marker's filename hash
-            // includes `(token, runId, hookId)` so different
-            // lifetimes never collide, but cleaning up reduces disk
-            // leak for hooks that go through the recovery path.
-            const disposedConstraintPath = path.join(
+            // Normal hook disposal frees the token. Start-hook claims carry
+            // ttlSeconds and are retained so duplicate starts remain fenced
+            // after the active hook entity is gone.
+            const disposedConstraintPath = hookTokenClaimPath(
               basedir,
-              'hooks',
-              'tokens',
-              `${hashToken(existingHook.token)}.json`
+              existingHook.token
             );
-            await deleteJSON(disposedConstraintPath);
+            const claim = await readHookTokenClaim(disposedConstraintPath);
+            if (claim?.runId === existingHook.runId && claim.ttlSeconds) {
+              await writeJSON(
+                disposedConstraintPath,
+                {
+                  token: existingHook.token,
+                  hookId: existingHook.hookId,
+                  runId: existingHook.runId,
+                  eventId: claim.eventId,
+                  ttlSeconds: claim.ttlSeconds,
+                  startEventId: claim.startEventId,
+                  createdAt: claim.createdAt,
+                  phase: 'retained',
+                  tag: claim.tag,
+                  expiresAt: new Date(
+                    Math.max(
+                      existingHook.createdAt.getTime() +
+                        claim.ttlSeconds * 1000,
+                      Date.now()
+                    )
+                  ),
+                },
+                { overwrite: true }
+              );
+            } else {
+              await deleteJSON(disposedConstraintPath);
+            }
             await deleteJSON(
               hookRecoveryMarkerPath(
                 basedir,

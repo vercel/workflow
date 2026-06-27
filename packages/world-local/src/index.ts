@@ -66,6 +66,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = mergedConfig.recoverActiveRuns ?? true;
   return {
     specVersion: SPEC_VERSION_CURRENT,
+    supportsExperimentalStartHook: true,
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
@@ -136,6 +137,40 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
               );
             }
           })
+        );
+        const tokensDir = path.join(hooksDir, 'tokens');
+        const tokenFiles = await fs.readdir(tokensDir).catch(() => []);
+        await Promise.all(
+          tokenFiles
+            .filter((tokenFile) => tokenFile.endsWith('.json'))
+            .map(async (tokenFile) => {
+              const claimPath = path.join(tokensDir, tokenFile);
+              const claim = JSON.parse(
+                await fs.readFile(claimPath, 'utf8')
+              ) as {
+                tag?: unknown;
+                token?: unknown;
+                runId?: unknown;
+                hookId?: unknown;
+              };
+              if (claim.tag !== tag) return;
+
+              await deleteJSON(claimPath);
+              if (
+                typeof claim.token === 'string' &&
+                typeof claim.runId === 'string' &&
+                typeof claim.hookId === 'string'
+              ) {
+                await deleteJSON(
+                  hookRecoveryMarkerPath(
+                    basedir,
+                    claim.token,
+                    claim.runId,
+                    claim.hookId
+                  )
+                );
+              }
+            })
         );
 
         // Delete tagged entity files across all directories
