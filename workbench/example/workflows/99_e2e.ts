@@ -226,7 +226,7 @@ export async function sleepWinsRaceWorkflow() {
   'use workflow';
   const startTime = Date.now();
   const winner = await Promise.race([
-    delayMsStep(20_000, 'step'),
+    delayMsStep(10_000, 'step'),
     sleep('1s').then(() => 'sleep'),
   ]);
   const endTime = Date.now();
@@ -238,7 +238,7 @@ export async function stepWinsRaceWorkflow() {
   const startTime = Date.now();
   const winner = await Promise.race([
     delayMsStep(1_000, 'step'),
-    sleep('20s').then(() => 'sleep'),
+    sleep('10s').then(() => 'sleep'),
   ]);
   const endTime = Date.now();
   return { winner, durationMs: endTime - startTime };
