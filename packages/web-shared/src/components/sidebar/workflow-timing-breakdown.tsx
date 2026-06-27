@@ -12,7 +12,7 @@ import { DetailCard } from './detail-card';
 
 const TIMING_LABELS = {
   coldStart: {
-    label: 'Cold VM Start',
+    label: 'Cold start',
     description: 'Time Fluid spent starting a cold VM for this invocation.',
   },
   moduleInit: {
