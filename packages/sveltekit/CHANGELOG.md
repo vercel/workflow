@@ -1,5 +1,16 @@
 # @workflow/sveltekit
 
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60) - Fix HTTP/2 requests failing in SvelteKit production builds (undici's bundled `node:http2` could not load, falling back to a stub).
+
+- Updated dependencies [[`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3)]:
+  - @workflow/builders@5.0.0-beta.25
+  - @workflow/rollup@5.0.0-beta.25
+  - @workflow/vite@5.0.0-beta.25
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.0-beta.14
+
+### Patch Changes
+
+- [#2622](https://github.com/vercel/workflow/pull/2622) [`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Declare Zod as a runtime dependency so exported schemas are built with the package's own Zod version instead of the consuming application's peer.
+
 ## 5.0.0-beta.13
 
 ### Patch Changes

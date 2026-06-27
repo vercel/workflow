@@ -1,5 +1,15 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.21
+
+### Patch Changes
+
+- [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60) - Enable HTTP/2 for the events API and stream write requests.
+
+- Updated dependencies [[`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/world@5.0.0-beta.14
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.20
 
 ### Patch Changes
