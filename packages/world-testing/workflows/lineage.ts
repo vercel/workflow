@@ -21,3 +21,25 @@ export async function spawnedChild(): Promise<string> {
   await noop();
   return 'done';
 }
+
+// Three-level chain: root → middle → leaf. The leaf is the first run whose
+// $rootRunId and $parentRunId differ.
+export async function chainRoot(): Promise<string> {
+  'use workflow';
+  await noop();
+  const middle = await start(chainMiddle, []);
+  return middle.runId;
+}
+
+export async function chainMiddle(): Promise<string> {
+  'use workflow';
+  await noop();
+  const leaf = await start(chainLeaf, []);
+  return leaf.runId;
+}
+
+export async function chainLeaf(): Promise<string> {
+  'use workflow';
+  await noop();
+  return 'done';
+}
