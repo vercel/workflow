@@ -175,6 +175,70 @@ function getHeadersFromPayload(
   return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
+/**
+ * Producer header carrying the Vercel trace-collection JWT (the value of the
+ * caller's `_vercel_tracing` cookie). VQS forwards it and surfaces it as a
+ * `_vercel_tracing` cookie on delivery, so the Vercel proxy collects the
+ * queued flow-route invocation's trace — letting backend workflow invocations
+ * show up in the Vercel dashboard, not just client-initiated requests.
+ *
+ * Keep in sync with vqs-server `FORWARDED_HEADERS` / `applyForwardedHeaders`.
+ */
+const TRACE_FORWARD_HEADER = 'x-vercel-tracing';
+
+/** Cookie name the Vercel proxy reads to decide whether to collect a trace. */
+const TRACE_COOKIE_NAME = '_vercel_tracing';
+
+/**
+ * Global key under which the Vercel runtime registers the per-request context
+ * reader. Reading it directly (rather than depending on `@vercel/functions`)
+ * mirrors how `@vercel/otel` accesses the ambient request — a stable contract
+ * that avoids coupling to that package's export surface.
+ */
+const REQUEST_CONTEXT_SYMBOL = Symbol.for('@vercel/request-context');
+
+interface VercelRequestContextReader {
+  get?: () => { headers?: Record<string, string | undefined> } | undefined;
+}
+
+/** Extract a single cookie value from a `Cookie` header string. */
+function parseCookie(cookieHeader: string, name: string): string | undefined {
+  for (const part of cookieHeader.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) {
+      return part.slice(eq + 1).trim() || undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Reads the caller's `_vercel_tracing` cookie from the ambient Vercel request
+ * context and, when present, returns it as an `x-vercel-tracing` header so it
+ * rides the queue message to the next invocation. This runs inside the request
+ * context at every enqueue — the user's route at `start()`, and the flow-route
+ * handler on re-enqueues (where the VQS-forwarded cookie is present) — so the
+ * trace context follows the run.
+ *
+ * Returns `{}` off-platform, when no request context/cookie is available, or if
+ * the global reader is missing — a safe no-op everywhere else.
+ */
+function getTraceCollectionHeaders(): Record<string, string> {
+  let cookieHeader: string | undefined;
+  try {
+    const reader = (globalThis as Record<symbol, unknown>)[
+      REQUEST_CONTEXT_SYMBOL
+    ] as VercelRequestContextReader | undefined;
+    cookieHeader = reader?.get?.()?.headers?.cookie ?? undefined;
+  } catch {
+    return {};
+  }
+  if (!cookieHeader) return {};
+  const token = parseCookie(cookieHeader, TRACE_COOKIE_NAME);
+  return token ? { [TRACE_FORWARD_HEADER]: token } : {};
+}
+
 type QueueFunction = (
   queueName: ValidQueueName,
   payload: QueuePayload,
@@ -247,6 +311,7 @@ export function createQueue(config?: APIConfig): Queue {
         delaySeconds: opts?.delaySeconds,
         headers: {
           ...getHeadersFromPayload(payload),
+          ...getTraceCollectionHeaders(),
           ...opts?.headers,
         },
       });
