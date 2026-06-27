@@ -1,6 +1,7 @@
 'use client';
 
 import { Info } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
   type DerivedWorkflowTimingBreakdown,
@@ -14,12 +15,12 @@ import { DetailCard } from './detail-card';
 const TIMING_LABELS = {
   coldStart: {
     label: 'Cold start',
-    description: 'Time Fluid spent starting a cold VM for this invocation.',
+    description: 'Fluid Compute function cold start time.',
   },
   moduleInit: {
     label: 'Module Init',
     description:
-      'Time before the first Workflow API request that was not cold start.',
+      'Time it took to load the function module before the first Workflow request was made.',
   },
   workflowOverhead: {
     label: 'Workflow Overhead',
@@ -27,19 +28,39 @@ const TIMING_LABELS = {
   },
 };
 
+const MODULE_INIT_WARNING_THRESHOLD_MS = 50;
+
 function formatDuration(value: number | undefined): string | null {
   return value === undefined ? null : formatDurationPrecise(value);
+}
+
+function ModuleInitWarningBadge() {
+  return (
+    <span
+      className="shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium leading-none"
+      style={{
+        borderColor: 'var(--ds-red-400)',
+        backgroundColor: 'var(--ds-red-100)',
+        color: 'var(--ds-red-900)',
+      }}
+      title="Module loading took over 50ms. Check module-level imports and initialization code."
+    >
+      Check code
+    </span>
+  );
 }
 
 function TimingRow({
   label,
   description,
   value,
+  badge,
   fallback = 'None',
 }: {
   label: string;
   description: string;
   value: number | undefined;
+  badge?: ReactNode;
   fallback?: string;
 }) {
   const formatted = formatDuration(value);
@@ -52,6 +73,7 @@ function TimingRow({
       >
         <span className="truncate">{label}</span>
         <Info aria-hidden className="h-3 w-3 shrink-0 text-gray-700" />
+        {badge}
       </span>
       <span
         className={`shrink-0 text-label-13 font-medium tabular-nums ${
@@ -97,6 +119,12 @@ function TimingRows({
         value={breakdown.coldStartDurationMs}
       />
       <TimingRow
+        badge={
+          breakdown.moduleInitDurationMs !== undefined &&
+          breakdown.moduleInitDurationMs > MODULE_INIT_WARNING_THRESHOLD_MS ? (
+            <ModuleInitWarningBadge />
+          ) : undefined
+        }
         description={TIMING_LABELS.moduleInit.description}
         label={TIMING_LABELS.moduleInit.label}
         value={breakdown.moduleInitDurationMs}
