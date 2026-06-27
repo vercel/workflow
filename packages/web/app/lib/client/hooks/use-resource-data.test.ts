@@ -1,10 +1,12 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useWorkflowResourceData } from './use-resource-data';
+import {
+  fetchSpanDetailResource,
+  useWorkflowResourceData,
+} from './use-resource-data';
 
 vi.mock('@workflow/web-shared', () => ({
-  hydrateResourceIO: <T>(x: T): T => x,
-  hydrateResourceIOAsync: async <T>(x: T): Promise<T> => x,
+  hydrateResourceIOAsync: vi.fn(async <T>(x: T): Promise<T> => x),
   waitEventsToWaitEntity: vi.fn(),
 }));
 
@@ -15,9 +17,12 @@ vi.mock('~/lib/rpc-client', () => ({
   fetchEvents: vi.fn(),
 }));
 
-import { waitEventsToWaitEntity } from '@workflow/web-shared';
-import type { WorkflowRun } from '@workflow/world';
-import { fetchEvents, fetchHook, fetchRun } from '~/lib/rpc-client';
+import {
+  hydrateResourceIOAsync,
+  waitEventsToWaitEntity,
+} from '@workflow/web-shared';
+import type { Step, WorkflowRun } from '@workflow/world';
+import { fetchEvents, fetchHook, fetchRun, fetchStep } from '~/lib/rpc-client';
 
 const env = { SOME_VAR: 'test' };
 
@@ -109,6 +114,41 @@ describe('useWorkflowResourceData', () => {
 
     expect(result.current.data).toEqual(hook);
     expect(result.current.error).toBeNull();
+  });
+
+  it('hydrates step data through the async path without an encryption key', async () => {
+    const rawStep = {
+      runId: 'run-1',
+      stepId: 'step-1',
+      stepName: 'step-1',
+      status: 'failed',
+      input: new Uint8Array([1, 2, 3]),
+      error: new Uint8Array([122, 115, 116, 100]),
+      attempt: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      specVersion: 5,
+    } as Step;
+    const hydratedStep = {
+      ...rawStep,
+      error: new Error('Fatal step error'),
+    } as Step;
+
+    vi.mocked(fetchStep).mockResolvedValue({
+      success: true,
+      data: rawStep,
+    });
+    vi.mocked(hydrateResourceIOAsync).mockResolvedValueOnce(hydratedStep);
+
+    await expect(
+      fetchSpanDetailResource(env, {
+        resource: 'step',
+        resourceId: 'step-1',
+        runId: 'run-1',
+      })
+    ).resolves.toBe(hydratedStep);
+
+    expect(hydrateResourceIOAsync).toHaveBeenCalledWith(rawStep, undefined);
   });
 
   it('shows sleep entity constructed from events', async () => {
