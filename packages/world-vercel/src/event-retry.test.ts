@@ -118,12 +118,27 @@ describe('isRetryableEventPostError', () => {
     expect(isRetryableEventPostError(fetchFailed('UND_ERR_SOCKET'))).toBe(true);
   });
 
-  it('retries our own timeout (AbortError/TimeoutError name)', () => {
+  it('retries our own timeout (TimeoutError) but not an external abort (AbortError)', () => {
+    // Self-deadline via AbortSignal.timeout → TimeoutError → ambiguous, retry.
     expect(
       isRetryableEventPostError(
         Object.assign(new Error('timed out'), { name: 'TimeoutError' })
       )
     ).toBe(true);
+    // Caller-requested cancellation surfaces as AbortError → must NOT be retried.
+    expect(
+      isRetryableEventPostError(
+        Object.assign(new Error('aborted'), { name: 'AbortError' })
+      )
+    ).toBe(false);
+    // Also when wrapped by makeRequest as a WorkflowWorldError(cause).
+    expect(
+      isRetryableEventPostError(
+        new WorkflowWorldError('request aborted', {
+          cause: Object.assign(new Error('aborted'), { name: 'AbortError' }),
+        })
+      )
+    ).toBe(false);
   });
 
   it('does not retry an unclassified error', () => {

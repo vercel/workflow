@@ -12,10 +12,13 @@
  * idempotent *in outcome*: the entity handlers run before the event-log row is
  * inserted, and state transitions are conditional writes that exclude
  * already-terminal states. A retry whose original already landed therefore
- * throws before any row is written and surfaces as a 409 — which the SDK maps to
- * `EntityConflictError` and existing callers already handle (e.g. the step
- * executor swallows it as `{ type: 'skipped' }`). So retrying the POST is safe:
- * worst case we observe the 409 our own first attempt caused.
+ * throws before any row is written and surfaces as a 409 for most types — which
+ * the SDK maps to `EntityConflictError` and existing callers already handle (e.g.
+ * the step executor swallows it as `{ type: 'skipped' }`). The two non-conflict
+ * cases still resolve as plain success the caller already handles: `run_started`
+ * early-returns the running run and `attr_set` replays the existing event (both
+ * 200). So retrying the POST is safe: worst case we observe the outcome our own
+ * first attempt caused.
  *
  * This module retries the POST in-process for the event types that are provably
  * idempotent-on-retry, and leaves the rest at a single attempt. The three
@@ -169,8 +172,13 @@ const TRANSIENT_CODES = new Set([
   'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_BODY_TIMEOUT',
   // Names (undici/Node surface these on the error or its cause).
+  // `TimeoutError` is our own per-request deadline (`AbortSignal.timeout` in
+  // makeRequest) — a genuinely ambiguous failure worth retrying. We deliberately
+  // do NOT include `AbortError`: that is how an external/caller-supplied
+  // cancellation surfaces (makeRequest composes the caller's signal via
+  // `AbortSignal.any`), and re-issuing a write the caller asked to cancel —
+  // stalling the abort by the full backoff budget — would be wrong.
   'TimeoutError',
-  'AbortError',
   'RequestRetryError',
 ]);
 
@@ -222,6 +230,33 @@ export function isRetryableEventPostError(err: unknown): boolean {
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Gated like the rest of world-vercel's HTTP layer (`DEBUG=workflow:*`). Keeps
+ * in-process retries visible during a latency/outage investigation — otherwise a
+ * step that quietly rode out a blip and one that exhausted its retries and fell
+ * through to queue redelivery look identical in logs/traces. */
+const RETRY_DEBUG_ENABLED =
+  typeof process !== 'undefined' &&
+  typeof process.env.DEBUG === 'string' &&
+  (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*');
+
+function logRetry(message: string, fields: Record<string, unknown>): void {
+  if (!RETRY_DEBUG_ENABLED) return;
+  const suffix = Object.entries(fields)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+  console.debug(`[workflow:world-vercel:event-retry] ${message} ${suffix}`);
+}
+
+/** A concise identifier for the failure, for the debug line above. */
+function errorMarker(err: unknown): string {
+  if (WorkflowWorldError.is(err)) {
+    return err.code ?? (err.status != null ? `status_${err.status}` : err.name);
+  }
+  return (
+    collectErrorMarkers(err)[0] ?? (err instanceof Error ? err.name : 'unknown')
+  );
+}
+
 /**
  * Run an event POST, retrying transient transport failures in-process when the
  * event type is idempotent-on-retry. Non-retryable event types and definitive
@@ -236,17 +271,33 @@ export async function withEventPostRetry<T>(
     try {
       return await fn();
     } catch (err) {
-      if (
-        !retryable ||
-        attempt >= MAX_EVENT_POST_RETRIES ||
-        !isRetryableEventPostError(err)
-      ) {
-        throw err;
+      const transient = retryable && isRetryableEventPostError(err);
+      if (transient && attempt < MAX_EVENT_POST_RETRIES) {
+        const backoff =
+          EVENT_POST_RETRY_BASE_MS * 2 ** attempt +
+          Math.floor(Math.random() * EVENT_POST_RETRY_JITTER_MS);
+        logRetry('retrying event POST after transient failure', {
+          eventType,
+          attempt: attempt + 1,
+          backoffMs: backoff,
+          error: errorMarker(err),
+        });
+        await sleep(backoff);
+        continue;
       }
-      const backoff =
-        EVENT_POST_RETRY_BASE_MS * 2 ** attempt +
-        Math.floor(Math.random() * EVENT_POST_RETRY_JITTER_MS);
-      await sleep(backoff);
+      // Out of retries on a still-transient failure: surface it so the queue
+      // redelivers (the worst-case fallthrough the in-process retry rode against).
+      if (transient) {
+        logRetry(
+          'exhausted in-process retries; surfacing for queue redelivery',
+          {
+            eventType,
+            attempts: attempt + 1,
+            error: errorMarker(err),
+          }
+        );
+      }
+      throw err;
     }
   }
 }

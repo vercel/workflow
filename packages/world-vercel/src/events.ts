@@ -526,8 +526,9 @@ export async function createWorkflowRunEvent(
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
     // are idempotent-on-retry. A write that landed but whose response was lost
-    // re-surfaces as a 409 the callers below already handle, so this avoids a
-    // needless step re-execution on the next queue delivery. Non-retryable
+    // re-surfaces as a 409 (or plain success for run_started/attr_set) the
+    // callers already handle, so this avoids a needless step re-execution on
+    // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
     return await withEventPostRetry(
