@@ -32,7 +32,11 @@ import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
-import { type APIConfig, getHttpConfig } from './utils.js';
+import {
+  type APIConfig,
+  getHttpConfig,
+  isFirewallChallenge429,
+} from './utils.js';
 
 /**
  * Issue a v4 request through the global `fetch` — NOT undici's `request`.
@@ -238,7 +242,9 @@ function buildPostFrameMeta(
  *   - 410 → RunExpiredError (runtime exits without retrying)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for
  *     what happens when a 425 degrades into an untyped error)
- *   - 429 → ThrottleError + retryAfter
+ *   - 429 → ThrottleError + retryAfter, EXCEPT a firewall challenge (429 +
+ *     `x-vercel-mitigated: challenge`) → retryable transport WorkflowWorldError
+ *     (`code: 'TRANSPORT'`); see isFirewallChallenge429
  *   - anything else → WorkflowWorldError with `status` (the hook 404 →
  *     HookNotFoundError translation in events.ts keys off status === 404)
  *
@@ -273,7 +279,26 @@ export function throwForErrorResponse(
   if (statusCode === 409) throw new EntityConflictError(message);
   if (statusCode === 410) throw new RunExpiredError(message);
   if (statusCode === 425) throw new TooEarlyError(message, { retryAfter });
-  if (statusCode === 429) throw new ThrottleError(message, { retryAfter });
+  if (statusCode === 429) {
+    // A firewall challenge (429 + `x-vercel-mitigated: challenge`) is routed to
+    // the retryable transport path instead of ThrottleError so the runtime
+    // rethrows it to the queue (delivery-count backoff + cap) rather than
+    // deferring it on step_started into an uncapped flat re-enqueue loop. See
+    // isFirewallChallenge429.
+    const mitigated = readHeader(responseHeaders, 'x-vercel-mitigated');
+    if (isFirewallChallenge429(statusCode, mitigated)) {
+      throw new WorkflowWorldError(
+        `${message} (x-vercel-mitigated=challenge)`,
+        {
+          status: 429,
+          code: 'TRANSPORT',
+          url,
+          retryAfter,
+        }
+      );
+    }
+    throw new ThrottleError(message, { retryAfter });
+  }
   throw new WorkflowWorldError(message, {
     status: statusCode,
     code,

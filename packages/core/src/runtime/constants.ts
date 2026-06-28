@@ -10,11 +10,14 @@ import { runtimeLogger } from '../logger.js';
 // `getHandlerErrorRetryAfterSeconds`) fed through VQS `calculateBackoffDelay`.
 // VQS uses our value for the first 32 attempts (clamped to [5s, 900s]) then
 // applies its own exponential growth — every hop hard-capped at the SQS limit
-// of 900s. With the backoff ramping toward that 900s ceiling, 48 attempts span
-// the better part of the 24-hour window, leaving headroom for the failure path
-// to run before the message expires. (A flatter, low-capped backoff exhausts
-// the budget in only a few hours, failing otherwise-healthy runs during a
-// transient backend outage.)
+// of 900s. With the backoff ramping toward that 900s ceiling (reached by
+// ~delivery 11), 48 attempts span roughly 9–10 hours of wall-clock (~35,000s),
+// comfortably under the 24-hour message-visibility limit so the failure path
+// runs before the message expires. (A flatter, low-capped backoff exhausts the
+// budget in only a few hours, failing otherwise-healthy runs during a transient
+// backend outage; conversely, spanning the full 24h window would require a
+// substantially higher cap here, not a higher per-hop ceiling — VQS clamps
+// every hop at 900s.)
 export const MAX_QUEUE_DELIVERIES = 48;
 
 /**

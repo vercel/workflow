@@ -171,6 +171,29 @@ function getTransientTransportCode(error: unknown): string | undefined {
 }
 
 /**
+ * The Vercel firewall answers an intercepted request with HTTP 429 and
+ * `x-vercel-mitigated: challenge`. A challenge is meant to be solved by a
+ * browser, which our server-to-server client can't do, so the 429 recurs for
+ * the life of the incident.
+ *
+ * Such a 429 must NOT surface as a `ThrottleError`: on the `step_started` write
+ * the runtime defers a `ThrottleError` (`{ type: 'throttled' }`) by
+ * self-enqueuing a FRESH queue message, which resets the delivery count — so it
+ * never backs off past `retryAfter` and never reaches `MAX_QUEUE_DELIVERIES`,
+ * hot-looping against an already-overloaded firewall. We instead map a
+ * challenge to a retryable transport `WorkflowWorldError` (`code: 'TRANSPORT'`),
+ * which the runtime rethrows to the queue handler — earning the delivery-count
+ * backoff AND the delivery cap. A genuine application-level 429 (no `challenge`
+ * mitigation) stays a `ThrottleError` and keeps its `Retry-After`-paced defer.
+ */
+export function isFirewallChallenge429(
+  status: number,
+  mitigated: string | null | undefined
+): boolean {
+  return status === 429 && mitigated === 'challenge';
+}
+
+/**
  * Effective workflow-server URL override. The inline constant wins when
  * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
  *
@@ -508,9 +531,9 @@ export async function makeRequest<T>({
           }
 
           // Parse Retry-After header (value is in seconds).
-          // Used by both 425 (TooEarlyError) and 429 (ThrottleError).
-          // Note: RetryAgent handles most 429 retries automatically, but this
-          // catches the case where retries are exhausted.
+          // Used by both 425 (TooEarlyError) and 429 (ThrottleError). The
+          // RetryAgent no longer retries 429 in-process (see http-client.ts),
+          // so every 429 reaches here on the first response.
           let retryAfter: number | undefined;
           const retryAfterHeader = response.headers.get('Retry-After');
           if (retryAfterHeader) {
@@ -544,6 +567,25 @@ export async function makeRequest<T>({
             throwWithTrace(new TooEarlyError(defaultMessage, { retryAfter }));
           }
           if (response.status === 429) {
+            // A firewall challenge (429 + `x-vercel-mitigated: challenge`) is
+            // routed to the retryable transport path instead of ThrottleError
+            // — see isFirewallChallenge429. The mitigation header is already
+            // appended to defaultMessage via responseDiagnostics.
+            if (
+              isFirewallChallenge429(
+                response.status,
+                response.headers.get('x-vercel-mitigated')
+              )
+            ) {
+              throwWithTrace(
+                new WorkflowWorldError(defaultMessage, {
+                  url,
+                  status: 429,
+                  code: 'TRANSPORT',
+                  retryAfter,
+                })
+              );
+            }
             throwWithTrace(new ThrottleError(defaultMessage, { retryAfter }));
           }
 

@@ -1134,6 +1134,51 @@ describe('executeStep inline-delta threading', () => {
     expect(createdEventTypes()).toEqual(['step_started', 'step_completed']);
   });
 
+  it('throws (does NOT defer as throttled) when a firewall-challenge 429 maps to a TRANSPORT error on step_started', async () => {
+    // world-vercel routes a firewall challenge to a TRANSPORT WorkflowWorldError
+    // rather than ThrottleError precisely so it propagates here: a throw flows
+    // into the replay loop's retryable-world-error rethrow (delivery-count
+    // backoff + MAX_QUEUE_DELIVERIES cap), instead of `{ type: 'throttled' }`
+    // which self-enqueues a fresh message and resets the delivery count.
+    const challengeError = new WorkflowWorldError(
+      'rate limited (x-vercel-mitigated=challenge)',
+      { status: 429, code: 'TRANSPORT' }
+    );
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(challengeError);
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    await expect(
+      executeStep({ world: world as never, ...baseParams })
+    ).rejects.toBe(challengeError);
+  });
+
+  it('defers (throttled) when a genuine application-level 429 (ThrottleError) hits step_started', async () => {
+    // A real server throttle keeps the Retry-After-paced defer.
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(
+            new ThrottleError('slow down', { retryAfter: 3 })
+          );
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+    expect(result.type).toBe('throttled');
+    if (result.type !== 'throttled') throw new Error('unreachable');
+    expect(result.timeoutSeconds).toBe(3);
+  });
+
   it('treats a RunExpiredError from step_completed as gone', async () => {
     mockStepCompleted(() =>
       Promise.reject(new RunExpiredError('run already completed'))

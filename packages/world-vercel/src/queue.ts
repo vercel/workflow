@@ -141,9 +141,11 @@ const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 // at 900s) — see vqs-server `calculateBackoffDelay`. Capping our base at 60s
 // (the old value) wasted that headroom: a run stuck behind a sustained backend
 // outage exhausted its delivery budget in ~3.7h. Ramping to the 900s ceiling
-// instead stretches survival across the bulk of the ~24h message-visibility
-// window, so transient outages don't fail otherwise-healthy runs. Going above
-// 900s is pointless — VQS clamps it.
+// instead stretches survival to ~9–10h (across `MAX_QUEUE_DELIVERIES` = 48
+// attempts), so transient outages don't fail otherwise-healthy runs. Spanning
+// the full ~24h message-visibility window would require a higher delivery cap,
+// not a higher ceiling — VQS clamps every hop at 900s, so going above it here
+// is pointless.
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
 
