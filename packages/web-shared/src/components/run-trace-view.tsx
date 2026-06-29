@@ -28,6 +28,7 @@ interface RunTraceViewProps {
   hasMoreSpans?: boolean;
   isLoadingMoreSpans?: boolean;
   showSeparateEventOccurrenceTimestamps?: boolean;
+  showWorkflowTimingBreakdown?: boolean;
   spanTimings?: WorkflowSpanTimingMap;
 }
 
@@ -46,6 +47,7 @@ export function RunTraceView({
   hasMoreSpans,
   isLoadingMoreSpans,
   showSeparateEventOccurrenceTimestamps,
+  showWorkflowTimingBreakdown = false,
   spanTimings,
 }: RunTraceViewProps) {
   if (error && !run) {
@@ -77,6 +79,7 @@ export function RunTraceView({
         showSeparateEventOccurrenceTimestamps={
           showSeparateEventOccurrenceTimestamps
         }
+        showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
         spanTimings={spanTimings}
       />
     </div>

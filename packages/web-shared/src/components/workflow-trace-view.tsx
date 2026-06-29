@@ -799,6 +799,7 @@ export const WorkflowTraceViewer = ({
   onDecrypt,
   isDecrypting = false,
   showSeparateEventOccurrenceTimestamps = false,
+  showWorkflowTimingBreakdown = false,
   spanTimings,
 }: {
   run: WorkflowRun;
@@ -840,6 +841,8 @@ export const WorkflowTraceViewer = ({
   isDecrypting?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** Show log-derived cold start, module init, and workflow overhead timing rows. */
+  showWorkflowTimingBreakdown?: boolean;
   /** Optional log-derived timing data keyed by trace span ID. */
   spanTimings?: WorkflowSpanTimingMap;
 }) => {
@@ -1185,6 +1188,7 @@ export const WorkflowTraceViewer = ({
                 showSeparateEventOccurrenceTimestamps={
                   showSeparateEventOccurrenceTimestamps
                 }
+                showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
               />
             </ErrorBoundary>
           </div>

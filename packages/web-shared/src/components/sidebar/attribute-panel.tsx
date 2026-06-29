@@ -750,6 +750,7 @@ export const AttributePanel = ({
   isDecrypting = false,
   resource,
   workflowTiming,
+  showWorkflowTimingBreakdown = false,
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
@@ -768,6 +769,8 @@ export const AttributePanel = ({
   resource?: string;
   /** Log-derived timing data for the selected workflow run or step span. */
   workflowTiming?: WorkflowSpanTiming;
+  /** Show log-derived cold start, module init, and workflow overhead timing rows. */
+  showWorkflowTimingBreakdown?: boolean;
 }) => {
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
@@ -861,8 +864,10 @@ export const AttributePanel = ({
       }
     : outerDecryptCtx;
   const hasCompletedAttribute = orderedBasicAttributes.includes('completedAt');
+  const shouldShowWorkflowTiming =
+    showWorkflowTimingBreakdown && Boolean(workflowTiming);
   const showMetadata =
-    visibleBasicAttributes.length > 0 || Boolean(workflowTiming);
+    visibleBasicAttributes.length > 0 || shouldShowWorkflowTiming;
 
   return (
     <ContextCardProvider>
@@ -895,16 +900,17 @@ export const AttributePanel = ({
                                 : undefined
                             }
                           />
-                          {attribute === 'completedAt' && (
-                            <WorkflowTimingBreakdown
-                              resource={resource}
-                              timing={workflowTiming}
-                            />
-                          )}
+                          {attribute === 'completedAt' &&
+                            shouldShowWorkflowTiming && (
+                              <WorkflowTimingBreakdown
+                                resource={resource}
+                                timing={workflowTiming}
+                              />
+                            )}
                         </Fragment>
                       );
                     })}
-                    {!hasCompletedAttribute && (
+                    {!hasCompletedAttribute && shouldShowWorkflowTiming && (
                       <WorkflowTimingBreakdown
                         resource={resource}
                         timing={workflowTiming}

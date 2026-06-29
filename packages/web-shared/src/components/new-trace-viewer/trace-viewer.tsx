@@ -58,6 +58,7 @@ interface NewTraceViewerProps {
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;
+  showWorkflowTimingBreakdown?: boolean;
 }
 
 const MIN_VIEWPORT_MS = 0.001;
@@ -177,6 +178,7 @@ export function NewTraceViewer({
   onLoadMore,
   hasMore,
   isLoadingMore,
+  showWorkflowTimingBreakdown = false,
 }: NewTraceViewerProps): ReactNode {
   return (
     <TooltipProvider delayDuration={300}>
@@ -186,6 +188,7 @@ export function NewTraceViewer({
           onLoadMore={onLoadMore}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
+          showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
         />
       </ActiveSpanProvider>
     </TooltipProvider>
@@ -197,6 +200,7 @@ function NewTraceViewerContent({
   onLoadMore,
   hasMore,
   isLoadingMore,
+  showWorkflowTimingBreakdown = false,
 }: NewTraceViewerProps): ReactNode {
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
@@ -835,6 +839,7 @@ function NewTraceViewerContent({
                 showSeparateEventOccurrenceTimestamps={
                   sidebar.showSeparateEventOccurrenceTimestamps
                 }
+                showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
               />
             </ErrorBoundary>
           </div>

@@ -66,6 +66,7 @@ export function EntityDetailPanel({
   isDecrypting = false,
   selectedSpan,
   showSeparateEventOccurrenceTimestamps = false,
+  showWorkflowTimingBreakdown = false,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -99,6 +100,8 @@ export function EntityDetailPanel({
   selectedSpan: SelectedSpanInfo | null;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** Show log-derived cold start, module init, and workflow overhead timing rows. */
+  showWorkflowTimingBreakdown?: boolean;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -373,6 +376,7 @@ export function EntityDetailPanel({
             isDecrypting={isDecrypting}
             resource={resource}
             workflowTiming={selectedSpan.timing}
+            showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
           />
 
           {rawEvents && (

@@ -21,6 +21,7 @@ const NewTraceViewer = ({
   hasMore,
   isLoadingMore,
   loading = false,
+  showWorkflowTimingBreakdown = false,
   spanTimings,
 }: {
   run: WorkflowRun;
@@ -30,6 +31,7 @@ const NewTraceViewer = ({
   hasMore?: boolean;
   isLoadingMore?: boolean;
   loading?: boolean;
+  showWorkflowTimingBreakdown?: boolean;
   spanTimings?: WorkflowSpanTimingMap;
 }) => {
   const trace: TraceWithMeta | undefined = useMemo(() => {
@@ -55,6 +57,7 @@ const NewTraceViewer = ({
           onLoadMore={onLoadMore}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
+          showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
         />
       </div>
     </SidebarDataProvider>
