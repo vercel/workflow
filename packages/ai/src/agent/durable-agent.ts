@@ -1662,15 +1662,39 @@ async function executeTool(
     // of aborting the entire stream. This aligns with AI SDK's streamText behavior
     // for tool failures. Reaches here both for malformed JSON and for the
     // re-thrown "Invalid input for tool ..." schema-validation error above.
-    return {
-      type: 'tool-result' as const,
-      toolCallId: toolCall.toolCallId,
-      toolName: toolCall.toolName,
-      output: {
-        type: 'error-text' as const,
-        value: getErrorMessage(parseError),
+    //
+    // This path intentionally does not reach `onError` (it no longer throws),
+    // matching the tool-execution-error path below. Emit an `ai.toolCall` span
+    // recording the failure so the recovered error stays observable in traces.
+    const parseErrorMessage = getErrorMessage(parseError);
+    return recordSpan({
+      name: 'ai.toolCall',
+      telemetry,
+      attributes: {
+        'ai.toolCall.name': toolCall.toolName,
+        'ai.toolCall.id': toolCall.toolCallId,
+        ...(telemetry?.recordOutputs !== false && {
+          'ai.toolCall.args': toolCall.input,
+        }),
       },
-    };
+      fn: (span) => {
+        if (span) {
+          // 2 === OTel SpanStatusCode.ERROR (inlined to avoid a hard dependency
+          // on the optional @opentelemetry/api package).
+          span.setStatus({ code: 2, message: parseErrorMessage });
+          span.setAttributes({ 'ai.toolCall.error': parseErrorMessage });
+        }
+        return {
+          type: 'tool-result' as const,
+          toolCallId: toolCall.toolCallId,
+          toolName: toolCall.toolName,
+          output: {
+            type: 'error-text' as const,
+            value: parseErrorMessage,
+          },
+        };
+      },
+    });
   }
 
   return recordSpan({

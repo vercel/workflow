@@ -2082,6 +2082,84 @@ describe('DurableAgent', () => {
       );
     });
 
+    it('should recover from invalid tool input and execute the corrected retry', async () => {
+      const execute = vi.fn(async () => ({ ok: true }));
+      const tools: ToolSet = {
+        strictTool: {
+          description: 'A tool with a strict input schema',
+          inputSchema: z.object({ requiredField: z.string().min(1) }),
+          execute,
+        },
+      };
+
+      const mockModel = createMockModel();
+      const agent = new DurableAgent({ model: async () => mockModel, tools });
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+      const mockMessages: LanguageModelV3Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      const makeToolCall = (input: string): LanguageModelV3ToolCall => ({
+        toolCallId: 'test-call-id',
+        toolName: 'strictTool',
+        input,
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi
+          .fn()
+          // Step 1: model emits invalid args (empty string fails .min(1)).
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [makeToolCall('{"requiredField":""}')],
+              messages: mockMessages,
+            },
+          })
+          // Step 2: model corrects the args after seeing the error-text result.
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [makeToolCall('{"requiredField":"ok"}')],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await expect(
+        agent.stream({
+          messages: [{ role: 'user', content: 'test' }],
+          writable: mockWritable,
+        })
+      ).resolves.not.toThrow();
+
+      // The tool must NOT run on the invalid call, and MUST run exactly once with
+      // the corrected input — proving the agent productively recovers, not just
+      // that the error was fed back.
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0][0]).toEqual({ requiredField: 'ok' });
+
+      // First turn fed back an error-text result; second turn produced a success.
+      expect(mockIterator.next).toHaveBeenCalledTimes(3);
+      const firstResults = mockIterator.next.mock.calls[1][0];
+      expect(firstResults[0].output.type).toBe('error-text');
+      const secondResults = mockIterator.next.mock.calls[2][0];
+      expect(secondResults[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'strictTool',
+        output: { type: 'json', value: { ok: true } },
+      });
+    });
+
     it('should call onFinish with steps and messages when streaming completes', async () => {
       const mockModel = createMockModel();
 
