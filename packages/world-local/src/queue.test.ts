@@ -344,3 +344,87 @@ describe('queue delaySeconds', () => {
     expect(mockSetTimeout).not.toHaveBeenCalled();
   });
 });
+
+/** undici's shape for a saturated-local-server connect timeout. */
+function fetchFailedTimeout(): TypeError {
+  const err = new TypeError('fetch failed');
+  (err as TypeError & { cause?: unknown }).cause = new AggregateError(
+    [
+      Object.assign(new Error('connect ETIMEDOUT ::1:3000'), {
+        code: 'ETIMEDOUT',
+      }),
+    ],
+    ''
+  );
+  return err;
+}
+
+describe('transport-level delivery failures are retried (regression)', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('retries an HTTP 500 and recovers (control: non-ok response path)', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        if (calls < 3) return new Response('boom', { status: 500 });
+        return Response.json({ ok: true }, { status: 200 });
+      })
+    );
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => expect(calls).toBe(3));
+  });
+
+  it('retries a "fetch failed"/ETIMEDOUT transport throw instead of dropping it', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        if (calls < 3) throw fetchFailedTimeout();
+        return Response.json({ ok: true }, { status: 200 });
+      })
+    );
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    // Before the fix this stayed at 1 (the throw escaped the retry loop and the
+    // message was dropped); now it retries until the transient timeout clears.
+    await vi.waitFor(() => expect(calls).toBe(3));
+  });
+
+  it('does NOT advance the handler delivery attempt across transport failures', async () => {
+    // The handler counts x-vqs-message-attempt against MAX_QUEUE_DELIVERIES, so
+    // a burst of transport timeouts must not inflate it: the first delivery that
+    // actually reaches the handler must arrive as attempt 1.
+    const attempts: number[] = [];
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+        calls++;
+        if (calls < 4) throw fetchFailedTimeout();
+        attempts.push(Number(init.headers['x-vqs-message-attempt']));
+        return Response.json({ ok: true }, { status: 200 });
+      })
+    );
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => expect(attempts.length).toBe(1));
+    expect(attempts[0]).toBe(1);
+  });
+});

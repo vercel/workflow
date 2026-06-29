@@ -1,6 +1,6 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
-import { cn } from '../../../lib/utils';
+import { cn } from '../../../lib/cn';
 import type { Span } from '../types';
 import { formatDurationPrecise } from '../../trace-viewer/util/timing';
 import {
