@@ -2,6 +2,7 @@
 
 import { Info } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { cn } from '../../lib/cn';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
   type DerivedWorkflowTimingBreakdown,
@@ -9,9 +10,13 @@ import {
   type WorkflowSpanTiming,
   type WorkflowSpanTimingAttempt,
 } from '../../lib/workflow-span-timing';
+import {
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from '../ui/collapsible';
 import { Skeleton } from '../ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
-import { DetailCard } from './detail-card';
 
 const TIMING_LABELS = {
   coldStart: {
@@ -32,6 +37,8 @@ const TIMING_LABELS = {
 const MODULE_INIT_WARNING_THRESHOLD_MS = 50;
 const MODULE_INIT_WARNING_DESCRIPTION =
   'Module loading took over 50ms. Move expensive imports or startup work out of module scope, or lazy-load them before making Workflow requests.';
+const timingRowClassName =
+  'px-1.5 hover:bg-gray-100 flex justify-between gap-3 -mx-1.5 py-0.5 rounded items-center';
 
 function formatDuration(value: number | undefined): string | null {
   return value === undefined ? null : formatDurationPrecise(value);
@@ -102,16 +109,17 @@ function TimingRow({
   const formatted = formatDuration(value);
 
   return (
-    <div className="flex min-h-8 items-center justify-between gap-4 border-t border-gray-alpha-400 first:border-t-0">
-      <span className="inline-flex min-w-0 items-center gap-1.5 text-label-13 text-gray-900">
+    <div className={timingRowClassName}>
+      <span className="flex min-w-0 items-center gap-1.5 truncate text-label-13 text-gray-900">
         <span className="truncate">{label}</span>
         <TimingInfoTooltip description={description} label={label} />
         {badge}
       </span>
       <span
-        className={`shrink-0 text-label-13 font-medium tabular-nums ${
+        className={cn(
+          'max-w-[60%] shrink-0 truncate text-right text-copy-13 tabular-nums',
           formatted ? 'text-gray-1000' : 'text-gray-900'
-        }`}
+        )}
       >
         {formatted ?? fallback}
       </span>
@@ -145,7 +153,7 @@ function TimingRows({
   breakdown: DerivedWorkflowTimingBreakdown;
 }) {
   return (
-    <div className="rounded-md border border-gray-alpha-400 bg-background-200 px-3 py-1">
+    <div className="flex flex-col">
       <TimingRow
         description={TIMING_LABELS.coldStart.description}
         label={TIMING_LABELS.coldStart.label}
@@ -173,16 +181,13 @@ function TimingRows({
 
 function TimingRowsSkeleton() {
   return (
-    <div className="rounded-md border border-gray-alpha-400 bg-background-200 px-3 py-1">
+    <div className="flex flex-col">
       {[
         TIMING_LABELS.coldStart.label,
         TIMING_LABELS.moduleInit.label,
         TIMING_LABELS.workflowOverhead.label,
       ].map((label) => (
-        <div
-          className="flex min-h-8 items-center justify-between gap-4 border-t border-gray-alpha-400 first:border-t-0"
-          key={label}
-        >
+        <div className={timingRowClassName} key={label}>
           <span className="text-label-13 text-gray-900">{label}</span>
           <Skeleton className="h-4 w-14" />
         </div>
@@ -241,26 +246,26 @@ export function WorkflowTimingBreakdown({
     : false;
 
   return (
-    <DetailCard
-      contentClassName="mb-4"
-      summary={<span className="min-w-0 flex-1 truncate">Queued</span>}
-    >
-      <div className="space-y-3">
-        {isLoading ? <TimingRowsSkeleton /> : null}
-        {!isLoading &&
-          breakdowns.map(({ attempt, breakdown, index }) => {
-            return (
-              <div key={`${attemptLabel(attempt, index)}-${index}`}>
-                {showAttemptLabels ? (
-                  <div className="mb-2 text-label-13 text-gray-900">
-                    {attemptLabel(attempt, index)}
-                  </div>
-                ) : null}
-                <TimingRows breakdown={breakdown} />
-              </div>
-            );
-          })}
-      </div>
-    </DetailCard>
+    <CollapsibleRoot>
+      <CollapsibleTrigger>Queued</CollapsibleTrigger>
+      <CollapsibleContent className="mb-4">
+        <div className="space-y-3">
+          {isLoading ? <TimingRowsSkeleton /> : null}
+          {!isLoading &&
+            breakdowns.map(({ attempt, breakdown, index }) => {
+              return (
+                <div key={`${attemptLabel(attempt, index)}-${index}`}>
+                  {showAttemptLabels ? (
+                    <div className="mb-2 text-label-13 text-gray-900">
+                      {attemptLabel(attempt, index)}
+                    </div>
+                  ) : null}
+                  <TimingRows breakdown={breakdown} />
+                </div>
+              );
+            })}
+        </div>
+      </CollapsibleContent>
+    </CollapsibleRoot>
   );
 }
