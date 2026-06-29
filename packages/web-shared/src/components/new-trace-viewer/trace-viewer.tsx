@@ -450,7 +450,9 @@ function NewTraceViewerContent({
         return;
       }
       const targetId =
-        e.key === 'k' ? prevSpanIdRef.current : nextSpanIdRef.current;
+        e.key === 'k' || e.key === 'ArrowUp'
+          ? prevSpanIdRef.current
+          : nextSpanIdRef.current;
       if (targetId) {
         e.preventDefault();
         navigateToSpanRef.current(targetId);
@@ -462,7 +464,12 @@ function NewTraceViewerContent({
         handleClearActiveSpan();
       } else if (e.key === 'Alt') {
         setAltHeld(true);
-      } else if (e.key === 'j' || e.key === 'k') {
+      } else if (
+        e.key === 'j' ||
+        e.key === 'k' ||
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowUp'
+      ) {
         handleSidebarNavKey(e);
       }
     };
