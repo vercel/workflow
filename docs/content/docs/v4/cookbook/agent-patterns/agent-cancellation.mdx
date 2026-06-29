@@ -5,6 +5,10 @@ type: guide
 summary: Two patterns for cancelling a running agent — Hard Cancellation via getRun(runId).cancel() for forced termination, or Stop Signal via a hook + Promise.race for a clean exit with cleanup and final stream notification.
 ---
 
+<Callout type="warn">
+This recipe uses the deprecated `DurableAgent` API. For new agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The cancellation patterns here (`run.cancel()`, stop-signal hook + `Promise.race`) apply to either API.
+</Callout>
+
 Cancel a running agent from the outside — for example, a "Stop" button in a chat UI, an admin cancellation endpoint, or a timeout fallback. Two patterns are available depending on whether you need the agent to exit cleanly or just need the run to stop: **Hard Cancellation** via `getRun(runId).cancel()` for immediate forced termination, or **Stop Signal** via a hook + `Promise.race` for a graceful exit that runs cleanup and notifies streaming clients before returning.
 
 ## When to use this
@@ -201,5 +205,5 @@ This is the same pattern used by the [Distributed Abort Controller](/cookbook/ad
 * [`defineHook()`](/docs/api-reference/workflow/define-hook) — type-safe hook for the stop signal
 * [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) — access the run ID for deterministic hook tokens
 * [`getWritable()`](/docs/api-reference/workflow/get-writable) — stream a stop notification to the client
-* [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — the agent that gets raced against the stop hook
+* [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) — AI SDK's durable agent that gets raced against the stop hook (replaces `DurableAgent`)
 * [`getRun()`](/docs/api-reference/workflow-api/get-run) — entry point for Hard Cancellation: `getRun(runId).cancel()`

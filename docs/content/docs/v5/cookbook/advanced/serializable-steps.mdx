@@ -63,6 +63,10 @@ The `DurableAgent` receives a function (`() => Promise<LanguageModel>`) instead 
 
 ## How `@workflow/ai` Uses This
 
+<Callout type="warn">
+`@workflow/ai`'s pre-wrapped providers and `DurableAgent` are deprecated. AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) resolves models from AI Gateway model strings (e.g. `"openai/gpt-4o"`), which usually removes the need for a model factory — see the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The serialization pattern on this page still applies to any non-serializable dependency you own (for example, cloud SDK clients).
+</Callout>
+
 The `@workflow/ai` package ships pre-wrapped providers for all major AI SDK backends. Each one follows the same pattern:
 
 ```typescript lineNumbers
@@ -143,5 +147,5 @@ async function uploadFile(
 
 - [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) — marks a function for extraction and serialization
 - [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) — declares the orchestrator function
-- [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — accepts a model factory for durable AI agent streaming
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) — AI SDK's durable agent (resolves models via AI Gateway strings; replaces `DurableAgent`)
 - [Custom class serialization](/docs/foundations/serialization#custom-class-serialization) — the companion pattern for classes you own (`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`)

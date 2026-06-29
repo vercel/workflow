@@ -9,6 +9,7 @@ import {
   clearCreatedFilesCache,
   deleteJSON,
   hasTag,
+  isUntagged,
   listTaggedFiles,
   listTaggedFilesByExtension,
   readJSON,
@@ -78,16 +79,24 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
       if (!recoverActiveRuns) {
         return;
       }
-      const recoveryRuns = tag
-        ? {
-            ...storage.runs,
-            list: ((params) =>
-              storage.runs.list({
-                ...params,
-                fileIdFilter: (fileId) => hasTag(fileId, tag),
-              })) as typeof storage.runs.list,
-          }
-        : storage.runs;
+      // Scope recovery to this world's own files. A tagged world recovers only
+      // its tag; an untagged world recovers only untagged files. Without the
+      // untagged filter, an untagged dev server sharing the data directory with
+      // the vitest harness would list tagged runs (list enumerates every file)
+      // and re-enqueue them, but run_started's tagged-or-untagged read can't
+      // resolve a foreign tag — yielding "did not return the run entity" 500s
+      // on startup until the message exhausts its deliveries.
+      const fileIdFilter = tag
+        ? (fileId: string) => hasTag(fileId, tag)
+        : isUntagged;
+      const recoveryRuns = {
+        ...storage.runs,
+        list: ((params) =>
+          storage.runs.list({
+            ...params,
+            fileIdFilter,
+          })) as typeof storage.runs.list,
+      };
       await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
     },
     async close() {

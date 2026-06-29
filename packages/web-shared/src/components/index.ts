@@ -13,18 +13,24 @@ export {
   ResolveHookModal,
   useHookActions,
 } from './hook-actions';
+export { TraceViewerSkeleton } from './new-trace-viewer/components/trace-viewer-skeleton';
 export { RunTraceView } from './run-trace-view';
 export { ConversationView } from './sidebar/conversation-view';
-export {
-  SidebarDataProvider,
-  type SidebarDataContextValue,
-} from './sidebar/sidebar-data-context';
 export type {
   SelectedSpanInfo,
   SpanSelectionInfo,
 } from './sidebar/entity-detail-panel';
+export {
+  type SidebarDataContextValue,
+  SidebarDataProvider,
+} from './sidebar/sidebar-data-context';
+export type {
+  DetailResource,
+  FetchSpanDetail,
+} from './sidebar/use-selected-span-detail';
 export { type StreamChunk, StreamViewer } from './stream-viewer';
 export type { Span, SpanEvent } from './trace-viewer/types';
+export { NewTraceViewer } from './trace-viewer-new';
 export {
   DataInspector,
   type DataInspectorProps,
@@ -38,5 +44,3 @@ export { LoadMoreButton } from './ui/load-more-button';
 export { MenuDropdown, type MenuDropdownOption } from './ui/menu-dropdown';
 export { Spinner } from './ui/spinner';
 export { WorkflowTraceViewer } from './workflow-trace-view';
-export { NewTraceViewer } from './trace-viewer-new';
-export { TraceViewerSkeleton } from './new-trace-viewer/components/trace-viewer-skeleton';

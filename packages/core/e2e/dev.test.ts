@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeAll, describe, expect, test } from 'vitest';
-import { getWorkbenchAppPath } from './utils';
+import { afterEach, assert, beforeAll, describe, expect, test } from 'vitest';
+import { start } from '../src/runtime';
+import { getWorkbenchAppPath, getWorkflowMetadata, setupWorld } from './utils';
 
 export interface DevTestConfig {
   generatedStepPath: string;
@@ -258,6 +259,64 @@ export async function myNewStep() {
         },
       });
     });
+
+    test.runIf(process.env.APP_NAME === 'vite')(
+      'should execute updated step logic after HMR',
+      { timeout: 70_000 },
+      async () => {
+        assert(deploymentUrl);
+        setupWorld(deploymentUrl);
+
+        const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
+        const content = await fs.readFile(workflowFile, 'utf8');
+        const before = 'before HMR';
+        const after = 'after HMR';
+        const fixture = `
+export async function hmrWorkflow() {
+  'use workflow';
+  return hmrStep();
+}
+
+async function hmrStep() {
+  'use step';
+  return '${before}';
+}
+`;
+
+        await fs.writeFile(workflowFile, content + fixture);
+        restoreFiles.push({ path: workflowFile, content });
+
+        await pollUntil({
+          description: 'generated step output to include the HMR fixture',
+          check: async () => {
+            expect(await fs.readFile(generatedStep, 'utf8')).toContain(before);
+          },
+        });
+
+        const workflow = await getWorkflowMetadata(
+          deploymentUrl,
+          `workflows/${testWorkflowFile}`,
+          'hmrWorkflow'
+        );
+        const runBefore = await start<[], string>(workflow, []);
+        expect(await runBefore.returnValue).toBe(before);
+
+        await fs.writeFile(
+          workflowFile,
+          (content + fixture).replace(before, after)
+        );
+
+        await pollUntil({
+          description: 'generated step output to include the HMR update',
+          check: async () => {
+            expect(await fs.readFile(generatedStep, 'utf8')).toContain(after);
+          },
+        });
+
+        const runAfter = await start<[], string>(workflow, []);
+        expect(await runAfter.returnValue).toBe(after);
+      }
+    );
 
     test(
       'should rebuild on adding workflow file',

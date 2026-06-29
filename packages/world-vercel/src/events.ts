@@ -48,6 +48,7 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
+import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
@@ -522,7 +523,18 @@ export async function createWorkflowRunEvent(
   config?: APIConfig
 ): Promise<EventResult> {
   try {
-    return await createWorkflowRunEventInner(id, data, params, config);
+    // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
+    // socket/headers timeouts, transient 5xx) in-process for event types that
+    // are idempotent-on-retry. A write that landed but whose response was lost
+    // re-surfaces as a 409 (or plain success for run_started/attr_set) the
+    // callers already handle, so this avoids a needless step re-execution on
+    // the next queue delivery. Non-retryable
+    // types (step_started, step_retrying, hook_received) run once. See
+    // ./event-retry for the validated per-event classification.
+    return await withEventPostRetry(
+      () => createWorkflowRunEventInner(id, data, params, config),
+      data.eventType
+    );
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (

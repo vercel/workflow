@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { cn } from '../../../lib/utils';
+import { cn } from '../../../lib/cn';
 
 const GUTTER_PX = 1;
 const MIN_PX = 50;

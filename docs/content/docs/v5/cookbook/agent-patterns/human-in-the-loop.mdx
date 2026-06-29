@@ -5,6 +5,10 @@ type: guide
 summary: Use defineHook with the tool call ID to suspend an agent for human approval, with an optional timeout.
 ---
 
+<Callout type="warn">
+This recipe uses the deprecated `DurableAgent` API. For new agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The human-in-the-loop pattern here (hooks, `Promise.race`, approval gating) applies to either API.
+</Callout>
+
 Use this pattern when an AI agent needs human confirmation before performing a consequential action like booking, purchasing, or publishing. The workflow suspends without consuming resources until the human responds.
 
 ## When to use this
@@ -252,4 +256,4 @@ const approvalResult = messages
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) — type-safe hook with schema validation
 - [`sleep()`](/docs/api-reference/workflow/sleep) — durable timeout for approval expiry
 - [`getWritable()`](/docs/api-reference/workflow/get-writable) — stream custom data parts from steps
-- [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — durable agent with tool definitions
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) — AI SDK's durable agent (replaces `DurableAgent`)

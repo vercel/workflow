@@ -110,6 +110,58 @@ describe('experimental_setAttributes (host-side)', () => {
     );
   });
 
+  it('waits for runReadyBarrier before posting the event (turbo optimistic start)', async () => {
+    const order: string[] = [];
+    const create = vi.fn().mockImplementation(async () => {
+      order.push('create');
+      return {};
+    });
+    globals[WORLD_CACHE] = {
+      events: { create },
+    };
+
+    let releaseBarrier!: () => void;
+    const runReadyBarrier = new Promise<void>((resolve) => {
+      releaseBarrier = () => {
+        order.push('barrier');
+        resolve();
+      };
+    });
+
+    const call = contextStorage.run({ ...stepContext(), runReadyBarrier }, () =>
+      experimental_setAttributes({ phase: 'ready' })
+    );
+
+    // The body ran before run_started is durable: the write must not fire yet.
+    await Promise.resolve();
+    expect(create).not.toHaveBeenCalled();
+
+    releaseBarrier();
+    await call;
+
+    // The attr_set create lands strictly after the run-ready barrier resolves.
+    expect(order).toEqual(['barrier', 'create']);
+  });
+
+  it('still posts when the runReadyBarrier rejects (write surfaces the real error)', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    globals[WORLD_CACHE] = {
+      events: { create },
+    };
+
+    const runReadyBarrier = Promise.reject(new Error('run_started failed'));
+    // Pre-attach a catch so the rejection never surfaces as unhandled.
+    runReadyBarrier.catch(() => {});
+
+    await contextStorage.run({ ...stepContext(), runReadyBarrier }, () =>
+      experimental_setAttributes({ phase: 'ready' })
+    );
+
+    // Barrier rejection is swallowed for ordering only — the write still fires
+    // and would surface a genuine run-not-found error from the World itself.
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects validation errors before posting from a step', async () => {
     const create = vi.fn();
     globals[WORLD_CACHE] = {
