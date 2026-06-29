@@ -1,5 +1,16 @@
 # @workflow/core
 
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- [`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115) - Treat transient world-vercel transport failures as retryable, surfacing them as a `TRANSPORT` type `WorkflowWorldError`, to be retried by the queue instead of failing the run.
+
+- [#2685](https://github.com/vercel/workflow/pull/2685) [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a turbo-mode race where a fire-and-forget hook, wait, or attribute created by a workflow that completes synchronously could be written to the server before the run was created.
+
+- Updated dependencies [[`897aac9`](https://github.com/vercel/workflow/commit/897aac979f2984dfa424f9ba3147b7dc82319a22), [`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`1dcdafd`](https://github.com/vercel/workflow/commit/1dcdafd422c870ec1b7dcbba8b0e733c1b6bbb14)]:
+  - @workflow/world-vercel@5.0.0-beta.22
+
 ## 5.0.0-beta.25
 
 ### Patch Changes
