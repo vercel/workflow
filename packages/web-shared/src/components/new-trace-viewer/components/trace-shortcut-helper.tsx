@@ -29,11 +29,11 @@ function readDismissals(): number {
 function AltHint() {
   return (
     <>
-      Hold
+      Select a span, then hold
       <Kbd variant="outline" size="compact" className="mx-1">
         {getAltKeyLabel()}
       </Kbd>
-      to see delta between spans
+      and hover another to compare
     </>
   );
 }

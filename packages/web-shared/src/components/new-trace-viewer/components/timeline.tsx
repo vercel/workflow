@@ -27,7 +27,7 @@ import type {
 } from '../utils';
 import {
   computeOffscreenMarkers,
-  computeSpanGaps,
+  computeSpanDelta,
   computeSpanMarkers,
   computeSpanSegments,
   getResourceColor,
@@ -381,6 +381,7 @@ const TimelineBar = memo(function TimelineBar({
   isDimmed,
   onSelect,
   onRevealTime,
+  onHover,
 }: {
   span: Span;
   viewStart: number;
@@ -390,6 +391,7 @@ const TimelineBar = memo(function TimelineBar({
   isDimmed?: boolean;
   onSelect: (spanId: string) => void;
   onRevealTime?: (timeMs: number) => void;
+  onHover?: (spanId: string) => void;
 }): ReactNode {
   const startMs = getHighResInMs(span.startTime);
   const endMs = getHighResInMs(span.endTime);
@@ -470,6 +472,10 @@ const TimelineBar = memo(function TimelineBar({
     onSelect(span.spanId);
   }, [onSelect, span.spanId]);
 
+  const handleMouseEnter = useCallback(() => {
+    onHover?.(span.spanId);
+  }, [onHover, span.spanId]);
+
   return (
     <div
       role="treeitem"
@@ -481,6 +487,7 @@ const TimelineBar = memo(function TimelineBar({
         isDimmed && 'opacity-35'
       )}
       onClick={handleClick}
+      onMouseEnter={handleMouseEnter}
     >
       <div className="absolute inset-y-0" style={TIMELINE_INSET_STYLE}>
         <div
@@ -544,45 +551,86 @@ const TimelineBar = memo(function TimelineBar({
 export { TimelineBar };
 
 // ---------------------------------------------------------------------------
-// DeltaIndicator (Alt-key gap overlay)
+// SpanDeltaOverlay (Alt-key measurement between the selected and hovered spans)
 // ---------------------------------------------------------------------------
 
+// Height (px) of the solid end caps on the horizontal measurement line.
 const DELTA_CAP_HEIGHT_PX = 8;
-// Vertical offset to sit the indicator inside the gap between row N and N+1,
-// aligned with where the bar starts in the next row (rows center a 24px bar
-// inside 40px, so bars start ~8px from the top of the row).
-const DELTA_ROW_OFFSET_PX = 8;
+// Each row centers a 24px bar inside its 40px height, so a bar's vertical
+// center sits at half the row height.
+const DELTA_BAR_CENTER_PX = ROW_HEIGHT_PX / 2;
 
-const DeltaIndicator = memo(function DeltaIndicator({
+/**
+ * Figma-style measurement drawn between the selected (anchor) span and the
+ * span currently hovered while Alt is held. Dashed guides mark the two edges
+ * being measured and a solid line carries the duration label between them.
+ */
+const SpanDeltaOverlay = memo(function SpanDeltaOverlay({
   leftFrac,
   rightFrac,
+  fromRowIndex,
+  toRowIndex,
   label,
-  rowIndex,
 }: {
   leftFrac: number;
   rightFrac: number;
+  fromRowIndex: number;
+  toRowIndex: number;
   label: string;
-  rowIndex: number;
 }) {
-  const centerY = DELTA_ROW_OFFSET_PX + (rowIndex + 1) * ROW_HEIGHT_PX;
+  const yFrom = fromRowIndex * ROW_HEIGHT_PX + DELTA_BAR_CENTER_PX;
+  const yTo = toRowIndex * ROW_HEIGHT_PX + DELTA_BAR_CENTER_PX;
+  const yTop = Math.min(yFrom, yTo);
+  const yBottom = Math.max(yFrom, yTo);
+  const yMid = (yFrom + yTo) / 2;
+
+  const leftPct = leftFrac * 100;
+  const rightPct = rightFrac * 100;
+  const midPct = ((leftFrac + rightFrac) / 2) * 100;
 
   return (
-    <div
-      className="absolute pointer-events-none"
-      style={{
-        left: `${leftFrac * 100}%`,
-        width: `${(rightFrac - leftFrac) * 100}%`,
-        top: centerY - DELTA_CAP_HEIGHT_PX / 2,
-        height: DELTA_CAP_HEIGHT_PX,
-      }}
-    >
-      <div className="absolute left-0 top-0 w-px h-full bg-amber-800" />
-      <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-800" />
-      <div className="absolute right-0 top-0 w-px h-full bg-amber-800" />
-      <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-label-12 leading-none whitespace-nowrap rounded-xs px-1 py-0.5 text-gray-100 bg-amber-800">
+    <>
+      {/* Dashed extension guides connecting the two rows at each measured edge */}
+      <div
+        className="absolute w-0 border-l border-dashed border-amber-800"
+        style={{ left: `${leftPct}%`, top: yTop, height: yBottom - yTop }}
+      />
+      <div
+        className="absolute w-0 border-l border-dashed border-amber-800"
+        style={{ left: `${rightPct}%`, top: yTop, height: yBottom - yTop }}
+      />
+      {/* Solid measurement line + end caps */}
+      <div
+        className="absolute h-px bg-amber-800"
+        style={{
+          left: `${leftPct}%`,
+          width: `${rightPct - leftPct}%`,
+          top: yMid,
+        }}
+      />
+      <div
+        className="absolute w-px bg-amber-800"
+        style={{
+          left: `${leftPct}%`,
+          top: yMid - DELTA_CAP_HEIGHT_PX / 2,
+          height: DELTA_CAP_HEIGHT_PX,
+        }}
+      />
+      <div
+        className="absolute w-px bg-amber-800"
+        style={{
+          left: `${rightPct}%`,
+          top: yMid - DELTA_CAP_HEIGHT_PX / 2,
+          height: DELTA_CAP_HEIGHT_PX,
+        }}
+      />
+      <span
+        className="absolute -translate-x-1/2 -translate-y-1/2 text-label-12 leading-none whitespace-nowrap rounded-xs px-1 py-0.5 text-gray-100 bg-amber-800"
+        style={{ left: `${midPct}%`, top: yMid }}
+      >
         {label}
       </span>
-    </div>
+    </>
   );
 });
 
@@ -632,9 +680,11 @@ export function Timeline({
   viewEnd,
   markers,
   selectedId,
+  hoveredId,
   searchResult,
   onSelect,
   onRevealTime,
+  onHoverSpan,
   hoverFraction,
   altHeld = false,
 }: {
@@ -643,9 +693,11 @@ export function Timeline({
   viewEnd: number;
   markers: TimeMarker[];
   selectedId: string | null;
+  hoveredId?: string | null;
   searchResult: SpanSearchResult;
   onSelect: (spanId: string) => void;
   onRevealTime?: (timeMs: number) => void;
+  onHoverSpan?: (spanId: string) => void;
   hoverFraction?: number | null;
   altHeld?: boolean;
 }): ReactNode {
@@ -669,10 +721,42 @@ export function Timeline({
     return () => ro.disconnect();
   }, []);
 
-  const gaps = useMemo(
-    () => computeSpanGaps(spans, viewStart, viewEnd),
-    [spans, viewStart, viewEnd]
-  );
+  const spanIndexById = useMemo(() => {
+    const index = new Map<string, number>();
+    for (let i = 0; i < spans.length; i++) {
+      index.set(spans[i].spanId, i);
+    }
+    return index;
+  }, [spans]);
+
+  // Figma-style delta: only computed while Alt is held, comparing the selected
+  // (anchor) span against the one currently hovered.
+  const delta = useMemo(() => {
+    if (!altHeld || !selectedId || !hoveredId || selectedId === hoveredId) {
+      return null;
+    }
+    const selectedIndex = spanIndexById.get(selectedId);
+    const hoveredIndex = spanIndexById.get(hoveredId);
+    if (selectedIndex === undefined || hoveredIndex === undefined) {
+      return null;
+    }
+    return computeSpanDelta(
+      spans[selectedIndex],
+      spans[hoveredIndex],
+      selectedIndex,
+      hoveredIndex,
+      viewStart,
+      viewEnd
+    );
+  }, [
+    altHeld,
+    selectedId,
+    hoveredId,
+    spans,
+    spanIndexById,
+    viewStart,
+    viewEnd,
+  ]);
 
   return (
     <div
@@ -719,24 +803,23 @@ export function Timeline({
             isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
             onSelect={onSelect}
             onRevealTime={onRevealTime}
+            onHover={onHoverSpan}
           />
         ))}
       </div>
-      {altHeld && (
+      {delta && (
         <div
           aria-hidden
-          className="absolute inset-y-0 pointer-events-none"
+          className="absolute inset-y-0 pointer-events-none z-10"
           style={TIMELINE_INSET_STYLE}
         >
-          {gaps.map((gap) => (
-            <DeltaIndicator
-              key={gap.rowIndex}
-              leftFrac={gap.leftFrac}
-              rightFrac={gap.rightFrac}
-              label={formatDuration(gap.gapMs, true)}
-              rowIndex={gap.rowIndex}
-            />
-          ))}
+          <SpanDeltaOverlay
+            leftFrac={delta.leftFrac}
+            rightFrac={delta.rightFrac}
+            fromRowIndex={delta.fromRowIndex}
+            toRowIndex={delta.toRowIndex}
+            label={formatDuration(delta.deltaMs, true)}
+          />
         </div>
       )}
     </div>

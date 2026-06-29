@@ -90,38 +90,84 @@ export function computeTimeMarkers(
 }
 
 // ---------------------------------------------------------------------------
-// Span gaps — time deltas between consecutive spans (Alt-key overlay)
+// Span delta — Figma-style time measurement between two spans (Alt-key overlay)
 // ---------------------------------------------------------------------------
 
-export interface SpanGap {
-  gapMs: number;
+export interface SpanDelta {
+  /**
+   * Time difference (ms) being measured: the idle gap between the two spans
+   * when they are disjoint, or the offset between their start times when they
+   * overlap in time.
+   */
+  deltaMs: number;
+  /** Left edge of the measured region as a fraction [0, 1] of the viewport. */
   leftFrac: number;
+  /** Right edge of the measured region as a fraction [0, 1] of the viewport. */
   rightFrac: number;
-  rowIndex: number;
+  /** Row index of the anchor (selected) span. */
+  fromRowIndex: number;
+  /** Row index of the compared (hovered) span. */
+  toRowIndex: number;
+  /** `gap` when the spans are disjoint, `overlap` when they overlap in time. */
+  kind: 'gap' | 'overlap';
 }
 
-export function computeSpanGaps(
-  spans: Span[],
+/**
+ * Measure the time delta between two spans for the Alt-key overlay.
+ *
+ * Mirrors Figma's Alt/Option measurement: with one span selected (the anchor),
+ * hovering another reveals the time between them. Disjoint spans report the
+ * idle gap between their nearest edges; overlapping spans (e.g. a parent run
+ * and a nested step) report the offset between their start times.
+ */
+export function computeSpanDelta(
+  selected: Span,
+  hovered: Span,
+  selectedIndex: number,
+  hoveredIndex: number,
   viewStart: number,
   viewEnd: number
-): SpanGap[] {
+): SpanDelta | null {
   const range = viewEnd - viewStart;
-  if (range <= 0) return [];
+  if (range <= 0) return null;
 
-  const gaps: SpanGap[] = [];
-  for (let i = 0; i < spans.length - 1; i++) {
-    const endTime = getHighResInMs(spans[i].endTime);
-    const startTime = getHighResInMs(spans[i + 1].startTime);
-    const gapMs = startTime - endTime;
-    if (gapMs <= 0) continue;
+  const s0 = getHighResInMs(selected.startTime);
+  const s1 = getHighResInMs(selected.endTime);
+  const h0 = getHighResInMs(hovered.startTime);
+  const h1 = getHighResInMs(hovered.endTime);
 
-    const leftFrac = Math.min(Math.max((endTime - viewStart) / range, 0), 1);
-    const rightFrac = Math.min(Math.max((startTime - viewStart) / range, 0), 1);
-    if (rightFrac - leftFrac < 0.001) continue;
+  let regionStart: number;
+  let regionEnd: number;
+  let kind: SpanDelta['kind'];
 
-    gaps.push({ gapMs, leftFrac, rightFrac, rowIndex: i });
+  if (h0 >= s1) {
+    // Hovered span lies entirely after the selected span.
+    regionStart = s1;
+    regionEnd = h0;
+    kind = 'gap';
+  } else if (s0 >= h1) {
+    // Hovered span lies entirely before the selected span.
+    regionStart = h1;
+    regionEnd = s0;
+    kind = 'gap';
+  } else {
+    // The spans overlap in time — measure the offset between their starts.
+    regionStart = Math.min(s0, h0);
+    regionEnd = Math.max(s0, h0);
+    kind = 'overlap';
   }
-  return gaps;
+
+  const leftFrac = Math.min(Math.max((regionStart - viewStart) / range, 0), 1);
+  const rightFrac = Math.min(Math.max((regionEnd - viewStart) / range, 0), 1);
+
+  return {
+    deltaMs: regionEnd - regionStart,
+    leftFrac,
+    rightFrac,
+    fromRowIndex: selectedIndex,
+    toRowIndex: hoveredIndex,
+    kind,
+  };
 }
 
 // ---------------------------------------------------------------------------
