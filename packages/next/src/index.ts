@@ -300,8 +300,14 @@ export function withWorkflow(
           const NextBuilder = await getNextBuilder(nextVersion);
           return new NextBuilder({
             watch: shouldWatch,
-            // discover workflows from pages/app entries
-            dirs: ['pages', 'app', 'src/pages', 'src/app'],
+            // getInputFiles filters the project to Next.js entrypoints
+            dirs: ['.'],
+            pageExtensions: nextConfig.pageExtensions ?? [
+              'tsx',
+              'ts',
+              'jsx',
+              'js',
+            ],
             projectRoot: nextConfig.outputFileTracingRoot,
             moduleSpecifierRoot: process.cwd(),
             workingDir: process.cwd(),

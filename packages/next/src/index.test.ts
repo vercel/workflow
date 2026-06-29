@@ -98,6 +98,7 @@ describe('withWorkflow builder config', () => {
   it('uses outputFileTracingRoot for tracing without changing module specifier root', async () => {
     const config = withWorkflow({
       outputFileTracingRoot: '/repo',
+      pageExtensions: ['page.ts'],
     });
 
     await config('phase-production-build', {
@@ -108,6 +109,8 @@ describe('withWorkflow builder config', () => {
     expect(buildMock).toHaveBeenCalledOnce();
     expect(builderConfigs).toHaveLength(1);
     expect(builderConfigs[0]).toMatchObject({
+      dirs: ['.'],
+      pageExtensions: ['page.ts'],
       projectRoot: '/repo',
       moduleSpecifierRoot: process.cwd(),
       workingDir: process.cwd(),
