@@ -1,5 +1,4 @@
 import {
-  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -15,19 +14,13 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 
-function createNitroStub({
-  dev,
-  routing,
-}: {
-  dev: boolean;
-  routing: boolean;
-}): Nitro {
+function createNitroStub({ routing }: { routing: boolean }): Nitro {
   return {
     routing,
     options: {
       alias: {},
       buildDir: '/tmp/.nitro',
-      dev,
+      dev: false,
       handlers: [],
       preset: 'node-server',
       rootDir: '/tmp/project',
@@ -43,7 +36,7 @@ function createNitroStub({
 
 describe('@workflow/nitro virtual handlers', () => {
   it('preserves side effects from generated step modules in Nitro v2 handlers', async () => {
-    const nitro = createNitroStub({ dev: false, routing: false });
+    const nitro = createNitroStub({ routing: false });
 
     await nitroModule.setup(nitro);
 
@@ -55,7 +48,7 @@ describe('@workflow/nitro virtual handlers', () => {
   });
 
   it('preserves side effects from generated step modules in Nitro v3 handlers', async () => {
-    const nitro = createNitroStub({ dev: false, routing: true });
+    const nitro = createNitroStub({ routing: true });
 
     await nitroModule.setup(nitro);
 
@@ -65,75 +58,33 @@ describe('@workflow/nitro virtual handlers', () => {
       'import { POST } from "/tmp/.nitro/workflow/steps.mjs";'
     );
   });
-
-  it('keeps generated workflow files out of Nitro dev rebuilds', async () => {
-    const nitro = createNitroStub({ dev: true, routing: true });
-
-    await nitroModule.setup(nitro);
-
-    expect(nitro.options.watchOptions?.ignored).toEqual([
-      '/tmp/.nitro/workflow/**',
-    ]);
-
-    const external = (
-      nitro.options as unknown as {
-        externals: { external: Array<(id: string) => boolean> };
-      }
-    ).externals.external[0];
-    expect(external('/tmp/.nitro/workflow/steps.mjs')).toBe(true);
-    expect(external('/tmp/.nitro/other.mjs')).toBe(false);
-  });
 });
 
 describe('@workflow/nitro Vercel Build Output API', () => {
-  it('routes workflow HTTP endpoints through Nitro and keeps queue functions trigger-only', async () => {
+  it('routes workflow HTTP endpoints to generated Vercel functions', async () => {
     const testRoot = await mkdtemp(join(tmpdir(), 'workflow-nitro-vercel-'));
     onTestFinished(async () => {
       await rm(testRoot, { recursive: true, force: true });
     });
 
-    const outputDir = join(testRoot, '.vercel/output');
-    const functionsDir = join(outputDir, 'functions');
-    const serverDest = '/__fallback';
-    const serverFuncDir = join(functionsDir, '__fallback.func');
-    const workflowRoutesDir = join(functionsDir, '.well-known/workflow/v1');
-    const configPath = join(outputDir, 'config.json');
+    const configPath = join(testRoot, '.vercel/output/config.json');
     const flowRoute = {
       src: '^\\/\\.well-known\\/workflow\\/v1\\/flow$',
-      dest: serverDest,
+      dest: '/.well-known/workflow/v1/flow',
     };
     const stepRoute = {
       src: '^\\/\\.well-known\\/workflow\\/v1\\/step$',
-      dest: serverDest,
+      dest: '/.well-known/workflow/v1/step',
     };
     const webhookRoute = {
       src: '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$',
-      dest: serverDest,
+      dest: '/.well-known/workflow/v1/webhook/[token]',
     };
-    const nitroRoutes = [
-      {
-        src: '^\\/\\.well-known\\/workflow\\/v1\\/flow$',
-        dest: '/.well-known/workflow/v1/flow',
-      },
-      {
-        src: '^\\/\\.well-known\\/workflow\\/v1\\/step$',
-        dest: '/.well-known/workflow/v1/step',
-      },
-      {
-        src: '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$',
-        dest: '/.well-known/workflow/v1/webhook/[token]',
-      },
-      {
-        src: '/assets/(.*)',
-        headers: { 'cache-control': 'public, max-age=31536000' },
-        continue: true,
-      },
-      { handle: 'filesystem' },
-    ];
+    const filesystemRoute = { handle: 'filesystem' };
+    const apiRoute = { src: '/api/chat', dest: '/api/chat' };
+    const fallbackRoute = { src: '/(.*)', dest: '/__server' };
 
-    await mkdir(outputDir, { recursive: true });
-    await mkdir(serverFuncDir, { recursive: true });
-    await mkdir(workflowRoutesDir, { recursive: true });
+    await mkdir(join(testRoot, '.vercel/output'), { recursive: true });
     await mkdir(join(testRoot, 'node_modules'), { recursive: true });
     await symlink(
       fileURLToPath(new URL('../../workflow', import.meta.url)),
@@ -144,23 +95,12 @@ describe('@workflow/nitro Vercel Build Output API', () => {
       configPath,
       JSON.stringify({
         version: 3,
-        routes: nitroRoutes,
+        routes: [filesystemRoute, apiRoute, fallbackRoute],
       })
     );
-    await writeFile(
-      join(serverFuncDir, '.vc-config.json'),
-      JSON.stringify({
-        handler: 'index.mjs',
-        launcherType: 'Nodejs',
-        shouldAddHelpers: false,
-      })
-    );
-    await writeFile(join(serverFuncDir, 'index.mjs'), 'export default {};');
-    await symlink(
-      './../../../__fallback.func',
-      join(workflowRoutesDir, 'step.func'),
-      'junction'
-    );
+
+    // A real workflow file makes VercelBuilder emit the generated flow, step,
+    // and webhook functions instead of only exercising config merging.
     await writeFile(
       join(testRoot, 'workflow.ts'),
       `export async function exampleWorkflow() {
@@ -185,38 +125,17 @@ async function exampleStep() {
     await new VercelBuilder(nitro).build();
 
     const config = JSON.parse(await readFile(configPath, 'utf-8'));
-    const serverConfig = JSON.parse(
-      await readFile(join(serverFuncDir, '.vc-config.json'), 'utf-8')
-    );
-    const stepConfig = JSON.parse(
-      await readFile(
-        join(workflowRoutesDir, 'step.func/.vc-config.json'),
-        'utf-8'
-      )
-    );
-    const stepFuncStats = await lstat(join(workflowRoutesDir, 'step.func'));
 
-    expect(serverConfig.handler).toBe('index.mjs');
-    expect(stepFuncStats.isSymbolicLink()).toBe(false);
-    await expect(
-      lstat(join(workflowRoutesDir, 'webhook'))
-    ).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(stepConfig.experimentalTriggers).toEqual([
-      expect.objectContaining({
-        topic: '__wkf_step_*',
-        type: 'queue/v2beta',
-      }),
-    ]);
+    // Flow/step are prepended by Nitro so HTTP traffic reaches generated
+    // workflow functions before Nitro's catch-all. Webhook already had an
+    // explicit route from the shared Vercel workflow builder.
     expect(config.routes).toEqual([
       flowRoute,
       stepRoute,
       webhookRoute,
-      {
-        src: '/assets/(.*)',
-        headers: { 'cache-control': 'public, max-age=31536000' },
-        continue: true,
-      },
-      { handle: 'filesystem' },
+      filesystemRoute,
+      apiRoute,
+      fallbackRoute,
     ]);
   });
 });

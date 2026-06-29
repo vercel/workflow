@@ -9,29 +9,6 @@ import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
 
-type NitroOptionsWithExternals = Nitro['options'] & {
-  externals?: {
-    external?: Array<(id: string) => boolean>;
-  };
-};
-
-function configureDevWorkflowBuildDir(
-  nitro: Nitro,
-  workflowBuildDir: string
-): void {
-  nitro.options.watchOptions ||= {};
-  const ignored = nitro.options.watchOptions.ignored;
-  const workflowBuildGlob = `${workflowBuildDir}/**`;
-  nitro.options.watchOptions.ignored = ignored
-    ? [ignored, workflowBuildGlob].flat()
-    : [workflowBuildGlob];
-
-  const options = nitro.options as NitroOptionsWithExternals;
-  options.externals ||= {};
-  options.externals.external ||= [];
-  options.externals.external.push((id) => id.startsWith(workflowBuildDir));
-}
-
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
@@ -56,12 +33,7 @@ export default {
 
     // NOTE: Temporary workaround for debug unenv mock
     if (!nitro.options.workflow?._vite) {
-      nitro.options.alias['debug'] ??= 'debug';
-    }
-
-    // NOTE: Keep generated workflow files out of Nitro dev rebuilds.
-    if (nitro.options.dev) {
-      configureDevWorkflowBuildDir(nitro, workflowBuildDir);
+      nitro.options.alias.debug ??= 'debug';
     }
 
     // Add tsConfig plugin
@@ -74,23 +46,6 @@ export default {
       });
     }
 
-    const localBuilder = new LocalBuilder(nitro);
-
-    nitro.hooks.hook('build:before', async () => {
-      await localBuilder.build();
-
-      // For prod: write the manifest handler file with inlined content
-      // now that the builder has generated the manifest. Rollup will
-      // bundle this file into the compiled output.
-      if (
-        !isVercelDeploy &&
-        !nitro.options.dev &&
-        process.env.WORKFLOW_PUBLIC_MANIFEST === '1'
-      ) {
-        writeManifestHandler(nitro);
-      }
-    });
-
     // Generate functions for vercel build
     if (isVercelDeploy) {
       nitro.hooks.hook('compiled', async () => {
@@ -100,7 +55,22 @@ export default {
 
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
+      const builder = new LocalBuilder(nitro);
       let isInitialBuild = true;
+
+      nitro.hooks.hook('build:before', async () => {
+        await builder.build();
+
+        // For prod: write the manifest handler file with inlined content
+        // now that the builder has generated the manifest. Rollup will
+        // bundle this file into the compiled output.
+        if (
+          !nitro.options.dev &&
+          process.env.WORKFLOW_PUBLIC_MANIFEST === '1'
+        ) {
+          writeManifestHandler(nitro);
+        }
+      });
 
       // Allows for HMR - but skip the first dev:reload since build:before already ran
       if (nitro.options.dev) {
@@ -109,34 +79,32 @@ export default {
             isInitialBuild = false;
             return;
           }
-          await localBuilder.build();
+          await builder.build();
         });
       }
-    }
 
-    if (nitro.options.dev) {
-      addDashboardHandler(nitro);
-    }
+      if (nitro.options.dev) {
+        addDashboardHandler(nitro);
+      }
 
-    addVirtualHandler(
-      nitro,
-      '/.well-known/workflow/v1/webhook/:token',
-      'workflow/webhook.mjs'
-    );
+      addVirtualHandler(
+        nitro,
+        '/.well-known/workflow/v1/webhook/:token',
+        'workflow/webhook.mjs'
+      );
 
-    addVirtualHandler(
-      nitro,
-      '/.well-known/workflow/v1/step',
-      'workflow/steps.mjs'
-    );
+      addVirtualHandler(
+        nitro,
+        '/.well-known/workflow/v1/step',
+        'workflow/steps.mjs'
+      );
 
-    addVirtualHandler(
-      nitro,
-      '/.well-known/workflow/v1/flow',
-      'workflow/workflows.mjs'
-    );
+      addVirtualHandler(
+        nitro,
+        '/.well-known/workflow/v1/flow',
+        'workflow/workflows.mjs'
+      );
 
-    if (!isVercelDeploy) {
       // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
       if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
         // Write a placeholder manifest-data.mjs so rollup can resolve the

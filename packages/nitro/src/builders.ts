@@ -1,5 +1,4 @@
-import assert from 'node:assert';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
@@ -10,9 +9,6 @@ import { join } from 'pathe';
 
 const FLOW_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/flow$';
 const STEP_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/step$';
-const WEBHOOK_ROUTE =
-  '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$';
-const SERVER_FUNCTIONS = ['__server.func', '__fallback.func'] as const;
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
@@ -30,33 +26,13 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       this.config.workingDir,
       '.vercel/output/config.json'
     );
-    const functionsDir = join(
-      this.config.workingDir,
-      '.vercel/output/functions'
-    );
-    const workflowFunctionsDir = join(functionsDir, '.well-known/workflow');
     const originalConfig = JSON.parse(await readFile(configPath, 'utf-8'));
-    const functionNames = await readdir(functionsDir);
-    const serverFunc = SERVER_FUNCTIONS.find((name) =>
-      functionNames.includes(name)
-    );
-    assert(serverFunc);
-    const serverDest = `/${serverFunc.replace(/\.func$/, '')}`;
-    originalConfig.routes = originalConfig.routes.filter(
-      (route: { dest?: string; src?: string }) =>
-        !route.src?.includes('.well-known/workflow') &&
-        !route.dest?.includes('.well-known/workflow')
-    );
-    await rm(workflowFunctionsDir, { recursive: true, force: true });
     await super.build();
-    await rm(join(workflowFunctionsDir, 'v1/webhook'), {
-      recursive: true,
-      force: true,
-    });
+    const newConfig = JSON.parse(await readFile(configPath, 'utf-8'));
     originalConfig.routes.unshift(
-      { src: FLOW_ROUTE, dest: serverDest },
-      { src: STEP_ROUTE, dest: serverDest },
-      { src: WEBHOOK_ROUTE, dest: serverDest }
+      { src: FLOW_ROUTE, dest: '/.well-known/workflow/v1/flow' },
+      { src: STEP_ROUTE, dest: '/.well-known/workflow/v1/step' },
+      ...newConfig.routes
     );
     await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
   }

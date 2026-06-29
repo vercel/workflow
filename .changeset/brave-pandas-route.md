@@ -2,4 +2,4 @@
 "@workflow/nitro": patch
 ---
 
-Route Nitro Vercel workflow HTTP endpoints through the Nitro server bundle.
+Route Nitro Vercel workflow HTTP endpoints through generated Vercel functions.
