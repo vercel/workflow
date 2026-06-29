@@ -109,23 +109,11 @@ for (const app of [
   },
 ]) {
   matrix.app.push(
-    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
-      lazyDiscovery: true,
-      runLabel: 'stable lazyDiscovery enabled',
-      artifactSuffix: 'stable-lazy-discovery-enabled',
-    })
-  );
-  matrix.app.push(
-    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
-      lazyDiscovery: false,
-      runLabel: 'stable lazyDiscovery disabled',
-      artifactSuffix: 'stable-lazy-discovery-disabled',
-    })
+    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name])
   );
   matrix.app.push(
     createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
       canary: true,
-      lazyDiscovery: true,
     })
   );
 }

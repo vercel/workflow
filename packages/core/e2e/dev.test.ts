@@ -1,10 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeAll, describe, expect, test } from 'vitest';
-import {
-  getWorkbenchAppPath,
-  isNextLazyDiscoveryEnabledForTest,
-} from './utils';
+import { afterEach, assert, beforeAll, describe, expect, test } from 'vitest';
+import { start } from '../src/runtime';
+import { getWorkbenchAppPath, getWorkflowMetadata, setupWorld } from './utils';
 
 export interface DevTestConfig {
   generatedStepPath: string;
@@ -17,6 +15,10 @@ export interface DevTestConfig {
   /** The workflows directory relative to appPath. Defaults to 'workflows' */
   workflowsDir?: string;
 }
+
+const SOURCE_MAP_WARNING = 'failed to read input source map';
+const SOURCE_MAP_FIXTURE_PACKAGE = 'workflow-sourcemap-warning-fixture';
+const SOURCE_MAP_COMMENT = '//# sourceMapping' + 'URL=index.js.map';
 
 function getConfigFromEnv(): DevTestConfig | null {
   const envConfig = process.env.DEV_TEST_CONFIG;
@@ -38,6 +40,17 @@ export function createDevTests(config?: DevTestConfig) {
     );
   }
   describe('dev e2e', () => {
+    // Each prewarm/trigger fetch is hard-bounded by this so cleanup never hangs
+    // on a wedged dev server.
+    const PREWARM_FETCH_TIMEOUT_MS = 5_000;
+    // The afterEach cleanup can issue two *sequential* prewarms (before and
+    // after deleting an added file) while the dev server is mid-rebuild — the
+    // teardown of a test that added a workflow file and edited an import is
+    // exactly when both rebuild and respond slowly. Its budget must therefore
+    // exceed 2× PREWARM_FETCH_TIMEOUT_MS (plus file IO) with headroom, or it
+    // trips vitest's 10s default hook timeout. The bounded fetches mean this
+    // can't hang indefinitely, so a generous budget is safe.
+    const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
     const appPath = getWorkbenchAppPath();
     const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
@@ -47,11 +60,9 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
-    const usesDeferredBuilder = generatedStep.includes(
-      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+    const usesNextFlowRoute = generatedWorkflow.includes(
+      path.join('app', '.well-known', 'workflow', 'v1', 'flow', 'route.js')
     );
-    const usesNextEagerBuilder =
-      !isNextLazyDiscoveryEnabledForTest() && usesDeferredBuilder;
     const workflowManifestPath = path.join(
       appPath,
       'app/.well-known/workflow/v1/manifest.json'
@@ -65,7 +76,45 @@ export function createDevTests(config?: DevTestConfig) {
         Object.keys(entry)
       );
     };
+    const readManifestWorkflowFunctionNames = async (): Promise<string[]> => {
+      const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
+      const manifest = JSON.parse(manifestJson) as {
+        workflows?: Record<string, Record<string, unknown>>;
+      };
+      return Object.values(manifest.workflows || {}).flatMap((entry) =>
+        Object.keys(entry)
+      );
+    };
+    const readFileIfExists = async (
+      filePath: string
+    ): Promise<string | null> => {
+      try {
+        return await fs.readFile(filePath, 'utf8');
+      } catch (error) {
+        if (
+          error &&
+          typeof error === 'object' &&
+          'code' in error &&
+          error.code === 'ENOENT'
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    };
+    const readGeneratedWorkflowOutput = async (): Promise<string> => {
+      const outputs = [await readFileIfExists(generatedWorkflow)].filter(
+        (output): output is string => output !== null
+      );
+
+      if (outputs.length === 0) {
+        throw new Error('Generated workflow outputs were not found');
+      }
+
+      return outputs.join('\n');
+    };
     const restoreFiles: Array<{ path: string; content: string }> = [];
+    const restoreDirectories: string[] = [];
 
     const fetchWithTimeout = (pathname: string) => {
       if (!deploymentUrl) {
@@ -73,38 +122,8 @@ export function createDevTests(config?: DevTestConfig) {
       }
 
       return fetch(new URL(pathname, deploymentUrl), {
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(PREWARM_FETCH_TIMEOUT_MS),
       });
-    };
-
-    const triggerWorkflowRun = async (
-      workflowName: string,
-      args: unknown[] = []
-    ) => {
-      if (!deploymentUrl) {
-        return;
-      }
-
-      const response = await fetch(
-        new URL('/api/workflows/start', deploymentUrl),
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            workflowName,
-            args,
-          }),
-          signal: AbortSignal.timeout(5_000),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          `Failed to trigger workflow "${workflowName}": ${response.status}`
-        );
-      }
     };
 
     const prewarm = async () => {
@@ -152,14 +171,14 @@ export function createDevTests(config?: DevTestConfig) {
 
     beforeAll(async () => {
       await prewarm();
-    });
+    }, CLEANUP_HOOK_TIMEOUT_MS);
 
     afterEach(async () => {
       // Restore file contents before deleting any files. If a deletion races
       // ahead of an api-file restore, the dev server briefly sees an import
       // pointing at a missing module and fails compilation. On Windows that
-      // failure can stick — Turbopack leaves stale imports in the generated
-      // step route bundle — and every subsequent step request returns 500.
+      // failure can stick in Turbopack's generated workflow outputs, and every
+      // subsequent step request returns 500.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
       const toDelete = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
@@ -169,11 +188,17 @@ export function createDevTests(config?: DevTestConfig) {
         await prewarm();
       }
       await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
+      await Promise.all(
+        restoreDirectories.map((dir) =>
+          fs.rm(dir, { recursive: true, force: true })
+        )
+      );
       await prewarm();
       restoreFiles.length = 0;
-    });
+      restoreDirectories.length = 0;
+    }, CLEANUP_HOOK_TIMEOUT_MS);
 
-    test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
+    test('should rebuild on workflow change', { timeout: 70_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(workflowFile, 'utf8');
@@ -192,14 +217,22 @@ export async function myNewWorkflow() {
 
       await pollUntil({
         description: 'generated workflow to include myNewWorkflow',
+        timeoutMs: usesNextFlowRoute ? 50_000 : 25_000,
         check: async () => {
-          const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
+          if (usesNextFlowRoute) {
+            const manifestFunctionNames =
+              await readManifestWorkflowFunctionNames();
+            expect(manifestFunctionNames).toContain('myNewWorkflow');
+            return;
+          }
+
+          const workflowContent = await readGeneratedWorkflowOutput();
           expect(workflowContent).toContain('myNewWorkflow');
         },
       });
     });
 
-    test('should rebuild on step change', { timeout: 30_000 }, async () => {
+    test('should rebuild on step change', { timeout: 70_000 }, async () => {
       const stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(stepFile, 'utf8');
@@ -217,15 +250,17 @@ export async function myNewStep() {
       restoreFiles.push({ path: stepFile, content });
       await pollUntil({
         description: 'generated step outputs to include myNewStep',
+        timeoutMs: usesNextFlowRoute ? 50_000 : 25_000,
         check: async () => {
-          const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
-          if (stepRouteContent.includes('myNewStep')) {
+          const stepRouteContent = await readFileIfExists(generatedStep);
+          if (stepRouteContent?.includes('myNewStep')) {
             return;
           }
 
-          // The deferred builder regenerates manifest.json on every rebuild.
-          // Check the manifest for the new step function name.
-          if (usesDeferredBuilder) {
+          // Next flow-route builders regenerate manifest.json on every
+          // rebuild. The bundled file may not preserve function names as
+          // plain text.
+          if (usesNextFlowRoute) {
             const manifestFunctionNames = await readManifestStepFunctionNames();
             expect(manifestFunctionNames).toContain('myNewStep');
             return;
@@ -236,55 +271,61 @@ export async function myNewStep() {
       });
     });
 
-    test.skipIf(!usesDeferredBuilder)(
-      'should rebuild on imported step dependency change',
-      { timeout: 60_000 },
+    test.runIf(process.env.APP_NAME === 'vite')(
+      'should execute updated step logic after HMR',
+      { timeout: 70_000 },
       async () => {
-        const importedStepFile = path.join(
-          appPath,
-          workflowsDir,
-          '_imported_step_only.ts'
-        );
-        const content = await fs.readFile(importedStepFile, 'utf8');
-        const marker = 'importedStepOnlyHotReloadMarker';
+        assert(deploymentUrl);
+        setupWorld(deploymentUrl);
 
-        await fs.writeFile(
-          importedStepFile,
-          `${content}
-
-export async function ${marker}() {
-  'use step'
-  return 'updated'
+        const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
+        const content = await fs.readFile(workflowFile, 'utf8');
+        const before = 'before HMR';
+        const after = 'after HMR';
+        const fixture = `
+export async function hmrWorkflow() {
+  'use workflow';
+  return hmrStep();
 }
-`
-        );
-        restoreFiles.push({ path: importedStepFile, content });
 
-        const apiFile = path.join(appPath, finalConfig.apiFilePath);
-        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+async function hmrStep() {
+  'use step';
+  return '${before}';
+}
+`;
+
+        await fs.writeFile(workflowFile, content + fixture);
+        restoreFiles.push({ path: workflowFile, content });
 
         await pollUntil({
-          description:
-            'manifest.json to include imported step hot-reload marker',
-          timeoutMs: 50_000,
+          description: 'generated step output to include the HMR fixture',
           check: async () => {
-            try {
-              await triggerWorkflowRun('importedStepOnlyWorkflow');
-            } catch (error) {
-              // Turbopack on Windows occasionally caches a stale resolver
-              // failure (e.g. `Could not parse module
-              // '@workflow/core/dist/runtime/start.js'`) after an HMR
-              // cascade and returns 500 to every request until something
-              // invalidates its cache. Rewriting the api file is enough to
-              // force a fresh resolve on the next request, so we treat the
-              // 500 as transient and keep polling instead of bailing out.
-              await fs.writeFile(apiFile, apiFileContent);
-              throw error;
-            }
-            const manifestFunctionNames = await readManifestStepFunctionNames();
-            expect(manifestFunctionNames).toContain(marker);
+            expect(await fs.readFile(generatedStep, 'utf8')).toContain(before);
           },
         });
+
+        const workflow = await getWorkflowMetadata(
+          deploymentUrl,
+          `workflows/${testWorkflowFile}`,
+          'hmrWorkflow'
+        );
+        const runBefore = await start<[], string>(workflow, []);
+        expect(await runBefore.returnValue).toBe(before);
+
+        await fs.writeFile(
+          workflowFile,
+          (content + fixture).replace(before, after)
+        );
+
+        await pollUntil({
+          description: 'generated step output to include the HMR update',
+          check: async () => {
+            expect(await fs.readFile(generatedStep, 'utf8')).toContain(after);
+          },
+        });
+
+        const runAfter = await start<[], string>(workflow, []);
+        expect(await runAfter.returnValue).toBe(after);
       }
     );
 
@@ -322,7 +363,7 @@ ${apiFileContent}`
           description: 'generated workflow to include newWorkflowFile',
           timeoutMs: 50_000,
           check: async () => {
-            if (usesNextEagerBuilder) {
+            if (usesNextFlowRoute) {
               const manifestJson = await fs.readFile(
                 workflowManifestPath,
                 'utf8'
@@ -339,146 +380,110 @@ ${apiFileContent}`
             }
 
             await fetchWithTimeout('/api/chat');
-            const workflowContent = await fs.readFile(
-              generatedWorkflow,
-              'utf8'
-            );
+            const workflowContent = await readGeneratedWorkflowOutput();
             expect(workflowContent).toContain('newWorkflowFile');
           },
         });
       }
     );
 
-    test.skipIf(!usesDeferredBuilder)(
-      'should include steps discovered from workflow imports',
-      { timeout: 60_000 },
+    test.runIf(process.env.APP_NAME === 'nextjs-turbopack')(
+      'should not log source map warnings for workflow node_modules imports',
+      { timeout: 70_000 },
       async () => {
+        const packageDir = path.join(
+          appPath,
+          'node_modules',
+          SOURCE_MAP_FIXTURE_PACKAGE
+        );
+        const packageJsonPath = path.join(packageDir, 'package.json');
+        const packageIndexPath = path.join(packageDir, 'index.js');
         const workflowFile = path.join(
           appPath,
           workflowsDir,
-          'discovered-via-workflow.ts'
+          'source-map-warning-fixture.ts'
         );
-        const stepFile = path.join(
-          appPath,
-          workflowsDir,
-          'discovered-via-workflow-step.ts'
-        );
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
 
+        await fs.mkdir(packageDir, { recursive: true });
+        restoreDirectories.push(packageDir);
         await fs.writeFile(
-          workflowFile,
-          `'use workflow';
-import { discoveredViaWorkflowStep } from './discovered-via-workflow-step';
-
-export async function discoveredViaWorkflow() {
-  await discoveredViaWorkflowStep();
-  return 'ok';
-}
+          packageJsonPath,
+          JSON.stringify(
+            {
+              name: SOURCE_MAP_FIXTURE_PACKAGE,
+              version: '0.0.0',
+              type: 'module',
+              main: './index.js',
+              types: './index.d.ts',
+            },
+            null,
+            2
+          )
+        );
+        await fs.writeFile(
+          packageIndexPath,
+          `export const sourceMapWarningFixtureValue = Symbol.for('workflow-serialize').description ?? 'workflow-serialize';
+${SOURCE_MAP_COMMENT}
 `
         );
         await fs.writeFile(
-          stepFile,
-          `'use step';
+          path.join(packageDir, 'index.d.ts'),
+          `export declare const sourceMapWarningFixtureValue: string;
+`
+        );
+        await fs.writeFile(
+          workflowFile,
+          `import { sourceMapWarningFixtureValue } from '${SOURCE_MAP_FIXTURE_PACKAGE}';
 
-export async function discoveredViaWorkflowStep() {
-  return 'ok';
+async function readSourceMapWarningFixture() {
+  'use step';
+  return sourceMapWarningFixtureValue;
+}
+
+export async function sourceMapWarningFixtureWorkflow() {
+  'use workflow';
+  return readSourceMapWarningFixture();
 }
 `
         );
         restoreFiles.push({ path: workflowFile, content: '' });
-        restoreFiles.push({ path: stepFile, content: '' });
-
-        const apiFile = path.join(appPath, finalConfig.apiFilePath);
-        const apiFileContent = await fs.readFile(apiFile, 'utf8');
         restoreFiles.push({ path: apiFile, content: apiFileContent });
 
         await fs.writeFile(
           apiFile,
-          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/discovered-via-workflow';
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/source-map-warning-fixture';
 ${apiFileContent}`
         );
 
         await pollUntil({
           description:
-            'manifest.json to include discoveredViaWorkflowStep after discovery',
-          timeoutMs: 25_000,
+            'generated workflow to include sourceMapWarningFixtureWorkflow',
+          timeoutMs: 50_000,
           check: async () => {
+            if (usesNextFlowRoute) {
+              const manifestFunctionNames =
+                await readManifestWorkflowFunctionNames();
+              expect(manifestFunctionNames).toContain(
+                'sourceMapWarningFixtureWorkflow'
+              );
+              return;
+            }
+
             await fetchWithTimeout('/api/chat');
-            const manifestFunctionNames = await readManifestStepFunctionNames();
-            expect(manifestFunctionNames).toContain(
-              'discoveredViaWorkflowStep'
+            const workflowContent = await readGeneratedWorkflowOutput();
+            expect(workflowContent).toContain(
+              'sourceMapWarningFixtureWorkflow'
             );
           },
         });
 
-        // Tear down in-test (rather than relying on afterEach) so we can wait
-        // for the deferred builder to drop the discovered step from the
-        // manifest before the next test file runs. The generated step route
-        // bundle holds a literal `import '../workflows/discovered-via-workflow-step.ts'`
-        // that is only pruned when the deferred builder rebuilds and
-        // `filterExistingFiles` excludes the now-missing source. On Windows
-        // the rebuild can lag behind the deletion, leaving the bundle
-        // unable to compile and breaking every step request in subsequent
-        // tests (which all share the same dev server).
-        await fs.writeFile(apiFile, apiFileContent);
-        await fs.unlink(workflowFile);
-        await fs.unlink(stepFile);
-        for (const trackedPath of [apiFile, workflowFile, stepFile]) {
-          const idx = restoreFiles.findIndex(
-            (item) => item.path === trackedPath
-          );
-          if (idx !== -1) {
-            restoreFiles.splice(idx, 1);
-          }
+        const devServerLogPath = process.env.DEV_SERVER_LOG_PATH;
+        if (devServerLogPath) {
+          const log = await fs.readFile(devServerLogPath, 'utf8');
+          expect(log).not.toContain(SOURCE_MAP_WARNING);
         }
-        await pollUntil({
-          description:
-            'manifest.json to drop discoveredViaWorkflowStep after cleanup',
-          timeoutMs: 25_000,
-          check: async () => {
-            await fetchWithTimeout('/api/chat');
-            const manifestFunctionNames = await readManifestStepFunctionNames();
-            expect(manifestFunctionNames).not.toContain(
-              'discoveredViaWorkflowStep'
-            );
-          },
-        });
-      }
-    );
-
-    test.skipIf(!usesDeferredBuilder)(
-      'should reference package step sources discovered via manifest entries',
-      { timeout: 30_000 },
-      async () => {
-        await pollUntil({
-          description:
-            'generated step route to reference @workflow/ai package steps',
-          timeoutMs: 25_000,
-          check: async () => {
-            await fetchWithTimeout('/api/chat');
-            const manifestJson = await fs.readFile(
-              workflowManifestPath,
-              'utf8'
-            );
-            const manifest = JSON.parse(manifestJson) as {
-              steps?: Record<string, unknown>;
-            };
-            const manifestStepFiles = Object.keys(manifest.steps || {});
-            expect(
-              manifestStepFiles.some((filePath) =>
-                filePath.includes('ai/dist/agent/durable-agent.js')
-              )
-            ).toBe(true);
-
-            // Package step sources are imported directly (not copied). Verify
-            // the generated step route imports the @workflow/ai package or
-            // otherwise references `durable-agent` via its resolved path.
-            const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
-            expect(
-              stepRouteContent.includes('@workflow/ai') ||
-                stepRouteContent.includes('durable-agent')
-            ).toBe(true);
-          },
-        });
       }
     );
   });

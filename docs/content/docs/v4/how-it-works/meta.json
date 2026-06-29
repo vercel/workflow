@@ -5,8 +5,7 @@
     "code-transform",
     "framework-integrations",
     "event-sourcing",
-    "encryption",
-    "cancellation"
+    "encryption"
   ],
   "defaultOpen": false
 }

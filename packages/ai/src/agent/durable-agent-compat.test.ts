@@ -1348,6 +1348,143 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           }
         `);
       });
+
+      it('should expose finishReason and totalUsage on the stream result', async () => {
+        const agent = new DurableAgent({
+          model: asModelFactory(mockModel),
+        });
+
+        const { writable } = createMockWritable();
+        const result = await agent.stream({
+          messages: [{ role: 'user' as const, content: 'test' }],
+          writable,
+        });
+
+        expect({
+          finishReason: result.finishReason,
+          inputTokens: result.totalUsage.inputTokens,
+          outputTokens: result.totalUsage.outputTokens,
+        }).toMatchInlineSnapshot(`
+          {
+            "finishReason": "stop",
+            "inputTokens": 3,
+            "outputTokens": 10,
+          }
+        `);
+      });
+
+      it('aggregates the full v6 usage shape (cache + reasoning details) across steps', async () => {
+        // Two-step tool loop with distinct nested usage per step, so the
+        // aggregation must both sum AND preserve the v6 detail fields
+        // (inputTokenDetails / outputTokenDetails) rather than collapsing to
+        // inputTokens/outputTokens/totalTokens only.
+        let callCount = 0;
+        const detailedUsageModel = new MockLanguageModelV3({
+          doStream: async () => {
+            if (callCount++ === 0) {
+              return {
+                stream: convertArrayToReadableStream([
+                  { type: 'stream-start' as const, warnings: [] },
+                  {
+                    type: 'response-metadata' as const,
+                    id: 'id-0',
+                    modelId: 'mock-model-id',
+                    timestamp: new Date(0),
+                  },
+                  {
+                    type: 'tool-call' as const,
+                    toolCallId: 'call-1',
+                    toolName: 'testTool',
+                    input: '{ "value": "test" }',
+                  },
+                  {
+                    type: 'finish' as const,
+                    finishReason: {
+                      unified: 'tool-calls' as const,
+                      raw: undefined,
+                    },
+                    usage: {
+                      inputTokens: {
+                        total: 10,
+                        noCache: 6,
+                        cacheRead: 4,
+                        cacheWrite: 2,
+                      },
+                      outputTokens: { total: 7, text: 5, reasoning: 2 },
+                    },
+                    providerMetadata: {},
+                  },
+                ]),
+              };
+            }
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                {
+                  type: 'response-metadata' as const,
+                  id: 'id-1',
+                  modelId: 'mock-model-id',
+                  timestamp: new Date(0),
+                },
+                { type: 'text-start' as const, id: '1' },
+                { type: 'text-delta' as const, id: '1', delta: 'done' },
+                { type: 'text-end' as const, id: '1' },
+                {
+                  type: 'finish' as const,
+                  finishReason: { unified: 'stop' as const, raw: 'stop' },
+                  usage: {
+                    inputTokens: {
+                      total: 20,
+                      noCache: 11,
+                      cacheRead: 9,
+                      cacheWrite: 3,
+                    },
+                    outputTokens: { total: 13, text: 9, reasoning: 4 },
+                  },
+                  providerMetadata: {},
+                },
+              ]),
+            };
+          },
+        });
+
+        const agent = new DurableAgent({
+          model: asModelFactory(detailedUsageModel),
+          tools: {
+            testTool: tool({
+              inputSchema: z.object({ value: z.string() }),
+              execute: async ({ value }: { value: string }) =>
+                `${value}-result`,
+            }),
+          },
+        });
+
+        const { writable } = createMockWritable();
+        const result = await agent.stream({
+          messages: [{ role: 'user' as const, content: 'test' }],
+          writable,
+        });
+
+        expect(result.steps.length).toBe(2);
+        expect(result.totalUsage).toMatchInlineSnapshot(`
+          {
+            "cachedInputTokens": 13,
+            "inputTokenDetails": {
+              "cacheReadTokens": 13,
+              "cacheWriteTokens": 5,
+              "noCacheTokens": 17,
+            },
+            "inputTokens": 30,
+            "outputTokenDetails": {
+              "reasoningTokens": 6,
+              "textTokens": 14,
+            },
+            "outputTokens": 20,
+            "reasoningTokens": 6,
+            "totalTokens": 50,
+          }
+        `);
+      });
     });
   });
 

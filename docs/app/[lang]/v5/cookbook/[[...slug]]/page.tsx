@@ -1,14 +1,10 @@
+import { Card, type CardProps } from 'fumadocs-ui/components/card';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import type { ComponentProps } from 'react';
-import {
-  rewriteCookbookUrlForVersion,
-  rewriteCookbookUrlsInText,
-} from '@/lib/geistdocs/cookbook-source';
-import { MobileDocsBar } from '@/components/geistdocs/mobile-docs-bar';
 import { AskAI } from '@/components/geistdocs/ask-ai';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
@@ -20,10 +16,15 @@ import {
 import { EditSource } from '@/components/geistdocs/edit-source';
 import { Feedback } from '@/components/geistdocs/feedback';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
+import { MobileDocsBar } from '@/components/geistdocs/mobile-docs-bar';
 import { OpenInChat } from '@/components/geistdocs/open-in-chat';
 import { ScrollTop } from '@/components/geistdocs/scroll-top';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import {
+  rewriteCookbookUrlForVersion,
+  rewriteCookbookUrlsInText,
+} from '@/lib/geistdocs/cookbook-source';
 import { getLLMText, getPageImage, v5Source } from '@/lib/geistdocs/source';
 import { PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
 
@@ -49,15 +50,22 @@ const Page = async ({
 
   // Rewrite /docs/cookbook/... links to /v5/cookbook/... and other /docs/...
   // links to /v5/docs/... so inline MDX links stay within the v5 context.
+  // Card renders its own Link (not the `a` component), so it needs the same
+  // rewrite applied separately.
+  function v5Href<T>(href: T): T {
+    if (typeof href !== 'string') return href;
+    let rewritten = rewriteCookbookUrlForVersion(href, VERSION_PREFIX);
+    if (rewritten.startsWith('/docs/'))
+      rewritten = `${VERSION_PREFIX}${rewritten}`;
+    return rewritten as T;
+  }
   const RelativeLink = createRelativeLink(v5Source, publicPage);
-  const V5CookbookLink = (props: ComponentProps<typeof RelativeLink>) => {
-    let href = props.href;
-    if (typeof href === 'string') {
-      href = rewriteCookbookUrlForVersion(href, VERSION_PREFIX);
-      if (href.startsWith('/docs/')) href = `${VERSION_PREFIX}${href}`;
-    }
-    return <RelativeLink {...props} href={href} />;
-  };
+  const V5CookbookLink = (props: ComponentProps<typeof RelativeLink>) => (
+    <RelativeLink {...props} href={v5Href(props.href)} />
+  );
+  const V5CookbookCard = (props: CardProps) => (
+    <Card {...props} href={v5Href(props.href)} />
+  );
 
   return (
     <DocsPage
@@ -67,7 +75,7 @@ const Page = async ({
         footer: (
           <div className="my-3 space-y-3">
             <Separator />
-            <EditSource path={page.path} />
+            <EditSource path={page.path} version="v5" />
             <ScrollTop />
             <Feedback />
             <CopyPage text={markdown} />
@@ -86,6 +94,7 @@ const Page = async ({
         <MDX
           components={getMDXComponents({
             a: V5CookbookLink,
+            Card: V5CookbookCard,
             Badge,
             Step,
             Steps,

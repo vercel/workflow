@@ -1,4 +1,4 @@
-import { CorruptedEventLogError } from '@workflow/errors';
+import { ReplayDivergenceError } from '@workflow/errors';
 import { EventConsumerResult } from '../events-consumer.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
@@ -147,8 +147,9 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         ) {
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
             ctx.onWorkflowError(
-              new CorruptedEventLogError(
-                `Corrupted event log: abort hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current abort hook expects "${this[ABORT_HOOK_TOKEN]}"`
+              new ReplayDivergenceError(
+                `Replay divergence: abort hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current abort hook expects "${this[ABORT_HOOK_TOKEN]}"`,
+                { eventId: event.eventId }
               )
             );
           });
@@ -177,35 +178,55 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // dehydration, so `'reason' in payload` is false and reason
           // ends up undefined on replay.
           const rawPayload = event.eventData?.payload;
+          // Account this abort as a pending delivery, exactly like step
+          // results (step.ts) and hook payloads (workflow/hook.ts) do. The
+          // suspension handler dehydrates queued step arguments only once
+          // `scheduleWhenIdle` observes `pendingDeliveries === 0`. Without
+          // this counter, a step dispatched right after the abort — e.g. one
+          // that receives `controller.signal` — can have its arguments
+          // serialized while the abort is still in flight behind
+          // `await hydrateStepReturnValue`, capturing `signal.aborted === false`
+          // (and a missing reason). Bumping the counter holds the suspension
+          // until `_setAborted` has landed, so downstream serialization is
+          // deterministic regardless of reason-hydration (decryption) latency.
+          ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             let reason: unknown;
-            if (rawPayload !== undefined) {
-              try {
-                const hydrated = (await hydrateStepReturnValue(
-                  rawPayload,
-                  ctx.runId,
-                  ctx.encryptionKey,
-                  ctx.globalThis
-                )) as { reason?: unknown } | undefined;
-                if (
-                  hydrated &&
-                  typeof hydrated === 'object' &&
-                  'reason' in hydrated
-                ) {
-                  reason = hydrated.reason;
+            try {
+              if (rawPayload !== undefined) {
+                try {
+                  const hydrated = (await hydrateStepReturnValue(
+                    rawPayload,
+                    ctx.runId,
+                    ctx.encryptionKey,
+                    ctx.globalThis
+                  )) as { reason?: unknown } | undefined;
+                  if (
+                    hydrated &&
+                    typeof hydrated === 'object' &&
+                    'reason' in hydrated
+                  ) {
+                    reason = hydrated.reason;
+                  }
+                } catch {
+                  // Best-effort: if hydration fails, fall back to undefined
+                  // reason. The signal still aborts; the user just won't see
+                  // the original reason. Matches WorkflowAbortSignal's spec
+                  // fallback (DOMException AbortError).
                 }
-              } catch {
-                // Best-effort: if hydration fails, fall back to undefined
-                // reason. The signal still aborts; the user just won't see
-                // the original reason. Matches WorkflowAbortSignal's spec
-                // fallback (DOMException AbortError).
               }
+              this.signal._setAborted(reason);
+            } finally {
+              ctx.pendingDeliveries--;
             }
-            this.signal._setAborted(reason);
           });
 
           ctx.invocationsQueue.delete(correlationId);
-          return EventConsumerResult.Finished;
+          // Multiple handlers can observe the same pending abort request and
+          // durably record it before replay removes the queue item. Abort is
+          // idempotent, so consume later matching receipts as no-ops instead
+          // of surfacing a corrupted event log after the first receipt.
+          return EventConsumerResult.Consumed;
         }
 
         if (event.eventType === 'hook_disposed') {

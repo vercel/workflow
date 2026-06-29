@@ -5,6 +5,7 @@ type: guide
 summary: Compose workflows two ways — direct await flattens the child into the parent's event log, while background spawn via start() runs the child as an independent run.
 related:
   - /cookbook/advanced/child-workflows
+  - /cookbook/common-patterns/idempotency
   - /docs/api-reference/workflow-api/start
   - /docs/api-reference/workflow-api/get-run
 ---
@@ -85,6 +86,10 @@ export async function processOrder(orderId: string) {
 The parent continues immediately after `start()` returns. The child runs independently and can be monitored separately using the returned `runId` (e.g., via [`getRun()`](/docs/api-reference/workflow-api/get-run)).
 
 <Callout type="info">
+Each background spawn creates a separate run. If duplicate requests must route to one active child workflow, have the child create a deterministic hook token from the business key and use that hook as the idempotency point. If concurrent starts race, the losing child can detect the conflict early with `await hook.getConflict()`, which resolves with the active owner so the child can point callers at it. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
+<Callout type="info">
 If you want the child workflow to run on the latest deployment rather than the current one, pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) in the `start()` options. See [Versioning](/docs/foundations/versioning) for the full model. This is currently a Vercel-specific feature, and other Worlds may map the concept to their own deployment runtimes. Be aware that the child workflow's function name, file path, argument types, and return type must remain compatible across deployments — renaming the function or changing its location will change the workflow ID, and modifying expected inputs or outputs can cause serialization failures.
 </Callout>
 
@@ -116,3 +121,4 @@ If you want the child workflow to run on the latest deployment rather than the c
 - [`"use step"`](/docs/foundations/workflows-and-steps) — marks functions with full Node.js access
 - [`start()`](/docs/api-reference/workflow-api/start) — spawn a child workflow as a separate run
 - [`getRun()`](/docs/api-reference/workflow-api/get-run) — retrieve a workflow run's status and return value
+- [Idempotency](/docs/foundations/idempotency) — deduplicate step side effects and workflow starts

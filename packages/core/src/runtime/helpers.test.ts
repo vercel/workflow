@@ -1,6 +1,11 @@
-import type { Event } from '@workflow/world';
+import { WorkflowWorldError } from '@workflow/errors';
+import type { Event, World } from '@workflow/world';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getWorkflowQueueName, loadWorkflowRunEvents } from './helpers.js';
+import {
+  getWorkflowQueueName,
+  healthCheck,
+  loadWorkflowRunEvents,
+} from './helpers.js';
 
 // Mock the logger to suppress output during tests
 vi.mock('../logger.js', () => ({
@@ -98,6 +103,125 @@ describe('getWorkflowQueueName', () => {
 
   it('should throw for empty string', () => {
     expect(() => getWorkflowQueueName('')).toThrow('Invalid workflow name');
+  });
+
+  it('should use default prefix when no namespace is provided', () => {
+    expect(getWorkflowQueueName('myFlow')).toBe('__wkf_workflow_myFlow');
+    expect(getWorkflowQueueName('myFlow', undefined)).toBe(
+      '__wkf_workflow_myFlow'
+    );
+  });
+
+  it('should use namespaced prefix when namespace is provided', () => {
+    expect(getWorkflowQueueName('myFlow', 'custom')).toBe(
+      '__custom_wkf_workflow_myFlow'
+    );
+  });
+
+  it('should reject invalid namespace in queue name construction', () => {
+    expect(() => getWorkflowQueueName('myFlow', '123bad')).toThrow();
+  });
+});
+
+describe('healthCheck response parsing', () => {
+  /**
+   * Builds a minimal `World` whose `streams.get(...)` returns a stream of
+   * the supplied response text, simulating what the responding deployment
+   * would write via `handleHealthCheckMessage`. Just enough surface for
+   * `healthCheck()` to exercise its parse path.
+   */
+  function makeWorldWithResponse(responseText: string): World {
+    return {
+      queue: vi.fn().mockResolvedValue(undefined),
+      streams: {
+        get: vi.fn(async () => {
+          let delivered = false;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!delivered) {
+                controller.enqueue(new TextEncoder().encode(responseText));
+                delivered = true;
+              } else {
+                controller.close();
+              }
+            },
+          });
+        }),
+      },
+    } as unknown as World;
+  }
+
+  it('surfaces workflowCoreVersion when present in the response', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        workflowCoreVersion: '5.0.0-beta.7',
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBe(3);
+    expect(result.workflowCoreVersion).toBe('5.0.0-beta.7');
+  });
+
+  it('omits workflowCoreVersion when the response does not include the field', async () => {
+    // Independent of specVersion — the field is omitted by any responder
+    // running an older `@workflow/core` that predates the addition of
+    // `workflowCoreVersion` to the health response payload.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        // No workflowCoreVersion field
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBe(3);
+    expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('omits workflowCoreVersion when the field is the wrong type', async () => {
+    // Defensive: the parser only accepts strings. Anything else is dropped
+    // rather than surfaced as garbage.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        workflowCoreVersion: 12345,
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('returns healthy with no fields for non-JSON plain-text responses', async () => {
+    // Some deployments respond with plain text like
+    // 'Workflow SDK "..." endpoint is healthy'. The parser treats any
+    // non-empty non-JSON text as healthy, with no version metadata.
+    const world = makeWorldWithResponse(
+      'Workflow SDK "workflow" endpoint is healthy'
+    );
+
+    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBeUndefined();
+    expect(result.workflowCoreVersion).toBeUndefined();
   });
 });
 
@@ -203,5 +327,83 @@ describe('loadWorkflowRunEvents', () => {
     // Preserving the input cursor avoids the runtime treating "no new events
     // since last poll" as "I have no idea where I am in the log."
     expect(result.cursor).toBe('eid:evnt_z');
+  });
+
+  it('deduplicates overlapping pages from a restarted continuation read', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a'), makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b',
+      hasMore: true,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_b'), makeEvent('evnt_c')],
+      cursor: 'eid:evnt_c',
+      hasMore: false,
+    });
+
+    const result = await loadWorkflowRunEvents('wrun_test');
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+  });
+
+  it('retries a rejected continuation cursor as a full load once', async () => {
+    eventsListMock.mockRejectedValueOnce(
+      new WorkflowWorldError('invalid cursor', { status: 400 })
+    );
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a'), makeEvent('evnt_b')],
+      cursor: 'eid:evnt_b',
+      hasMore: false,
+    });
+
+    const result = await loadWorkflowRunEvents('wrun_test', 'opaque-cursor');
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+    ]);
+    expect(eventsListMock).toHaveBeenNthCalledWith(1, {
+      runId: 'wrun_test',
+      pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
+    });
+    expect(eventsListMock).toHaveBeenNthCalledWith(2, {
+      runId: 'wrun_test',
+      pagination: { sortOrder: 'asc', cursor: undefined },
+    });
+  });
+
+  it('fails instead of looping when pagination repeats a cursor', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: 'eid:evnt_a',
+      hasMore: true,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: 'eid:evnt_a',
+      hasMore: true,
+    });
+
+    await expect(loadWorkflowRunEvents('wrun_test')).rejects.toMatchObject({
+      code: 'WORLD_CONTRACT_ERROR',
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails when a response reports more pages without a cursor', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeEvent('evnt_a')],
+      cursor: null,
+      hasMore: true,
+    });
+
+    await expect(loadWorkflowRunEvents('wrun_test')).rejects.toMatchObject({
+      code: 'WORLD_CONTRACT_ERROR',
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
   });
 });

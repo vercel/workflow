@@ -18,9 +18,20 @@ class TestBuilder extends BaseBuilder {
   public get publicSourcemapsEnabled(): boolean {
     return this.sourcemapsEnabled;
   }
+
+  public get publicDefaultSourcemapMode(): SourcemapMode {
+    return this.defaultSourcemapMode;
+  }
+
+  public get publicIsDevelopmentBuild(): boolean {
+    return this.isDevelopmentBuild;
+  }
 }
 
-function createBuilder(sourcemap?: SourcemapMode): TestBuilder {
+function createBuilder(
+  sourcemap?: SourcemapMode,
+  watch?: boolean
+): TestBuilder {
   const config: StandaloneConfig = {
     buildTarget: 'standalone',
     workingDir: '/tmp/workflow-test',
@@ -29,6 +40,7 @@ function createBuilder(sourcemap?: SourcemapMode): TestBuilder {
     workflowsBundlePath: '',
     webhookBundlePath: '',
     sourcemap,
+    watch,
   };
   return new TestBuilder(config);
 }
@@ -109,14 +121,67 @@ describe('resolveSourcemap', () => {
   });
 });
 
-describe('sourcemapsEnabled', () => {
-  const originalEnv = process.env.WORKFLOW_SOURCEMAP;
+describe('defaultSourcemapMode / isDevelopmentBuild', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalSourcemapEnv = process.env.WORKFLOW_SOURCEMAP;
 
   beforeEach(() => {
     delete process.env.WORKFLOW_SOURCEMAP;
   });
 
   afterEach(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    if (originalSourcemapEnv === undefined) {
+      delete process.env.WORKFLOW_SOURCEMAP;
+    } else {
+      process.env.WORKFLOW_SOURCEMAP = originalSourcemapEnv;
+    }
+  });
+
+  it('defaults to off in production (no watch, NODE_ENV not development)', () => {
+    process.env.NODE_ENV = 'production';
+    const builder = createBuilder();
+    expect(builder.publicIsDevelopmentBuild).toBe(false);
+    expect(builder.publicDefaultSourcemapMode).toBe(false);
+  });
+
+  it('defaults to inline when config.watch is true', () => {
+    // Even with a production NODE_ENV, an active watch/dev server opts in.
+    process.env.NODE_ENV = 'production';
+    const builder = createBuilder(undefined, true);
+    expect(builder.publicIsDevelopmentBuild).toBe(true);
+    expect(builder.publicDefaultSourcemapMode).toBe('inline');
+  });
+
+  it('defaults to inline when NODE_ENV is development', () => {
+    process.env.NODE_ENV = 'development';
+    const builder = createBuilder();
+    expect(builder.publicIsDevelopmentBuild).toBe(true);
+    expect(builder.publicDefaultSourcemapMode).toBe('inline');
+  });
+});
+
+describe('sourcemapsEnabled', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalEnv = process.env.WORKFLOW_SOURCEMAP;
+
+  beforeEach(() => {
+    delete process.env.WORKFLOW_SOURCEMAP;
+    // Pin to production so the environment-aware default is deterministic;
+    // individual tests opt into dev via watch/NODE_ENV as needed.
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
     if (originalEnv === undefined) {
       delete process.env.WORKFLOW_SOURCEMAP;
     } else {
@@ -124,7 +189,16 @@ describe('sourcemapsEnabled', () => {
     }
   });
 
-  it('is true by default', () => {
+  it('is false by default in production', () => {
+    expect(createBuilder().publicSourcemapsEnabled).toBe(false);
+  });
+
+  it('is true by default in development (watch)', () => {
+    expect(createBuilder(undefined, true).publicSourcemapsEnabled).toBe(true);
+  });
+
+  it('is true by default in development (NODE_ENV)', () => {
+    process.env.NODE_ENV = 'development';
     expect(createBuilder().publicSourcemapsEnabled).toBe(true);
   });
 
@@ -142,6 +216,11 @@ describe('sourcemapsEnabled', () => {
     ] as const) {
       expect(createBuilder(mode).publicSourcemapsEnabled).toBe(true);
     }
+  });
+
+  it('is true in production when WORKFLOW_SOURCEMAP env opts in', () => {
+    process.env.WORKFLOW_SOURCEMAP = 'inline';
+    expect(createBuilder().publicSourcemapsEnabled).toBe(true);
   });
 
   it('is false when WORKFLOW_SOURCEMAP env is false', () => {

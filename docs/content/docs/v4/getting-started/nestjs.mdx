@@ -387,7 +387,8 @@ WorkflowModule.forRoot({
   // Should match the outDir in your tsconfig.json
   distDir: 'dist',
 
-  // Source maps on generated workflow bundles (default: 'inline').
+  // Source maps on generated workflow bundles (default: 'inline' in
+  // development, false in production).
   // Accepts the same values as esbuild's sourcemap option: true, false,
   // 'inline', 'linked', 'external', 'both'. Set to false for smaller
   // function bundles (useful for staying under the Vercel 250MB function

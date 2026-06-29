@@ -2,6 +2,8 @@
  * Shared types for the serialization system.
  */
 
+import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+
 // ---- Format Prefix ----
 
 /**
@@ -30,9 +32,25 @@ export const SerializationFormat = {
   DEVALUE_V1: 'devl' as FormatPrefix,
   /** Encrypted payload (inner payload has its own format prefix) */
   ENCRYPTED: 'encr' as FormatPrefix,
+  /** Gzip-compressed payload (inner payload has its own format prefix) */
+  GZIP: 'gzip' as FormatPrefix,
+  /** Zstandard-compressed payload (inner payload has its own format prefix) */
+  ZSTD: 'zstd' as FormatPrefix,
 } as const;
 
 // ---- Serializable Types ----
+
+/**
+ * Wire-framing format identifier carried in the serialized
+ * `ReadableStream` ref's `framing` field.
+ *
+ * - absent / `'raw'`: chunks are written to the transport verbatim
+ *   (legacy format — no auto-reconnect support).
+ * - `'framed-v1'`: each chunk is wrapped in a 4-byte big-endian length
+ *   prefix, allowing the reader to identify chunk boundaries and
+ *   transparently reconnect on transient stream errors.
+ */
+export type ByteStreamFraming = 'raw' | 'framed-v1';
 
 /**
  * Types that need specialized handling when serialized/deserialized.
@@ -71,7 +89,21 @@ export interface SerializableSpecial {
   Map: [any, any][];
   RangeError: { message: string; stack?: string; cause?: unknown };
   ReadableStream:
-    | { name: string; type?: 'bytes'; startIndex?: number }
+    | {
+        name: string;
+        type?: 'bytes';
+        startIndex?: number;
+        /**
+         * Wire-framing format for byte streams. See {@link ByteStreamFraming}
+         * and `getByteFramingStream` / `getByteUnframingStream`.
+         *
+         * Only meaningful when `type === 'bytes'`. Absent on object streams
+         * (which always use length-prefixed devalue framing) and on legacy
+         * byte streams written by SDKs that predate framing support — those
+         * are interpreted as `'raw'` by the consumer.
+         */
+        framing?: ByteStreamFraming;
+      }
     | { bodyInit: any };
   ReferenceError: { message: string; stack?: string; cause?: unknown };
   RegExp: { source: string; flags: string };
@@ -85,6 +117,12 @@ export interface SerializableSpecial {
     stack?: string;
     cause?: unknown;
     retryAfter: number;
+  };
+  RuntimeDecryptionError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    context?: RuntimeDecryptionErrorContext;
   };
   Request: {
     method: string;
@@ -161,6 +199,12 @@ export interface SerializableSpecial {
      * belongs to the receiving run (the normal in-run case).
      */
     runId?: string;
+    /**
+     * The deployment that owns the server stream. Carried with `runId`
+     * so a child running on a newer deployment can encrypt chunks with
+     * the parent's key without fetching the parent run first.
+     */
+    deploymentId?: string;
   };
   AbortController: {
     streamName: string;

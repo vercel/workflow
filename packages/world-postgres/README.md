@@ -98,9 +98,17 @@ This package uses PostgreSQL with the following components:
 The easiest way to set up your database is using the included CLI tool:
 
 ```bash
-pnpm exec workflow-postgres-setup
-# or
-npm exec workflow-postgres-setup
+# npm
+npx --package=@workflow/world-postgres bootstrap
+
+# pnpm
+pnpm dlx --package @workflow/world-postgres bootstrap
+
+# Yarn
+yarn dlx --package @workflow/world-postgres bootstrap
+
+# Bun
+bunx --package @workflow/world-postgres bootstrap
 ```
 
 The CLI automatically loads `.env` files and will use the connection string from:

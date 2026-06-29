@@ -1,0 +1,58 @@
+---
+title: WorkflowRuntimeError
+description: Thrown when the workflow runtime encounters an execution error, such as serialization failures or timeouts.
+type: reference
+summary: Catch WorkflowRuntimeError for runtime-level failures like unserializable values or workflow timeouts.
+related:
+  - /docs/foundations/serialization
+  - /docs/foundations/errors-and-retries
+---
+
+`WorkflowRuntimeError` is thrown when the workflow runtime encounters an error executing a workflow. Common causes include:
+
+- Values crossing the workflow/step boundary that cannot be serialized
+- Workflow execution timeouts
+- Invalid runtime state, such as misconfigured streams
+
+```typescript lineNumbers
+import { WorkflowRuntimeError } from "workflow/errors"
+declare function runWorkflowOperation(): Promise<void>; // @setup
+
+try {
+  await runWorkflowOperation();
+} catch (error) {
+  if (WorkflowRuntimeError.is(error)) { // [!code highlight]
+    console.error("Workflow runtime error:", error.message);
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowRuntimeError {
+  /** The error message. */
+  message: string;
+  /** The underlying cause, when provided. */
+  cause?: unknown;
+}
+export default WorkflowRuntimeError;`}
+/>
+
+### Static Methods
+
+#### `WorkflowRuntimeError.is(value)`
+
+Type-safe check for `WorkflowRuntimeError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { WorkflowRuntimeError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (WorkflowRuntimeError.is(error)) {
+  // error is typed as WorkflowRuntimeError
+}
+```
