@@ -1,11 +1,5 @@
 import type { Step } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { type ClassValue, clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
 
 const durationFormatter = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 2,

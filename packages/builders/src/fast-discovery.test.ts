@@ -99,6 +99,33 @@ describe('fast workflow discovery', () => {
     );
   });
 
+  it('discovers relative JS imports whose basename includes .step', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const workflowFile = join(testRoot, 'src', 'hello.step.js');
+
+    writeFile(entryFile, `import './hello.step';\n`);
+    writeFile(
+      workflowFile,
+      `export async function run() {
+  'use workflow';
+  return 'ok';
+}
+`
+    );
+
+    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+      [entryFile],
+      join(testRoot, 'out')
+    );
+
+    expect(discovered.discoveredWorkflows).toEqual(
+      new Set([normalize(workflowFile)])
+    );
+    expect(parentHasChild(normalize(entryFile), normalize(workflowFile))).toBe(
+      true
+    );
+  });
+
   it('discovers workflow files reached through an imported package re-export', async () => {
     const entryFile = join(testRoot, 'src', 'entry.ts');
     const packageRoot = join(testRoot, 'node_modules', 'workflow-pkg');
