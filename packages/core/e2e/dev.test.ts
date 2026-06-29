@@ -18,6 +18,10 @@ export interface DevTestConfig {
   workflowsDir?: string;
 }
 
+const SOURCE_MAP_WARNING = 'failed to read input source map';
+const SOURCE_MAP_FIXTURE_PACKAGE = 'workflow-sourcemap-warning-fixture';
+const SOURCE_MAP_COMMENT = '//# sourceMapping' + 'URL=index.js.map';
+
 function getConfigFromEnv(): DevTestConfig | null {
   const envConfig = process.env.DEV_TEST_CONFIG;
   if (envConfig) {
@@ -64,6 +68,7 @@ export function createDevTests(config?: DevTestConfig) {
         path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
       );
     const restoreFiles: Array<{ path: string; content: string }> = [];
+    const restoreDirectories: string[] = [];
 
     const fetchWithTimeout = (pathname: string) => {
       if (!deploymentUrl) {
@@ -176,7 +181,14 @@ export function createDevTests(config?: DevTestConfig) {
           await prewarm();
         }
       }
+      await Promise.all(
+        restoreDirectories.map((dir) =>
+          fs.rm(dir, { recursive: true, force: true })
+        )
+      );
+      await prewarm();
       restoreFiles.length = 0;
+      restoreDirectories.length = 0;
     }, CLEANUP_HOOK_TIMEOUT_MS);
 
     test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
@@ -517,6 +529,98 @@ ${apiFileContent}`
             ).toBe(true);
           },
         });
+      }
+    );
+
+    test.runIf(process.env.APP_NAME === 'nextjs-turbopack')(
+      'should not log source map warnings for workflow node_modules imports',
+      { timeout: 70_000 },
+      async () => {
+        const packageDir = path.join(
+          appPath,
+          'node_modules',
+          SOURCE_MAP_FIXTURE_PACKAGE
+        );
+        const workflowFile = path.join(
+          appPath,
+          workflowsDir,
+          'source-map-warning-fixture.ts'
+        );
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+
+        await fs.mkdir(packageDir, { recursive: true });
+        restoreDirectories.push(packageDir);
+        await fs.writeFile(
+          path.join(packageDir, 'package.json'),
+          JSON.stringify(
+            {
+              name: SOURCE_MAP_FIXTURE_PACKAGE,
+              version: '0.0.0',
+              type: 'module',
+              main: './index.js',
+              types: './index.d.ts',
+            },
+            null,
+            2
+          )
+        );
+        await fs.writeFile(
+          path.join(packageDir, 'index.js'),
+          `export const sourceMapWarningFixtureValue = Symbol.for('workflow-serialize').description ?? 'workflow-serialize';
+${SOURCE_MAP_COMMENT}
+`
+        );
+        await fs.writeFile(
+          path.join(packageDir, 'index.d.ts'),
+          `export declare const sourceMapWarningFixtureValue: string;
+`
+        );
+        await fs.writeFile(
+          workflowFile,
+          `import { sourceMapWarningFixtureValue } from '${SOURCE_MAP_FIXTURE_PACKAGE}';
+
+async function readSourceMapWarningFixture() {
+  'use step';
+  return sourceMapWarningFixtureValue;
+}
+
+export async function sourceMapWarningFixtureWorkflow() {
+  'use workflow';
+  return readSourceMapWarningFixture();
+}
+`
+        );
+        restoreFiles.push({ path: workflowFile, content: '' });
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/source-map-warning-fixture';
+${apiFileContent}`
+        );
+
+        await pollUntil({
+          description:
+            'generated workflow to include sourceMapWarningFixtureWorkflow',
+          timeoutMs: 50_000,
+          check: async () => {
+            await fetchWithTimeout('/api/chat');
+            const workflowContent = await fs.readFile(
+              generatedWorkflow,
+              'utf8'
+            );
+            expect(workflowContent).toContain(
+              'sourceMapWarningFixtureWorkflow'
+            );
+          },
+        });
+
+        const devServerLogPath = process.env.DEV_SERVER_LOG_PATH;
+        if (devServerLogPath) {
+          const log = await fs.readFile(devServerLogPath, 'utf8');
+          expect(log).not.toContain(SOURCE_MAP_WARNING);
+        }
       }
     );
   });

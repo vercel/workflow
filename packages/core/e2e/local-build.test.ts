@@ -106,6 +106,81 @@ const CJS_STEP_BUNDLE_PROJECTS: Record<string, string> = {
     '.vercel/output/functions/.well-known/workflow/v1/step.func/index.js',
 };
 
+const SOURCE_MAP_WARNING = 'failed to read input source map';
+const SOURCE_MAP_FIXTURE_PACKAGE = 'workflow-sourcemap-warning-fixture';
+const SOURCE_MAP_COMMENT = '//# sourceMapping' + 'URL=index.js.map';
+
+async function writeFileWithParents(
+  filePath: string,
+  content: string
+): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content);
+}
+
+async function setupNextSourceMapWarningFixture(
+  appPath: string
+): Promise<() => Promise<void>> {
+  const packageDir = path.join(
+    appPath,
+    'node_modules',
+    SOURCE_MAP_FIXTURE_PACKAGE
+  );
+  const workflowPath = path.join(
+    appPath,
+    'workflows',
+    'source-map-warning-fixture.ts'
+  );
+
+  await writeFileWithParents(
+    path.join(packageDir, 'package.json'),
+    JSON.stringify(
+      {
+        name: SOURCE_MAP_FIXTURE_PACKAGE,
+        version: '0.0.0',
+        type: 'module',
+        main: './index.js',
+        types: './index.d.ts',
+      },
+      null,
+      2
+    )
+  );
+  await writeFileWithParents(
+    path.join(packageDir, 'index.js'),
+    `export const sourceMapWarningFixtureValue = Symbol.for('workflow-serialize').description ?? 'workflow-serialize';
+${SOURCE_MAP_COMMENT}
+`
+  );
+  await writeFileWithParents(
+    path.join(packageDir, 'index.d.ts'),
+    `export declare const sourceMapWarningFixtureValue: string;
+`
+  );
+  await writeFileWithParents(
+    workflowPath,
+    `import { sourceMapWarningFixtureValue } from '${SOURCE_MAP_FIXTURE_PACKAGE}';
+
+async function readSourceMapWarningFixture() {
+  'use step';
+  return sourceMapWarningFixtureValue;
+}
+
+export async function sourceMapWarningFixtureWorkflow() {
+  'use workflow';
+  return readSourceMapWarningFixture();
+}
+`
+  );
+
+  return async () => {
+    await Promise.all([
+      fs.rm(packageDir, { recursive: true, force: true }),
+      fs.rm(workflowPath, { force: true }),
+    ]);
+  };
+}
+
 describe.each([
   'example',
   'nextjs-webpack',
@@ -142,13 +217,31 @@ describe.each([
       expect(importResult.output).toContain('workflow/sveltekit import ok');
     }
 
-    const result = await runBuildWithRetry(appPath);
+    const cleanup =
+      project === 'nextjs-turbopack'
+        ? await setupNextSourceMapWarningFixture(appPath)
+        : async () => {};
+    const preserveFixtureForBuiltOutput =
+      project === 'nextjs-turbopack' && process.env.CI === 'true';
+
+    let result: CommandResult;
+    try {
+      result = await runBuildWithRetry(appPath);
+    } finally {
+      // CI starts the just-built app in the same prepared workbench path after
+      // this test. Turbopack production bundles can retain references to the
+      // fixture package/source, so keep them available until the job ends.
+      if (!preserveFixtureForBuiltOutput) {
+        await cleanup();
+      }
+    }
 
     expect(result.output).not.toContain('Error:');
+    expect(result.output).not.toContain(SOURCE_MAP_WARNING);
 
     if (usesVercelWorld()) {
       const diagnosticsManifestPath = path.join(
-        getWorkbenchAppPath(project),
+        appPath,
         '.vercel/output/diagnostics/workflows-manifest.json'
       );
       await fs.access(diagnosticsManifestPath);
@@ -158,7 +251,7 @@ describe.each([
     const cjsBundlePath = CJS_STEP_BUNDLE_PROJECTS[project];
     if (cjsBundlePath) {
       const bundleContent = await readFileIfExists(
-        path.join(getWorkbenchAppPath(project), cjsBundlePath)
+        path.join(appPath, cjsBundlePath)
       );
       expect(bundleContent).not.toBeNull();
       expect(bundleContent).toContain('var __import_meta_url');
