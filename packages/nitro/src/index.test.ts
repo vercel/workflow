@@ -198,6 +198,9 @@ async function exampleStep() {
 
     expect(serverConfig.handler).toBe('index.mjs');
     expect(stepFuncStats.isSymbolicLink()).toBe(false);
+    await expect(
+      lstat(join(workflowRoutesDir, 'webhook'))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
     expect(stepConfig.experimentalTriggers).toEqual([
       expect.objectContaining({
         topic: '__wkf_step_*',

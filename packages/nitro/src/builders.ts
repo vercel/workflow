@@ -49,6 +49,10 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     );
     await rm(workflowFunctionsDir, { recursive: true, force: true });
     await super.build();
+    await rm(join(workflowFunctionsDir, 'v1/webhook'), {
+      recursive: true,
+      force: true,
+    });
     originalConfig.routes.unshift(
       { src: FLOW_ROUTE, dest: serverDest },
       { src: STEP_ROUTE, dest: serverDest },
