@@ -56,6 +56,27 @@ describe('throwForErrorResponse', () => {
     }
   });
 
+  it('maps a firewall challenge (429 + x-vercel-mitigated: challenge) to a retryable TRANSPORT WorkflowWorldError, not ThrottleError', () => {
+    // The hot event-write path (step_started included) must route a challenge
+    // to the TRANSPORT path so the runtime rethrows it to the queue (backoff +
+    // cap) rather than deferring it into an uncapped flat re-enqueue loop.
+    try {
+      call(429, '{"message":"rate limited"}', {
+        'x-vercel-mitigated': 'challenge',
+        'retry-after': '5',
+      });
+      expect.unreachable();
+    } catch (err) {
+      expect(ThrottleError.is(err)).toBe(false);
+      expect(WorkflowWorldError.is(err)).toBe(true);
+      expect((err as WorkflowWorldError).code).toBe('TRANSPORT');
+      expect((err as WorkflowWorldError).status).toBe(429);
+      expect((err as WorkflowWorldError).message).toContain(
+        'x-vercel-mitigated=challenge'
+      );
+    }
+  });
+
   it('maps 404 to WorkflowWorldError with status (hook → HookNotFoundError translation keys off this)', () => {
     try {
       call(404, '{"message":"hook not found","code":"not_found"}');

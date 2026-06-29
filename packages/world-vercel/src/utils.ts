@@ -58,10 +58,15 @@ function httpLog(
 }
 
 function getResponseDiagnosticHeaders(response: Response): string[] {
-  return ['x-vercel-id', 'x-vercel-error'].flatMap((header) => {
-    const value = response.headers.get(header);
-    return value ? [`${header}=${value}`] : [];
-  });
+  // x-vercel-mitigated (challenge | deny) is set by the Vercel firewall when it
+  // intercepts a request in front of the backend — surfacing it makes a
+  // firewall block diagnosable from the error message and DEBUG logs.
+  return ['x-vercel-id', 'x-vercel-error', 'x-vercel-mitigated'].flatMap(
+    (header) => {
+      const value = response.headers.get(header);
+      return value ? [`${header}=${value}`] : [];
+    }
+  );
 }
 
 function formatResponseDiagnostics(response: Response): string {
@@ -110,10 +115,65 @@ export const MAX_BODY_PARSE_RETRIES = 2;
 const BODY_PARSE_RETRY_BASE_MS = 100;
 
 /**
- * Resolves the effective workflow-server URL override at call time. The hard-coded
- * `WORKFLOW_SERVER_URL_OVERRIDE` constant takes precedence so it is always honored
- * when set; otherwise we fall back to the `VERCEL_WORKFLOW_SERVER_URL` env var
- * (used by CI to point preview runs at a protected workflow-server preview).
+ * Transient transport failure codes. When a request to workflow-server cannot
+ * complete, `fetch()` throws rather than returning a response: the shared
+ * `RetryAgent` exhausted its retries (`UND_ERR_REQ_RETRY` — e.g. the firewall
+ * in front of workflow-server shedding load with sustained 429/503, which the
+ * RetryAgent retries internally and never surfaces to us), the socket dropped,
+ * or connect/DNS failed. These are retryable infrastructure failures, not
+ * contract or user errors, so we map them to a typed `WorkflowWorldError`
+ * (`code: 'TRANSPORT'`) that the runtime recognizes as retryable and bubbles
+ * to the queue for a fast redrive — instead of crashing the invocation or
+ * failing the run.
+ */
+const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
+  'UND_ERR_REQ_RETRY',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CLOSED',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+]);
+
+/**
+ * Walks the `cause` chain of a thrown value looking for a transient transport
+ * error code. `fetch()` wraps the underlying undici error in a
+ * `TypeError: fetch failed` whose `cause` carries the real `.code`, so the
+ * code we care about is usually one level down (sometimes two). Bounded depth
+ * guards against pathological or cyclic `cause` chains.
+ */
+function getTransientTransportCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; current != null && depth < 5; depth++) {
+    if (typeof current === 'object' && 'code' in current) {
+      const code = (current as { code?: unknown }).code;
+      if (
+        typeof code === 'string' &&
+        TRANSIENT_TRANSPORT_ERROR_CODES.has(code)
+      ) {
+        return code;
+      }
+    }
+    current = (current as { cause?: unknown })?.cause;
+  }
+  return undefined;
+}
+
+/**
+ * Effective workflow-server URL override. The inline constant wins when
+ * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
+ *
+ * When set, requests bypass the default production host
+ * (`https://vercel-workflow.com`). When using the proxy
+ * (`api.vercel.com/v1/workflow`), this value is forwarded via the
+ * `x-vercel-workflow-api-url` header so the proxy routes the request to
+ * the override URL.
  */
 const getWorkflowServerUrlOverride = (): string =>
   WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
@@ -452,11 +512,25 @@ export async function makeRequest<T>({
           ) {
             const timeoutError = new WorkflowWorldError(
               `${method} ${endpoint} timed out after ${elapsed}ms`,
-              { url, cause: error }
+              { url, code: 'TIMEOUT', cause: error }
             );
             span?.setAttributes({ ...ErrorType('TIMEOUT') });
             span?.recordException?.(timeoutError);
             throw timeoutError;
+          }
+          // Transient transport failure (RetryAgent retries exhausted, socket
+          // reset, connect/DNS failure). Surface as a retryable
+          // WorkflowWorldError so the runtime redrives via the queue instead
+          // of failing the run. See TRANSIENT_TRANSPORT_ERROR_CODES.
+          const transportCode = getTransientTransportCode(error);
+          if (transportCode) {
+            const transportError = new WorkflowWorldError(
+              `${method} ${endpoint} transport failure after ${elapsed}ms (${transportCode})`,
+              { url, code: 'TRANSPORT', cause: error }
+            );
+            span?.setAttributes({ ...ErrorType('TRANSPORT') });
+            span?.recordException?.(transportError);
+            throw transportError;
           }
           throw error;
         }
@@ -486,8 +560,8 @@ export async function makeRequest<T>({
 
           // Parse Retry-After header (value is in seconds).
           // Used by both 425 (TooEarlyError) and 429 (ThrottleError).
-          // Note: RetryAgent handles most 429 retries automatically, but this
-          // catches the case where retries are exhausted.
+          // The RetryAgent no longer retries 429 in-process (see
+          // http-client.ts), so every 429 reaches here.
           let retryAfter: number | undefined;
           const retryAfterHeader = response.headers.get('Retry-After');
           if (retryAfterHeader) {
@@ -521,6 +595,24 @@ export async function makeRequest<T>({
             throwWithTrace(new TooEarlyError(defaultMessage, { retryAfter }));
           }
           if (response.status === 429) {
+            // A firewall-challenge 429 (x-vercel-mitigated: challenge) can't be
+            // solved by a server-to-server client, so route it to the retryable
+            // transport path (TRANSPORT) instead of ThrottleError so the runtime
+            // backs off + caps rather than self-enqueuing a fresh message. A
+            // genuine application 429 stays a ThrottleError.
+            if (response.headers.get('x-vercel-mitigated') === 'challenge') {
+              throwWithTrace(
+                new WorkflowWorldError(
+                  `${defaultMessage} (x-vercel-mitigated=challenge)`,
+                  {
+                    url,
+                    status: response.status,
+                    code: 'TRANSPORT',
+                    retryAfter,
+                  }
+                )
+              );
+            }
             throwWithTrace(new ThrottleError(defaultMessage, { retryAfter }));
           }
 

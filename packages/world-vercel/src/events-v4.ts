@@ -188,7 +188,22 @@ export function throwForErrorResponse(
   if (statusCode === 409) throw new EntityConflictError(message);
   if (statusCode === 410) throw new RunExpiredError(message);
   if (statusCode === 425) throw new TooEarlyError(message, { retryAfter });
-  if (statusCode === 429) throw new ThrottleError(message, { retryAfter });
+  if (statusCode === 429) {
+    // A firewall-challenge 429 is routed to the retryable transport path (not
+    // ThrottleError) so step_started writes back off + cap rather than looping.
+    if (readHeader(responseHeaders, 'x-vercel-mitigated') === 'challenge') {
+      throw new WorkflowWorldError(
+        `${message} (x-vercel-mitigated=challenge)`,
+        {
+          status: statusCode,
+          code: 'TRANSPORT',
+          url,
+          retryAfter,
+        }
+      );
+    }
+    throw new ThrottleError(message, { retryAfter });
+  }
   throw new WorkflowWorldError(message, {
     status: statusCode,
     code,
