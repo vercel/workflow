@@ -39,4 +39,23 @@ describe('deriveWorkflowTimingBreakdown', () => {
       })
     );
   });
+
+  it('derives workflow overhead from queued duration, cold start, and module init', () => {
+    const breakdown = deriveWorkflowTimingBreakdown({
+      functionStartType: 'cold',
+      queuedDurationMs: 2135,
+      firstWorkflowRequestStartOffsetMs: 1903,
+      coldStartDurationMs: 459,
+      firstWorkflowRequestDurationMs: 999,
+    });
+
+    expect(breakdown).toEqual(
+      expect.objectContaining({
+        coldStartDurationMs: 459,
+        moduleInitDurationMs: 1444,
+        workflowOverheadDurationMs: 232,
+        queuedDurationMs: 2135,
+      })
+    );
+  });
 });

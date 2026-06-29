@@ -15,7 +15,6 @@ import {
   type FetchSpanDetail,
   useSelectedSpanDetail,
 } from './use-selected-span-detail';
-import { WorkflowTimingBreakdown } from './workflow-timing-breakdown';
 
 // Type guard for runtime validation of span attribute data
 function isHook(data: unknown): data is Hook {
@@ -373,11 +372,7 @@ export function EntityDetailPanel({
             onDecrypt={onDecrypt}
             isDecrypting={isDecrypting}
             resource={resource}
-          />
-
-          <WorkflowTimingBreakdown
-            resource={resource}
-            timing={selectedSpan.timing}
+            workflowTiming={selectedSpan.timing}
           />
 
           {rawEvents && (

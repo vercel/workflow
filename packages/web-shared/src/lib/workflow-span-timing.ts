@@ -25,9 +25,9 @@ export interface WorkflowQueuedTiming {
    * by VM cold start, usually module imports and user initialization.
    */
   moduleInitDurationMs?: number;
-  /** Duration of the first Workflow API request. */
+  /** Precomputed/fallback Workflow overhead duration. */
   workflowOverheadDurationMs?: number;
-  /** Alias for workflowOverheadDurationMs used by logs request metrics. */
+  /** Duration of the first Workflow API request, used as a fallback. */
   firstWorkflowRequestDurationMs?: number;
   /** Total queued/pre-execution duration, when known directly. */
   queuedDurationMs?: number;
@@ -103,6 +103,73 @@ function isColdStart(
   );
 }
 
+function deriveFirstWorkflowRequestStartOffset(
+  timing: WorkflowQueuedTiming,
+  queuedDurationMs: number | undefined,
+  rawWorkflowRequestDurationMs: number | undefined
+) {
+  const explicitOffset = finiteDuration(
+    timing.firstWorkflowRequestStartOffsetMs
+  );
+  if (explicitOffset !== undefined) {
+    return explicitOffset;
+  }
+
+  const timestampOffset = durationBetween(
+    timing.invocationStartedAt,
+    timing.firstWorkflowRequestStartedAt
+  );
+  if (timestampOffset !== undefined) {
+    return timestampOffset;
+  }
+
+  if (
+    queuedDurationMs === undefined ||
+    rawWorkflowRequestDurationMs === undefined
+  ) {
+    return undefined;
+  }
+
+  return Math.max(0, queuedDurationMs - rawWorkflowRequestDurationMs);
+}
+
+function deriveModuleInitDuration(
+  timing: WorkflowQueuedTiming,
+  firstWorkflowRequestStartOffsetMs: number | undefined,
+  coldStartDurationMs: number | undefined
+) {
+  const explicitModuleInitDurationMs = finiteDuration(
+    timing.moduleInitDurationMs
+  );
+  if (explicitModuleInitDurationMs !== undefined) {
+    return explicitModuleInitDurationMs;
+  }
+  if (firstWorkflowRequestStartOffsetMs === undefined) {
+    return undefined;
+  }
+
+  return Math.max(
+    0,
+    firstWorkflowRequestStartOffsetMs - (coldStartDurationMs ?? 0)
+  );
+}
+
+function deriveWorkflowOverheadDuration(
+  queuedDurationMs: number | undefined,
+  coldStartDurationMs: number | undefined,
+  moduleInitDurationMs: number | undefined,
+  fallbackDurationMs: number | undefined
+) {
+  if (queuedDurationMs === undefined || moduleInitDurationMs === undefined) {
+    return fallbackDurationMs;
+  }
+
+  return Math.max(
+    0,
+    queuedDurationMs - (coldStartDurationMs ?? 0) - moduleInitDurationMs
+  );
+}
+
 export function deriveWorkflowTimingBreakdown(
   timing: WorkflowQueuedTiming | undefined
 ): DerivedWorkflowTimingBreakdown | null {
@@ -110,20 +177,10 @@ export function deriveWorkflowTimingBreakdown(
     return null;
   }
 
-  const workflowOverheadDurationMs =
+  const rawWorkflowRequestDurationMs =
     finiteDuration(timing.workflowOverheadDurationMs) ??
     finiteDuration(timing.firstWorkflowRequestDurationMs);
   const queuedDurationMs = finiteDuration(timing.queuedDurationMs);
-  const firstWorkflowRequestStartOffsetMs =
-    finiteDuration(timing.firstWorkflowRequestStartOffsetMs) ??
-    durationBetween(
-      timing.invocationStartedAt,
-      timing.firstWorkflowRequestStartedAt
-    ) ??
-    (queuedDurationMs !== undefined && workflowOverheadDurationMs !== undefined
-      ? Math.max(0, queuedDurationMs - workflowOverheadDurationMs)
-      : undefined);
-
   const coldStartDurationCandidate = finiteDuration(timing.coldStartDurationMs);
   const coldStartDurationMs = isColdStart(
     timing.functionStartType,
@@ -131,15 +188,23 @@ export function deriveWorkflowTimingBreakdown(
   )
     ? coldStartDurationCandidate
     : undefined;
-
-  const moduleInitDurationMs =
-    finiteDuration(timing.moduleInitDurationMs) ??
-    (firstWorkflowRequestStartOffsetMs !== undefined
-      ? Math.max(
-          0,
-          firstWorkflowRequestStartOffsetMs - (coldStartDurationMs ?? 0)
-        )
-      : undefined);
+  const firstWorkflowRequestStartOffsetMs =
+    deriveFirstWorkflowRequestStartOffset(
+      timing,
+      queuedDurationMs,
+      rawWorkflowRequestDurationMs
+    );
+  const moduleInitDurationMs = deriveModuleInitDuration(
+    timing,
+    firstWorkflowRequestStartOffsetMs,
+    coldStartDurationMs
+  );
+  const workflowOverheadDurationMs = deriveWorkflowOverheadDuration(
+    queuedDurationMs,
+    coldStartDurationMs,
+    moduleInitDurationMs,
+    rawWorkflowRequestDurationMs
+  );
 
   const derivedQueuedDurationMs =
     queuedDurationMs ??

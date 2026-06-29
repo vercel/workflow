@@ -10,11 +10,6 @@ import {
   type WorkflowSpanTiming,
   type WorkflowSpanTimingAttempt,
 } from '../../lib/workflow-span-timing';
-import {
-  CollapsibleContent,
-  CollapsibleRoot,
-  CollapsibleTrigger,
-} from '../ui/collapsible';
 import { Skeleton } from '../ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
@@ -30,7 +25,8 @@ const TIMING_LABELS = {
   },
   workflowOverhead: {
     label: 'Workflow Overhead',
-    description: 'Duration of the first Workflow API request.',
+    description:
+      'Remaining time between creation and start after cold start and module initialization.',
   },
 };
 
@@ -246,26 +242,24 @@ export function WorkflowTimingBreakdown({
     : false;
 
   return (
-    <CollapsibleRoot>
-      <CollapsibleTrigger>Queued</CollapsibleTrigger>
-      <CollapsibleContent className="mb-4">
-        <div className="space-y-3">
-          {isLoading ? <TimingRowsSkeleton /> : null}
-          {!isLoading &&
-            breakdowns.map(({ attempt, breakdown, index }) => {
-              return (
-                <div key={`${attemptLabel(attempt, index)}-${index}`}>
-                  {showAttemptLabels ? (
-                    <div className="mb-2 text-label-13 text-gray-900">
-                      {attemptLabel(attempt, index)}
-                    </div>
-                  ) : null}
-                  <TimingRows breakdown={breakdown} />
+    <>
+      {isLoading ? <TimingRowsSkeleton /> : null}
+      {!isLoading &&
+        breakdowns.map(({ attempt, breakdown, index }) => {
+          return (
+            <div
+              className="flex flex-col"
+              key={`${attemptLabel(attempt, index)}-${index}`}
+            >
+              {showAttemptLabels ? (
+                <div className="-mx-1.5 px-1.5 pb-0.5 pt-2 text-label-12 text-gray-700">
+                  {attemptLabel(attempt, index)}
                 </div>
-              );
-            })}
-        </div>
-      </CollapsibleContent>
-    </CollapsibleRoot>
+              ) : null}
+              <TimingRows breakdown={breakdown} />
+            </div>
+          );
+        })}
+    </>
   );
 }
