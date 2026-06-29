@@ -213,6 +213,34 @@ export async function parallelSleepWorkflow() {
   return { startTime, endTime };
 }
 
+async function delayMsStep(ms: number, label: string) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return label;
+}
+
+export async function sleepWinsRaceWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  const winner = await Promise.race([
+    delayMsStep(10_000, 'step'),
+    sleep('1s').then(() => 'sleep'),
+  ]);
+  const endTime = Date.now();
+  return { winner, durationMs: endTime - startTime };
+}
+
+export async function stepWinsRaceWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  const winner = await Promise.race([
+    delayMsStep(1_000, 'step'),
+    sleep('10s').then(() => 'sleep'),
+  ]);
+  const endTime = Date.now();
+  return { winner, durationMs: endTime - startTime };
+}
+
 //////////////////////////////////////////////////////////
 
 async function nullByteStep() {
@@ -1759,6 +1787,43 @@ export async function hookWithSleepWorkflow(token: string) {
   }
 
   return results;
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * https://github.com/vercel/workflow/pull/1528 Regression test for false-positive
+ * unconsumed event in for-await hook loops with steps: a hook iteration with
+ * an unawaited sleep where the step is only invoked on the final payload.
+ * The replay event log ends up with two `hook_received` events before a
+ * single `step_created`, which is the exact shape that triggered the
+ * false-positive "Corrupted event log" error in production.
+ */
+export async function hookWithSleepFinalStepWorkflow(token: string) {
+  'use workflow';
+
+  type Payload = { type: string; id?: number; done?: boolean };
+
+  using hook = createHook<Payload>({ token });
+
+  // Fire-and-forget timeout — the "concurrent pending entity" that interacts
+  // with the hook iteration during replay.
+  void sleep('1d');
+
+  const seen: number[] = [];
+  let finalResult: any;
+
+  for await (const payload of hook) {
+    if (typeof payload.id === 'number') {
+      seen.push(payload.id);
+    }
+    if (payload.done) {
+      finalResult = await processPayload(payload);
+      break;
+    }
+  }
+
+  return { seen, finalResult };
 }
 
 //////////////////////////////////////////////////////////

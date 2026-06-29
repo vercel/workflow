@@ -53,6 +53,7 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   ],
   hookSignalOwnerWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   hookSupersedeOwnerWorkflow: [RANDOM_ARG_PLACEHOLDER],
+  hookWithSleepFinalStepWorkflow: [RANDOM_ARG_PLACEHOLDER],
   closureVariableWorkflow: [7],
   // 100_durable_agent_e2e.ts
   agentBasicE2e: ['hello world'],
