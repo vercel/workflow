@@ -67,7 +67,7 @@ function DetailKeyValueRowBase({
   const stringValue = typeof value === 'string' ? value : undefined;
 
   return (
-    <div className="flex items-center justify-between gap-3 py-0.5">
+    <div className="px-1.5 hover:bg-gray-100 flex justify-between gap-3 -mx-1.5 py-0.5 rounded items-center">
       <span className="flex min-w-0 items-center gap-1.5 truncate text-label-13 text-gray-900">
         {label}
       </span>

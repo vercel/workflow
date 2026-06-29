@@ -857,7 +857,7 @@ export const AttributePanel = ({
             {visibleBasicAttributes.length > 0 && (
               <CollapsibleRoot defaultOpen>
                 <CollapsibleTrigger>Metadata</CollapsibleTrigger>
-                <CollapsibleContent className="mt-0 mb-4">
+                <CollapsibleContent className="mt-0 mb-2">
                   <div className="flex flex-col">
                     {orderedBasicAttributes.map((attribute) => {
                       const displayValue = attributeToDisplayFn[
