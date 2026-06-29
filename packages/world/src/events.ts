@@ -170,7 +170,10 @@ const HookCreatedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     token: z.string(),
     metadata: SerializedDataSchema.optional(),
-    // Preserved on read so crash-recovery paths can rebuild the hook
+    // Marks a hook created for a webhook (not resumable via the public
+    // webhook endpoint). The runtime emits this on hook_created and the
+    // backend consumes it; declaring it here keeps it on the wire.
+    // Also preserved on read so crash-recovery paths can rebuild the hook
     // entity from the persisted `hook_created` event's payload (see
     // `repairHookEntityFromPersistedEvent` in `@workflow/world-local`).
     isWebhook: z.boolean().optional(),
@@ -359,6 +362,7 @@ export const EventSchema = AllEventsSchema.and(
     runId: z.string(),
     eventId: z.string(),
     createdAt: z.coerce.date(),
+    occurredAt: z.coerce.date().optional(),
     specVersion: z.number().optional(),
   })
 );
@@ -394,6 +398,12 @@ export interface CreateEventParams {
   resolveData?: ResolveData;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
+  /**
+   * Timestamp for when the event occurred on the client side. Worlds that
+   * support this can persist it separately from `createdAt`, which represents
+   * when the backing service accepted or stored the event.
+   */
+  occurredAt?: Date;
 }
 
 /**

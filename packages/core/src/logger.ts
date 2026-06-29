@@ -1,11 +1,51 @@
 import debug from 'debug';
 import { getActiveSpan } from './telemetry.js';
 
-function createLogger(namespace: string) {
+type LoggerOptions = {
+  debugNamespace?: string;
+};
+
+/**
+ * Lightweight `DEBUG=` pattern matcher used for loggers that pin an explicit
+ * debug namespace (e.g. the build logger). Evaluated lazily against
+ * `process.env.DEBUG` on every call so tests and tooling can toggle the env
+ * var at runtime.
+ */
+function matchesDebugNamespace(
+  namespace: string,
+  patternList: string | undefined
+): boolean {
+  if (!patternList) {
+    return false;
+  }
+
+  let enabled = false;
+  for (const rawPattern of patternList.split(',')) {
+    const pattern = rawPattern.trim();
+    if (!pattern) {
+      continue;
+    }
+
+    const isNegated = pattern.startsWith('-');
+    const candidate = isNegated ? pattern.slice(1) : pattern;
+    const regex = new RegExp(
+      `^${candidate.replace(/[|\\{}()[\]^$+?.]/g, '\\$&').replace(/\*/g, '.*')}$`
+    );
+
+    if (regex.test(namespace)) {
+      enabled = !isNegated;
+    }
+  }
+
+  return enabled;
+}
+
+function createLogger(namespace: string, options: LoggerOptions = {}) {
   const baseDebug = debug(`workflow:${namespace}`);
 
   const logger = (level: string) => {
     const levelDebug = baseDebug.extend(level);
+    const debugNamespace = options.debugNamespace;
 
     return (message: string, metadata?: Record<string, any>) => {
       // Always output error/warn to console so users see critical issues
@@ -14,6 +54,28 @@ function createLogger(namespace: string) {
         console.error(`[Workflow] ${message}`, metadata ?? '');
       } else if (level === 'warn') {
         console.warn(`[Workflow] ${message}`, metadata ?? '');
+      }
+
+      // Loggers pinned to an explicit debug namespace (e.g. the build logger)
+      // route through console.debug, gated by a lightweight DEBUG matcher that
+      // is evaluated lazily so the namespace can be toggled at runtime.
+      if (debugNamespace) {
+        const debugEnabled = matchesDebugNamespace(
+          debugNamespace,
+          process.env.DEBUG
+        );
+
+        if (debugEnabled) {
+          console.debug(`[${debugNamespace}] ${message}`, metadata ?? '');
+          getActiveSpan()
+            .then((span) => {
+              span?.addEvent(`${level}.${namespace}`, { message, ...metadata });
+            })
+            .catch(() => {
+              // Silently ignore telemetry errors
+            });
+        }
+        return;
       }
 
       // Also log to debug library for verbose output when DEBUG is enabled
@@ -44,3 +106,6 @@ export const runtimeLogger = createLogger('runtime');
 export const webhookLogger = createLogger('webhook');
 export const eventsLogger = createLogger('events');
 export const adapterLogger = createLogger('adapter');
+export const buildLogger = createLogger('build', {
+  debugNamespace: 'workflow:build',
+});

@@ -46,13 +46,13 @@ catalogs:
       specifier: ~3.0.1
       version: 3.0.1
     undici:
-      specifier: 7.26.0
-      version: 7.26.0
+      specifier: 7.28.0
+      version: 7.28.0
     vitest:
       specifier: ^4.0.18
       version: 4.0.18
     zod:
-      specifier: 4.3.6
+      specifier: ~4.3.6
       version: 4.3.6
 
 overrides:
@@ -1100,6 +1100,9 @@ importers:
       ulid:
         specifier: 'catalog:'
         version: 3.0.1
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1107,9 +1110,6 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
-      zod:
-        specifier: 'catalog:'
-        version: 4.3.6
 
   packages/world-local:
     dependencies:
@@ -1133,7 +1133,7 @@ importers:
         version: 3.0.1
       undici:
         specifier: 'catalog:'
-        version: 7.26.0
+        version: 7.28.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -1280,7 +1280,7 @@ importers:
         version: 1.6.0
       undici:
         specifier: 'catalog:'
-        version: 7.26.0
+        version: 7.28.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -14967,8 +14967,8 @@ packages:
     resolution: {integrity: sha512-raqeBD6NQK4SkWhQzeYKd1KmIG6dllBOTt55Rmkt4HtI9mwdWtJljnrXjAFUBLTSN67HWrOIZ3EPF4kjUw80Bg==}
     engines: {node: '>=14.0'}
 
-  undici@7.26.0:
-    resolution: {integrity: sha512-3O9Tf67pGhgOv9jM35AbhkXAKi13f3oy3aE4CSgr+TckGeY+/iu97ZXN+J7DpHPzLbVApFd1IFhcnBjREYXYcg==}
+  undici@7.28.0:
+    resolution: {integrity: sha512-cRZYrTDwWznlnRiPjggAGxZXanty6M8RV1ff8Wm4LWXBp7/IG8v5DnOm74DtUBp9OONpK75YlPnIjQqX0dBDtA==}
     engines: {node: '>=20.18.1'}
 
   unenv@2.0.0-rc.24:
@@ -24352,7 +24352,7 @@ snapshots:
       parse5: 7.3.0
       parse5-htmlparser2-tree-adapter: 7.1.0
       parse5-parser-stream: 7.1.2
-      undici: 7.26.0
+      undici: 7.28.0
       whatwg-mimetype: 4.0.0
 
   chevrotain-allstar@0.3.1(chevrotain@11.0.3):
@@ -27754,7 +27754,7 @@ snapshots:
       oxc-minify: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       oxc-transform: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       srvx: 0.9.6
-      undici: 7.26.0
+      undici: 7.28.0
       unenv: 2.0.0-rc.24
       unstorage: 2.0.0-alpha.4(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.4.3(@aws-sdk/credential-provider-web-identity@3.972.49))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(ioredis@5.10.1)(lru-cache@11.5.1)(ofetch@2.0.0-alpha.3)
     optionalDependencies:
@@ -27804,7 +27804,7 @@ snapshots:
       oxc-minify: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       oxc-transform: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       srvx: 0.9.6
-      undici: 7.26.0
+      undici: 7.28.0
       unenv: 2.0.0-rc.24
       unstorage: 2.0.0-alpha.4(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.4.3(@aws-sdk/credential-provider-web-identity@3.972.49))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(ioredis@5.10.1)(lru-cache@11.5.1)(ofetch@2.0.0-alpha.3)
     optionalDependencies:
@@ -27854,7 +27854,7 @@ snapshots:
       oxc-minify: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       oxc-transform: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       srvx: 0.9.6
-      undici: 7.26.0
+      undici: 7.28.0
       unenv: 2.0.0-rc.24
       unstorage: 2.0.0-alpha.4(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.4.3(@aws-sdk/credential-provider-web-identity@3.972.49))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(ioredis@5.10.1)(lru-cache@11.5.1)(ofetch@2.0.0-alpha.3)
     optionalDependencies:
@@ -27904,7 +27904,7 @@ snapshots:
       oxc-minify: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       oxc-transform: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       srvx: 0.9.6
-      undici: 7.26.0
+      undici: 7.28.0
       unenv: 2.0.0-rc.24
       unstorage: 2.0.0-alpha.4(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.4.3(@aws-sdk/credential-provider-web-identity@3.972.49))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(ioredis@5.10.1)(lru-cache@11.5.1)(ofetch@2.0.0-alpha.3)
     optionalDependencies:
@@ -27954,7 +27954,7 @@ snapshots:
       oxc-minify: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       oxc-transform: 0.96.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
       srvx: 0.9.6
-      undici: 7.26.0
+      undici: 7.28.0
       unenv: 2.0.0-rc.24
       unstorage: 2.0.0-alpha.4(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.4.3(@aws-sdk/credential-provider-web-identity@3.972.49))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(ioredis@5.10.1)(lru-cache@11.5.1)(ofetch@2.0.0-alpha.3)
     optionalDependencies:
@@ -31178,7 +31178,7 @@ snapshots:
       ssh-remote-port-forward: 1.0.4
       tar-fs: 3.1.1
       tmp: 0.2.5
-      undici: 7.26.0
+      undici: 7.28.0
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -31436,7 +31436,7 @@ snapshots:
     dependencies:
       '@fastify/busboy': 2.1.1
 
-  undici@7.26.0: {}
+  undici@7.28.0: {}
 
   unenv@2.0.0-rc.24:
     dependencies:

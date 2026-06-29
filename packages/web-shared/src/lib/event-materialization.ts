@@ -23,6 +23,7 @@ export interface MaterializedStep {
   status: StepStatus;
   attempt: number;
   createdAt: Date;
+  occurredAt?: Date;
   startedAt?: Date;
   completedAt?: Date;
   updatedAt: Date;
@@ -35,6 +36,7 @@ export interface MaterializedHook {
   runId: string;
   token?: string;
   createdAt: Date;
+  occurredAt?: Date;
   receivedCount: number;
   lastReceivedAt?: Date;
   disposedAt?: Date;
@@ -47,6 +49,7 @@ export interface MaterializedWait {
   runId: string;
   status: 'waiting' | 'completed';
   createdAt: Date;
+  occurredAt?: Date;
   resumeAt?: Date;
   completedAt?: Date;
   /** All events for this wait, in insertion order */
@@ -58,6 +61,16 @@ export interface MaterializedEntities {
   hooks: MaterializedHook[];
   waits: MaterializedWait[];
 }
+
+const withOccurredAt = <T extends object>(
+  entity: T,
+  occurredAt: Event['occurredAt'] | undefined
+): T & { occurredAt?: Date } => {
+  if (!occurredAt || (entity as { occurredAt?: unknown }).occurredAt != null) {
+    return entity;
+  }
+  return { ...entity, occurredAt };
+};
 
 // ---------------------------------------------------------------------------
 // Helper: group events by correlationId prefix
@@ -133,21 +146,26 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
       }
     }
 
-    steps.push({
-      stepId: correlationId,
-      runId: created.runId,
-      stepName:
-        created.eventType === 'step_created'
-          ? (created.eventData?.stepName ?? correlationId)
-          : correlationId,
-      status,
-      attempt,
-      createdAt: created.createdAt,
-      startedAt,
-      completedAt,
-      updatedAt,
-      events: stepEvents,
-    });
+    steps.push(
+      withOccurredAt(
+        {
+          stepId: correlationId,
+          runId: created.runId,
+          stepName:
+            created.eventType === 'step_created'
+              ? (created.eventData?.stepName ?? correlationId)
+              : correlationId,
+          status,
+          attempt,
+          createdAt: created.createdAt,
+          startedAt,
+          completedAt,
+          updatedAt,
+          events: stepEvents,
+        },
+        created.occurredAt
+      )
+    );
   }
 
   return steps;
@@ -174,19 +192,24 @@ export function materializeHooks(events: Event[]): MaterializedHook[] {
     const disposed = hookEvents.find((e) => e.eventType === 'hook_disposed');
     const lastReceived = receivedEvents.at(-1);
 
-    hooks.push({
-      hookId: correlationId,
-      runId: created.runId,
-      token:
-        created.eventType === 'hook_created'
-          ? created.eventData?.token
-          : undefined,
-      createdAt: created.createdAt,
-      receivedCount: receivedEvents.length,
-      lastReceivedAt: lastReceived?.createdAt,
-      disposedAt: disposed?.createdAt,
-      events: hookEvents,
-    });
+    hooks.push(
+      withOccurredAt(
+        {
+          hookId: correlationId,
+          runId: created.runId,
+          token:
+            created.eventType === 'hook_created'
+              ? created.eventData?.token
+              : undefined,
+          createdAt: created.createdAt,
+          receivedCount: receivedEvents.length,
+          lastReceivedAt: lastReceived?.createdAt,
+          disposedAt: disposed?.createdAt,
+          events: hookEvents,
+        },
+        created.occurredAt
+      )
+    );
   }
 
   return hooks;
@@ -209,18 +232,23 @@ export function materializeWaits(events: Event[]): MaterializedWait[] {
 
     const completed = waitEvents.find((e) => e.eventType === 'wait_completed');
 
-    waits.push({
-      waitId: correlationId,
-      runId: created.runId,
-      status: completed ? 'completed' : 'waiting',
-      createdAt: created.createdAt,
-      resumeAt:
-        created.eventType === 'wait_created'
-          ? created.eventData?.resumeAt
-          : undefined,
-      completedAt: completed?.createdAt,
-      events: waitEvents,
-    });
+    waits.push(
+      withOccurredAt(
+        {
+          waitId: correlationId,
+          runId: created.runId,
+          status: completed ? 'completed' : 'waiting',
+          createdAt: created.createdAt,
+          resumeAt:
+            created.eventType === 'wait_created'
+              ? created.eventData?.resumeAt
+              : undefined,
+          completedAt: completed?.createdAt,
+          events: waitEvents,
+        },
+        created.occurredAt
+      )
+    );
   }
 
   return waits;

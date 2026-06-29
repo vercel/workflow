@@ -1,15 +1,6 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { connect, type Socket } from 'node:net';
 import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
-import { type SocketMessage, serializeMessage } from './socket-server.js';
-import {
-  DEFERRED_STEP_SOURCE_METADATA_PREFIX,
-  isDeferredStepCopyFilePath,
-  parseDeferredStepSourceMetadata,
-  parseInlineSourceMapComment,
-} from './step-copy-utils.js';
 
 type DecoratorOptionsWithConfigPath =
   import('@workflow/builders').DecoratorOptionsWithConfigPath;
@@ -27,49 +18,6 @@ type LoaderStaticDependencies = {
   files: string[];
 };
 let cachedLoaderStaticDependencies: LoaderStaticDependencies | null = null;
-
-// Cache socket connection to avoid reconnecting on every file.
-let socketClientPromise: Promise<Socket | null> | null = null;
-let socketClient: Socket | null = null;
-let socketClientKey: string | null = null;
-
-type SocketCredentials = {
-  port: number;
-  authToken: string;
-};
-
-/**
- * Wrap a TCP connect failure with context about where the connection was
- * attempted, where the credentials came from, and which source file was
- * being processed when it failed. ECONNREFUSED is the common case here, and
- * the message points the user at the most likely root cause (stale
- * socket-info file).
- */
-function annotateConnectionError(
-  originalError: unknown,
-  credentials: SocketCredentials
-): Error {
-  const errorCode =
-    originalError instanceof Error &&
-    'code' in originalError &&
-    typeof (originalError as { code?: unknown }).code === 'string'
-      ? ((originalError as { code: string }).code as string)
-      : undefined;
-  const errorMessage =
-    originalError instanceof Error
-      ? originalError.message
-      : String(originalError);
-
-  const lines = [
-    `Workflow discovery socket connect failed: ${errorCode ?? errorMessage} (127.0.0.1:${credentials.port})`,
-  ];
-
-  const annotated = new Error(lines.join('\n'));
-  if (originalError instanceof Error) {
-    (annotated as { cause?: unknown }).cause = originalError;
-  }
-  return annotated;
-}
 
 function registerFileDependency(
   loaderContext: WorkflowLoaderContext,
@@ -106,8 +54,6 @@ function resolveLoaderStaticDependencies(): LoaderStaticDependencies {
 
   const files = new Set<string>([
     __filename,
-    require.resolve('./socket-server'),
-    require.resolve('./step-copy-utils'),
     swcPluginPath,
     swcPluginBuildHashPath,
     workflowBuildersPath,
@@ -131,214 +77,6 @@ function registerTransformDependencies(
   }
 
   return staticDependencies.swcPluginPath;
-}
-
-function resetSocketClient(cachedSocket?: Socket): void {
-  if (cachedSocket && socketClient && socketClient !== cachedSocket) {
-    return;
-  }
-
-  socketClientPromise = null;
-  socketClient = null;
-  socketClientKey = null;
-}
-
-async function writeSocketMessage(
-  socket: Socket,
-  message: string
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    socket.write(message, (error?: Error | null) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
-function getSocketInfoFilePath(): string | null {
-  const configuredPath = process.env.WORKFLOW_SOCKET_INFO_PATH;
-  if (!configuredPath) {
-    return null;
-  }
-
-  return configuredPath;
-}
-
-function getSocketCredentialsFromEnv(): SocketCredentials | null {
-  const socketPort = process.env.WORKFLOW_SOCKET_PORT;
-  const authToken = process.env.WORKFLOW_SOCKET_AUTH;
-  if (!socketPort || !authToken) {
-    return null;
-  }
-
-  const port = Number.parseInt(socketPort, 10);
-  if (Number.isNaN(port)) {
-    return null;
-  }
-
-  return { port, authToken };
-}
-
-async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null> {
-  const socketInfoFilePath = getSocketInfoFilePath();
-  if (!socketInfoFilePath) {
-    return null;
-  }
-  if (!existsSync(socketInfoFilePath)) {
-    return null;
-  }
-
-  try {
-    const raw = await readFile(socketInfoFilePath, 'utf8');
-    const parsed = JSON.parse(raw) as {
-      port?: unknown;
-      authToken?: unknown;
-    };
-    const authToken =
-      typeof parsed.authToken === 'string' ? parsed.authToken : null;
-    const numericPort =
-      typeof parsed.port === 'number'
-        ? parsed.port
-        : Number.parseInt(String(parsed.port), 10);
-
-    if (!authToken || Number.isNaN(numericPort)) {
-      return null;
-    }
-
-    return {
-      port: numericPort,
-      authToken,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function getSocketCredentials(): Promise<SocketCredentials | null> {
-  return (
-    getSocketCredentialsFromEnv() ?? (await getSocketCredentialsFromFile())
-  );
-}
-
-async function getSocketClient(): Promise<Socket | null> {
-  const socketCredentials = await getSocketCredentials();
-  if (!socketCredentials) {
-    return null;
-  }
-
-  if (socketClient?.destroyed) {
-    resetSocketClient(socketClient);
-  }
-
-  const currentSocketKey = `${socketCredentials.port}:${socketCredentials.authToken}`;
-  if (socketClientKey && socketClientKey !== currentSocketKey) {
-    if (socketClient) {
-      resetSocketClient(socketClient);
-    } else {
-      resetSocketClient();
-    }
-  }
-
-  if (!socketClientPromise) {
-    socketClientPromise = (async () => {
-      try {
-        const socket = connect({
-          port: socketCredentials.port,
-          host: '127.0.0.1',
-        });
-
-        // Wait for connection
-        await new Promise<void>((resolve, reject) => {
-          const onConnect = () => {
-            socket.setNoDelay(true);
-            cleanup();
-            resolve();
-          };
-          const onError = (error: Error) => {
-            cleanup();
-            reject(annotateConnectionError(error, socketCredentials));
-          };
-          const timeout = setTimeout(() => {
-            cleanup();
-            socket.destroy();
-            reject(
-              annotateConnectionError(
-                new Error('Socket connection timeout'),
-                socketCredentials
-              )
-            );
-          }, 1000);
-          const cleanup = () => {
-            clearTimeout(timeout);
-            socket.off('connect', onConnect);
-            socket.off('error', onError);
-          };
-
-          socket.on('connect', onConnect);
-          socket.on('error', onError);
-        });
-
-        socket.on('close', () => {
-          resetSocketClient(socket);
-        });
-        socket.on('error', () => {
-          resetSocketClient(socket);
-        });
-
-        socketClient = socket;
-        socketClientKey = currentSocketKey;
-        return socket;
-      } catch (error) {
-        resetSocketClient();
-        throw error;
-      }
-    })();
-  }
-
-  return socketClientPromise;
-}
-
-async function notifySocketServer(
-  filename: string,
-  hasWorkflow: boolean,
-  hasStep: boolean,
-  hasSerde: boolean
-): Promise<void> {
-  const socketCredentials = await getSocketCredentials();
-  if (!socketCredentials) {
-    return;
-  }
-
-  const socket = await getSocketClient();
-  if (!socket) {
-    throw new Error('Invariant: missing workflow socket connection');
-  }
-
-  const message: SocketMessage = {
-    type: 'file-discovered',
-    filePath: filename,
-    hasWorkflow,
-    hasStep,
-    hasSerde,
-  };
-  const serializedMessage = serializeMessage(
-    message,
-    socketCredentials.authToken
-  );
-
-  try {
-    await writeSocketMessage(socket, serializedMessage);
-  } catch (error) {
-    resetSocketClient(socket);
-    const reconnectedSocket = await getSocketClient();
-    if (!reconnectedSocket) {
-      throw error;
-    }
-    await writeSocketMessage(reconnectedSocket, serializedMessage);
-  }
 }
 
 async function getBuildersModule(): Promise<
@@ -463,15 +201,10 @@ async function getRelativeFilenameForSwc(
   return relativeFilename;
 }
 
-function stripDeferredStepSourceMetadataComment(source: string): string {
-  const metadataPattern = new RegExp(
-    `^\\s*//\\s*${DEFERRED_STEP_SOURCE_METADATA_PREFIX}[A-Za-z0-9+/=]+\\s*\\r?\\n?`
-  );
-  return source.replace(metadataPattern, '');
-}
-
 // This loader applies the "use workflow"/"use step" transform.
-// Deferred step-copy files are transformed in step mode; all other files use client mode.
+// All matching files are transformed in client mode; the SWC plugin decides
+// per-function whether to emit workflow or step bindings based on the
+// source's directives.
 type WorkflowLoaderContext = {
   resourcePath: string;
   async?: () => (
@@ -494,64 +227,27 @@ export default function workflowLoader(
     const normalizedSource = source.toString();
     const workingDir = process.cwd();
     const swcPluginPath = registerTransformDependencies(this);
-    const isDeferredStepCopyFile = isDeferredStepCopyFilePath(filename);
-    const deferredStepSourceMetadata = isDeferredStepCopyFile
-      ? parseDeferredStepSourceMetadata(normalizedSource)
-      : null;
-    const sourceWithoutDeferredMetadata = isDeferredStepCopyFile
-      ? stripDeferredStepSourceMetadataComment(normalizedSource)
-      : normalizedSource;
-    const deferredSourceMapResult = isDeferredStepCopyFile
-      ? parseInlineSourceMapComment(sourceWithoutDeferredMetadata)
-      : {
-          sourceWithoutMapComment: sourceWithoutDeferredMetadata,
-          sourceMap: null,
-        };
-    const sourceForTransform = deferredSourceMapResult.sourceWithoutMapComment;
-    const discoveryFilePath =
-      deferredStepSourceMetadata?.absolutePath || filename;
+    const sourceForTransform = normalizedSource;
 
-    if (deferredStepSourceMetadata?.absolutePath) {
-      // Ensure edits to the original source invalidate deferred step copies.
-      registerFileDependency(this, deferredStepSourceMetadata.absolutePath);
-    }
-
-    // Skip generated workflow route files to avoid re-processing them
-    if ((await checkGeneratedFile(filename)) && !isDeferredStepCopyFile) {
+    const isGeneratedWorkflowFile = await checkGeneratedFile(filename);
+    // Skip generated workflow route files to avoid re-processing them.
+    if (isGeneratedWorkflowFile) {
       return { code: normalizedSource, map: sourceMap };
     }
 
     // Detect workflow patterns in the source code.
     const patterns = await detectPatterns(sourceForTransform);
-    // Always notify discovery tracking, even for `false/false`, so files that
-    // previously had workflow/step usage are removed from the tracked sets.
-    // Deferred step copy files must report using their original source path so
-    // deferred rebuilds can react to source edits outside generated artifacts.
-    if (!isDeferredStepCopyFile || deferredStepSourceMetadata?.absolutePath) {
-      // For @workflow SDK packages, do not report serde-only matches for
-      // discovery, otherwise deferred mode can incorrectly treat SDK internals
-      // as app serde entrypoints.
-      const isSdkFile = await checkSdkFile(discoveryFilePath);
-      await notifySocketServer(
-        discoveryFilePath,
-        patterns.hasUseWorkflow,
-        patterns.hasUseStep,
-        patterns.hasSerde && !isSdkFile
-      );
+
+    // For @workflow SDK packages, only transform files with actual directives,
+    // not files that just match serde patterns (which are internal SDK implementation files)
+    const isSdkFile = await checkSdkFile(filename);
+    if (isSdkFile && !patterns.hasDirective) {
+      return { code: normalizedSource, map: sourceMap };
     }
 
-    if (!isDeferredStepCopyFile) {
-      // For @workflow SDK packages, only transform files with actual directives,
-      // not files that just match serde patterns (which are internal SDK implementation files)
-      const isSdkFile = await checkSdkFile(filename);
-      if (isSdkFile && !patterns.hasDirective) {
-        return { code: normalizedSource, map: sourceMap };
-      }
-
-      // Check if file needs transformation based on patterns and path
-      if (!(await checkShouldTransform(filename, patterns))) {
-        return { code: normalizedSource, map: sourceMap };
-      }
+    // Check if file needs transformation based on patterns and path
+    if (!(await checkShouldTransform(filename, patterns))) {
+      return { code: normalizedSource, map: sourceMap };
     }
 
     const isTypeScript =
@@ -562,9 +258,10 @@ export default function workflowLoader(
 
     // Calculate relative filename for SWC plugin
     // The SWC plugin uses filename to generate workflowId, so it must be relative
-    const relativeFilename =
-      deferredStepSourceMetadata?.relativeFilename ||
-      (await getRelativeFilenameForSwc(filename, workingDir));
+    const relativeFilename = await getRelativeFilenameForSwc(
+      filename,
+      workingDir
+    );
 
     // Get decorator options from tsconfig (cached per working directory)
     const { options: decoratorOptions, configPath } =
@@ -574,11 +271,8 @@ export default function workflowLoader(
     }
 
     // Resolve module specifier for packages (node_modules or workspace packages)
-    const moduleSpecifier = await getModuleSpecifier(
-      deferredStepSourceMetadata?.absolutePath || filename,
-      workingDir
-    );
-    const mode = isDeferredStepCopyFile ? 'step' : 'client';
+    const moduleSpecifier = await getModuleSpecifier(filename, workingDir);
+    const mode = 'client';
 
     // Transform with SWC
     const result = await transform(sourceForTransform, {
@@ -610,9 +304,7 @@ export default function workflowLoader(
         },
       },
       minify: false,
-      inputSourceMap: isDeferredStepCopyFile
-        ? deferredSourceMapResult.sourceMap || sourceMap
-        : sourceMap,
+      inputSourceMap: sourceMap,
       sourceMaps: true,
       inlineSourcesContent: true,
     });
