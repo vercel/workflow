@@ -16,7 +16,11 @@ import {
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
-import { classifyRunError, isWorldContractError } from './classify-error.js';
+import {
+  classifyRunError,
+  isRetryableWorldError,
+  isWorldContractError,
+} from './classify-error.js';
 import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
@@ -728,6 +732,30 @@ export function workflowEntrypoint(
 
                     // Suspension handled, no further work needed
                     return;
+                  }
+
+                  // Transient infrastructure failures talking to the
+                  // world (workflow-server) — an exhausted RetryAgent
+                  // (UND_ERR_REQ_RETRY from a sustained 429/503 storm),
+                  // a dropped socket, a connect/DNS failure, or a client
+                  // timeout — must NOT fail the run. Rethrow so the queue
+                  // redelivers and a fresh invocation retries the replay
+                  // once the backend recovers. The @vercel/queue handler
+                  // applies a fast (1s→60s) backoff by delivery count,
+                  // avoiding the ~5min default visibility-timeout redrive
+                  // (and never killing the process via run_failed).
+                  if (isRetryableWorldError(err)) {
+                    runtimeLogger.warn(
+                      'Transient world error during replay; redelivering via queue instead of failing the run',
+                      {
+                        errorName:
+                          err instanceof Error ? err.name : 'UnknownError',
+                        errorMessage:
+                          err instanceof Error ? err.message : String(err),
+                        deliveryAttempt: metadata.attempt,
+                      }
+                    );
+                    throw err;
                   }
 
                   let terminalError = err;

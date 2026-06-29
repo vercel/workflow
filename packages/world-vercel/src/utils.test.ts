@@ -280,4 +280,185 @@ describe('makeRequest body-parse retry', () => {
       'upstream timed out (x-vercel-id=iad1::req-abc; x-vercel-error=FUNCTION_INVOCATION_TIMEOUT)'
     );
   });
+
+  it('surfaces the firewall x-vercel-mitigated header in HTTP response errors', async () => {
+    // A firewall `deny` arrives as a 403 (not retried by the RetryAgent), so
+    // its mitigation + trace headers reach our response handling.
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Forbidden' }), {
+        status: 403,
+        headers: {
+          'content-type': 'application/json',
+          'x-vercel-id': 'sfo1::req-deny',
+          'x-vercel-mitigated': 'deny',
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toThrow('x-vercel-id=sfo1::req-deny; x-vercel-mitigated=deny');
+  });
+
+  it('maps a firewall challenge (429 + x-vercel-mitigated: challenge) to a retryable TRANSPORT error, not ThrottleError', async () => {
+    // A challenge can't be solved by a server-to-server client, so it must NOT
+    // become a ThrottleError (which the step_started path defers by re-enqueuing
+    // a fresh message, resetting the delivery count → uncapped flat loop). It is
+    // routed to the TRANSPORT path so the runtime rethrows it to the queue
+    // (delivery-count backoff + MAX_QUEUE_DELIVERIES cap).
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'rate limited' }), {
+        status: 429,
+        headers: {
+          'content-type': 'application/json',
+          'x-vercel-id': 'iad1::req-challenge',
+          'x-vercel-mitigated': 'challenge',
+          'retry-after': '5',
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection).toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'TRANSPORT',
+      status: 429,
+    });
+    // The mitigation + trace headers stay diagnosable in the message.
+    expect(rejection.message).toContain('x-vercel-mitigated=challenge');
+    // Single attempt — the queue redrive is the retry layer, not body-parse.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a genuine application-level 429 (no challenge mitigation) as a ThrottleError with retryAfter', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'slow down' }), {
+        status: 429,
+        headers: {
+          'content-type': 'application/json',
+          'retry-after': '12',
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection.name).toBe('ThrottleError');
+    expect(rejection.retryAfter).toBe(12);
+  });
+});
+
+describe('makeRequest transport errors', () => {
+  const schema = z.object({ value: z.string() });
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_WORKFLOW_SERVER_URL;
+    delete process.env.VERCEL_OIDC_TOKEN;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  it('maps an exhausted RetryAgent (UND_ERR_REQ_RETRY in cause) to a TRANSPORT error', async () => {
+    // fetch() wraps the underlying undici error in a `TypeError: fetch failed`
+    // whose `cause` carries the real `.code` — the firewall returning 429/503
+    // that the RetryAgent retried and then gave up on surfaces this way.
+    const cause = Object.assign(new Error('Request failed'), {
+      code: 'UND_ERR_REQ_RETRY',
+    });
+    const fetchErr = Object.assign(new TypeError('fetch failed'), { cause });
+    const fetchMock = vi.fn().mockRejectedValue(fetchErr);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TRANSPORT' });
+
+    // Transport failures are not body-parse retried inside makeRequest — the
+    // queue redrive is the retry layer, so exactly one attempt is made.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a direct socket error code (ECONNRESET) to TRANSPORT', async () => {
+    const fetchErr = Object.assign(new Error('socket hang up'), {
+      code: 'ECONNRESET',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TRANSPORT' });
+  });
+
+  it('preserves the original error as the cause', async () => {
+    const cause = Object.assign(new Error('Request failed'), {
+      code: 'UND_ERR_REQ_RETRY',
+    });
+    const fetchErr = Object.assign(new TypeError('fetch failed'), { cause });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
+
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection.cause).toBe(fetchErr);
+  });
+
+  it('rethrows a non-transient fetch error unchanged', async () => {
+    const fetchErr = new Error('some unexpected non-network error');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toBe(fetchErr);
+  });
+
+  it('maps an AbortSignal timeout to a TIMEOUT error', async () => {
+    const timeoutErr = Object.assign(new Error('The operation timed out'), {
+      name: 'TimeoutError',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(timeoutErr));
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TIMEOUT' });
+  });
 });
