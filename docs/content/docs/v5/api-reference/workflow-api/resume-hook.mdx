@@ -7,6 +7,7 @@ prerequisites:
   - /docs/foundations/hooks
 related:
   - /docs/api-reference/workflow-api/resume-webhook
+  - /docs/foundations/idempotency
 ---
 
 Resumes a workflow run by sending a payload to a hook identified by its token.
@@ -155,8 +156,64 @@ export async function POST(request: Request) {
 }
 ```
 
+### Resume or Start
+
+A common endpoint shape is "resume or start": one route that resumes the active workflow run for a business key if one exists, or starts a new run otherwise. This comes up when the workflow uses a deterministic hook token as its idempotency key — for example, one active run per order or conversation.
+
+`resumeHook()` is the resume half of that flow. Try it first; if it throws `HookNotFoundError`, no active run owns the token yet, so start the workflow. One subtlety: `start()` returns before the new run executes and registers its hook, so you cannot resume immediately after starting. Retry the resume until the hook is registered — if you drop the payload and only start the workflow, the data from this request is lost.
+
+```typescript lineNumbers
+import { resumeHook, start } from "workflow/api";
+import { HookNotFoundError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+type OrderRequest = { confirmed: boolean };
+
+async function resumeWithRetry(token: string, payload: OrderRequest) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await resumeHook(token, payload); // [!code highlight]
+    } catch (error) {
+      if (!HookNotFoundError.is(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  throw new Error("Workflow did not register its hook in time");
+}
+
+export async function POST(request: Request) {
+  const { orderId, confirmed } = await request.json();
+  const token = `order:${orderId}`;
+  const payload = { confirmed };
+
+  try {
+    // An active run already owns this token: resume it.
+    const hook = await resumeHook(token, payload); // [!code highlight]
+    return Response.json({ runId: hook.runId, reused: true });
+  } catch (error) {
+    if (!HookNotFoundError.is(error)) throw error;
+  }
+
+  // No hook yet: start a new run, then retry the resume so this
+  // request's payload still reaches the workflow.
+  const run = await start(processOrder, [orderId]); // [!code highlight]
+  const resumed = await resumeWithRetry(token, payload);
+
+  // A concurrent request can win the race between `start()` and hook
+  // registration; the resume always reaches the actual active owner.
+  return Response.json({
+    runId: resumed.runId,
+    reused: resumed.runId !== run.runId,
+  });
+}
+```
+
+See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how the workflow claims the token with `hook.getConflict()` and how concurrent starts converge on one active owner.
+
 ## Related Functions
 
 - [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) - Get hook details before resuming.
 - [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper.
+- [Idempotency](/docs/foundations/idempotency) - Deduplicate step side effects and workflow starts.

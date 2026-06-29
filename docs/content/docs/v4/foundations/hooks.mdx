@@ -85,6 +85,35 @@ The key points:
 - You need the hook's `token` to resume it
 - The workflow will resume execution right where it left off
 
+### Checking for Token Conflicts
+
+Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict()` (available starting in `workflow@4.5.0`) for that:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+declare function processOrder(orderId: string): Promise<void>; // @setup
+
+export async function orderWorkflow(orderId: string) {
+  "use workflow";
+
+  using hook = createHook({
+    token: `order:${orderId}`
+  });
+
+  const conflict = await hook.getConflict(); // [!code highlight]
+  if (conflict) { // [!code highlight]
+    // Another active run already owns this token.
+    return { dedupedTo: conflict.runId };
+  }
+
+  // The hook token is registered and reserved here.
+  await processOrder(orderId);
+}
+```
+
+Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with `{ runId }` identifying the run that owns the token if another active hook already claimed it (see [`HookConflictError`](/docs/errors/hook-conflict)). For `hook_conflict` events persisted by older worlds that did not record the owning run's ID, `getConflict()` rejects with `HookConflictError` instead of resolving with an incomplete handle. To act on the owner — inspect its status, wait for its result, or cancel it — pass `conflict.runId` to [`getRun()`](/docs/api-reference/workflow-api/get-run) inside a step. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies.
+
 ### Custom Tokens for Deterministic Hooks
 
 By default, hooks generate a random token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.

@@ -41,7 +41,17 @@ const orderedOutcomes = [
   'RUNTIME_ERROR',
   'stuck',
   'other',
+  // Harness-side, non-gating outcomes (hook-resume vs. sleep-budget timing
+  // races and transport errors in the repro driver). Reported but never fail
+  // the job — see `gatingOutcomes` / `regressionCount`.
+  'infra',
 ];
+
+// Outcomes that represent a real SDK regression and therefore gate the job.
+// Everything that is not `completed` and not `infra`.
+const gatingOutcomes = orderedOutcomes.filter(
+  (outcome) => outcome !== 'completed' && outcome !== 'infra'
+);
 
 function emptyDistribution() {
   return Object.fromEntries(orderedOutcomes.map((outcome) => [outcome, 0]));
@@ -101,10 +111,16 @@ function summarizeByScenario(results) {
   return byScenario;
 }
 
-function nonCompletedCount(distribution) {
-  return orderedOutcomes
-    .filter((outcome) => outcome !== 'completed')
-    .reduce((sum, outcome) => sum + (distribution[outcome] ?? 0), 0);
+// Count of regression-class outcomes — the number the job gates on.
+function regressionCount(distribution) {
+  return gatingOutcomes.reduce(
+    (sum, outcome) => sum + (distribution[outcome] ?? 0),
+    0
+  );
+}
+
+function infraCount(distribution) {
+  return distribution.infra ?? 0;
 }
 
 function compactTimestamp(value) {
@@ -136,9 +152,11 @@ function renderResult(entry) {
   if (entry.missingResults) {
     return 'missing result file';
   }
+  const infra = entry.infraCount ?? infraCount(entry.distribution ?? {});
+  const infraSuffix = infra > 0 ? ` (+${infra} infra)` : '';
   return entry.failedCount === 0
-    ? 'all completed'
-    : `${entry.failedCount}/${entry.total} non-completed`;
+    ? `no regressions${infraSuffix}`
+    : `${entry.failedCount}/${entry.total} regressions${infraSuffix}`;
 }
 
 function renderConfig(entry) {
@@ -203,6 +221,7 @@ function compactHistoryEntry(entry, keepFailures = false) {
     distribution: entry.distribution ?? emptyDistribution(),
     scenarioDistribution: entry.scenarioDistribution ?? {},
     failedCount: entry.failedCount ?? 0,
+    infraCount: entry.infraCount ?? infraCount(entry.distribution ?? {}),
     total: entry.total ?? 0,
     config: compactConfig(entry.config),
     failing: keepFailures ? (entry.failing ?? []) : [],
@@ -233,23 +252,28 @@ function buildEntry(resultsFile) {
   const distribution = resultsFile.distribution ?? summarize(results);
   const scenarioDistribution =
     resultsFile.scenarioDistribution ?? summarizeByScenario(results);
-  const failedCount = nonCompletedCount(distribution);
+  const failedCount = regressionCount(distribution);
+  const infra = infraCount(distribution);
   const total = orderedOutcomes.reduce(
     (sum, outcome) => sum + (distribution[outcome] ?? 0),
     0
   );
-  const failing = results
+  // Surface regressions before infra so the 20-row cap never hides a real
+  // failure behind a flood of harness-timing `infra` rows.
+  const nonCompleted = results
     .filter((result) => result.outcome !== 'completed')
-    .slice(0, 20)
-    .map((result) => ({
-      attempt: result.attempt,
-      scenario: result.scenario,
-      outcome: result.outcome,
-      status: result.status,
-      errorCode: result.errorCode,
-      runId: result.runId,
-      dashboardUrl: result.dashboardUrl,
-    }));
+    .sort(
+      (a, b) => Number(a.outcome === 'infra') - Number(b.outcome === 'infra')
+    );
+  const failing = nonCompleted.slice(0, 20).map((result) => ({
+    attempt: result.attempt,
+    scenario: result.scenario,
+    outcome: result.outcome,
+    status: result.status,
+    errorCode: result.errorCode,
+    runId: result.runId,
+    dashboardUrl: result.dashboardUrl,
+  }));
 
   return {
     timestamp,
@@ -260,14 +284,11 @@ function buildEntry(resultsFile) {
     distribution,
     scenarioDistribution,
     failedCount,
+    infraCount: infra,
     total,
     config: compactConfig(resultsFile.config),
     failing,
-    truncatedFailingCount: Math.max(
-      0,
-      results.filter((result) => result.outcome !== 'completed').length -
-        failing.length
-    ),
+    truncatedFailingCount: Math.max(0, nonCompleted.length - failing.length),
   };
 }
 
@@ -365,14 +386,23 @@ function render(resultsFile, previousComment) {
   );
   const latest = history[history.length - 1];
 
+  const latestInfra =
+    latest.infraCount ?? infraCount(latest.distribution ?? {});
+  const infraNote =
+    latestInfra > 0
+      ? ` ${latestInfra} run${latestInfra === 1 ? '' : 's'} hit harness-side ` +
+        '`infra` outcomes (hook-resume timing races / transport errors); ' +
+        'these are reported but do not fail the job.'
+      : '';
+
   console.log('<!-- event-log-race-repro-results -->');
   console.log('## Event Log Race Repro\n');
   console.log(
     latest.missingResults
       ? 'No result file was produced by the latest repro job.'
       : latest.failedCount === 0
-        ? 'The latest repro job completed all runs cleanly.'
-        : `${latest.failedCount} of ${latest.total} latest repro runs did not complete cleanly.`
+        ? `No event-log regressions in the latest repro job.${infraNote}`
+        : `${latest.failedCount} of ${latest.total} latest repro runs hit event-log regressions.${infraNote}`
   );
   console.log('');
   console.log(historyMarkerStart);
@@ -385,21 +415,39 @@ function render(resultsFile, previousComment) {
   renderLatestFailures(latest);
 }
 
-const resultsFile = loadResults();
-const previousComment = loadPreviousComment();
+function main() {
+  const resultsFile = loadResults();
+  const previousComment = loadPreviousComment();
 
-if (!resultsFile) {
-  if (!check) {
-    render(null, previousComment);
+  if (!resultsFile) {
+    if (!check) {
+      render(null, previousComment);
+    }
+    process.exit(check ? 1 : 0);
   }
-  process.exit(check ? 1 : 0);
+
+  if (!check) {
+    render(resultsFile, previousComment);
+    process.exit(0);
+  }
+
+  const distribution =
+    resultsFile.distribution ?? summarize(resultsFile.results ?? []);
+  process.exit(regressionCount(distribution) > 0 ? 1 : 0);
 }
 
-if (!check) {
-  render(resultsFile, previousComment);
-  process.exit(0);
-}
+// Pure helpers are exported for unit testing; the CLI only runs when the
+// script is executed directly (not when required by the test).
+module.exports = {
+  orderedOutcomes,
+  gatingOutcomes,
+  summarize,
+  summarizeByScenario,
+  regressionCount,
+  infraCount,
+  buildEntry,
+};
 
-const distribution =
-  resultsFile.distribution ?? summarize(resultsFile.results ?? []);
-process.exit(nonCompletedCount(distribution) > 0 ? 1 : 0);
+if (require.main === module) {
+  main();
+}

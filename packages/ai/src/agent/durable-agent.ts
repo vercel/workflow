@@ -736,6 +736,16 @@ export interface DurableAgentStreamResult<
   toolResults: ToolResult[];
 
   /**
+   * The finish reason from the last step.
+   */
+  finishReason: FinishReason;
+
+  /**
+   * The total token usage across all steps.
+   */
+  totalUsage: LanguageModelUsage;
+
+  /**
    * The generated structured output. It uses the `experimental_output` specification.
    * Only available when `experimental_output` is specified.
    */
@@ -985,6 +995,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         steps,
         toolCalls: [],
         toolResults: [],
+        finishReason: 'other',
+        totalUsage: aggregateUsage(steps),
         experimental_output: undefined as OUTPUT,
         uiMessages: undefined,
       };
@@ -1173,15 +1185,17 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             // resolved tool results), so callers can resume the conversation.
             // Cast matches the existing pattern used at the end of stream().
             const messages = iterMessages as unknown as ModelMessage[];
+            const lastStep = steps[steps.length - 1];
+            const totalUsage = aggregateUsage(steps);
+            const finishReason = lastStep?.finishReason ?? 'other';
 
             if (mergedOnFinish && !wasAborted) {
-              const lastStep = steps[steps.length - 1];
               await mergedOnFinish({
                 steps,
                 messages,
                 text: lastStep?.text ?? '',
-                finishReason: lastStep?.finishReason ?? 'other',
-                totalUsage: aggregateUsage(steps),
+                finishReason,
+                totalUsage,
                 experimental_context: experimentalContext,
                 experimental_output: undefined as OUTPUT,
               });
@@ -1196,6 +1210,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               steps,
               toolCalls: allToolCalls,
               toolResults: allToolResults,
+              finishReason,
+              totalUsage,
               experimental_output: undefined as OUTPUT,
               uiMessages,
             };
@@ -1333,15 +1349,18 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       }
     }
 
+    const lastStep = steps[steps.length - 1];
+    const totalUsage = aggregateUsage(steps);
+    const finishReason = lastStep?.finishReason ?? 'other';
+
     // Call onFinish callback if provided (always call, even on errors, but not on abort)
     if (mergedOnFinish && !wasAborted) {
-      const lastStep = steps[steps.length - 1];
       await mergedOnFinish({
         steps,
         messages: messages as ModelMessage[],
         text: lastStep?.text ?? '',
-        finishReason: lastStep?.finishReason ?? 'other',
-        totalUsage: aggregateUsage(steps),
+        finishReason,
+        totalUsage,
         experimental_context: experimentalContext,
         experimental_output: experimentalOutput,
       });
@@ -1363,6 +1382,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       steps,
       toolCalls: lastStepToolCalls,
       toolResults: lastStepToolResults,
+      finishReason,
+      totalUsage,
       experimental_output: experimentalOutput,
       uiMessages,
     };
@@ -1373,20 +1394,85 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
  * Filter tools to only include the specified active tools.
  */
 /**
- * Aggregate token usage across all steps.
+ * Add two token counts, preserving `undefined` when both operands are absent
+ * (so missing details aren't coerced to 0). Mirrors the AI SDK's internal
+ * `addTokenCounts`.
+ */
+function addTokenCounts(
+  a: number | undefined,
+  b: number | undefined
+): number | undefined {
+  return a == null && b == null ? undefined : (a ?? 0) + (b ?? 0);
+}
+
+/**
+ * Sum two `LanguageModelUsage` values across every field, including the v6
+ * nested `inputTokenDetails`/`outputTokenDetails` and the deprecated flat
+ * `reasoningTokens`/`cachedInputTokens`. Mirrors the AI SDK's internal
+ * `addLanguageModelUsage` so aggregated usage matches `streamText`/ToolLoopAgent.
+ */
+function addLanguageModelUsage(
+  a: LanguageModelUsage,
+  b: LanguageModelUsage
+): LanguageModelUsage {
+  return {
+    inputTokens: addTokenCounts(a.inputTokens, b.inputTokens),
+    inputTokenDetails: {
+      noCacheTokens: addTokenCounts(
+        a.inputTokenDetails?.noCacheTokens,
+        b.inputTokenDetails?.noCacheTokens
+      ),
+      cacheReadTokens: addTokenCounts(
+        a.inputTokenDetails?.cacheReadTokens,
+        b.inputTokenDetails?.cacheReadTokens
+      ),
+      cacheWriteTokens: addTokenCounts(
+        a.inputTokenDetails?.cacheWriteTokens,
+        b.inputTokenDetails?.cacheWriteTokens
+      ),
+    },
+    outputTokens: addTokenCounts(a.outputTokens, b.outputTokens),
+    outputTokenDetails: {
+      textTokens: addTokenCounts(
+        a.outputTokenDetails?.textTokens,
+        b.outputTokenDetails?.textTokens
+      ),
+      reasoningTokens: addTokenCounts(
+        a.outputTokenDetails?.reasoningTokens,
+        b.outputTokenDetails?.reasoningTokens
+      ),
+    },
+    totalTokens: addTokenCounts(a.totalTokens, b.totalTokens),
+    reasoningTokens: addTokenCounts(a.reasoningTokens, b.reasoningTokens),
+    cachedInputTokens: addTokenCounts(a.cachedInputTokens, b.cachedInputTokens),
+  };
+}
+
+/**
+ * Aggregate token usage across all steps, preserving the full AI SDK v6 usage
+ * shape (nested token details and deprecated flat fields) so consumers reading
+ * `result.totalUsage` see the same data as `streamText`/ToolLoopAgent.
  */
 function aggregateUsage(steps: StepResult<any>[]): LanguageModelUsage {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  for (const step of steps) {
-    inputTokens += step.usage?.inputTokens ?? 0;
-    outputTokens += step.usage?.outputTokens ?? 0;
-  }
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-  } as LanguageModelUsage;
+  return steps.reduce<LanguageModelUsage>(
+    (total, step) => addLanguageModelUsage(total, step.usage),
+    {
+      inputTokens: undefined,
+      inputTokenDetails: {
+        noCacheTokens: undefined,
+        cacheReadTokens: undefined,
+        cacheWriteTokens: undefined,
+      },
+      outputTokens: undefined,
+      outputTokenDetails: {
+        textTokens: undefined,
+        reasoningTokens: undefined,
+      },
+      totalTokens: undefined,
+      reasoningTokens: undefined,
+      cachedInputTokens: undefined,
+    }
+  );
 }
 
 function filterTools<TTools extends ToolSet>(

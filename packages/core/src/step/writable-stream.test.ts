@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { setWorld } from '../runtime/world.js';
+import { STREAM_SERVER_DEPLOYMENT_ID_SYMBOL } from '../symbols.js';
 
 // Captures every chunk written to `world.streams.write` / `writeMulti`
 // in arrival order, so tests can assert the on-wire sequence after
@@ -218,5 +219,23 @@ describe('step-level getWritable', () => {
     });
 
     expect(ops).toHaveLength(2);
+  });
+
+  it('tags a writable with its owning deployment for child workflow forwarding', async () => {
+    const { contextStorage } = await import('./context-storage.js');
+    const ctx = {
+      ...makeStepCtx(),
+      workflowDeploymentId: 'dpl_parent',
+    };
+
+    const writable = await contextStorage.run(ctx, async () => {
+      const { getWritable } = await import('./writable-stream.js');
+      return getWritable<string>();
+    });
+
+    expect((writable as any)[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL]).toBe(
+      'dpl_parent'
+    );
+    await Promise.all(ctx.ops);
   });
 });

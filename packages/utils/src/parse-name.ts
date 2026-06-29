@@ -106,6 +106,55 @@ export function formatWorkflowName(name: string): string {
   return formatParsedName(parseWorkflowName(name), name);
 }
 
+/**
+ * Best-effort short display name for spans and UI labels. Accepts either the
+ * raw machine name (`workflow//./src/jobs/order//processOrder`) or the
+ * queue-sanitized form (`workflow----src-jobs-order--processOrder`, where
+ * every non-alphanumeric character was replaced with `-`) and returns just
+ * the function name (`processOrder`). Falls back to the input unchanged when
+ * neither form is recognized.
+ */
+export function workflowDisplayName(name: string): string {
+  return (
+    parseWorkflowName(name)?.shortName ??
+    shortNameFromSanitized('workflow', name) ??
+    name
+  );
+}
+
+/** See {@link workflowDisplayName} — the step-name equivalent. */
+export function stepDisplayName(name: string): string {
+  return (
+    parseStepName(name)?.shortName ??
+    shortNameFromSanitized('step', name) ??
+    name
+  );
+}
+
+function shortNameFromSanitized(tag: string, name: string): string | null {
+  if (!name.startsWith(`${tag}--`)) return null;
+  // The `//` separators became `--`, and within the function-name part any
+  // nested-function `/` became `-`. Function names are mostly dash-free, so
+  // the innermost name is the last dash-free segment. This is best-effort:
+  // `$` is a valid JS identifier character but is also sanitized to `-`, so
+  // a name like `process$Order` displays as `Order` — accepted limitation.
+  const segments = name.split('--').filter(Boolean);
+  const functionPart = segments.at(-1);
+  let shortName = functionPart?.split('-').filter(Boolean).at(-1) ?? '';
+  // Mirror parseName's default-export handling: display default exports as
+  // the module's short name (the module part is the second-to-last `--`
+  // segment; its last `-` segment is the module short name), so the same
+  // workflow doesn't render as e.g. `order` from the raw name but
+  // `default` from the sanitized name.
+  if (['default', '__default'].includes(shortName)) {
+    const moduleShortName = segments.at(-2)?.split('-').filter(Boolean).at(-1);
+    if (moduleShortName && moduleShortName !== tag) {
+      shortName = moduleShortName;
+    }
+  }
+  return shortName || null;
+}
+
 function formatParsedName(
   parsed: {
     shortName: string;

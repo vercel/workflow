@@ -1,0 +1,52 @@
+---
+title: WorkflowError
+description: Base class for all workflow error types.
+type: reference
+summary: All errors thrown by the Workflow SDK extend WorkflowError.
+related:
+  - /docs/foundations/errors-and-retries
+---
+
+`WorkflowError` is the base class that all Workflow SDK error types extend, such as [`WorkflowRunFailedError`](/docs/api-reference/workflow-errors/workflow-run-failed-error) and [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error). It extends `Error` with an optional `cause` and, for some subclasses, a link to the relevant error documentation appended to the message.
+
+```typescript lineNumbers
+import { WorkflowError } from "workflow/errors"
+
+const error = new WorkflowError("something went wrong", {
+  cause: new Error("underlying cause"),
+});
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowError {
+  /** The error message. */
+  message: string;
+  /** The underlying cause, when provided. */
+  cause?: unknown;
+}
+export default WorkflowError;`}
+/>
+
+### Static Methods
+
+#### `WorkflowError.is(value)`
+
+Type-safe check for `WorkflowError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+<Callout type="warn">
+  `WorkflowError.is()` matches only direct `WorkflowError` instances — not subclasses, which override the error name it checks. To handle a specific error type, use that subclass's own `.is()` method (e.g. `WorkflowRunFailedError.is(error)`).
+</Callout>
+
+```typescript
+import { WorkflowError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (WorkflowError.is(error)) {
+  // error is typed as WorkflowError
+}
+```

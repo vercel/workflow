@@ -7,7 +7,9 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
 } from '@workflow/world';
@@ -35,13 +37,20 @@ const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
  * Ensures the workflow name only contains safe characters before
  * interpolating it into the queue name string.
  */
-export function getWorkflowQueueName(workflowName: string): ValidQueueName {
+export function getWorkflowQueueName(
+  workflowName: string,
+  namespace?: string
+): ValidQueueName {
   if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
     throw new Error(
       `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
     );
   }
-  return `__wkf_workflow_${workflowName}` as ValidQueueName;
+  const prefix = getQueueTopicPrefix(
+    'workflow',
+    resolveQueueNamespace(namespace)
+  );
+  return `${prefix}${workflowName}` as ValidQueueName;
 }
 
 const generateId = monotonicFactory();
@@ -64,6 +73,14 @@ export interface HealthCheckResult {
   latencyMs?: number;
   /** Spec version of the responding deployment */
   specVersion?: number;
+  /**
+   * `@workflow/core` version of the responding deployment, used for
+   * capability detection (see `getRunCapabilities`). Omitted when the
+   * responding deployment did not provide the field as a string —
+   * for example, an older `@workflow/core` that predates this field,
+   * or a non-JSON plain-text health response.
+   */
+  workflowCoreVersion?: string;
 }
 
 /**
@@ -180,9 +197,11 @@ async function readStreamWithTimeout(
  * Parse and validate a health check response from stream chunks.
  * Returns the parsed response or null if invalid.
  */
-function parseHealthCheckResponse(
-  chunks: Uint8Array[]
-): { healthy: boolean } | null {
+function parseHealthCheckResponse(chunks: Uint8Array[]): {
+  healthy: boolean;
+  specVersion?: number;
+  workflowCoreVersion?: string;
+} | null {
   if (chunks.length === 0) return null;
 
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -217,11 +236,18 @@ function parseHealthCheckResponse(
   }
 
   const r = response as Record<string, unknown>;
-  const parsed: { healthy: boolean; specVersion?: number } = {
+  const parsed: {
+    healthy: boolean;
+    specVersion?: number;
+    workflowCoreVersion?: string;
+  } = {
     healthy: r.healthy as boolean,
   };
   if (typeof r.specVersion === 'number') {
     parsed.specVersion = r.specVersion;
+  }
+  if (typeof r.workflowCoreVersion === 'string') {
+    parsed.workflowCoreVersion = r.workflowCoreVersion;
   }
   return parsed;
 }
@@ -229,16 +255,14 @@ function parseHealthCheckResponse(
 export async function healthCheck(
   world: World,
   endpoint: HealthCheckEndpoint,
-  options?: HealthCheckOptions
+  options?: HealthCheckOptions & { namespace?: string }
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
   const correlationId = generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
-  const queueName: ValidQueueName =
-    endpoint === 'workflow'
-      ? '__wkf_workflow_health_check'
-      : '__wkf_step_health_check';
+  const queueName =
+    `${getQueueTopicPrefix(endpoint, resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
 
   const startTime = Date.now();
 

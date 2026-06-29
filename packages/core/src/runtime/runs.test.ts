@@ -148,6 +148,33 @@ describe('Run.exists', () => {
   });
 });
 
+describe('Run.getReadable', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('does not fetch the run encryption key for an empty stream', async () => {
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    new Run('wrun_123').getReadable();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(world.runs.get).not.toHaveBeenCalled();
+    expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+  });
+});
+
 describe('Run.wakeUp', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);

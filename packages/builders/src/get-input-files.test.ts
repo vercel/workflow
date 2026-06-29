@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -26,6 +27,10 @@ class TestBuilder extends BaseBuilder {
 
   public getDiagnosticsManifestPath(): string | undefined {
     return super.getDiagnosticsManifestPath();
+  }
+
+  public ensureSwcIgnored(): Promise<void> {
+    return super.ensureSwcIgnored();
   }
 }
 
@@ -112,6 +117,7 @@ describe('getInputFiles', () => {
     writeFile(srcDir, '.workflow-data/state.ts');
     writeFile(srcDir, '.workflow-vitest/workflows.mjs');
     writeFile(srcDir, '.well-known/workflow/route.ts');
+    writeFile(srcDir, '.swc/cache/plugin-output.ts');
     writeFile(srcDir, '.turbo/cache/build.ts');
     writeFile(srcDir, '.cache/babel/plugin.js');
     writeFile(srcDir, '.yarn/releases/yarn.cjs');
@@ -148,6 +154,9 @@ describe('getInputFiles', () => {
       normalize(join(srcDir, '.well-known/workflow/route.ts'))
     );
     expect(files).not.toContain(
+      normalize(join(srcDir, '.swc/cache/plugin-output.ts'))
+    );
+    expect(files).not.toContain(
       normalize(join(srcDir, '.turbo/cache/build.ts'))
     );
     expect(files).not.toContain(
@@ -179,6 +188,47 @@ describe('getInputFiles', () => {
     expect(files).toContain(normalize(join(srcDir, '.api/handler.mts')));
     expect(files).toContain(normalize(join(srcDir, '.api/utils.js')));
     expect(files).toContain(normalize(join(srcDir, '.api/config.cjs')));
+  });
+});
+
+describe('ensureSwcIgnored', () => {
+  let testRoot: string;
+
+  beforeEach(() => {
+    testRoot = mkdtempSync(join(realTmpdir, 'swc-gitignore-'));
+  });
+
+  afterEach(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it('adds .swc to the project .gitignore once', async () => {
+    writeFile(testRoot, '.gitignore', 'node_modules\n');
+
+    const builder = createBuilder(testRoot, ['src']);
+
+    await builder.ensureSwcIgnored();
+    await builder.ensureSwcIgnored();
+
+    const gitignore = readFileSync(join(testRoot, '.gitignore'), 'utf-8');
+    const swcEntries = gitignore
+      .split(/\r?\n/)
+      .filter((line) => line.trim() === '/.swc');
+
+    expect(gitignore).toBe('node_modules\n/.swc\n');
+    expect(swcEntries).toHaveLength(1);
+  });
+
+  it('preserves existing .swc gitignore variants', async () => {
+    writeFile(testRoot, '.gitignore', 'node_modules\n.swc/\n');
+
+    const builder = createBuilder(testRoot, ['src']);
+
+    await builder.ensureSwcIgnored();
+
+    expect(readFileSync(join(testRoot, '.gitignore'), 'utf-8')).toBe(
+      'node_modules\n.swc/\n'
+    );
   });
 });
 

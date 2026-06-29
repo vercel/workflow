@@ -1,0 +1,64 @@
+---
+title: "workflow/observability"
+description: Utilities to hydrate serialized step I/O and parse machine-readable workflow names for display.
+type: overview
+summary: Explore utilities for hydrating serialized workflow data and parsing display names in observability tools.
+keywords:
+  - workflow/observability
+  - hydrateResourceIO
+  - observabilityRevivers
+  - hydrateData
+  - parseStepName
+  - parseWorkflowName
+  - parseClassName
+  - data hydration
+  - devalue deserialization
+  - display name parsing
+---
+
+API reference for observability utilities from the `workflow/observability` package.
+
+The observability package provides utilities for working with workflow data in observability and debugging tools — hydrating serialized step I/O for display, and parsing machine-readable names into display-friendly formats.
+
+```typescript lineNumbers
+import { // [!code highlight]
+  hydrateResourceIO, // [!code highlight]
+  observabilityRevivers, // [!code highlight]
+  hydrateData, // [!code highlight]
+  parseStepName, // [!code highlight]
+  parseWorkflowName, // [!code highlight]
+  parseClassName, // [!code highlight]
+} from "workflow/observability"; // [!code highlight]
+```
+
+## Data Hydration
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-observability/hydrate-resource-io" title="hydrateResourceIO()">
+        Hydrate the serialized data fields of a run, step, hook, or event for display.
+    </Card>
+    <Card href="/docs/api-reference/workflow-observability/observability-revivers" title="observabilityRevivers">
+        Standard revivers for deserializing workflow data types (Date, Map, Set, streams, etc.).
+    </Card>
+    <Card href="/docs/api-reference/workflow-observability/hydrate-data" title="hydrateData()">
+        Hydrate a single serialized value (lower-level than hydrateResourceIO).
+    </Card>
+</Cards>
+
+## Name Parsing
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-observability/parse-step-name" title="parseStepName()">
+        Parse a machine-readable step name into display-friendly components.
+    </Card>
+    <Card href="/docs/api-reference/workflow-observability/parse-workflow-name" title="parseWorkflowName()">
+        Parse a machine-readable workflow name into display-friendly components.
+    </Card>
+    <Card href="/docs/api-reference/workflow-observability/parse-class-name" title="parseClassName()">
+        Parse a machine-readable class ID into display-friendly components.
+    </Card>
+</Cards>
+
+## Encrypted Data
+
+When a [World](/docs/api-reference/workflow-runtime/world) stores encrypted data, the hydration utilities intentionally leave encrypted values untouched: [`hydrateData()`](/docs/api-reference/workflow-observability/hydrate-data) and [`hydrateResourceIO()`](/docs/api-reference/workflow-observability/hydrate-resource-io) return encrypted fields as raw `Uint8Array` values so observability tools can detect them and decide how to render them (for example, the Workflow CLI shows an "Encrypted" placeholder). Decryption is handled by the runtime and the World implementation — see [Encryption](/docs/how-it-works/encryption) for how keys are managed.

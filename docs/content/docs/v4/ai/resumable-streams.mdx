@@ -12,6 +12,10 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
+<Callout type="warn">
+`WorkflowChatTransport` now ships in AI SDK as a 1:1 port — import it from `@ai-sdk/workflow` (the `@workflow/ai` export is deprecated). See [Resumable Streaming with `WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) for the full reference.
+</Callout>
+
 When building chat interfaces, it's common to run into network interruptions, page refreshes, or serverless function timeouts, which can break the connection to an in-progress agent.
 
 Where a standard chat implementation would require the user to resend their message and wait for the entire response again, workflow runs are durable, and so are the streams attached to them. This means a stream can be resumed at any point, optionally only syncing the data that was missed since the last connection.
@@ -109,7 +113,7 @@ Replace the default transport in AI-SDK's `useChat` with [`WorkflowChatTransport
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { WorkflowChatTransport } from "@ai-sdk/workflow"; // [!code highlight]
 import { useMemo, useState } from "react";
 
 export default function ChatPage() {
@@ -193,6 +197,10 @@ This avoids replaying potentially thousands of chunks and lets the UI render fas
 <Callout>
 When using a negative `initialStartIndex`, the reconnection endpoint **must** return the `x-workflow-stream-tail-index` header (as shown in [Step 2](#add-a-stream-reconnection-endpoint) above). The transport uses this header to compute absolute chunk positions so that retries after a disconnect resume from the correct position. If the header is missing, the transport falls back to `startIndex: 0` (replaying the entire stream) and logs a warning.
 </Callout>
+
+### Mid-part resumes
+
+A workflow stream is a flat sequence of chunks, but the AI SDK's UI protocol groups chunks into logical parts (`text-*`, `reasoning-*`, `tool-input-*`) that must be opened with a `*-start` before any `*-delta` or `*-end`. A non-zero `startIndex` can land in the middle of an open part. See [`WorkflowChatTransport` → Mid-part resumes](/docs/api-reference/workflow-ai/workflow-chat-transport#mid-part-resumes) for how this is handled and an example of rewinding to a step boundary on the server.
 
 ## Related Documentation
 

@@ -10,20 +10,23 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { isEncryptedMarker } from '../lib/hydration';
 import {
-  parseExactWorkflowSearchId,
-  looksLikeWorkflowIdSearchInput,
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
+  looksLikeWorkflowIdSearchInput,
+  parseExactWorkflowSearchId,
 } from '../lib/exact-event-search-id';
-import { DecryptButton } from './ui/decrypt-button';
-import { formatDuration } from '../lib/utils';
+import { isEncryptedMarker } from '../lib/hydration';
 import { useToast } from '../lib/toast';
+import { formatDuration } from '../lib/utils';
+import { AttrSetEventBlock } from './sidebar/attributes-block';
+import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
+import { DecryptButton } from './ui/decrypt-button';
 import {
   ErrorStackBlock,
-  isStructuredErrorWithStack,
+  isStructuredError,
+  type StructuredErrorRecord,
 } from './ui/error-stack-block';
 import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
@@ -66,6 +69,25 @@ function formatEventTime(date: Date): string {
   );
 }
 
+function parseEventDate(value: unknown): Date | null {
+  if (value == null) return null;
+
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getEffectiveEventDate(
+  event: Pick<Event, 'createdAt' | 'occurredAt'>
+): Date {
+  return parseEventDate(event.occurredAt) ?? new Date(event.createdAt);
+}
+
+function getEffectiveEventTime(
+  event: Pick<Event, 'createdAt' | 'occurredAt'>
+): number {
+  return getEffectiveEventDate(event).getTime();
+}
+
 function formatEventType(eventType: Event['eventType']): string {
   return eventType
     .split('_')
@@ -94,6 +116,10 @@ function getStatusDotColor(eventType: string): string {
   // Retrying → amber
   if (eventType === 'step_retrying') {
     return 'var(--ds-amber-700)';
+  }
+  // Attribute changes → teal
+  if (eventType === 'attr_set') {
+    return 'var(--ds-teal-900)';
   }
   // Completed/succeeded → green
   if (
@@ -171,7 +197,7 @@ export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
   // events for the same correlationId; the queued duration must be measured
   // against the first one, not the last.
   const chronological = [...events].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    (a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b)
   );
 
   const createdTimes = new Map<string, number>();
@@ -180,7 +206,7 @@ export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
   const durations = new Map<string, DurationInfo>();
 
   for (const event of chronological) {
-    const ts = new Date(event.createdAt).getTime();
+    const ts = getEffectiveEventTime(event);
     const key = event.correlationId ?? '__run__';
     const type: string = event.eventType;
 
@@ -257,7 +283,10 @@ function isRunLevel(eventType: string): boolean {
     eventType === 'run_cancelled' ||
     eventType === 'workflow_started' ||
     eventType === 'workflow_completed' ||
-    eventType === 'workflow_failed'
+    eventType === 'workflow_failed' ||
+    // attr_set carries a dedup correlationId rather than a child entity ID,
+    // so it groups and labels with the run itself.
+    eventType === 'attr_set'
   );
 }
 
@@ -519,20 +548,20 @@ function deepParseJson(value: unknown): unknown {
 }
 
 /**
- * Extracts a structured error with a stack trace from event data, if present.
+ * Extracts a structured error from event data, if present.
  * Returns the error object to render with ErrorStackBlock, or null if not applicable.
  */
 function extractStructuredError(
   data: unknown,
   eventType?: string
-): (Record<string, unknown> & { stack: string }) | null {
+): StructuredErrorRecord | null {
   if (!eventType || !ERROR_EVENT_TYPES.has(eventType)) return null;
   if (data == null || typeof data !== 'object') return null;
   const record = data as Record<string, unknown>;
   // Check the nested `error` field first (the StructuredError)
-  if (isStructuredErrorWithStack(record.error)) return record.error;
-  // Some error formats put the stack at the top level of eventData
-  if (isStructuredErrorWithStack(record)) return record;
+  if (isStructuredError(record.error)) return record.error;
+  // Some error formats put the message/stack at the top level of eventData.
+  if (isStructuredError(record)) return record;
   return null;
 }
 
@@ -593,6 +622,12 @@ function PayloadBlock({
     );
   }
 
+  // Attribute changes — render the changed keys and the writer instead of
+  // the raw JSON payload.
+  if (eventType === 'attr_set') {
+    return <AttrSetEventBlock data={cleaned} />;
+  }
+
   return (
     <div className="relative group/payload">
       <div
@@ -636,7 +671,11 @@ const SORT_OPTIONS = [
   { value: 'asc' as const, label: 'Oldest' },
 ];
 
-function RowsSkeleton() {
+function RowsSkeleton({
+  showSeparateEventOccurrenceTimestamps = false,
+}: {
+  showSeparateEventOccurrenceTimestamps?: boolean;
+}) {
   return (
     <div className="flex-1 overflow-hidden">
       {Array.from({ length: 16 }, (_, i) => (
@@ -673,7 +712,12 @@ function RowsSkeleton() {
           <div className="w-5 flex-shrink-0 flex items-center justify-center">
             <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
           </div>
-          {/* Time */}
+          {showSeparateEventOccurrenceTimestamps && (
+            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+              <Skeleton className="h-3" style={{ width: '70%' }} />
+            </div>
+          )}
+          {/* Created */}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             <Skeleton className="h-3" style={{ width: '70%' }} />
           </div>
@@ -738,9 +782,11 @@ interface EventsListProps {
     kind: ExactWorkflowSearchIdKind,
     signal?: AbortSignal
   ) => Promise<ExactIdSearchResult>;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }
 
-function EventRow({
+export function EventRow({
   event,
   index,
   isFirst,
@@ -761,6 +807,7 @@ function EventRow({
   encryptionKey,
   onEncryptedDataDetected,
   suppressGroupDimming = false,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   event: Event;
   index: number;
@@ -783,6 +830,8 @@ function EventRow({
   onEncryptedDataDetected?: () => void;
   /** Exact-ID search results should not dim unrelated rows. */
   suppressGroupDimming?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -811,6 +860,10 @@ function EventRow({
 
   const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
+  const occurredAt = parseEventDate(event.occurredAt);
+  const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
+    ? createdAt
+    : getEffectiveEventDate(event);
   const hasExistingEventData = 'eventData' in event && event.eventData != null;
   const isRun = isRunLevel(event.eventType);
   const eventName = isRun
@@ -991,13 +1044,28 @@ function EventRow({
             />
           </div>
 
-          {/* Time */}
+          {showSeparateEventOccurrenceTimestamps && (
+            <div
+              className="tabular-nums min-w-0 px-4"
+              style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
+            >
+              {occurredAt ? (
+                <TimestampTooltip date={occurredAt}>
+                  <span>{formatEventTime(occurredAt)}</span>
+                </TimestampTooltip>
+              ) : (
+                '-'
+              )}
+            </div>
+          )}
+
+          {/* Created */}
           <div
             className="tabular-nums min-w-0 px-4"
             style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
           >
-            <TimestampTooltip date={createdAt}>
-              <span>{formatEventTime(createdAt)}</span>
+            <TimestampTooltip date={displayedCreatedAt}>
+              <span>{formatEventTime(displayedCreatedAt)}</span>
             </TimestampTooltip>
           </div>
 
@@ -1161,7 +1229,7 @@ function EventRow({
 // Main component
 // ──────────────────────────────────────────────────────────────────────────
 
-export function EventListView({
+function EventListViewInner({
   events,
   run,
   onLoadEventData,
@@ -1176,6 +1244,7 @@ export function EventListView({
   isDecrypting = false,
   hasEncryptedData: hasEncryptedDataProp = false,
   onExactIdSearch,
+  showSeparateEventOccurrenceTimestamps = false,
 }: EventsListProps) {
   const toast = useToast();
   const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
@@ -1213,9 +1282,7 @@ export function EventListView({
     if (sourceEvents.length === 0) return [];
     const dir = effectiveSortOrder === 'desc' ? -1 : 1;
     return [...sourceEvents].sort(
-      (a, b) =>
-        dir *
-        (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      (a, b) => dir * (getEffectiveEventTime(a) - getEffectiveEventTime(b))
     );
   }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
 
@@ -1629,8 +1696,13 @@ export function EventListView({
         >
           <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
           <div className="w-5 flex-shrink-0" />
+          {showSeparateEventOccurrenceTimestamps && (
+            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+              Occurred
+            </div>
+          )}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Time
+            Created
           </div>
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             Event Type
@@ -1648,7 +1720,11 @@ export function EventListView({
 
         {/* Virtualized event rows or refetching skeleton */}
         {isRefetching || searchLoading ? (
-          <RowsSkeleton />
+          <RowsSkeleton
+            showSeparateEventOccurrenceTimestamps={
+              showSeparateEventOccurrenceTimestamps
+            }
+          />
         ) : sortedEvents.length === 0 ? (
           <div
             className="flex flex-1 items-center justify-center px-6 text-center text-sm"
@@ -1704,6 +1780,9 @@ export function EventListView({
                   encryptionKey={encryptionKey}
                   onEncryptedDataDetected={handleEncryptedDataDetected}
                   suppressGroupDimming={isExactSearchActive}
+                  showSeparateEventOccurrenceTimestamps={
+                    showSeparateEventOccurrenceTimestamps
+                  }
                 />
               );
             }}
@@ -1742,5 +1821,13 @@ export function EventListView({
         </div>
       </div>
     </DecryptClickContext.Provider>
+  );
+}
+
+export function EventListView(props: EventsListProps) {
+  return (
+    <ContextCardProvider>
+      <EventListViewInner {...props} />
+    </ContextCardProvider>
   );
 }
