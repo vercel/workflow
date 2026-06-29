@@ -211,7 +211,8 @@ jobs:
         run: |
           DEV_TEST_CONFIG="$(jq -nc --arg name "$APP_NAME" '{name:$name,project:"workbench-\($name)-workflow",generatedStepPath:"app/.well-known/workflow/v1/flow/__step_registrations.js",generatedWorkflowPath:"app/.well-known/workflow/v1/flow/route.js",apiFilePath:"app/api/chat/route.ts",apiFileImportPath:"../../.."}')"
           export DEV_TEST_CONFIG
-          cd "workbench/$APP_NAME" && pnpm dev &
+          export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-$APP_NAME-$WORLD_ID.log"
+          (cd "workbench/$APP_NAME" && pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
           cd "$GITHUB_WORKSPACE"
           echo "Waiting for dev server to start..." && sleep 15
           pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-community-$WORLD_ID-dev.json" || true
