@@ -1,7 +1,7 @@
 import * as zlib from 'node:zlib';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getStep } from './steps.js';
+import { deserializeStep, getStep } from './steps.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
@@ -107,5 +107,34 @@ describe('getStep', () => {
 
     expect(step.error).toEqual(serializedError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('deserializeStep (runtime write/append path)', () => {
+  // The runtime consumes events.create/createStep/updateStep results and
+  // re-hydrates payloads through the decompress-aware hydrate helpers, so the
+  // wire→shape adapter must NOT decompress. Decompressing here would skew the
+  // runtime's deserialize compression telemetry to `codec: none`. Compression
+  // normalization is the read path's (filterStepData) job — covered by the
+  // getStep tests above.
+  it('passes a compressed step error through unchanged (no decompression)', () => {
+    const serializedError = new TextEncoder().encode(
+      'devl[{"name":1,"message":2}, "Error", "boom"]'
+    );
+    const wrapped = gzipWrapped(serializedError);
+
+    const step = deserializeStep({
+      runId: 'wrun_test',
+      stepId: 'step_test',
+      stepName: 'step//./workflows/test//explode',
+      status: 'failed',
+      error: wrapped,
+      attempt: 1,
+      specVersion: 5,
+    });
+
+    // Still the compressed wire bytes — the runtime's hydrateStepError
+    // inflates them, this layer does not.
+    expect(step.error).toBe(wrapped);
   });
 });

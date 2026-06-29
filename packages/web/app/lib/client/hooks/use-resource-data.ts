@@ -83,10 +83,15 @@ export async function fetchSpanDetailResource(
     const result = await unwrapOrThrow(
       fetchEvents(env, runId, { sortOrder: 'asc', limit: 1000, withData: true })
     );
-    const allEvents = await Promise.all(
-      (result.data as unknown as Event[]).map(hydrate)
+    // `correlationId` is a top-level event field, untouched by hydration, so
+    // filter first and only hydrate the wait's own events. Hydrating the
+    // whole page would needlessly decrypt every event in the run when a key
+    // is present.
+    const waitEvents = await Promise.all(
+      (result.data as unknown as Event[])
+        .filter((e) => e.correlationId === resourceId)
+        .map(hydrate)
     );
-    const waitEvents = allEvents.filter((e) => e.correlationId === resourceId);
     const data = waitEventsToWaitEntity(waitEvents);
     if (data === null) {
       throw new WorkflowWebAPIError(

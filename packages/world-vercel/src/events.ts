@@ -56,20 +56,16 @@ import {
   getEventV4,
   getWorkflowRunEventsV4,
 } from './events-v4.js';
-import {
-  cancelWorkflowRunV1,
-  createWorkflowRunV1,
-  filterRunData,
-} from './runs.js';
+import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
   normalizeEventData,
-  normalizeHookData,
   normalizeSerializedData,
 } from './serialized-data.js';
 import { deserializeStep } from './steps.js';
 import {
   type APIConfig,
   DEFAULT_RESOLVE_DATA_OPTION,
+  deserializeError,
   makeRequest,
 } from './utils.js';
 
@@ -655,42 +651,42 @@ async function createWorkflowRunEventInner(
   );
 
   // The server already CBOR-decoded into result.body — just thread the
-  // fields through. Step/run/hook adapters normalize the wire-format
-  // payload fields before handing them to runtime hydration (run/step
-  // dates arrive as real Dates — the server's entity getters convert
-  // before CBOR-encoding).
-  // The returned `event` and preloaded `events` go through
-  // coerceEventDates: they can be read back from the backing store
-  // server-side (e.g. the run_started TTFB preload queries the event
-  // log), where nested eventData dates are ISO strings — same coercion
-  // the GET/LIST path applies, and the v3 path applied via its zod wire
-  // schemas.
-  // The returned event honors the caller's resolveData: 'none' strips
-  // payload fields, matching the v3 path's stripEventAndLegacyRefs
-  // behavior and the Storage contract.
+  // fields through. This is the runtime's event-append path (world.events
+  // .create is only ever called from the workflow runtime, never from
+  // o11y), and the runtime re-hydrates every payload it consumes through
+  // the decompress-aware helpers (hydrateStepReturnValue, hydrateRunError,
+  // …). So we deliberately do NOT decompress here: doing so would be
+  // redundant work on the TTFB-sensitive run_started/inline-delta path and
+  // would make the runtime's deserialize compression telemetry report
+  // `codec: none` for payloads that were compressed at rest. gzip/zstd
+  // normalization for o11y/display lives on the read paths (getEvent,
+  // getWorkflowRunEvents, getStep, getRun, getHook).
+  //
+  // `event`/`events` go through coerceEventDates only: they can be read
+  // back from the backing store server-side (e.g. the run_started TTFB
+  // preload queries the event log), where nested eventData dates are ISO
+  // strings — same coercion the GET/LIST path applies. The returned event
+  // honors the caller's resolveData: 'none' strips payload fields,
+  // matching the v3 path's stripEventAndLegacyRefs behavior.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
   return {
     event: body.event
       ? stripEventDataRefs(
-          coerceNormalizedEvent(body.event as Record<string, unknown>),
+          coerceEventDates(body.event as Record<string, unknown>),
           resolveData
         )
       : undefined,
     run: body.run
-      ? (filterRunData(body.run, resolveData) as EventResult['run'])
+      ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
       : undefined,
     step: body.step
       ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
       : undefined,
-    hook: body.hook
-      ? (normalizeHookData(
-          body.hook as Record<string, unknown>
-        ) as EventResult['hook'])
-      : undefined,
+    hook: body.hook as EventResult['hook'],
     wait: body.wait as EventResult['wait'],
     events: body.events
-      ? (body.events as Record<string, unknown>[]).map(coerceNormalizedEvent)
+      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
       : undefined,
     cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,

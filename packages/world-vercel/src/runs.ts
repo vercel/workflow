@@ -62,18 +62,19 @@ const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
 });
 
 // Overloaded function signatures for filterRunData
-export function filterRunData(
-  run: any,
-  resolveData: 'none'
-): WorkflowRunWithoutData;
-export function filterRunData(run: any, resolveData: 'all'): WorkflowRun;
-export function filterRunData(
+function filterRunData(run: any, resolveData: 'none'): WorkflowRunWithoutData;
+function filterRunData(run: any, resolveData: 'all'): WorkflowRun;
+function filterRunData(
   run: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData;
 
-// Implementation
-export function filterRunData(
+// Implementation. This is a read/display entry point (getRun/listRuns),
+// so it decompresses gzip/zstd payload wrappers via
+// `normalizeWorkflowRunData`. The runtime write path (events.create)
+// re-hydrates run errors through `hydrateRunError`, which decompresses
+// on its own, so it deliberately does not route through here.
+function filterRunData(
   run: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {

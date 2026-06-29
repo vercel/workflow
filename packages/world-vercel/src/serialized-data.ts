@@ -74,12 +74,14 @@ export function normalizeWorkflowRunData<T extends Record<string, unknown>>(
 export function normalizeStepData<T extends Record<string, unknown>>(
   step: T
 ): T {
+  // Only the resolved payload fields can carry a compression wrapper.
+  // `*Ref` fields are RefDescriptor objects (lazy mode), never byte
+  // payloads, so they need no normalization.
   return {
     ...step,
     input: normalizeSerializedData(step.input),
     output: normalizeSerializedData(step.output),
     error: normalizeSerializedData(step.error),
-    errorRef: normalizeSerializedData(step.errorRef),
   };
 }
 
@@ -89,7 +91,6 @@ export function normalizeHookData<T extends Record<string, unknown>>(
   return {
     ...hook,
     metadata: normalizeSerializedData(hook.metadata),
-    metadataRef: normalizeSerializedData(hook.metadataRef),
   };
 }
 
