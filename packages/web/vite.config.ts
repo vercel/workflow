@@ -1,6 +1,7 @@
 import { reactRouter } from '@react-router/dev/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
+import { nodeRequireBanner } from './vite-plugin-node-require';
 
 // When `true`, we're building the `packages/web` project for deployment to
 // Vercel itself (as opposed to local development, publishing to npm, or being
@@ -38,7 +39,7 @@ export default defineConfig(({ command, isSsrBuild }) => ({
     noExternal: command === 'build' ? true : undefined,
     external: isVercelWebDeployment ? undefined : ['express'],
   },
-  plugins: [tailwindcss(), reactRouter()],
+  plugins: [tailwindcss(), reactRouter(), nodeRequireBanner()],
   resolve: {
     // Ensure all workspace packages resolve React from the same location
     // to prevent duplicate React instances (which cause "Invalid hook call"

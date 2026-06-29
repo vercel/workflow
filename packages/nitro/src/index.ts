@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -413,7 +413,13 @@ function addDashboardHandler(nitro: Nitro) {
   }
 }
 
-function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
+type VirtualHandlerPath = 'workflow/webhook.mjs' | 'workflow/workflows.mjs';
+
+function addVirtualHandler(
+  nitro: Nitro,
+  route: string,
+  buildPath: VirtualHandlerPath
+) {
   nitro.options.handlers.push({
     route,
     handler: `#${buildPath}`,
@@ -421,6 +427,13 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
   const handlerImportPath = JSON.stringify(
     join(nitro.options.buildDir, buildPath)
   );
+  const stepsImportPath = JSON.stringify(
+    join(nitro.options.buildDir, 'workflow/steps.mjs')
+  );
+  const preloadSteps: Record<VirtualHandlerPath, string> = {
+    'workflow/webhook.mjs': '',
+    'workflow/workflows.mjs': `await import(/* @vite-ignore */ pathToFileURL(${stepsImportPath}).href + "?t=" + version);`,
+  };
 
   if (nitro.options.dev) {
     // Dev mode: load generated workflow bundles from disk at request time.
@@ -442,6 +455,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
         if (version !== currentVersion) {
           currentVersion = version;
           currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
+          ${preloadSteps[buildPath]}
         }
         return (await import(currentImportPath)).POST;
       }
@@ -465,6 +479,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
         if (version !== currentVersion) {
           currentVersion = version;
           currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
+          ${preloadSteps[buildPath]}
         }
         return (await import(currentImportPath)).POST;
       }

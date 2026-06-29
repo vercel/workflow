@@ -13,6 +13,7 @@ import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 
@@ -39,6 +40,28 @@ const DATA_EVENT_TYPES = new Set([
   'attr_set',
 ]);
 
+const parseDateValue = (value: unknown): Date | null => {
+  if (value == null) return null;
+
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const getEffectiveEventDate = (
+  event: Pick<Event, 'createdAt' | 'occurredAt'>
+): Date => parseDateValue(event.occurredAt) ?? new Date(event.createdAt);
+
+const formatEventTimestamp = (date: Date): string =>
+  date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    fractionalSecondDigits: 3,
+    timeZoneName: 'short',
+  });
+
 /**
  * A single event row that can lazy-load its eventData when expanded.
  */
@@ -46,6 +69,7 @@ function EventItem({
   event,
   onLoadEventData,
   encryptionKey,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   event: Event;
   onLoadEventData?: (
@@ -54,6 +78,8 @@ function EventItem({
   ) => Promise<unknown | null>;
   /** When this changes (e.g., Decrypt was clicked), invalidate cached data */
   encryptionKey?: Uint8Array;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) {
   const [loadedData, setLoadedData] = useState<unknown | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -106,11 +132,18 @@ function EventItem({
   }, [encryptionKey, loadEventData]);
 
   const createdAt = new Date(event.createdAt);
-  const createdAtTime = createdAt.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-  });
+  const occurredAt = parseDateValue(event.occurredAt);
+  const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
+    ? createdAt
+    : getEffectiveEventDate(event);
+  const displayedCreatedAtTime = displayedCreatedAt.toLocaleTimeString(
+    undefined,
+    {
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    }
+  );
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
@@ -131,13 +164,23 @@ function EventItem({
             {event.eventType}
           </span>
           <span className="shrink-0 text-label-13 text-gray-900">
-            {createdAtTime}
+            {displayedCreatedAtTime}
           </span>
         </div>
       </CollapsibleTrigger>
       <CollapsibleContent>
         {/* Event attributes */}
         <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
+          {showSeparateEventOccurrenceTimestamps && occurredAt && (
+            <div className="flex items-center justify-between gap-2 py-2 px-3">
+              <span className="text-label-12 text-gray-900">Occurred</span>
+              <TimestampTooltip date={occurredAt}>
+                <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+                  {formatEventTimestamp(occurredAt)}
+                </span>
+              </TimestampTooltip>
+            </div>
+          )}
           <div className="flex items-center justify-between gap-2 py-2 px-3">
             <span className="text-label-12 text-gray-900">Event ID</span>
             <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
@@ -276,6 +319,7 @@ export function EventsList({
   onStreamClick,
   onRunClick,
   encryptionKey,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   events: Event[];
   isLoading?: boolean;
@@ -288,13 +332,16 @@ export function EventsList({
   onRunClick?: (runId: string) => void;
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */
   encryptionKey?: Uint8Array;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) {
-  // Sort by createdAt
+  // Sort by the timestamp shown as Created by default.
   const sortedEvents = useMemo(
     () =>
       [...events].sort(
         (a, b) =>
-          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          getEffectiveEventDate(a).getTime() -
+          getEffectiveEventDate(b).getTime()
       ),
     [events]
   );
@@ -331,6 +378,9 @@ export function EventsList({
                     event={event}
                     onLoadEventData={onLoadEventData}
                     encryptionKey={encryptionKey}
+                    showSeparateEventOccurrenceTimestamps={
+                      showSeparateEventOccurrenceTimestamps
+                    }
                   />
                 ))}
               </div>

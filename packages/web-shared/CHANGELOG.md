@@ -1,5 +1,21 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2619](https://github.com/vercel/workflow/pull/2619) [`8c12132`](https://github.com/vercel/workflow/commit/8c12132d73fee22d80bead6e773c734688d13fba) Thanks [@mitul-s](https://github.com/mitul-s)! - Extend `cn` with custom tailwind-merge class groups for the design-system typography and material utilities, and move it to its own `lib/cn` module.
+
+- [#2637](https://github.com/vercel/workflow/pull/2637) [`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix the run trace detail panel flickering its Input/Output sections when navigating between spans. Span detail is now driven by a single selection-derived state machine (`useSelectedSpanDetail`) whose loading state stays in phase with the selected span, replacing the fetch flag that lagged selection by a few renders.
+
+- [#2613](https://github.com/vercel/workflow/pull/2613) [`148d474`](https://github.com/vercel/workflow/commit/148d4743e504d97e31cb333864bf4b22c6f49e5b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Use workflow event occurrence timestamps for span timing, span detail lifecycle fields, and event row display when available.
+
+- [#2614](https://github.com/vercel/workflow/pull/2614) [`a9a1d99`](https://github.com/vercel/workflow/commit/a9a1d991774b01357d5e150585cdd8c8185cb4b4) Thanks [@mitul-s](https://github.com/mitul-s)! - Remove the drop shadow from the off-screen marker indicator button in the trace viewer.
+
+- Updated dependencies [[`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e), [`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/core@5.0.0-beta.25
+  - @workflow/world@5.0.0-beta.14
+
 ## 5.0.0-beta.24
 
 ### Patch Changes
