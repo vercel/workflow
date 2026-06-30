@@ -1,8 +1,13 @@
+import { fileURLToPath } from 'node:url';
 import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
-import { LocalBuilder, VercelBuilder } from './builder.js';
+import {
+  type AstroBuilderOptions,
+  LocalBuilder,
+  VercelBuilder,
+} from './builder.js';
 
 export interface WorkflowPluginOptions {
   /**
@@ -17,17 +22,26 @@ export interface WorkflowPluginOptions {
 export function workflowPlugin(
   options: WorkflowPluginOptions = {}
 ): AstroIntegration {
-  const builder = new LocalBuilder({ sourcemap: options.sourcemap });
+  let builder: LocalBuilder | undefined;
+  let builderOptions: AstroBuilderOptions = { sourcemap: options.sourcemap };
   const enqueue = createBuildQueue();
 
   return {
     name: 'workflow:astro',
     hooks: {
       'astro:config:setup': async ({
+        config,
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
+        builderOptions = {
+          workingDir: fileURLToPath(config.root),
+          srcDir: fileURLToPath(config.srcDir),
+          sourcemap: options.sourcemap,
+        };
+
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
+          builder = new LocalBuilder(builderOptions);
           try {
             await builder.build();
           } catch (buildError) {
@@ -43,7 +57,7 @@ export function workflowPlugin(
               workflowTransformPlugin(),
               // Cast needed due to Astro using a different internal Vite version
               workflowHotUpdatePlugin({
-                builder,
+                builder: () => builder,
                 enqueue,
               }) as any,
             ],
@@ -52,9 +66,7 @@ export function workflowPlugin(
       },
       'astro:build:done': async () => {
         if (process.env.VERCEL_DEPLOYMENT_ID) {
-          const vercelBuilder = new VercelBuilder({
-            sourcemap: options.sourcemap,
-          });
+          const vercelBuilder = new VercelBuilder(builderOptions);
           await vercelBuilder.build();
         }
       },

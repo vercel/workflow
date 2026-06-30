@@ -1,5 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   type AstroConfig,
   BaseBuilder,
@@ -19,25 +20,36 @@ const WORKFLOW_ROUTES = [
   },
 ];
 
+export type AstroBuilderOptions = Pick<
+  Partial<AstroConfig>,
+  'workingDir' | 'projectRoot' | 'runtime' | 'sourcemap'
+> & {
+  srcDir?: string;
+};
+
 export class LocalBuilder extends BaseBuilder {
-  constructor(options?: {
-    sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
-  }) {
+  #pagesDir: string;
+
+  constructor(options: AstroBuilderOptions = {}) {
+    const config = resolveAstroBuilderConfig(options);
     super({
-      dirs: ['src/pages', 'src/workflows'],
+      ...createBaseBuilderConfig({
+        workingDir: config.workingDir,
+        projectRoot: config.projectRoot,
+        dirs: config.dirs,
+        sourcemap: options.sourcemap,
+      }),
       buildTarget: 'astro' as const,
-      stepsBundlePath: '', // unused in base
-      workflowsBundlePath: '', // unused in base
-      webhookBundlePath: '', // unused in base
-      workingDir: process.cwd(),
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
-      sourcemap: options?.sourcemap,
     });
+    this.#pagesDir = config.pagesDir;
   }
 
   override async build(): Promise<void> {
-    const pagesDir = resolve(this.config.workingDir, 'src/pages');
-    const workflowGeneratedDir = join(pagesDir, '.well-known/workflow/v1');
+    const workflowGeneratedDir = join(
+      this.#pagesDir,
+      '.well-known/workflow/v1'
+    );
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
@@ -162,14 +174,15 @@ export const prerender = false;`
 }
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
-  constructor(config?: Partial<AstroConfig>) {
-    const workingDir = config?.workingDir || process.cwd();
+  constructor(options: AstroBuilderOptions = {}) {
+    const config = resolveAstroBuilderConfig(options);
     super({
       ...createBaseBuilderConfig({
-        workingDir,
-        dirs: ['src/pages', 'src/workflows'],
-        runtime: config?.runtime,
-        sourcemap: config?.sourcemap,
+        workingDir: config.workingDir,
+        projectRoot: config.projectRoot,
+        dirs: config.dirs,
+        runtime: options.runtime,
+        sourcemap: options.sourcemap,
       }),
       buildTarget: 'vercel-build-output-api',
       debugFilePrefix: '_',
@@ -212,5 +225,76 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
 
     // Use old astro config with updated routes
     await writeFile(configPath, JSON.stringify(config, null, 2));
+  }
+}
+
+/** @internal */
+export function resolveAstroBuilderConfig(options: AstroBuilderOptions = {}): {
+  workingDir: string;
+  srcDir: string;
+  pagesDir: string;
+  dirs: string[];
+  projectRoot: string;
+} {
+  const workingDir = resolve(options.workingDir ?? process.cwd());
+  const srcDir = resolve(workingDir, options.srcDir ?? 'src');
+  const pagesDir = join(srcDir, 'pages');
+  const workflowsDir = join(srcDir, 'workflows');
+
+  return {
+    workingDir,
+    srcDir,
+    pagesDir,
+    dirs: [
+      toBuilderDir(workingDir, pagesDir),
+      toBuilderDir(workingDir, workflowsDir),
+    ],
+    projectRoot: options.projectRoot ?? findWorkspaceRoot(workingDir),
+  };
+}
+
+function toBuilderDir(workingDir: string, dir: string): string {
+  const relativeDir = relative(workingDir, dir);
+  if (
+    relativeDir &&
+    !relativeDir.startsWith('..') &&
+    !isAbsolute(relativeDir)
+  ) {
+    return toPosixPath(relativeDir);
+  }
+  return dir;
+}
+
+function toPosixPath(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
+function findWorkspaceRoot(workingDir: string): string {
+  let current = resolve(workingDir);
+
+  while (true) {
+    if (
+      existsSync(join(current, 'pnpm-workspace.yaml')) ||
+      packageJsonHasWorkspaces(join(current, 'package.json'))
+    ) {
+      return current;
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return workingDir;
+    }
+    current = parent;
+  }
+}
+
+function packageJsonHasWorkspaces(path: string): boolean {
+  try {
+    const packageJson = JSON.parse(readFileSync(path, 'utf-8')) as {
+      workspaces?: unknown;
+    };
+    return packageJson.workspaces !== undefined;
+  } catch {
+    return false;
   }
 }
