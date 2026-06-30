@@ -1,11 +1,7 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { join as pathJoin, resolve as pathResolve } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NestLocalBuilder, resolveNestBuilderConfig } from './builder.js';
 
@@ -42,9 +38,9 @@ describe('resolveNestBuilderConfig', () => {
 
     expect(resolveNestBuilderConfig({ workingDir: appRoot })).toEqual({
       workingDir: appRoot,
-      outDir: join(appRoot, '.nestjs/workflow'),
+      outDir: pathJoin(appRoot, '.nestjs/workflow'),
       dirs: ['lib'],
-      projectRoot: repoRoot,
+      projectRoot: pathResolve(repoRoot),
       moduleType: 'commonjs',
       distDir: 'build',
     });
@@ -84,7 +80,7 @@ describe('resolveNestBuilderConfig', () => {
 
     expect(resolveNestBuilderConfig({ workingDir: appRoot })).toEqual({
       workingDir: appRoot,
-      outDir: join(appRoot, '.nestjs/workflow'),
+      outDir: pathJoin(appRoot, '.nestjs/workflow'),
       dirs: ['src'],
       projectRoot: appRoot,
       moduleType: 'es6',
@@ -104,7 +100,7 @@ describe('resolveNestBuilderConfig', () => {
     expect(builder.config).toMatchObject({
       workingDir: appRoot,
       dirs: ['lib'],
-      projectRoot: repoRoot,
+      projectRoot: pathResolve(repoRoot),
     });
   });
 });
