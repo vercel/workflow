@@ -10,6 +10,10 @@ export type ResolvedWorkflowTestOptions = {
   outDir: string;
 };
 
+export type ResolveWorkflowTestOptionsContext = {
+  cwd?: string;
+};
+
 function getDefinedOptions(
   options?: WorkflowTestOptions
 ): Partial<WorkflowTestOptions> {
@@ -23,10 +27,11 @@ function getDefinedOptions(
 }
 
 export function resolveWorkflowTestOptions(
-  options?: WorkflowTestOptions
+  options?: WorkflowTestOptions,
+  context: ResolveWorkflowTestOptionsContext = {}
 ): ResolvedWorkflowTestOptions {
   const mergedOptions = getDefinedOptions(options);
-  const cwd = resolve(mergedOptions.cwd ?? process.cwd());
+  const cwd = resolve(mergedOptions.cwd ?? context.cwd ?? process.cwd());
   const rootDir = mergedOptions.rootDir
     ? resolve(cwd, mergedOptions.rootDir)
     : cwd;

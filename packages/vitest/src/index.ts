@@ -12,10 +12,16 @@ import {
   type LocalWorld,
 } from '@workflow/world-local';
 import type { Plugin } from 'vite';
+import type { TestProject } from 'vitest/node';
 import {
+  type ResolvedWorkflowTestOptions,
   resolveWorkflowTestOptions,
   WORKFLOW_VITEST_OPTIONS_KEY,
 } from './options.js';
+
+type WorkflowVitestPlugin = Plugin & {
+  configureVitest?: (context: { project: TestProject }) => void;
+};
 
 class VitestBuilder extends BaseBuilder {
   #outDir: string;
@@ -62,7 +68,8 @@ class VitestBuilder extends BaseBuilder {
 export interface WorkflowTestOptions {
   /**
    * The working directory of the project (where workflows/ lives).
-   * Defaults to process.cwd().
+   * Defaults to the Vite/Vitest config root when available, otherwise
+   * process.cwd().
    */
   cwd?: string;
   /**
@@ -99,27 +106,49 @@ export interface WorkflowTestOptions {
  * ```
  */
 export function workflow(options?: WorkflowTestOptions): Plugin[] {
-  const resolvedOptions = resolveWorkflowTestOptions(options);
-  const { outDir } = resolvedOptions;
+  const fallbackOptions = resolveWorkflowTestOptions(options);
+  const transformExcludes = [`${fallbackOptions.outDir}/`];
   const dir = fileURLToPath(new URL('.', import.meta.url));
+  const addTransformExclude = (
+    resolvedOptions: ResolvedWorkflowTestOptions
+  ) => {
+    const outDirExclude = `${resolvedOptions.outDir}/`;
+    if (!transformExcludes.includes(outDirExclude)) {
+      transformExcludes.push(outDirExclude);
+    }
+  };
+  const vitestPlugin: WorkflowVitestPlugin = {
+    name: 'workflow:vitest',
+    config(config) {
+      const resolvedOptions = resolveWorkflowTestOptions(options, {
+        cwd: typeof config?.root === 'string' ? config.root : undefined,
+      });
+      addTransformExclude(resolvedOptions);
+
+      return {
+        test: {
+          globalSetup: [join(dir, 'global-setup.js')],
+          setupFiles: [join(dir, 'setup-file.js')],
+          provide: {
+            [WORKFLOW_VITEST_OPTIONS_KEY]: resolvedOptions,
+          },
+        },
+      } as Record<string, unknown>;
+    },
+    configureVitest({ project }) {
+      const resolvedOptions = resolveWorkflowTestOptions(options, {
+        cwd: project.config.root,
+      });
+      addTransformExclude(resolvedOptions);
+      project.provide(WORKFLOW_VITEST_OPTIONS_KEY, resolvedOptions);
+    },
+  };
+
   return [
     workflowTransformPlugin({
-      exclude: [outDir + '/'],
+      exclude: transformExcludes,
     }),
-    {
-      name: 'workflow:vitest',
-      config() {
-        return {
-          test: {
-            globalSetup: [join(dir, 'global-setup.js')],
-            setupFiles: [join(dir, 'setup-file.js')],
-            provide: {
-              [WORKFLOW_VITEST_OPTIONS_KEY]: resolvedOptions,
-            },
-          },
-        } as Record<string, unknown>;
-      },
-    },
+    vitestPlugin,
   ];
 }
 
