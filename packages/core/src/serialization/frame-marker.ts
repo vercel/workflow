@@ -100,3 +100,28 @@ export function writerIdKey(writerId: Uint8Array): string {
   }
   return key;
 }
+
+/**
+ * Derive a compact {@link WRITER_ID_SIZE}-byte writerId from a seed string via
+ * FNV-1a (64-bit, emitted big-endian).
+ *
+ * The caller passes a value that is unique per logical writer and **stable
+ * across deterministic replays** — in practice a ULID from the workflow VM's
+ * seeded generator (`STABLE_ULID`). Deriving the id from that seed (rather than
+ * from `crypto.getRandomValues`) keeps it replay-deterministic without
+ * consuming the VM's seeded RNG, which would shift the sequence observed by
+ * user code. FNV-1a is not cryptographic; it only needs low collision
+ * probability among the few writers that may share one stream.
+ */
+export function deriveWriterId(seed: string): Uint8Array {
+  let hash = 0xcbf29ce484222325n; // FNV-1a 64-bit offset basis
+  const prime = 0x100000001b3n;
+  const mask = (1n << 64n) - 1n;
+  const bytes = new TextEncoder().encode(seed);
+  for (let i = 0; i < bytes.length; i++) {
+    hash = ((hash ^ BigInt(bytes[i])) * prime) & mask;
+  }
+  const out = new Uint8Array(WRITER_ID_SIZE);
+  new DataView(out.buffer).setBigUint64(0, hash, false);
+  return out;
+}

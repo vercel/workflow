@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildFramedV2Frame,
+  deriveWriterId,
   FRAME_HEADER_SIZE,
   FRAME_MARKER_SIZE,
   readFrameMarker,
@@ -78,5 +79,23 @@ describe('framed-v2 frame marker', () => {
   it('produces stable, distinct hex keys', () => {
     expect(writerIdKey(writerId(0x0a, 0x0b))).toBe('0a0b000000000000');
     expect(writerIdKey(writerId(1))).not.toBe(writerIdKey(writerId(2)));
+  });
+});
+
+describe('deriveWriterId', () => {
+  it('is deterministic for a given seed and exactly WRITER_ID_SIZE bytes', () => {
+    const a = deriveWriterId('01JABCDEF0123456789XYZABCD');
+    const b = deriveWriterId('01JABCDEF0123456789XYZABCD');
+    expect(a.length).toBe(WRITER_ID_SIZE);
+    expect(Array.from(a)).toEqual(Array.from(b));
+  });
+
+  it('maps distinct seeds to distinct ids', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      seen.add(writerIdKey(deriveWriterId(`seed-${i}`)));
+    }
+    // No collisions across 1000 distinct seeds.
+    expect(seen.size).toBe(1000);
   });
 });
