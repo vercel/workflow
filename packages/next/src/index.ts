@@ -1,6 +1,6 @@
 import { copyFileSync, mkdirSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
@@ -15,6 +15,14 @@ const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
 const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
+];
+const WORKSPACE_MARKER_FILES = ['pnpm-workspace.yaml'];
+const WORKSPACE_LOCK_FILES = [
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
 ];
 
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
@@ -232,6 +240,76 @@ function fileExists(path: string): boolean {
   }
 }
 
+function findFirstExistingUp(
+  cwd: string,
+  filenames: readonly string[]
+): string | undefined {
+  let current = resolve(cwd);
+
+  while (true) {
+    for (const filename of filenames) {
+      const candidate = join(current, filename);
+      if (fileExists(candidate)) {
+        return candidate;
+      }
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+function findNextWorkRootMarker(cwd: string): string | undefined {
+  return (
+    findFirstExistingUp(cwd, WORKSPACE_MARKER_FILES) ??
+    findFirstExistingUp(cwd, WORKSPACE_LOCK_FILES)
+  );
+}
+
+function findNextProjectRoot(workingDir: string): string {
+  let marker = findNextWorkRootMarker(workingDir);
+  if (!marker) {
+    return workingDir;
+  }
+
+  while (true) {
+    const markerDir = dirname(marker);
+    const parentDir = dirname(markerDir);
+    if (parentDir === markerDir) {
+      return markerDir;
+    }
+
+    const parentMarker = findNextWorkRootMarker(parentDir);
+    if (!parentMarker) {
+      return markerDir;
+    }
+    marker = parentMarker;
+  }
+}
+
+function getTurbopackRoot(nextConfig: NextConfig): string | undefined {
+  const root = (nextConfig.turbopack as { root?: unknown } | undefined)?.root;
+  return typeof root === 'string' && root.length > 0 ? root : undefined;
+}
+
+function resolveNextProjectRoot(
+  nextConfig: NextConfig,
+  workingDir: string
+): string {
+  const configuredRoot =
+    nextConfig.outputFileTracingRoot || getTurbopackRoot(nextConfig);
+  if (configuredRoot) {
+    return isAbsolute(configuredRoot)
+      ? configuredRoot
+      : resolve(configuredRoot);
+  }
+
+  return findNextProjectRoot(workingDir);
+}
+
 function getWorkflowManifestCopyPaths({
   projectDir,
   distDir,
@@ -442,7 +520,9 @@ export function withWorkflow(
       nextConfig.turbopack.rules = {};
     }
     const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = resolveNextVersion(process.cwd());
+    const workingDir = process.cwd();
+    const nextVersion = resolveNextVersion(workingDir);
+    const projectRoot = resolveNextProjectRoot(nextConfig, workingDir);
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
     const shouldWatch = process.env.NODE_ENV === 'development';
@@ -474,9 +554,9 @@ export function withWorkflow(
               'jsx',
               'js',
             ],
-            projectRoot: nextConfig.outputFileTracingRoot,
-            moduleSpecifierRoot: process.cwd(),
-            workingDir: process.cwd(),
+            projectRoot,
+            moduleSpecifierRoot: workingDir,
+            workingDir,
             distDir,
             diagnosticsDir: `${distDir}/diagnostics`,
             buildTarget: 'next',

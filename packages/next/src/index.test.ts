@@ -123,6 +123,63 @@ describe('withWorkflow builder config', () => {
     });
   });
 
+  it('uses outputFileTracingRoot before turbopack root', async () => {
+    const config = withWorkflow({
+      outputFileTracingRoot: '/trace-root',
+      turbopack: { root: '/turbo-root' },
+    });
+
+    await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(builderConfigs[0]).toMatchObject({
+      projectRoot: '/trace-root',
+      moduleSpecifierRoot: process.cwd(),
+      workingDir: process.cwd(),
+    });
+  });
+
+  it('uses turbopack root when outputFileTracingRoot is not set', async () => {
+    const config = withWorkflow({
+      turbopack: { root: '/turbo-root' },
+    });
+
+    await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(builderConfigs[0]).toMatchObject({
+      projectRoot: '/turbo-root',
+      moduleSpecifierRoot: process.cwd(),
+      workingDir: process.cwd(),
+    });
+  });
+
+  it('derives projectRoot from the Next.js workspace root detection markers', async () => {
+    const repoRoot = mkdtempSync(join(realTmpDir, 'workflow-next-root-'));
+    const appRoot = join(repoRoot, 'apps/web');
+    mkdirSync(appRoot, { recursive: true });
+    writeFile(join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n');
+    process.chdir(appRoot);
+
+    try {
+      const config = withWorkflow({});
+
+      await config('phase-production-build', {
+        defaultConfig: {},
+      });
+
+      expect(builderConfigs[0]).toMatchObject({
+        projectRoot: repoRoot,
+        moduleSpecifierRoot: appRoot,
+        workingDir: appRoot,
+      });
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     'phase-production-build',
     'phase-development-server',
