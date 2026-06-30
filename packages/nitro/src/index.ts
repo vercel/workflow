@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
@@ -33,15 +33,7 @@ export default {
 
     // NOTE: Temporary workaround for debug unenv mock
     if (!nitro.options.workflow?._vite) {
-      nitro.options.alias['debug'] ??= 'debug';
-    }
-
-    // NOTE: Externalize .nitro/workflow to prevent dev reloads
-    if (nitro.options.dev) {
-      nitro.options.externals ||= {};
-      nitro.options.externals.external ||= [];
-      const outDir = join(nitro.options.buildDir, 'workflow');
-      nitro.options.externals.external.push((id) => id.startsWith(outDir));
+      nitro.options.alias.debug ??= 'debug';
     }
 
     // Add tsConfig plugin
