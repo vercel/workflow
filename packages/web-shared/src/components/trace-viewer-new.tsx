@@ -8,27 +8,31 @@ import {
   type SidebarDataContextValue,
   SidebarDataProvider,
 } from './sidebar/sidebar-data-context';
-import type { Trace } from './trace-viewer/types';
 
 const NewTraceViewer = ({
   run,
   events,
   sidebarData,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
   loading = false,
 }: {
   run: WorkflowRun;
   events: Event[];
   sidebarData: SidebarDataContextValue;
+  onLoadMore?: () => void | Promise<void>;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
   loading?: boolean;
 }) => {
-  const traceWithMeta: TraceWithMeta | undefined = useMemo(() => {
+  const trace: TraceWithMeta | undefined = useMemo(() => {
     if (!run?.runId) {
       return undefined;
     }
     return buildTrace(run, events, new Date());
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `new Date()` is intentionally not a dep
   }, [run, events]);
-  const trace = traceWithMeta;
 
   if (!trace || (loading && events.length === 0)) {
     return <TraceViewerSkeleton />;
@@ -37,7 +41,12 @@ const NewTraceViewer = ({
   return (
     <SidebarDataProvider value={sidebarData}>
       <div className="relative w-full h-full flex">
-        <NewTraceViewerComponent trace={trace as Trace} />
+        <NewTraceViewerComponent
+          trace={trace}
+          onLoadMore={onLoadMore}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
+        />
       </div>
     </SidebarDataProvider>
   );

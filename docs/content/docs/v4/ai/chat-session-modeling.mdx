@@ -14,6 +14,10 @@ related:
   - /docs/api-reference/workflow/define-hook
 ---
 
+<Callout type="warn">
+The examples below use the deprecated `DurableAgent` API. For new agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The session-modeling patterns here (single- vs multi-turn, hooks, stream reconnection) apply to either API.
+</Callout>
+
 Chat sessions in AI agents can be modeled at different layers of your architecture. The choice affects state ownership and how you handle interruptions and reconnections.
 
 While there are many ways to model chat sessions, the two most common categories are single-turn and multi-turn.
@@ -83,7 +87,7 @@ Chat messages need to be stored somewhere—typically a database. In this exampl
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { WorkflowChatTransport } from "@ai-sdk/workflow"; // [!code highlight]
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
 
@@ -338,7 +342,7 @@ A custom hook wraps `useChat` to manage the multi-turn session. It handles:
 
 import type { UIMessage, UIDataTypes, ChatStatus } from "ai";
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@workflow/ai";
+import { WorkflowChatTransport } from "@ai-sdk/workflow";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 
 const STORAGE_KEY = "workflow-run-id";
@@ -592,4 +596,4 @@ export async function POST(
 - [Building Durable AI Agents](/docs/ai) - Foundation guide for durable agents
 - [Message Queueing](/docs/ai/message-queueing) - Queueing messages during tool execution
 - [`defineHook()` API Reference](/docs/api-reference/workflow/define-hook) - Hook configuration options
-- [`DurableAgent` API Reference](/docs/api-reference/workflow-ai/durable-agent) - Full API documentation
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - AI SDK API for durable, resumable agents

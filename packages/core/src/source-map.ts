@@ -52,7 +52,62 @@ function extractInlineSourceMapBase64(source: string): string | undefined {
 }
 
 /**
+ * Memoized `TraceMap | null` per workflow bundle. `null` records "this bundle
+ * has no usable inline source map" so repeated failures don't rescan the whole
+ * (potentially multi-MB) bundle string or re-parse the map. This matters most
+ * in production, where source maps are off by default: the first failure scans
+ * once and caches `null`, every later failure is O(1).
+ *
+ * Keyed by the bundle `code`. Insertion-ordered LRU capped at `MAX_TRACERS`,
+ * mirroring `vm/script-cache.ts`: production serves a single build-time bundle
+ * literal for the process lifetime, while dev/watch produces a new bundle
+ * string per edit — the bound keeps the few most-recent ones and evicts the
+ * rest instead of pinning every historical version.
+ */
+const tracerCache = new Map<string, TraceMap | null>();
+const MAX_TRACERS = 8;
+
+function getTraceMapForCode(workflowCode: string): TraceMap | null {
+  const cached = tracerCache.get(workflowCode);
+  if (cached !== undefined) {
+    // Move to most-recently-used position (end of insertion order).
+    tracerCache.delete(workflowCode);
+    tracerCache.set(workflowCode, cached);
+    return cached;
+  }
+
+  let tracer: TraceMap | null = null;
+  const base64 = extractInlineSourceMapBase64(workflowCode);
+  if (base64) {
+    try {
+      const sourceMapJson = Buffer.from(base64, 'base64').toString('utf-8');
+      const sourceMapData = JSON.parse(sourceMapJson);
+      // Use TraceMap (pure JS, no WASM required)
+      tracer = new TraceMap(sourceMapData);
+    } catch {
+      // Malformed inline map — treat as absent so we don't retry parsing it.
+      tracer = null;
+    }
+  }
+
+  tracerCache.set(workflowCode, tracer);
+  // Evict the least-recently-used entries when over the cap. New entries are
+  // appended at the end, so the oldest live at the front.
+  while (tracerCache.size > MAX_TRACERS) {
+    const oldest = tracerCache.keys().next().value;
+    if (oldest === undefined) break;
+    tracerCache.delete(oldest);
+  }
+  return tracer;
+}
+
+/**
  * Remaps an error stack trace using inline source maps to show original source locations.
+ *
+ * Degrades gracefully when the bundle has no inline source map (e.g. production
+ * builds, where maps are off by default): the original stack is returned
+ * unchanged. A cheap `filename` presence check skips all work when no frame
+ * references the workflow file, and parsed source maps are memoized per bundle.
  *
  * @param stack - The error stack trace to remap
  * @param filename - The workflow filename to match in stack frames
@@ -64,18 +119,18 @@ export function remapErrorStack(
   filename: string,
   workflowCode: string
 ): string {
-  const base64 = extractInlineSourceMapBase64(workflowCode);
-  if (!base64) {
+  // Nothing to remap if no frame references the workflow file. Avoids touching
+  // the (large) bundle string entirely for errors thrown elsewhere.
+  if (!stack.includes(filename)) {
+    return stack;
+  }
+
+  const tracer = getTraceMapForCode(workflowCode);
+  if (!tracer) {
     return stack; // No source map found
   }
 
   try {
-    const sourceMapJson = Buffer.from(base64, 'base64').toString('utf-8');
-    const sourceMapData = JSON.parse(sourceMapJson);
-
-    // Use TraceMap (pure JS, no WASM required)
-    const tracer = new TraceMap(sourceMapData);
-
     // Parse and remap each line in the stack trace
     const lines = stack.split('\n');
     const remappedLines = lines.map((line) => {

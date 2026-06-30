@@ -4,12 +4,13 @@ import {
   Children,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
   useCallback,
   useEffect,
   useRef,
   useState,
 } from 'react';
-import { cn } from '../../../lib/utils';
+import { cn } from '../../../lib/cn';
 
 const GUTTER_PX = 1;
 const MIN_PX = 50;
@@ -28,6 +29,7 @@ export interface SplitPaneProps {
   startHeader?: ReactNode;
   /** Fixed (non-scrolling) header rendered above the end pane. */
   endHeader?: ReactNode;
+  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }
 
 export function SplitPane({
@@ -36,6 +38,7 @@ export function SplitPane({
   defaultStartWidth = DEFAULT_START_PX,
   startHeader,
   endHeader,
+  scrollContainerRef,
 }: SplitPaneProps) {
   const parts = Children.toArray(children);
   if (parts.length !== 2) {
@@ -56,6 +59,16 @@ export function SplitPane({
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, []);
+
+  const setContainerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef.current = node;
+      if (scrollContainerRef) {
+        scrollContainerRef.current = node;
+      }
+    },
+    [scrollContainerRef]
+  );
 
   const clampPx = useCallback((px: number) => {
     const el = containerRef.current;
@@ -152,7 +165,7 @@ export function SplitPane({
           <div>{endHeader}</div>
         </div>
         <div
-          ref={containerRef}
+          ref={setContainerRef}
           className={cn(
             'grid flex-1 min-h-0 overflow-x-hidden overflow-y-auto',
             isDragging && 'select-none'
@@ -169,7 +182,7 @@ export function SplitPane({
 
   return (
     <div
-      ref={containerRef}
+      ref={setContainerRef}
       className={cn(
         'grid h-full min-h-0 content-start overflow-x-hidden overflow-y-auto',
         isDragging && 'select-none',

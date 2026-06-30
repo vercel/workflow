@@ -6,7 +6,7 @@
  * (for real-time step propagation).
  */
 
-import { CorruptedEventLogError } from '@workflow/errors';
+import { ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -121,7 +121,7 @@ describe('AbortController in workflow VM', () => {
       expect(controller.signal.aborted).toBe(true);
     });
 
-    it('reports a CorruptedEventLogError when abort hook_received token mismatches the controller', async () => {
+    it('reports a ReplayDivergenceError when abort hook_received token mismatches the controller', async () => {
       ctx = setupWorkflowContext([]);
       const ProbeAbortController = createCreateAbortController(ctx);
       new ProbeAbortController();
@@ -160,7 +160,8 @@ describe('AbortController in workflow VM', () => {
       new AbortController();
 
       const workflowError = await errorReceived.promise;
-      expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
+      expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
+      expect((workflowError as ReplayDivergenceError).eventId).toBe('evnt_0');
       expect(workflowError?.message).toContain('hook_received');
       expect(workflowError?.message).toContain('wrong-token');
       expect(workflowError?.message).toContain(probeHookItem.token);

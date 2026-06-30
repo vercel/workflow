@@ -8,12 +8,17 @@
  * per-test failure details including run IDs and dashboard links, which the
  * aggregation script uses to enrich the PR comment.
  *
+ * The sidecar carries the actual error message (`error.message`), which is
+ * important for test timeouts: vitest's built-in JSON reporter serializes only
+ * error stacks, and for timeouts the stack is the task-collection stack
+ * (`Error: STACK_TRACE_ERROR ...`) that contains no failure information.
+ *
  * Usage:
  *   vitest run --reporter=./packages/core/e2e/github-reporter.ts
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import type { File, Reporter, TaskResultPack, Vitest } from 'vitest';
+import type { Reporter, TestModule } from 'vitest/node';
 
 interface FailedTestInfo {
   testName: string;
@@ -33,22 +38,11 @@ interface DiagnosticsEntry {
 }
 
 export default class GithubAnnotationReporter implements Reporter {
-  private ctx!: Vitest;
   private failedTests: FailedTestInfo[] = [];
 
-  onInit(ctx: Vitest) {
-    this.ctx = ctx;
-  }
-
-  onTaskUpdate(_packs: TaskResultPack[]) {
-    // No-op: we process results in onFinished
-  }
-
-  onFinished(files?: File[]) {
-    if (!files) return;
-
-    for (const file of files) {
-      this.collectFailures(file.tasks, file.filepath);
+  onTestRunEnd(testModules: ReadonlyArray<TestModule>) {
+    for (const module of testModules) {
+      this.collectFailures(module);
     }
 
     if (this.failedTests.length > 0) {
@@ -64,17 +58,15 @@ export default class GithubAnnotationReporter implements Reporter {
     }
   }
 
-  private collectFailures(tasks: File['tasks'], filepath: string) {
-    for (const task of tasks) {
-      if (task.type === 'suite' && 'tasks' in task) {
-        this.collectFailures(task.tasks, filepath);
-        continue;
-      }
+  private collectFailures(module: TestModule) {
+    for (const test of module.children.allTests()) {
+      const result = test.result();
+      if (result.state !== 'failed') continue;
 
-      if (task.result?.state !== 'fail') continue;
-
-      const errors = task.result.errors || [];
-      const errorMessage = errors.map((e) => e.message).join('\n');
+      const errors = result.errors || [];
+      const errorMessage = errors
+        .map((e) => e.message || e.stack || 'Unknown error')
+        .join('\n');
 
       // Try to extract run diagnostics from error output.
       // The onTestFailed hook in utils.ts writes diagnostics with specific markers.
@@ -83,9 +75,9 @@ export default class GithubAnnotationReporter implements Reporter {
       const statusMatch = errorMessage.match(/Status:\s+(\S+)/);
 
       this.failedTests.push({
-        testName: task.name,
-        fullName: this.getFullName(task),
-        file: filepath,
+        testName: test.name,
+        fullName: test.fullName,
+        file: module.moduleId,
         errorMessage: errorMessage.slice(0, 500),
         runId: diagnosticsMatch?.[1],
         dashboardUrl: dashboardMatch?.[1],
@@ -150,16 +142,6 @@ export default class GithubAnnotationReporter implements Reporter {
         `\n::error file=${relFile},title=${title}::${body}\n`
       );
     }
-  }
-
-  private getFullName(task: any): string {
-    const parts: string[] = [task.name];
-    let current = task.suite;
-    while (current) {
-      if (current.name) parts.unshift(current.name);
-      current = current.suite;
-    }
-    return parts.join(' > ');
   }
 
   private writeFailuresSidecar() {

@@ -2,6 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getAllPorts, getPort, getWorkflowPort } from './get-port';
+import { parseWindowsNetstatPortsForPid } from './get-port-internals';
 
 describe('getPort', () => {
   let servers: http.Server[] = [];
@@ -324,8 +325,8 @@ describe('getWorkflowPort', () => {
 
     const fastAddr = fastServer.address() as AddressInfo;
     expect(port).toBe(fastAddr.port);
-    // Should complete reasonably quickly (Windows CI can be slow)
-    expect(elapsed).toBeLessThan(2000);
+    // Windows enumerates ports through netstat before applying the probe timeout.
+    expect(elapsed).toBeLessThan(5000);
   });
 
   it('should handle concurrent getWorkflowPort calls', async () => {
@@ -357,5 +358,23 @@ describe('getWorkflowPort', () => {
     results.forEach((port) => {
       expect(port).toBe(addr.port);
     });
+  });
+});
+
+describe('parseWindowsNetstatPortsForPid', () => {
+  it('only returns listening ports owned by the requested PID', () => {
+    const ports = parseWindowsNetstatPortsForPid(
+      [
+        '  Proto  Local Address          Foreign Address        State           PID',
+        '  TCP    0.0.0.0:22             0.0.0.0:0              LISTENING       4',
+        '  TCP    127.0.0.1:55812        0.0.0.0:0              LISTENING       4',
+        '  TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       55812',
+        '  TCP    [::1]:3001             [::]:0                 LISTENING       55812',
+        '  TCP    127.0.0.1:3002         0.0.0.0:0              ESTABLISHED     55812',
+      ].join('\n'),
+      55812
+    );
+
+    expect(ports).toEqual([3000, 3001]);
   });
 });

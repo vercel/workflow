@@ -17,12 +17,12 @@ import {
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import { getWorldLazy } from './get-world-lazy.js';
 import {
   type StopSleepOptions,
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
-import { getWorldLazy } from './get-world-lazy.js';
 
 /**
  * A `ReadableStream` extended with workflow-specific helpers.
@@ -134,6 +134,16 @@ export class Run<TResult> {
       })();
     }
     return this.#encryptionKeyPromise;
+  }
+
+  /**
+   * Defer fetching the run and its encryption key until serialized stream data
+   * is actually read. An empty or metadata-only stream must not start an
+   * unobserved run lookup.
+   * @internal
+   */
+  #getEncryptionKeyLazily(): () => Promise<CryptoKey | undefined> {
+    return () => this.#getEncryptionKey();
   }
 
   /**
@@ -264,9 +274,10 @@ export class Run<TResult> {
     'use step';
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    // Pass the key as a promise — it will be resolved lazily inside
-    // the first async transform() call of the deserialize stream.
-    const encryptionKey = this.#getEncryptionKey();
+    // The resolver starts only when the deserialize stream sees its first
+    // chunk, so creating or probing an empty stream cannot reject in the
+    // background.
+    const encryptionKey = this.#getEncryptionKeyLazily();
     const stream = getExternalRevivers(global, ops, this.runId, encryptionKey)
       .ReadableStream!({
       name,

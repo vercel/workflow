@@ -28,6 +28,12 @@ type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
 export interface EventsConsumerOptions {
   /**
+   * Callback invoked after an event has been consumed. Consumers such as the
+   * deterministic workflow clock must not observe events that are merely
+   * inspected while waiting for user code to subscribe to the next operation.
+   */
+  onConsumedEvent?: (event: Event) => void;
+  /**
    * Callback invoked when a non-null event cannot be consumed by any registered
    * callback, indicating an orphaned or invalid event in the event log. The
    * check is deferred until after the promise queue has drained, ensuring that
@@ -48,6 +54,7 @@ export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[] = [];
   readonly callbacks: EventConsumerCallback[] = [];
+  private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
   private getPromiseQueue: () => Promise<void>;
   private pendingUnconsumedCheck: Promise<void> | null = null;
@@ -57,6 +64,7 @@ export class EventsConsumer {
   constructor(events: Event[], options: EventsConsumerOptions) {
     this.events = events;
     this.eventIndex = 0;
+    this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
   }
@@ -86,8 +94,55 @@ export class EventsConsumer {
     process.nextTick(this.consume);
   }
 
+  private notifyConsumedEvent(event: Event) {
+    if (!this.onConsumedEvent) {
+      return;
+    }
+    try {
+      this.onConsumedEvent(event);
+    } catch (error) {
+      eventsLogger.error('onConsumedEvent callback threw an error', {
+        error,
+      });
+    }
+  }
+
   private consume = () => {
-    const currentEvent = this.events[this.eventIndex] ?? null;
+    // Drain consecutively consumable events synchronously within a single
+    // pass instead of paying one `process.nextTick` per consumed event.
+    //
+    // Why this is safe: a callback only consumes an event using a consumer
+    // that is ALREADY registered (e.g. a long-lived step consumer walking
+    // `step_created` → `step_started` → `step_completed`, or the structural
+    // lifecycle consumer). New consumers are only ever registered by workflow
+    // VM body code that runs asynchronously off `ctx.promiseQueue` after a
+    // delivery `resolve()`; none of the callbacks here call `subscribe()`
+    // synchronously. So within one pass `this.callbacks` is mutated only by
+    // this loop (the `Finished` splice), and the next event's consumer is
+    // either already present (advance now) or not yet registered — in which
+    // case no callback consumes the event and we fall through to the
+    // cross-VM-safe deferred unconsumed-event check below, exactly as before.
+    while (true) {
+      const currentEvent = this.events[this.eventIndex] ?? null;
+      if (!this.consumeOne(currentEvent)) {
+        // No callback consumed the current event; handle the terminal case.
+        this.handleUnconsumed(currentEvent);
+        return;
+      }
+      // A real event was consumed — advance to the next in the same pass. A
+      // consumed `null` sentinel never returns true (see consumeOne), so the
+      // synchronous drain can't spin past the end of the log.
+    }
+  };
+
+  /**
+   * Offer `currentEvent` to each registered callback in turn. Returns true
+   * when a callback consumed a real (non-null) event and the drain should
+   * advance to the next event in the same synchronous pass; false otherwise
+   * (nothing consumed it, or the consumed event was the end-of-events
+   * sentinel).
+   */
+  private consumeOne(currentEvent: Event | null): boolean {
     for (let i = 0; i < this.callbacks.length; i++) {
       const callback = this.callbacks[i];
       let handled = EventConsumerResult.NotConsumed;
@@ -97,24 +152,30 @@ export class EventsConsumer {
         eventsLogger.error('EventConsumer callback threw an error', { error });
       }
       if (
-        handled === EventConsumerResult.Consumed ||
-        handled === EventConsumerResult.Finished
+        handled !== EventConsumerResult.Consumed &&
+        handled !== EventConsumerResult.Finished
       ) {
-        // consumer handled this event, so increase the event index
-        this.eventIndex++;
-
-        // remove the callback if it has finished
-        if (handled === EventConsumerResult.Finished) {
-          this.callbacks.splice(i, 1);
-        }
-
-        // continue to the next event
-        process.nextTick(this.consume);
-        return;
+        continue;
       }
+      if (currentEvent !== null) {
+        this.notifyConsumedEvent(currentEvent);
+      }
+      // consumer handled this event, so increase the event index
+      this.eventIndex++;
+      // remove the callback if it has finished
+      if (handled === EventConsumerResult.Finished) {
+        this.callbacks.splice(i, 1);
+      }
+      // Continue draining only for real events. Real consumers return
+      // NotConsumed for the `null` sentinel, but guard against a pathological
+      // callback consuming it so the drain never spins past end-of-log.
+      return currentEvent !== null;
     }
+    return false;
+  }
 
-    // If we reach here, all callbacks returned NotConsumed.
+  private handleUnconsumed(currentEvent: Event | null) {
+    // All callbacks returned NotConsumed for the current event.
     // If the current event is non-null (a real event, not end-of-events),
     // schedule a deferred check. We chain onto the promiseQueue so that any
     // pending async work (e.g., deserialization/decryption that triggers
@@ -149,5 +210,5 @@ export class EventsConsumer {
           }, DEFERRED_CHECK_DELAY_MS);
         });
     }
-  };
+  }
 }

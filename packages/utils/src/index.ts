@@ -5,6 +5,8 @@ export {
   parseClassName,
   parseStepName,
   parseWorkflowName,
+  stepDisplayName,
+  workflowDisplayName,
 } from './parse-name.js';
 export { once, type PromiseWithResolvers, withResolvers } from './promise.js';
 export { parseDurationToDate } from './time.js';

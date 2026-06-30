@@ -92,6 +92,14 @@ export const WorkflowTracePropagated = SemanticConvention<boolean>(
   'workflow.trace.propagated'
 );
 
+/** Active trace-correlation mode for this invocation (linked or continuous) */
+export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
+  'workflow.trace.mode'
+);
+
+/** Whether this workflow invocation is using the turbo first-delivery path */
+export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'
@@ -120,6 +128,33 @@ export const WorkflowHooksCreated = SemanticConvention<number>(
 /** Number of waits created during workflow execution */
 export const WorkflowWaitsCreated = SemanticConvention<number>(
   'workflow.waits.created'
+);
+
+// Route attributes
+
+/** The workflow runtime route being handled */
+export const WorkflowRouteType = SemanticConvention<'flow' | 'step'>(
+  'workflow.route.type'
+);
+
+/** Whether this route invocation reused an already-created request handler */
+export const WorkflowRouteHandlerCached = SemanticConvention<boolean>(
+  'workflow.route.handler_cached'
+);
+
+/** Number of times this in-memory route handler has been invoked */
+export const WorkflowRouteInvocationCount = SemanticConvention<number>(
+  'workflow.route.invocation_count'
+);
+
+/** Time since this route entrypoint was constructed, in milliseconds */
+export const WorkflowRouteEntrypointAgeMs = SemanticConvention<number>(
+  'workflow.route.entrypoint_age_ms'
+);
+
+/** Time spent evaluating the generated route module body before creating the entrypoint */
+export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
+  'workflow.route.module_body_init_ms'
 );
 
 // Step attributes
@@ -256,6 +291,9 @@ export const HttpRequestMethod = SemanticConvention<string>(
   'http.request.method'
 );
 
+/** Route pattern for the request (standard OTEL: http.route) */
+export const HttpRoute = SemanticConvention<string>('http.route');
+
 /** Full URL of the request (standard OTEL: url.full) */
 export const UrlFull = SemanticConvention<string>('url.full');
 
@@ -302,6 +340,43 @@ export const QueueExecutionTimeMs = SemanticConvention<number>(
 /** Time spent serializing the response in milliseconds */
 export const QueueSerializeTimeMs = SemanticConvention<number>(
   'workflow.queue.serialize_time_ms'
+);
+
+// Payload compression attributes (gzip codec, specVersion >= 5)
+//
+// Sizes are measured at the compression boundary: before encryption on the
+// write path and after decryption on the read path. They therefore reflect
+// compression's effect, not the at-rest size (which also includes the
+// ~28-byte `encr` envelope and, on some backends, base64 expansion).
+
+/** Whether this serialize/deserialize was a write or read. */
+export const SerializationOperation = SemanticConvention<
+  'serialize' | 'deserialize'
+>('workflow.serialization.operation');
+
+/** Whether a compression codec was applied (write) / present (read). */
+export const SerializationCompressed = SemanticConvention<boolean>(
+  'workflow.serialization.compressed'
+);
+
+/** Which compression codec applied / was present (`zstd`, `gzip`, or `none`). */
+export const SerializationCodec = SemanticConvention<'zstd' | 'gzip' | 'none'>(
+  'workflow.serialization.codec'
+);
+
+/** Logical (uncompressed, devalue-prefixed) payload size in bytes. */
+export const SerializationUncompressedBytes = SemanticConvention<number>(
+  'workflow.serialization.uncompressed_bytes'
+);
+
+/** Stored (post-compression, pre-encryption) payload size in bytes. */
+export const SerializationStoredBytes = SemanticConvention<number>(
+  'workflow.serialization.stored_bytes'
+);
+
+/** Fraction of bytes saved by compression (0..1); set only when compressed. */
+export const SerializationCompressionRatio = SemanticConvention<number>(
+  'workflow.serialization.compression_ratio'
 );
 
 // RPC/Peer Service attributes - For service maps and dependency tracking
