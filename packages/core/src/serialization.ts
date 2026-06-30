@@ -42,6 +42,13 @@ import {
   rethrowIfRuntimeError,
 } from './serialization/errors.js';
 import {
+  buildFramedV2Frame,
+  FRAME_HEADER_SIZE,
+  FRAME_MARKER_SIZE,
+  readFrameMarker,
+  writerIdKey,
+} from './serialization/frame-marker.js';
+import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
   isEncrypted,
@@ -136,9 +143,12 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
  *
  * Each chunk is independently framed so the deserializer can find
  * chunk boundaries even when multiple chunks are concatenated or
- * split across transport reads.
+ * split across transport reads. `framed-v2` inserts a per-writer marker
+ * between the length and the payload (see `serialization/frame-marker.ts`).
+ *
+ * The length constant lives in `frame-marker.ts` so the framing and the
+ * marker codec share a single source of truth.
  */
-const FRAME_HEADER_SIZE = 4;
 
 /**
  * The mode-specific serializers (`./serialization/{client,step,workflow}.ts`)
@@ -208,9 +218,15 @@ async function recordCompression(
 
 export function getSerializeStream(
   reducers: Partial<Reducers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  // When provided, frames are framed-v2: a `[writerId][seq]` marker precedes
+  // the format-prefixed payload (see `serialization/frame-marker.ts`), so the
+  // single-request streaming writer can find its own frames in the persisted
+  // tail during recovery. `seq` is per-writer monotonic from 0.
+  writerId?: Uint8Array
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
+  let seq = 0n;
   // Resolve the key input once on first use and cache the result.
   // Note: if resolving cryptoKey rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
@@ -232,13 +248,22 @@ export function getSerializeStream(
 
         // Encrypt the frame payload if a key is provided.
         // The length header remains in the clear so the deserializer can
-        // find frame boundaries regardless of transport chunking.
+        // find frame boundaries regardless of transport chunking. The writer
+        // marker (framed-v2) likewise stays in the clear — it is transport
+        // metadata, not user data.
         if (keyState.key) {
           const encrypted = await aesGcmEncrypt(keyState.key, prefixed);
           prefixed = encodeWithFormatPrefix(
             SerializationFormat.ENCRYPTED,
             encrypted
           ) as Uint8Array;
+        }
+
+        if (writerId) {
+          controller.enqueue(
+            buildFramedV2Frame(prefixed, { writerId, seq: seq++ })
+          );
+          return;
         }
 
         // Write length-prefixed frame: [4-byte length][prefixed data]
@@ -269,10 +294,18 @@ export function getSerializeStream(
 
 export function getDeserializeStream(
   revivers: Partial<Revivers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  // When 'framed-v2', each frame carries a `[writerId][seq]` marker before the
+  // format-prefixed payload; it is stripped here and used to drop replays that
+  // recovery re-sent after they were already persisted.
+  framing?: 'framed-v2'
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
+  const stripMarkers = framing === 'framed-v2';
+  // framed-v2 only: highest seq already delivered per writerId (see the byte
+  // unframer for the dedupe rationale). O(number of writers) memory.
+  const maxSeqByWriter = new Map<string, bigint>();
   // Resolve the key input once on first use and cache the result.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
 
@@ -304,11 +337,33 @@ export function getDeserializeStream(
         break; // Incomplete frame, wait for more data
       }
 
-      const frameData = buffer.slice(
+      let frameData = buffer.slice(
         FRAME_HEADER_SIZE,
         FRAME_HEADER_SIZE + frameLength
       );
       buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
+
+      if (stripMarkers) {
+        if (frameData.length < FRAME_MARKER_SIZE) {
+          controller.error(
+            new SerializationError(
+              `framed-v2 stream frame of ${frameData.length} bytes is smaller ` +
+                `than the ${FRAME_MARKER_SIZE}-byte writer marker.`
+            )
+          );
+          return;
+        }
+        const { writerId, seq } = readFrameMarker(frameData);
+        frameData = frameData.slice(FRAME_MARKER_SIZE);
+        // Drop replays: a frame whose seq we've already delivered for this
+        // writer was re-sent by recovery after it was already persisted.
+        const key = writerIdKey(writerId);
+        const seen = maxSeqByWriter.get(key);
+        if (seen !== undefined && seq <= seen) {
+          continue;
+        }
+        maxSeqByWriter.set(key, seq);
+      }
 
       let { format, payload } = decodeFormatPrefix(frameData);
 
@@ -357,6 +412,13 @@ export function getDeserializeStream(
 
   const stream = new TransformStream<Uint8Array, any>({
     async transform(chunk, controller) {
+      // framed-v2 is always length-prefixed (the writer opts in via the ref's
+      // `framing` field), so skip the legacy-vs-framed sniffing entirely.
+      if (stripMarkers) {
+        appendToBuffer(chunk);
+        await processFrames(controller);
+        return;
+      }
       // First, try to detect if this is length-prefixed framed data
       // by checking if the first 4 bytes form a plausible length.
       if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
@@ -454,11 +516,18 @@ const MAX_FRAME_SIZE = 100_000_000;
  * `startIndex + consumedFrames` — the same arithmetic
  * `createReconnectingFramedStream` relies on for object streams. Do not
  * coalesce or split frames here without revisiting that resume logic.
+ *
+ * When `writerId` is provided the stream emits framed-v2 frames: each frame
+ * additionally carries a `[writerId][seq]` marker (see
+ * `serialization/frame-marker.ts`) so the single-request streaming writer can
+ * recognize its own frames in the persisted tail during recovery. `seq` is a
+ * per-writer monotonic counter starting at 0; one framer instance backs one
+ * logical writer, so the counter spans the whole stream lifetime.
  */
-export function getByteFramingStream(): TransformStream<
-  Uint8Array,
-  Uint8Array
-> {
+export function getByteFramingStream(
+  writerId?: Uint8Array
+): TransformStream<Uint8Array, Uint8Array> {
+  let seq = 0n;
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       if (chunk.length === 0) return;
@@ -471,6 +540,10 @@ export function getByteFramingStream(): TransformStream<
             { slug: 'serialization-failed' }
           )
         );
+        return;
+      }
+      if (writerId) {
+        controller.enqueue(buildFramedV2Frame(chunk, { writerId, seq: seq++ }));
         return;
       }
       const frame = new Uint8Array(FRAME_HEADER_SIZE + chunk.length);
@@ -495,11 +568,14 @@ export function getByteFramingStream(): TransformStream<
  * misframed wire (e.g. a raw byte stream being fed through this transform
  * by mistake) and we don't want to allocate an enormous buffer.
  */
-export function getByteUnframingStream(): TransformStream<
-  Uint8Array,
-  Uint8Array
-> {
+export function getByteUnframingStream(
+  framing: 'framed-v1' | 'framed-v2' = 'framed-v1'
+): TransformStream<Uint8Array, Uint8Array> {
   let buffer = new Uint8Array(0);
+  // framed-v2 only: highest seq already emitted per writerId, so a frame that
+  // recovery re-sent after it was in fact already persisted is dropped rather
+  // than delivered twice. O(number of writers) memory.
+  const maxSeqByWriter = new Map<string, bigint>();
 
   function appendToBuffer(data: Uint8Array) {
     const next = new Uint8Array(buffer.length + data.length);
@@ -532,6 +608,35 @@ export function getByteUnframingStream(): TransformStream<
 
         const total = FRAME_HEADER_SIZE + frameLength;
         if (buffer.length < total) break;
+
+        if (framing === 'framed-v2') {
+          if (frameLength < FRAME_MARKER_SIZE) {
+            controller.error(
+              new WorkflowRuntimeError(
+                `Byte-stream framed-v2 frame of ${frameLength} bytes is smaller ` +
+                  `than the ${FRAME_MARKER_SIZE}-byte writer marker.`,
+                { slug: 'serialization-failed' }
+              )
+            );
+            return;
+          }
+          const body = buffer.subarray(FRAME_HEADER_SIZE, total);
+          const { writerId, seq } = readFrameMarker(body);
+          const payload = buffer.slice(
+            FRAME_HEADER_SIZE + FRAME_MARKER_SIZE,
+            total
+          );
+          buffer = buffer.slice(total);
+          // Drop replays: a frame whose seq we've already delivered for this
+          // writer was re-sent by recovery after it was already persisted.
+          const key = writerIdKey(writerId);
+          const seen = maxSeqByWriter.get(key);
+          if (seen === undefined || seq > seen) {
+            maxSeqByWriter.set(key, seq);
+            controller.enqueue(payload);
+          }
+          continue;
+        }
 
         controller.enqueue(buffer.slice(FRAME_HEADER_SIZE, total));
         buffer = buffer.slice(total);
