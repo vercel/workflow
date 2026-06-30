@@ -70,6 +70,10 @@ export function createDevTests(config?: DevTestConfig) {
       appPath,
       'app/.well-known/workflow/v1/manifest.json'
     );
+    // Next canary webpack can queue Workflow rediscovery behind route
+    // compilation long enough that the default budget races test cleanup.
+    const hmrRediscoveryTimeoutMs = finalConfig.canary ? 120_000 : 50_000;
+    const flowRouteHmrFuzzTimeoutMs = finalConfig.canary ? 360_000 : 240_000;
     const readManifestStepFunctionNames = async (): Promise<string[]> => {
       const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
       const manifest = JSON.parse(manifestJson) as {
@@ -182,6 +186,12 @@ export function createDevTests(config?: DevTestConfig) {
       expected: ExpectedHmrLogCount | undefined
     ) => {
       if (typeof expected === 'number') {
+        // Canary webpack can emit duplicate watcher events for one edit; keep
+        // stable exact while treating canary counts as lower bounds.
+        if (finalConfig.canary) {
+          expect(actual).toBeGreaterThanOrEqual(expected);
+          return;
+        }
         expect(actual).toBe(expected);
         return;
       }
@@ -203,7 +213,7 @@ export function createDevTests(config?: DevTestConfig) {
       }
       await pollUntil({
         description: 'dev server HMR logs to match expected rebuild counts',
-        timeoutMs: 50_000,
+        timeoutMs: hmrRediscoveryTimeoutMs,
         intervalMs: 250,
         check: async () => {
           const log = (await readDevServerLog()).slice(cursor);
@@ -821,7 +831,7 @@ ${apiFileContent}`
 
     test.runIf(shouldRunNextFlowRouteHmrTests)(
       'should follow Next flow-route HMR rebuild rules for body-only changes',
-      { timeout: 240_000 },
+      { timeout: flowRouteHmrFuzzTimeoutMs },
       async () => {
         assert(deploymentUrl);
         setupWorld(deploymentUrl);
@@ -954,7 +964,7 @@ ${apiFileContent}`
 
         await pollUntil({
           description: 'HMR fuzz fixture to appear in the Next manifest',
-          timeoutMs: 50_000,
+          timeoutMs: hmrRediscoveryTimeoutMs,
           check: async () => {
             await prewarm();
             expect(await readManifestStepFunctionNames()).toContain(
@@ -1223,7 +1233,7 @@ export async function hmrFuzzAddedStep() {
             assert: async () => {
               await pollUntil({
                 description: 'added step definition to appear in manifest',
-                timeoutMs: 50_000,
+                timeoutMs: hmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1264,7 +1274,7 @@ export async function hmrFuzzAddedWorkflow() {
             assert: async () => {
               await pollUntil({
                 description: 'added workflow definition to appear in manifest',
-                timeoutMs: 50_000,
+                timeoutMs: hmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1297,7 +1307,7 @@ ${apiFileContent}`
             assert: async () => {
               await pollUntil({
                 description: 'added workflow file to appear in manifest',
-                timeoutMs: 50_000,
+                timeoutMs: hmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1323,7 +1333,7 @@ ${apiFileContent}`
             assert: async () => {
               await pollUntil({
                 description: 'removed workflow file to disappear from manifest',
-                timeoutMs: 50_000,
+                timeoutMs: hmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
