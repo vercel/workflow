@@ -165,11 +165,7 @@ describe('@workflow/vitest', () => {
     expect(combinedHandler).toBeDefined();
     expect(mockWorld.handlers.has('__wkf_step_')).toBe(false);
 
-    if (!combinedHandler) {
-      throw new Error('Expected combined handler to be registered');
-    }
-
-    const combinedResponse = await combinedHandler(new Request('http://test'));
+    const combinedResponse = await combinedHandler!(new Request('http://test'));
     expect(await combinedResponse.json()).toEqual({ bundle: 'combined' });
   });
 
@@ -178,122 +174,33 @@ describe('@workflow/vitest', () => {
     const dataDir = path.resolve('/tmp/workflow-vitest-data');
     const outDir = path.resolve('/tmp/workflow-vitest-out');
     const cwd = path.resolve('/repo/app');
+    const provide = vi.fn();
 
     const { workflow } = await loadModule();
-    const plugins = workflow({ cwd, rootDir, dataDir, outDir });
+    const plugins = workflow({ rootDir, dataDir, outDir });
 
-    expect(workflowTransformPlugin).toHaveBeenCalledWith({
-      exclude: [`${outDir}/`],
-    });
-
-    const vitestPlugin = plugins[1];
+    const vitestPlugin = plugins[1] as any;
     expect(vitestPlugin.name).toBe('workflow:vitest');
-    const config = vitestPlugin.config?.() as {
-      test: {
-        provide: Record<string, unknown>;
-      };
-    };
+    vitestPlugin.configureVitest({
+      project: {
+        config: { root: cwd },
+        provide,
+      },
+    });
 
     expect(process.env.WORKFLOW_VITEST_CWD).toBeUndefined();
     expect(process.env.WORKFLOW_VITEST_ROOT_DIR).toBeUndefined();
     expect(process.env.WORKFLOW_VITEST_DATA_DIR).toBeUndefined();
     expect(process.env.WORKFLOW_VITEST_OUT_DIR).toBeUndefined();
-    expect(config.test.provide.__workflowVitestOptions).toEqual({
+    expect(provide).toHaveBeenCalledWith('__workflowVitestOptions', {
       cwd,
       rootDir,
       dataDir,
       outDir,
     });
-  });
-
-  it('derives project-scoped options from the Vite config root', async () => {
-    const viteRoot = path.resolve('/repo/apps/api');
-
-    const { workflow } = await loadModule();
-    const plugins = workflow();
-
-    const transformOptions = workflowTransformPlugin.mock.calls[0]?.[0] as {
-      exclude: string[];
-    };
-    const vitestPlugin = plugins[1];
-    const config = vitestPlugin.config?.({ root: viteRoot } as any) as {
-      test: {
-        provide: Record<string, unknown>;
-      };
-    };
-
-    expect(config.test.provide.__workflowVitestOptions).toEqual({
-      cwd: viteRoot,
-      rootDir: viteRoot,
-      dataDir: path.join(viteRoot, '.workflow-data'),
-      outDir: path.join(viteRoot, '.workflow-vitest'),
+    expect(workflowTransformPlugin).toHaveBeenCalledWith({
+      exclude: [`${outDir}/`],
     });
-    expect(transformOptions.exclude).toContain(
-      `${path.join(viteRoot, '.workflow-vitest')}/`
-    );
-  });
-
-  it('updates project-scoped options from the resolved Vitest project root', async () => {
-    const configRoot = path.resolve('/repo');
-    const resolvedRoot = path.resolve('/repo/apps/api');
-    const providedOptions: Record<string, unknown> = {};
-
-    const { workflow } = await loadModule();
-    const plugins = workflow();
-
-    const transformOptions = workflowTransformPlugin.mock.calls[0]?.[0] as {
-      exclude: string[];
-    };
-    const vitestPlugin = plugins[1];
-    vitestPlugin.config?.({ root: configRoot } as any);
-    (vitestPlugin as any).configureVitest?.({
-      project: {
-        config: {
-          root: resolvedRoot,
-        },
-        provide: vi.fn((key: string, value: unknown) => {
-          providedOptions[key] = value;
-        }),
-      } as any,
-    });
-
-    expect(providedOptions.__workflowVitestOptions).toEqual({
-      cwd: resolvedRoot,
-      rootDir: resolvedRoot,
-      dataDir: path.join(resolvedRoot, '.workflow-data'),
-      outDir: path.join(resolvedRoot, '.workflow-vitest'),
-    });
-    expect(transformOptions.exclude).toContain(
-      `${path.join(resolvedRoot, '.workflow-vitest')}/`
-    );
-  });
-
-  it('prefers explicit cwd over the Vite config root', async () => {
-    const cwd = path.resolve('/repo/apps/api');
-    const viteRoot = path.resolve('/repo');
-
-    const { workflow } = await loadModule();
-    const plugins = workflow({ cwd });
-
-    const transformOptions = workflowTransformPlugin.mock.calls[0]?.[0] as {
-      exclude: string[];
-    };
-    const vitestPlugin = plugins[1];
-    const config = vitestPlugin.config?.({ root: viteRoot } as any) as {
-      test: {
-        provide: Record<string, unknown>;
-      };
-    };
-
-    expect(config.test.provide.__workflowVitestOptions).toEqual({
-      cwd,
-      rootDir: cwd,
-      dataDir: path.join(cwd, '.workflow-data'),
-      outDir: path.join(cwd, '.workflow-vitest'),
-    });
-    expect(transformOptions.exclude).toEqual([
-      `${path.join(cwd, '.workflow-vitest')}/`,
-    ]);
   });
 
   it('builds from project-scoped options in global setup', async () => {
@@ -306,20 +213,9 @@ describe('@workflow/vitest', () => {
     const rootDir = path.join(cwd, 'test-root');
     const dataDir = path.join(rootDir, '.workflow-data');
     const outDir = path.join(rootDir, '.workflow-vitest');
-    const fallbackCwd = path.resolve('/repo/wrong-app');
 
     const { setup } = await import('./global-setup.js');
     await setup({
-      config: {
-        provide: {
-          __workflowVitestOptions: {
-            cwd: fallbackCwd,
-            rootDir: fallbackCwd,
-            dataDir: path.join(fallbackCwd, '.workflow-data'),
-            outDir: path.join(fallbackCwd, '.workflow-vitest'),
-          },
-        },
-      },
       getProvidedContext: () => ({
         __workflowVitestOptions: {
           cwd,
