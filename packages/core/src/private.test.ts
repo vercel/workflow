@@ -19,6 +19,25 @@ describe('lazy step function loaders', () => {
 
     await expect(loadStepFunction(stepId)).resolves.toBe(stepFn);
     await expect(loadStepFunction(stepId)).resolves.toBe(stepFn);
-    expect(loadCount).toBe(1);
+    expect(loadCount).toBe(2);
+  });
+
+  it('lets a loader refresh an already registered step function', async () => {
+    const stepId = `step//./workflows/lazy-${randomUUID()}//resize`;
+    const firstStepFn = async () => 'first';
+    const secondStepFn = async () => 'second';
+    let loadCount = 0;
+
+    registerStepFunctionLoader(stepId, () => {
+      loadCount++;
+      registerStepFunction(
+        stepId,
+        loadCount === 1 ? firstStepFn : secondStepFn
+      );
+    });
+
+    await expect(loadStepFunction(stepId)).resolves.toBe(firstStepFn);
+    await expect(loadStepFunction(stepId)).resolves.toBe(secondStepFn);
+    expect(loadCount).toBe(2);
   });
 });

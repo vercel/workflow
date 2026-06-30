@@ -164,17 +164,11 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
 export async function loadStepFunction(
   stepId: string
 ): Promise<StepFunction | undefined> {
-  const registeredMatch = getStepFunction(stepId);
-  if (registeredMatch) {
-    return registeredMatch;
-  }
-
   const loader = getStepIdMatch(registeredStepLoaders, stepId);
-  if (!loader) {
-    return undefined;
+  if (loader) {
+    await loader();
   }
 
-  await loader();
   return getStepFunction(stepId);
 }
 
