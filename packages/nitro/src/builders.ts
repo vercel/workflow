@@ -7,6 +7,9 @@ import {
 import type { Nitro } from 'nitro/types';
 import { join } from 'pathe';
 
+const FLOW_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/flow$';
+const STEP_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/step$';
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
@@ -26,7 +29,11 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     const originalConfig = JSON.parse(await readFile(configPath, 'utf-8'));
     await super.build();
     const newConfig = JSON.parse(await readFile(configPath, 'utf-8'));
-    originalConfig.routes.unshift(...newConfig.routes);
+    originalConfig.routes.unshift(
+      { src: FLOW_ROUTE, dest: '/.well-known/workflow/v1/flow' },
+      { src: STEP_ROUTE, dest: '/.well-known/workflow/v1/step' },
+      ...newConfig.routes
+    );
     await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
   }
 }
