@@ -176,6 +176,7 @@ describe('withWorkflow builder config', () => {
         workingDir: appRoot,
       });
     } finally {
+      process.chdir(originalCwd);
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });
