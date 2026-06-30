@@ -25,6 +25,7 @@ When enabled, the module:
 - Registers the [`workflow/nitro`](/docs/api-reference/workflow-nitro) module on Nuxt's Nitro server, which transforms `"use workflow"` and `"use step"` directives, builds the workflow bundles, and registers the workflow runtime routes under `/.well-known/workflow/v1/`.
 - Configures Vite to bundle (rather than externalize) the Workflow SDK packages in SSR mode so workflow code is transformed correctly.
 - Enables the `workflow` TypeScript plugin by default for IDE IntelliSense.
+- Uses Nuxt/Nitro's detected `workspaceDir` so monorepo apps can import sibling workspace packages without extra workflow config.
 
 ## Module Options
 
