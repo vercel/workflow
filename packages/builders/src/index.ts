@@ -14,7 +14,10 @@ export {
   createWorkflowQueueTrigger,
   WORKFLOW_QUEUE_TRIGGER,
 } from './constants.js';
-export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
+export {
+  createDiscoverEntriesPlugin,
+  parentHasChild,
+} from './discover-entries-esbuild-plugin.js';
 export {
   clearModuleSpecifierCache,
   getImportPath,

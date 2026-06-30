@@ -189,43 +189,88 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // The actual max delivery enforcement happens in the workflow/step handlers
       // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
+      // Number of times the message has actually reached a handler (returned
+      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This —
+      // not the loop counter — is the attempt the handler sees via
+      // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
+      // Transport-level failures (below) never reach the handler, so they must
+      // not advance this, or a burst of "fetch failed"/ETIMEDOUT timeouts under
+      // local load would exhaust the handler's delivery budget before its first
+      // real execution.
+      let delivery = 0;
       try {
-        for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
+        for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(attempt + 1),
+            'x-vqs-message-attempt': String(delivery + 1),
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
 
-          if (directHandler) {
-            const req = new Request(
-              `http://localhost/.well-known/workflow/v1/${pathname}`,
+          try {
+            if (directHandler) {
+              const req = new Request(
+                `http://localhost/.well-known/workflow/v1/${pathname}`,
+                {
+                  method: 'POST',
+                  headers,
+                  body,
+                }
+              );
+              response = await directHandler(req);
+            } else {
+              const baseUrl = await resolveBaseUrl(config);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+              response = await fetch(
+                `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+                {
+                  method: 'POST',
+                  duplex: 'half',
+                  dispatcher: httpAgent,
+                  headers,
+                  body,
+                } as any
+              );
+            }
+          } catch (err) {
+            // The delivery never reached the handler: undici threw before a
+            // response. Under heavy local concurrency the single-process dev
+            // server can't accept every connection, so undici reports
+            // `TypeError: fetch failed` with an ETIMEDOUT/ECONNRESET cause.
+            // These are transient — back off and retry the *same* delivery
+            // rather than dropping the message (which would leave the step
+            // never started, with no retry). Two failures are not retryable:
+            //  - shutdown: close() aborted the agent / the backoff sleep.
+            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds —
+            //    rethrow so the outer catch surfaces the actionable guidance.
+            const name = (err as { name?: string } | undefined)?.name;
+            if (
+              closeSignal.aborted ||
+              name === 'AbortError' ||
+              name === 'ResponseAborted'
+            ) {
+              return;
+            }
+            if (isDetachedArrayBufferQueueError(err)) throw err;
+
+            console.error(
+              `[world-local] Queue delivery failed at the transport (loop ${loop + 1}), retrying`,
               {
-                method: 'POST',
-                headers,
-                body,
+                queueName,
+                messageId,
+                ...(runId && { runId }),
+                ...(stepId && { stepId }),
+                error: String(err),
               }
             );
-            response = await directHandler(req);
-          } else {
-            const baseUrl = await resolveBaseUrl(config);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-            response = await fetch(
-              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-              {
-                method: 'POST',
-                duplex: 'half',
-                dispatcher: httpAgent,
-                headers,
-                body,
-              } as any
-            );
+            await setTimeout(5000, undefined, { signal: closeSignal });
+            continue;
           }
 
+          delivery++;
           const text = await response.text();
 
           if (response.ok) {
@@ -251,7 +296,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
 
           console.error(
-            `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
+            `[world-local] Queue message failed (attempt ${delivery}, HTTP ${response.status})`,
             {
               queueName,
               messageId,

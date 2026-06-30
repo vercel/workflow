@@ -1,3 +1,4 @@
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // Re-declare the symbols here (mirrors world.ts and get-world-lazy.ts)
@@ -52,10 +53,8 @@ describe('world-init', () => {
       const { getWorldLazy } = await import('./get-world-lazy.js');
 
       // Replace the registration with a sentinel-returning function so we can
-      // prove which branch getWorldLazy used. Using a Symbol means a real
-      // World instance from `world.ts`'s `getWorld()` (returned by the
-      // production registration) can't accidentally satisfy this assertion.
-      const sentinel = Symbol('sentinel-world');
+      // prove which branch getWorldLazy used.
+      const sentinel = { specVersion: SPEC_VERSION_CURRENT };
       g[GetWorldFnKey] = async () => sentinel as unknown;
 
       const result = await getWorldLazy();

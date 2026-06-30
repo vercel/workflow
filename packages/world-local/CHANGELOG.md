@@ -1,5 +1,17 @@
 # @workflow/world-local
 
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2679](https://github.com/vercel/workflow/pull/2679) [`5977694`](https://github.com/vercel/workflow/commit/59776946a095c56c68254dcb0761d5dec48ccdf6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry local queue deliveries that fail at the transport (e.g. `fetch failed` / `ETIMEDOUT` when the dev server is saturated by many parallel steps) instead of dropping the message, so steps no longer get stuck never-started under high local concurrency.
+
+- [#2667](https://github.com/vercel/workflow/pull/2667) [`d4e6c5b`](https://github.com/vercel/workflow/commit/d4e6c5ba34a1a3df0e07cc1891837e1435a697a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Scope untagged startup recovery to untagged runs so a dev server no longer re-enqueues tagged runs (e.g. left behind by the vitest harness in a shared data directory), which previously failed `run_started` with "did not return the run entity".
+
+- Updated dependencies [[`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/world@5.0.0-beta.14
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.21
 
 ### Patch Changes

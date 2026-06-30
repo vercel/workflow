@@ -345,28 +345,18 @@ export async function batchProcessingWorkflow(items: string[]) {
 }
 ```
 
-### Streaming AI Responses with `DurableAgent`
+### Streaming AI Responses with `WorkflowAgent`
 
-Stream AI-generated content using [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) from `@workflow/ai`. Tools can also emit progress updates to the same stream using [data chunks](https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data#streaming-custom-data) with the [`UIMessageChunk`](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) type from the AI SDK:
+Stream AI-generated content using AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) from `@ai-sdk/workflow`. The agent writes `ModelCallStreamPart` chunks to the workflow stream, and route handlers convert them to UI message chunks with `createModelCallToUIChunkTransform()` before returning the response:
 
 ```typescript title="workflows/ai-assistant.ts" lineNumbers
-import { DurableAgent } from "@workflow/ai/agent";
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
+import { tool } from "ai";
 import { getWritable } from "workflow";
 import { z } from "zod";
-import type { UIMessageChunk } from "ai";
 
 async function searchFlights({ query }: { query: string }) {
   "use step";
-
-  // Tools can emit progress updates to the stream
-  const writable = getWritable<UIMessageChunk>(); // [!code highlight]
-  const writer = writable.getWriter(); // [!code highlight]
-  await writer.write({ // [!code highlight]
-    type: "data-progress", // [!code highlight]
-    data: { message: `Searching flights for ${query}...` }, // [!code highlight]
-    transient: true, // [!code highlight]
-  }); // [!code highlight]
-  writer.releaseLock(); // [!code highlight]
 
   // ... search logic ...
   return { flights: [/* results */] };
@@ -375,27 +365,28 @@ async function searchFlights({ query }: { query: string }) {
 export async function aiAssistantWorkflow(userMessage: string) {
   "use workflow";
 
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: "anthropic/claude-haiku-4.5",
-    system: "You are a helpful flight assistant.",
+    instructions: "You are a helpful flight assistant.",
     tools: {
-      searchFlights: {
+      searchFlights: tool({
         description: "Search for flights",
         inputSchema: z.object({ query: z.string() }),
         execute: searchFlights,
-      },
+      }),
     },
   });
 
   // LLM response will be streamed to the run's writable
   await agent.stream({
     messages: [{ role: "user", content: userMessage }],
-    writable: getWritable<UIMessageChunk>(), // [!code highlight]
+    writable: getWritable<ModelCallStreamPart>(), // [!code highlight]
   });
 }
 ```
 
 ```typescript title="app/api/ai-assistant/route.ts" lineNumbers
+import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import { createUIMessageStreamResponse } from "ai";
 import { start } from "workflow/api";
 import { aiAssistantWorkflow } from "./workflows/ai";
@@ -406,13 +397,13 @@ export async function POST(request: Request) {
   const run = await start(aiAssistantWorkflow, [message]);
 
   return createUIMessageStreamResponse({
-    stream: run.readable,
+    stream: run.readable.pipeThrough(createModelCallToUIChunkTransform()), // [!code highlight]
   });
 }
 ```
 
 <Callout type="info">
-For a complete implementation, see the [flight booking example](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) which demonstrates streaming AI responses with tool progress updates.
+For the full agent API and migration notes, see the [`WorkflowAgent` documentation](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent).
 </Callout>
 
 ### Streaming Between Steps
@@ -594,7 +585,7 @@ Stream errors don't trigger automatic retries for the producer step. Design your
 - [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows and access the `Run` object
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Retrieve runs and their streams later
 - [world.streams](/docs/api-reference/workflow-runtime/world/streams) - Low-level stream read/write/close via World SDK
-- [DurableAgent](/docs/api-reference/workflow-ai/durable-agent) - AI agents with built-in streaming support
+- [WorkflowAgent](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - AI agents with durable, resumable streaming support
 - [Errors and Retries](/docs/foundations/errors-and-retries) - Understanding error handling and retry behavior
 - [Serialization](/docs/foundations/serialization) - Understanding what data types can be passed in workflows
 - [Workflows and Steps](/docs/foundations/workflows-and-steps) - Core concepts of workflow execution

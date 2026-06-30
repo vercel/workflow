@@ -196,6 +196,19 @@ async function getRelativeFilenameForSwc(
   return relativeFilename;
 }
 
+function isNodeModulesPath(filename: string): boolean {
+  return /(?:^|[/\\])node_modules(?:[/\\]|$)/.test(filename);
+}
+
+export function getLoaderSourceMapOptions(filename: string, sourceMap: any) {
+  const shouldEmitSourceMaps = !isNodeModulesPath(filename);
+  return {
+    inputSourceMap: shouldEmitSourceMaps ? (sourceMap ?? false) : false,
+    sourceMaps: shouldEmitSourceMaps,
+    inlineSourcesContent: shouldEmitSourceMaps,
+  };
+}
+
 // This loader applies the "use workflow"/"use step" transform.
 // All files use step mode; the SWC plugin decides per-function whether
 // to emit workflow or step bindings based on the source's directives.
@@ -292,9 +305,7 @@ export default function workflowLoader(
         },
       },
       minify: false,
-      inputSourceMap: sourceMap,
-      sourceMaps: true,
-      inlineSourcesContent: true,
+      ...getLoaderSourceMapOptions(filename, sourceMap),
     });
 
     let transformedMap = sourceMap;

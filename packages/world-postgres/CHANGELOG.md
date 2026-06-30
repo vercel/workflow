@@ -1,5 +1,18 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.20
+
+### Patch Changes
+
+- [#2644](https://github.com/vercel/workflow/pull/2644) [`361ce23`](https://github.com/vercel/workflow/commit/361ce23b0f55833dab48889f4734c24cd8e373bf) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Rename the Postgres setup command to `bootstrap`.
+
+- [#2657](https://github.com/vercel/workflow/pull/2657) [`5718df8`](https://github.com/vercel/workflow/commit/5718df8721d76d8ee7088478c858e9e8862a332b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Defer loopback worker startup
+
+- Updated dependencies [[`5977694`](https://github.com/vercel/workflow/commit/59776946a095c56c68254dcb0761d5dec48ccdf6), [`d4e6c5b`](https://github.com/vercel/workflow/commit/d4e6c5ba34a1a3df0e07cc1891837e1435a697a8), [`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/world-local@5.0.0-beta.22
+  - @workflow/world@5.0.0-beta.14
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.19
 
 ### Patch Changes

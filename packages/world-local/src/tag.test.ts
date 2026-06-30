@@ -353,6 +353,32 @@ describe('File tagging', () => {
     });
   });
 
+  describe('untagged clear()', () => {
+    it('can write new entities after clearing cached directories', async () => {
+      const { createLocalWorld } = await import('./index.js');
+      const world = createLocalWorld({ dataDir: testDir });
+      await world.start?.();
+
+      await createRun(world, {
+        deploymentId: 'dep-before-clear',
+        workflowName: 'before-clear',
+        input: new Uint8Array(),
+      });
+      await world.clear();
+
+      const run = await createRun(world, {
+        deploymentId: 'dep-after-clear',
+        workflowName: 'after-clear',
+        input: new Uint8Array(),
+      });
+
+      expect((await world.runs.get(run.runId)).workflowName).toBe(
+        'after-clear'
+      );
+      await world.close?.();
+    });
+  });
+
   describe('full lifecycle with tags', () => {
     it('should support complete run lifecycle through tagged storage', async () => {
       const storage = createStorage(testDir, 'vitest-0');

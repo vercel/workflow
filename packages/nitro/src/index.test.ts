@@ -8,6 +8,7 @@ type StubOptions = {
   majorVersion?: number;
   dev?: boolean;
   preset?: string;
+  workspaceDir?: string;
   workflow?: { runtime?: string };
   externals?: {
     external?: Array<string | RegExp | ((id: string) => boolean)>;
@@ -20,6 +21,7 @@ function createNitroStub({
   majorVersion,
   dev = false,
   preset = 'node-server',
+  workspaceDir = '/tmp/project',
   workflow = {},
   externals,
   vercel,
@@ -38,6 +40,7 @@ function createNitroStub({
       typescript: {},
       vercel: vercel ?? {},
       virtual: {},
+      workspaceDir,
       workflow,
     },
     hooks: {
@@ -318,6 +321,15 @@ describe('@workflow/nitro externals forwarding', () => {
         const nitro = createNitroStub({ routing: true });
         const builder = new Builder(nitro) as any;
         expect(builder.config.externalPackages).toBeUndefined();
+      });
+
+      it('uses nitro workspaceDir as the workflow projectRoot', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          workspaceDir: '/tmp',
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.projectRoot).toBe('/tmp');
       });
 
       it('forwards string entries from nitro.options.externals.external', () => {

@@ -1,6 +1,6 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { materializeAll } from '../src/lib/event-materialization.js';
+import { otelTimeToMs } from '../src/components/workflow-traces/trace-time-utils.js';
 import { buildTrace } from '../src/lib/trace-builder.js';
 
 const BASE_TIME = new Date('2026-03-16T00:00:00Z');
@@ -25,34 +25,23 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   } as WorkflowRun;
 }
 
-describe('trace builder occurredAt data', () => {
-  it('threads lifecycle event occurredAt into span and materialized entity data', () => {
+describe('trace builder occurredAt timing', () => {
+  it('uses event occurrence timestamps for step span timing when available', () => {
     const run = makeRun();
-    const runOccurredAt = new Date(BASE_TIME.getTime() + 50);
-    const stepOccurredAt = new Date(BASE_TIME.getTime() + 1_050);
-    const hookOccurredAt = new Date(BASE_TIME.getTime() + 2_050);
-    const waitOccurredAt = new Date(BASE_TIME.getTime() + 3_050);
+    const stepCreatedAt = new Date(BASE_TIME.getTime() + 1_000);
+    const stepCreatedOccurredAt = new Date(BASE_TIME.getTime() + 1_050);
+    const stepStartedAt = new Date(BASE_TIME.getTime() + 1_100);
+    const stepStartedOccurredAt = new Date(BASE_TIME.getTime() + 1_250);
+    const stepCompletedAt = new Date(BASE_TIME.getTime() + 3_000);
+    const stepCompletedOccurredAt = new Date(BASE_TIME.getTime() + 2_750);
     const events = [
-      {
-        eventId: 'evnt_run_created',
-        runId: run.runId,
-        eventType: 'run_created',
-        createdAt: BASE_TIME,
-        occurredAt: runOccurredAt,
-        specVersion: 2,
-        eventData: {
-          deploymentId: 'dep_1',
-          workflowName: run.workflowName,
-          input: {},
-        },
-      },
       {
         eventId: 'evnt_step_created',
         runId: run.runId,
         eventType: 'step_created',
         correlationId: 'step_1',
-        createdAt: new Date(BASE_TIME.getTime() + 1_000),
-        occurredAt: stepOccurredAt,
+        createdAt: stepCreatedAt,
+        occurredAt: stepCreatedOccurredAt,
         specVersion: 2,
         eventData: { stepName: 'add', input: {} },
       },
@@ -61,30 +50,19 @@ describe('trace builder occurredAt data', () => {
         runId: run.runId,
         eventType: 'step_started',
         correlationId: 'step_1',
-        createdAt: new Date(BASE_TIME.getTime() + 1_100),
+        createdAt: stepStartedAt,
+        occurredAt: stepStartedOccurredAt,
         specVersion: 2,
       },
       {
-        eventId: 'evnt_hook_created',
+        eventId: 'evnt_step_completed',
         runId: run.runId,
-        eventType: 'hook_created',
-        correlationId: 'hook_1',
-        createdAt: new Date(BASE_TIME.getTime() + 2_000),
-        occurredAt: hookOccurredAt,
+        eventType: 'step_completed',
+        correlationId: 'step_1',
+        createdAt: stepCompletedAt,
+        occurredAt: stepCompletedOccurredAt,
         specVersion: 2,
-        eventData: { token: 'approve' },
-      },
-      {
-        eventId: 'evnt_wait_created',
-        runId: run.runId,
-        eventType: 'wait_created',
-        correlationId: 'wait_1',
-        createdAt: new Date(BASE_TIME.getTime() + 3_000),
-        occurredAt: waitOccurredAt,
-        specVersion: 2,
-        eventData: {
-          resumeAt: new Date(BASE_TIME.getTime() + 60_000),
-        },
+        eventData: { result: 42 },
       },
     ] as Event[];
 
@@ -93,20 +71,48 @@ describe('trace builder occurredAt data', () => {
       events,
       new Date(BASE_TIME.getTime() + 10_000)
     );
-    const dataFor = (resource: string) => {
-      const span = trace.spans.find((s) => s.attributes.resource === resource);
-      expect(span).toBeDefined();
-      return span?.attributes.data as { occurredAt?: Date } | undefined;
+    const stepSpan = trace.spans.find((s) => s.attributes.resource === 'step');
+    expect(stepSpan).toBeDefined();
+    if (!stepSpan) {
+      throw new Error('Expected step span to be built');
+    }
+
+    expect(otelTimeToMs(stepSpan.startTime)).toBe(
+      stepCreatedOccurredAt.getTime()
+    );
+    expect(stepSpan.activeStartTime).toBeDefined();
+    if (!stepSpan.activeStartTime) {
+      throw new Error('Expected step span active start time to be built');
+    }
+    expect(otelTimeToMs(stepSpan.activeStartTime)).toBe(
+      stepStartedOccurredAt.getTime()
+    );
+    expect(otelTimeToMs(stepSpan.endTime)).toBe(
+      stepCompletedOccurredAt.getTime()
+    );
+    expect(otelTimeToMs(stepSpan.duration)).toBe(
+      stepCompletedOccurredAt.getTime() - stepCreatedOccurredAt.getTime()
+    );
+
+    const startMarker = stepSpan.events.find(
+      (event) => event.name === 'step_started'
+    );
+    expect(startMarker).toBeDefined();
+    if (!startMarker) {
+      throw new Error('Expected step_started marker to be built');
+    }
+    expect(otelTimeToMs(startMarker.timestamp)).toBe(
+      stepStartedOccurredAt.getTime()
+    );
+    const stepData = stepSpan.attributes.data as {
+      createdAt: Date;
+      startedAt?: Date;
+      completedAt?: Date;
+      occurredAt?: Date;
     };
-
-    expect(dataFor('run')?.occurredAt).toEqual(runOccurredAt);
-    expect(dataFor('step')?.occurredAt).toEqual(stepOccurredAt);
-    expect(dataFor('hook')?.occurredAt).toEqual(hookOccurredAt);
-    expect(dataFor('sleep')?.occurredAt).toEqual(waitOccurredAt);
-
-    const materialized = materializeAll(events);
-    expect(materialized.steps[0]?.occurredAt).toEqual(stepOccurredAt);
-    expect(materialized.hooks[0]?.occurredAt).toEqual(hookOccurredAt);
-    expect(materialized.waits[0]?.occurredAt).toEqual(waitOccurredAt);
+    expect(stepData.createdAt).toEqual(stepCreatedOccurredAt);
+    expect(stepData.startedAt).toEqual(stepStartedOccurredAt);
+    expect(stepData.completedAt).toEqual(stepCompletedOccurredAt);
+    expect(stepData).not.toHaveProperty('occurredAt');
   });
 });
