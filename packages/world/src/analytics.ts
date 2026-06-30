@@ -9,6 +9,9 @@ const NullableDateSchema = z.coerce.date().nullable().optional();
 const NullableStringSchema = z.string().nullable().optional();
 const NullableBooleanSchema = z.boolean().nullable().optional();
 
+// Keep analytics object schemas standalone even when they mirror storage
+// metadata fields. This namespace is an explicit metadata-only read contract;
+// payload and secret fields should only appear here through deliberate opt-in.
 export const AnalyticsRunSchema = z.object({
   runId: z.string(),
   status: WorkflowRunStatusSchema,
