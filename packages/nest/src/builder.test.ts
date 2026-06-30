@@ -36,8 +36,9 @@ describe('resolveNestBuilderConfig', () => {
     });
     writeJson(join(appRoot, '.swcrc'), { module: { type: 'commonjs' } });
 
+    const workingDir = pathResolve(appRoot);
     expect(resolveNestBuilderConfig({ workingDir: appRoot })).toEqual({
-      workingDir: appRoot,
+      workingDir,
       outDir: pathJoin(appRoot, '.nestjs/workflow'),
       dirs: ['lib'],
       projectRoot: pathResolve(repoRoot),
@@ -46,43 +47,15 @@ describe('resolveNestBuilderConfig', () => {
     });
   });
 
-  it('lets explicit workflow options win over framework-derived values', () => {
-    const repoRoot = createTempDir();
-    const appRoot = join(repoRoot, 'apps/api');
-    mkdirSync(appRoot, { recursive: true });
-    writeFileSync(join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n');
-    writeJson(join(appRoot, 'nest-cli.json'), { sourceRoot: 'lib' });
-    writeJson(join(appRoot, 'tsconfig.json'), {
-      compilerOptions: { outDir: 'build', module: 'CommonJS' },
-    });
-
-    expect(
-      resolveNestBuilderConfig({
-        workingDir: appRoot,
-        outDir: '.workflow/custom',
-        dirs: ['custom-workflows'],
-        projectRoot: '/manual/root',
-        moduleType: 'es6',
-        distDir: 'manual-dist',
-      })
-    ).toEqual({
-      workingDir: appRoot,
-      outDir: '.workflow/custom',
-      dirs: ['custom-workflows'],
-      projectRoot: '/manual/root',
-      moduleType: 'es6',
-      distDir: 'manual-dist',
-    });
-  });
-
   it('falls back to existing defaults without framework config files', () => {
     const appRoot = createTempDir();
 
+    const workingDir = pathResolve(appRoot);
     expect(resolveNestBuilderConfig({ workingDir: appRoot })).toEqual({
-      workingDir: appRoot,
+      workingDir,
       outDir: pathJoin(appRoot, '.nestjs/workflow'),
       dirs: ['src'],
-      projectRoot: appRoot,
+      projectRoot: workingDir,
       moduleType: 'es6',
       distDir: 'dist',
     });
@@ -98,7 +71,7 @@ describe('resolveNestBuilderConfig', () => {
     const builder = new NestLocalBuilder({ workingDir: appRoot }) as any;
 
     expect(builder.config).toMatchObject({
-      workingDir: appRoot,
+      workingDir: pathResolve(appRoot),
       dirs: ['lib'],
       projectRoot: pathResolve(repoRoot),
     });

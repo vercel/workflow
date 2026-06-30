@@ -13,8 +13,6 @@ export interface NestBuilderOptions {
   /**
    * Directories to scan for workflow files
    * @default nest-cli.json sourceRoot or ['src']
-   * @deprecated Prefer `sourceRoot` in nest-cli.json. This option remains as
-   * an override for non-standard layouts.
    */
   dirs?: string[];
   /**
@@ -39,8 +37,6 @@ export interface NestBuilderOptions {
    * steps bundle to use require() via createRequire, avoiding ESM/CJS
    * named-export interop issues with SWC's _export() wrapper pattern.
    * @default .swcrc module.type, tsconfig module, or 'es6'
-   * @deprecated Prefer `module.type` in .swcrc. This option remains as an
-   * override for non-standard compiler setups.
    */
   moduleType?: 'es6' | 'commonjs';
   /**
@@ -48,8 +44,6 @@ export interface NestBuilderOptions {
    * Used when moduleType is 'commonjs' to resolve compiled file paths.
    * This should match the `outDir` in your tsconfig.json.
    * @default tsconfig compilerOptions.outDir or 'dist'
-   * @deprecated Prefer `compilerOptions.outDir` in tsconfig.json. This option
-   * remains as an override for non-standard compiler setups.
    */
   distDir?: string;
   /**
@@ -176,6 +170,10 @@ export class NestLocalBuilder extends BaseBuilder {
   }
 }
 
+type NestCliConfig = { sourceRoot?: unknown };
+type SwcConfig = { module?: { type?: unknown } };
+type TsConfig = { compilerOptions?: { module?: unknown; outDir?: unknown } };
+
 /** @internal */
 export function resolveNestBuilderConfig(options: NestBuilderOptions = {}): {
   workingDir: string;
@@ -185,78 +183,84 @@ export function resolveNestBuilderConfig(options: NestBuilderOptions = {}): {
   moduleType: 'es6' | 'commonjs';
   distDir: string;
 } {
-  const workingDir = options.workingDir ?? process.cwd();
+  const workingDir = resolve(options.workingDir ?? process.cwd());
+  const nestCli = readJsonIfExists<NestCliConfig>(
+    join(workingDir, 'nest-cli.json')
+  );
+  const swcrc = readJsonIfExists<SwcConfig>(join(workingDir, '.swcrc'));
+  const tsconfig = readJsonIfExists<TsConfig>(
+    join(workingDir, 'tsconfig.json')
+  );
+  const moduleType =
+    options.moduleType ??
+    readModuleType(readString(swcrc?.module?.type, '.swcrc module.type')) ??
+    readModuleType(
+      readString(tsconfig?.compilerOptions?.module, 'tsconfig module')
+    ) ??
+    'es6';
+
   return {
     workingDir,
     outDir: options.outDir ?? join(workingDir, '.nestjs/workflow'),
-    dirs: options.dirs ?? getNestSourceDirs(workingDir),
-    projectRoot: options.projectRoot ?? findWorkspaceRoot(workingDir),
-    moduleType: options.moduleType ?? getNestModuleType(workingDir),
-    distDir: options.distDir ?? getTsConfigOutDir(workingDir),
+    dirs: options.dirs ?? [
+      readString(nestCli?.sourceRoot, 'nest-cli sourceRoot') ?? 'src',
+    ],
+    projectRoot: options.projectRoot ?? findPnpmWorkspaceRoot(workingDir),
+    moduleType,
+    distDir:
+      options.distDir ??
+      readString(tsconfig?.compilerOptions?.outDir, 'tsconfig outDir') ??
+      'dist',
   };
 }
 
-function readJsonFile(path: string): unknown {
-  try {
-    return JSON.parse(readFileSync(path, 'utf-8'));
-  } catch {
-    return undefined;
+function readJsonIfExists<T extends object>(path: string): T | undefined {
+  if (!existsSync(path)) return undefined;
+
+  const value = JSON.parse(readFileSync(path, 'utf-8'));
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Expected ${path} to contain a JSON object.`);
+  }
+  return value as T;
+}
+
+function readString(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`Expected ${name} to be a string.`);
+  }
+  return value;
+}
+
+function readModuleType(
+  value: string | undefined
+): 'es6' | 'commonjs' | undefined {
+  switch (value?.toLowerCase()) {
+    case undefined:
+      return undefined;
+    case 'commonjs':
+      return 'commonjs';
+    case 'es6':
+    case 'es2015':
+    case 'es2020':
+    case 'es2022':
+    case 'esnext':
+    case 'node16':
+    case 'node18':
+    case 'node20':
+    case 'nodenext':
+    case 'preserve':
+      return 'es6';
+    default:
+      throw new Error(`Unsupported Nest module type: ${value}`);
   }
 }
 
-function getRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function getString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function getNestSourceDirs(workingDir: string): string[] {
-  const config = getRecord(readJsonFile(join(workingDir, 'nest-cli.json')));
-  return [getString(config?.sourceRoot) ?? 'src'];
-}
-
-function getTsConfigCompilerOptions(
-  workingDir: string
-): Record<string, unknown> {
-  const config = getRecord(readJsonFile(join(workingDir, 'tsconfig.json')));
-  return getRecord(config?.compilerOptions) ?? {};
-}
-
-function getTsConfigOutDir(workingDir: string): string {
-  return getString(getTsConfigCompilerOptions(workingDir).outDir) ?? 'dist';
-}
-
-function getNestModuleType(workingDir: string): 'es6' | 'commonjs' {
-  const swcrc = getRecord(readJsonFile(join(workingDir, '.swcrc')));
-  const swcrcModule = getRecord(swcrc?.module);
-  return (
-    normalizeModuleType(swcrcModule?.type) ??
-    normalizeModuleType(getTsConfigCompilerOptions(workingDir).module) ??
-    'es6'
-  );
-}
-
-function normalizeModuleType(
-  value: unknown
-): 'es6' | 'commonjs' | undefined {
-  const normalized = getString(value)?.toLowerCase();
-  if (!normalized) return undefined;
-  if (normalized === 'commonjs') return 'commonjs';
-  return 'es6';
-}
-
-function findWorkspaceRoot(workingDir: string): string {
+function findPnpmWorkspaceRoot(workingDir: string): string {
   let current = resolve(workingDir);
 
   while (true) {
-    if (
-      existsSync(join(current, 'pnpm-workspace.yaml')) ||
-      packageJsonHasWorkspaces(join(current, 'package.json'))
-    ) {
+    if (existsSync(join(current, 'pnpm-workspace.yaml'))) {
       return current;
     }
 
@@ -266,9 +270,4 @@ function findWorkspaceRoot(workingDir: string): string {
     }
     current = parent;
   }
-}
-
-function packageJsonHasWorkspaces(path: string): boolean {
-  const packageJson = getRecord(readJsonFile(path));
-  return packageJson?.workspaces !== undefined;
 }

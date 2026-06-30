@@ -62,17 +62,25 @@ When using ESM with NestJS, local imports must include the `.js` extension (e.g.
 
 #### CommonJS
 
-Use this when your NestJS project compiles CommonJS via SWC. Generate the SWC
-configuration with CommonJS output:
+Use this when your NestJS project compiles CommonJS via SWC.
 
-```bash
-npx @workflow/nest init --module commonjs
+```typescript title="src/app.module.ts" lineNumbers
+import { Module } from '@nestjs/common';
+import { WorkflowModule } from '@workflow/nest';
+
+@Module({
+  imports: [
+    WorkflowModule.forRoot({
+      moduleType: 'commonjs',
+      distDir: 'dist',
+    }),
+  ],
+})
+export class AppModule {}
 ```
 
 <Callout type="info">
-`WorkflowModule.forRoot()` reads `module.type` from `.swcrc` and `outDir` from
-`tsconfig.json`, so CommonJS projects do not need duplicate Workflow options
-unless they use a non-standard compiler setup.
+`distDir` should match the directory where NestJS writes compiled `.js` files. In the default SWC setup, that is `dist`.
 </Callout>
 
 ### Configure NestJS to use SWC
@@ -176,8 +184,17 @@ export class AppModule {}
 ```
 
 <Callout type="info">
-The `.js` local import specifiers in this example are the ESM form. CommonJS
-projects can use the import style expected by their NestJS compiler setup.
+If you chose CommonJS above, keep the CommonJS options here as well:
+
+{/* @skip-typecheck - config snippet, full import shown above */}
+```typescript
+WorkflowModule.forRoot({
+  moduleType: 'commonjs',
+  distDir: 'dist',
+})
+```
+
+The `.js` local import specifiers in this example are the ESM form.
 </Callout>
 
 The `WorkflowModule` handles workflow bundle building and provides HTTP routing for workflow execution at `.well-known/workflow/v1/`.
@@ -352,14 +369,8 @@ The `WorkflowModule.forRoot()` method accepts optional configuration:
 
 ```typescript
 WorkflowModule.forRoot({
-  // Directory to scan for workflow files.
-  // Defaults to nest-cli.json sourceRoot, then ['src'].
-  // Prefer sourceRoot unless you need a Workflow-specific override.
+  // Directory to scan for workflow files (default: ['src'])
   dirs: ['src'],
-
-  // Project root used for monorepo workspace imports.
-  // Defaults to the nearest workspace root, then workingDir.
-  projectRoot: '/repo',
 
   // Output directory for generated bundles (default: '.nestjs/workflow')
   outDir: '.nestjs/workflow',
@@ -367,12 +378,13 @@ WorkflowModule.forRoot({
   // Skip building in production when bundles are pre-built
   skipBuild: false,
 
-  // SWC module type override. Defaults to .swcrc module.type, then
-  // tsconfig module, then 'es6'.
+  // SWC module type: 'es6' (default) or 'commonjs'
+  // Set to 'commonjs' if your NestJS project compiles to CJS via SWC
   moduleType: 'es6',
 
-  // Compiled .js output directory override. Defaults to tsconfig outDir,
-  // then 'dist'. Only used when moduleType resolves to 'commonjs'.
+  // Directory where NestJS compiles .ts to .js (default: 'dist')
+  // Only used when moduleType is 'commonjs'
+  // Should match the outDir in your tsconfig.json
   distDir: 'dist',
 
   // Source maps on generated workflow bundles (default: 'inline' in

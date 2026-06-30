@@ -101,25 +101,12 @@ Add scripts to regenerate configuration before builds:
 
 ## Configuration Options
 
-`WorkflowModule.forRoot()` derives framework-owned defaults from your NestJS
-project config:
-
-- workflow scan directories default to `nest-cli.json` `sourceRoot`, then `src`
-- CommonJS mode defaults to `.swcrc` `module.type`, then `tsconfig.json` `module`
-- CommonJS compiled output defaults to `tsconfig.json` `outDir`, then `dist`
-- monorepo project root defaults to the nearest workspace root
-
-The options below remain available as overrides for non-standard setups.
-
 {/*@skip-typecheck: Shows WorkflowModule.forRoot options*/}
 
 ```typescript
 WorkflowModule.forRoot({
-  // Override workflow scan directories
+  // Directory to scan for workflow files (default: ['src'])
   dirs: ['src'],
-
-  // Override monorepo project root
-  projectRoot: '/repo',
 
   // Output directory for generated bundles (default: '.nestjs/workflow')
   outDir: '.nestjs/workflow',
@@ -127,10 +114,13 @@ WorkflowModule.forRoot({
   // Skip building in production when bundles are pre-built
   skipBuild: false,
 
-  // Override SWC module type
+  // SWC module type: 'es6' (default) or 'commonjs'
+  // Set to 'commonjs' if your NestJS project compiles to CJS via SWC
   moduleType: 'es6',
 
-  // Override CommonJS compiled .js output directory
+  // Directory where NestJS compiles .ts to .js (default: 'dist')
+  // Only used when moduleType is 'commonjs'
+  // Should match the outDir in your tsconfig.json
   distDir: 'dist',
 });
 ```
@@ -181,11 +171,10 @@ WorkflowModule.forRoot()
 // With options
 WorkflowModule.forRoot({
   dirs: ['src/workflows'],
-  projectRoot: '/repo',
   outDir: '.nestjs/workflow',
   skipBuild: process.env.NODE_ENV === 'production',
-  moduleType: 'commonjs', // override if .swcrc is non-standard
-  distDir: 'dist', // override if tsconfig outDir is non-standard
+  moduleType: 'commonjs',  // if using SWC CommonJS compilation
+  distDir: 'dist',          // where compiled .js files live
 })
 ```
 
