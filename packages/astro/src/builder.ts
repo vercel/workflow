@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   type AstroConfig,
   BaseBuilder,
@@ -228,10 +228,8 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   }
 }
 
-/** @internal */
-export function resolveAstroBuilderConfig(options: AstroBuilderOptions = {}): {
+function resolveAstroBuilderConfig(options: AstroBuilderOptions = {}): {
   workingDir: string;
-  srcDir: string;
   pagesDir: string;
   dirs: string[];
   projectRoot: string;
@@ -239,44 +237,20 @@ export function resolveAstroBuilderConfig(options: AstroBuilderOptions = {}): {
   const workingDir = resolve(options.workingDir ?? process.cwd());
   const srcDir = resolve(workingDir, options.srcDir ?? 'src');
   const pagesDir = join(srcDir, 'pages');
-  const workflowsDir = join(srcDir, 'workflows');
 
   return {
     workingDir,
-    srcDir,
     pagesDir,
-    dirs: [
-      toBuilderDir(workingDir, pagesDir),
-      toBuilderDir(workingDir, workflowsDir),
-    ],
-    projectRoot: options.projectRoot ?? findWorkspaceRoot(workingDir),
+    dirs: [pagesDir, join(srcDir, 'workflows')],
+    projectRoot: options.projectRoot ?? findPnpmWorkspaceRoot(workingDir),
   };
 }
 
-function toBuilderDir(workingDir: string, dir: string): string {
-  const relativeDir = relative(workingDir, dir);
-  if (
-    relativeDir &&
-    !relativeDir.startsWith('..') &&
-    !isAbsolute(relativeDir)
-  ) {
-    return toPosixPath(relativeDir);
-  }
-  return dir;
-}
-
-function toPosixPath(path: string): string {
-  return path.replace(/\\/g, '/');
-}
-
-function findWorkspaceRoot(workingDir: string): string {
+function findPnpmWorkspaceRoot(workingDir: string): string {
   let current = resolve(workingDir);
 
   while (true) {
-    if (
-      existsSync(join(current, 'pnpm-workspace.yaml')) ||
-      packageJsonHasWorkspaces(join(current, 'package.json'))
-    ) {
+    if (existsSync(join(current, 'pnpm-workspace.yaml'))) {
       return current;
     }
 
@@ -285,16 +259,5 @@ function findWorkspaceRoot(workingDir: string): string {
       return workingDir;
     }
     current = parent;
-  }
-}
-
-function packageJsonHasWorkspaces(path: string): boolean {
-  try {
-    const packageJson = JSON.parse(readFileSync(path, 'utf-8')) as {
-      workspaces?: unknown;
-    };
-    return packageJson.workspaces !== undefined;
-  } catch {
-    return false;
   }
 }

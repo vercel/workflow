@@ -1,4 +1,4 @@
-import { constants, existsSync, readFileSync } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import {
   access,
   copyFile,
@@ -8,7 +8,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
@@ -23,40 +23,27 @@ const SVELTEKIT_VIRTUAL_MODULES = [
   '$app/*', // All $app subpaths
 ];
 
-type SvelteKitBuilderConfig = Partial<SvelteKitConfig> & {
-  routesDir?: string;
-};
-
 export class SvelteKitBuilder extends BaseBuilder {
-  #routesDir: string | undefined;
-
-  constructor(config: SvelteKitBuilderConfig = {}) {
+  constructor(config: Partial<SvelteKitConfig> = {}) {
     const workingDir = resolve(config.workingDir || process.cwd());
-    const routesDir = config.routesDir
-      ? resolve(workingDir, config.routesDir)
-      : undefined;
-    const dirs = config.dirs ?? getSvelteKitWorkflowDirs(workingDir, routesDir);
-    const projectRoot = config.projectRoot ?? findWorkspaceRoot(workingDir);
+    const dirs = config.dirs ?? [
+      'workflows',
+      'src/workflows',
+      'routes',
+      'src/routes',
+    ];
+    const projectRoot = config.projectRoot ?? findPnpmWorkspaceRoot(workingDir);
     super({
       ...createBaseBuilderConfig({
         workingDir,
         projectRoot,
         dirs,
+        watch: config.watch,
         externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
         sourcemap: config.sourcemap,
       }),
-      ...config,
-      dirs,
       buildTarget: 'sveltekit' as const,
-      stepsBundlePath: '',
-      workflowsBundlePath: '',
-      webhookBundlePath: '',
-      workingDir,
-      projectRoot,
-      externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
-      sourcemap: config.sourcemap,
     });
-    this.#routesDir = routesDir;
   }
 
   override async build(): Promise<void> {
@@ -193,11 +180,6 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
   }
 
   private async findRoutesDirectory(): Promise<string> {
-    if (this.#routesDir) {
-      await assertDirectory(this.#routesDir);
-      return this.#routesDir;
-    }
-
     const routesDir = resolve(this.config.workingDir, 'src/routes');
     const rootRoutesDir = resolve(this.config.workingDir, 'routes');
 
@@ -227,43 +209,11 @@ async function assertDirectory(path: string): Promise<void> {
   }
 }
 
-function getSvelteKitWorkflowDirs(
-  workingDir: string,
-  routesDir: string | undefined
-): string[] {
-  return [
-    'workflows',
-    'src/workflows',
-    ...(routesDir
-      ? [toBuilderDir(workingDir, routesDir)]
-      : ['routes', 'src/routes']),
-  ];
-}
-
-function toBuilderDir(workingDir: string, dir: string): string {
-  const relativeDir = relative(workingDir, dir);
-  if (
-    relativeDir &&
-    !relativeDir.startsWith('..') &&
-    !isAbsolute(relativeDir)
-  ) {
-    return toPosixPath(relativeDir);
-  }
-  return dir;
-}
-
-function toPosixPath(path: string): string {
-  return path.replace(/\\/g, '/');
-}
-
-function findWorkspaceRoot(workingDir: string): string {
+function findPnpmWorkspaceRoot(workingDir: string): string {
   let current = resolve(workingDir);
 
   while (true) {
-    if (
-      existsSync(join(current, 'pnpm-workspace.yaml')) ||
-      packageJsonHasWorkspaces(join(current, 'package.json'))
-    ) {
+    if (existsSync(join(current, 'pnpm-workspace.yaml'))) {
       return current;
     }
 
@@ -272,16 +222,5 @@ function findWorkspaceRoot(workingDir: string): string {
       return workingDir;
     }
     current = parent;
-  }
-}
-
-function packageJsonHasWorkspaces(path: string): boolean {
-  try {
-    const packageJson = JSON.parse(readFileSync(path, 'utf-8')) as {
-      workspaces?: unknown;
-    };
-    return packageJson.workspaces !== undefined;
-  } catch {
-    return false;
   }
 }
