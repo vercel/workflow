@@ -16,15 +16,6 @@ const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
-const WORKSPACE_MARKER_FILES = ['pnpm-workspace.yaml'];
-const WORKSPACE_LOCK_FILES = [
-  'pnpm-lock.yaml',
-  'package-lock.json',
-  'yarn.lock',
-  'bun.lock',
-  'bun.lockb',
-];
-
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
 const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
@@ -240,74 +231,29 @@ function fileExists(path: string): boolean {
   }
 }
 
-function findFirstExistingUp(
-  cwd: string,
-  filenames: readonly string[]
-): string | undefined {
-  let current = resolve(cwd);
-
-  while (true) {
-    for (const filename of filenames) {
-      const candidate = join(current, filename);
-      if (fileExists(candidate)) {
-        return candidate;
-      }
-    }
-
-    const parent = dirname(current);
-    if (parent === current) {
-      return undefined;
-    }
-    current = parent;
-  }
-}
-
-function findNextWorkRootMarker(cwd: string): string | undefined {
-  return (
-    findFirstExistingUp(cwd, WORKSPACE_MARKER_FILES) ??
-    findFirstExistingUp(cwd, WORKSPACE_LOCK_FILES)
-  );
-}
-
-function findNextProjectRoot(workingDir: string): string {
-  let marker = findNextWorkRootMarker(workingDir);
-  if (!marker) {
-    return workingDir;
-  }
-
-  while (true) {
-    const markerDir = dirname(marker);
-    const parentDir = dirname(markerDir);
-    if (parentDir === markerDir) {
-      return markerDir;
-    }
-
-    const parentMarker = findNextWorkRootMarker(parentDir);
-    if (!parentMarker) {
-      return markerDir;
-    }
-    marker = parentMarker;
-  }
-}
-
-function getTurbopackRoot(nextConfig: NextConfig): string | undefined {
-  const root = (nextConfig.turbopack as { root?: unknown } | undefined)?.root;
-  return typeof root === 'string' && root.length > 0 ? root : undefined;
-}
-
 function resolveNextProjectRoot(
   nextConfig: NextConfig,
   workingDir: string
 ): string {
-  const configuredRoot =
-    nextConfig.outputFileTracingRoot || getTurbopackRoot(nextConfig);
-  if (configuredRoot) {
-    return isAbsolute(configuredRoot)
-      ? configuredRoot
-      : resolve(configuredRoot);
+  if (nextConfig.outputFileTracingRoot) {
+    return isAbsolute(nextConfig.outputFileTracingRoot)
+      ? nextConfig.outputFileTracingRoot
+      : resolve(workingDir, nextConfig.outputFileTracingRoot);
   }
 
-  return findNextProjectRoot(workingDir);
+  let current = resolve(workingDir);
+
+  while (true) {
+    if (fileExists(join(current, 'pnpm-workspace.yaml'))) {
+      return current;
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return workingDir;
+    }
+    current = parent;
+  }
 }
 
 function getWorkflowManifestCopyPaths({
