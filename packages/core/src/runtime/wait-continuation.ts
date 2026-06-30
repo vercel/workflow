@@ -57,6 +57,8 @@
  * wait.
  */
 
+import { envNumber } from '@workflow/world';
+
 /**
  * Maximum `delaySeconds` for a single wait-continuation message. Waits
  * longer than this are chained across multiple hops. 23 hours: VQS
@@ -72,6 +74,21 @@ export const WAIT_CONTINUATION_MAX_DELAY_SECONDS = 82_800;
  * mid-range waits keyed on the bare correlationId.
  */
 export const NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS = 2;
+
+/** Effective max continuation delay. Override: `WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS`. */
+const getWaitContinuationMaxDelaySeconds = (): number =>
+  envNumber(
+    'WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS',
+    WAIT_CONTINUATION_MAX_DELAY_SECONDS,
+    { integer: true, min: 1 }
+  );
+
+/** Effective near-elapsed threshold. Override: `WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS`. */
+const getNearElapsedWaitThresholdSeconds = (): number =>
+  envNumber(
+    'WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS',
+    NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS
+  );
 
 export interface WaitContinuationDispatch {
   delaySeconds: number;
@@ -89,16 +106,17 @@ export function getWaitContinuationDispatch(
   waitCorrelationId: string,
   now: number = Date.now()
 ): WaitContinuationDispatch {
-  if (timeoutSeconds <= NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS) {
+  if (timeoutSeconds <= getNearElapsedWaitThresholdSeconds()) {
     return {
       delaySeconds: timeoutSeconds,
       idempotencyKey: `${waitCorrelationId}:${Math.floor(now / 1000)}`,
     };
   }
 
-  const hop = Math.ceil(timeoutSeconds / WAIT_CONTINUATION_MAX_DELAY_SECONDS);
+  const maxDelaySeconds = getWaitContinuationMaxDelaySeconds();
+  const hop = Math.ceil(timeoutSeconds / maxDelaySeconds);
   return {
-    delaySeconds: Math.min(timeoutSeconds, WAIT_CONTINUATION_MAX_DELAY_SECONDS),
+    delaySeconds: Math.min(timeoutSeconds, maxDelaySeconds),
     idempotencyKey:
       hop === 1 ? waitCorrelationId : `${waitCorrelationId}:hop-${hop}`,
   };

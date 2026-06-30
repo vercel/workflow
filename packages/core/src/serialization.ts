@@ -3,6 +3,7 @@ import {
   SerializationError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
@@ -604,6 +605,17 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
  */
 export const FRAMED_STREAM_MAX_RECONNECTS = 50;
 
+/** Effective consecutive-reconnect cap. Override: `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`. */
+const getFramedStreamMaxReconnects = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS',
+    FRAMED_STREAM_MAX_RECONNECTS,
+    {
+      integer: true,
+      min: 1,
+    }
+  );
+
 /**
  * Absolute backstop on total reconnects for a single session, independent of
  * progress. The consecutive cap above resets on forward progress, which is
@@ -616,6 +628,14 @@ export const FRAMED_STREAM_MAX_RECONNECTS = 50;
  * with legitimate long-lived streams.
  */
 export const FRAMED_STREAM_MAX_TOTAL_RECONNECTS = 1000;
+
+/** Effective total-reconnect backstop. Override: `WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS`. */
+const getFramedStreamMaxTotalReconnects = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS',
+    FRAMED_STREAM_MAX_TOTAL_RECONNECTS,
+    { integer: true, min: 1 }
+  );
 
 /**
  * Wraps the length-prefix-framed byte stream from `world.streams.get` with
@@ -676,17 +696,19 @@ export function createReconnectingFramedStream(
     // count it against the budget and try again rather than treating it as
     // fatal. Only budget exhaustion (a server that stays down) terminates the
     // stream.
+    const maxReconnects = getFramedStreamMaxReconnects();
+    const maxTotalReconnects = getFramedStreamMaxTotalReconnects();
     for (;;) {
       reconnectCount++;
       totalReconnectCount++;
-      if (reconnectCount > FRAMED_STREAM_MAX_RECONNECTS) {
+      if (reconnectCount > maxReconnects) {
         throw new Error(
-          `Stream "${name}" exceeded maximum reconnection attempts (${FRAMED_STREAM_MAX_RECONNECTS})`
+          `Stream "${name}" exceeded maximum reconnection attempts (${maxReconnects})`
         );
       }
-      if (totalReconnectCount > FRAMED_STREAM_MAX_TOTAL_RECONNECTS) {
+      if (totalReconnectCount > maxTotalReconnects) {
         throw new Error(
-          `Stream "${name}" exceeded maximum total reconnection attempts (${FRAMED_STREAM_MAX_TOTAL_RECONNECTS})`
+          `Stream "${name}" exceeded maximum total reconnection attempts (${maxTotalReconnects})`
         );
       }
       try {
@@ -794,6 +816,15 @@ export function createReconnectingFramedStream(
  */
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
+/**
+ * Effective default stream-flush interval (a `world.streamFlushIntervalMs`
+ * still takes precedence). Override: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
+ */
+const getStreamFlushIntervalMs = (): number =>
+  envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', STREAM_FLUSH_INTERVAL_MS, {
+    integer: true,
+  });
+
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   /**
    * @param runReadyBarrier Turbo mode only: a promise that resolves once the
@@ -859,7 +890,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // Cache the flush interval from the world on first use
       if (resolvedFlushIntervalMs === undefined) {
         resolvedFlushIntervalMs =
-          world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+          world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
       }
       // Use writeMulti if available for batch writes
       if (
@@ -899,7 +930,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
             for (const w of currentWaiters) w.reject(err);
           }
         );
-      }, resolvedFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
+      }, resolvedFlushIntervalMs ?? getStreamFlushIntervalMs());
     };
 
     super({

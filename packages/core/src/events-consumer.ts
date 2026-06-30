@@ -1,4 +1,4 @@
-import type { Event } from '@workflow/world';
+import { type Event, envNumber } from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
 /**
@@ -8,6 +8,12 @@ import { eventsLogger } from './logger.js';
  * in host). Any subscribe() arriving during this window cancels the check.
  */
 export const DEFERRED_CHECK_DELAY_MS = 100;
+
+/** Effective deferred-check delay. Override: `WORKFLOW_DEFERRED_CHECK_DELAY_MS`. */
+const getDeferredCheckDelayMs = (): number =>
+  envNumber('WORKFLOW_DEFERRED_CHECK_DELAY_MS', DEFERRED_CHECK_DELAY_MS, {
+    integer: true,
+  });
 
 export enum EventConsumerResult {
   /**
@@ -207,7 +213,7 @@ export class EventsConsumer {
               this.pendingUnconsumedCheck = null;
               this.onUnconsumedEvent(currentEvent);
             }
-          }, DEFERRED_CHECK_DELAY_MS);
+          }, getDeferredCheckDelayMs());
         });
     }
   }

@@ -32,6 +32,7 @@
  *   archives, etc.) from wasted CPU and size inflation.
  */
 
+import { envNumber } from '@workflow/world';
 import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -46,6 +47,12 @@ import { SerializationFormat } from './types.js';
  */
 export const COMPRESSION_MIN_BYTES = 1024;
 
+/** Effective min-bytes-to-compress threshold. Override: `WORKFLOW_COMPRESSION_MIN_BYTES`. */
+const getCompressionMinBytes = (): number =>
+  envNumber('WORKFLOW_COMPRESSION_MIN_BYTES', COMPRESSION_MIN_BYTES, {
+    integer: true,
+  });
+
 /**
  * Compression must shave off at least this fraction of the payload
  * size to be kept; otherwise the uncompressed original is stored.
@@ -53,6 +60,14 @@ export const COMPRESSION_MIN_BYTES = 1024;
  * data paying a permanent decompression tax for a negligible win.
  */
 export const COMPRESSION_MIN_SAVINGS_RATIO = 0.05;
+
+/** Effective min-savings ratio. Override: `WORKFLOW_COMPRESSION_MIN_SAVINGS_RATIO` (0–1). */
+const getCompressionMinSavingsRatio = (): number =>
+  envNumber(
+    'WORKFLOW_COMPRESSION_MIN_SAVINGS_RATIO',
+    COMPRESSION_MIN_SAVINGS_RATIO,
+    { max: 1 }
+  );
 
 /** Default zstd compression level — the sweet spot of speed vs ratio. */
 const ZSTD_LEVEL = 3;
@@ -276,7 +291,7 @@ export async function compress(
   // From here `data` is binary, so every return path records stats.
   if (
     !enabled ||
-    data.length < COMPRESSION_MIN_BYTES ||
+    data.length < getCompressionMinBytes() ||
     isCompressionDisabledByEnv()
   ) {
     recordStats(stats, 'none', data.length, data.length);
@@ -293,7 +308,7 @@ export async function compress(
   const format =
     codec === 'zstd' ? SerializationFormat.ZSTD : SerializationFormat.GZIP;
   const wrappedLength = 4 + compressed.length; // format prefix + payload
-  if (wrappedLength >= data.length * (1 - COMPRESSION_MIN_SAVINGS_RATIO)) {
+  if (wrappedLength >= data.length * (1 - getCompressionMinSavingsRatio())) {
     recordStats(stats, 'none', data.length, data.length);
     return data;
   }

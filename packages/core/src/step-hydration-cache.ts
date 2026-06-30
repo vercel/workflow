@@ -82,6 +82,8 @@
  * invocation ends.)
  */
 
+import { envNumber } from '@workflow/world';
+
 /**
  * Upper bound, in characters, on a string/bigint primitive that may be
  * memoized. Beyond this, the value falls through to a fresh re-hydrate on every
@@ -92,6 +94,14 @@
  * are inherently small and are never length-checked.
  */
 export const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
+
+/** Effective memoizable-primitive length cap. Override: `WORKFLOW_MAX_MEMOIZED_PRIMITIVE_LENGTH`. */
+const getMaxMemoizedPrimitiveLength = (): number =>
+  envNumber(
+    'WORKFLOW_MAX_MEMOIZED_PRIMITIVE_LENGTH',
+    MAX_MEMOIZED_PRIMITIVE_LENGTH,
+    { integer: true }
+  );
 
 /**
  * Returns true for values that are safe to memoize and return by reference
@@ -112,11 +122,13 @@ export function isMemoizablePrimitive(value: unknown): boolean {
   const t = typeof value;
   if (t === 'object' || t === 'function') return false;
   // Bound the only primitive types that can carry a large payload.
-  if (t === 'string') {
-    return (value as string).length <= MAX_MEMOIZED_PRIMITIVE_LENGTH;
-  }
-  if (t === 'bigint') {
-    return (value as bigint).toString().length <= MAX_MEMOIZED_PRIMITIVE_LENGTH;
+  if (t === 'string' || t === 'bigint') {
+    const maxLength = getMaxMemoizedPrimitiveLength();
+    const length =
+      t === 'string'
+        ? (value as string).length
+        : (value as bigint).toString().length;
+    return length <= maxLength;
   }
   return true;
 }

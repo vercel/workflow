@@ -2,7 +2,7 @@ import os from 'node:os';
 import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowWorldError } from '@workflow/errors';
-import type { SerializedData } from '@workflow/world';
+import { envNumber, type SerializedData } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
@@ -55,6 +55,18 @@ export const MAX_BODY_PARSE_RETRIES = 2;
 
 /** Base delay for the exponential backoff between body-parse retries. */
 const BODY_PARSE_RETRY_BASE_MS = 100;
+
+/** Effective body-parse retry count. Override: `WORKFLOW_MAX_BODY_PARSE_RETRIES`. */
+const getMaxBodyParseRetries = (): number =>
+  envNumber('WORKFLOW_MAX_BODY_PARSE_RETRIES', MAX_BODY_PARSE_RETRIES, {
+    integer: true,
+  });
+
+/** Effective body-parse retry base delay. Override: `WORKFLOW_BODY_PARSE_RETRY_BASE_MS`. */
+const getBodyParseRetryBaseMs = (): number =>
+  envNumber('WORKFLOW_BODY_PARSE_RETRY_BASE_MS', BODY_PARSE_RETRY_BASE_MS, {
+    integer: true,
+  });
 
 /**
  * Transient transport failure codes. When a request to workflow-server cannot
@@ -119,6 +131,26 @@ function getTransientTransportCode(error: unknown): string | undefined {
  */
 const getWorkflowServerUrlOverride = (): string =>
   WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
+
+/**
+ * Header the server reads to tighten its own limits (stream max-duration,
+ * chunk-batch size, …) per request — only ever to a stricter value than the
+ * deployment default. See `world-vercel`'s server counterpart.
+ */
+const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
+
+/**
+ * Forward server-side limit overrides set via `WORKFLOW_TEST_LIMIT_OVERRIDES`.
+ *
+ * The value is a JSON object of server-constant name → value (e.g.
+ * `{"STREAM_MAX_DURATION_MS":5000}`) sent verbatim as
+ * `x-workflow-test-limit-overrides`. The server validates and clamps it
+ * (stricter-only), so a malformed value is harmlessly ignored there — we don't
+ * parse it here. Intended for a dedicated e2e deployment so the suite exercises
+ * edge paths (stream reconnect, batch splitting) quickly; unset in production.
+ */
+const getTestLimitOverridesHeader = (): string =>
+  process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
 
 export interface APIConfig {
   token?: string;
@@ -220,6 +252,10 @@ export const getHeaders = (
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
   headers.set('User-Agent', getUserAgent());
+  const testLimitOverrides = getTestLimitOverridesHeader();
+  if (testLimitOverrides) {
+    headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
+  }
   if (projectConfig) {
     headers.set(
       'x-vercel-environment',
@@ -342,6 +378,8 @@ export async function makeRequest<T>({
       // we retry such failures here. Only idempotent reads are re-issued; a
       // write must not be replayed (it could be applied twice).
       const canRetryBody = IDEMPOTENT_METHODS.has(method.toUpperCase());
+      const maxBodyParseRetries = getMaxBodyParseRetries();
+      const bodyParseRetryBaseMs = getBodyParseRetryBaseMs();
       let parseResult: ParseResult;
       let responseDiagnostics = '';
       for (let attempt = 0; ; attempt++) {
@@ -463,14 +501,14 @@ export async function makeRequest<T>({
           // Body read and decoded successfully.
           break;
         } catch (error) {
-          if (canRetryBody && attempt < MAX_BODY_PARSE_RETRIES) {
-            const backoffMs = BODY_PARSE_RETRY_BASE_MS * 2 ** attempt;
+          if (canRetryBody && attempt < maxBodyParseRetries) {
+            const backoffMs = bodyParseRetryBaseMs * 2 ** attempt;
             span?.setAttributes({
               ...ErrorType('PARSE_ERROR_RETRYING'),
             });
             if (HTTP_DEBUG_ENABLED) {
               console.debug(
-                `[workflow:world-vercel:http] ${method} ${endpoint} body parse failed (attempt ${attempt + 1}/${MAX_BODY_PARSE_RETRIES + 1}); retrying in ${backoffMs}ms: ${error}`
+                `[workflow:world-vercel:http] ${method} ${endpoint} body parse failed (attempt ${attempt + 1}/${maxBodyParseRetries + 1}); retrying in ${backoffMs}ms: ${error}`
               );
             }
             await new Promise((resolve) => setTimeout(resolve, backoffMs));
