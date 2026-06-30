@@ -78,6 +78,13 @@
       "when": 1771000000000,
       "tag": "0010_add_events_entity_creation_unique_index",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1782691200000,
+      "tag": "0015_move_enums_to_workflow_schema",
+      "breakpoints": true
     }
   ]
 }
