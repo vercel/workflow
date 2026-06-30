@@ -9,7 +9,7 @@ type StubOptions = {
   dev?: boolean;
   preset?: string;
   workspaceDir?: string;
-  workflow?: { runtime?: string };
+  workflow?: { dirs?: string[]; runtime?: string };
   externals?: {
     external?: Array<string | RegExp | ((id: string) => boolean)>;
   };
@@ -330,6 +330,18 @@ describe('@workflow/nitro externals forwarding', () => {
         });
         const builder = new Builder(nitro) as any;
         expect(builder.config.projectRoot).toBe('/tmp');
+      });
+
+      it('forwards workflow.dirs to the workflow builder', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          workflow: { dirs: ['server/workflows', 'layers/custom/workflows'] },
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.dirs).toEqual([
+          'server/workflows',
+          'layers/custom/workflows',
+        ]);
       });
 
       it('forwards string entries from nitro.options.externals.external', () => {
