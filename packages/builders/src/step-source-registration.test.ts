@@ -214,4 +214,45 @@ describe('step source registration', () => {
       )
     ).rejects.toThrow(/Duplicate workflow step ID/);
   });
+
+  it('registers lazy step loaders in combined routes', async () => {
+    const workflowFile = join(testRoot, 'workflows', 'image.ts');
+    const stepsOutfile = join(testRoot, '.workflow', '__step_registrations.js');
+    const flowOutfile = join(testRoot, '.workflow', 'route.js');
+
+    mkdirSync(dirname(flowOutfile), { recursive: true });
+    writeFile(
+      workflowFile,
+      `export async function imageWorkflow() {
+  'use workflow';
+  return resize();
+}
+
+export async function resize() {
+  'use step';
+  return 1;
+}
+`
+    );
+
+    const { stepsManifest } = await createBuilder(testRoot).createCombinedRoute(
+      [workflowFile],
+      stepsOutfile,
+      flowOutfile
+    );
+    const routeCode = readFileSync(flowOutfile, 'utf-8');
+    const stepIds = Object.values(stepsManifest.steps ?? {}).flatMap(
+      (entries) => Object.values(entries).map(({ stepId }) => stepId)
+    );
+
+    expect(stepIds).toHaveLength(1);
+    expect(routeCode).toContain(
+      "import { registerStepFunctionLoader, workflowEntrypoint } from 'workflow/runtime';"
+    );
+    expect(routeCode).toContain(
+      `registerStepFunctionLoader(${JSON.stringify(stepIds[0])}, () => import("./__step_registrations.js"));`
+    );
+    expect(routeCode).not.toContain('import { __steps_registered }');
+    expect(routeCode).not.toContain('void __steps_registered');
+  });
 });

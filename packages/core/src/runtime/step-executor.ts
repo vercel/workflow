@@ -30,7 +30,7 @@ import {
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
 import { runtimeLogger, stepLogger } from '../logger.js';
-import { getStepFunction } from '../private.js';
+import { loadStepFunction } from '../private.js';
 import type { PayloadKey } from '../serialization/encryption.js';
 import { formatSerializationError } from '../serialization/errors.js';
 import {
@@ -459,166 +459,6 @@ export async function executeStep(
     // fetch / HKDF derivation; subsequent callers await the cached promise.
     const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
 
-    const stepFn = getStepFunction(stepName);
-    if (!stepFn || typeof stepFn !== 'function') {
-      // Step function not registered: fail the step immediately (not the run).
-      // Create a step_failed event so
-      // the workflow can handle it gracefully via try/catch in user code.
-      const errorMessage = `Step "${stepName}" is not registered in the current deployment. This usually indicates a build or bundling issue that caused the step to not be included in the deployment.`;
-      runtimeLogger.error('Step function not registered, failing step', {
-        workflowRunId,
-        stepName,
-        stepId,
-      });
-      // On the lazy inline path the suspension handler deferred this step's
-      // `step_created`, expecting executeStep to materialize the step via a
-      // lazy `step_started` carrying its input. We never get that far for an
-      // unregistered step, so the step entity does not exist yet, and writing
-      // `step_failed` straight away would hit the world's "step must exist"
-      // ordering guard and wedge the run. Send the lazy `step_started` first
-      // (it creates the step + synthetic `step_created` atomically and keeps
-      // replay correct), then fail it below. This also preserves the
-      // exactly-one-owner guarantee: a concurrent handler that won the create
-      // makes our lazy `step_started` reject with EntityConflictError → we
-      // return `skipped` and never write the failure twice.
-      if (params.lazyStepInput !== undefined) {
-        try {
-          // Turbo: this lazy `step_started` must not precede the backgrounded
-          // `run_started`. Order it after the run-ready barrier (best-effort:
-          // a barrier rejection means the run doesn't exist, and the create
-          // below surfaces the real error). No-op outside turbo.
-          if (params.runReadyBarrier) {
-            await params.runReadyBarrier.catch(() => {});
-          }
-          await createEvent(
-            {
-              eventType: 'step_started',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-              eventData: {
-                stepName,
-                workflowName,
-                input: params.lazyStepInput,
-                // Stamped for consistency even though this step terminal-fails
-                // immediately below; the log should never show an unowned
-                // lazy start.
-                ...(params.ownerMessageId !== undefined
-                  ? { ownerMessageId: params.ownerMessageId }
-                  : {}),
-              },
-            },
-            stepStartedEventParams
-          );
-        } catch (startErr) {
-          if (EntityConflictError.is(startErr)) {
-            return { type: 'skipped' };
-          }
-          if (RunExpiredError.is(startErr)) {
-            return { type: 'gone' };
-          }
-          throw startErr;
-        }
-      }
-      try {
-        await createEvent({
-          eventType: 'step_failed',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: stepId,
-          eventData: {
-            stepName,
-            error: await dehydrateStepError(
-              new FatalError(errorMessage),
-              workflowRunId,
-              await getEncryptionKey(),
-              [],
-              globalThis,
-              compression
-            ),
-          },
-        });
-      } catch (stepFailErr) {
-        if (EntityConflictError.is(stepFailErr)) {
-          return { type: 'skipped' };
-        }
-        throw stepFailErr;
-      }
-      span?.setAttributes({
-        ...Attribute.StepStatus('failed'),
-        ...Attribute.StepFatalError(true),
-      });
-      return { type: 'failed' };
-    }
-
-    const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
-
-    span?.setAttributes({
-      ...Attribute.StepMaxRetries(maxRetries),
-    });
-
-    // maxRetries enforced before starting another attempt. Timeouts can kill
-    // a step execution without any way to catch the error, so the post-body/error
-    // guards below might miss it. Hence, we use `authoritativeAttempt` count
-    // as an additional guard based on step_started count or queue delivery count
-    // on backgrounded steps.
-    // Thrown-error exhaustion still terminates one attempt earlier via the post-body
-    // guard (with the thrown error as cause), and this check does not affect that.
-    if (
-      params.authoritativeAttempt !== undefined &&
-      params.authoritativeAttempt > maxRetries + 1
-    ) {
-      const retryCount = maxRetries;
-      const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
-      stepLogger.error('Step exceeded max retries', {
-        workflowRunId,
-        stepName,
-        stepId,
-        attempt: params.authoritativeAttempt,
-        maxRetries,
-      });
-      try {
-        await createEvent({
-          eventType: 'step_failed',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: stepId,
-          eventData: {
-            stepName,
-            error: await dehydrateStepError(
-              new FatalError(errorMessage),
-              workflowRunId,
-              await getEncryptionKey(),
-              [],
-              globalThis,
-              compression
-            ),
-          },
-        });
-      } catch (err) {
-        if (EntityConflictError.is(err)) {
-          // Step already reached a terminal state (a concurrent handler or an
-          // earlier delivery failed/completed it), so nothing to do.
-          runtimeLogger.info(
-            'Tried failing step for exceeded retries, but step has already finished.',
-            {
-              workflowRunId,
-              stepId,
-              stepName,
-              message: err instanceof Error ? err.message : String(err),
-            }
-          );
-          return { type: 'skipped' };
-        }
-        if (RunExpiredError.is(err)) {
-          return { type: 'gone' };
-        }
-        throw err;
-      }
-      span?.setAttributes({
-        ...Attribute.StepStatus('failed'),
-        ...Attribute.StepRetryExhausted(true),
-      });
-      return { type: 'failed' };
-    }
-
     // Maps a `step_started` rejection to a terminal StepExecutionResult,
     // shared by the await path (below) and the optimistic-start reconciliation.
     // Returns undefined when the error is not one we translate (caller rethrows).
@@ -860,6 +700,154 @@ export async function executeStep(
     span?.setAttributes({
       ...Attribute.StepStatus(step.status),
     });
+
+    let stepFn: Awaited<ReturnType<typeof loadStepFunction>>;
+    try {
+      stepFn = await loadStepFunction(stepName);
+    } catch (err) {
+      if (optimisticStart) {
+        const reconcile = await reconcileOptimisticStart();
+        if (reconcile) return reconcile;
+      }
+
+      const normalizedError = await normalizeUnknownError(err);
+      const normalizedStack = normalizedError.stack || getErrorStack(err) || '';
+      const wrappedError = new FatalError(
+        `Failed to load step "${stepName}": ${normalizedError.message}`
+      );
+      (wrappedError as Error).cause = err;
+      if (normalizedStack) wrappedError.stack = normalizedStack;
+
+      stepLogger.error('Failed to load step function, failing step', {
+        workflowRunId,
+        stepName,
+        errorStack: normalizedStack,
+      });
+
+      try {
+        await world.events.create(workflowRunId, {
+          eventType: 'step_failed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            error: await dehydrateStepError(
+              wrappedError,
+              workflowRunId,
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
+            ),
+          },
+        });
+      } catch (stepFailErr) {
+        if (EntityConflictError.is(stepFailErr)) {
+          return { type: 'skipped' };
+        }
+        throw stepFailErr;
+      }
+
+      span?.setAttributes({
+        ...Attribute.StepStatus('failed'),
+        ...Attribute.StepFatalError(true),
+      });
+      return { type: 'failed' };
+    }
+
+    if (!stepFn || typeof stepFn !== 'function') {
+      // Step function not registered — fail the step (not the run).
+      const errorMessage = `Step "${stepName}" is not registered in the current deployment. This usually indicates a build or bundling issue that caused the step to not be included in the deployment.`;
+      runtimeLogger.error('Step function not registered, failing step', {
+        workflowRunId,
+        stepName,
+        stepId,
+      });
+
+      if (optimisticStart) {
+        const reconcile = await reconcileOptimisticStart();
+        if (reconcile) return reconcile;
+      }
+
+      try {
+        await world.events.create(workflowRunId, {
+          eventType: 'step_failed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            error: await dehydrateStepError(
+              new FatalError(errorMessage),
+              workflowRunId,
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
+            ),
+          },
+        });
+      } catch (stepFailErr) {
+        if (EntityConflictError.is(stepFailErr)) {
+          return { type: 'skipped' };
+        }
+        throw stepFailErr;
+      }
+      span?.setAttributes({
+        ...Attribute.StepStatus('failed'),
+        ...Attribute.StepFatalError(true),
+      });
+      return { type: 'failed' };
+    }
+
+    const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+
+    span?.setAttributes({
+      ...Attribute.StepMaxRetries(maxRetries),
+    });
+
+    // Enforce the retry ceiling before running the body. This has to happen
+    // after loading the function because maxRetries is defined on it.
+    if (
+      params.authoritativeAttempt !== undefined &&
+      params.authoritativeAttempt > maxRetries + 1
+    ) {
+      const retryCount = maxRetries;
+      const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
+      stepLogger.error('Step exceeded max retries', {
+        workflowRunId,
+        stepName,
+        stepId,
+        attempt: params.authoritativeAttempt,
+        maxRetries,
+      });
+      try {
+        await createEvent({
+          eventType: 'step_failed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            error: await dehydrateStepError(
+              new FatalError(errorMessage),
+              workflowRunId,
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
+            ),
+          },
+        });
+      } catch (err) {
+        if (EntityConflictError.is(err)) return { type: 'skipped' };
+        if (RunExpiredError.is(err)) return { type: 'gone' };
+        throw err;
+      }
+      span?.setAttributes({
+        ...Attribute.StepStatus('failed'),
+        ...Attribute.StepRetryExhausted(true),
+      });
+      return { type: 'failed' };
+    }
 
     let result: unknown;
 
