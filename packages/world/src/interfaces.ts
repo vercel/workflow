@@ -257,6 +257,21 @@ export interface Storage {
       params?: GetEventParams
     ): Promise<Event>;
 
+    /**
+     * List the events for a run, ordered by creation time and paginated via
+     * an opaque {@link PaginatedResponse.cursor}.
+     *
+     * Progress contract: every page returned while `hasMore` is `true` must
+     * make forward progress, i.e. it must contain at least one event that was
+     * not present in an earlier page of the same paginated load. A non-final
+     * page that is empty, or that re-serves only already-returned events, is a
+     * contract violation. Consumers walk this list with `while (hasMore)` and
+     * rely on this guarantee to terminate; a backend that keeps reporting
+     * `hasMore: true` without surfacing new events (even with a fresh cursor
+     * each time) will be rejected with a `WORLD_CONTRACT_ERROR` rather than
+     * looping forever. A final page (`hasMore: false`) may legitimately be
+     * empty.
+     */
     list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
     listByCorrelationId(
       params: ListEventsByCorrelationIdParams

@@ -31,7 +31,14 @@ export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
 ) =>
   z.object({
     data: z.array(dataSchema),
+    // Opaque token used to fetch the next page, or `null` when no more pages
+    // are available.
     cursor: z.string().nullable(),
+    // Whether additional pages exist. Individual list calls may strengthen
+    // this into a forward-progress requirement — e.g. `events.list` requires
+    // that every `hasMore: true` page surface at least one new item so the
+    // consuming read loop is guaranteed to terminate. See the method docs on
+    // the consuming interface for the per-call contract.
     hasMore: z.boolean(),
   });
 
