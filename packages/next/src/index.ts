@@ -231,28 +231,71 @@ function fileExists(path: string): boolean {
   }
 }
 
-function resolveNextProjectRoot(
-  nextConfig: NextConfig,
-  workingDir: string
-): string {
-  if (nextConfig.outputFileTracingRoot) {
-    return isAbsolute(nextConfig.outputFileTracingRoot)
-      ? nextConfig.outputFileTracingRoot
-      : resolve(workingDir, nextConfig.outputFileTracingRoot);
-  }
-
+function findRootFile(names: string[], workingDir: string): string | undefined {
   let current = resolve(workingDir);
 
   while (true) {
-    if (fileExists(join(current, 'pnpm-workspace.yaml'))) {
-      return current;
+    for (const name of names) {
+      const file = join(current, name);
+      if (fileExists(file)) {
+        return file;
+      }
     }
 
     const parent = dirname(current);
     if (parent === current) {
-      return workingDir;
+      return undefined;
     }
     current = parent;
+  }
+}
+
+function findNextRootFile(workingDir: string): string | undefined {
+  return (
+    findRootFile(['pnpm-workspace.yaml'], workingDir) ??
+    findRootFile(
+      [
+        'pnpm-lock.yaml',
+        'package-lock.json',
+        'yarn.lock',
+        'bun.lock',
+        'bun.lockb',
+      ],
+      workingDir
+    )
+  );
+}
+
+function resolveNextProjectRoot(
+  nextConfig: NextConfig,
+  workingDir: string
+): string {
+  const configuredRoot =
+    nextConfig.outputFileTracingRoot ?? nextConfig.turbopack?.root;
+
+  if (configuredRoot) {
+    return isAbsolute(configuredRoot)
+      ? configuredRoot
+      : resolve(workingDir, configuredRoot);
+  }
+
+  let rootFile = findNextRootFile(workingDir);
+  if (!rootFile) {
+    return workingDir;
+  }
+
+  while (true) {
+    const currentDir = dirname(rootFile);
+    const parentDir = dirname(currentDir);
+    if (parentDir === currentDir) {
+      return currentDir;
+    }
+
+    const parentRootFile = findNextRootFile(parentDir);
+    if (!parentRootFile) {
+      return currentDir;
+    }
+    rootFile = parentRootFile;
   }
 }
 

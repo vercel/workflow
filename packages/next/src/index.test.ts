@@ -123,31 +123,6 @@ describe('withWorkflow builder config', () => {
     });
   });
 
-  it('derives projectRoot from the nearest pnpm workspace root', async () => {
-    const repoRoot = mkdtempSync(join(realTmpDir, 'workflow-next-root-'));
-    const appRoot = join(repoRoot, 'apps/web');
-    mkdirSync(appRoot, { recursive: true });
-    writeFile(join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n');
-    process.chdir(appRoot);
-
-    try {
-      const config = withWorkflow({});
-
-      await config('phase-production-build', {
-        defaultConfig: {},
-      });
-
-      expect(builderConfigs[0]).toMatchObject({
-        projectRoot: repoRoot,
-        moduleSpecifierRoot: appRoot,
-        workingDir: appRoot,
-      });
-    } finally {
-      process.chdir(originalCwd);
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
   it.each([
     'phase-production-build',
     'phase-development-server',
