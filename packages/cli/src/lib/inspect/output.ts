@@ -124,15 +124,13 @@ const WAIT_LISTED_PROPS: (keyof Sleep)[] = [
   'completedAt',
 ];
 
-const STATUS_COLORS: Record<
-  WorkflowRun['status'] | Step['status'],
-  (value: string) => string
-> = {
+const STATUS_COLORS: Record<string, (value: string) => string> = {
   running: chalk.blue,
   completed: chalk.green,
   failed: chalk.red,
   cancelled: chalk.strikethrough.yellow,
   pending: chalk.blue,
+  waiting: chalk.blue,
 };
 
 const isStreamId = (value: string) => {
@@ -141,12 +139,13 @@ const isStreamId = (value: string) => {
 
 const showStatusLegend = () => {
   logger.log('\nStatus Legend:');
-  const statuses: Array<WorkflowRun['status'] | Step['status']> = [
+  const statuses = [
     'running',
     'completed',
     'failed',
     'cancelled',
     'pending',
+    'waiting',
   ];
 
   const legendItems = statuses.map((status) => {
@@ -346,7 +345,8 @@ export const formatTableValue = (
 
   if (prop === 'status') {
     const status = value as WorkflowRun['status'] | Step['status'];
-    const colorFunc = STATUS_COLORS[status];
+    const colorFunc =
+      STATUS_COLORS[status] ?? ((formatted: string) => formatted);
     const formattedStatus = displaySettings?.abbreviateStatus
       ? formatStatusAbbrev(status, true)
       : status;
@@ -831,7 +831,7 @@ export const listSteps = async (
   if (opts.json) {
     try {
       const page = await fetchStepsPage(opts.cursor);
-      showJson(page.data);
+      showJsonPage(page);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -1091,7 +1091,7 @@ export const listEvents = async (
   if (opts.json) {
     try {
       const page = await fetchEventsPage(opts.cursor);
-      showJson(page.data);
+      showJsonPage(page);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -1245,24 +1245,46 @@ const listSleepsViaAnalytics = async (
   analytics: NonNullable<World['analytics']>,
   opts: InspectCLIOptions
 ): Promise<void> => {
-  const waits = await analytics.waits.list({
-    runId: opts.runId as string,
-    pagination: {
-      sortOrder: opts.sort || 'desc',
-      limit: opts.limit || DEFAULT_PAGE_SIZE,
-    },
-  });
+  const fetchSleepsPage = async (
+    cursor: string | undefined
+  ): Promise<PageData<Record<string, unknown>>> => {
+    const waits = await analytics.waits.list({
+      runId: opts.runId as string,
+      pagination: {
+        sortOrder: opts.sort || 'desc',
+        cursor,
+        limit: opts.limit || DEFAULT_PAGE_SIZE,
+      },
+    });
+
+    return {
+      data: waits.data as unknown as Record<string, unknown>[],
+      cursor: waits.cursor,
+      hasMore: waits.hasMore,
+      pageInfo: getPageInfo(waits),
+    };
+  };
+
   if (opts.json) {
-    showJson(waits.data);
+    const page = await fetchSleepsPage(opts.cursor);
+    showJsonPage(page);
     return;
   }
-  logger.log(
-    showTable(
-      waits.data as unknown as Record<string, unknown>[],
-      ['waitId', 'status', 'createdAt', 'resumeAt', 'completedAt'],
-      { ...opts, disableRelativeDates: true }
-    )
-  );
+
+  await setupListPagination<Record<string, unknown>>({
+    initialCursor: opts.cursor,
+    interactive: opts.interactive,
+    fetchPage: fetchSleepsPage,
+    displayPage: async (waits) => {
+      logger.log(
+        showTable(
+          waits,
+          ['waitId', 'status', 'createdAt', 'resumeAt', 'completedAt'],
+          { ...opts, disableRelativeDates: true }
+        )
+      );
+    },
+  });
 };
 
 export const listSleeps = async (

@@ -129,6 +129,28 @@ export interface AnalyticsPageInfo {
   upgradeAvailable: boolean;
 }
 
+export const getPageInfoUpgradeHint = (
+  pageInfo: AnalyticsPageInfo | undefined
+): string | undefined => {
+  if (
+    !pageInfo?.upgradeAvailable ||
+    pageInfo.currentLookbackDays >= pageInfo.maxLookbackDays
+  ) {
+    return undefined;
+  }
+
+  return `Showing the last ${pageInfo.currentLookbackDays} days of workflow observability data. Upgrade Observability Plus to query up to ${pageInfo.maxLookbackDays} days.`;
+};
+
+const showPageInfoUpgradeHint = (
+  pageInfo: AnalyticsPageInfo | undefined
+): void => {
+  const hint = getPageInfoUpgradeHint(pageInfo);
+  if (hint) {
+    logger.info(hint);
+  }
+};
+
 /**
  * Generic pagination handler for list operations
  */
@@ -146,7 +168,11 @@ export interface ListPaginationOptions<TData> {
   /**
    * Display function that renders the current page
    */
-  displayPage: (data: TData[], pageIndex: number) => void | Promise<void>;
+  displayPage: (
+    data: TData[],
+    pageIndex: number,
+    page: PageData<TData>
+  ) => void | Promise<void>;
 
   /**
    * Optional callback for when fetching starts
@@ -194,7 +220,8 @@ export async function setupListPagination<TData>(
       console.clear();
     }
 
-    await displayPage(page.data, index);
+    await displayPage(page.data, index, page);
+    showPageInfoUpgradeHint(page.pageInfo);
     return page;
   };
 
@@ -236,7 +263,8 @@ export async function setupListPagination<TData>(
           console.clear();
         }
 
-        await displayPage(cachedPage.data, pageIndex);
+        await displayPage(cachedPage.data, pageIndex, cachedPage);
+        showPageInfoUpgradeHint(cachedPage.pageInfo);
 
         paginationState.cursor = cachedPage.cursor;
         paginationState.hasMore = cachedPage.hasMore;
@@ -285,7 +313,8 @@ export async function setupListPagination<TData>(
           console.clear();
         }
 
-        await displayPage(prevPage.data, pageIndex);
+        await displayPage(prevPage.data, pageIndex, prevPage);
+        showPageInfoUpgradeHint(prevPage.pageInfo);
 
         paginationState.cursor = prevPage.cursor;
         paginationState.hasMore = prevPage.hasMore;

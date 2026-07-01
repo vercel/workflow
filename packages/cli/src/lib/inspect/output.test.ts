@@ -1,10 +1,22 @@
-import type { AnalyticsRun, World, WorkflowRun } from '@workflow/world';
+import type {
+  AnalyticsRun,
+  AnalyticsStep,
+  AnalyticsWait,
+  WorkflowRun,
+  World,
+} from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getObservabilityUpgradeRequiredMessage,
   isObservabilityUpgradeRequiredError,
 } from './errors.js';
-import { formatTableValue, hasExpiredData, listRuns } from './output.js';
+import {
+  formatTableValue,
+  hasExpiredData,
+  listRuns,
+  listSleeps,
+  listSteps,
+} from './output.js';
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
   ({
@@ -24,6 +36,10 @@ const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
     executionContext: {},
     ...overrides,
   }) as unknown as WorkflowRun;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('hasExpiredData', () => {
   it('returns false when expiredAt is undefined', () => {
@@ -99,10 +115,6 @@ describe('isObservabilityUpgradeRequiredError', () => {
 });
 
 describe('listRuns', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it('preserves analytics page metadata in JSON output', async () => {
     const run = {
       runId: 'run-1',
@@ -173,5 +185,164 @@ describe('listRuns', () => {
         upgradeAvailable: true,
       },
     });
+  });
+});
+
+describe('listSteps', () => {
+  it('emits a paginated JSON envelope', async () => {
+    const step = {
+      runId: 'run-1',
+      stepId: 'step-1',
+      stepName: 'doWork',
+      status: 'completed',
+      attempt: 1,
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:02.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: new Date('2026-06-30T00:00:02.000Z'),
+      retryAfter: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsStep;
+    const world = {
+      analytics: {
+        steps: {
+          list: vi.fn().mockResolvedValue({
+            data: [step],
+            cursor: 'next-step-cursor',
+            hasMore: true,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listSteps(world, {
+      json: true,
+      runId: 'run-1',
+      cursor: 'step-cursor',
+      limit: 1,
+    });
+
+    expect(world.analytics?.steps.list).toHaveBeenCalledWith({
+      runId: 'run-1',
+      pagination: {
+        sortOrder: 'desc',
+        cursor: 'step-cursor',
+        limit: 1,
+      },
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual({
+      data: [
+        {
+          ...step,
+          createdAt: '2026-06-30T00:00:00.000Z',
+          updatedAt: '2026-06-30T00:00:02.000Z',
+          startedAt: '2026-06-30T00:00:01.000Z',
+          completedAt: '2026-06-30T00:00:02.000Z',
+        },
+      ],
+      cursor: 'next-step-cursor',
+      hasMore: true,
+    });
+  });
+});
+
+describe('listSleeps', () => {
+  const wait = {
+    runId: 'run-1',
+    waitId: 'wait-1',
+    status: 'waiting',
+    resumeAt: new Date('2026-06-30T00:01:00.000Z'),
+    createdAt: new Date('2026-06-30T00:00:00.000Z'),
+    updatedAt: new Date('2026-06-30T00:00:00.000Z'),
+    completedAt: null,
+    workflowCoreVersion: null,
+    workflowEncryptionEnabled: false,
+  } satisfies AnalyticsWait;
+  const pageInfo = {
+    currentLookbackDays: 2,
+    maxLookbackDays: 30,
+    currentWindowStart: new Date('2026-06-28T00:00:00.000Z'),
+    maxWindowStart: new Date('2026-06-01T00:00:00.000Z'),
+    upgradeAvailable: true,
+  };
+
+  it('passes cursors and emits a paginated JSON envelope through analytics', async () => {
+    const world = {
+      analytics: {
+        waits: {
+          list: vi.fn().mockResolvedValue({
+            data: [wait],
+            cursor: 'next-wait-cursor',
+            hasMore: true,
+            pageInfo,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listSleeps(world, {
+      json: true,
+      runId: 'run-1',
+      cursor: 'wait-cursor',
+      limit: 1,
+    });
+
+    expect(world.analytics?.waits.list).toHaveBeenCalledWith({
+      runId: 'run-1',
+      pagination: {
+        sortOrder: 'desc',
+        cursor: 'wait-cursor',
+        limit: 1,
+      },
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual({
+      data: [
+        {
+          ...wait,
+          resumeAt: '2026-06-30T00:01:00.000Z',
+          createdAt: '2026-06-30T00:00:00.000Z',
+          updatedAt: '2026-06-30T00:00:00.000Z',
+        },
+      ],
+      cursor: 'next-wait-cursor',
+      hasMore: true,
+      pageInfo: {
+        currentLookbackDays: 2,
+        maxLookbackDays: 30,
+        currentWindowStart: '2026-06-28T00:00:00.000Z',
+        maxWindowStart: '2026-06-01T00:00:00.000Z',
+        upgradeAvailable: true,
+      },
+    });
+  });
+
+  it('surfaces the observability upgrade hint in table mode', async () => {
+    const world = {
+      analytics: {
+        waits: {
+          list: vi.fn().mockResolvedValue({
+            data: [wait],
+            cursor: null,
+            hasMore: false,
+            pageInfo,
+          }),
+        },
+      },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSleeps(world, { runId: 'run-1' });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      'Upgrade Observability Plus'
+    );
   });
 });
