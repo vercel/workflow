@@ -727,7 +727,7 @@ export function createQueue(
    * runner registers both job types up front and is never replaced; per-job
    * executor resolution absorbs all later registration changes. When no
    * workflow executor exists yet, kick the bootstrap loop that probes the
-   * workflow routes until one appears.
+   * flow route until one appears.
    */
   function ensureRunner(): Promise<void> {
     if (closed || !workerUtils || runner) return Promise.resolve();
@@ -774,7 +774,7 @@ export function createQueue(
     if (bootstrapPromise || closed) return;
     bootstrapPromise = (async () => {
       while (!closed && !hasWorkflowExecutor()) {
-        await probeWorkflowRoutes();
+        await probeFlowRoute();
         if (closed || hasWorkflowExecutor()) break;
         await waitForRegistrationRetry();
       }
@@ -793,20 +793,18 @@ export function createQueue(
   }
 
   /**
-   * Probe the flow and step health endpoints. A POST probe against a
-   * same-process server loads lazy route modules, which register their
-   * direct handlers. Against `WORKFLOW_LOCAL_BASE_URL`, a healthy response
-   * additionally marks the remote route usable for HTTP execution.
+   * Probe the flow health endpoint. A POST probe against a same-process
+   * server loads the lazy route module, which registers its direct handler.
+   * Against `WORKFLOW_LOCAL_BASE_URL`, a healthy response marks the remote
+   * route usable for HTTP execution. The step route is not probed here —
+   * step jobs probe it on demand in resolveExecutor.
    */
-  async function probeWorkflowRoutes(): Promise<void> {
+  async function probeFlowRoute(): Promise<void> {
     const baseUrl = await resolveWorkflowBaseUrl();
     if (!baseUrl) return;
     const flowHealthy = await probeHealthPath(baseUrl, FLOW_HEALTH_PATH);
-    if (closed) return;
-    const stepHealthy = await probeHealthPath(baseUrl, STEP_HEALTH_PATH);
-    if (hasRemoteQueueFallback()) {
-      if (flowHealthy) healthyRemotePaths.add(FLOW_HEALTH_PATH);
-      if (stepHealthy) healthyRemotePaths.add(STEP_HEALTH_PATH);
+    if (flowHealthy && hasRemoteQueueFallback()) {
+      healthyRemotePaths.add(FLOW_HEALTH_PATH);
     }
   }
 

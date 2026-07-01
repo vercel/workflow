@@ -95,15 +95,16 @@ describe('postgres queue direct execution', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it('probes workflow routes to bootstrap handler registration', async () => {
+  it('probes the flow route to bootstrap handler registration', async () => {
     vi.mocked(getWorkflowPort).mockResolvedValue(3000);
+    const stepHandler = vi.fn(async () => undefined);
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith('/flow?__health')) {
         queue.createQueueHandler('__wkf_workflow_', async () => undefined);
       }
       if (url.endsWith('/step?__health')) {
-        queue.createQueueHandler('__wkf_step_', async () => undefined);
+        queue.createQueueHandler('__wkf_step_', stepHandler);
       }
       return new Response(null, { status: 200 });
     });
@@ -113,18 +114,34 @@ describe('postgres queue direct execution', () => {
 
     await vi.waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:3000/.well-known/workflow/v1/step?__health',
+        'http://localhost:3000/.well-known/workflow/v1/flow?__health',
         expect.objectContaining({ method: 'POST' })
       );
+      expect(run).toHaveBeenCalledTimes(1);
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:3000/.well-known/workflow/v1/flow?__health',
-      expect.objectContaining({ method: 'POST' })
-    );
-    expect(vi.mocked(run).mock.calls.at(-1)?.[0]?.taskList).toEqual({
+    expect(vi.mocked(run).mock.calls[0]?.[0]?.taskList).toEqual({
       workflow_flows: expect.any(Function),
       workflow_steps: expect.any(Function),
     });
+
+    // The step route is only warmed on demand: a step job with no registered
+    // handler probes the route, waits for its registration, then executes.
+    const stepTask = getTaskHandler('workflow_steps');
+    await stepTask(
+      buildMessageData('__wkf_step_test-step', {
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:3000/.well-known/workflow/v1/step?__health',
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(stepHandler).toHaveBeenCalledTimes(1);
   });
 
   it('waits for pending route registration before closing', async () => {
