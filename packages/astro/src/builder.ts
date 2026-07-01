@@ -1,11 +1,11 @@
-import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 
@@ -20,17 +20,10 @@ const WORKFLOW_ROUTES = [
   },
 ];
 
-export type AstroBuilderOptions = Pick<
-  Partial<AstroConfig>,
-  'workingDir' | 'projectRoot' | 'runtime' | 'sourcemap'
-> & {
-  srcDir?: string;
-};
-
 export class LocalBuilder extends BaseBuilder {
   #pagesDir: string;
 
-  constructor(options: AstroBuilderOptions = {}) {
+  constructor(options: Partial<AstroConfig> = {}) {
     const config = resolveAstroBuilderConfig(options);
     super({
       ...createBaseBuilderConfig({
@@ -39,7 +32,12 @@ export class LocalBuilder extends BaseBuilder {
         dirs: config.dirs,
         sourcemap: options.sourcemap,
       }),
+      ...options,
+      dirs: config.dirs,
       buildTarget: 'astro' as const,
+      workingDir: config.workingDir,
+      projectRoot: config.projectRoot,
+      moduleSpecifierRoot: options.moduleSpecifierRoot ?? config.workingDir,
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
     });
     this.#pagesDir = config.pagesDir;
@@ -174,7 +172,7 @@ export const prerender = false;`
 }
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
-  constructor(options: AstroBuilderOptions = {}) {
+  constructor(options: Partial<AstroConfig> = {}) {
     const config = resolveAstroBuilderConfig(options);
     super({
       ...createBaseBuilderConfig({
@@ -184,7 +182,12 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         runtime: options.runtime,
         sourcemap: options.sourcemap,
       }),
+      ...options,
+      dirs: config.dirs,
       buildTarget: 'vercel-build-output-api',
+      workingDir: config.workingDir,
+      projectRoot: config.projectRoot,
+      moduleSpecifierRoot: options.moduleSpecifierRoot ?? config.workingDir,
       debugFilePrefix: '_',
     });
   }
@@ -228,36 +231,20 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   }
 }
 
-function resolveAstroBuilderConfig(options: AstroBuilderOptions = {}): {
+function resolveAstroBuilderConfig(options: Partial<AstroConfig> = {}): {
   workingDir: string;
   pagesDir: string;
   dirs: string[];
   projectRoot: string;
 } {
   const workingDir = resolve(options.workingDir ?? process.cwd());
-  const srcDir = resolve(workingDir, options.srcDir ?? 'src');
-  const pagesDir = join(srcDir, 'pages');
+  const dirs = options.dirs ?? ['src/pages', 'src/workflows'];
+  const pagesDir = resolve(workingDir, dirs[0]);
 
   return {
     workingDir,
     pagesDir,
-    dirs: [pagesDir, join(srcDir, 'workflows')],
-    projectRoot: options.projectRoot ?? findPnpmWorkspaceRoot(workingDir),
+    dirs,
+    projectRoot: options.projectRoot ?? resolveProjectRoot(workingDir),
   };
-}
-
-function findPnpmWorkspaceRoot(workingDir: string): string {
-  let current = resolve(workingDir);
-
-  while (true) {
-    if (existsSync(join(current, 'pnpm-workspace.yaml'))) {
-      return current;
-    }
-
-    const parent = dirname(current);
-    if (parent === current) {
-      return workingDir;
-    }
-    current = parent;
-  }
 }

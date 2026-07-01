@@ -1,6 +1,8 @@
 ---
 "@workflow/astro": patch
+"@workflow/builders": patch
+"@workflow/next": patch
 "@workflow/sveltekit": patch
 ---
 
-Derive Astro and SvelteKit builder roots from framework and workspace config.
+Share framework project root detection across Astro, Next.js, and SvelteKit.

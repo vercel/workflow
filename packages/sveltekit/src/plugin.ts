@@ -1,7 +1,7 @@
 import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
-import type { Plugin, ResolvedConfig } from 'vite';
+import type { Plugin } from 'vite';
 import { SvelteKitBuilder } from './builder.js';
 
 export interface WorkflowPluginOptions {
@@ -12,30 +12,6 @@ export interface WorkflowPluginOptions {
    * also be set via the `WORKFLOW_SOURCEMAP` environment variable.
    */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
-}
-
-const SERVER_REQUIRE_BANNER =
-  "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
-
-function addServerRequireBanner(config: ResolvedConfig): void {
-  const rollupOptions = config.build.rollupOptions;
-  if (rollupOptions.output == null) {
-    rollupOptions.output = {};
-  }
-
-  const outputs = Array.isArray(rollupOptions.output)
-    ? rollupOptions.output
-    : [rollupOptions.output];
-  for (const output of outputs) {
-    const existing = output.banner;
-    output.banner =
-      existing == null
-        ? SERVER_REQUIRE_BANNER
-        : typeof existing === 'function'
-          ? async (chunk) =>
-              `${SERVER_REQUIRE_BANNER}\n${await existing(chunk)}`
-          : `${SERVER_REQUIRE_BANNER}\n${existing}`;
-  }
 }
 
 export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
@@ -84,7 +60,23 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
           return;
         }
 
-        addServerRequireBanner(config);
+        const banner =
+          "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+        const rollupOptions = config.build.rollupOptions;
+        rollupOptions.output ??= {};
+        const output = rollupOptions.output;
+        const outputs = Array.isArray(output) ? output : [output];
+        for (const output of outputs) {
+          const existing = output.banner;
+          if (existing == null) {
+            output.banner = banner;
+            continue;
+          }
+          output.banner =
+            typeof existing === 'function'
+              ? async (chunk) => `${banner}\n${await existing(chunk)}`
+              : `${banner}\n${existing}`;
+        }
       },
     },
     workflowHotUpdatePlugin({

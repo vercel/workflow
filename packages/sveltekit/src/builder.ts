@@ -1,4 +1,4 @@
-import { constants, existsSync } from 'node:fs';
+import { constants } from 'node:fs';
 import {
   access,
   copyFile,
@@ -8,11 +8,12 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  resolveProjectRoot,
   type SvelteKitConfig,
 } from '@workflow/builders';
 
@@ -32,7 +33,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       'routes',
       'src/routes',
     ];
-    const projectRoot = config.projectRoot ?? findPnpmWorkspaceRoot(workingDir);
+    const projectRoot = config.projectRoot ?? resolveProjectRoot(workingDir);
     super({
       ...createBaseBuilderConfig({
         workingDir,
@@ -42,7 +43,13 @@ export class SvelteKitBuilder extends BaseBuilder {
         externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
         sourcemap: config.sourcemap,
       }),
+      ...config,
+      dirs,
       buildTarget: 'sveltekit' as const,
+      workingDir,
+      projectRoot,
+      moduleSpecifierRoot: config.moduleSpecifierRoot ?? workingDir,
+      externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
     });
   }
 
@@ -206,21 +213,5 @@ async function assertDirectory(path: string): Promise<void> {
   const stats = await stat(path);
   if (!stats.isDirectory()) {
     throw new Error(`Path exists but is not a directory: ${path}`);
-  }
-}
-
-function findPnpmWorkspaceRoot(workingDir: string): string {
-  let current = resolve(workingDir);
-
-  while (true) {
-    if (existsSync(join(current, 'pnpm-workspace.yaml'))) {
-      return current;
-    }
-
-    const parent = dirname(current);
-    if (parent === current) {
-      return workingDir;
-    }
-    current = parent;
   }
 }

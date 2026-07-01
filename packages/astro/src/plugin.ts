@@ -1,13 +1,10 @@
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createBuildQueue } from '@workflow/builders';
+import { type AstroConfig, createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
-import {
-  type AstroBuilderOptions,
-  LocalBuilder,
-  VercelBuilder,
-} from './builder.js';
+import { LocalBuilder, VercelBuilder } from './builder.js';
 
 export interface WorkflowPluginOptions {
   /**
@@ -22,8 +19,9 @@ export interface WorkflowPluginOptions {
 export function workflowPlugin(
   options: WorkflowPluginOptions = {}
 ): AstroIntegration {
-  let builder: LocalBuilder | undefined;
-  let builderOptions: AstroBuilderOptions = { sourcemap: options.sourcemap };
+  let builderOptions: Partial<AstroConfig> = {
+    sourcemap: options.sourcemap,
+  };
   const enqueue = createBuildQueue();
 
   return {
@@ -33,15 +31,17 @@ export function workflowPlugin(
         config,
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
+        const srcDir = fileURLToPath(config.srcDir);
         builderOptions = {
           workingDir: fileURLToPath(config.root),
-          srcDir: fileURLToPath(config.srcDir),
+          dirs: [join(srcDir, 'pages'), join(srcDir, 'workflows')],
           sourcemap: options.sourcemap,
         };
+        const vitePlugins = [workflowTransformPlugin()];
 
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
-          builder = new LocalBuilder(builderOptions);
+          const builder = new LocalBuilder(builderOptions);
           try {
             await builder.build();
           } catch (buildError) {
@@ -50,17 +50,17 @@ export function workflowPlugin(
             console.error('Build failed during config setup:', buildError);
             throw buildError;
           }
+          vitePlugins.push(
+            // Cast needed due to Astro using a different internal Vite version
+            workflowHotUpdatePlugin({
+              builder,
+              enqueue,
+            }) as any
+          );
         }
         updateConfig({
           vite: {
-            plugins: [
-              workflowTransformPlugin(),
-              // Cast needed due to Astro using a different internal Vite version
-              workflowHotUpdatePlugin({
-                builder: () => builder,
-                enqueue,
-              }) as any,
-            ],
+            plugins: vitePlugins,
           },
         });
       },

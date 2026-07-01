@@ -2,23 +2,18 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { SvelteKitBuilder } from './builder.js';
+import { resolveProjectRoot } from './config-helpers.js';
 
-describe('SvelteKitBuilder config', () => {
-  it('derives project root from the nearest workspace root', () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'workflow-sveltekit-config-'));
+describe('resolveProjectRoot', () => {
+  it('prefers the workspace root over app lockfiles', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'workflow-project-root-'));
     onTestFinished(() => rmSync(repoRoot, { recursive: true, force: true }));
 
     const appRoot = join(repoRoot, 'apps/web');
     mkdirSync(appRoot, { recursive: true });
     writeFileSync(join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n');
+    writeFileSync(join(appRoot, 'package-lock.json'), '{}\n');
 
-    const builder = new SvelteKitBuilder({ workingDir: appRoot }) as any;
-
-    expect(builder.config).toMatchObject({
-      workingDir: appRoot,
-      projectRoot: repoRoot,
-      moduleSpecifierRoot: appRoot,
-    });
+    expect(resolveProjectRoot(appRoot)).toBe(repoRoot);
   });
 });

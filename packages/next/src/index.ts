@@ -1,6 +1,10 @@
 import { copyFileSync, mkdirSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
+import {
+  resolveConfiguredProjectRoot,
+  resolveProjectRoot,
+} from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
@@ -231,74 +235,6 @@ function fileExists(path: string): boolean {
   }
 }
 
-function findRootFile(names: string[], workingDir: string): string | undefined {
-  let current = resolve(workingDir);
-
-  while (true) {
-    for (const name of names) {
-      const file = join(current, name);
-      if (fileExists(file)) {
-        return file;
-      }
-    }
-
-    const parent = dirname(current);
-    if (parent === current) {
-      return undefined;
-    }
-    current = parent;
-  }
-}
-
-function findNextRootFile(workingDir: string): string | undefined {
-  return (
-    findRootFile(['pnpm-workspace.yaml'], workingDir) ??
-    findRootFile(
-      [
-        'pnpm-lock.yaml',
-        'package-lock.json',
-        'yarn.lock',
-        'bun.lock',
-        'bun.lockb',
-      ],
-      workingDir
-    )
-  );
-}
-
-function resolveNextProjectRoot(
-  nextConfig: NextConfig,
-  workingDir: string
-): string {
-  const configuredRoot =
-    nextConfig.outputFileTracingRoot ?? nextConfig.turbopack?.root;
-
-  if (configuredRoot) {
-    return isAbsolute(configuredRoot)
-      ? configuredRoot
-      : resolve(workingDir, configuredRoot);
-  }
-
-  let rootFile = findNextRootFile(workingDir);
-  if (!rootFile) {
-    return workingDir;
-  }
-
-  while (true) {
-    const currentDir = dirname(rootFile);
-    const parentDir = dirname(currentDir);
-    if (parentDir === currentDir) {
-      return currentDir;
-    }
-
-    const parentRootFile = findNextRootFile(parentDir);
-    if (!parentRootFile) {
-      return currentDir;
-    }
-    rootFile = parentRootFile;
-  }
-}
-
 function getWorkflowManifestCopyPaths({
   projectDir,
   distDir,
@@ -511,7 +447,11 @@ export function withWorkflow(
     const existingRules = nextConfig.turbopack.rules as any;
     const workingDir = process.cwd();
     const nextVersion = resolveNextVersion(workingDir);
-    const projectRoot = resolveNextProjectRoot(nextConfig, workingDir);
+    const configuredProjectRoot =
+      nextConfig.outputFileTracingRoot ?? nextConfig.turbopack?.root;
+    const projectRoot = configuredProjectRoot
+      ? resolveConfiguredProjectRoot(workingDir, configuredProjectRoot)
+      : resolveProjectRoot(workingDir);
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
     const shouldWatch = process.env.NODE_ENV === 'development';
