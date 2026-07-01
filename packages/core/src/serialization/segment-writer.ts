@@ -51,9 +51,12 @@ export interface SegmentWriterDeps extends SegmentTransport {
   /**
    * Recover after an unclean segment failure: durably persist `unconfirmed`
    * (the frames not yet acknowledged by a clean `200`) by reading the tail and
-   * replaying this writer's un-persisted frames. Resolves with the chunk
-   * indices ultimately assigned, or rejects if the write has truly failed
-   * (e.g. a reserved-but-never-persisted tail chunk after the backoff window).
+   * replaying this writer's un-persisted frames. `priorIndices` are the chunk
+   * indices from the last clean segment — the anchor for the tail scan (the
+   * failed segment's frames were reserved at or after `max(priorIndices)+1`).
+   * Resolves with the chunk indices ultimately assigned, or rejects if the
+   * write has truly failed (e.g. a reserved-but-never-persisted tail chunk
+   * after the backoff window).
    *
    * When omitted, an unclean failure is fatal: it rejects the pending
    * `write()`/`close()` and aborts the stream (no worse than an un-retried
@@ -61,6 +64,7 @@ export interface SegmentWriterDeps extends SegmentTransport {
    */
   recover?(
     unconfirmed: Uint8Array[],
+    priorIndices: readonly number[],
     error: unknown
   ): Promise<{ chunkIndices: number[] }>;
 
@@ -242,8 +246,15 @@ export class StreamSegmentWriter {
       this.unconfirmed = [];
     } catch (error) {
       if (!this.deps.recover) throw error;
-      const { chunkIndices } = await this.deps.recover(this.unconfirmed, error);
-      this.lastCommittedIndices = chunkIndices;
+      const { chunkIndices } = await this.deps.recover(
+        this.unconfirmed,
+        this.lastCommittedIndices,
+        error
+      );
+      // Recovery replays only the un-persisted suffix, so it may return no
+      // indices (everything was already durable). Keep the prior anchor in that
+      // case rather than clobbering it with an empty array.
+      if (chunkIndices.length > 0) this.lastCommittedIndices = chunkIndices;
       this.unconfirmed = [];
     }
   }

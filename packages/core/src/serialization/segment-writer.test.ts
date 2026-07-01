@@ -199,7 +199,7 @@ describe('StreamSegmentWriter', () => {
     const writer = makeWriter(
       {
         ...transport,
-        recover: async (unconfirmed) => {
+        recover: async (unconfirmed, _priorIndices) => {
           recovered = unconfirmed;
           return { chunkIndices: [100, 101] };
         },
