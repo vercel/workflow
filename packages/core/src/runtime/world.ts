@@ -174,11 +174,16 @@ function getCachedWorld(): World | undefined {
 }
 
 async function hasPostgresDeploymentId(world: World | undefined) {
-  return (
-    world !== undefined &&
-    typeof world.getDeploymentId === 'function' &&
-    (await world.getDeploymentId()) === 'postgres'
-  );
+  if (world === undefined || typeof world.getDeploymentId !== 'function') {
+    return false;
+  }
+  try {
+    return (await world.getDeploymentId()) === 'postgres';
+  } catch {
+    // e.g. the Vercel world throws when VERCEL_DEPLOYMENT_ID is not set.
+    // A world we cannot identify is not a Postgres world.
+    return false;
+  }
 }
 
 export async function getPostgresRegistrationWorld() {

@@ -2061,9 +2061,6 @@ export function workflowEntrypoint(
       }
     );
 
-  const shouldEagerlyRegisterFromEnv =
-    process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres' ||
-    process.env.WORKFLOW_TARGET_WORLD === 'postgres';
   let handlerPromise: Promise<(req: Request) => Promise<Response>> | undefined;
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
@@ -2072,9 +2069,14 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  const loadWorldHandlers = (withSpan: boolean) => {
-    if (shouldEagerlyRegisterFromEnv) {
-      return getWorld();
+  const loadWorldHandlers = async (
+    withSpan: boolean
+  ): Promise<WorldHandlers> => {
+    // Postgres worlds need the full world instance so the queue handler
+    // registers against the same queue that runs the Graphile runner.
+    const postgresWorld = await getPostgresRegistrationWorld();
+    if (postgresWorld) {
+      return postgresWorld;
     }
     if (withSpan) {
       return trace('workflow.route.get_world_handlers', async () =>

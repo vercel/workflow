@@ -38,6 +38,7 @@ describe('postgres queue direct execution', () => {
     vi.mocked(workerUtilsMock.release).mockReset();
     vi.mocked(makeWorkerUtils).mockReset();
     vi.mocked(run).mockReset();
+    vi.mocked(runnerMock.stop).mockReset();
     vi.mocked(getWorkflowPort).mockReset();
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(run).mockResolvedValue(runnerMock);
@@ -66,6 +67,7 @@ describe('postgres queue direct execution', () => {
     expect(run).toHaveBeenCalledTimes(1);
     expect(vi.mocked(run).mock.calls[0]?.[0]?.taskList).toEqual({
       workflow_flows: expect.any(Function),
+      workflow_steps: expect.any(Function),
     });
   });
 
@@ -110,19 +112,19 @@ describe('postgres queue direct execution', () => {
     await queue.start();
 
     await vi.waitFor(() => {
-      expect(vi.mocked(run).mock.calls.at(-1)?.[0]?.taskList).toEqual({
-        workflow_flows: expect.any(Function),
-        workflow_steps: expect.any(Function),
-      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:3000/.well-known/workflow/v1/step?__health',
+        expect.objectContaining({ method: 'POST' })
+      );
     });
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:3000/.well-known/workflow/v1/flow?__health',
       expect.objectContaining({ method: 'POST' })
     );
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:3000/.well-known/workflow/v1/step?__health',
-      expect.objectContaining({ method: 'POST' })
-    );
+    expect(vi.mocked(run).mock.calls.at(-1)?.[0]?.taskList).toEqual({
+      workflow_flows: expect.any(Function),
+      workflow_steps: expect.any(Function),
+    });
   });
 
   it('waits for pending route registration before closing', async () => {
@@ -262,11 +264,6 @@ describe('postgres queue direct execution', () => {
 
   it('uses local handlers before remote handlers for matching prefixes', async () => {
     vi.stubEnv('WORKFLOW_LOCAL_BASE_URL', 'https://worker.example.test');
-    const workflowRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    const mixedRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    vi.mocked(run)
-      .mockResolvedValueOnce(workflowRunner)
-      .mockResolvedValueOnce(mixedRunner);
     const workflowHandler = vi.fn(async () => undefined);
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     queue.createQueueHandler('__wkf_workflow_', workflowHandler);
@@ -329,37 +326,8 @@ describe('postgres queue direct execution', () => {
     );
   });
 
-  it('does not consume remote step jobs when the step route is unhealthy', async () => {
+  it('defers remote step jobs while the step route is unhealthy', async () => {
     vi.stubEnv('WORKFLOW_LOCAL_BASE_URL', 'https://worker.example.test');
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url.endsWith('/flow?__health')) {
-        return new Response(null, { status: 200 });
-      }
-      if (url.endsWith('/step?__health')) {
-        return new Response(null, { status: 404 });
-      }
-      return Response.json({ ok: true });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    await queue.start();
-
-    await vi.waitFor(() => {
-      expect(run).toHaveBeenCalledTimes(1);
-    });
-    expect(vi.mocked(run).mock.calls[0]?.[0]?.taskList).toEqual({
-      workflow_flows: expect.any(Function),
-    });
-  });
-
-  it('starts consuming remote step jobs once the step route becomes healthy', async () => {
-    vi.stubEnv('WORKFLOW_LOCAL_BASE_URL', 'https://worker.example.test');
-    const workflowRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    const combinedRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    vi.mocked(run)
-      .mockResolvedValueOnce(workflowRunner)
-      .mockResolvedValueOnce(combinedRunner);
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     let stepRouteHealthy = false;
     const fetchMock = vi.fn(async (url: string) => {
@@ -378,31 +346,57 @@ describe('postgres queue direct execution', () => {
     await vi.waitFor(() => {
       expect(run).toHaveBeenCalledTimes(1);
     });
-    expect(vi.mocked(run).mock.calls[0]?.[0]?.taskList).toEqual({
-      workflow_flows: expect.any(Function),
-    });
 
-    stepRouteHealthy = true;
-    await vi.waitFor(
-      () => {
-        expect(run).toHaveBeenCalledTimes(2);
-      },
-      { timeout: 1500 }
+    const stepTask = getTaskHandler('workflow_steps');
+    const stepMessage = {
+      workflowName: 'test-workflow',
+      workflowRunId: 'run_01ABC',
+      workflowStartedAt: Date.now(),
+      stepId: 'step_01ABC',
+    } satisfies QueuePayload;
+
+    // While the step route is unhealthy the job is durably re-added with a
+    // delay instead of being executed (or failed).
+    await stepTask(
+      buildMessageData('__wkf_step_test-step', stepMessage, {
+        idempotencyKey: 'step_01ABC',
+      }),
+      { job: { attempts: 1 } }
     );
 
-    expect(workflowRunner.stop).toHaveBeenCalled();
-    expect(vi.mocked(run).mock.calls[1]?.[0]?.taskList).toEqual({
-      workflow_flows: expect.any(Function),
-      workflow_steps: expect.any(Function),
-    });
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_steps',
+      expect.objectContaining({ id: 'test-step', attempt: 1 }),
+      expect.objectContaining({ jobKey: 'step_01ABC', runAt: expect.any(Date) })
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([url]) =>
+          url === 'https://worker.example.test/.well-known/workflow/v1/step'
+      )
+    ).toBe(false);
+
+    // Once the step route becomes healthy, the redelivered job executes over
+    // HTTP without the Graphile runner ever being replaced.
+    stepRouteHealthy = true;
+    await stepTask(
+      buildMessageData('__wkf_step_test-step', stepMessage, {
+        idempotencyKey: 'step_01ABC',
+        messageId: MessageId.parse('msg_01ABD'),
+      }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://worker.example.test/.well-known/workflow/v1/step',
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(runnerMock.stop).not.toHaveBeenCalled();
   });
 
-  it('restarts Graphile when another queue prefix registers later', async () => {
-    const workflowRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    const combinedRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    vi.mocked(run)
-      .mockResolvedValueOnce(workflowRunner)
-      .mockResolvedValueOnce(combinedRunner);
+  it('executes later-registered handlers without restarting Graphile', async () => {
+    const stepHandler = vi.fn(async () => undefined);
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
 
     await queue.start();
@@ -411,24 +405,26 @@ describe('postgres queue direct execution', () => {
       expect(run).toHaveBeenCalledTimes(1);
     });
 
-    queue.createQueueHandler('__wkf_step_', async () => undefined);
-    await vi.waitFor(() => {
-      expect(run).toHaveBeenCalledTimes(2);
-    });
+    queue.createQueueHandler('__wkf_step_', stepHandler);
 
-    expect(workflowRunner.stop).toHaveBeenCalled();
-    expect(vi.mocked(run).mock.calls[1]?.[0]?.taskList).toEqual({
-      workflow_flows: expect.any(Function),
-      workflow_steps: expect.any(Function),
-    });
+    const stepTask = getTaskHandler('workflow_steps');
+    await stepTask(
+      buildMessageData('__wkf_step_test-step', {
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(stepHandler).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(runnerMock.stop).not.toHaveBeenCalled();
   });
 
-  it('restarts a running queue when another world instance registers steps', async () => {
-    const workflowRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    const combinedRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    vi.mocked(run)
-      .mockResolvedValueOnce(workflowRunner)
-      .mockResolvedValueOnce(combinedRunner);
+  it('executes handlers registered by another world instance without restarting', async () => {
+    const stepHandler = vi.fn(async () => undefined);
     const workflowQueue = buildQueue(
       { connectionString: 'postgres://test' },
       pool
@@ -441,28 +437,25 @@ describe('postgres queue direct execution', () => {
       expect(run).toHaveBeenCalledTimes(1);
     });
 
-    stepQueue.createQueueHandler('__wkf_step_', async () => undefined);
-    await vi.waitFor(() => {
-      expect(run).toHaveBeenCalledTimes(2);
-    });
+    stepQueue.createQueueHandler('__wkf_step_', stepHandler);
 
-    expect(workflowRunner.stop).toHaveBeenCalled();
-    expect(vi.mocked(run).mock.calls[1]?.[0]?.taskList).toEqual({
-      workflow_flows: expect.any(Function),
-      workflow_steps: expect.any(Function),
-    });
+    const stepTask = getTaskHandler('workflow_steps');
+    await stepTask(
+      buildMessageData('__wkf_step_test-step', {
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(stepHandler).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it('restarts a running queue when another world instance unregisters steps', async () => {
-    const workflowRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    const combinedRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    const workflowOnlyRunner = {
-      stop: vi.fn(),
-    } as Awaited<ReturnType<typeof run>>;
-    vi.mocked(run)
-      .mockResolvedValueOnce(workflowRunner)
-      .mockResolvedValueOnce(combinedRunner)
-      .mockResolvedValueOnce(workflowOnlyRunner);
+  it('defers step jobs after the owning world instance unregisters', async () => {
+    const stepHandler = vi.fn(async () => undefined);
     const workflowQueue = buildQueue(
       { connectionString: 'postgres://test' },
       pool
@@ -471,24 +464,31 @@ describe('postgres queue direct execution', () => {
 
     await workflowQueue.start();
     workflowQueue.createQueueHandler('__wkf_workflow_', async () => undefined);
+    stepQueue.createQueueHandler('__wkf_step_', stepHandler);
     await vi.waitFor(() => {
       expect(run).toHaveBeenCalledTimes(1);
-    });
-
-    stepQueue.createQueueHandler('__wkf_step_', async () => undefined);
-    await vi.waitFor(() => {
-      expect(run).toHaveBeenCalledTimes(2);
     });
 
     await stepQueue.close();
-    await vi.waitFor(() => {
-      expect(run).toHaveBeenCalledTimes(3);
-    });
 
-    expect(combinedRunner.stop).toHaveBeenCalled();
-    expect(vi.mocked(run).mock.calls[2]?.[0]?.taskList).toEqual({
-      workflow_flows: expect.any(Function),
-    });
+    const stepTask = getTaskHandler('workflow_steps');
+    await stepTask(
+      buildMessageData('__wkf_step_test-step', {
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(stepHandler).not.toHaveBeenCalled();
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_steps',
+      expect.objectContaining({ id: 'test-step', attempt: 1 }),
+      expect.objectContaining({ runAt: expect.any(Date) })
+    );
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it('restores a previous handler when a duplicate prefix owner closes', async () => {
@@ -562,38 +562,32 @@ describe('postgres queue direct execution', () => {
     expect(run).toHaveBeenCalledTimes(1);
     expect(vi.mocked(run).mock.calls[0]?.[0]?.taskList).toEqual({
       workflow_flows: expect.any(Function),
+      workflow_steps: expect.any(Function),
     });
     expect(workerUtilsMock.addJob).toHaveBeenCalled();
   });
 
-  it('queues messages while Graphile runner replacement is draining', async () => {
-    let finishStop!: () => void;
-    const stopStarted = new Promise<void>((resolve) => {
-      finishStop = resolve;
-    });
-    const workflowRunner = {
-      stop: vi.fn(() => stopStarted),
-    } as unknown as Awaited<ReturnType<typeof run>>;
-    const combinedRunner = { stop: vi.fn() } as Awaited<ReturnType<typeof run>>;
-    vi.mocked(run)
-      .mockResolvedValueOnce(workflowRunner)
-      .mockResolvedValueOnce(combinedRunner);
+  it('queues messages while the Graphile runner is still starting', async () => {
+    let finishRun!: (runner: Awaited<ReturnType<typeof run>>) => void;
+    const runStarted = new Promise<Awaited<ReturnType<typeof run>>>(
+      (resolve) => {
+        finishRun = resolve;
+      }
+    );
+    vi.mocked(run).mockReturnValue(runStarted);
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
 
     queue.createQueueHandler('__wkf_workflow_', async () => undefined);
-    await queue.start();
-    queue.createQueueHandler('__wkf_step_', async () => undefined);
-    await vi.waitFor(() => {
-      expect(workflowRunner.stop).toHaveBeenCalled();
+    await queue.queue('__wkf_step_test-step', {
+      workflowName: 'test-workflow',
+      workflowRunId: 'run_01ABC',
+      workflowStartedAt: Date.now(),
+      stepId: 'step_01ABC',
     });
 
-    await queue.queue('__wkf_step_test-step', { ok: true });
-
+    expect(run).toHaveBeenCalledTimes(1);
     expect(workerUtilsMock.addJob).toHaveBeenCalled();
-    finishStop();
-    await vi.waitFor(() => {
-      expect(run).toHaveBeenCalledTimes(2);
-    });
+    finishRun(runnerMock);
   });
 
   it('waits for pending Graphile startup before closing', async () => {
