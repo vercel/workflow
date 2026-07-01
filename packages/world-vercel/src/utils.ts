@@ -544,10 +544,14 @@ export async function makeRequest<T>({
         });
 
         if (!response.ok) {
-          const errorData: { message?: string; code?: string } =
+          const errorData: { message?: string; code?: string; error?: string } =
             await parseResponseBody(response)
-              .then((r) => r.data as { message?: string; code?: string })
+              .then(
+                (r) =>
+                  r.data as { message?: string; code?: string; error?: string }
+              )
               .catch(() => ({}));
+          const errorCode = errorData.code ?? errorData.error;
           if (process.env.DEBUG) {
             const stringifiedHeaders = Array.from(headers.entries())
               .filter(([key]) => key.toLowerCase() !== 'authorization')
@@ -579,7 +583,7 @@ export async function makeRequest<T>({
           // Map specific HTTP status codes to semantic error types
           const throwWithTrace = (error: Error): never => {
             span?.setAttributes({
-              ...ErrorType(errorData.code || `HTTP ${response.status}`),
+              ...ErrorType(errorCode || `HTTP ${response.status}`),
             });
             span?.recordException?.(error);
             throw error;
@@ -620,7 +624,7 @@ export async function makeRequest<T>({
             new WorkflowWorldError(defaultMessage, {
               url,
               status: response.status,
-              code: errorData.code,
+              code: errorCode,
               retryAfter,
             })
           );
