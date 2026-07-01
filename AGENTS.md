@@ -294,3 +294,22 @@ The `executionContext` field on workflow runs is a flexible JSONB/CBOR object th
 Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists — `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
 
 Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step — workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
+
+## Cursor Cloud specific instructions
+
+The VM snapshot already has dependencies installed (`pnpm install` runs automatically on startup) and a Rust toolchain configured. This section captures only non-obvious, durable caveats — see the `## Development Commands` section above for the standard build/test/lint/dev commands.
+
+### Build before running anything downstream
+`pnpm build` (root) builds only `packages/*`, and the workbench apps consume the packages' compiled `dist` output via `workspace:*`. You must run `pnpm build` at least once before starting a workbench dev server or running e2e tests, and rebuild any package you change. This is already noted in the changesets guidance above; it applies to the dev environment too.
+
+### Rust is required to build the SWC plugin
+`@workflow/swc-plugin` (`packages/swc-plugin-workflow`) compiles a WASM binary from Rust during `pnpm build`. The Rust workspace requires **edition 2024 / Rust ≥ 1.87** (`Cargo.toml` pins `rust-version = "1.87"`) and the `wasm32-unknown-unknown` target. The snapshot's default toolchain (`rustup default stable`) and the wasm target are already set up. If a future toolchain reset leaves the default at an older Rust (e.g. 1.83), `pnpm build` fails with `feature 'edition2024' is required`; fix with `rustup default stable` (must resolve to ≥ 1.87) and `rustup target add wasm32-unknown-unknown`. There is no committed prebuilt `.wasm`, so this build step is mandatory. The first WASM build takes ~1 minute (LTO release build); subsequent builds are Turbo-cached.
+
+### Local development uses the filesystem "world" — no database needed
+With `WORKFLOW_TARGET_WORLD` unset and no `VERCEL_DEPLOYMENT_ID`, the runtime defaults to the local filesystem world (`@workflow/world-local`). The `workbench/nextjs-turbopack` dev server therefore runs workflows end-to-end with no Postgres/Vercel setup. Postgres/Vercel worlds are optional and only needed to exercise those specific backends.
+
+### `pnpm lint` is not a clean gate
+`pnpm lint` (`biome check`) currently reports many pre-existing diagnostics (e.g. `noNonNullAssertion`, `useImportType`) across source and generated dirs, and it is **not** run by CI — the `Lint` workflow (`.github/workflows/lint.yml`) only checks for test overrides, runs `.github/scripts` unit tests, and validates docs links. Do not expect a clean `biome check`; use `pnpm format` / targeted `biome check <path>` when tidying code you touch.
+
+### Quick end-to-end smoke test
+The `nextjs-turbopack` app exposes `POST /api/workflows/start` (`{ "workflowName": "...", "args": [...] }`, returns an `X-Workflow-Run-Id` header) and `POST /api/workflows/await` (`{ "runId": "..." }`). The home page (`http://localhost:3000`) also has a Workflows tab to trigger any workflow and watch it complete. Deterministic workflows for smoke tests: `addTenWorkflow` (`[123]` → `133`), `simple` (`[42]` → `57`).
