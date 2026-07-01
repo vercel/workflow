@@ -17,6 +17,9 @@ const {
 
   const mockSend = vi.fn();
   const mockHandleCallback = vi.fn();
+  // Must be a `function` (not an arrow): queue.ts calls `new QueueClient(...)`,
+  // and an arrow function cannot be used as a constructor.
+  // biome-ignore lint/complexity/useArrowFunction: needs to be newable
   const MockQueueClient = vi.fn().mockImplementation(function () {
     return {
       send: mockSend,
@@ -390,7 +393,21 @@ describe('createQueue', () => {
             messageId: 'msg-123',
             deliveryCount: 8,
           })
-        ).toEqual({ afterSeconds: 60 });
+        ).toEqual({ afterSeconds: 128 });
+        // Ramps toward the 900s ceiling (VQS clamps each redelivery to its
+        // 900s SQS limit) so a sustained outage spans most of the 24h window.
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 11,
+          })
+        ).toEqual({ afterSeconds: 900 });
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 20,
+          })
+        ).toEqual({ afterSeconds: 900 });
 
         randomSpy.mockReturnValue(0.999);
         expect(
@@ -404,7 +421,7 @@ describe('createQueue', () => {
             messageId: 'msg-123',
             deliveryCount: 8,
           })
-        ).toEqual({ afterSeconds: 45 });
+        ).toEqual({ afterSeconds: 96 });
       } finally {
         randomSpy.mockRestore();
       }

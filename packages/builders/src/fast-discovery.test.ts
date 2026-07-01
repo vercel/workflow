@@ -303,6 +303,71 @@ export const allWorkflows = { workflow };
     );
   });
 
+  it('ignores imports that only appear inside comments', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const registryFile = join(testRoot, 'src', '_workflows.ts');
+    const workflowFile = join(testRoot, 'src', 'workflows', 'simple.ts');
+
+    writeFile(entryFile, `import './_workflows';\n`);
+    writeFile(
+      registryFile,
+      `// import * as simple from './workflows/simple';
+
+export const allWorkflows = {
+  'workflows/simple.ts': simple,
+} as const;
+`
+    );
+    writeFile(
+      workflowFile,
+      `export async function simple() {
+  'use workflow';
+}
+`
+    );
+
+    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+      [entryFile],
+      join(testRoot, 'out')
+    );
+
+    expect(discovered.discoveredWorkflows).toEqual(new Set());
+    expect(discovered.discoveredFiles).toEqual(
+      new Set([normalize(entryFile), normalize(registryFile)])
+    );
+  });
+
+  it('does not treat regex literals as comments', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const registryFile = join(testRoot, 'src', '_workflows.ts');
+    const workflowFile = join(testRoot, 'src', 'workflows', 'simple.ts');
+
+    writeFile(entryFile, `import './_workflows';\n`);
+    writeFile(
+      registryFile,
+      `const commentStartChars = /[/*]/;
+const protocol = /https?:\\/\\//;
+import './workflows/simple';
+`
+    );
+    writeFile(
+      workflowFile,
+      `export async function simple() {
+  'use workflow';
+}
+`
+    );
+
+    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+      [entryFile],
+      join(testRoot, 'out')
+    );
+
+    expect(discovered.discoveredWorkflows).toEqual(
+      new Set([normalize(workflowFile)])
+    );
+  });
+
   it('uses nearest nested jsconfig aliases in monorepo packages', async () => {
     const rootTsconfigFile = join(testRoot, 'tsconfig.json');
     const packageRoot = join(testRoot, 'packages', 'app');

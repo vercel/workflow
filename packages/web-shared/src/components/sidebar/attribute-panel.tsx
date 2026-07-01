@@ -8,8 +8,12 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
-import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from '../ui/collapsible';
 import { ContextCardProvider } from '../ui/context-card';
 import {
   DecryptClickContext,
@@ -20,10 +24,13 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
-import { RunAttributesCard } from './attributes-block';
+import {
+  DetailMonoKeyValueRow,
+  RunAttributesCard,
+  RunMetadataCard,
+} from './attributes-block';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-import { DetailCard } from './detail-card';
 
 /**
  * Tab button for conversation/JSON toggle
@@ -150,7 +157,7 @@ function ConversationWithTabs({
   );
 
   return (
-    <DetailCard summary="Input">
+    <Collapsible label="Input">
       <TabbedContainer
         tabs={conversationTabs}
         activeTab={activeTab}
@@ -171,7 +178,7 @@ function ConversationWithTabs({
           </div>
         )}
       </TabbedContainer>
-    </DetailCard>
+    </Collapsible>
   );
 }
 
@@ -413,7 +420,7 @@ const attributeToDisplayFn: Record<
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
   // Attributes — string-string metadata attached to the run.
-  // Rendered as key-value rows in its own collapsible DetailCard;
+  // Rendered as key-value rows in its own collapsible section;
   // if empty/missing, hidden by the hasDisplayContent gate.
   attributes: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
@@ -431,16 +438,28 @@ const attributeToDisplayFn: Record<
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedDataBlock />;
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return JsonBlock(value);
+    if (isEncryptedMarker(value)) {
+      return (
+        <Collapsible label="Metadata">
+          <EncryptedDataBlock />
+        </Collapsible>
+      );
+    }
+    if (isExpiredMarker(value)) {
+      return (
+        <Collapsible label="Metadata">
+          <ExpiredFieldBlock />
+        </Collapsible>
+      );
+    }
+    return <RunMetadataCard metadata={value} />;
   },
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Input">
+        <Collapsible label="Input">
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
@@ -463,14 +482,14 @@ const attributeToDisplayFn: Record<
             <>
               <ConversationWithTabs conversation={conversation} args={args} />
               {hasClosureVars && (
-                <DetailCard summary="Closure Variables">
+                <Collapsible label="Closure Variables">
                   {JsonBlock(closureVars)}
-                </DetailCard>
+                </Collapsible>
               )}
               {hasThisVal && (
-                <DetailCard summary="This Value">
+                <Collapsible label="This Value">
                   {JsonBlock(thisVal)}
-                </DetailCard>
+                </Collapsible>
               )}
             </>
           );
@@ -479,12 +498,12 @@ const attributeToDisplayFn: Record<
 
       // Don't render an empty "Input (0 arguments)" card when no input exists.
       if (!hasArgs && !hasClosureVars && !hasThisVal) {
-        return <DetailCard summary="Input (no data)" disabled />;
+        return <Collapsible label="Input (no data)" disabled />;
       }
 
       return (
         <>
-          <DetailCard summary="Input">
+          <Collapsible label="Input">
             {Array.isArray(args)
               ? args.map((v, i) => (
                   <div className="mt-2 first:mt-0" key={i}>
@@ -492,14 +511,14 @@ const attributeToDisplayFn: Record<
                   </div>
                 ))
               : JsonBlock(args)}
-          </DetailCard>
+          </Collapsible>
           {hasClosureVars && (
-            <DetailCard summary="Closure Variables">
+            <Collapsible label="Closure Variables">
               {JsonBlock(closureVars)}
-            </DetailCard>
+            </Collapsible>
           )}
           {hasThisVal && (
-            <DetailCard summary="Context">{JsonBlock(thisVal)}</DetailCard>
+            <Collapsible label="Context">{JsonBlock(thisVal)}</Collapsible>
           )}
         </>
       );
@@ -507,10 +526,10 @@ const attributeToDisplayFn: Record<
 
     // Fallback: treat as plain array or object
     if (!hasDisplayContent(value)) {
-      return <DetailCard summary="Input (no data)" disabled />;
+      return <Collapsible label="Input (no data)" disabled />;
     }
     return (
-      <DetailCard summary="Input">
+      <Collapsible label="Input">
         {Array.isArray(value)
           ? value.map((v, i) => (
               <div className="mt-2 first:mt-0" key={i}>
@@ -518,27 +537,27 @@ const attributeToDisplayFn: Record<
               </div>
             ))
           : JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
   output: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Output">
+        <Collapsible label="Output">
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
     if (!hasDisplayContent(value)) return null;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return <DetailCard summary="Output">{JsonBlock(value)}</DetailCard>;
+    return <Collapsible label="Output">{JsonBlock(value)}</Collapsible>;
   },
   error: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Error" defaultOpen>
+        <Collapsible label="Error" defaultOpen>
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
@@ -548,32 +567,32 @@ const attributeToDisplayFn: Record<
     // `{ message, stack }`. Render both with the dedicated error block.
     if (isStructuredError(value)) {
       return (
-        <DetailCard summary="Error" defaultOpen>
+        <Collapsible label="Error" defaultOpen>
           <ErrorStackBlock value={value} />
-        </DetailCard>
+        </Collapsible>
       );
     }
 
     return (
-      <DetailCard summary="Error" defaultOpen>
+      <Collapsible label="Error" defaultOpen>
         {JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
   eventData: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Event Data" defaultOpen>
+        <Collapsible label="Event Data" defaultOpen>
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
     return (
-      <DetailCard summary="Event Data" defaultOpen>
+      <Collapsible label="Event Data" defaultOpen>
         {JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
   errorCode: (value: unknown) => {
@@ -591,12 +610,13 @@ const resolvableAttributes = [
   'eventData',
 ];
 
-// Attributes whose displayFn renders its own section header via DetailCard,
+// Attributes whose displayFn renders its own section header via Collapsible,
 // so the outer AttributeBlock should not duplicate the label.
 const selfHeaderedAttributes = new Set([
   'input',
   'output',
   'error',
+  'metadata',
   'attributes',
   'eventData',
 ]);
@@ -649,12 +669,12 @@ export const AttributeBlock = ({
           : 'Input';
     if (decryptCtx?.hasEncryptedData) {
       return (
-        <DetailCard summary={label} defaultOpen={attribute === 'eventData'}>
+        <Collapsible label={label} defaultOpen={attribute === 'eventData'}>
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
-    return <DetailCard summary={label} />;
+    return <Collapsible label={label} />;
   }
 
   const displayFn =
@@ -835,61 +855,44 @@ export const AttributePanel = ({
         <StreamClickContext.Provider value={onStreamClick}>
           <DecryptClickContext.Provider value={decryptValue}>
             {visibleBasicAttributes.length > 0 && (
-              <div className="flex flex-col overflow-hidden divide-y divide-gray-alpha-400 mb-3">
-                {orderedBasicAttributes.map((attribute) => {
-                  const displayValue = attributeToDisplayFn[
-                    attribute as keyof typeof attributeToDisplayFn
-                  ]?.(displayData[attribute as keyof typeof displayData]);
-                  const isCopyableBasicAttribute =
-                    copyableBasicAttributes.has(attribute as AttributeKey) &&
-                    typeof displayValue === 'string';
+              <CollapsibleRoot defaultOpen>
+                <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+                <CollapsibleContent className="mt-0 mb-2">
+                  <div className="flex flex-col">
+                    {orderedBasicAttributes.map((attribute) => {
+                      const displayValue = attributeToDisplayFn[
+                        attribute as keyof typeof attributeToDisplayFn
+                      ]?.(displayData[attribute as keyof typeof displayData]);
+                      const isCopyableBasicAttribute =
+                        copyableBasicAttributes.has(
+                          attribute as AttributeKey
+                        ) && typeof displayValue === 'string';
+                      const label = getAttributeDisplayName(attribute);
 
-                  return (
-                    <div
-                      className="flex items-center justify-between py-2"
-                      key={attribute}
-                    >
-                      <span className="text-label-14 text-gray-900">
-                        {getAttributeDisplayName(attribute)}
-                      </span>
-                      {isCopyableBasicAttribute ? (
-                        <div
-                          className="flex min-w-0 max-w-[70%] items-center justify-end gap-1 text-[13px] font-mono text-gray-1000"
-                          title={displayValue}
-                        >
-                          <MiddleTruncate
-                            value={displayValue}
-                            className="text-right"
-                            style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
-                          />
-                          <CopyButton
-                            copyText={displayValue}
-                            ariaLabel={`Copy ${getAttributeDisplayName(attribute)}`}
-                            className="shrink-0 -mr-1"
-                          />
+                      return (
+                        <DetailMonoKeyValueRow
+                          key={attribute}
+                          label={label}
+                          value={displayValue}
+                          copyText={
+                            isCopyableBasicAttribute ? displayValue : undefined
+                          }
+                        />
+                      );
+                    })}
+                    {isLoading &&
+                      resource === 'sleep' &&
+                      !displayData.resumeAt && (
+                        <div className="flex items-center justify-between gap-3 py-0.5">
+                          <span className="text-label-13 text-gray-900">
+                            Resume
+                          </span>
+                          <Skeleton className="h-4 w-[55%]" />
                         </div>
-                      ) : (
-                        <span className="text-right text-label-13 font-mono">
-                          {displayValue}
-                        </span>
                       )}
-                    </div>
-                  );
-                })}
-                {isLoading && resource === 'sleep' && !displayData.resumeAt && (
-                  <div className="py-1">
-                    <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                      <span
-                        className="text-[14px] first-letter:uppercase"
-                        style={{ color: 'var(--ds-gray-700)' }}
-                      >
-                        resumeAt
-                      </span>
-                      <Skeleton className="h-4 w-[55%]" />
-                    </div>
                   </div>
-                )}
-              </div>
+                </CollapsibleContent>
+              </CollapsibleRoot>
             )}
             {error ? (
               <ErrorCard
@@ -900,17 +903,15 @@ export const AttributePanel = ({
             ) : hasExpired ? (
               <ExpiredDataMessage />
             ) : resolvedAttributes.length > 0 ? (
-              <>
-                {resolvedAttributes.map((attribute) => (
-                  <AttributeBlock
-                    isLoading={isLoading}
-                    key={attribute}
-                    attribute={attribute}
-                    value={displayData[attribute as keyof typeof displayData]}
-                    context={displayContext}
-                  />
-                ))}
-              </>
+              resolvedAttributes.map((attribute) => (
+                <AttributeBlock
+                  isLoading={isLoading}
+                  key={attribute}
+                  attribute={attribute}
+                  value={displayData[attribute as keyof typeof displayData]}
+                  context={displayContext}
+                />
+              ))
             ) : null}
           </DecryptClickContext.Provider>
         </StreamClickContext.Provider>

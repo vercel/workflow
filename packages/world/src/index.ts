@@ -1,3 +1,11 @@
+export type * from './analytics.js';
+export {
+  AnalyticsEventSchema,
+  AnalyticsHookSchema,
+  AnalyticsRunSchema,
+  AnalyticsStepSchema,
+  AnalyticsWaitSchema,
+} from './analytics.js';
 export type * from './attributes.js';
 export {
   ATTRIBUTE_KEY_MAX_LENGTH,

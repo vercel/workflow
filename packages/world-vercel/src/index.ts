@@ -1,5 +1,6 @@
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { createAnalytics } from './analytics.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
@@ -11,6 +12,7 @@ import type { APIConfig } from './utils.js';
 const EXPERIMENTAL_START_HOOK_TTL_MAX_SECONDS = 30 * 24 * 60 * 60;
 const EXPERIMENTAL_START_HOOK_TOKEN_MAX_BYTES = 255;
 
+export { createAnalytics } from './analytics.js';
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
@@ -49,6 +51,7 @@ export function createVercelWorld(config?: APIConfig): World {
     },
     ...createQueue(config),
     ...createStorage(config),
+    analytics: createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,

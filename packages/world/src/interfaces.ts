@@ -1,3 +1,4 @@
+import type { Analytics } from './analytics.js';
 import type {
   AttributeChange,
   ExperimentalSetAttributesResult,
@@ -275,15 +276,22 @@ export interface Storage {
  */
 export interface World extends Queue, Streamer, Storage {
   /**
-   * The highest spec version this World supports.
+   * Optional analytics read namespace for observability surfaces.
    *
-   * When set, `start()` creates runs at this version so world-specific
-   * features (e.g., CBOR queue transport) are enabled automatically.
-   * When omitted, runs default to `SPEC_VERSION_SUPPORTS_EVENT_SOURCING` (2),
-   * the safe baseline that all worlds — including community worlds on
-   * older @workflow/world versions — are expected to handle.
+   * These APIs return metadata-only rows intended for UI/CLI listing and
+   * trace views. Payload-bearing fields remain on the canonical runtime
+   * storage APIs (`runs`, `steps`, `events`, `hooks`) and their RemoteRef
+   * resolution path.
    */
-  specVersion?: number;
+  analytics?: Analytics;
+
+  /**
+   * The Workflow protocol spec version this World implements.
+   *
+   * Current runtimes require this to exactly match their
+   * `SPEC_VERSION_CURRENT` before they create or replay runs.
+   */
+  specVersion: number;
 
   /**
    * How this World atomically reserves `run_created.eventData.experimentalStartHook`

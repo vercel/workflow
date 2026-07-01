@@ -110,8 +110,15 @@
     {
       "idx": 15,
       "version": "7",
-      "when": 1782604800000,
-      "tag": "0015_add_hook_claims",
+      "when": 1782691200000,
+      "tag": "0015_move_enums_to_workflow_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1782777600000,
+      "tag": "0016_add_hook_claims",
       "breakpoints": true
     }
   ]

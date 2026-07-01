@@ -450,7 +450,9 @@ function NewTraceViewerContent({
         return;
       }
       const targetId =
-        e.key === 'k' ? prevSpanIdRef.current : nextSpanIdRef.current;
+        e.key === 'k' || e.key === 'ArrowUp'
+          ? prevSpanIdRef.current
+          : nextSpanIdRef.current;
       if (targetId) {
         e.preventDefault();
         navigateToSpanRef.current(targetId);
@@ -462,7 +464,12 @@ function NewTraceViewerContent({
         handleClearActiveSpan();
       } else if (e.key === 'Alt') {
         setAltHeld(true);
-      } else if (e.key === 'j' || e.key === 'k') {
+      } else if (
+        e.key === 'j' ||
+        e.key === 'k' ||
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowUp'
+      ) {
         handleSidebarNavKey(e);
       }
     };
@@ -764,7 +771,7 @@ function NewTraceViewerContent({
       {activeSpan ? (
         <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
           {/* Panel header */}
-          <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
+          <div className="flex items-center justify-between gap-2 shrink-0 px-4 py-[7.5px]">
             <span className="text-label-14 font-medium text-gray-1000 truncate block">
               {selectedSpanName}
             </span>

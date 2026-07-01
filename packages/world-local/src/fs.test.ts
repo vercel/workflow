@@ -17,6 +17,8 @@ import {
 import { z } from 'zod';
 import {
   assertSafeEntityId,
+  clearCreatedFilesCache,
+  ensureDir,
   paginatedFileSystemQuery,
   readFirstByte,
   readJSONWithFallback,
@@ -112,6 +114,47 @@ describe('fs utilities', () => {
       expect(await readFirstByte(dataPath)).toBe(1);
       expect(await readFirstByte(nonEofPath)).toBe(0);
       expect(await readFirstByte(emptyPath)).toBeUndefined();
+    });
+  });
+
+  describe('ensureDir', () => {
+    it('does not repeat mkdir for a directory created by this process', async () => {
+      clearCreatedFilesCache();
+      const nestedDir = path.join(testDir, 'events');
+      const mkdirSpy = vi.spyOn(fs, 'mkdir');
+
+      await ensureDir(nestedDir);
+      await ensureDir(nestedDir);
+
+      expect(
+        mkdirSpy.mock.calls.filter(([dirPath]) => dirPath === nestedDir)
+      ).toHaveLength(1);
+    });
+
+    it('recreates a cached directory removed before an atomic write', async () => {
+      clearCreatedFilesCache();
+      const eventsDir = path.join(testDir, 'events');
+      const firstPath = path.join(eventsDir, 'first.json');
+      const secondPath = path.join(eventsDir, 'second.json');
+
+      await writeJSON(firstPath, { value: 'first' });
+      await fs.rm(eventsDir, { recursive: true, force: true });
+      await writeJSON(secondPath, { value: 'second' });
+
+      expect(JSON.parse(await fs.readFile(secondPath, 'utf8'))).toEqual({
+        value: 'second',
+      });
+    });
+
+    it('recreates a cached directory removed before an exclusive write', async () => {
+      clearCreatedFilesCache();
+      const locksDir = path.join(testDir, '.locks');
+
+      expect(await writeExclusive(path.join(locksDir, 'first'), '')).toBe(true);
+      await fs.rm(locksDir, { recursive: true, force: true });
+      expect(await writeExclusive(path.join(locksDir, 'second'), '')).toBe(
+        true
+      );
     });
   });
 
