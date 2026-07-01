@@ -804,12 +804,18 @@ export const listSteps = async (
     };
     if (useAnalytics && world.analytics) {
       const steps = await world.analytics.steps.list({ runId, pagination });
-      return {
+      const page = {
         data: steps.data as unknown as Record<string, unknown>[],
         cursor: steps.cursor,
         hasMore: steps.hasMore,
         pageInfo: getPageInfo(steps),
       };
+      if (cursor || page.data.length > 0 || page.hasMore) {
+        return page;
+      }
+      logger.debug(
+        `No analytics steps found for run ${runId}; falling back to storage`
+      );
     }
     const stepChunks = await world.steps.list({
       runId,
@@ -1061,12 +1067,18 @@ export const listEvents = async (
         correlationId: correlationIdFilter,
         pagination,
       });
-      return {
+      const page = {
         data: events.data as unknown as Record<string, unknown>[],
         cursor: events.cursor,
         hasMore: events.hasMore,
         pageInfo: getPageInfo(events),
       };
+      if (cursor || page.data.length > 0 || page.hasMore) {
+        return page;
+      }
+      logger.debug(
+        `No analytics events found for run ${runId}; falling back to storage`
+      );
     }
     const result = await world.events.list({
       runId,

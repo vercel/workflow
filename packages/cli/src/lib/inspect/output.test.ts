@@ -3,6 +3,8 @@ import type {
   AnalyticsRun,
   AnalyticsStep,
   AnalyticsWait,
+  Event,
+  Step,
   WorkflowRun,
   World,
 } from '@workflow/world';
@@ -247,6 +249,65 @@ describe('listSteps', () => {
       },
     ]);
   });
+
+  it('falls back to storage when the first analytics page is empty', async () => {
+    const step = {
+      runId: 'run-1',
+      stepId: 'step-1',
+      stepName: 'step//./src/workflows/test//doWork',
+      status: 'completed',
+      attempt: 1,
+      input: undefined,
+      output: undefined,
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:02.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: new Date('2026-06-30T00:00:02.000Z'),
+    } satisfies Step;
+    const world = {
+      analytics: {
+        steps: {
+          list: vi.fn().mockResolvedValue({
+            data: [],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+      steps: {
+        list: vi.fn().mockResolvedValue({
+          data: [step],
+          cursor: null,
+          hasMore: false,
+        }),
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listSteps(world, { json: true, runId: 'run-1' });
+
+    expect(world.analytics?.steps.list).toHaveBeenCalled();
+    expect(world.steps.list).toHaveBeenCalledWith({
+      runId: 'run-1',
+      pagination: {
+        sortOrder: 'desc',
+        cursor: undefined,
+        limit: 20,
+      },
+      resolveData: 'none',
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual([
+      {
+        ...step,
+        createdAt: '2026-06-30T00:00:00.000Z',
+        updatedAt: '2026-06-30T00:00:02.000Z',
+        startedAt: '2026-06-30T00:00:01.000Z',
+        completedAt: '2026-06-30T00:00:02.000Z',
+      },
+    ]);
+  });
 });
 
 describe('listEvents', () => {
@@ -309,6 +370,60 @@ describe('listEvents', () => {
       {
         ...event,
         runCreatedAt: '2026-06-30T00:00:00.000Z',
+        createdAt: '2026-06-30T00:00:02.000Z',
+      },
+    ]);
+  });
+
+  it('falls back to storage when the first analytics page is empty', async () => {
+    const event = {
+      runId: 'run-1',
+      eventId: 'event-1',
+      eventType: 'step_completed',
+      correlationId: 'step-1',
+      eventData: {
+        stepName: 'doWork',
+        result: undefined,
+      },
+      createdAt: new Date('2026-06-30T00:00:02.000Z'),
+    } as unknown as Event;
+    const world = {
+      analytics: {
+        events: {
+          list: vi.fn().mockResolvedValue({
+            data: [],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [event],
+          cursor: null,
+          hasMore: false,
+        }),
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listEvents(world, { json: true, runId: 'run-1' });
+
+    expect(world.analytics?.events.list).toHaveBeenCalled();
+    expect(world.events.list).toHaveBeenCalledWith({
+      runId: 'run-1',
+      pagination: {
+        sortOrder: 'desc',
+        cursor: undefined,
+        limit: 20,
+      },
+      resolveData: 'none',
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual([
+      {
+        ...event,
         createdAt: '2026-06-30T00:00:02.000Z',
       },
     ]);
