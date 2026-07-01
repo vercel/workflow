@@ -46,14 +46,20 @@ export const EVENTS_AGENT_OPTIONS = {
   allowH2: true,
 } as const;
 
-const RETRY_AGENT_OPTIONS = {
+const RETRY_AGENT_OPTIONS: RetryHandler.RetryOptions = {
   // Observe Retry-After header if received
   retryAfter: true,
-  // By default, we observe re-try headers, and also separately
-  // re-try on these status codes: 429 / 500 / 502 / 503 / 504.
-  // TODO: We might want to let 429s pass through, so that we can do
-  // runtime retry-after handling through the queue.
-} as const;
+  // Retry 5xx in-process (genuine transient blips recover fast), but NOT 429.
+  // The Vercel firewall issues a challenge as a 429: our server-to-server
+  // client cannot solve a challenge, so in-process retries just re-trigger it
+  // ~5× per request and amplify load against an already-overloaded firewall
+  // during an incident. Letting 429 pass through surfaces it immediately to
+  // makeRequest — which maps it to a ThrottleError carrying the
+  // `x-vercel-mitigated` / `x-vercel-id` headers — and the queue does the
+  // (backed-off) retry instead. This is the long-standing "let 429s pass
+  // through" intent. (undici default is [500, 502, 503, 504, 429].)
+  statusCodes: [500, 502, 503, 504],
+};
 
 /**
  * Retry options for stream writes (PUT). Stream appends are NOT idempotent, so
@@ -107,21 +113,28 @@ export function getStreamDispatcher(config?: APIConfig): unknown {
   return config?.dispatcher ?? getDefaultStreamDispatcher();
 }
 
+/** Build a shared undici RetryAgent wrapping an Agent with the given options. */
+function makeRetryDispatcher(
+  agentOptions: typeof DEFAULT_AGENT_OPTIONS | typeof EVENTS_AGENT_OPTIONS,
+  retryOptions: RetryHandler.RetryOptions
+): RetryAgent {
+  return new RetryAgent(new Agent(agentOptions), retryOptions);
+}
+
 /**
- * Returns a shared undici RetryAgent wrapping an Agent.
+ * Returns the shared default RetryAgent.
  *
  * - HTTP/1.1 (see DEFAULT_AGENT_OPTIONS)
  * - Connection pooling (up to 8 connections per origin)
- * - Retry: Automatic retry on 429/5xx or network errors with exponential backoff
- *   - Observes Retry-After header if received and lower than 30s
+ * - Retry: Automatic retry on 5xx or network errors with exponential backoff
+ *   (idempotent methods only — undici's default never retries POST), observing
+ *   the `Retry-After` header when present.
  */
 function getDefaultDispatcher(): RetryAgent {
-  if (!_dispatcher) {
-    _dispatcher = new RetryAgent(
-      new Agent(DEFAULT_AGENT_OPTIONS),
-      RETRY_AGENT_OPTIONS
-    );
-  }
+  _dispatcher ??= makeRetryDispatcher(
+    DEFAULT_AGENT_OPTIONS,
+    RETRY_AGENT_OPTIONS
+  );
   return _dispatcher;
 }
 
@@ -130,12 +143,10 @@ function getDefaultDispatcher(): RetryAgent {
  * pooling behavior as the default dispatcher, but with `allowH2` enabled.
  */
 function getDefaultEventsDispatcher(): RetryAgent {
-  if (!_eventsDispatcher) {
-    _eventsDispatcher = new RetryAgent(
-      new Agent(EVENTS_AGENT_OPTIONS),
-      RETRY_AGENT_OPTIONS
-    );
-  }
+  _eventsDispatcher ??= makeRetryDispatcher(
+    EVENTS_AGENT_OPTIONS,
+    RETRY_AGENT_OPTIONS
+  );
   return _eventsDispatcher;
 }
 
@@ -152,11 +163,9 @@ function getDefaultEventsDispatcher(): RetryAgent {
  * events agent's H2 / pooling options.
  */
 function getDefaultStreamDispatcher(): RetryAgent {
-  if (!_streamDispatcher) {
-    _streamDispatcher = new RetryAgent(
-      new Agent(EVENTS_AGENT_OPTIONS),
-      STREAM_RETRY_OPTIONS
-    );
-  }
+  _streamDispatcher ??= makeRetryDispatcher(
+    EVENTS_AGENT_OPTIONS,
+    STREAM_RETRY_OPTIONS
+  );
   return _streamDispatcher;
 }

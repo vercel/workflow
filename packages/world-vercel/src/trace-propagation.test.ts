@@ -7,6 +7,7 @@ import {
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { encode } from 'cbor-x';
+import { MockAgent } from 'undici';
 import {
   afterAll,
   afterEach,
@@ -16,7 +17,6 @@ import {
   it,
   vi,
 } from 'vitest';
-import { MockAgent } from 'undici';
 import { z } from 'zod';
 import { getWorkflowRunEventsV4 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
@@ -152,8 +152,62 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     const sent = new Headers(calledInit?.headers as HeadersInit);
     // Without the fetchV4 injection this header is absent and workflow-server
     // cannot parent its spans to the flow-route invocation.
-    expect(sent.get('traceparent')).toBe(`00-${traceId}-${spanId}-01`);
+    const traceparent = sent.get('traceparent');
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+
+    // The v4 path now opens its own `http GET` CLIENT span (a child of the
+    // flow-invocation span) and injects from inside it — matching the v3
+    // makeRequest path — so the server parents to the client span and the whole
+    // chain stays on one trace.
+    const clientSpan = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === 'http GET');
+    expect(clientSpan).toBeDefined();
+    expect(clientSpan?.spanContext().traceId).toBe(traceId);
+    expect(clientSpan?.parentSpanId).toBe(spanId);
+    expect(traceparent).toBe(
+      `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
+    );
     agent.assertNoPendingInterceptors();
     fetchSpy.mockRestore();
+  });
+});
+
+describe('streamer write trace propagation', () => {
+  it('injects traceparent on the outgoing stream write, parented to the client span', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { createStreamer } = await import('./streamer.js');
+    const streamer = createStreamer({ token: 'test-token' });
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    let spanId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      spanId = span.spanContext().spanId;
+      await streamer.streams.write('wrun_1', 'user', 'chunk');
+      span.end();
+    });
+
+    const calledInit = fetchMock.mock.calls[0][1];
+    const sent = new Headers(calledInit?.headers as HeadersInit);
+    const traceparent = sent.get('traceparent');
+    // Stream writes previously skipped trace-context injection; they now share
+    // the instrumented envelope, so workflow-server can correlate the write.
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+
+    const clientSpan = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === 'http PUT');
+    expect(clientSpan).toBeDefined();
+    expect(clientSpan?.spanContext().traceId).toBe(traceId);
+    expect(clientSpan?.parentSpanId).toBe(spanId);
+    expect(traceparent).toBe(
+      `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
+    );
   });
 });

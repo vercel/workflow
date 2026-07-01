@@ -20,7 +20,10 @@ export {
   useWorkflowHooks,
   useWorkflowRuns,
 } from './client/hooks/use-paginated-list';
-export { useWorkflowResourceData } from './client/hooks/use-resource-data';
+export {
+  fetchSpanDetailResource,
+  useWorkflowResourceData,
+} from './client/hooks/use-resource-data';
 export { useWorkflowTraceViewerData } from './client/hooks/use-trace-viewer';
 export { useWorkflowStreams } from './client/hooks/use-workflow-streams';
 export {

@@ -730,7 +730,12 @@ export async function fetchStep(
  * fields (input/output/result/error/payload) are intentionally omitted — they
  * are loaded lazily per event via `fetchEvent(..., 'all')` on the runtime path.
  */
-function analyticsEventToEvent(event: AnalyticsEvent): Event {
+export function analyticsEventToEvent(event: AnalyticsEvent): Event {
+  const eventData = {
+    ...(event.stepName ? { stepName: event.stepName } : {}),
+    ...(event.resumeAt ? { resumeAt: event.resumeAt } : {}),
+    ...(event.retryAfter ? { retryAfter: event.retryAfter } : {}),
+  };
   const base = {
     runId: event.runId,
     eventId: event.eventId,
@@ -740,7 +745,7 @@ function analyticsEventToEvent(event: AnalyticsEvent): Event {
     ...(event.specVersion !== undefined
       ? { specVersion: event.specVersion }
       : {}),
-    ...(event.stepName ? { eventData: { stepName: event.stepName } } : {}),
+    ...(Object.keys(eventData).length > 0 ? { eventData } : {}),
   };
   return base as unknown as Event;
 }
