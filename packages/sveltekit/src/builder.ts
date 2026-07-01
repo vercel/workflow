@@ -207,6 +207,8 @@ export async function loadSvelteKitRoutesDir(
   const require = createRequire(join(workingDir, 'package.json'));
   const packageJsonPath = require.resolve('@sveltejs/kit/package.json');
   const loaderPath = join(dirname(packageJsonPath), 'src/core/config/index.js');
+
+  // SvelteKit's internal config loader
   const { load_config } = await import(pathToFileURL(loaderPath).href);
   const config = await load_config({ cwd: workingDir });
   const routesDir = config.kit?.files?.routes;
