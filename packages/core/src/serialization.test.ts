@@ -3989,7 +3989,6 @@ describe('Workflow error serialization', () => {
     const error = new WorkflowStartError('queued but not admitted', {
       runId: 'wrun_queued',
       stage: 'admission',
-      queued: true,
       retryable: true,
       status: 408,
       retryAfter: 2,
@@ -4010,7 +4009,6 @@ describe('Workflow error serialization', () => {
     const error = new WorkflowStartError('queue response lost', {
       runId: 'wrun_unknown',
       stage: 'queue',
-      queued: 'unknown',
       retryable: true,
     });
     const serialized = await dehydrateStepReturnValue(

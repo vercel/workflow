@@ -21,7 +21,7 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import { HookConflictError } from '@workflow/errors';
+import type { ExperimentalStartHook } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
@@ -139,7 +139,7 @@ export interface CreateEventV4Input {
   attributes?: Record<string, string>;
   /** Experimental start-hook token claim carried by run_created and the
    *  resilient-start run_started fallback. */
-  experimentalStartHook?: { token: string; ttlSeconds: number };
+  experimentalStartHook?: ExperimentalStartHook;
   /** attr_set's attribute change list ({key, value|null} entries). */
   changes?: Array<Record<string, unknown>>;
   /** attr_set's writer provenance ({type:'workflow'} or
@@ -274,12 +274,6 @@ function errorFromV4Response(
     if (errorBody) message += ` ${errorBody}`;
   }
 
-  // A 409 carrying the server's hook_conflict code is a start-hook token
-  // conflict, not a generic entity conflict — surface it as the typed error
-  // the runtime and start() branch on.
-  if (statusCode === 409 && code === 'hook_conflict') {
-    return new HookConflictError(token ?? '', conflictingRunId);
-  }
   const retryAfter = parseRetryAfter(
     readHeader(responseHeaders, 'retry-after')
   );
@@ -289,6 +283,8 @@ function errorFromV4Response(
     retryAfter,
     code,
     url,
+    token,
+    conflictingRunId,
     mitigated: readHeader(responseHeaders, 'x-vercel-mitigated'),
   });
 }

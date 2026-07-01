@@ -233,15 +233,12 @@ export function getCommonReducers(
       const base = reduceNamedErrorSubclassBase('WorkflowStartError', value);
       if (!base) return false;
       const error = value as WorkflowStartError;
-      const details = {
+      const reduced: SerializableSpecial['WorkflowStartError'] = {
         ...base,
         runId: error.runId,
+        stage: error.stage,
         retryable: error.retryable,
       };
-      const reduced: SerializableSpecial['WorkflowStartError'] =
-        error.stage === 'queue'
-          ? { ...details, stage: 'queue', queued: 'unknown' }
-          : { ...details, stage: 'admission', queued: true };
       if (error.status !== undefined) reduced.status = error.status;
       if (error.url !== undefined) reduced.url = error.url;
       if (error.code !== undefined) reduced.code = error.code;
@@ -436,27 +433,16 @@ export function getCommonRevivers(
         ((global as Record<symbol, unknown>)[
           Symbol.for('@workflow/errors//WorkflowStartError')
         ] as typeof WorkflowStartError | undefined) ?? WorkflowStartError;
-      const details = {
+      const error = new Ctor(value.message, {
         runId: value.runId,
+        stage: value.stage,
         retryable: value.retryable,
         status: value.status,
         url: value.url,
         code: value.code,
         retryAfter: value.retryAfter,
         ...('cause' in value ? { cause: value.cause } : {}),
-      };
-      const error =
-        value.stage === 'queue'
-          ? new Ctor(value.message, {
-              ...details,
-              stage: 'queue',
-              queued: 'unknown',
-            })
-          : new Ctor(value.message, {
-              ...details,
-              stage: 'admission',
-              queued: true,
-            });
+      });
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },

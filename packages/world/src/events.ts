@@ -276,10 +276,19 @@ const AttrSetEventSchema = BaseEventSchema.extend({
   }),
 });
 
-const ExperimentalStartHookSchema = z.object({
+/**
+ * Start-hook claim data: `start()` reserves `token` atomically with run
+ * admission, fencing duplicate starts for `ttlSeconds` past hook creation /
+ * run completion. Rides on `run_created` (and the resilient-start
+ * `run_started` fallback + queue runInput) so every admission path validates
+ * the same shape.
+ */
+export const ExperimentalStartHookSchema = z.object({
   token: z.string().min(1),
   ttlSeconds: z.number().int().positive(),
 });
+
+export type ExperimentalStartHook = z.infer<typeof ExperimentalStartHookSchema>;
 
 // =============================================================================
 // Run lifecycle events

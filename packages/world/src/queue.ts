@@ -115,10 +115,12 @@ export const RunInputSchema = z.object({
   executionContext: z.record(z.string(), z.any()).optional(),
   /** Initial plaintext run attributes, for resilient run creation. */
   attributes: z.record(z.string(), z.string()).optional(),
-  /** Start-hook claim data, for resilient run creation. */
+  /** Start-hook claim data, for resilient run creation. Keep aligned with
+   * `ExperimentalStartHookSchema` in events.ts (this file uses `zod/v4`, so
+   * the schema instance cannot be shared). */
   experimentalStartHook: z
     .object({
-      token: z.string(),
+      token: z.string().min(1),
       ttlSeconds: z.number().int().positive(),
     })
     .optional(),

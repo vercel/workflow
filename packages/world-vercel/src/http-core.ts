@@ -19,6 +19,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  HookConflictError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -165,9 +166,19 @@ export function errorForResponse(
     code?: string;
     url?: string;
     mitigated?: string | null;
+    /** Hook token from a 409 `hook_conflict` response body. */
+    token?: string;
+    /** Owning run from a 409 `hook_conflict` response body. */
+    conflictingRunId?: string;
   } = {}
 ): Error {
   const { retryAfter, code, url, mitigated } = opts;
+  // A 409 carrying the server's hook_conflict code is a start-hook token
+  // conflict, not a generic entity conflict — surface it as the typed error
+  // the runtime and start() branch on.
+  if (status === 409 && code === 'hook_conflict') {
+    return new HookConflictError(opts.token ?? '', opts.conflictingRunId);
+  }
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) return new RunExpiredError(message);
   if (status === 425) return new TooEarlyError(message, { retryAfter });

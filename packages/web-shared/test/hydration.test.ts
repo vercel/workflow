@@ -140,7 +140,6 @@ describe('getWebRevivers — error family', () => {
       new WorkflowStartError('admission uncertain', {
         runId: 'wrun_queued',
         stage: 'admission',
-        queued: true,
         retryable: false,
         status: 403,
       })

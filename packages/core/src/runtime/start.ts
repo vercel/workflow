@@ -113,24 +113,26 @@ async function hasDurableRunCreatedEvent(
 }
 
 function getRunCreatedResult(
-  runId: string,
   result: Awaited<ReturnType<World['events']['create']>>,
-  verifyRunId = true
+  expectedRunId?: string
 ) {
   if (!result.run) {
     throw new WorkflowRuntimeError(
       "Missing 'run' in server response for 'run_created' event"
     );
   }
-  if (verifyRunId && result.run.runId !== runId) {
+  if (expectedRunId !== undefined && result.run.runId !== expectedRunId) {
     throw new WorkflowRuntimeError(
-      `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
+      `Server returned different runId than requested: expected ${expectedRunId}, got ${result.run.runId}`
     );
   }
   return result.run;
 }
 
 function isWorkflowWorldError(error: unknown): error is WorkflowWorldError {
+  // `.is()` alone misses subclasses (their `name` differs, e.g.
+  // ThrottleError); `instanceof` alone misses cross-realm base instances.
+  // World code runs in the host realm, so together they cover both.
   return error instanceof WorkflowWorldError || WorkflowWorldError.is(error);
 }
 
@@ -367,7 +369,7 @@ export async function start<TArgs extends unknown[], TResult>(
           SerializationFormat.GZIP
         );
         targetSupportsStartHookAdmission =
-          capabilities.experimentalStartHookAdmission;
+          capabilities.experimentalStartHookLoserAck;
       }
 
       const ops: Promise<void>[] = [];
@@ -417,33 +419,33 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         if (startHookAdmission.mode === 'queue-first') {
+          const contractError = (message: string) =>
+            new WorkflowWorldError(message, {
+              code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+            });
           if (!targetSupportsStartHookAdmission) {
-            throw new WorkflowWorldError(
-              'experimentalStartHook requires a target deployment that supports queue-first start-hook admission.',
-              { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+            throw contractError(
+              'experimentalStartHook requires a target deployment that supports queue-first start-hook admission.'
             );
           }
           if (
             experimentalStartHook.ttlSeconds > startHookAdmission.maxTtlSeconds
           ) {
-            throw new WorkflowWorldError(
-              `experimentalStartHook.experimental_ttl exceeds this World's maximum of ${startHookAdmission.maxTtlSeconds} seconds.`,
-              { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+            throw contractError(
+              `experimentalStartHook.experimental_ttl exceeds this World's maximum of ${startHookAdmission.maxTtlSeconds} seconds.`
             );
           }
           if (
             textEncoder.encode(experimentalStartHook.token).byteLength >
             startHookAdmission.maxTokenBytes
           ) {
-            throw new WorkflowWorldError(
-              `experimentalStartHook.token exceeds this World's maximum of ${startHookAdmission.maxTokenBytes} bytes.`,
-              { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+            throw contractError(
+              `experimentalStartHook.token exceeds this World's maximum of ${startHookAdmission.maxTokenBytes} bytes.`
             );
           }
           if (specVersion < SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT) {
-            throw new WorkflowWorldError(
-              'experimentalStartHook requires a spec version that supports runInput queue transport in queue-first Worlds.',
-              { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+            throw contractError(
+              'experimentalStartHook requires a spec version that supports runInput queue transport in queue-first Worlds.'
             );
           }
         }
@@ -558,6 +560,14 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
       } satisfies WorkflowInvokePayload;
 
+      const createRunEvent = () =>
+        world.events.create(runId, runCreatedEvent, { v1Compat });
+      const enqueueRun = () =>
+        world.queue(getWorkflowQueueName(workflowName), queuePayload, {
+          deploymentId,
+          specVersion,
+        });
+
       let resilientStart = false;
       let createdRunForSpan:
         | NonNullable<Awaited<ReturnType<typeof world.events.create>>['run']>
@@ -565,14 +575,7 @@ export async function start<TArgs extends unknown[], TResult>(
       if (experimentalStartHook) {
         if (startHookAdmission?.mode === 'queue-first') {
           try {
-            await world.queue(
-              getWorkflowQueueName(workflowName),
-              queuePayload,
-              {
-                deploymentId,
-                specVersion,
-              }
-            );
+            await enqueueRun();
           } catch (error) {
             scheduleOpsFlush();
             throw new WorkflowStartError(
@@ -580,7 +583,6 @@ export async function start<TArgs extends unknown[], TResult>(
               {
                 runId,
                 stage: 'queue',
-                queued: 'unknown',
                 retryable: isRetryableWorldError(error),
                 cause: error,
                 ...getWorkflowWorldErrorDetails(error),
@@ -589,10 +591,10 @@ export async function start<TArgs extends unknown[], TResult>(
           }
 
           try {
-            const result = await world.events.create(runId, runCreatedEvent, {
-              v1Compat,
-            });
-            createdRunForSpan = getRunCreatedResult(runId, result);
+            createdRunForSpan = getRunCreatedResult(
+              await createRunEvent(),
+              runId
+            );
           } catch (error) {
             scheduleOpsFlush();
             if (EntityConflictError.is(error)) {
@@ -610,7 +612,6 @@ export async function start<TArgs extends unknown[], TResult>(
                 {
                   runId,
                   stage: 'admission',
-                  queued: true,
                   retryable: isRetryableWorldError(error),
                   cause: error,
                   ...getWorkflowWorldErrorDetails(error),
@@ -625,20 +626,13 @@ export async function start<TArgs extends unknown[], TResult>(
           // before the run is queued, so a losing start never enqueues work.
           // Any creation failure — including HookConflictError — fails the
           // start; nothing was queued, so the caller can simply retry.
-          const result = await world.events.create(runId, runCreatedEvent, {
-            v1Compat,
-          });
-          createdRunForSpan = getRunCreatedResult(runId, result);
+          createdRunForSpan = getRunCreatedResult(
+            await createRunEvent(),
+            runId
+          );
 
           try {
-            await world.queue(
-              getWorkflowQueueName(workflowName),
-              queuePayload,
-              {
-                deploymentId,
-                specVersion,
-              }
-            );
+            await enqueueRun();
           } catch (error) {
             // Undo admission so the token is not fenced by a run that will
             // never execute. Cancellation releases unmaterialized start-hook
@@ -669,11 +663,8 @@ export async function start<TArgs extends unknown[], TResult>(
         // If events.create fails with 429/5xx, the run was still accepted
         // via the queue and creation will be re-tried async by the runtime.
         const [runCreatedResult, queueResult] = await Promise.allSettled([
-          world.events.create(runId, runCreatedEvent, { v1Compat }),
-          world.queue(getWorkflowQueueName(workflowName), queuePayload, {
-            deploymentId,
-            specVersion,
-          }),
+          createRunEvent(),
+          enqueueRun(),
         ]);
 
         // Queue failure is always fatal — the run was not enqueued
@@ -705,9 +696,8 @@ export async function start<TArgs extends unknown[], TResult>(
           }
         } else {
           createdRunForSpan = getRunCreatedResult(
-            runId,
             runCreatedResult.value,
-            !v1Compat
+            v1Compat ? undefined : runId
           );
         }
       }

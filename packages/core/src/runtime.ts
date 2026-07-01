@@ -892,7 +892,6 @@ export function workflowEntrypoint(
                             'Start-hook claim lost during setup, skipping queued run',
                             {
                               workflowRunId: runId,
-                              token: runInput.experimentalStartHook.token,
                               message: err.message,
                             }
                           );

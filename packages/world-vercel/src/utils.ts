@@ -412,13 +412,16 @@ export async function makeRequest<T>({
         });
 
         if (!response.ok) {
-          const errorData: { message?: string; code?: string; error?: string } =
-            await parseResponseBody(response)
-              .then(
-                (r) =>
-                  r.data as { message?: string; code?: string; error?: string }
-              )
-              .catch(() => ({}));
+          type ErrorBody = {
+            message?: string;
+            code?: string;
+            error?: string;
+            token?: string;
+            conflictingRunId?: string;
+          };
+          const errorData: ErrorBody = await parseResponseBody(response)
+            .then((r) => r.data as ErrorBody)
+            .catch(() => ({}));
           const errorCode = errorData.code ?? errorData.error;
           logCurlRepro(request.method, url, headers);
 
@@ -440,6 +443,8 @@ export async function makeRequest<T>({
             url,
             code: errorCode,
             retryAfter,
+            token: errorData.token,
+            conflictingRunId: errorData.conflictingRunId,
             mitigated: response.headers.get('x-vercel-mitigated'),
           });
           span?.setAttributes({

@@ -40,6 +40,7 @@ import {
   type EventResult,
   EventSchema,
   EventTypeSchema,
+  type ExperimentalStartHook,
   type GetEventParams,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
@@ -185,7 +186,7 @@ interface SplitEventData {
     /** Initial run attributes (run_created / resilient-start run_started). */
     attributes?: Record<string, string>;
     /** Experimental start-hook token claim (run_created / resilient start). */
-    experimentalStartHook?: { token: string; ttlSeconds: number };
+    experimentalStartHook?: ExperimentalStartHook;
     /** attr_set change list, included verbatim in frame meta. */
     changes?: Array<Record<string, unknown>>;
     /** attr_set writer provenance, included verbatim in frame meta. */
@@ -339,10 +340,8 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     eventData.experimentalStartHook !== null &&
     typeof eventData.experimentalStartHook === 'object'
   ) {
-    meta.experimentalStartHook = eventData.experimentalStartHook as {
-      token: string;
-      ttlSeconds: number;
-    };
+    meta.experimentalStartHook =
+      eventData.experimentalStartHook as ExperimentalStartHook;
   }
   if (Array.isArray(eventData.changes)) {
     meta.changes = eventData.changes as Array<Record<string, unknown>>;

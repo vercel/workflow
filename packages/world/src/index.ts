@@ -27,6 +27,7 @@ export {
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  ExperimentalStartHookSchema,
   stripEventDataRefs,
 } from './events.js';
 export type * from './hooks.js';

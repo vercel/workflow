@@ -88,15 +88,15 @@ export interface SerializableSpecial {
     stack?: string;
     cause?: unknown;
     runId: string;
+    // `queued` is derived from `stage` by the constructor, so only `stage`
+    // is serialized.
+    stage: 'queue' | 'admission';
     retryable: boolean;
     status?: number;
     url?: string;
     code?: string;
     retryAfter?: number;
-  } & (
-    | { stage: 'queue'; queued: 'unknown' }
-    | { stage: 'admission'; queued: true }
-  );
+  };
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
   Int32Array: string; // base64 string

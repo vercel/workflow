@@ -21,8 +21,8 @@ import {
 import { filterHookData } from './filters.js';
 import {
   type HookTokenClaim,
-  hashToken,
   hookRecoveryMarkerPath,
+  hookTokenClaimPath,
   readHookTokenClaim,
 } from './helpers.js';
 
@@ -49,21 +49,33 @@ export async function retainStartHookClaim(
     )
   );
 
-  await writeJSON(
-    constraintPath,
-    {
-      token: claim.token,
-      hookId: claim.hookId,
-      runId: claim.runId,
-      eventId: claim.eventId,
-      ttlSeconds: claim.ttlSeconds,
-      startEventId: claim.startEventId,
-      createdAt: claim.createdAt,
-      tag: claim.tag,
-      expiresAt,
-    },
-    { overwrite: true }
-  );
+  await writeJSON(constraintPath, { ...claim, expiresAt }, { overwrite: true });
+}
+
+/**
+ * Settles a disposed hook's token claim: TTL-carrying claims are retained
+ * (duplicate starts stay fenced past disposal), plain createHook guards are
+ * deleted to free the token. Shared by hook_disposed and terminal-run
+ * cleanup.
+ */
+export async function settleClaimForDisposedHook(
+  basedir: string,
+  hook: Pick<Hook, 'token' | 'runId' | 'createdAt'>,
+  now: Date
+): Promise<string> {
+  const constraintPath = hookTokenClaimPath(basedir, hook.token);
+  const claim = await readHookTokenClaim(constraintPath);
+  if (claim?.runId === hook.runId && claim.ttlSeconds) {
+    await retainStartHookClaim(
+      constraintPath,
+      { ...claim, token: hook.token },
+      now,
+      hook.createdAt
+    );
+  } else {
+    await deleteJSON(constraintPath);
+  }
+  return constraintPath;
 }
 
 /**
@@ -175,32 +187,19 @@ export async function deleteAllHooksForRun(
   const tokensDir = path.join(hooksDir, 'tokens');
   const now = new Date();
 
+  // Settle claims through the run's hook entities (retain TTL claims, free
+  // plain guards), and delete the hooks + recovery markers. The marker's
+  // filename hash includes `(token, runId, hookId)` so a leaked marker can
+  // never corrupt a different lifetime — cleaning it up here keeps the
+  // tokens/ directory from accumulating recovered-hook sidecars over time.
+  const settledClaimPaths = new Set<string>();
   for (const file of files) {
     const hookPath = path.join(hooksDir, `${file}.json`);
     const hook = await readJSON(hookPath, HookSchema);
     if (hook && hook.runId === runId) {
-      // Delete the token constraint file to free up the token, and
-      // delete the recovery marker (if any) for disk hygiene. The
-      // marker's filename hash includes `(token, runId, hookId)` so
-      // a leaked marker can never corrupt a different lifetime — but
-      // cleaning it up here keeps the tokens/ directory from
-      // accumulating recovered-hook sidecars over time.
-      const constraintPath = path.join(
-        hooksDir,
-        'tokens',
-        `${hashToken(hook.token)}.json`
+      settledClaimPaths.add(
+        await settleClaimForDisposedHook(basedir, hook, now)
       );
-      const claim = await readHookTokenClaim(constraintPath);
-      if (claim?.runId === runId && claim.ttlSeconds) {
-        await retainStartHookClaim(
-          constraintPath,
-          { ...claim, token: hook.token },
-          now,
-          hook.createdAt
-        );
-      } else {
-        await deleteJSON(constraintPath);
-      }
       await deleteJSON(
         hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
       );
@@ -208,19 +207,33 @@ export async function deleteAllHooksForRun(
     }
   }
 
-  for (const file of await listJSONFiles(tokensDir)) {
-    if (file.endsWith('.recovery')) continue;
-    const constraintPath = path.join(tokensDir, `${file}.json`);
-    const claim = await readHookTokenClaim(constraintPath);
-    if (claim?.runId !== runId || !claim.ttlSeconds) continue;
-    if (
-      opts?.releaseUnmaterializedClaims &&
-      claim.hookId === undefined &&
-      claim.expiresAt === undefined
-    ) {
-      await deleteJSON(constraintPath);
-    } else {
-      await retainStartHookClaim(constraintPath, claim, now);
-    }
-  }
+  // Sweep the tokens directory for claims with no hook entity: this run's
+  // unmaterialized start claims (retain or, on cancellation, release), plus
+  // opportunistic cleanup of anyone's expired retained-claim debris so the
+  // directory doesn't grow forever.
+  const tokenFiles = await listJSONFiles(tokensDir);
+  await Promise.all(
+    tokenFiles.map(async (file) => {
+      if (file.endsWith('.recovery')) return;
+      const constraintPath = path.join(tokensDir, `${file}.json`);
+      if (settledClaimPaths.has(constraintPath)) return;
+      const claim = await readHookTokenClaim(constraintPath);
+      if (!claim) return;
+      if (claim.expiresAt && claim.expiresAt <= now) {
+        // Retention window over — the claim is dead for every run.
+        await deleteJSON(constraintPath);
+        return;
+      }
+      if (claim.runId !== runId || !claim.ttlSeconds) return;
+      if (
+        opts?.releaseUnmaterializedClaims &&
+        claim.hookId === undefined &&
+        claim.expiresAt === undefined
+      ) {
+        await deleteJSON(constraintPath);
+      } else {
+        await retainStartHookClaim(constraintPath, claim, now);
+      }
+    })
+  );
 }

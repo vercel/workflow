@@ -18,8 +18,8 @@ import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import {
-  hashToken,
   hookRecoveryMarkerPath,
+  hookTokenClaimPath,
   readHookTokenClaim,
 } from './storage/helpers.js';
 import { createStorage } from './storage.js';
@@ -133,9 +133,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
               HookSchema
             );
             if (hook?.token) {
-              await deleteJSON(
-                path.join(hooksDir, 'tokens', `${hashToken(hook.token)}.json`)
-              );
+              await deleteJSON(hookTokenClaimPath(basedir, hook.token));
               await deleteJSON(
                 hookRecoveryMarkerPath(
                   basedir,

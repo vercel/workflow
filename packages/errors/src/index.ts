@@ -187,18 +187,21 @@ export class WorkflowWorldError extends WorkflowError {
   }
 }
 
-type WorkflowStartErrorOptions = {
+interface WorkflowStartErrorOptions {
   runId: string;
+  /**
+   * The phase that failed. `queue` means the enqueue call itself failed (the
+   * queue may or may not have accepted the message); `admission` means the
+   * message was queued but admission could not be confirmed.
+   */
+  stage: 'queue' | 'admission';
   retryable: boolean;
   status?: number;
   url?: string;
   code?: string;
   retryAfter?: number;
   cause?: unknown;
-} & (
-  | { stage: 'queue'; queued: 'unknown' }
-  | { stage: 'admission'; queued: true }
-);
+}
 
 /**
  * Thrown when `start()` cannot synchronously confirm whether a workflow run was
@@ -207,8 +210,9 @@ type WorkflowStartErrorOptions = {
  */
 export class WorkflowStartError extends WorkflowWorldError {
   readonly runId: string;
-  readonly stage: WorkflowStartErrorOptions['stage'];
-  readonly queued: WorkflowStartErrorOptions['queued'];
+  readonly stage: 'queue' | 'admission';
+  /** Whether the queue accepted the message — derived from `stage`. */
+  readonly queued: true | 'unknown';
   readonly retryable: boolean;
 
   constructor(message: string, options: WorkflowStartErrorOptions) {
@@ -216,7 +220,7 @@ export class WorkflowStartError extends WorkflowWorldError {
     this.name = 'WorkflowStartError';
     this.runId = options.runId;
     this.stage = options.stage;
-    this.queued = options.queued;
+    this.queued = options.stage === 'queue' ? 'unknown' : true;
     this.retryable = options.retryable;
   }
 

@@ -104,27 +104,28 @@ describe('getRunCapabilities', () => {
     });
   });
 
-  describe('experimentalStartHookAdmission', () => {
+  describe('experimentalStartHookLoserAck', () => {
     it('is false when version is missing or invalid', () => {
-      expect(getRunCapabilities(undefined).experimentalStartHookAdmission).toBe(
+      expect(getRunCapabilities(undefined).experimentalStartHookLoserAck).toBe(
         false
       );
       expect(
-        getRunCapabilities('not-a-version').experimentalStartHookAdmission
+        getRunCapabilities('not-a-version').experimentalStartHookLoserAck
       ).toBe(false);
     });
 
-    it('is false before the start-hook admission cutoff', () => {
+    it('is false before the loser-ack cutoff', () => {
+      // beta.26 was published from main without loser-ack handling.
       expect(
-        getRunCapabilities('5.0.0-beta.25').experimentalStartHookAdmission
+        getRunCapabilities('5.0.0-beta.26').experimentalStartHookLoserAck
       ).toBe(false);
     });
 
-    it('is true at and after the start-hook admission cutoff', () => {
+    it('is true at and after the loser-ack cutoff', () => {
       expect(
-        getRunCapabilities('5.0.0-beta.26').experimentalStartHookAdmission
+        getRunCapabilities('5.0.0-beta.27').experimentalStartHookLoserAck
       ).toBe(true);
-      expect(getRunCapabilities('5.0.0').experimentalStartHookAdmission).toBe(
+      expect(getRunCapabilities('5.0.0').experimentalStartHookLoserAck).toBe(
         true
       );
     });

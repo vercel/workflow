@@ -13,6 +13,7 @@ import {
 import type {
   Event,
   EventResult,
+  ExperimentalStartHook,
   Hook,
   SerializedData,
   Step,
@@ -61,7 +62,10 @@ import {
   monotonicUlid,
   readHookTokenClaim,
 } from './helpers.js';
-import { deleteAllHooksForRun, retainStartHookClaim } from './hooks-storage.js';
+import {
+  deleteAllHooksForRun,
+  settleClaimForDisposedHook,
+} from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
 
@@ -90,6 +94,10 @@ import { withRunFileLock } from './runs-storage.js';
 
 const START_HOOK_LOCK_STALE_MS = 30_000;
 
+/** Whether a run status is terminal (no further lifecycle transitions). */
+const isRunTerminal = (status: string) =>
+  ['completed', 'failed', 'cancelled'].includes(status);
+
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
  * eventId for a legacy token claim — one written by a version of
@@ -112,24 +120,25 @@ const HookRecoveryMarkerSchema = z.object({
 });
 
 /**
- * Runs `fn` under an exclusive cross-process file lock scoped to a hook
- * token. Returns `undefined` (without running `fn`) when the lock is
- * contended. Locks abandoned by a crashed holder (older than
- * START_HOOK_LOCK_STALE_MS) are broken atomically via rename, so two
- * breakers can never both enter, and the holder only removes a lock it
- * still owns, so a stalled holder cannot free a breaker's lock.
+ * Runs `fn` under THE exclusive cross-process file lock for a token's claim
+ * writes — one lock per token, shared by reclaim and materialize, so the two
+ * read-check-overwrite operations mutually exclude. Returns `undefined`
+ * (without running `fn`) when the lock is contended; callers treat that as
+ * a retryable failure and re-validate. Locks abandoned by a crashed holder
+ * (older than START_HOOK_LOCK_STALE_MS) are broken atomically via rename,
+ * so two breakers can never both enter, and the holder only removes a lock
+ * it still owns, so a stalled holder cannot free a breaker's lock.
  */
 async function withTokenClaimLock<T>(
   basedir: string,
   token: string,
-  purpose: 'reclaim' | 'materialize',
   fn: () => Promise<T>
 ): Promise<T | undefined> {
   const lockPath = resolveWithinBase(
     basedir,
     '.locks',
     'hooks',
-    `${hashToken(token)}.${purpose}`
+    `${hashToken(token)}.claim`
   );
   const owner = monotonicUlid();
   let locked = await writeExclusive(lockPath, owner);
@@ -182,32 +191,34 @@ async function canReuseExpiredStartClaim(
     claim.tag ?? tag
   );
   if (!run) return true;
-  return ['completed', 'failed', 'cancelled'].includes(run.status);
+  return isRunTerminal(run.status);
 }
 
 async function replaceExpiredStartClaim(
   basedir: string,
   tag: string | undefined,
   token: string,
+  currentClaim: HookTokenClaim,
   nextClaim: HookTokenClaim
 ): Promise<boolean> {
-  const replaced = await withTokenClaimLock(
-    basedir,
-    token,
-    'reclaim',
-    async () => {
-      const constraintPath = hookTokenClaimPath(basedir, token);
-      const latestClaim = await readHookTokenClaim(constraintPath);
-      if (
-        !latestClaim ||
-        !(await canReuseExpiredStartClaim(basedir, tag, latestClaim))
-      ) {
-        return false;
-      }
-      await writeJSON(constraintPath, nextClaim, { overwrite: true });
-      return true;
+  // Cheap pre-check on the caller's snapshot: an unexpired claim can never
+  // be reclaimed, so skip the lock + re-reads entirely. The in-lock check
+  // below stays authoritative.
+  if (!(await canReuseExpiredStartClaim(basedir, tag, currentClaim))) {
+    return false;
+  }
+  const replaced = await withTokenClaimLock(basedir, token, async () => {
+    const constraintPath = hookTokenClaimPath(basedir, token);
+    const latestClaim = await readHookTokenClaim(constraintPath);
+    if (
+      !latestClaim ||
+      !(await canReuseExpiredStartClaim(basedir, tag, latestClaim))
+    ) {
+      return false;
     }
-  );
+    await writeJSON(constraintPath, nextClaim, { overwrite: true });
+    return true;
+  });
   return replaced ?? false;
 }
 
@@ -221,25 +232,20 @@ async function materializeStartHookClaim(
   token: string,
   nextClaim: HookTokenClaim
 ): Promise<boolean> {
-  const materialized = await withTokenClaimLock(
-    basedir,
-    token,
-    'materialize',
-    async () => {
-      const constraintPath = hookTokenClaimPath(basedir, token);
-      const latestClaim = await readHookTokenClaim(constraintPath);
-      if (
-        !latestClaim ||
-        latestClaim.runId !== nextClaim.runId ||
-        latestClaim.hookId !== undefined ||
-        latestClaim.expiresAt !== undefined
-      ) {
-        return false;
-      }
-      await writeJSON(constraintPath, nextClaim, { overwrite: true });
-      return true;
+  const materialized = await withTokenClaimLock(basedir, token, async () => {
+    const constraintPath = hookTokenClaimPath(basedir, token);
+    const latestClaim = await readHookTokenClaim(constraintPath);
+    if (
+      !latestClaim ||
+      latestClaim.runId !== nextClaim.runId ||
+      latestClaim.hookId !== undefined ||
+      latestClaim.expiresAt !== undefined
+    ) {
+      return false;
     }
-  );
+    await writeJSON(constraintPath, nextClaim, { overwrite: true });
+    return true;
+  });
   return materialized ?? false;
 }
 
@@ -256,7 +262,7 @@ async function claimStartHookToken(
   basedir: string,
   runId: string,
   eventId: string,
-  startHook: { token: string; ttlSeconds: number },
+  startHook: ExperimentalStartHook,
   tag?: string
 ): Promise<string> {
   const constraintPath = hookTokenClaimPath(basedir, startHook.token);
@@ -280,11 +286,22 @@ async function claimStartHookToken(
   }
   if (
     existingClaim &&
-    (await replaceExpiredStartClaim(basedir, tag, startHook.token, nextClaim))
+    (await replaceExpiredStartClaim(
+      basedir,
+      tag,
+      startHook.token,
+      existingClaim,
+      nextClaim
+    ))
   ) {
     return eventId;
   }
+  if (existingClaim) {
+    throw new HookConflictError(startHook.token, existingClaim.runId);
+  }
 
+  // The exclusive write failed but the claim file was gone by the time we
+  // read it (concurrently reclaimed) — re-read once to converge.
   const currentClaim = await readHookTokenClaim(constraintPath);
   if (currentClaim?.runId === runId) {
     return currentClaim.startEventId ?? eventId;
@@ -780,10 +797,6 @@ export function createEventsStorage(
         // specVersion is always sent by the runtime, but we provide a fallback for safety
         const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
-        // Helper to check if run is in terminal state
-        const isRunTerminal = (status: string) =>
-          ['completed', 'failed', 'cancelled'].includes(status);
-
         // Helper to check if step is in terminal state
         const isStepTerminal = (status: string) =>
           ['completed', 'failed', 'cancelled'].includes(status);
@@ -822,10 +835,7 @@ export function createEventsStorage(
               executionContext?: Record<string, any>;
               attributes?: Record<string, string>;
               allowReservedAttributes?: true;
-              experimentalStartHook?: {
-                token: string;
-                ttlSeconds: number;
-              };
+              experimentalStartHook?: ExperimentalStartHook;
             };
             if (
               runInputData.deploymentId &&
@@ -1186,10 +1196,7 @@ export function createEventsStorage(
             executionContext?: Record<string, any>;
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
-            experimentalStartHook?: {
-              token: string;
-              ttlSeconds: number;
-            };
+            experimentalStartHook?: ExperimentalStartHook;
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -1902,12 +1909,18 @@ export function createEventsStorage(
             if (
               !tokenClaimed &&
               existingClaim?.expiresAt !== undefined &&
-              (await replaceExpiredStartClaim(basedir, tag, hookData.token, {
-                token: hookData.token,
-                hookId: data.correlationId,
-                runId: effectiveRunId,
-                eventId,
-              }))
+              (await replaceExpiredStartClaim(
+                basedir,
+                tag,
+                hookData.token,
+                existingClaim,
+                {
+                  token: hookData.token,
+                  hookId: data.correlationId,
+                  runId: effectiveRunId,
+                  eventId,
+                }
+              ))
             ) {
               tokenClaimed = true;
             }
@@ -2132,28 +2145,10 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Normal hook disposal frees the token. Start-hook claims carry
+            // Normal hook disposal frees the token; start-hook claims carry
             // ttlSeconds and are retained so duplicate starts remain fenced
             // after the active hook entity is gone.
-            const disposedConstraintPath = hookTokenClaimPath(
-              basedir,
-              existingHook.token
-            );
-            const claim = await readHookTokenClaim(disposedConstraintPath);
-            if (claim?.runId === existingHook.runId && claim.ttlSeconds) {
-              await retainStartHookClaim(
-                disposedConstraintPath,
-                {
-                  ...claim,
-                  token: existingHook.token,
-                  hookId: existingHook.hookId,
-                },
-                now,
-                existingHook.createdAt
-              );
-            } else {
-              await deleteJSON(disposedConstraintPath);
-            }
+            await settleClaimForDisposedHook(basedir, existingHook, now);
             await deleteJSON(
               hookRecoveryMarkerPath(
                 basedir,

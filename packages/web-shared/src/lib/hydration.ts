@@ -227,7 +227,7 @@ export function getWebRevivers(): Revivers {
       error.name = 'WorkflowStartError';
       error.runId = value.runId;
       error.stage = value.stage;
-      error.queued = value.queued;
+      error.queued = value.stage === 'queue' ? 'unknown' : true;
       error.retryable = value.retryable;
       if (value.status !== undefined) error.status = value.status;
       if (value.url !== undefined) error.url = value.url;

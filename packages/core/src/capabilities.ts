@@ -31,7 +31,7 @@
  * - `gzip` (gzip payload compression): added in `5.0.0-beta.18`
  * - `zstd` (zstd payload compression, preferred codec): added in `5.0.0-beta.18`
  *   alongside gzip — they co-ship, so any run that can read one can read both.
- * - `experimentalStartHookAdmission` (queued start-hook loser handling): added in `5.0.0-beta.26`
+ * - `experimentalStartHookLoserAck` (queued start-hook loser handling): added in `5.0.0-beta.27`
  */
 
 import semver from 'semver';
@@ -62,11 +62,11 @@ export interface RunCapabilities {
   framedByteStreams: boolean;
 
   /**
-   * Whether the target workflow handler can safely process queue-first
-   * experimental start-hook runs: turbo is disabled and `HookConflictError`
+   * Whether the target workflow handler safely handles a queued start-hook
+   * run that LOST its token claim: turbo is disabled and `HookConflictError`
    * during `run_started` is acknowledged without running user workflow code.
    */
-  experimentalStartHookAdmission: boolean;
+  experimentalStartHookLoserAck: boolean;
 }
 
 /**
@@ -106,10 +106,14 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // delays the optimization (safe).
 }> = [
   { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
-  // TODO(release): bump if this change ships after beta.26.
+  // beta.26 was published from main WITHOUT this change, so the cutoff must
+  // point past it. TODO(release): bump again if another "Version Packages
+  // (beta)" PR merges before this change ships. A too-low cutoff runs user
+  // workflow code on a lost claim (unsafe); too-high merely rejects
+  // cross-deployment start-hook starts (safe).
   {
-    capability: 'experimentalStartHookAdmission',
-    minVersion: '5.0.0-beta.26',
+    capability: 'experimentalStartHookLoserAck',
+    minVersion: '5.0.0-beta.27',
   },
 ];
 
@@ -138,7 +142,7 @@ export function getRunCapabilities(
     return {
       supportedFormats: BASELINE_FORMATS,
       framedByteStreams: false,
-      experimentalStartHookAdmission: false,
+      experimentalStartHookLoserAck: false,
     };
   }
 
@@ -153,7 +157,7 @@ export function getRunCapabilities(
   const result: RunCapabilities = {
     supportedFormats: formats,
     framedByteStreams: false,
-    experimentalStartHookAdmission: false,
+    experimentalStartHookLoserAck: false,
   };
 
   for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {
