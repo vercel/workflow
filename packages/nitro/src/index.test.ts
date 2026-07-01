@@ -11,10 +11,20 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Nitro } from 'nitro/types';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { VercelBuilder } from './builders.js';
+import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 
-function createNitroStub({ routing }: { routing: boolean }): Nitro {
+type StubOptions = {
+  routing: boolean;
+  workspaceDir?: string;
+  workflow?: { runtime?: string };
+};
+
+function createNitroStub({
+  routing,
+  workspaceDir = '/tmp/project',
+  workflow = {},
+}: StubOptions) {
   return {
     routing,
     options: {
@@ -26,7 +36,8 @@ function createNitroStub({ routing }: { routing: boolean }): Nitro {
       rootDir: '/tmp/project',
       typescript: {},
       virtual: {},
-      workflow: {},
+      workspaceDir,
+      workflow,
     },
     hooks: {
       hook() {},
@@ -138,4 +149,22 @@ async function exampleStep() {
       fallbackRoute,
     ]);
   });
+});
+
+describe('@workflow/nitro projectRoot', () => {
+  for (const [label, Builder] of [
+    ['VercelBuilder', VercelBuilder],
+    ['LocalBuilder', LocalBuilder],
+  ] as const) {
+    describe(label, () => {
+      it('uses nitro workspaceDir as the workflow projectRoot', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          workspaceDir: '/tmp',
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.projectRoot).toBe('/tmp');
+      });
+    });
+  }
 });

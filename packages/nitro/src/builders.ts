@@ -10,11 +10,16 @@ import { join } from 'pathe';
 const FLOW_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/flow$';
 const STEP_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/step$';
 
+function getNitroProjectRoot(nitro: Nitro): string {
+  return nitro.options.workspaceDir ?? nitro.options.rootDir;
+}
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
+        projectRoot: getNitroProjectRoot(nitro),
         dirs: ['.'], // Different apps that use nitro have different directories
         runtime: nitro.options.workflow?.runtime,
       }),
@@ -45,6 +50,7 @@ export class LocalBuilder extends BaseBuilder {
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
+        projectRoot: getNitroProjectRoot(nitro),
         watch: nitro.options.dev,
         dirs: ['.'], // Different apps that use nitro have different directories
       }),
