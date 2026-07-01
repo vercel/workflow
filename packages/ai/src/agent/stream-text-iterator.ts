@@ -327,7 +327,7 @@ export async function* streamTextIterator({
         // Normalize finishReason - AI SDK v6 returns { unified, raw }, v5 returns a string
         const finishReason = normalizeFinishReason(finish?.finishReason);
 
-        if (finishReason === 'tool-calls') {
+        if (finishReason === 'tool-calls' || toolCalls.length > 0) {
           lastStepWasToolCalls = true;
 
           // Build reasoning content parts from the step result.
