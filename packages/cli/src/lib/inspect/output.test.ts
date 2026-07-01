@@ -1,4 +1,5 @@
 import type {
+  AnalyticsEvent,
   AnalyticsRun,
   AnalyticsStep,
   AnalyticsWait,
@@ -13,6 +14,7 @@ import {
 import {
   formatTableValue,
   hasExpiredData,
+  listEvents,
   listRuns,
   listSleeps,
   listSteps,
@@ -189,7 +191,7 @@ describe('listRuns', () => {
 });
 
 describe('listSteps', () => {
-  it('emits a paginated JSON envelope', async () => {
+  it('passes cursors and preserves the JSON array output', async () => {
     const step = {
       runId: 'run-1',
       stepId: 'step-1',
@@ -235,19 +237,81 @@ describe('listSteps', () => {
         limit: 1,
       },
     });
-    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual({
-      data: [
-        {
-          ...step,
-          createdAt: '2026-06-30T00:00:00.000Z',
-          updatedAt: '2026-06-30T00:00:02.000Z',
-          startedAt: '2026-06-30T00:00:01.000Z',
-          completedAt: '2026-06-30T00:00:02.000Z',
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual([
+      {
+        ...step,
+        createdAt: '2026-06-30T00:00:00.000Z',
+        updatedAt: '2026-06-30T00:00:02.000Z',
+        startedAt: '2026-06-30T00:00:01.000Z',
+        completedAt: '2026-06-30T00:00:02.000Z',
+      },
+    ]);
+  });
+});
+
+describe('listEvents', () => {
+  it('passes cursors and preserves the JSON array output', async () => {
+    const event = {
+      runId: 'run-1',
+      eventId: 'event-1',
+      eventType: 'step_completed',
+      correlationId: 'step-1',
+      entityId: 'step-1',
+      stepName: 'doWork',
+      workflowName: 'workflow//./src/workflows/test//myWorkflow',
+      deploymentId: 'dep-1',
+      specVersion: 2,
+      runCreatedAt: new Date('2026-06-30T00:00:00.000Z'),
+      createdAt: new Date('2026-06-30T00:00:02.000Z'),
+      region: null,
+      vercelId: null,
+      requestId: null,
+      resumeAt: null,
+      retryAfter: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      isWebhook: false,
+      isSystem: false,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsEvent;
+    const world = {
+      analytics: {
+        events: {
+          list: vi.fn().mockResolvedValue({
+            data: [event],
+            cursor: 'next-event-cursor',
+            hasMore: true,
+          }),
         },
-      ],
-      cursor: 'next-step-cursor',
-      hasMore: true,
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listEvents(world, {
+      json: true,
+      runId: 'run-1',
+      cursor: 'event-cursor',
+      limit: 1,
     });
+
+    expect(world.analytics?.events.list).toHaveBeenCalledWith({
+      runId: 'run-1',
+      correlationId: undefined,
+      pagination: {
+        sortOrder: 'desc',
+        cursor: 'event-cursor',
+        limit: 1,
+      },
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual([
+      {
+        ...event,
+        runCreatedAt: '2026-06-30T00:00:00.000Z',
+        createdAt: '2026-06-30T00:00:02.000Z',
+      },
+    ]);
   });
 });
 
@@ -271,7 +335,7 @@ describe('listSleeps', () => {
     upgradeAvailable: true,
   };
 
-  it('passes cursors and emits a paginated JSON envelope through analytics', async () => {
+  it('passes cursors and preserves the JSON array output through analytics', async () => {
     const world = {
       analytics: {
         waits: {
@@ -303,25 +367,14 @@ describe('listSleeps', () => {
         limit: 1,
       },
     });
-    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual({
-      data: [
-        {
-          ...wait,
-          resumeAt: '2026-06-30T00:01:00.000Z',
-          createdAt: '2026-06-30T00:00:00.000Z',
-          updatedAt: '2026-06-30T00:00:00.000Z',
-        },
-      ],
-      cursor: 'next-wait-cursor',
-      hasMore: true,
-      pageInfo: {
-        currentLookbackDays: 2,
-        maxLookbackDays: 30,
-        currentWindowStart: '2026-06-28T00:00:00.000Z',
-        maxWindowStart: '2026-06-01T00:00:00.000Z',
-        upgradeAvailable: true,
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual([
+      {
+        ...wait,
+        resumeAt: '2026-06-30T00:01:00.000Z',
+        createdAt: '2026-06-30T00:00:00.000Z',
+        updatedAt: '2026-06-30T00:00:00.000Z',
       },
-    });
+    ]);
   });
 
   it('surfaces the observability upgrade hint in table mode', async () => {

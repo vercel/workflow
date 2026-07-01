@@ -831,7 +831,7 @@ export const listSteps = async (
   if (opts.json) {
     try {
       const page = await fetchStepsPage(opts.cursor);
-      showJsonPage(page);
+      showJson(page.data);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -1091,7 +1091,7 @@ export const listEvents = async (
   if (opts.json) {
     try {
       const page = await fetchEventsPage(opts.cursor);
-      showJsonPage(page);
+      showJson(page.data);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -1267,7 +1267,7 @@ const listSleepsViaAnalytics = async (
 
   if (opts.json) {
     const page = await fetchSleepsPage(opts.cursor);
-    showJsonPage(page);
+    showJson(page.data);
     return;
   }
 
