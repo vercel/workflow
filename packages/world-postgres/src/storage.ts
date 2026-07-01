@@ -1127,8 +1127,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       let value: { createdAt: Date } | undefined;
 
+      // Handle step_started event: increment attempt and set the step to
+      // running, then write the matching event log entry in the same
+      // transaction. The guarded UPDATE takes the step row lock; keeping the
+      // event INSERT behind that lock prevents a late step_started from being
+      // ordered after a concurrent terminal event that already won the row.
       if (data.eventType === 'step_started') {
         value = await drizzle.transaction(async (tx) => {
+          // Lazy step start: no prior step_created exists, but this
+          // step_started carries the step-creation data. The step INSERT is
+          // the ownership claim: only the caller that inserts the row gets to
+          // run the step body inline.
           if (lazyStepStart && !validatedStep) {
             const lazyData = (data as any).eventData as {
               stepName: string;
@@ -1154,6 +1163,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               );
             }
 
+            // Replay still needs to observe step_created before
+            // step_started. Because this synthetic event is in the same
+            // transaction as the lazy step row and step_started event, we
+            // cannot leave behind only one side of that materialization.
             const stepCreatedEventId = `wevt_${ulid()}`;
             await tx
               .insert(events)
@@ -1172,6 +1185,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             stepCreatedLazily = true;
           }
 
+          // Retried steps may be scheduled for later. Keep this check inside
+          // the transaction so the step_started write cannot slip past it.
           if (
             validatedStep?.retryAfter &&
             validatedStep.retryAfter.getTime() > Date.now()
@@ -1186,11 +1201,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
 
+          // The terminal-state guard is part of the UPDATE, not just the
+          // earlier validation read. That closes the race where another
+          // writer completes/fails the step between validation and start.
           const [stepValue] = await tx
             .update(Schema.steps)
             .set({
               status: 'running',
               attempt: sql`${Schema.steps.attempt} + 1`,
+              // Preserve the original first-start timestamp across retries or
+              // overlapping starts.
               startedAt: sql`COALESCE(${Schema.steps.startedAt}, ${now.toISOString()})`,
               retryAfter: null,
             })
@@ -1228,6 +1248,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             }
           }
 
+          // Allocate the step_started ULID only after the guarded step UPDATE
+          // has acquired and passed the row lock. Without a sequence, this is
+          // the local ordering guarantee we can provide: a writer blocked on
+          // the step row will not carry an older event id into a later insert.
           const stepStartedEventId = `wevt_${ulid()}`;
           eventId = stepStartedEventId;
           const [eventValue] = await tx
