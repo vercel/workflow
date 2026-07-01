@@ -118,6 +118,15 @@ export interface PageData<T> {
   data: T[];
   cursor: string | null | undefined;
   hasMore: boolean;
+  pageInfo?: AnalyticsPageInfo;
+}
+
+export interface AnalyticsPageInfo {
+  currentLookbackDays: number;
+  maxLookbackDays: number;
+  currentWindowStart: Date | string;
+  maxWindowStart: Date | string;
+  upgradeAvailable: boolean;
 }
 
 /**

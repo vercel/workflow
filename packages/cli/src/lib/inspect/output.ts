@@ -14,6 +14,10 @@ import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
 import {
+  getObservabilityUpgradeRequiredMessage,
+  isObservabilityUpgradeRequiredError,
+} from './errors.js';
+import {
   type EncryptionKeyResolver,
   hydrateResourceIO,
   isEncryptedRef,
@@ -43,7 +47,11 @@ function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
   };
 }
 
-import { type PageData, setupListPagination } from './pagination.js';
+import {
+  type AnalyticsPageInfo,
+  type PageData,
+  setupListPagination,
+} from './pagination.js';
 import { streamToConsole } from './stream.js';
 import {
   formatISODate,
@@ -189,9 +197,25 @@ const extractErrorMessage = (
   return undefined;
 };
 
+const getPageInfo = (result: unknown): AnalyticsPageInfo | undefined => {
+  if (
+    typeof result !== 'object' ||
+    result === null ||
+    !('pageInfo' in result)
+  ) {
+    return undefined;
+  }
+  return (result as { pageInfo?: AnalyticsPageInfo }).pageInfo;
+};
+
 const handleApiError = (error: unknown, backend?: string): boolean => {
   // First check for Vercel access errors
   if (checkAndHandleVercelAccessError(error, backend)) {
+    return true;
+  }
+
+  if (isObservabilityUpgradeRequiredError(error)) {
+    logger.error(getObservabilityUpgradeRequiredMessage());
     return true;
   }
 
@@ -227,6 +251,7 @@ const getStatusText = (status: number): string => {
   const statusTexts: Record<number, string> = {
     400: 'Bad Request',
     401: 'Unauthorized',
+    402: 'Payment Required',
     403: 'Forbidden',
     404: 'Not Found',
     429: 'Too Many Requests',
@@ -426,6 +451,15 @@ const showJson = (data: unknown) => {
   process.stdout.write(`${json}\n`);
 };
 
+const showJsonPage = <T>(page: PageData<T>) => {
+  showJson({
+    data: page.data,
+    cursor: page.cursor,
+    hasMore: page.hasMore,
+    ...(page.pageInfo ? { pageInfo: page.pageInfo } : {}),
+  });
+};
+
 /**
  * In tables, we want to show a shorter timestamp, YYYY-MM-DD HH:MM:SS
  */
@@ -611,6 +645,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         data: runs.data as unknown as Record<string, unknown>[],
         cursor: runs.cursor,
         hasMore: runs.hasMore,
+        pageInfo: getPageInfo(runs),
       };
     }
     const runs = await world.runs.list({
@@ -626,6 +661,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       data: data as unknown as Record<string, unknown>[],
       cursor: runs.cursor,
       hasMore: runs.hasMore,
+      pageInfo: getPageInfo(runs),
     };
   };
 
@@ -633,7 +669,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   if (opts.json) {
     try {
       const page = await fetchRunsPage(opts.cursor);
-      showJson({ data: page.data, cursor: page.cursor, hasMore: page.hasMore });
+      showJsonPage(page);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -772,6 +808,7 @@ export const listSteps = async (
         data: steps.data as unknown as Record<string, unknown>[],
         cursor: steps.cursor,
         hasMore: steps.hasMore,
+        pageInfo: getPageInfo(steps),
       };
     }
     const stepChunks = await world.steps.list({
@@ -786,6 +823,7 @@ export const listSteps = async (
       data: data as unknown as Record<string, unknown>[],
       cursor: stepChunks.cursor,
       hasMore: stepChunks.hasMore,
+      pageInfo: getPageInfo(stepChunks),
     };
   };
 
@@ -1027,6 +1065,7 @@ export const listEvents = async (
         data: events.data as unknown as Record<string, unknown>[],
         cursor: events.cursor,
         hasMore: events.hasMore,
+        pageInfo: getPageInfo(events),
       };
     }
     const result = await world.events.list({
@@ -1044,6 +1083,7 @@ export const listEvents = async (
       data: data as unknown as Record<string, unknown>[],
       cursor: result.cursor,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     };
   };
 
@@ -1121,6 +1161,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
       data: data as unknown as Record<string, unknown>[],
       cursor: hooks.cursor,
       hasMore: hooks.hasMore,
+      pageInfo: getPageInfo(hooks),
     };
   };
 
@@ -1128,7 +1169,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
   if (opts.json) {
     try {
       const page = await fetchHooksPage(opts.cursor);
-      showJson({ data: page.data, cursor: page.cursor, hasMore: page.hasMore });
+      showJsonPage(page);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {

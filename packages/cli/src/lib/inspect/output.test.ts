@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
 import type { WorkflowRun } from '@workflow/world';
+import { describe, expect, it } from 'vitest';
+import {
+  getObservabilityUpgradeRequiredMessage,
+  isObservabilityUpgradeRequiredError,
+} from './errors.js';
 import { formatTableValue, hasExpiredData } from './output.js';
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
@@ -56,5 +60,40 @@ describe('formatTableValue expired data handling', () => {
     const item = { input: 'hello' };
     const result = formatTableValue('input', 'hello', {}, undefined, item);
     expect(String(result)).not.toContain('expired');
+  });
+});
+
+describe('isObservabilityUpgradeRequiredError', () => {
+  it('detects workflow analytics 402 errors by top-level code', () => {
+    expect(
+      isObservabilityUpgradeRequiredError({
+        status: 402,
+        code: 'observability-upgrade-required',
+      })
+    ).toBe(true);
+  });
+
+  it('detects workflow analytics 402 errors by response body error', () => {
+    expect(
+      isObservabilityUpgradeRequiredError({
+        status: 402,
+        body: { error: 'observability-upgrade-required' },
+      })
+    ).toBe(true);
+  });
+
+  it('does not treat 404s as upgrade prompts', () => {
+    expect(
+      isObservabilityUpgradeRequiredError({
+        status: 404,
+        code: 'observability-upgrade-required',
+      })
+    ).toBe(false);
+  });
+
+  it('uses an upgrade prompt message', () => {
+    expect(getObservabilityUpgradeRequiredMessage()).toContain(
+      'Upgrade Observability Plus'
+    );
   });
 });
