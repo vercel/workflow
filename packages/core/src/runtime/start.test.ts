@@ -840,6 +840,7 @@ describe('start', () => {
       const createRunId = vi.fn().mockReturnValue(customId);
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -868,6 +869,7 @@ describe('start', () => {
       const createRunId = vi.fn().mockReturnValue(customId);
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -892,6 +894,7 @@ describe('start', () => {
       const customId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -913,6 +916,7 @@ describe('start', () => {
       });
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -931,6 +935,7 @@ describe('start', () => {
       });
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,

@@ -86,6 +86,20 @@ export function lookupRegion(regionId: number): RegionCode | null {
 }
 
 /**
+ * Runtime guard for arbitrary strings crossing a JS/TS boundary (e.g. an
+ * `opts.region` override or the `VERCEL_REGION` env var). Returns `true` only
+ * for a concrete, routable region code — the `unknown` sentinel and any
+ * unrecognised value both return `false`.
+ */
+export function isKnownRegionCode(
+  code: string | undefined
+): code is RegionCode {
+  return (
+    code !== undefined && code !== 'unknown' && Object.hasOwn(REGION_IDS, code)
+  );
+}
+
+/**
  * Look up a numeric region ID by code. The TypeScript signature requires a
  * known {@link RegionCode}, but the function still validates at runtime
  * for callers crossing a JS/TS boundary where the input may be any string.

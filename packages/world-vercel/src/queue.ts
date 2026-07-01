@@ -15,7 +15,7 @@ import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { getDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
-import { REGION_IDS } from './run-id/regions.js';
+import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 
 /**
@@ -218,16 +218,22 @@ function regionFromTaggedRunId(runId: string | undefined): string | undefined {
  *   2. Region embedded in the payload's tagged run ID.
  *   3. `VERCEL_REGION` environment variable.
  *   4. {@link FALLBACK_REGION} (preserves pre-regional behaviour).
+ *
+ * The `opts.region` override and `VERCEL_REGION` are arbitrary strings, so
+ * each is validated against the known region table and ignored (falling
+ * through to the next source) when it isn't a routable region code. This keeps
+ * a bad override — e.g. `start({ runIdInput: { region: 'xyz9' } })` — from
+ * clobbering the payload-derived region with an undeliverable destination.
  */
 function resolveTargetRegion(
   payload: QueuePayload,
   opts?: QueueOptions
 ): string {
-  if (opts?.region) return opts.region;
+  if (isKnownRegionCode(opts?.region)) return opts.region;
   const fromRunId = regionFromTaggedRunId(getRunIdFromPayload(payload));
   if (fromRunId) return fromRunId;
   const fromEnv = process.env.VERCEL_REGION;
-  if (fromEnv) return fromEnv;
+  if (isKnownRegionCode(fromEnv)) return fromEnv;
   return FALLBACK_REGION;
 }
 
