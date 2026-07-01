@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { SvelteKitBuilder } from './builder.js';
+import { loadSvelteKitRoutesDir, SvelteKitBuilder } from './builder.js';
 
 describe('SvelteKitBuilder config', () => {
   it('derives project root from the nearest workspace root', () => {
@@ -20,5 +20,28 @@ describe('SvelteKitBuilder config', () => {
       projectRoot: repoRoot,
       moduleSpecifierRoot: appRoot,
     });
+  });
+
+  it('loads the routes directory from SvelteKit config', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'workflow-sveltekit-routes-'));
+    onTestFinished(() => rmSync(appRoot, { recursive: true, force: true }));
+
+    const kitRoot = join(appRoot, 'node_modules/@sveltejs/kit');
+    const routesDir = join(appRoot, 'app/custom/pages');
+    mkdirSync(join(kitRoot, 'src/core/config'), { recursive: true });
+    writeFileSync(join(appRoot, 'package.json'), '{}\n');
+    writeFileSync(
+      join(kitRoot, 'package.json'),
+      JSON.stringify({ name: '@sveltejs/kit', type: 'module' })
+    );
+    writeFileSync(
+      join(kitRoot, 'src/core/config/index.js'),
+      `export async function load_config({ cwd }) {
+  return { kit: { files: { routes: ${JSON.stringify(routesDir)} } } };
+}
+`
+    );
+
+    await expect(loadSvelteKitRoutesDir(appRoot)).resolves.toBe(routesDir);
   });
 });
