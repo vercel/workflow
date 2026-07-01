@@ -403,11 +403,15 @@ describe('streams.writeStream (single-request streaming write)', () => {
     });
 
     const streamer = await getStreamer();
-    const frame = encodeMultiChunks([new Uint8Array([1, 2, 3])]);
+    // The caller streams raw frames; the world applies the multi-chunk length
+    // prefix per frame, so the wire body matches encodeMultiChunks of the same
+    // frames.
+    const f1 = new Uint8Array([1, 2, 3]);
+    const f2 = new Uint8Array([9, 9]);
     const result = await streamer.streams.writeStream?.(
       'run-9',
       'out',
-      bodyStream(frame)
+      bodyStream(f1, f2)
     );
 
     expect(result).toEqual({ chunkIndices: [7, 8] });
@@ -419,7 +423,8 @@ describe('streams.writeStream (single-request streaming write)', () => {
       '/v2/runs/run-9/stream/out'
     );
     expect((seenInit?.headers as Headers).get('X-Stream-Multi')).toBe('true');
-    expect(streamedBody).toEqual(frame);
+    // Body is the per-frame length-prefixed encoding of the raw frames.
+    expect(streamedBody).toEqual(encodeMultiChunks([f1, f2]));
   });
 
   it('throws a diagnostic error on a non-2xx streaming write', async () => {

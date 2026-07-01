@@ -111,6 +111,27 @@ export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
   return result;
 }
 
+/**
+ * TransformStream that applies the multi-chunk length prefix to each frame as
+ * it passes through: `[4-byte big-endian length][frame bytes]`. This is the
+ * streaming, per-frame equivalent of {@link encodeMultiChunks}, used by
+ * `writeStream` so a long-lived upload wraps frames incrementally (and honors
+ * backpressure) instead of buffering the whole batch.
+ */
+export function frameMultiChunkStream(): TransformStream<
+  Uint8Array,
+  Uint8Array
+> {
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const framed = new Uint8Array(4 + chunk.length);
+      new DataView(framed.buffer).setUint32(0, chunk.length, false);
+      framed.set(chunk, 4);
+      controller.enqueue(framed);
+    },
+  });
+}
+
 const StreamInfoResponseSchema = z.object({
   tailIndex: z.number(),
   done: z.boolean(),
@@ -217,7 +238,7 @@ export function createStreamer(config?: APIConfig): Streamer {
       async writeStream(
         runId: string | Promise<string>,
         name: string,
-        body: ReadableStream<Uint8Array>
+        chunks: ReadableStream<Uint8Array>
       ): Promise<{ chunkIndices: number[] }> {
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
@@ -227,6 +248,12 @@ export function createStreamer(config?: APIConfig): Streamer {
         // is the body is streamed incrementally instead of buffered whole.
         httpConfig.headers.set('X-Stream-Multi', 'true');
         const url = getStreamUrl(name, resolvedRunId, httpConfig);
+
+        // Apply the multi-chunk length prefix per frame as it flows through,
+        // mirroring encodeMultiChunks — the world owns the wire encoding so the
+        // caller streams raw frames. The TransformStream preserves backpressure
+        // from the upload back to the producer.
+        const body = chunks.pipeThrough(frameMultiChunkStream());
 
         // Long-lived streaming upload. Use the global dispatcher (no custom
         // retry, no H2) and no request timeout — mirroring the live-read (GET):

@@ -74,9 +74,11 @@ export interface Streamer {
     /**
      * Write a stream of chunks in a single long-lived request, sending each
      * chunk into the request body as it is produced rather than batching into
-     * many short requests. The body is an already length-prefixed multi-chunk
-     * frame stream (one `[4-byte length][chunk]` per chunk, same wire format as
-     * {@link writeMulti}); the world streams it incrementally to the backend.
+     * many short requests. `chunks` yields one chunk (one frame) at a time;
+     * the world applies the same wire encoding as {@link writeMulti} (a
+     * `[4-byte length][chunk]` prefix per chunk) as it streams them to the
+     * backend, and honors the stream's backpressure so a slow upload throttles
+     * the producer rather than buffering unboundedly.
      *
      * Resolves with the backend chunk indices assigned to the chunks in this
      * request (in order). The caller uses these as a recovery anchor: every
@@ -90,12 +92,12 @@ export interface Streamer {
      *
      * @param runId - The run ID
      * @param name - The stream name
-     * @param body - Length-prefixed multi-chunk frames, produced incrementally
+     * @param chunks - Chunks (frames) produced incrementally, one per read
      */
     writeStream?(
       runId: string,
       name: string,
-      body: ReadableStream<Uint8Array>
+      chunks: ReadableStream<Uint8Array>
     ): Promise<{ chunkIndices: number[] }>;
 
     close(runId: string, name: string): Promise<void>;
