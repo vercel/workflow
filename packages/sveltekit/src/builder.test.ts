@@ -22,6 +22,45 @@ describe('SvelteKitBuilder config', () => {
     });
   });
 
+  it('passes explicit workflow builder options through', () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'workflow-sveltekit-options-'));
+    onTestFinished(() => rmSync(appRoot, { recursive: true, force: true }));
+
+    const projectRoot = join(appRoot, '../repo');
+    const moduleSpecifierRoot = join(appRoot, 'module-root');
+    const dirs = ['custom/workflows', 'more-workflows'];
+    const builder = new SvelteKitBuilder({
+      workingDir: appRoot,
+      dirs,
+      projectRoot,
+      moduleSpecifierRoot,
+      sourcemap: false,
+    }) as any;
+
+    expect(builder.config).toMatchObject({
+      workingDir: appRoot,
+      dirs,
+      projectRoot,
+      moduleSpecifierRoot,
+      sourcemap: false,
+    });
+  });
+
+  it('uses an explicit routes directory override', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'workflow-sveltekit-options-'));
+    onTestFinished(() => rmSync(appRoot, { recursive: true, force: true }));
+
+    const routesDir = join(appRoot, 'app/custom/pages');
+    mkdirSync(routesDir, { recursive: true });
+
+    const builder = new SvelteKitBuilder({
+      workingDir: appRoot,
+      routesDir: 'app/custom/pages',
+    }) as any;
+
+    await expect(builder.loadRoutesDirectory()).resolves.toBe(routesDir);
+  });
+
   it('loads the routes directory from SvelteKit config', async () => {
     const appRoot = mkdtempSync(join(tmpdir(), 'workflow-sveltekit-routes-'));
     onTestFinished(() => rmSync(appRoot, { recursive: true, force: true }));
