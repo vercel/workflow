@@ -71,6 +71,33 @@ export interface Streamer {
       chunks: (string | Uint8Array)[]
     ): Promise<void>;
 
+    /**
+     * Write a stream of chunks in a single long-lived request, sending each
+     * chunk into the request body as it is produced rather than batching into
+     * many short requests. The body is an already length-prefixed multi-chunk
+     * frame stream (one `[4-byte length][chunk]` per chunk, same wire format as
+     * {@link writeMulti}); the world streams it incrementally to the backend.
+     *
+     * Resolves with the backend chunk indices assigned to the chunks in this
+     * request (in order). The caller uses these as a recovery anchor: every
+     * chunk in a request that resolved cleanly is durable. If the request
+     * rejects (connection drop / 5xx), some prefix may or may not have
+     * persisted — the caller recovers by reading the tail and replaying its
+     * un-acknowledged chunks on a fresh request.
+     *
+     * Optional: worlds that cannot stream a request body omit it, and callers
+     * fall back to {@link writeMulti} / {@link write}.
+     *
+     * @param runId - The run ID
+     * @param name - The stream name
+     * @param body - Length-prefixed multi-chunk frames, produced incrementally
+     */
+    writeStream?(
+      runId: string,
+      name: string,
+      body: ReadableStream<Uint8Array>
+    ): Promise<{ chunkIndices: number[] }>;
+
     close(runId: string, name: string): Promise<void>;
 
     /**

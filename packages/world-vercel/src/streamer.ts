@@ -117,6 +117,15 @@ const StreamInfoResponseSchema = z.object({
 });
 
 /**
+ * Response of the streaming multi-chunk PUT: the backend chunk indices assigned
+ * to the frames in this request, in order. `success` is always true on a 2xx
+ * (a non-2xx throws before we parse). Tolerant of extra fields.
+ */
+const StreamWriteResponseSchema = z.object({
+  chunkIndices: z.array(z.number()),
+});
+
+/**
  * Zod schema for the paginated stream chunks response from the server.
  * When using CBOR (the default for makeRequest), chunk data arrives as
  * native Uint8Array byte strings — no base64 decoding required.
@@ -203,6 +212,45 @@ export function createStreamer(config?: APIConfig): Streamer {
           // Drain so undici can release the pooled connection between pages.
           await response.text();
         }
+      },
+
+      async writeStream(
+        runId: string | Promise<string>,
+        name: string,
+        body: ReadableStream<Uint8Array>
+      ): Promise<{ chunkIndices: number[] }> {
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
+
+        const httpConfig = await getHttpConfig(config);
+        // Same wire format and server path as writeMulti — the only difference
+        // is the body is streamed incrementally instead of buffered whole.
+        httpConfig.headers.set('X-Stream-Multi', 'true');
+        const url = getStreamUrl(name, resolvedRunId, httpConfig);
+
+        // Long-lived streaming upload. Use the global dispatcher (no custom
+        // retry, no H2) and no request timeout — mirroring the live-read (GET):
+        //  - A consumed `ReadableStream` body cannot be replayed, so retrying is
+        //    unsafe; recovery (tail-read + replay of un-acked frames) lives at
+        //    the segment layer above, not in the transport.
+        //  - H2's duplex-streaming issues (which keep the live-read off the H2
+        //    stream dispatcher) apply to a streaming request body too, so we use
+        //    the same plain-fetch path that long-lived reads already rely on.
+        //  - The client soft-closes each segment well under any platform idle
+        //    bound, so there is no whole-request deadline to truncate it.
+        const response = await instrumentedFetch({
+          method: 'PUT',
+          url: url.toString(),
+          body,
+          headers: httpConfig.headers,
+          dispatcher: undefined,
+          timeoutMs: null,
+          logLabel: url.pathname,
+          buildError: async (res) =>
+            createStreamRequestError('write', url, res, await res.text()),
+        });
+        const text = await response.text();
+        return StreamWriteResponseSchema.parse(JSON.parse(text));
       },
 
       async close(runId: string | Promise<string>, name: string) {

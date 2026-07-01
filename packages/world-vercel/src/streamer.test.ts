@@ -344,3 +344,100 @@ describe('writeMulti pagination', () => {
     ]);
   });
 });
+
+describe('streams.writeStream (single-request streaming write)', () => {
+  async function getStreamer() {
+    const { createStreamer } = await import('./streamer.js');
+    return createStreamer();
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Drain a ReadableStream<Uint8Array> into one concatenated buffer. */
+  async function drain(body: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+    const reader = body.getReader();
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      total += value.length;
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const p of parts) {
+      out.set(p, offset);
+      offset += p.length;
+    }
+    return out;
+  }
+
+  function bodyStream(...frames: Uint8Array[]): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const f of frames) controller.enqueue(f);
+        controller.close();
+      },
+    });
+  }
+
+  it('PUTs a streaming body with duplex:half, X-Stream-Multi, and returns chunkIndices', async () => {
+    let seenInit: RequestInit | undefined;
+    let seenUrl: string | undefined;
+    let streamedBody: Uint8Array | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      seenUrl = url as string;
+      seenInit = init;
+      if (init?.body instanceof ReadableStream) {
+        streamedBody = await drain(init.body);
+      }
+      return new Response(
+        JSON.stringify({ success: true, chunkIndices: [7, 8] }),
+        {
+          status: 200,
+        }
+      );
+    });
+
+    const streamer = await getStreamer();
+    const frame = encodeMultiChunks([new Uint8Array([1, 2, 3])]);
+    const result = await streamer.streams.writeStream?.(
+      'run-9',
+      'out',
+      bodyStream(frame)
+    );
+
+    expect(result).toEqual({ chunkIndices: [7, 8] });
+    // Streaming uploads MUST set duplex:'half' or fetch rejects the stream body.
+    expect((seenInit as { duplex?: string }).duplex).toBe('half');
+    expect(seenInit?.method).toBe('PUT');
+    // Same v2 endpoint and multi-chunk framing as writeMulti.
+    expect(new URL(seenUrl as string).pathname).toBe(
+      '/v2/runs/run-9/stream/out'
+    );
+    expect((seenInit?.headers as Headers).get('X-Stream-Multi')).toBe('true');
+    expect(streamedBody).toEqual(frame);
+  });
+
+  it('throws a diagnostic error on a non-2xx streaming write', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response('boom', {
+          status: 500,
+          headers: { 'x-vercel-id': 'sfo1::z' },
+        })
+    );
+
+    const streamer = await getStreamer();
+    await expect(
+      streamer.streams.writeStream?.(
+        'run-9',
+        'out',
+        bodyStream(new Uint8Array([0]))
+      )
+    ).rejects.toThrow(/Stream write failed: HTTP 500 .*x-vercel-id=sfo1::z/);
+  });
+});

@@ -278,7 +278,15 @@ export interface InstrumentedFetchOptions {
   method: string;
   url: string;
   headers: Headers;
-  body?: Uint8Array | string;
+  /**
+   * Request body. A `ReadableStream<Uint8Array>` is streamed incrementally (the
+   * single-request streaming stream writer): the request is sent with
+   * `duplex: 'half'` (upload-only — the response is read only after the body
+   * closes; there is no mid-upload read-back) and no whole-body buffering. A
+   * streamed body cannot be replayed by undici, so the caller must own
+   * retry/recovery at a higher layer.
+   */
+  body?: Uint8Array | string | ReadableStream<Uint8Array>;
   /** Undici dispatcher (typed `unknown`; see APIConfig.dispatcher). */
   dispatcher: unknown;
   /**
@@ -321,6 +329,17 @@ export interface InstrumentedFetchOptions {
  * attribute + curl-repro + typed error). Returns the raw `Response` on success
  * so the caller can consume the body in its own format.
  */
+/** True when the request body is a `ReadableStream` (streamed upload). */
+function isReadableStreamBody(
+  body: InstrumentedFetchOptions['body']
+): body is ReadableStream<Uint8Array> {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    typeof (body as ReadableStream).getReader === 'function'
+  );
+}
+
 export async function instrumentedFetch(
   opts: InstrumentedFetchOptions
 ): Promise<Response> {
@@ -373,6 +392,11 @@ export async function instrumentedFetch(
           headers,
           body,
           signal,
+          // A `ReadableStream` body is uploaded incrementally; fetch/undici
+          // require `duplex: 'half'` for any streaming request body (the
+          // upload-only mode — NOT a bidirectional channel; the response is
+          // consumed only after the body closes).
+          ...(isReadableStreamBody(body) ? { duplex: 'half' } : {}),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
           dispatcher,
         } as any);
