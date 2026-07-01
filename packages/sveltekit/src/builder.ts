@@ -26,16 +26,6 @@ const SVELTEKIT_VIRTUAL_MODULES = [
   '$app/*', // All $app subpaths
 ];
 
-interface SvelteKitConfigLoader {
-  load_config(options: { cwd: string }): Promise<{
-    kit: {
-      files: {
-        routes: string;
-      };
-    };
-  }>;
-}
-
 export class SvelteKitBuilder extends BaseBuilder {
   #routesDir: string | undefined;
 
@@ -217,11 +207,15 @@ export async function loadSvelteKitRoutesDir(
   const require = createRequire(join(workingDir, 'package.json'));
   const packageJsonPath = require.resolve('@sveltejs/kit/package.json');
   const loaderPath = join(dirname(packageJsonPath), 'src/core/config/index.js');
-  const { load_config } = (await import(
-    pathToFileURL(loaderPath).href
-  )) as SvelteKitConfigLoader;
+  const { load_config } = await import(pathToFileURL(loaderPath).href);
   const config = await load_config({ cwd: workingDir });
-  return config.kit.files.routes;
+  const routesDir = config.kit?.files?.routes;
+  if (routesDir == null || typeof routesDir !== 'string') {
+    throw new Error(
+      'Expected SvelteKit config loader to return kit.files.routes as a string.'
+    );
+  }
+  return routesDir;
 }
 
 async function assertDirectory(path: string): Promise<void> {
