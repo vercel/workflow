@@ -27,6 +27,7 @@ When enabled, the module:
 - Registers the workflow runtime routes under `/.well-known/workflow/v1/`.
 - Serves a redirect to the local observability dashboard at `/_workflow` in development.
 - Configures Vercel function rules (queue triggers and `maxDuration`) for the workflow routes when deploying to Vercel.
+- Uses Nitro's `workspaceDir` as the workflow project root so monorepo apps can import sibling workspace packages without extra workflow config.
 
 ## Module Options
 

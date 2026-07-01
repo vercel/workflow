@@ -177,6 +177,11 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
       build.onStart(() => {
         stepIdsForCurrentBuild = new Map();
         workflowIdsForCurrentBuild = new Map();
+        if (options.workflowManifest) {
+          delete options.workflowManifest.steps;
+          delete options.workflowManifest.workflows;
+          delete options.workflowManifest.classes;
+        }
       });
 
       // everything is external unless explicitly configured
@@ -446,7 +451,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           const lowerPath = normalizedPath.toLowerCase();
 
           let relativeFilepath: string;
-          if (lowerPath.startsWith(lowerWd + '/')) {
+          if (lowerPath.startsWith(`${lowerWd}/`)) {
             // File is under working directory - manually calculate relative path
             // This ensures we get a relative path even with drive letter casing issues
             relativeFilepath = normalizedPath.substring(

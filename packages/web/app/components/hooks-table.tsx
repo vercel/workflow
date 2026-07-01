@@ -3,7 +3,7 @@ import {
   ResolveHookDropdownItem,
   useHookActions,
 } from '@workflow/web-shared';
-import type { Event, Hook } from '@workflow/world';
+import type { Hook } from '@workflow/world';
 import {
   AlertCircle,
   ChevronLeft,
@@ -40,6 +40,7 @@ import type { EnvMap, HookListItem } from '~/lib/types';
 import {
   fetchHookToken,
   getErrorMessage,
+  getErrorTitle,
   resumeHook,
   useWorkflowHooks,
 } from '~/lib/workflow-api-client';
@@ -277,7 +278,7 @@ export function HooksTable({
       {error ? (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Error loading hooks</AlertTitle>
+          <AlertTitle>{getErrorTitle(error, 'Error loading hooks')}</AlertTitle>
           <AlertDescription>{getErrorMessage(error)}</AlertDescription>
         </Alert>
       ) : !loading && (!hooks || hooks.length === 0) ? (

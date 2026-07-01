@@ -27,7 +27,7 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
-import { type APIConfig, createVercelWorld } from '@workflow/world-vercel';
+import { createVercelWorld } from '@workflow/world-vercel';
 import type { HookListItem, HookTokenResult } from '~/lib/types';
 
 /**
@@ -359,6 +359,7 @@ export interface PaginatedResult<T> {
   data: T[];
   cursor?: string;
   hasMore: boolean;
+  pageInfo?: AnalyticsPageInfo;
 }
 
 /**
@@ -384,6 +385,29 @@ export interface ServerActionError {
 export type ServerActionResult<T> =
   | { success: true; data: T }
   | { success: false; error: ServerActionError };
+
+interface AnalyticsPageInfo {
+  currentLookbackDays: number;
+  maxLookbackDays: number;
+  currentWindowStart: Date;
+  maxWindowStart: Date;
+  upgradeAvailable: boolean;
+}
+
+const OBSERVABILITY_UPGRADE_REQUIRED_CODE = 'observability-upgrade-required';
+const OBSERVABILITY_UPGRADE_REQUIRED_MESSAGE =
+  'This workflow observability data is outside your current plan window. Upgrade Observability Plus to view up to 30 days of workflow data.';
+
+function getPageInfo(result: unknown): AnalyticsPageInfo | undefined {
+  if (
+    typeof result !== 'object' ||
+    result === null ||
+    !('pageInfo' in result)
+  ) {
+    return undefined;
+  }
+  return (result as { pageInfo?: AnalyticsPageInfo }).pageInfo;
+}
 
 /**
  * Cache for World instances.
@@ -474,7 +498,7 @@ function createServerActionError<T>(
       console.error(`[web-api] ${operation} error:`, err);
     }
     errorResponse = {
-      message: getUserFacingErrorMessage(err, error.status),
+      message: getUserFacingErrorMessage(err, error.status, error.code),
       layer: 'API',
       cause: err.stack || err.message,
       request: {
@@ -513,9 +537,17 @@ function createServerActionError<T>(
 /**
  * Converts an error into a user-facing message
  */
-function getUserFacingErrorMessage(error: Error, status?: number): string {
+function getUserFacingErrorMessage(
+  error: Error,
+  status?: number,
+  code?: string
+): string {
   if (!status) {
     return `Error creating response: ${error.message}`;
+  }
+
+  if (status === 402 && code === OBSERVABILITY_UPGRADE_REQUIRED_CODE) {
+    return OBSERVABILITY_UPGRADE_REQUIRED_MESSAGE;
   }
 
   // Check for common error patterns
@@ -591,6 +623,7 @@ export async function fetchRuns(
       data: result.data as unknown as WorkflowRun[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<WorkflowRun>>(
@@ -653,6 +686,7 @@ export async function fetchSteps(
       data: result.data as unknown as Step[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<Step>>(
@@ -697,7 +731,12 @@ export async function fetchStep(
  * fields (input/output/result/error/payload) are intentionally omitted — they
  * are loaded lazily per event via `fetchEvent(..., 'all')` on the runtime path.
  */
-function analyticsEventToEvent(event: AnalyticsEvent): Event {
+export function analyticsEventToEvent(event: AnalyticsEvent): Event {
+  const eventData = {
+    ...(event.stepName ? { stepName: event.stepName } : {}),
+    ...(event.resumeAt ? { resumeAt: event.resumeAt } : {}),
+    ...(event.retryAfter ? { retryAfter: event.retryAfter } : {}),
+  };
   const base = {
     runId: event.runId,
     eventId: event.eventId,
@@ -707,7 +746,7 @@ function analyticsEventToEvent(event: AnalyticsEvent): Event {
     ...(event.specVersion !== undefined
       ? { specVersion: event.specVersion }
       : {}),
-    ...(event.stepName ? { eventData: { stepName: event.stepName } } : {}),
+    ...(Object.keys(eventData).length > 0 ? { eventData } : {}),
   };
   return base as unknown as Event;
 }
@@ -741,6 +780,7 @@ export async function fetchEvents(
         data: result.data.map(analyticsEventToEvent),
         cursor: result.cursor ?? undefined,
         hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
       });
     }
     const result = await world.events.list({
@@ -752,6 +792,7 @@ export async function fetchEvents(
       data: result.data as unknown as Event[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<Event>>(
@@ -816,6 +857,7 @@ export async function fetchEventsByCorrelationId(
         data: result.data.map(analyticsEventToEvent),
         cursor: result.cursor ?? undefined,
         hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
       });
     }
     const result = await world.events.listByCorrelationId({
@@ -827,6 +869,7 @@ export async function fetchEventsByCorrelationId(
       data: result.data as unknown as Event[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<Event>>(
@@ -843,6 +886,11 @@ export async function fetchEventsByCorrelationId(
 /**
  * Fetch paginated list of hooks
  */
+export function hookToListItem(hook: Hook): HookListItem {
+  const { token: _token, ...hookListItem } = hook;
+  return hookListItem;
+}
+
 export async function fetchHooks(
   worldEnv: EnvMap,
   params: {
@@ -856,18 +904,20 @@ export async function fetchHooks(
   try {
     const world = await getWorldFromEnv(worldEnv);
     // Prefer the metadata-only analytics read path when the backend provides
-    // one. The hook list is metadata only — the secret `token` is fetched on
-    // demand per hook via `fetchHookToken` for the copy-token and resume
-    // affordances — so the list never carries it.
-    if (world.analytics) {
+    // one and the run scope required by analytics is present. The hook list is
+    // metadata only — the secret `token` is fetched on demand per hook via
+    // `fetchHookToken` for the copy-token and resume affordances — so the list
+    // never carries it.
+    if (world.analytics && runId) {
       const result = await world.analytics.hooks.list({
-        ...(runId ? { runId } : {}),
+        runId,
         pagination: { cursor, limit, sortOrder },
       });
       return createResponse({
         data: result.data as unknown as HookListItem[],
         cursor: result.cursor ?? undefined,
         hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
       });
     }
     const result = await world.hooks.list({
@@ -876,9 +926,10 @@ export async function fetchHooks(
       resolveData: 'none',
     });
     return createResponse({
-      data: result.data as unknown as HookListItem[],
+      data: result.data.map(hookToListItem),
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<HookListItem>>(
