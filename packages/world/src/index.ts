@@ -27,7 +27,11 @@ export {
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  HookCreatedEventSchema,
+  isTerminalRunEventType,
   stripEventDataRefs,
+  TERMINAL_RUN_EVENT_TYPES,
+  TerminalRunEventTypeSchema,
 } from './events.js';
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
@@ -50,6 +54,9 @@ export {
 export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
+  isTerminalWorkflowRunStatus,
+  TERMINAL_WORKFLOW_RUN_STATUSES,
+  TerminalWorkflowRunStatusSchema,
   WorkflowRunBaseSchema,
   WorkflowRunSchema,
   WorkflowRunStatusSchema,
@@ -82,7 +89,13 @@ export {
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from './spec-version.js';
 export type * from './steps.js';
-export { StepSchema, StepStatusSchema } from './steps.js';
+export {
+  isTerminalStepStatus,
+  StepSchema,
+  StepStatusSchema,
+  TERMINAL_STEP_STATUSES,
+  TerminalStepStatusSchema,
+} from './steps.js';
 export {
   DEFAULT_TIMESTAMP_THRESHOLD_FUTURE_MS,
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
