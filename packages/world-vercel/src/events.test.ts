@@ -1,5 +1,5 @@
 import type { AnyEventRequest } from '@workflow/world';
-import { encode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
@@ -18,6 +18,19 @@ function mockAgent() {
   const agent = new MockAgent();
   agent.disableNetConnect();
   return agent;
+}
+
+function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
+  const bytes =
+    typeof rawBody === 'string'
+      ? new TextEncoder().encode(rawBody)
+      : new Uint8Array(rawBody as ArrayBufferLike);
+  const metaLen = new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength
+  ).getUint32(0, false);
+  return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
 }
 
 /**
@@ -166,6 +179,55 @@ describe('splitEventDataForV4 attribute fields', () => {
 
     expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
   });
+
+  it('lifts workflowName into the frame meta on outcome events (step_completed/step_created), keeping the payload in the body', () => {
+    // The backend keys payload refs by workflow name; carrying it in the
+    // frame meta lets the v4 POST handler skip the per-step run lookup.
+    const completed = splitEventDataForV4({
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        result: new TextEncoder().encode('"ok"'),
+      },
+    } as AnyEventRequest);
+    expect(completed.meta.workflowName).toBe('wf');
+    // The result still travels as the opaque body, not in meta.
+    expect(completed.payload).toBeInstanceOf(Uint8Array);
+    expect(completed.meta.result).toBeUndefined();
+
+    const created = splitEventDataForV4({
+      eventType: 'step_created',
+      correlationId: 'step_2',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+      },
+    } as AnyEventRequest);
+    expect(created.meta.workflowName).toBe('wf');
+    expect(created.payload).toBeInstanceOf(Uint8Array);
+
+    // The lazy inline start is the motivating hot-path event: it writes the
+    // step `input` payload ref on the sequential path, so it must carry
+    // workflowName to spare the backend the per-step run lookup.
+    const started = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_3',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+      },
+    } as AnyEventRequest);
+    expect(started.meta.workflowName).toBe('wf');
+    expect(started.payload).toBeInstanceOf(Uint8Array);
+    expect(started.meta.input).toBeUndefined();
+  });
 });
 
 describe('createWorkflowRunEvent response coercion', () => {
@@ -222,6 +284,52 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('sends occurredAt in the v4 frame meta', async () => {
+    const agent = mockAgent();
+    const occurredAt = new Date('2026-06-10T00:00:03.000Z');
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({
+            run: {
+              runId: 'wrun_1',
+              status: 'running',
+              startedAt: new Date('2026-06-10T00:00:04.000Z'),
+            },
+          });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:04.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      { occurredAt },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.occurredAt).toBeInstanceOf(Date);
+    expect((capturedMeta?.occurredAt as Date).getTime()).toBe(
+      occurredAt.getTime()
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
   it('coerces ISO-string dates in the returned event and preloaded events', async () => {
     // Persisted events store nested eventData dates as ISO strings
     // (the backend's entity layer converts Date → toISOString on write with
@@ -249,6 +357,7 @@ describe('createWorkflowRunEvent response coercion', () => {
             runId: 'wrun_1',
             eventType: 'run_started',
             createdAt: '2026-06-10T00:00:01.000Z',
+            occurredAt: '2026-06-10T00:00:00.500Z',
             eventData: {},
           },
           events: [
@@ -258,6 +367,7 @@ describe('createWorkflowRunEvent response coercion', () => {
               eventType: 'wait_created',
               correlationId: 'wait_1',
               createdAt: '2026-06-10T00:00:02.000Z',
+              occurredAt: '2026-06-10T00:00:01.500Z',
               specVersion: 2,
               eventData: { resumeAt: '2026-06-10T01:00:00.000Z' },
             },
@@ -282,11 +392,14 @@ describe('createWorkflowRunEvent response coercion', () => {
     );
 
     expect(result.event?.createdAt).toBeInstanceOf(Date);
+    expect(result.event?.occurredAt).toBeInstanceOf(Date);
     const preloaded = result.events?.[0] as {
       createdAt: Date;
+      occurredAt: Date;
       eventData: { resumeAt: Date };
     };
     expect(preloaded.createdAt).toBeInstanceOf(Date);
+    expect(preloaded.occurredAt).toBeInstanceOf(Date);
     expect(preloaded.eventData.resumeAt).toBeInstanceOf(Date);
     expect(preloaded.eventData.resumeAt.getTime()).toBe(
       new Date('2026-06-10T01:00:00.000Z').getTime()
@@ -482,5 +595,85 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     ).eventData;
     expect(eventData?.input).toEqual(body);
     agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
+ * The v4 LIST sentinel carries a trailing `next` cursor even on the final
+ * page (it doubles as the incremental-load resume point), so the runtime's
+ * `while (hasMore)` replay loader must key off the server's explicit
+ * `hasMore` — not `Boolean(next)` — to avoid one wasted empty-page request
+ * per event-log load. Older servers omit the flag; the Boolean(next)
+ * fallback preserves their (correct, if slower) behavior.
+ */
+describe('getWorkflowRunEvents hasMore mapping', () => {
+  function mockListResponse(agent: MockAgent, sentinelMeta: object) {
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        new Uint8Array(0)
+      ),
+      encodeFrame(sentinelMeta as Record<string, unknown>, new Uint8Array(0)),
+    ]);
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        // These tests use the default resolveData ('all' → resolve), which
+        // the adapter forwards as a query param; match it so the mock fires.
+        query: { remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+  }
+
+  it('honors an explicit hasMore:false even when a trailing cursor is present', async () => {
+    const agent = mockAgent();
+    mockListResponse(agent, { _end: 1, next: 'eid:last', hasMore: false });
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.data).toHaveLength(1);
+    expect(result.hasMore).toBe(false);
+    // The cursor still rides along for incremental loads.
+    expect(result.cursor).toBe('eid:last');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('maps an explicit hasMore:true through', async () => {
+    const agent = mockAgent();
+    mockListResponse(agent, { _end: 1, next: 'cursor-2', hasMore: true });
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.hasMore).toBe(true);
+    expect(result.cursor).toBe('cursor-2');
+  });
+
+  it('falls back to Boolean(next) against a legacy server without the flag', async () => {
+    const agent = mockAgent();
+    mockListResponse(agent, { _end: 1, next: 'cursor-2' });
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.hasMore).toBe(true);
+    expect(result.cursor).toBe('cursor-2');
   });
 });

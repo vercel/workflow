@@ -1,9 +1,4 @@
-import {
-  EntityConflictError,
-  ThrottleError,
-  WorkflowRuntimeError,
-  WorkflowWorldError,
-} from '@workflow/errors';
+import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
@@ -11,11 +6,11 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
-  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
 import { getRunCapabilities } from '../capabilities.js';
+import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
@@ -30,6 +25,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
+import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
 /**
  * Timeout for the cross-deployment capability probe done before
@@ -220,7 +216,8 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
-      const world = opts?.world ?? (await getWorldLazy());
+      const world = opts.world ?? (await getWorldLazy());
+      assertWorldSupportsRuntimeProtocol(world);
       const currentDeploymentId = await world.getDeploymentId();
       let deploymentId = opts.deploymentId ?? currentDeploymentId;
 
@@ -301,14 +298,9 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      // Use world-declared specVersion when available (our worlds set this),
-      // otherwise fall back to the safe baseline that community worlds handle.
-      // Community worlds built against older @workflow/world reject runs with
-      // specVersion > their SPEC_VERSION_CURRENT via requiresNewerWorld().
-      const specVersion =
-        opts.specVersion ??
-        world.specVersion ??
-        SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
+      // Default new runs to the configured world's spec version. The world
+      // itself has already been checked against this runtime's spec version.
+      const specVersion = opts.specVersion ?? world.specVersion;
       const v1Compat = isLegacySpecVersion(specVersion);
       const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;
@@ -450,10 +442,11 @@ export async function start<TArgs extends unknown[], TResult>(
           // the run creation call gets a cold start or other slowdown, and the queue
           // + run_started call completes faster. We expect this to be <=1% of cases.
           // In this case, we can safely return.
-        } else if (isRetryableStartError(err)) {
-          // 429 (ThrottleError) and 5xx (WorkflowWorldError with status >= 500)
-          // are retryable — the run was accepted via the queue and creation
-          // will be re-tried by the runtime when it calls run_started.
+        } else if (isRetryableWorldError(err)) {
+          // 429 (ThrottleError), 5xx, and transient transport failures
+          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
+          // queue and creation will be re-tried by the runtime when it calls
+          // run_started.
           resilientStart = true;
           runtimeLogger.warn(
             'Run creation event failed, but the run was accepted via the queue. ' +
@@ -506,17 +499,4 @@ export async function start<TArgs extends unknown[], TResult>(
       return new Run<TResult>(runId, { resilientStart });
     });
   });
-}
-
-/**
- * Checks if an error from events.create (run_created) is retryable,
- * meaning the queue can re-try creation later via the run_started path.
- * - ThrottleError (429): rate limited, will succeed later
- * - WorkflowWorldError with status >= 500: server error, will succeed later
- */
-function isRetryableStartError(err: unknown): boolean {
-  if (ThrottleError.is(err)) return true;
-  if (WorkflowWorldError.is(err) && err.status && err.status >= 500)
-    return true;
-  return false;
 }

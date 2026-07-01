@@ -281,6 +281,52 @@
       "services": [],
       "requiresCredentials": true,
       "credentialsNote": "Requires Upstash Redis and QStash credentials from Upstash console (https://console.upstash.com)"
+    },
+    {
+      "id": "platformatic",
+      "type": "community",
+      "package": "@platformatic/world",
+      "version": "0.8.1",
+      "name": "Platformatic",
+      "description": "Platformatic World backed by a centralized workflow service with PostgreSQL for version-safe orchestration on Kubernetes",
+      "repository": "https://github.com/platformatic/platformatic-world",
+      "docs": "https://github.com/platformatic/platformatic-world",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@platformatic/world",
+        "PLT_WORLD_SERVICE_URL": "http://localhost:3042",
+        "PLT_WORLD_APP_ID": "default",
+        "PLT_WORLD_DEPLOYMENT_VERSION": "local"
+      },
+      "services": [
+        {
+          "name": "postgres",
+          "image": "postgres:18-alpine",
+          "ports": ["5432:5432"],
+          "env": {
+            "POSTGRES_USER": "wf",
+            "POSTGRES_PASSWORD": "wf",
+            "POSTGRES_DB": "workflow"
+          },
+          "healthCheck": {
+            "cmd": "pg_isready -h localhost",
+            "retries": 5
+          }
+        },
+        {
+          "name": "platformatic-workflow",
+          "image": "platformatic/workflow:0.8.1",
+          "ports": ["3042:3042"],
+          "env": {
+            "DATABASE_URL": "postgres://wf:wf@localhost:5432/workflow",
+            "PORT": "3042"
+          },
+          "healthCheck": {
+            "cmd": "curl -sf http://localhost:3042/status",
+            "retries": 10
+          }
+        }
+      ]
     }
   ]
 }

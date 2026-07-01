@@ -15,7 +15,8 @@ import { buildDurationMap } from '../src/components/event-list-view.js';
 function ev(
   eventType: string,
   correlationId: string | null,
-  createdAt: string
+  createdAt: string,
+  occurredAt?: string
 ): Event {
   // Only the fields buildDurationMap reads are required; the rest of Event
   // is opaque to it.
@@ -23,6 +24,7 @@ function ev(
     eventType,
     correlationId,
     createdAt,
+    occurredAt,
   } as unknown as Event;
 }
 
@@ -64,6 +66,33 @@ describe('buildDurationMap → queued duration', () => {
     ];
 
     expect(buildDurationMap(events).get('step-2')?.queued).toBe(500);
+  });
+
+  it('prefers occurredAt over createdAt when measuring durations', () => {
+    const events: Event[] = [
+      ev(
+        'step_created',
+        'step-occurred',
+        '2026-01-01T00:00:10.000Z',
+        '2026-01-01T00:00:00.000Z'
+      ),
+      ev(
+        'step_started',
+        'step-occurred',
+        '2026-01-01T00:00:11.000Z',
+        '2026-01-01T00:00:00.250Z'
+      ),
+      ev(
+        'step_completed',
+        'step-occurred',
+        '2026-01-01T00:00:12.000Z',
+        '2026-01-01T00:00:01.000Z'
+      ),
+    ];
+
+    const duration = buildDurationMap(events).get('step-occurred');
+    expect(duration?.queued).toBe(250);
+    expect(duration?.ran).toBe(750);
   });
 
   it('falls back to the started time when no created event is seen', () => {

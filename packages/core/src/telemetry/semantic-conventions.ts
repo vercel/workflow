@@ -97,6 +97,9 @@ export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
   'workflow.trace.mode'
 );
 
+/** Whether this workflow invocation is using the turbo first-delivery path */
+export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'
@@ -125,6 +128,33 @@ export const WorkflowHooksCreated = SemanticConvention<number>(
 /** Number of waits created during workflow execution */
 export const WorkflowWaitsCreated = SemanticConvention<number>(
   'workflow.waits.created'
+);
+
+// Route attributes
+
+/** The workflow runtime route being handled */
+export const WorkflowRouteType = SemanticConvention<'flow' | 'step'>(
+  'workflow.route.type'
+);
+
+/** Whether this route invocation reused an already-created request handler */
+export const WorkflowRouteHandlerCached = SemanticConvention<boolean>(
+  'workflow.route.handler_cached'
+);
+
+/** Number of times this in-memory route handler has been invoked */
+export const WorkflowRouteInvocationCount = SemanticConvention<number>(
+  'workflow.route.invocation_count'
+);
+
+/** Time since this route entrypoint was constructed, in milliseconds */
+export const WorkflowRouteEntrypointAgeMs = SemanticConvention<number>(
+  'workflow.route.entrypoint_age_ms'
+);
+
+/** Time spent evaluating the generated route module body before creating the entrypoint */
+export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
+  'workflow.route.module_body_init_ms'
 );
 
 // Step attributes
@@ -260,6 +290,9 @@ export const WorkflowSuspensionWaitCount = SemanticConvention<number>(
 export const HttpRequestMethod = SemanticConvention<string>(
   'http.request.method'
 );
+
+/** Route pattern for the request (standard OTEL: http.route) */
+export const HttpRoute = SemanticConvention<string>('http.route');
 
 /** Full URL of the request (standard OTEL: url.full) */
 export const UrlFull = SemanticConvention<string>('url.full');

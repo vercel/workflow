@@ -1,5 +1,181 @@
 # workflow
 
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [[`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528)]:
+  - @workflow/core@5.0.0-beta.26
+  - @workflow/cli@5.0.0-beta.26
+  - @workflow/next@5.0.0-beta.26
+  - @workflow/nitro@5.0.0-beta.26
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/astro@5.0.0-beta.26
+  - @workflow/nest@5.0.0-beta.26
+  - @workflow/rollup@5.0.0-beta.26
+  - @workflow/sveltekit@5.0.0-beta.26
+  - @workflow/nuxt@5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- Updated dependencies [[`6f4dd0e`](https://github.com/vercel/workflow/commit/6f4dd0e7169c5b3eb48e920a2e86e61450a565d3), [`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60), [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e)]:
+  - @workflow/nitro@5.0.0-beta.25
+  - @workflow/core@5.0.0-beta.25
+  - @workflow/sveltekit@5.0.0-beta.25
+  - @workflow/cli@5.0.0-beta.25
+  - @workflow/nuxt@5.0.0-beta.25
+  - @workflow/astro@5.0.0-beta.25
+  - @workflow/nest@5.0.0-beta.25
+  - @workflow/next@5.0.0-beta.25
+  - @workflow/rollup@5.0.0-beta.25
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/errors@5.0.0-beta.8
+
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- Updated dependencies [[`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba)]:
+  - @workflow/core@5.0.0-beta.24
+  - @workflow/astro@5.0.0-beta.24
+  - @workflow/cli@5.0.0-beta.24
+  - @workflow/nest@5.0.0-beta.24
+  - @workflow/next@5.0.0-beta.24
+  - @workflow/nitro@5.0.0-beta.24
+  - @workflow/rollup@5.0.0-beta.24
+  - @workflow/sveltekit@5.0.0-beta.24
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/nuxt@5.0.0-beta.24
+
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
+  - @workflow/core@5.0.0-beta.23
+  - @workflow/cli@5.0.0-beta.23
+  - @workflow/next@5.0.0-beta.23
+  - @workflow/nitro@5.0.0-beta.23
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/astro@5.0.0-beta.23
+  - @workflow/nest@5.0.0-beta.23
+  - @workflow/rollup@5.0.0-beta.23
+  - @workflow/sveltekit@5.0.0-beta.23
+  - @workflow/nuxt@5.0.0-beta.23
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- Updated dependencies [[`22b2728`](https://github.com/vercel/workflow/commit/22b2728394b3a3dbfa4e32984e2feba28b4136a9), [`332c63c`](https://github.com/vercel/workflow/commit/332c63ce3c63f1505025d4b35cab44d21533d26d), [`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626)]:
+  - @workflow/next@5.0.0-beta.22
+  - @workflow/core@5.0.0-beta.22
+  - @workflow/cli@5.0.0-beta.22
+  - @workflow/nitro@5.0.0-beta.22
+  - @workflow/errors@5.0.0-beta.8
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/nuxt@5.0.0-beta.22
+  - @workflow/astro@5.0.0-beta.22
+  - @workflow/nest@5.0.0-beta.22
+  - @workflow/rollup@5.0.0-beta.22
+  - @workflow/sveltekit@5.0.0-beta.22
+
+## 5.0.0-beta.21
+
+### Minor Changes
+
+- [#2526](https://github.com/vercel/workflow/pull/2526) [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add turbo mode (on by default, disable with `WORKFLOW_TURBO=0`): on the first delivery of a run's first invocation the runtime backgrounds `run_started`, skips the initial event-log load, and forces optimistic inline start so the run reaches its first steps with no preceding network round-trips. It is safe there because the first delivery has no concurrent handler to race; turbo mode deactivates once a hook or sleep is encountered.
+
+### Patch Changes
+
+- [#2472](https://github.com/vercel/workflow/pull/2472) [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615) Thanks [@pranaygp](https://github.com/pranaygp)! - Memoize hydrated step return values across inline replay iterations, turning the per-invocation step-result decrypt+parse cost from O(N²) to O(N) for sequential workflows. Only primitive results are cached, so deterministic replay is preserved.
+
+- Updated dependencies [[`6de5ea5`](https://github.com/vercel/workflow/commit/6de5ea5c2f32b474274f5dabe5f3663e03622ac5), [`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc), [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615), [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3), [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055)]:
+  - @workflow/core@5.0.0-beta.21
+  - @workflow/next@5.0.0-beta.21
+  - @workflow/cli@5.0.0-beta.21
+  - @workflow/nitro@5.0.0-beta.21
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/astro@5.0.0-beta.21
+  - @workflow/nest@5.0.0-beta.21
+  - @workflow/rollup@5.0.0-beta.21
+  - @workflow/sveltekit@5.0.0-beta.21
+  - @workflow/nuxt@5.0.0-beta.21
+
+## 5.0.0-beta.20
+
+### Minor Changes
+
+- [#2516](https://github.com/vercel/workflow/pull/2516) [`84ccd40`](https://github.com/vercel/workflow/commit/84ccd40ea3e12ba6b67967a4ff9f0b84b2393c48) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Inline execution now runs up to `WORKFLOW_MAX_INLINE_STEPS` (default 3) steps in parallel per suspension, each lazily created. An opt-in `WORKFLOW_OPTIMISTIC_INLINE_START` (default off) additionally starts step bodies before `step_started` is confirmed, reconciling the in-flight start before the terminal write so a lost create-claim is discarded; it is off by default because under contention a step body can run more than once (e.g. two runs writing to the workflow stream can corrupt it), so only enable it for idempotent steps.
+
+### Patch Changes
+
+- [#2475](https://github.com/vercel/workflow/pull/2475) [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip the per-step incremental `events.list` round-trip in the inline sequential loop by consuming an event-log delta returned from the step's terminal write (gated to the single-step case with no open hooks or waits).
+
+  Add the opt-in `CreateEventParams.sinceCursor` contract so a step-terminal `events.create` can return the event-log delta since that cursor (via `EventResult.events`/`cursor`/`hasMore`).
+
+  Return the inline delta from a step-terminal write when `sinceCursor` is supplied, computed identically to `events.list` so the consumed prefix cannot skew from the server log.
+
+  Forward `sinceCursor` over the v4 wire in `@workflow/world-vercel` so the server can return the delta on a step-terminal response; older servers ignore it and the runtime falls back to `events.list`.
+
+- [#2478](https://github.com/vercel/workflow/pull/2478) [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9) Thanks [@pranaygp](https://github.com/pranaygp)! - Lazy inline step start: the owned-inline runtime path now sends a single `step_started` carrying the step input, letting the world create the step on the fly and saving one round-trip per inline step.
+
+  `@workflow/world`: `step_started` event data accepts an optional `input`, and `EventResult` gains a `stepCreated` ownership signal.
+
+  `@workflow/world-local`: `step_started` with input atomically creates the step plus a synthetic `step_created` event; a lazy `step_started` for an already-existing step throws `EntityConflictError` so concurrent losers skip (exactly-once).
+
+  `@workflow/world-postgres`: same lazy-create + exactly-once create-claim for the Postgres backend.
+
+  `@workflow/world-vercel`: sends the step input on `step_started` over the v4 wire and threads the server's `stepCreated` signal into `EventResult`.
+
+- Updated dependencies [[`7aee0d4`](https://github.com/vercel/workflow/commit/7aee0d4e4aae627d900068a4740fd69e651d1a2f), [`16b3670`](https://github.com/vercel/workflow/commit/16b36703e2b1102df33bb301e8b19d7031dbb70f), [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca), [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9), [`722bb7c`](https://github.com/vercel/workflow/commit/722bb7c6a20a7f255757280739d8b51661ed7792), [`de91f20`](https://github.com/vercel/workflow/commit/de91f20f6828904a2da1d80c9f6ae729438a453b), [`ab2e9b8`](https://github.com/vercel/workflow/commit/ab2e9b8d0740c457f80e05f05c1fd907bcf4f027), [`84ccd40`](https://github.com/vercel/workflow/commit/84ccd40ea3e12ba6b67967a4ff9f0b84b2393c48), [`939890d`](https://github.com/vercel/workflow/commit/939890d4c2998823d95732dbc310712709618bc9), [`a92c16d`](https://github.com/vercel/workflow/commit/a92c16debd46f3804b01682eadfbfc355f03921c), [`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a)]:
+  - @workflow/core@5.0.0-beta.20
+  - @workflow/cli@5.0.0-beta.20
+  - @workflow/next@5.0.0-beta.20
+  - @workflow/nitro@5.0.0-beta.20
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/errors@5.0.0-beta.8
+  - @workflow/astro@5.0.0-beta.20
+  - @workflow/nest@5.0.0-beta.20
+  - @workflow/rollup@5.0.0-beta.20
+  - @workflow/sveltekit@5.0.0-beta.20
+  - @workflow/nuxt@5.0.0-beta.20
+
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@5.0.0-beta.19
+  - @workflow/core@5.0.0-beta.19
+  - @workflow/next@5.0.0-beta.19
+  - @workflow/nitro@5.0.0-beta.19
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/astro@5.0.0-beta.19
+  - @workflow/nest@5.0.0-beta.19
+  - @workflow/rollup@5.0.0-beta.19
+  - @workflow/sveltekit@5.0.0-beta.19
+  - @workflow/nuxt@5.0.0-beta.19
+
+## 5.0.0-beta.18
+
+### Patch Changes
+
+- Updated dependencies [[`b92dfbb`](https://github.com/vercel/workflow/commit/b92dfbb94dabdeefd53bd9499a78174ac6bb2156), [`cb18139`](https://github.com/vercel/workflow/commit/cb181392b9d6282438c20a4fb6868bc3fd7bc886), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`4b7a720`](https://github.com/vercel/workflow/commit/4b7a7203bf7093a435a9c4fc33a3af1060f010f7), [`3c79c56`](https://github.com/vercel/workflow/commit/3c79c56af257b4c327e4363c0cdb482149b55c73), [`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`d4dd6f9`](https://github.com/vercel/workflow/commit/d4dd6f9c015af17344f49635d62c00d78f25a911)]:
+  - @workflow/astro@5.0.0-beta.18
+  - @workflow/cli@5.0.0-beta.18
+  - @workflow/core@5.0.0-beta.18
+  - @workflow/next@5.0.0-beta.18
+  - @workflow/nitro@5.0.0-beta.18
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/nest@5.0.0-beta.18
+  - @workflow/rollup@5.0.0-beta.18
+  - @workflow/sveltekit@5.0.0-beta.18
+  - @workflow/errors@5.0.0-beta.8
+  - @workflow/nuxt@5.0.0-beta.18
+
 ## 5.0.0-beta.17
 
 ### Minor Changes

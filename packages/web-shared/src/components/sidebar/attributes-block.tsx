@@ -4,30 +4,107 @@ import {
   type AttributeChange,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
 } from '@workflow/world';
+import { cva, type VariantProps } from 'class-variance-authority';
+import type { ReactNode } from 'react';
+import { cn } from '../../lib/cn';
+import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
+import {
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from '../ui/collapsible';
 import { CopyableDataBlock } from './copyable-data-block';
-import { DetailCard } from './detail-card';
 
-/**
- * Check whether an attribute key is in the reserved (`$`-prefixed)
- * namespace used by framework/library code.
- */
-export const isReservedAttributeKey = (key: string): boolean =>
-  key.startsWith(RESERVED_ATTRIBUTE_KEY_PREFIX);
+function isReservedAttributeKey(key: string): boolean {
+  return key.startsWith(RESERVED_ATTRIBUTE_KEY_PREFIX);
+}
 
-function ReservedBadge() {
+const rowValueVariants = cva(
+  'max-w-[60%] truncate text-right text-copy-13 text-gray-1000',
+  {
+    variants: {
+      variant: {
+        default: '',
+        mono: 'font-mono',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+    },
+  }
+);
+
+const rowCopyValueVariants = cva(
+  'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000',
+  {
+    variants: {
+      variant: {
+        default: '',
+        mono: 'font-mono',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+    },
+  }
+);
+
+type DetailKeyValueRowProps = {
+  label: string;
+  value?: ReactNode;
+  copyText?: string;
+  removed?: boolean;
+};
+
+function DetailKeyValueRowBase({
+  label,
+  value,
+  copyText,
+  removed = false,
+  variant,
+}: DetailKeyValueRowProps & VariantProps<typeof rowValueVariants>) {
+  const stringValue = typeof value === 'string' ? value : undefined;
+
   return (
-    <span
-      className="shrink-0 rounded border px-1 py-px text-[10px] font-medium leading-3"
-      style={{
-        borderColor: 'var(--ds-gray-alpha-400)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-700)',
-      }}
-      title={`Keys prefixed with "${RESERVED_ATTRIBUTE_KEY_PREFIX}" are reserved for framework and library code`}
-    >
-      Reserved
-    </span>
+    <div className="px-1.5 hover:bg-gray-100 flex justify-between gap-3 -mx-1.5 py-0.5 rounded items-center">
+      <span className="flex min-w-0 items-center gap-1.5 truncate text-label-13 text-gray-900">
+        {label}
+      </span>
+      {removed ? (
+        <span className="shrink-0 text-copy-13 italic text-gray-700">
+          removed
+        </span>
+      ) : copyText ? (
+        <div className={cn(rowCopyValueVariants({ variant }))} title={copyText}>
+          <MiddleTruncate
+            value={copyText}
+            className={cn(
+              rowValueVariants({ variant, className: 'text-right' })
+            )}
+            style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
+          />
+          <CopyButton
+            copyText={copyText}
+            ariaLabel={`Copy ${label}`}
+            className="shrink-0 -mr-1"
+          />
+        </div>
+      ) : (
+        <span className={cn(rowValueVariants({ variant }))} title={stringValue}>
+          {value}
+        </span>
+      )}
+    </div>
   );
+}
+
+export function DetailKeyValueRow(props: DetailKeyValueRowProps) {
+  return <DetailKeyValueRowBase {...props} />;
+}
+
+export function DetailMonoKeyValueRow(props: DetailKeyValueRowProps) {
+  return <DetailKeyValueRowBase {...props} variant="mono" />;
 }
 
 function AttributeRow({
@@ -39,29 +116,8 @@ function AttributeRow({
   value?: string;
   removed?: boolean;
 }) {
-  const reserved = isReservedAttributeKey(attributeKey);
   return (
-    <div className="flex items-center justify-between gap-3 py-0.5">
-      <span
-        className="flex min-w-0 items-center gap-1.5 text-label-13 text-gray-900"
-        style={reserved ? { color: 'var(--ds-gray-700)' } : undefined}
-      >
-        <span className="truncate">{attributeKey}</span>
-        {reserved && <ReservedBadge />}
-      </span>
-      {removed ? (
-        <span className="shrink-0 text-copy-13 italic text-gray-700">
-          removed
-        </span>
-      ) : (
-        <span
-          className="max-w-[60%] truncate text-copy-13 text-gray-1000"
-          title={value}
-        >
-          {value}
-        </span>
-      )}
-    </div>
+    <DetailKeyValueRow label={attributeKey} value={value} removed={removed} />
   );
 }
 
@@ -81,8 +137,7 @@ export function sortAttributeKeys(keys: string[]): string[] {
 
 /**
  * Collapsible section showing a run's materialized attributes as key-value
- * rows. Reserved (`$`-prefixed) keys are visually de-emphasized with a
- * badge and sorted after user keys.
+ * rows. Reserved (`$`-prefixed) keys are sorted after user keys.
  */
 export function RunAttributesCard({
   attributes,
@@ -93,13 +148,78 @@ export function RunAttributesCard({
   if (keys.length === 0) return null;
 
   return (
-    <DetailCard summary="Attributes" defaultOpen contentClassName="mb-4">
-      <div className="flex flex-col">
-        {keys.map((key) => (
-          <AttributeRow attributeKey={key} key={key} value={attributes[key]} />
-        ))}
-      </div>
-    </DetailCard>
+    <CollapsibleRoot defaultOpen>
+      <CollapsibleTrigger>Attributes</CollapsibleTrigger>
+      <CollapsibleContent className="mb-4">
+        <div className="flex flex-col">
+          {keys.map((key) => (
+            <AttributeRow
+              attributeKey={key}
+              key={key}
+              value={attributes[key]}
+            />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </CollapsibleRoot>
+  );
+}
+
+function formatMetadataValue(value: unknown): string {
+  if (value == null) {
+    return String(value);
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function isMetadataRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Collapsible section showing hook (or other resource) metadata as key-value
+ * rows, matching the Attributes section styling.
+ */
+export function RunMetadataCard({ metadata }: { metadata: unknown }) {
+  if (!isMetadataRecord(metadata)) {
+    return (
+      <CollapsibleRoot defaultOpen>
+        <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+        <CollapsibleContent className="mb-4">
+          <CopyableDataBlock data={metadata} />
+        </CollapsibleContent>
+      </CollapsibleRoot>
+    );
+  }
+
+  const keys = Object.keys(metadata).sort((a, b) => a.localeCompare(b));
+  if (keys.length === 0) return null;
+
+  return (
+    <CollapsibleRoot defaultOpen>
+      <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+      <CollapsibleContent className="mb-4">
+        <div className="flex flex-col">
+          {keys.map((key) => (
+            <AttributeRow
+              attributeKey={key}
+              key={key}
+              value={formatMetadataValue(metadata[key])}
+            />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </CollapsibleRoot>
   );
 }
 

@@ -1,5 +1,109 @@
 # @workflow/nitro
 
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [[`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528)]:
+  - @workflow/core@5.0.0-beta.26
+  - @workflow/web@5.0.0-beta.26
+  - @workflow/builders@5.0.0-beta.26
+  - @workflow/rollup@5.0.0-beta.26
+  - @workflow/vite@5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2572](https://github.com/vercel/workflow/pull/2572) [`6f4dd0e`](https://github.com/vercel/workflow/commit/6f4dd0e7169c5b3eb48e920a2e86e61450a565d3) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Reload rebuilt step bundles during Vite development.
+
+- [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60) - Fix HTTP/2 requests failing in production builds (Vite/Nitro, TanStack Start) where undici's bundled `node:http2` could not load and fell back to a stub.
+
+- Updated dependencies [[`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b), [`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3), [`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e), [`7c1e2a2`](https://github.com/vercel/workflow/commit/7c1e2a2c7e837ef76bafc771811c8f320d8c4053)]:
+  - @workflow/web@5.0.0-beta.25
+  - @workflow/builders@5.0.0-beta.25
+  - @workflow/core@5.0.0-beta.25
+  - @workflow/rollup@5.0.0-beta.25
+  - @workflow/vite@5.0.0-beta.25
+
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- Updated dependencies [[`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba)]:
+  - @workflow/builders@5.0.0-beta.24
+  - @workflow/core@5.0.0-beta.24
+  - @workflow/web@5.0.0-beta.24
+  - @workflow/rollup@5.0.0-beta.24
+  - @workflow/vite@5.0.0-beta.24
+
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
+  - @workflow/core@5.0.0-beta.23
+  - @workflow/builders@5.0.0-beta.23
+  - @workflow/web@5.0.0-beta.23
+  - @workflow/rollup@5.0.0-beta.23
+  - @workflow/vite@5.0.0-beta.23
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- Updated dependencies [[`6855282`](https://github.com/vercel/workflow/commit/685528259ddf93c17f544c2bed841088d0973dcb), [`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626)]:
+  - @workflow/web@5.0.0-beta.22
+  - @workflow/core@5.0.0-beta.22
+  - @workflow/builders@5.0.0-beta.22
+  - @workflow/rollup@5.0.0-beta.22
+  - @workflow/vite@5.0.0-beta.22
+
+## 5.0.0-beta.21
+
+### Patch Changes
+
+- Updated dependencies [[`6de5ea5`](https://github.com/vercel/workflow/commit/6de5ea5c2f32b474274f5dabe5f3663e03622ac5), [`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc), [`66ca0dc`](https://github.com/vercel/workflow/commit/66ca0dcc096440f39dd234e04669e1fc7bf2d615), [`b713d84`](https://github.com/vercel/workflow/commit/b713d8417b1334abd1e30bdc50701d0d96dee39d), [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3), [`3e82a12`](https://github.com/vercel/workflow/commit/3e82a12712b1efe229ac2b1623dc6c8fc7be7055)]:
+  - @workflow/core@5.0.0-beta.21
+  - @workflow/builders@5.0.0-beta.21
+  - @workflow/web@5.0.0-beta.21
+  - @workflow/rollup@5.0.0-beta.21
+  - @workflow/vite@5.0.0-beta.21
+
+## 5.0.0-beta.20
+
+### Patch Changes
+
+- Updated dependencies [[`7aee0d4`](https://github.com/vercel/workflow/commit/7aee0d4e4aae627d900068a4740fd69e651d1a2f), [`16b3670`](https://github.com/vercel/workflow/commit/16b36703e2b1102df33bb301e8b19d7031dbb70f), [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca), [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9), [`722bb7c`](https://github.com/vercel/workflow/commit/722bb7c6a20a7f255757280739d8b51661ed7792), [`de91f20`](https://github.com/vercel/workflow/commit/de91f20f6828904a2da1d80c9f6ae729438a453b), [`ab2e9b8`](https://github.com/vercel/workflow/commit/ab2e9b8d0740c457f80e05f05c1fd907bcf4f027), [`84ccd40`](https://github.com/vercel/workflow/commit/84ccd40ea3e12ba6b67967a4ff9f0b84b2393c48), [`939890d`](https://github.com/vercel/workflow/commit/939890d4c2998823d95732dbc310712709618bc9), [`a92c16d`](https://github.com/vercel/workflow/commit/a92c16debd46f3804b01682eadfbfc355f03921c), [`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a), [`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a)]:
+  - @workflow/core@5.0.0-beta.20
+  - @workflow/builders@5.0.0-beta.20
+  - @workflow/web@5.0.0-beta.20
+  - @workflow/rollup@5.0.0-beta.20
+  - @workflow/vite@5.0.0-beta.20
+
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@5.0.0-beta.19
+  - @workflow/web@5.0.0-beta.19
+  - @workflow/builders@5.0.0-beta.19
+  - @workflow/rollup@5.0.0-beta.19
+  - @workflow/vite@5.0.0-beta.19
+
+## 5.0.0-beta.18
+
+### Patch Changes
+
+- Updated dependencies [[`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`4b7a720`](https://github.com/vercel/workflow/commit/4b7a7203bf7093a435a9c4fc33a3af1060f010f7), [`3c79c56`](https://github.com/vercel/workflow/commit/3c79c56af257b4c327e4363c0cdb482149b55c73), [`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`da37349`](https://github.com/vercel/workflow/commit/da373493d211c09056f745332b18f55ef801da2b), [`53ede30`](https://github.com/vercel/workflow/commit/53ede3079c19494c53e181917f26c2499a19e012)]:
+  - @workflow/core@5.0.0-beta.18
+  - @workflow/builders@5.0.0-beta.18
+  - @workflow/swc-plugin@5.0.0-beta.5
+  - @workflow/web@5.0.0-beta.18
+  - @workflow/rollup@5.0.0-beta.18
+  - @workflow/vite@5.0.0-beta.18
+
 ## 5.0.0-beta.17
 
 ### Patch Changes

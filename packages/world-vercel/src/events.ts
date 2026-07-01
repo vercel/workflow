@@ -22,7 +22,8 @@
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
- *     frame whose meta carries `{_end: 1, next?: cursor}`. The old
+ *     frame whose meta carries `{_end: 1, next?: cursor, hasMore?: boolean}`.
+ *     The old
  *     per-event `/refs` round-trip is eliminated.
  *
  * Public function signatures are unchanged: storage.ts continues to
@@ -47,6 +48,7 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
+import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
@@ -56,6 +58,10 @@ import {
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
+import {
+  normalizeEventData,
+  normalizeSerializedData,
+} from './serialized-data.js';
 import { deserializeStep } from './steps.js';
 import {
   type APIConfig,
@@ -107,6 +113,12 @@ const PAYLOAD_FIELD_BY_EVENT_TYPE = {
   run_completed: 'output',
   run_failed: 'error',
   step_created: 'input',
+  // step_started normally has no payload, but on the lazy-start path the
+  // runtime piggybacks the step input here so the server can synthesize the
+  // missing step_created (mirrors run_started above). Without this entry the
+  // v4 split would silently drop those bytes and the backend's "step_started
+  // arrived before step_created" fallback would have nothing to create from.
+  step_started: 'input',
   step_completed: 'result',
   step_failed: 'error',
   step_retrying: 'error',
@@ -123,8 +135,10 @@ type PayloadField =
 
 /**
  * Look up the payload field for an event type, or undefined for the event
- * types that carry no user payload (run_cancelled, attr_set, step_started,
- * wait_*, hook_disposed). The map is `as const` so it can drive
+ * types that carry no user payload (run_cancelled, attr_set, wait_*,
+ * hook_disposed). Note `step_started` carries a payload only on the
+ * lazy-start path; legacy starts send an empty body. The map is `as const`
+ * so it can drive
  * `PayloadField`; the cast keeps the lookup callable with any event-type
  * string.
  */
@@ -406,6 +420,10 @@ function coerceEventDates(raw: Record<string, unknown>): Event {
   return raw as unknown as Event;
 }
 
+function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
+  return coerceEventDates(normalizeEventData(raw));
+}
+
 /**
  * Turn a v4 event (frame meta + frame body) into the Event shape the
  * workflow runtime expects.
@@ -413,10 +431,11 @@ function coerceEventDates(raw: Record<string, unknown>): Event {
  * Both GET single-event and LIST use the same frame format: meta is the
  * full event entity with the payload field as a RefDescriptor, body is
  * the resolved payload bytes (possibly empty). This helper splices the
- * body bytes into `eventData[fieldName]` unchanged — the runtime's
- * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume the raw
- * devalue-with-format-prefix Uint8Array directly. No CBOR decode here,
- * symmetric with the pass-through write in `splitEventDataForV4`.
+ * body bytes into `eventData[fieldName]`, normalizing any zstd wrapper
+ * back to the raw devalue-with-format-prefix Uint8Array the runtime's
+ * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume. No CBOR
+ * decode here, symmetric with the pass-through write in
+ * `splitEventDataForV4`.
  */
 function buildEventFromV4(
   decoded: DecodedV4Event,
@@ -427,7 +446,10 @@ function buildEventFromV4(
 
   if (payloadBody.byteLength > 0) {
     const payloadField = payloadFieldFor(decoded.eventType);
-    if (payloadField) eventData[payloadField] = payloadBody;
+    const normalizedPayload = normalizeSerializedData(payloadBody);
+    if (payloadField && normalizedPayload instanceof Uint8Array) {
+      eventData[payloadField] = normalizedPayload;
+    }
   }
 
   const raw = {
@@ -438,6 +460,14 @@ function buildEventFromV4(
       decoded.createdAt instanceof Date
         ? decoded.createdAt
         : new Date(decoded.createdAt),
+    ...(decoded.occurredAt !== undefined
+      ? {
+          occurredAt:
+            decoded.occurredAt instanceof Date
+              ? decoded.occurredAt
+              : new Date(decoded.occurredAt),
+        }
+      : {}),
     ...(decoded.correlationId ? { correlationId: decoded.correlationId } : {}),
     eventData,
     ...(decoded.specVersion !== undefined
@@ -445,7 +475,7 @@ function buildEventFromV4(
       : {}),
   };
 
-  const event = coerceEventDates(raw);
+  const event = coerceNormalizedEvent(raw);
 
   // For resolveData='none', strip eventData entirely. Reuse the world-
   // side helper so behavior stays in sync with other backends.
@@ -500,8 +530,15 @@ export async function getWorkflowRunEvents(
 
   return {
     data: events,
+    // `next` is present even on the final page (it's the incremental-load
+    // resume cursor), so prefer the server's explicit `hasMore`. The
+    // `Boolean(next)` fallback covers older servers that don't emit it —
+    // at the cost of one extra empty-page request per load.
     cursor: result.next ?? null,
-    hasMore: Boolean(result.next),
+    hasMore:
+      typeof result.hasMore === 'boolean'
+        ? result.hasMore
+        : Boolean(result.next),
   } as PaginatedResponse<Event>;
 }
 
@@ -512,7 +549,18 @@ export async function createWorkflowRunEvent(
   config?: APIConfig
 ): Promise<EventResult> {
   try {
-    return await createWorkflowRunEventInner(id, data, params, config);
+    // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
+    // socket/headers timeouts, transient 5xx) in-process for event types that
+    // are idempotent-on-retry. A write that landed but whose response was lost
+    // re-surfaces as a 409 (or plain success for run_started/attr_set) the
+    // callers already handle, so this avoids a needless step re-execution on
+    // the next queue delivery. Non-retryable
+    // types (step_started, step_retrying, hook_received) run once. See
+    // ./event-retry for the validated per-event classification.
+    return await withEventPostRetry(
+      () => createWorkflowRunEventInner(id, data, params, config),
+      data.eventType
+    );
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
@@ -596,6 +644,19 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      occurredAt: params?.occurredAt ?? new Date(),
+      // Opt-in inline-delta: forward the cursor the runtime held before
+      // this write so the server can return the authoritative event-log
+      // delta on the response (events/cursor/hasMore), letting the inline
+      // loop skip a follow-up events.list. The server only acts on it for
+      // step_completed/step_failed; older servers ignore it and the runtime
+      // falls back to events.list.
+      ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
+      // Run-started preload opt-out: turbo backgrounds run_started as a write
+      // barrier only and never reads the preloaded log, so tell the server to
+      // skip the list+resolve. The server only acts on it for run_started;
+      // older servers ignore it and simply preload as before.
+      ...(params?.skipPreload ? { skipPreload: true } : {}),
       remoteRefBehavior,
       payload,
       ...meta,
@@ -604,18 +665,23 @@ async function createWorkflowRunEventInner(
   );
 
   // The server already CBOR-decoded into result.body — just thread the
-  // fields through. Step has a wire-format adapter; runs use the
-  // pass-through deserializeError helper (run/step dates arrive as real
-  // Dates — the server's entity getters convert before CBOR-encoding).
-  // The returned `event` and preloaded `events` go through
-  // coerceEventDates: they can be read back from the backing store
-  // server-side (e.g. the run_started TTFB preload queries the event
-  // log), where nested eventData dates are ISO strings — same coercion
-  // the GET/LIST path applies, and the v3 path applied via its zod wire
-  // schemas.
-  // The returned event honors the caller's resolveData: 'none' strips
-  // payload fields, matching the v3 path's stripEventAndLegacyRefs
-  // behavior and the Storage contract.
+  // fields through. This is the runtime's event-append path (world.events
+  // .create is only ever called from the workflow runtime, never from
+  // o11y), and the runtime re-hydrates every payload it consumes through
+  // the decompress-aware helpers (hydrateStepReturnValue, hydrateRunError,
+  // …). So we deliberately do NOT decompress here: doing so would be
+  // redundant work on the TTFB-sensitive run_started/inline-delta path and
+  // would make the runtime's deserialize compression telemetry report
+  // `codec: none` for payloads that were compressed at rest. gzip/zstd
+  // normalization for o11y/display lives on the read paths (getEvent,
+  // getWorkflowRunEvents, getStep, getRun, getHook).
+  //
+  // `event`/`events` go through coerceEventDates only: they can be read
+  // back from the backing store server-side (e.g. the run_started TTFB
+  // preload queries the event log), where nested eventData dates are ISO
+  // strings — same coercion the GET/LIST path applies. The returned event
+  // honors the caller's resolveData: 'none' strips payload fields,
+  // matching the v3 path's stripEventAndLegacyRefs behavior.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
   return {
@@ -638,5 +704,9 @@ async function createWorkflowRunEventInner(
       : undefined,
     cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,
+    // Lazy step start: thread the server's "I created the step on this call"
+    // signal through so the owned-inline runtime path can gate body execution
+    // on it. Absent from older servers → undefined → safe default.
+    ...(body.stepCreated ? { stepCreated: true } : {}),
   };
 }

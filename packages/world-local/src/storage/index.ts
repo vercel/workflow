@@ -10,7 +10,10 @@ import { createStepsStorage } from './steps-storage.js';
  * exposes the internal `fileIdFilter` option on `list()`. Structurally
  * assignable to `Storage` at public boundaries (e.g., `reenqueueActiveRuns`).
  */
-export type LocalStorage = Omit<Storage, 'runs'> & { runs: LocalRunsStorage };
+export type LocalStorage = Omit<Storage, 'runs'> & {
+  runs: LocalRunsStorage;
+  clearCache(): void;
+};
 
 /**
  * Creates a complete storage implementation using the filesystem.
@@ -35,5 +38,6 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
     steps: instrumentObject('world.steps', steps),
     events: instrumentObject('world.events', events),
     hooks: instrumentObject('world.hooks', hooks),
+    clearCache: () => events.clearCache(),
   };
 }

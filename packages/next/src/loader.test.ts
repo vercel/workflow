@@ -1,43 +1,52 @@
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { shouldNotifySocketForDiscoveredPattern } from './loader.js';
+import { getLoaderSourceMapOptions } from './loader.ts';
 
-describe('workflow loader discovery notifications', () => {
-  it('notifies for unchanged files that still contain workflow patterns', () => {
+describe('getLoaderSourceMapOptions', () => {
+  it('emits source maps for app files and uses the upstream source map', () => {
+    const upstreamMap = { version: 3, sources: ['input.ts'], mappings: '' };
+
     expect(
-      shouldNotifySocketForDiscoveredPattern(false, {
-        hasWorkflow: true,
-        hasStep: false,
-        hasSerde: false,
-      })
-    ).toBe(true);
-    expect(
-      shouldNotifySocketForDiscoveredPattern(false, {
-        hasWorkflow: false,
-        hasStep: true,
-        hasSerde: false,
-      })
-    ).toBe(true);
-    expect(
-      shouldNotifySocketForDiscoveredPattern(false, {
-        hasWorkflow: false,
-        hasStep: false,
-        hasSerde: true,
-      })
-    ).toBe(true);
+      getLoaderSourceMapOptions(
+        join(process.cwd(), 'app', 'workflow.ts'),
+        upstreamMap
+      )
+    ).toEqual({
+      inputSourceMap: upstreamMap,
+      sourceMaps: true,
+      inlineSourcesContent: true,
+    });
   });
 
-  it('only notifies for plain files when pattern state changed', () => {
-    const plainPatternState = {
-      hasWorkflow: false,
-      hasStep: false,
-      hasSerde: false,
-    };
+  it('disables implicit input source map loading when app files have no upstream map', () => {
+    expect(
+      getLoaderSourceMapOptions(join(process.cwd(), 'app', 'workflow.ts'), null)
+    ).toEqual({
+      inputSourceMap: false,
+      sourceMaps: true,
+      inlineSourcesContent: true,
+    });
+  });
 
+  it('does not emit source maps for node_modules files', () => {
     expect(
-      shouldNotifySocketForDiscoveredPattern(false, plainPatternState)
-    ).toBe(false);
-    expect(
-      shouldNotifySocketForDiscoveredPattern(true, plainPatternState)
-    ).toBe(true);
+      getLoaderSourceMapOptions(
+        join(
+          process.cwd(),
+          'node_modules',
+          '.pnpm',
+          'pkg@1.0.0',
+          'node_modules',
+          'pkg',
+          'dist',
+          'index.js'
+        ),
+        { version: 3, sources: ['index.js'], mappings: '' }
+      )
+    ).toEqual({
+      inputSourceMap: false,
+      sourceMaps: false,
+      inlineSourcesContent: false,
+    });
   });
 });

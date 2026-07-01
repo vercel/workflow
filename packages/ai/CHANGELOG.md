@@ -1,5 +1,24 @@
 # @workflow/ai
 
+## 5.0.0-beta.12
+
+### Minor Changes
+
+- [#1863](https://github.com/vercel/workflow/pull/1863) [`d580326`](https://github.com/vercel/workflow/commit/d5803265d4fa616e61fae960916fe957b0b16ad0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Expose `totalUsage` and `finishReason` on the `DurableAgent.stream()` result, mirroring the AI SDK's `GenerateTextResult`/`StreamTextResult` and the existing `onFinish` event payload.
+
+- [`8cdfd85`](https://github.com/vercel/workflow/commit/8cdfd8591418b1c3e7d294b44f3003cc3fe7552f) - `WorkflowChatTransport` now repairs UI message stream part framing, so duplicated or interleaved durable stream writes no longer crash the AI SDK consumer with `Received text-delta for missing text part`.
+
+### Patch Changes
+
+- [#2082](https://github.com/vercel/workflow/pull/2082) [`eff215c`](https://github.com/vercel/workflow/commit/eff215ceeceaf87cc8704d7cc404b0f427a45b3c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `WorkflowChatTransport` now drops orphan UI chunks (deltas/ends with no matching `*-start` in the resumed window) when reconnecting with an `initialStartIndex` not matching a UI chunk boundary, instead of throwing.
+
+- [#2635](https://github.com/vercel/workflow/pull/2635) [`aa71766`](https://github.com/vercel/workflow/commit/aa71766bc9fac71d0f38b42f83151952193be579) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Suppress chat transport console errors for intentional AbortError stream closes.
+
+- [`096faf0`](https://github.com/vercel/workflow/commit/096faf0ff6a8106522263971c899a68404f5e406) - Reduce DurableAgent step boundary payload by reconstructing `StepResult` outside the step instead of inside.
+
+- Updated dependencies []:
+  - workflow@5.0.0-beta.25
+
 ## 5.0.0-beta.11
 
 ### Patch Changes

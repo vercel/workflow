@@ -27,6 +27,7 @@ When enabled, the module:
 - Registers the workflow runtime routes under `/.well-known/workflow/v1/`.
 - Serves a redirect to the local observability dashboard at `/_workflow` in development.
 - Configures Vercel function rules (queue triggers and `maxDuration`) for the workflow routes when deploying to Vercel.
+- Uses Nitro's `workspaceDir` as the workflow project root so monorepo apps can import sibling workspace packages without extra workflow config.
 
 ## Module Options
 
@@ -52,7 +53,7 @@ export default defineConfig({
 | `dirs` | `string[]` | — | Directories to scan for workflows and steps. By default, the `workflows/` directory is scanned from the project root and all layer source directories. |
 | `typescriptPlugin` | `boolean` | `false` | Adds the `workflow` TypeScript plugin to the generated `tsconfig.json` for IDE IntelliSense. |
 | `runtime` | `string` | — | Node.js runtime version for Vercel Functions (e.g. `'nodejs22.x'`, `'nodejs24.x'`). Only applies when deploying to Vercel. |
-| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Set to `false` for smaller function bundles (useful for staying under the Vercel 250MB function size limit) at the cost of stack traces pointing at generated code. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles — helps stay under the Vercel 250MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
 
 ## Vite-based Nitro
 

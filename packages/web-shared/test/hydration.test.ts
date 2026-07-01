@@ -1,8 +1,19 @@
-import { dehydrateStepError } from '@workflow/core/serialization';
+import { importKey } from '@workflow/core/encryption';
+import {
+  dehydrateStepError,
+  dehydrateStepReturnValue,
+} from '@workflow/core/serialization';
 import { hydrateData } from '@workflow/core/serialization-format';
 import { FatalError, RetryableError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
-import { getWebRevivers } from '../src/lib/hydration.js';
+import {
+  getWebRevivers,
+  hasEncryptedFields,
+  hydrateResourceIO,
+  hydrateResourceIOAsync,
+  hydrateResourceIOWithKey,
+  isEncryptedMarker,
+} from '../src/lib/hydration.js';
 
 /**
  * The web reviver set must mirror every key in `SerializableSpecial` (see
@@ -20,6 +31,7 @@ import { getWebRevivers } from '../src/lib/hydration.js';
  */
 
 const REVIVERS = getWebRevivers();
+const textDecoder = new TextDecoder();
 
 /** Run a real value through the production wire path with no encryption. */
 async function roundTrip<T>(value: unknown): Promise<T> {
@@ -139,5 +151,100 @@ describe('getWebRevivers — error family', () => {
     expect(revived.name).toBe('RetryableError');
     expect(revived.message).toBe('try again');
     expect(revived.retryAfter).toBeUndefined();
+  });
+});
+
+describe('front hydration — encrypted compressed payloads', () => {
+  const runId = 'wrun_test';
+  const rawKey = new Uint8Array(32).fill(7);
+
+  function formatPrefix(value: unknown): string {
+    expect(value).toBeInstanceOf(Uint8Array);
+    return textDecoder.decode((value as Uint8Array).subarray(0, 4));
+  }
+
+  it('keeps encrypted compressed step errors as markers until decrypting them with the run key', async () => {
+    const cryptoKey = await importKey(rawKey);
+    const original = new Error(
+      `boom ${'front encrypted payload '.repeat(400)}`
+    );
+    const wire = await dehydrateStepError(
+      original,
+      runId,
+      cryptoKey,
+      [],
+      globalThis,
+      true
+    );
+
+    expect(formatPrefix(wire)).toBe('encr');
+
+    const hydrated = hydrateResourceIO({
+      stepId: 'step_test',
+      error: wire,
+    });
+
+    expect(isEncryptedMarker(hydrated.error)).toBe(true);
+    expect(hasEncryptedFields(hydrated)).toBe(true);
+
+    const decrypted = await hydrateResourceIOWithKey(hydrated, rawKey);
+    expect(decrypted.error).toBeInstanceOf(Error);
+    expect((decrypted.error as Error).message).toBe(original.message);
+  });
+
+  it('hydrates unencrypted compressed step errors through the async web path', async () => {
+    const original = new Error(
+      `boom ${'oss web compressed payload '.repeat(400)}`
+    );
+    const wire = await dehydrateStepError(
+      original,
+      runId,
+      undefined,
+      [],
+      globalThis,
+      true
+    );
+
+    expect(['gzip', 'zstd']).toContain(formatPrefix(wire));
+
+    const hydrated = await hydrateResourceIOAsync({
+      stepId: 'step_test',
+      error: wire,
+    });
+
+    expect(hydrated.error).toBeInstanceOf(Error);
+    expect((hydrated.error as Error).message).toBe(original.message);
+  });
+
+  it('decrypts encrypted compressed v4 step_started input payloads', async () => {
+    const cryptoKey = await importKey(rawKey);
+    const input = ['probe', { message: 'encrypted front payload' }];
+    const wire = await dehydrateStepReturnValue(
+      input,
+      runId,
+      cryptoKey,
+      [],
+      globalThis,
+      false,
+      false,
+      true
+    );
+
+    expect(formatPrefix(wire)).toBe('encr');
+
+    const hydrated = hydrateResourceIO({
+      eventId: 'evnt_test',
+      eventType: 'step_started',
+      eventData: {
+        stepName: 'probe',
+        input: wire,
+      },
+    });
+
+    expect(isEncryptedMarker(hydrated.eventData.input)).toBe(true);
+    expect(hasEncryptedFields(hydrated)).toBe(true);
+
+    const decrypted = await hydrateResourceIOWithKey(hydrated, rawKey);
+    expect(decrypted.eventData.input).toEqual(input);
   });
 });

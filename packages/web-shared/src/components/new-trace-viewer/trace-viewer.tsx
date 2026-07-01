@@ -39,13 +39,14 @@ import {
   TooltipTrigger,
 } from '../ui/tooltip';
 import EventList from './components/event-list';
-import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { SplitPane } from './components/split-pane';
 import {
   TIMELINE_PADDING_PX,
   Timeline,
   TimelineHeader,
 } from './components/timeline';
+import { TraceShortcutHelper } from './components/trace-shortcut-helper';
+import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
 import type { TraceWithMeta } from './types';
@@ -449,7 +450,9 @@ function NewTraceViewerContent({
         return;
       }
       const targetId =
-        e.key === 'k' ? prevSpanIdRef.current : nextSpanIdRef.current;
+        e.key === 'k' || e.key === 'ArrowUp'
+          ? prevSpanIdRef.current
+          : nextSpanIdRef.current;
       if (targetId) {
         e.preventDefault();
         navigateToSpanRef.current(targetId);
@@ -460,9 +463,13 @@ function NewTraceViewerContent({
       if (e.key === 'Escape') {
         handleClearActiveSpan();
       } else if (e.key === 'Alt') {
-        e.preventDefault();
         setAltHeld(true);
-      } else if (e.key === 'j' || e.key === 'k') {
+      } else if (
+        e.key === 'j' ||
+        e.key === 'k' ||
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowUp'
+      ) {
         handleSidebarNavKey(e);
       }
     };
@@ -648,7 +655,7 @@ function NewTraceViewerContent({
     <div
       data-pane="pane-root"
       data-has-detail={activeSpan ? '' : undefined}
-      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,360px,100%)]"
+      className="relative grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,360px,100%)]"
     >
       <div
         id="trace-parent"
@@ -683,9 +690,9 @@ function NewTraceViewerContent({
                   onClick={() => setSearchQuery('')}
                   className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-base text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
                 >
-                  <kbd className="inline-flex h-5 min-h-5 min-w-5 items-center justify-center rounded border border-gray-alpha-400 bg-background-100 px-1 font-sans text-[13px] font-medium leading-[1.7em] text-gray-900">
+                  <Kbd variant="outline" size="search">
                     Esc
-                  </kbd>
+                  </Kbd>
                 </button>
               )}
             </div>
@@ -764,7 +771,7 @@ function NewTraceViewerContent({
       {activeSpan ? (
         <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
           {/* Panel header */}
-          <div className="flex items-center justify-between gap-2 shrink-0 px-4 pt-3 pb-3">
+          <div className="flex items-center justify-between gap-2 shrink-0 px-4 py-[7.5px]">
             <span className="text-label-14 font-medium text-gray-1000 truncate block">
               {selectedSpanName}
             </span>
@@ -822,10 +829,7 @@ function NewTraceViewerContent({
                 run={sidebar.run}
                 onStreamClick={sidebar.onStreamClick}
                 onRunClick={sidebar.onRunClick}
-                spanDetailData={sidebar.spanDetailData}
-                spanDetailError={sidebar.spanDetailError}
-                spanDetailLoading={sidebar.spanDetailLoading}
-                onSpanSelect={sidebar.onSpanSelect}
+                fetchSpanDetail={sidebar.fetchSpanDetail}
                 onWakeUpSleep={sidebar.onWakeUpSleep}
                 onLoadEventData={sidebar.onLoadEventData}
                 onResolveHook={sidebar.onResolveHook}
@@ -833,11 +837,19 @@ function NewTraceViewerContent({
                 onDecrypt={sidebar.onDecrypt}
                 isDecrypting={sidebar.isDecrypting}
                 selectedSpan={selectedSpan}
+                showSeparateEventOccurrenceTimestamps={
+                  sidebar.showSeparateEventOccurrenceTimestamps
+                }
               />
             </ErrorBoundary>
           </div>
         </aside>
       ) : null}
+
+      <TraceShortcutHelper
+        hasMultipleSpans={trace.spans.length > 1}
+        reducedMotion={reducedMotion}
+      />
     </div>
   );
 }
