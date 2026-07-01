@@ -593,13 +593,13 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
  * (metadata-only — no payload resolution); otherwise we fall back to the
  * runtime storage APIs with `resolveData: 'none'`.
  *
- * `--with-data` forces the runtime path so payloads can be resolved into the
+ * `--withData` forces the runtime path so payloads can be resolved into the
  * table. It is deprecated for list views: view payloads per-resource with
  * `workflow inspect <resource> <id>`.
  */
 const warnWithDataDeprecatedForList = (singular: string): void => {
   logger.warn(
-    `'--with-data' is deprecated for list views and will be removed in a future release. Use 'workflow inspect ${singular} <id>' to view payloads for a single ${singular}.`
+    `'--withData' is deprecated for list views and will be removed in a future release. Use 'workflow inspect ${singular} <id>' to view payloads for a single ${singular}.`
   );
 };
 
