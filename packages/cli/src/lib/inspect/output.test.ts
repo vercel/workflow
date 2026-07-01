@@ -1,10 +1,10 @@
-import type { WorkflowRun } from '@workflow/world';
-import { describe, expect, it } from 'vitest';
+import type { AnalyticsRun, World, WorkflowRun } from '@workflow/world';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getObservabilityUpgradeRequiredMessage,
   isObservabilityUpgradeRequiredError,
 } from './errors.js';
-import { formatTableValue, hasExpiredData } from './output.js';
+import { formatTableValue, hasExpiredData, listRuns } from './output.js';
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
   ({
@@ -95,5 +95,83 @@ describe('isObservabilityUpgradeRequiredError', () => {
     expect(getObservabilityUpgradeRequiredMessage()).toContain(
       'Upgrade Observability Plus'
     );
+  });
+});
+
+describe('listRuns', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('preserves analytics page metadata in JSON output', async () => {
+    const run = {
+      runId: 'run-1',
+      status: 'running',
+      deploymentId: 'dep-1',
+      workflowName: 'workflow//./src/workflows/test//myWorkflow',
+      specVersion: 2,
+      attributes: {},
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:00.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsRun;
+    const pageInfo = {
+      currentLookbackDays: 2,
+      maxLookbackDays: 30,
+      currentWindowStart: new Date('2026-06-28T00:00:00.000Z'),
+      maxWindowStart: new Date('2026-06-01T00:00:00.000Z'),
+      upgradeAvailable: true,
+    };
+    const world = {
+      analytics: {
+        runs: {
+          list: vi.fn().mockResolvedValue({
+            data: [run],
+            cursor: null,
+            hasMore: false,
+            pageInfo,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listRuns(world, { json: true });
+
+    expect(world.analytics?.runs.list).toHaveBeenCalledWith({
+      workflowName: undefined,
+      status: undefined,
+      pagination: {
+        sortOrder: 'desc',
+        cursor: undefined,
+        limit: 20,
+      },
+    });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual({
+      data: [
+        {
+          ...run,
+          createdAt: '2026-06-30T00:00:00.000Z',
+          updatedAt: '2026-06-30T00:00:00.000Z',
+          startedAt: '2026-06-30T00:00:01.000Z',
+        },
+      ],
+      cursor: null,
+      hasMore: false,
+      pageInfo: {
+        currentLookbackDays: 2,
+        maxLookbackDays: 30,
+        currentWindowStart: '2026-06-28T00:00:00.000Z',
+        maxWindowStart: '2026-06-01T00:00:00.000Z',
+        upgradeAvailable: true,
+      },
+    });
   });
 });
