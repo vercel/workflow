@@ -54,9 +54,9 @@ function appendFramedDetails(
     const head = isLast ? '╰▶ ' : '├▶ ';
     const cont = isLast ? '   ' : '│  ';
     const text = `${detail.label}: ${detail.value}`;
-    text
-      .split('\n')
-      .forEach((line, i) => lines.push(`${i === 0 ? head : cont}${line}`));
+    text.split('\n').forEach((line, i) => {
+      lines.push(`${i === 0 ? head : cont}${line}`);
+    });
   });
   return lines.join('\n');
 }
@@ -184,6 +184,44 @@ export class WorkflowWorldError extends WorkflowError {
 
   static is(value: unknown): value is WorkflowWorldError {
     return isError(value) && value.name === 'WorkflowWorldError';
+  }
+}
+
+type WorkflowStartErrorOptions = {
+  runId: string;
+  retryable: boolean;
+  status?: number;
+  url?: string;
+  code?: string;
+  retryAfter?: number;
+  cause?: unknown;
+} & (
+  | { stage: 'queue'; queued: 'unknown' }
+  | { stage: 'admission'; queued: true }
+);
+
+/**
+ * Thrown when `start()` cannot synchronously confirm whether a workflow run was
+ * fully admitted. The error carries the client-generated run ID so callers can
+ * inspect or retry the run when the queue may already have accepted it.
+ */
+export class WorkflowStartError extends WorkflowWorldError {
+  readonly runId: string;
+  readonly stage: WorkflowStartErrorOptions['stage'];
+  readonly queued: WorkflowStartErrorOptions['queued'];
+  readonly retryable: boolean;
+
+  constructor(message: string, options: WorkflowStartErrorOptions) {
+    super(message, options);
+    this.name = 'WorkflowStartError';
+    this.runId = options.runId;
+    this.stage = options.stage;
+    this.queued = options.queued;
+    this.retryable = options.retryable;
+  }
+
+  static is(value: unknown): value is WorkflowStartError {
+    return isError(value) && value.name === 'WorkflowStartError';
   }
 }
 
@@ -914,7 +952,8 @@ export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
 // Cross-realm class registration
 // ---------------------------------------------------------------------------
 //
-// `FatalError`, `RetryableError`, and `HookConflictError` are not built-ins, so different realms
+// `FatalError`, `RetryableError`, `HookConflictError`, and
+// `WorkflowStartError` are not built-ins, so different realms
 // (e.g. the workflow VM context vs. the host context that runs the queue
 // handler) bundle and load their own copies of this module — meaning each
 // realm has its own distinct class identity. Cross-realm `instanceof` fails
@@ -932,6 +971,9 @@ const FATAL_ERROR_KEY = Symbol.for('@workflow/errors//FatalError');
 const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
 const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookConflictError'
+);
+const WORKFLOW_START_ERROR_KEY = Symbol.for(
+  '@workflow/errors//WorkflowStartError'
 );
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
@@ -957,6 +999,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, HOOK_CONFLICT_ERROR_KEY)) {
     Object.defineProperty(globalThis, HOOK_CONFLICT_ERROR_KEY, {
       value: HookConflictError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, WORKFLOW_START_ERROR_KEY)) {
+    Object.defineProperty(globalThis, WORKFLOW_START_ERROR_KEY, {
+      value: WorkflowStartError,
       writable: false,
       enumerable: false,
       configurable: false,

@@ -219,15 +219,26 @@ export const hooks = schema.table(
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );
 
+/**
+ * Hook-token claims: the single-owner constraint behind hook tokens.
+ *
+ * A claim's lifecycle state is derived, not stored:
+ * - unmaterialized start claim: `hookId IS NULL` (reserved by `start()`,
+ *   no hook entity yet)
+ * - materialized: `hookId` set, `expiresAt IS NULL` (live hook entity)
+ * - retained: `expiresAt` set (hook disposed / run finished; the token
+ *   stays fenced until `expiresAt`)
+ *
+ * `ttlSeconds <= 0` marks a plain `createHook` token guard with no
+ * retention window — it is released when the hook is disposed or the run
+ * reaches a terminal state.
+ */
 export const hookClaims = schema.table(
   'workflow_hook_claims',
   {
     token: varchar('token').primaryKey(),
     runId: varchar('run_id').notNull(),
     hookId: varchar('hook_id'),
-    phase: varchar('phase')
-      .$type<'start_claim' | 'materialized' | 'retained'>()
-      .notNull(),
     ttlSeconds: integer('ttl_seconds').notNull(),
     expiresAt: timestamp('expires_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),

@@ -2134,7 +2134,7 @@ describe('Storage', () => {
         expect(result.hook?.hookId).toBe('hook_stale_materialize');
       });
 
-      it('should clean up start hook claims when run creation loses', async () => {
+      it('should not adopt or duplicate run_created when losing to a pre-existing hookless run', async () => {
         const token = 'failed-run-create-start-claim-token';
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
@@ -2142,6 +2142,10 @@ describe('Storage', () => {
           input: new Uint8Array(),
         });
 
+        // A hook-carrying run_created for a runId that already exists
+        // (created without a start hook) is a divergent duplicate: it must
+        // conflict, and it must NOT append a second run_created event. Its
+        // claim stays behind and expires via TTL once the run is terminal.
         await expect(
           storage.events.create(run.runId, {
             eventType: 'run_created',
@@ -2155,21 +2159,63 @@ describe('Storage', () => {
           })
         ).rejects.toThrow(EntityConflictError);
 
+        const runEvents = await storage.events.list({
+          runId: run.runId,
+          pagination: {},
+        });
+        expect(
+          runEvents.data.filter((e) => e.eventType === 'run_created')
+        ).toHaveLength(1);
+      });
+
+      it('should converge duplicate same-run hook-carrying run_created deliveries on one event', async () => {
+        const token = 'duplicate-run-create-start-claim-token';
+        const request = {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          experimentalStartHook: { token, ttlSeconds: 60 },
+        };
+        const started = await storage.events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: request,
+        });
+        const runId = started.run?.runId;
+        if (!runId) throw new Error('Expected run to be created');
+
+        // A duplicate delivery of the same run_created converges on the
+        // canonical event path and dedups instead of appending a second
+        // run_created or deleting the live claim.
+        await expect(
+          storage.events.create(runId, {
+            eventType: 'run_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: request,
+          })
+        ).rejects.toThrow(EntityConflictError);
+
+        const runEvents = await storage.events.list({
+          runId,
+          pagination: {},
+        });
+        expect(
+          runEvents.data.filter((e) => e.eventType === 'run_created')
+        ).toHaveLength(1);
+
+        // The claim survived the duplicate: another run still conflicts.
         await expect(
           storage.events.create(null, {
             eventType: 'run_created',
             specVersion: SPEC_VERSION_CURRENT,
             eventData: {
-              deploymentId: 'deployment-789',
-              workflowName: 'test-workflow-3',
+              deploymentId: 'deployment-456',
+              workflowName: 'test-workflow-2',
               input: new Uint8Array(),
               experimentalStartHook: { token, ttlSeconds: 60 },
             },
           })
-        ).resolves.toMatchObject({
-          event: { eventType: 'run_created' },
-          run: { workflowName: 'test-workflow-3' },
-        });
+        ).rejects.toThrow(HookConflictError);
       });
 
       it('should retain a disposed start hook claim until ttl expiry', async () => {
@@ -2248,8 +2294,8 @@ describe('Storage', () => {
         expect(result.hook).toBeUndefined();
       });
 
-      it('should retain an unmaterialized start hook claim until ttl expiry', async () => {
-        const token = 'cancelled-unmaterialized-start-claim-token';
+      it('should retain an unmaterialized start hook claim after run failure until ttl expiry', async () => {
+        const token = 'failed-unmaterialized-start-claim-token';
         const started = await storage.events.create(null, {
           eventType: 'run_created',
           specVersion: SPEC_VERSION_CURRENT,
@@ -2264,7 +2310,11 @@ describe('Storage', () => {
         if (!run) throw new Error('Expected run to be created');
 
         await storage.events.create(run.runId, {
-          eventType: 'run_cancelled',
+          eventType: 'run_started',
+        });
+        await storage.events.create(run.runId, {
+          eventType: 'run_failed',
+          eventData: { error: new Uint8Array() },
         });
 
         await expect(
@@ -2289,7 +2339,6 @@ describe('Storage', () => {
             ttlSeconds: 60,
             createdAt: past,
             expiresAt: past,
-            phase: 'retained',
           },
           { overwrite: true }
         );
@@ -2308,6 +2357,45 @@ describe('Storage', () => {
         ).resolves.toMatchObject({
           event: { eventType: 'run_created' },
           run: { workflowName: 'test-workflow-3' },
+        });
+      });
+
+      it('should release an unmaterialized start hook claim on cancellation', async () => {
+        const token = 'cancelled-unmaterialized-start-claim-token';
+        const started = await storage.events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+            experimentalStartHook: { token, ttlSeconds: 60 },
+          },
+        });
+        const run = started.run;
+        if (!run) throw new Error('Expected run to be created');
+
+        // Cancel the claim-owning run before it materialized a hook: the
+        // token must be immediately reusable (cancel-then-retry, including
+        // start()'s own cleanup when queueing fails after admission).
+        await storage.events.create(run.runId, {
+          eventType: 'run_cancelled',
+        });
+
+        await expect(
+          storage.events.create(null, {
+            eventType: 'run_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              deploymentId: 'deployment-456',
+              workflowName: 'test-workflow-2',
+              input: new Uint8Array(),
+              experimentalStartHook: { token, ttlSeconds: 60 },
+            },
+          })
+        ).resolves.toMatchObject({
+          event: { eventType: 'run_created' },
+          run: { workflowName: 'test-workflow-2' },
         });
       });
 
@@ -2395,7 +2483,6 @@ describe('Storage', () => {
             runId: 'orphaned-start-run',
             ttlSeconds: 1,
             createdAt: past,
-            phase: 'start_claim',
           },
           { overwrite: true }
         );
@@ -2456,7 +2543,6 @@ describe('Storage', () => {
             ttlSeconds: 1,
             createdAt: past,
             expiresAt: past,
-            phase: 'retained',
           },
           { overwrite: true }
         );

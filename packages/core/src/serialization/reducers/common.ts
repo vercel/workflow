@@ -15,6 +15,7 @@ import {
   HookConflictError,
   RetryableError,
   RuntimeDecryptionError,
+  WorkflowStartError,
 } from '@workflow/errors';
 import type { Reducers, Revivers, SerializableSpecial } from '../types.js';
 
@@ -228,6 +229,27 @@ export function getCommonReducers(
       }
       return reduced;
     },
+    WorkflowStartError: (value) => {
+      const base = reduceNamedErrorSubclassBase('WorkflowStartError', value);
+      if (!base) return false;
+      const error = value as WorkflowStartError;
+      const details = {
+        ...base,
+        runId: error.runId,
+        retryable: error.retryable,
+      };
+      const reduced: SerializableSpecial['WorkflowStartError'] =
+        error.stage === 'queue'
+          ? { ...details, stage: 'queue', queued: 'unknown' }
+          : { ...details, stage: 'admission', queued: true };
+      if (error.status !== undefined) reduced.status = error.status;
+      if (error.url !== undefined) reduced.url = error.url;
+      if (error.code !== undefined) reduced.code = error.code;
+      if (error.retryAfter !== undefined) {
+        reduced.retryAfter = error.retryAfter;
+      }
+      return reduced;
+    },
     RangeError: makeErrorSubclassReducer('RangeError'),
     ReferenceError: makeErrorSubclassReducer('ReferenceError'),
     // RetryableError carries an extra `retryAfter` Date that we serialize as
@@ -407,6 +429,35 @@ export function getCommonRevivers(
       if ('cause' in value) {
         (error as Error & { cause?: unknown }).cause = value.cause;
       }
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//WorkflowStartError')
+        ] as typeof WorkflowStartError | undefined) ?? WorkflowStartError;
+      const details = {
+        runId: value.runId,
+        retryable: value.retryable,
+        status: value.status,
+        url: value.url,
+        code: value.code,
+        retryAfter: value.retryAfter,
+        ...('cause' in value ? { cause: value.cause } : {}),
+      };
+      const error =
+        value.stage === 'queue'
+          ? new Ctor(value.message, {
+              ...details,
+              stage: 'queue',
+              queued: 'unknown',
+            })
+          : new Ctor(value.message, {
+              ...details,
+              stage: 'admission',
+              queued: true,
+            });
+      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     RangeError: makeErrorSubclassReviver(global, 'RangeError'),

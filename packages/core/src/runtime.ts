@@ -3,6 +3,7 @@ import {
   CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  HookConflictError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -535,6 +536,7 @@ export function workflowEntrypoint(
                   const turbo =
                     isTurboEnabled() &&
                     runInput !== undefined &&
+                    runInput.experimentalStartHook === undefined &&
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
                     !replayDivergence;
@@ -878,6 +880,20 @@ export function workflowEntrypoint(
                           );
                         }
                       } catch (err) {
+                        if (
+                          runInput?.experimentalStartHook &&
+                          HookConflictError.is(err)
+                        ) {
+                          runtimeLogger.info(
+                            'Start-hook claim lost during setup, skipping queued run',
+                            {
+                              workflowRunId: runId,
+                              token: runInput.experimentalStartHook.token,
+                              message: err.message,
+                            }
+                          );
+                          return;
+                        }
                         // Run was concurrently completed/failed/cancelled
                         if (
                           EntityConflictError.is(err) ||

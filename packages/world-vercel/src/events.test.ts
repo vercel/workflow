@@ -177,6 +177,34 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
   });
 
+  it('carries experimental start hooks on run_created and resilient-start run_started', () => {
+    const startHook = { token: 'order:123', ttlSeconds: 60 };
+
+    const created = splitEventDataForV4({
+      eventType: 'run_created',
+      specVersion: 4,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+        experimentalStartHook: startHook,
+      },
+    } as AnyEventRequest);
+    const started = splitEventDataForV4({
+      eventType: 'run_started',
+      specVersion: 4,
+      eventData: {
+        input: new TextEncoder().encode('[]'),
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        experimentalStartHook: startHook,
+      },
+    } as AnyEventRequest);
+
+    expect(created.meta.experimentalStartHook).toEqual(startHook);
+    expect(started.meta.experimentalStartHook).toEqual(startHook);
+  });
+
   it('lifts workflowName into the frame meta on outcome events (step_completed/step_created), keeping the payload in the body', () => {
     // The backend keys payload refs by workflow name; carrying it in the
     // frame meta lets the v4 POST handler skip the per-step run lookup.

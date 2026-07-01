@@ -2,7 +2,6 @@ CREATE TABLE IF NOT EXISTS "workflow"."workflow_hook_claims" (
 	"token" varchar PRIMARY KEY NOT NULL,
 	"run_id" varchar NOT NULL,
 	"hook_id" varchar,
-	"phase" varchar NOT NULL,
 	"ttl_seconds" integer NOT NULL,
 	"expires_at" timestamp,
 	"created_at" timestamp DEFAULT now() NOT NULL

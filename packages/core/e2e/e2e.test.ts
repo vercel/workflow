@@ -1791,15 +1791,15 @@ describe('e2e', () => {
   );
 
   test.skipIf(!!process.env.WORKFLOW_VERCEL_ENV)(
-    'experimentalWithHook rejects duplicate starts before hook materialization',
+    'experimentalStartHook rejects duplicate starts before hook materialization',
     { timeout: 60_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const workflow = await e2e('experimentalStartHookWorkflow');
       const startOptions = {
-        experimentalWithHook: {
+        experimentalStartHook: {
           token,
-          experimentalTtl: 60_000,
+          experimental_ttl: 60_000,
         },
       };
 

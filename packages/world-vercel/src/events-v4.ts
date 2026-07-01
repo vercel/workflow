@@ -23,6 +23,7 @@
 
 import {
   EntityConflictError,
+  HookConflictError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -136,6 +137,9 @@ export interface CreateEventV4Input {
    *  resilient-start path). Validated server-side against the attribute
    *  key/value/count caps. */
   attributes?: Record<string, string>;
+  /** Experimental start-hook token claim carried by run_created and the
+   *  resilient-start run_started fallback. */
+  experimentalStartHook?: { token: string; ttlSeconds: number };
   /** attr_set's attribute change list ({key, value|null} entries). */
   changes?: Array<Record<string, unknown>>;
   /** attr_set's writer provenance ({type:'workflow'} or
@@ -219,6 +223,9 @@ function buildPostFrameMeta(
     meta.executionContext = input.executionContext;
   }
   if (input.attributes !== undefined) meta.attributes = input.attributes;
+  if (input.experimentalStartHook !== undefined) {
+    meta.experimentalStartHook = input.experimentalStartHook;
+  }
   if (input.changes !== undefined) meta.changes = input.changes;
   if (input.writer !== undefined) meta.writer = input.writer;
   if (input.allowReservedAttributes !== undefined) {
@@ -253,10 +260,21 @@ export function throwForErrorResponse(
 ): never {
   let message = `v4 ${opName} failed: HTTP ${statusCode}`;
   let code: string | undefined;
+  let token: string | undefined;
+  let conflictingRunId: string | undefined;
   try {
-    const json = JSON.parse(errorBody) as { message?: string; code?: string };
+    const json = JSON.parse(errorBody) as {
+      message?: string;
+      code?: string;
+      token?: string;
+      conflictingRunId?: string;
+    };
     if (typeof json.message === 'string') message = json.message;
     if (typeof json.code === 'string') code = json.code;
+    if (typeof json.token === 'string') token = json.token;
+    if (typeof json.conflictingRunId === 'string') {
+      conflictingRunId = json.conflictingRunId;
+    }
   } catch {
     // body wasn't JSON — keep the default message, append raw text below
     if (errorBody) message += ` ${errorBody}`;
@@ -270,6 +288,9 @@ export function throwForErrorResponse(
     if (!Number.isNaN(parsed)) retryAfter = parsed;
   }
 
+  if (statusCode === 409 && code === 'hook_conflict') {
+    throw new HookConflictError(token ?? '', conflictingRunId);
+  }
   if (statusCode === 409) throw new EntityConflictError(message);
   if (statusCode === 410) throw new RunExpiredError(message);
   if (statusCode === 425) throw new TooEarlyError(message, { retryAfter });

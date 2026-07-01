@@ -146,10 +146,79 @@ export async function POST(request: Request) {
 ```
 
 <Callout type="warn">
-This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work — and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.getConflict()`.
+This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work — and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. If duplicates must be rejected before duplicate workflow code can run, use experimental start-hook admission in a supporting World.
 </Callout>
 
 This is active-run coordination. When the workflow completes and disposes the hook, the token can be used again. If a duplicate request after completion must return the original result instead of starting fresh work, persist that completed result under the same domain key.
+
+### Atomic start-hook idempotency
+
+`start()` can reserve the same hook token at admission time with the experimental `experimentalStartHook` option. In supporting Worlds, the run and hook-token claim are admitted atomically. On Vercel, the queue message is accepted first, turbo mode is disabled for that start, and the workflow-server claim decides whether this run owns the token.
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { HookConflictError, WorkflowStartError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+  const token = `order:${orderId}`;
+
+  try {
+    const run = await start(processOrder, [orderId], {
+      experimentalStartHook: {
+        token,
+        experimental_ttl: "30 days",
+      },
+    });
+
+    return Response.json({ runId: run.runId, reused: false });
+  } catch (error) {
+    if (HookConflictError.is(error)) {
+      return Response.json({
+        runId: error.conflictingRunId,
+        reused: true,
+      });
+    }
+
+    if (WorkflowStartError.is(error)) {
+      // The queue may already have accepted this run. Keep error.runId so
+      // callers can poll it or retry the start call.
+      return Response.json(
+        { runId: error.runId, queued: error.queued },
+        { status: 202 }
+      );
+    }
+
+    throw error;
+  }
+}
+```
+
+The workflow should still create the same hook token and check `hook.getConflict()`. That materializes the reserved hook for the owning run and keeps the workflow body correct in Worlds that do not support atomic admission.
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+type OrderRequest = { confirmed: boolean };
+
+export async function processOrder(orderId: string) {
+  "use workflow";
+
+  using request = createHook<OrderRequest>({
+    token: `order:${orderId}`,
+  });
+
+  const conflict = await request.getConflict();
+  if (conflict) {
+    return { status: "duplicate" as const, runId: conflict.runId };
+  }
+
+  // Continue with the owning run.
+}
+```
+
+On Vercel, `experimental_ttl` is capped at 30 days and hook tokens are capped at 255 bytes; values above either cap fail with a world contract error before queueing. Cross-deployment starts also fail before queueing unless the target deployment reports support for queued start-hook handling. The token claim is retained until at least the later of hook creation plus TTL and run completion, so duplicates can be rejected while the run is active and for the configured retention window. Cancelling a run before it has created its hook releases the claim immediately, so an explicit cancel-then-retry can reuse the token without waiting out the TTL.
 
 ### Conflict-handling strategies
 

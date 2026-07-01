@@ -1,6 +1,10 @@
 import { dehydrateStepError } from '@workflow/core/serialization';
 import { hydrateData } from '@workflow/core/serialization-format';
-import { FatalError, RetryableError } from '@workflow/errors';
+import {
+  FatalError,
+  RetryableError,
+  WorkflowStartError,
+} from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import { getWebRevivers } from '../src/lib/hydration.js';
 
@@ -109,6 +113,35 @@ describe('getWebRevivers — error family', () => {
     expect(revived.message).toContain('already in use');
     expect(revived.token).toBe('approval-token');
     expect(revived.conflictingRunId).toBe('wrun_conflicting');
+  });
+
+  it('hydrates a WorkflowStartError with recovery details preserved', async () => {
+    const revived = await roundTrip<
+      Error & {
+        runId?: string;
+        stage?: string;
+        queued?: true | 'unknown';
+        retryable?: boolean;
+        status?: number;
+      }
+    >(
+      new WorkflowStartError('admission uncertain', {
+        runId: 'wrun_queued',
+        stage: 'admission',
+        queued: true,
+        retryable: false,
+        status: 403,
+      })
+    );
+
+    expect(revived).toBeInstanceOf(Error);
+    expect(revived.name).toBe('WorkflowStartError');
+    expect(revived.message).toBe('admission uncertain');
+    expect(revived.runId).toBe('wrun_queued');
+    expect(revived.stage).toBe('admission');
+    expect(revived.queued).toBe(true);
+    expect(revived.retryable).toBe(false);
+    expect(revived.status).toBe(403);
   });
 
   it('hydrates a RetryableError with retryAfter as a Date', async () => {

@@ -17,7 +17,11 @@ import {
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
-import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
+import {
+  hashToken,
+  hookRecoveryMarkerPath,
+  readHookTokenClaim,
+} from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -66,7 +70,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = mergedConfig.recoverActiveRuns ?? true;
   return {
     specVersion: SPEC_VERSION_CURRENT,
-    supportsExperimentalStartHook: true,
+    experimentalStartHookAdmission: { mode: 'event-first' },
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
@@ -145,22 +149,11 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
             .filter((tokenFile) => tokenFile.endsWith('.json'))
             .map(async (tokenFile) => {
               const claimPath = path.join(tokensDir, tokenFile);
-              const claim = JSON.parse(
-                await fs.readFile(claimPath, 'utf8')
-              ) as {
-                tag?: unknown;
-                token?: unknown;
-                runId?: unknown;
-                hookId?: unknown;
-              };
-              if (claim.tag !== tag) return;
+              const claim = await readHookTokenClaim(claimPath);
+              if (claim?.tag !== tag) return;
 
               await deleteJSON(claimPath);
-              if (
-                typeof claim.token === 'string' &&
-                typeof claim.runId === 'string' &&
-                typeof claim.hookId === 'string'
-              ) {
+              if (claim.token && claim.hookId) {
                 await deleteJSON(
                   hookRecoveryMarkerPath(
                     basedir,

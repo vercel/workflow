@@ -8,6 +8,9 @@ import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
+const EXPERIMENTAL_START_HOOK_TTL_MAX_SECONDS = 30 * 24 * 60 * 60;
+const EXPERIMENTAL_START_HOOK_TOKEN_MAX_BYTES = 255;
+
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
@@ -39,6 +42,11 @@ export function createVercelWorld(config?: APIConfig): World {
     // `process.exit(1)` is an acceptable response to an exhausted replay
     // budget.
     processExitTriggersQueueRedelivery: true,
+    experimentalStartHookAdmission: {
+      mode: 'queue-first',
+      maxTtlSeconds: EXPERIMENTAL_START_HOOK_TTL_MAX_SECONDS,
+      maxTokenBytes: EXPERIMENTAL_START_HOOK_TOKEN_MAX_BYTES,
+    },
     ...createQueue(config),
     ...createStorage(config),
     ...instrumentObject('world.streams', createStreamer(config)),

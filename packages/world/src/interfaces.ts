@@ -286,10 +286,12 @@ export interface World extends Queue, Streamer, Storage {
   specVersion?: number;
 
   /**
-   * Whether this World atomically reserves `run_created.eventData.experimentalStartHook`
+   * How this World atomically reserves `run_created.eventData.experimentalStartHook`
    * tokens with run admission.
    */
-  supportsExperimentalStartHook?: true;
+  experimentalStartHookAdmission?:
+    | { mode: 'event-first' }
+    | { mode: 'queue-first'; maxTtlSeconds: number; maxTokenBytes: number };
 
   /**
    * Whether calling `process.exit(1)` from a queue handler is observed by

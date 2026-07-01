@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  HookConflictError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -14,6 +15,19 @@ import {
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+
+function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
+  const bytes =
+    typeof rawBody === 'string'
+      ? new TextEncoder().encode(rawBody)
+      : new Uint8Array(rawBody as ArrayBufferLike);
+  const metaLen = new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength
+  ).getUint32(0, false);
+  return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
+}
 
 /**
  * The v4 client must preserve the typed-error contract of the v3
@@ -30,6 +44,25 @@ describe('throwForErrorResponse', () => {
 
   it('maps 409 to EntityConflictError', () => {
     expect(() => call(409)).toThrowError(EntityConflictError);
+  });
+
+  it('maps hook-conflict 409s to HookConflictError', () => {
+    try {
+      call(
+        409,
+        JSON.stringify({
+          code: 'hook_conflict',
+          message: 'hook conflict',
+          token: 'order:123',
+          conflictingRunId: 'wrun_owner',
+        })
+      );
+      expect.unreachable();
+    } catch (err) {
+      expect(HookConflictError.is(err)).toBe(true);
+      expect((err as HookConflictError).token).toBe('order:123');
+      expect((err as HookConflictError).conflictingRunId).toBe('wrun_owner');
+    }
   });
 
   it('maps 410 to RunExpiredError (terminal run — runtime must not retry)', () => {
@@ -328,24 +361,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     const agent = new MockAgent();
     agent.disableNetConnect();
 
-    // Decode the posted frame's CBOR meta block:
-    //   u32_be(meta_len) || cbor_meta || u32_be(body_len) || body
     let capturedMeta: Record<string, unknown> | undefined;
-    const captureMeta = (rawBody: unknown) => {
-      const bytes =
-        typeof rawBody === 'string'
-          ? new TextEncoder().encode(rawBody)
-          : new Uint8Array(rawBody as ArrayBufferLike);
-      const metaLen = new DataView(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength
-      ).getUint32(0, false);
-      capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
-        string,
-        unknown
-      >;
-    };
 
     agent
       .get(origin)
@@ -356,7 +372,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       .reply(
         200,
         (opts: { body?: unknown }) => {
-          captureMeta(opts.body);
+          capturedMeta = decodePostedMeta(opts.body);
           return encode({ run: { runId: 'wrun_1', status: 'running' } });
         },
         {
@@ -380,6 +396,50 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
     expect(capturedMeta?.eventType).toBe('run_started');
     expect(capturedMeta?.skipPreload).toBe(true);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('forwards experimentalStartHook in the frame meta', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    const startHook = { token: 'order:123', ttlSeconds: 60 };
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({ run: { runId: 'wrun_1', status: 'pending' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'run_created',
+        specVersion: 5,
+        experimentalStartHook: startHook,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('run_created');
+    expect(capturedMeta?.experimentalStartHook).toEqual(startHook);
     agent.assertNoPendingInterceptors();
   });
 

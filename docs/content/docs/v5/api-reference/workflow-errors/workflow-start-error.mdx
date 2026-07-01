@@ -1,0 +1,74 @@
+---
+title: WorkflowStartError
+description: Thrown when start() cannot synchronously confirm queueing or start-hook admission.
+type: reference
+summary: Catch WorkflowStartError when a start call may have queued a run but could not confirm admission.
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/idempotency
+---
+
+`WorkflowStartError` is thrown by [`start()`](/docs/api-reference/workflow-api/start) when the SDK cannot synchronously confirm a run started successfully. It carries the generated `runId` so callers can inspect the run, poll later, or retry the start call.
+
+This is most important for `experimentalStartHook` on Vercel, where the queue is contacted before start-hook admission. If the queue accepts the message but admission cannot be confirmed, the original run may still start later. Retrying the same request can then return a [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) if the original run wins the token claim.
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { WorkflowStartError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+try {
+  await start(processOrder, ["order_123"], {
+    experimentalStartHook: {
+      token: "order:order_123",
+      experimental_ttl: "30 days",
+    },
+  });
+} catch (error) {
+  if (WorkflowStartError.is(error)) { // [!code highlight]
+    console.log("Run may already be queued:", error.runId);
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowStartError {
+  /** The generated workflow run ID. */
+  runId: string;
+  /** The phase that failed: queue send or admission confirmation. */
+  stage: "queue" | "admission";
+  /** Whether the queue accepted the message, when known. */
+  queued: true | "unknown";
+  /** Whether retrying the start call is expected to be safe/useful. */
+  retryable: boolean;
+  /** HTTP status code from the world backend, if available. */
+  status?: number;
+  /** Machine-readable error code, if available. */
+  code?: string;
+  /** Retry-After value in seconds, present on 429 and 425 responses. */
+  retryAfter?: number;
+  /** The error message. */
+  message: string;
+}
+export default WorkflowStartError;`}
+/>
+
+### Static Methods
+
+#### `WorkflowStartError.is(value)`
+
+Type-safe check for `WorkflowStartError` instances.
+
+```typescript
+import { WorkflowStartError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (WorkflowStartError.is(error)) {
+  // error is typed as WorkflowStartError
+}
+```

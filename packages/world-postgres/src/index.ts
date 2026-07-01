@@ -58,7 +58,7 @@ export function createWorld(
 
   return {
     specVersion: SPEC_VERSION_CURRENT,
-    supportsExperimentalStartHook: true,
+    experimentalStartHookAdmission: { mode: 'event-first' },
     ...storage,
     ...streamer,
     ...queue,

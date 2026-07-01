@@ -1,4 +1,5 @@
 import {
+  HookConflictError,
   RUN_ERROR_CODES,
   ThrottleError,
   WorkflowWorldError,
@@ -1381,13 +1382,14 @@ describe('workflowEntrypoint turbo mode', () => {
       return r;
     }${xform('workflow')}`;
 
-  async function makeRunInput(runId: string) {
+  async function makeRunInput(runId: string, extra?: Record<string, unknown>) {
     return {
       input: await dehydrateWorkflowArguments([], runId, undefined, []),
       deploymentId: 'test-deployment',
       workflowName: 'workflow',
       specVersion: SPEC_VERSION_CURRENT,
       executionContext: {},
+      ...extra,
     };
   }
 
@@ -1401,7 +1403,9 @@ describe('workflowEntrypoint turbo mode', () => {
     runId: string;
     attempt: number;
     source: string;
+    runInput?: Awaited<ReturnType<typeof makeRunInput>>;
     runStartedGate?: Promise<void>;
+    runStartedError?: unknown;
   }) {
     const { runId, attempt, source } = opts;
     const order = turboOrder;
@@ -1432,6 +1436,7 @@ describe('workflowEntrypoint turbo mode', () => {
     const eventsCreate = vi.fn(async (_runId: string, data: any) => {
       if (data.eventType === 'run_started') {
         if (opts.runStartedGate) await opts.runStartedGate;
+        if (opts.runStartedError) throw opts.runStartedError;
         order.push('run_started_resolved');
         return { run: runEntity, events: [] as Event[] };
       }
@@ -1475,7 +1480,7 @@ describe('workflowEntrypoint turbo mode', () => {
               {
                 runId,
                 requestedAt: new Date('2024-01-01T00:00:00.000Z'),
-                runInput: await makeRunInput(runId),
+                runInput: opts.runInput ?? (await makeRunInput(runId)),
               },
               {
                 requestId: 'req_turbo',
@@ -1574,6 +1579,69 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(order.indexOf('run_started_resolved')).toBeLessThan(
       order.indexOf('body')
     );
+  });
+
+  it('does not turbo when runInput carries an experimental start hook', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const runId = 'wrun_start_hook_no_turbo';
+    const { handlerPromise, order, eventsCreate } = await driveTurbo({
+      runId,
+      attempt: 1,
+      source: oneStepWorkflow,
+      runInput: await makeRunInput(runId, {
+        experimentalStartHook: { token: 'order:123', ttlSeconds: 60 },
+      }),
+      runStartedGate: gate,
+    });
+
+    await vi.waitFor(
+      () =>
+        expect(
+          eventsCreate.mock.calls.some(
+            (c) => (c[1] as any).eventType === 'run_started'
+          )
+        ).toBe(true),
+      { timeout: 15_000 }
+    );
+    expect(order).not.toContain('body');
+    expect(order).not.toContain('run_started_resolved');
+
+    release();
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    expect(order.indexOf('run_started_resolved')).toBeLessThan(
+      order.indexOf('body')
+    );
+    const runStarted = eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'run_started'
+    );
+    expect((runStarted?.[2] as any)?.skipPreload).toBeUndefined();
+  });
+
+  it('acknowledges queued start-hook losers without running workflow code', async () => {
+    const runId = 'wrun_start_hook_loser';
+    const { handlerPromise, order, eventsCreate } = await driveTurbo({
+      runId,
+      attempt: 1,
+      source: oneStepWorkflow,
+      runInput: await makeRunInput(runId, {
+        experimentalStartHook: { token: 'order:123', ttlSeconds: 60 },
+      }),
+      runStartedError: new HookConflictError('order:123', 'wrun_winner'),
+    });
+
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    expect(order).not.toContain('body');
+    expect(order).not.toContain('step_started_called');
+    expect(
+      eventsCreate.mock.calls.some(
+        (c) => (c[1] as any).eventType === 'run_failed'
+      )
+    ).toBe(false);
   });
 
   it('asks the World to skip the run_started preload only under turbo', async () => {

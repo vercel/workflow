@@ -402,29 +402,43 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .limit(1)
     .prepare('events_get_wait_for_validation');
 
+  /**
+   * Reads the claim for a token, lazily reclaiming dead claims. A claim is
+   * live while its expiry (explicit `expiresAt`, or `createdAt + ttl` for
+   * never-retained start claims) is in the future. Claims past expiry — and
+   * plain `createHook` guards (`ttlSeconds <= 0`), which have no expiry —
+   * additionally survive while their owning run is still active; otherwise
+   * they are debris from a crashed cleanup and are deleted here.
+   */
   async function getLiveHookClaim(token: string): Promise<{
     runId: string;
-    phase: 'start_claim' | 'materialized' | 'retained';
+    hookId: string | null;
     expiresAt: Date | null;
   } | null> {
-    const [claim] = await drizzle
-      .select({
-        runId: Schema.hookClaims.runId,
-        phase: Schema.hookClaims.phase,
-        expiresAt: Schema.hookClaims.expiresAt,
-        ttlSeconds: Schema.hookClaims.ttlSeconds,
-        createdAt: Schema.hookClaims.createdAt,
-      })
-      .from(Schema.hookClaims)
-      .where(eq(Schema.hookClaims.token, token))
-      .limit(1);
-    if (!claim) return null;
-    const expiresAt =
-      claim.expiresAt ??
-      (claim.ttlSeconds > 0
-        ? new Date(claim.createdAt.getTime() + claim.ttlSeconds * 1000)
-        : null);
-    if (expiresAt && expiresAt <= new Date()) {
+    // Bounded loop instead of recursion: the guarded DELETE below can miss
+    // when a concurrent writer replaces the row between the read and the
+    // delete; re-read and re-evaluate.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const [claim] = await drizzle
+        .select({
+          runId: Schema.hookClaims.runId,
+          hookId: Schema.hookClaims.hookId,
+          expiresAt: Schema.hookClaims.expiresAt,
+          ttlSeconds: Schema.hookClaims.ttlSeconds,
+          createdAt: Schema.hookClaims.createdAt,
+        })
+        .from(Schema.hookClaims)
+        .where(eq(Schema.hookClaims.token, token))
+        .limit(1);
+      if (!claim) return null;
+
+      const expiresAt =
+        claim.expiresAt ??
+        (claim.ttlSeconds > 0
+          ? new Date(claim.createdAt.getTime() + claim.ttlSeconds * 1000)
+          : null);
+      if (expiresAt && expiresAt > new Date()) return claim;
+
       const [run] = await drizzle
         .select({ status: Schema.runs.status })
         .from(Schema.runs)
@@ -433,85 +447,89 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       if (run && !['completed', 'failed', 'cancelled'].includes(run.status)) {
         return claim;
       }
+
       const [deleted] = await drizzle
         .delete(Schema.hookClaims)
         .where(
           and(
             eq(Schema.hookClaims.token, token),
             eq(Schema.hookClaims.runId, claim.runId),
-            eq(Schema.hookClaims.phase, claim.phase),
+            claim.hookId
+              ? eq(Schema.hookClaims.hookId, claim.hookId)
+              : isNull(Schema.hookClaims.hookId),
             claim.expiresAt
               ? eq(Schema.hookClaims.expiresAt, claim.expiresAt)
               : isNull(Schema.hookClaims.expiresAt)
           )
         )
         .returning({ token: Schema.hookClaims.token });
-      return deleted ? null : getLiveHookClaim(token);
+      if (deleted) return null;
     }
-    return claim;
+    // The row kept churning under us; treat whatever is there as live — the
+    // caller reports a conflict, which is the safe default.
+    const [claim] = await drizzle
+      .select({
+        runId: Schema.hookClaims.runId,
+        hookId: Schema.hookClaims.hookId,
+        expiresAt: Schema.hookClaims.expiresAt,
+      })
+      .from(Schema.hookClaims)
+      .where(eq(Schema.hookClaims.token, token))
+      .limit(1);
+    return claim ?? null;
   }
 
+  /**
+   * Transitions a finishing run's hook-token claims. Called before the
+   * run's hook entities are deleted, so the retention window can anchor on
+   * the hook's `createdAt`. Set-based statements so a concurrent
+   * materialize cannot interleave with a read-modify-write.
+   */
   async function retainHookClaimsForRun(
     runId: string,
-    completedAt: Date
+    completedAt: Date,
+    opts?: { releaseUnmaterializedClaims?: boolean }
   ): Promise<void> {
-    const hooksForRun = await drizzle
-      .select({
-        token: Schema.hooks.token,
-        createdAt: Schema.hooks.createdAt,
-      })
-      .from(Schema.hooks)
-      .where(eq(Schema.hooks.runId, runId));
-    const hookCreatedAtByToken = new Map(
-      hooksForRun.map((hook) => [hook.token, hook.createdAt])
-    );
-
-    const claimsForRun = await drizzle
-      .select()
-      .from(Schema.hookClaims)
-      .where(eq(Schema.hookClaims.runId, runId));
-
-    for (const claim of claimsForRun) {
-      const hookCreatedAt = hookCreatedAtByToken.get(claim.token);
-      if (claim.ttlSeconds <= 0) {
-        await drizzle
-          .delete(Schema.hookClaims)
-          .where(
-            and(
-              eq(Schema.hookClaims.token, claim.token),
-              eq(Schema.hookClaims.runId, runId),
-              eq(Schema.hookClaims.phase, claim.phase)
-            )
-          );
-        continue;
-      }
-
-      const ttlBase = hookCreatedAt ?? claim.createdAt;
-      const expiresAt = new Date(
-        Math.max(
-          ttlBase.getTime() + claim.ttlSeconds * 1000,
-          claim.expiresAt?.getTime() ?? 0,
-          completedAt.getTime()
-        )
-      );
-
-      await drizzle
+    await drizzle.transaction(async (tx) => {
+      // Plain createHook token guards (ttlSeconds <= 0) are released with
+      // the run. Cancellation additionally releases start-hook claims the
+      // workflow never materialized into a hook: a cancelled run did no
+      // fenced work, and cancel-then-retry (including start()'s own cleanup
+      // when queueing fails after admission) must be able to reuse the
+      // token immediately.
+      await tx
+        .delete(Schema.hookClaims)
+        .where(
+          and(
+            eq(Schema.hookClaims.runId, runId),
+            opts?.releaseUnmaterializedClaims
+              ? sql`(${Schema.hookClaims.ttlSeconds} <= 0 OR ${Schema.hookClaims.hookId} IS NULL)`
+              : sql`${Schema.hookClaims.ttlSeconds} <= 0`
+          )
+        );
+      // Retain the rest until at least `hookCreatedAt + ttl` (falling back
+      // to the claim's own createdAt when no hook entity exists), never
+      // shrinking an existing retention window and never expiring before
+      // run completion.
+      await tx
         .update(Schema.hookClaims)
         .set({
-          expiresAt,
-          phase: 'retained',
+          expiresAt: sql`GREATEST(
+            COALESCE(
+              (SELECT h.created_at FROM ${Schema.hooks} h WHERE h.hook_id = ${Schema.hookClaims.hookId}),
+              ${Schema.hookClaims.createdAt}
+            ) + make_interval(secs => ${Schema.hookClaims.ttlSeconds}),
+            COALESCE(${Schema.hookClaims.expiresAt}, ${completedAt}),
+            ${completedAt}
+          )`,
         })
         .where(
           and(
-            eq(Schema.hookClaims.token, claim.token),
             eq(Schema.hookClaims.runId, runId),
-            eq(Schema.hookClaims.phase, claim.phase),
-            claim.hookId
-              ? eq(Schema.hookClaims.hookId, claim.hookId)
-              : isNull(Schema.hookClaims.hookId)
+            gt(Schema.hookClaims.ttlSeconds, 0)
           )
         );
-    }
+    });
   }
 
   return {
@@ -675,7 +693,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   .values({
                     token: startHook.token,
                     runId: effectiveRunId,
-                    phase: 'start_claim',
                     ttlSeconds: startHook.ttlSeconds,
                   })
                   .onConflictDoNothing()
@@ -985,6 +1002,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         const startHook = eventData.experimentalStartHook;
         const runValues = startHook
           ? await (async () => {
+              // Pre-checks outside the transaction: reject tokens held by a
+              // legacy hook entity without a claim row, and let
+              // getLiveHookClaim lazily reclaim dead claims so the insert
+              // below can succeed. Claim + run + event are committed in one
+              // transaction, so a live same-run claim means this exact
+              // run_created was already admitted — a duplicate delivery.
               const [existingHook] = await getHookByToken.execute({
                 token: startHook.token,
               });
@@ -995,44 +1018,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 );
               }
               const existingClaim = await getLiveHookClaim(startHook.token);
-              if (existingClaim) {
-                if (existingClaim.runId === effectiveRunId) {
-                  const [existingEvent] = await drizzle
-                    .select({ eventId: events.eventId })
-                    .from(events)
-                    .where(
-                      and(
-                        eq(events.runId, effectiveRunId),
-                        eq(events.eventType, 'run_created')
-                      )
-                    )
-                    .orderBy(asc(events.eventId))
-                    .limit(1);
-                  if (existingEvent) {
-                    throw new EntityConflictError(
-                      `Run "${effectiveRunId}" already exists`
-                    );
-                  }
-
-                  const insertedRuns = await drizzle
-                    .insert(Schema.runs)
-                    .values(pendingRun)
-                    .onConflictDoNothing()
-                    .returning();
-                  if (!insertedRuns[0]) {
-                    const [existingRun] = await drizzle
-                      .select()
-                      .from(Schema.runs)
-                      .where(eq(Schema.runs.runId, effectiveRunId))
-                      .limit(1);
-                    if (existingRun) return [existingRun];
-                    throw new WorkflowRunNotFoundError(effectiveRunId);
-                  }
-                  return insertedRuns;
-                }
+              if (existingClaim && existingClaim.runId !== effectiveRunId) {
                 throw new HookConflictError(
                   startHook.token,
                   existingClaim.runId
+                );
+              }
+              if (existingClaim) {
+                throw new EntityConflictError(
+                  `Run "${effectiveRunId}" already exists`
                 );
               }
               const result = await drizzle.transaction(async (tx) => {
@@ -1041,7 +1035,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   .values({
                     token: startHook.token,
                     runId: effectiveRunId,
-                    phase: 'start_claim',
                     ttlSeconds: startHook.ttlSeconds,
                   })
                   .onConflictDoNothing()
@@ -1052,7 +1045,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                     .from(Schema.hookClaims)
                     .where(eq(Schema.hookClaims.token, startHook.token))
                     .limit(1);
-                  throw new HookConflictError(startHook.token, existing?.runId);
+                  // A same-run claim raced in (duplicate delivery of this
+                  // run_created): fall through — the run insert below
+                  // conflicts, yielding EntityConflictError.
+                  if (existing && existing.runId !== effectiveRunId) {
+                    throw new HookConflictError(
+                      startHook.token,
+                      existing.runId
+                    );
+                  }
                 }
 
                 const insertedRuns = await tx
@@ -1264,8 +1265,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
         }
-        // Close active hooks/waits; retained start-hook claims expire separately.
-        await retainHookClaimsForRun(effectiveRunId, now);
+        // Close active hooks/waits. Cancellation releases start-hook claims
+        // the workflow never materialized into a hook, so cancel-then-retry
+        // (including start()'s own cleanup when queueing fails after
+        // admission) can reuse the token immediately.
+        await retainHookClaimsForRun(effectiveRunId, now, {
+          releaseUnmaterializedClaims: true,
+        });
         await Promise.all([
           drizzle
             .delete(Schema.hooks)
@@ -1643,8 +1649,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
-      // Handle hook_created event: create hook entity
-      // Uses prepared statement for token uniqueness check (performance optimization)
+      // Handle hook_created event: create the hook entity and take (or
+      // materialize) the token claim.
       if (data.eventType === 'hook_created') {
         const eventData = (data as any).eventData as {
           token: string;
@@ -1653,133 +1659,126 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           isSystem?: boolean;
         };
 
-        // Check for duplicate token using prepared statement
+        // Emit a hook_conflict event instead of throwing 409 — this lets
+        // the workflow continue and fail gracefully when the hook is
+        // awaited.
+        const emitHookConflict = async (conflictingRunId?: string) => {
+          const conflictEventData = {
+            token: eventData.token,
+            ...(conflictingRunId ? { conflictingRunId } : {}),
+          };
+          const [conflictValue] = await drizzle
+            .insert(events)
+            .values({
+              runId: effectiveRunId,
+              eventId,
+              correlationId: data.correlationId,
+              eventType: 'hook_conflict',
+              eventData: conflictEventData,
+              specVersion: effectiveSpecVersion,
+            })
+            .returning({ createdAt: events.createdAt });
+          if (!conflictValue) {
+            throw new EntityConflictError(
+              `Event ${eventId} could not be created`
+            );
+          }
+          const parsedConflict = EventSchema.parse({
+            eventType: 'hook_conflict' as const,
+            correlationId: data.correlationId,
+            eventData: conflictEventData,
+            ...conflictValue,
+            runId: effectiveRunId,
+            eventId,
+            specVersion: effectiveSpecVersion,
+          });
+          const resolveData = params?.resolveData ?? 'all';
+          return {
+            event: stripEventDataRefs(parsedConflict, resolveData),
+            run,
+            step,
+            hook: undefined,
+          };
+        };
+
+        // Snapshot current token ownership. getLiveHookClaim lazily
+        // reclaims dead claims, so a `null` claim means the token is free.
         const [existingHook] = await getHookByToken.execute({
           token: eventData.token,
         });
         const existingClaim = await getLiveHookClaim(eventData.token);
-        const materializesStartClaim =
-          !existingHook &&
-          existingClaim?.runId === effectiveRunId &&
-          existingClaim.phase === 'start_claim';
-        if (existingHook || existingClaim?.runId !== undefined) {
-          // Idempotency: if the existing hook is the *same* (runId, hookId)
-          // we are trying to create, this is either a duplicate / replayed
-          // processing of the same hook_created (not a real conflict), or
-          // an orphaned hook row from a prior crashed attempt (the hook
-          // INSERT below landed but the events INSERT below didn't —
-          // these writes are not in one transaction). Distinguish by
-          // checking whether the `hook_created` event actually exists in
-          // the event log:
-          //   - exists → real duplicate: throw EntityConflictError so the
-          //     runtime's concurrent-replay catch path (matching the
-          //     step_created path) swallows it, instead of producing a
-          //     self-conflict in the event log that would later replay
-          //     as HookConflictError.
-          //     See https://github.com/vercel/workflow/issues/2283.
-          //   - missing → orphaned hook row (crash between hook INSERT
-          //     and events INSERT): skip the hook insert (the existing
-          //     row already has the desired state) and fall through to
-          //     the events INSERT below, completing the partial write.
-          if (
-            existingHook?.runId === effectiveRunId &&
-            existingHook.hookId === data.correlationId
-          ) {
-            const [existingEvent] = await getHookCreatedEvent.execute({
-              runId: effectiveRunId,
-              correlationId: data.correlationId,
-              eventType: 'hook_created',
-            });
-            if (existingEvent) {
-              throw new EntityConflictError(
-                `Hook "${data.correlationId}" already created`
-              );
-            }
-            if (existingClaim?.phase === 'start_claim') {
-              await drizzle
-                .update(Schema.hookClaims)
-                .set({
-                  hookId: data.correlationId!,
-                  phase: 'materialized',
-                })
-                .where(
-                  and(
-                    eq(Schema.hookClaims.token, eventData.token),
-                    eq(Schema.hookClaims.runId, effectiveRunId),
-                    eq(Schema.hookClaims.phase, 'start_claim')
-                  )
-                );
-            }
-            // Orphaned hook row: hook row exists but no hook_created
-            // event in the log. Skip the hook insert below (the row
-            // already exists with our (runId, hookId)) and let the
-            // outer code path emit the hook_created event, completing
-            // the partial write. We also re-fetch the existing hook
-            // row so the EventResult carries the actual persisted
-            // entity rather than `undefined`.
-            const [recoveredHookValue] = await drizzle
-              .select()
-              .from(Schema.hooks)
-              .where(eq(Schema.hooks.hookId, data.correlationId!))
-              .limit(1);
-            if (recoveredHookValue) {
-              recoveredHookValue.metadata ||= recoveredHookValue.metadataJson;
-              hook = HookSchema.parse(compact(recoveredHookValue));
-            }
-          } else {
-            // Cross-hook / cross-run conflict: a different
-            // (runId, hookId) holds this token. Create a hook_conflict
-            // event instead of throwing 409 — this lets the workflow
-            // continue and fail gracefully when the hook is awaited.
-            const conflictingRunId =
-              existingHook?.runId ?? existingClaim!.runId;
-            if (materializesStartClaim) {
-              // This run reserved the token during start(); materialize the
-              // actual workflow hook below.
-            } else {
-              const conflictEventData = {
-                token: eventData.token,
-                conflictingRunId,
-              };
 
-              const [conflictValue] = await drizzle
-                .insert(events)
-                .values({
-                  runId: effectiveRunId,
-                  eventId,
-                  correlationId: data.correlationId,
-                  eventType: 'hook_conflict',
-                  eventData: conflictEventData,
-                  specVersion: effectiveSpecVersion,
-                })
-                .returning({ createdAt: events.createdAt });
+        const isOwnHookRow = (row: typeof existingHook) =>
+          row?.runId === effectiveRunId && row.hookId === data.correlationId;
 
-              if (!conflictValue) {
-                throw new EntityConflictError(
-                  `Event ${eventId} could not be created`
-                );
-              }
-
-              const conflictResult = {
-                eventType: 'hook_conflict' as const,
-                correlationId: data.correlationId,
-                eventData: conflictEventData,
-                ...conflictValue,
-                runId: effectiveRunId,
-                eventId,
-              };
-              const parsedConflict = EventSchema.parse(conflictResult);
-              const resolveData = params?.resolveData ?? 'all';
-              return {
-                event: stripEventDataRefs(parsedConflict, resolveData),
-                run,
-                step,
-                hook: undefined,
-              };
-            }
+        // Adopt our own already-persisted hook row: either a replayed
+        // duplicate of this hook_created (the hook_created event exists →
+        // throw EntityConflictError so the runtime's dedup catch path
+        // swallows it instead of recording a self-conflict, see
+        // https://github.com/vercel/workflow/issues/2283), or an orphaned
+        // row from a crash between the entity write and the events INSERT
+        // (event missing → reuse the row and fall through to the events
+        // INSERT below, completing the partial write).
+        const adoptOwnHookRow = async () => {
+          const [existingEvent] = await getHookCreatedEvent.execute({
+            runId: effectiveRunId,
+            correlationId: data.correlationId,
+            eventType: 'hook_created',
+          });
+          if (existingEvent) {
+            throw new EntityConflictError(
+              `Hook "${data.correlationId}" already created`
+            );
           }
-        }
-        if (!existingHook || existingClaim?.runId === effectiveRunId) {
+          // Repair the claim if it does not reflect the materialized hook
+          // yet (rows written before the claim update and hook insert were
+          // transactional).
+          await drizzle
+            .update(Schema.hookClaims)
+            .set({ hookId: data.correlationId! })
+            .where(
+              and(
+                eq(Schema.hookClaims.token, eventData.token),
+                eq(Schema.hookClaims.runId, effectiveRunId),
+                isNull(Schema.hookClaims.hookId)
+              )
+            );
+          // Re-fetch the full row so the EventResult carries the actual
+          // persisted entity.
+          const [recoveredHookValue] = await drizzle
+            .select()
+            .from(Schema.hooks)
+            .where(eq(Schema.hooks.hookId, data.correlationId!))
+            .limit(1);
+          if (recoveredHookValue) {
+            recoveredHookValue.metadata ||= recoveredHookValue.metadataJson;
+            hook = HookSchema.parse(compact(recoveredHookValue));
+          }
+        };
+
+        if (isOwnHookRow(existingHook)) {
+          await adoptOwnHookRow();
+        } else if (existingHook) {
+          // A different (runId, hookId) hook entity holds this token.
+          return await emitHookConflict(existingHook.runId);
+        } else if (
+          existingClaim &&
+          !(
+            existingClaim.runId === effectiveRunId &&
+            existingClaim.hookId === null &&
+            existingClaim.expiresAt === null
+          )
+        ) {
+          // The token is held by a claim we cannot materialize: another
+          // run's claim, or our own claim already bound to a different hook
+          // or retained after disposal.
+          return await emitHookConflict(existingClaim.runId);
+        } else {
+          // The token is free, or reserved for this run by start(): create
+          // the hook row and take (or materialize) the claim in one
+          // transaction. ttlSeconds 0 marks a plain createHook guard with
+          // no retention window.
+          const materializesStartClaim = existingClaim !== null;
           const hookValues = {
             runId: effectiveRunId,
             hookId: data.correlationId!,
@@ -1793,219 +1792,124 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             isWebhook: eventData.isWebhook,
             isSystem: eventData.isSystem ?? false,
           };
-          const hookValue =
-            !existingHook && !existingClaim
-              ? await drizzle.transaction(async (tx) => {
-                  const [createdClaim] = await tx
-                    .insert(Schema.hookClaims)
-                    .values({
-                      token: eventData.token,
-                      runId: effectiveRunId,
-                      hookId: data.correlationId!,
-                      phase: 'materialized',
-                      ttlSeconds: 0,
-                    })
-                    .onConflictDoNothing()
-                    .returning({ token: Schema.hookClaims.token });
-                  if (!createdClaim) return undefined;
-                  const [createdHook] = await tx
-                    .insert(Schema.hooks)
-                    .values(hookValues)
-                    .onConflictDoNothing()
-                    .returning();
-                  if (!createdHook) {
-                    throw new EntityConflictError(
-                      `Hook "${data.correlationId}" already created`
-                    );
-                  }
-                  return createdHook;
-                })
-              : materializesStartClaim
-                ? await drizzle.transaction(async (tx) => {
-                    const [claimed] = await tx
-                      .update(Schema.hookClaims)
-                      .set({
-                        hookId: data.correlationId!,
-                        phase: 'materialized',
-                      })
-                      .where(
-                        and(
-                          eq(Schema.hookClaims.token, eventData.token),
-                          eq(Schema.hookClaims.runId, effectiveRunId),
-                          eq(Schema.hookClaims.phase, 'start_claim'),
-                          isNull(Schema.hookClaims.hookId)
-                        )
-                      )
-                      .returning({ token: Schema.hookClaims.token });
-                    if (!claimed) return undefined;
-                    const [createdHook] = await tx
-                      .insert(Schema.hooks)
-                      .values(hookValues)
-                      .onConflictDoNothing()
-                      .returning();
-                    if (!createdHook) {
-                      throw new EntityConflictError(
-                        `Hook "${data.correlationId}" already created`
-                      );
-                    }
-                    return createdHook;
+          const hookValue = await drizzle.transaction(async (tx) => {
+            const [claimed] = materializesStartClaim
+              ? await tx
+                  .update(Schema.hookClaims)
+                  .set({ hookId: data.correlationId! })
+                  .where(
+                    and(
+                      eq(Schema.hookClaims.token, eventData.token),
+                      eq(Schema.hookClaims.runId, effectiveRunId),
+                      isNull(Schema.hookClaims.hookId),
+                      isNull(Schema.hookClaims.expiresAt)
+                    )
+                  )
+                  .returning({ token: Schema.hookClaims.token })
+              : await tx
+                  .insert(Schema.hookClaims)
+                  .values({
+                    token: eventData.token,
+                    runId: effectiveRunId,
+                    hookId: data.correlationId!,
+                    ttlSeconds: 0,
                   })
-                : (
-                    await drizzle
-                      .insert(Schema.hooks)
-                      .values(hookValues)
-                      .onConflictDoNothing()
-                      .returning()
-                  )[0];
-          if (
-            !hookValue &&
-            ((!existingHook && !existingClaim) || materializesStartClaim)
-          ) {
-            const racedClaim = await getLiveHookClaim(eventData.token);
+                  .onConflictDoNothing()
+                  .returning({ token: Schema.hookClaims.token });
+            if (!claimed) return undefined;
+            const [createdHook] = await tx
+              .insert(Schema.hooks)
+              .values(hookValues)
+              .onConflictDoNothing()
+              .returning();
+            if (!createdHook) {
+              throw new EntityConflictError(
+                `Hook "${data.correlationId}" already created`
+              );
+            }
+            return createdHook;
+          });
+
+          if (hookValue) {
+            hookValue.metadata ||= hookValue.metadataJson;
+            hook = HookSchema.parse(compact(hookValue));
+          } else {
+            // Lost the claim to a concurrent writer between the snapshot
+            // and the transaction. Re-read and converge: our own
+            // (runId, hookId) winning concurrently is a duplicate/orphan;
+            // anything else is a conflict.
             const [racedHook] = await getHookByToken.execute({
               token: eventData.token,
             });
-            if (
-              racedHook?.runId === effectiveRunId &&
-              racedHook.hookId === data.correlationId
-            ) {
-              const [existingEvent] = await getHookCreatedEvent.execute({
-                runId: effectiveRunId,
-                correlationId: data.correlationId,
-                eventType: 'hook_created',
-              });
-              if (existingEvent) {
-                throw new EntityConflictError(
-                  `Hook "${data.correlationId}" already created`
-                );
-              }
-              const [recoveredHookValue] = await drizzle
-                .select()
-                .from(Schema.hooks)
-                .where(eq(Schema.hooks.hookId, data.correlationId!))
-                .limit(1);
-              if (recoveredHookValue) {
-                recoveredHookValue.metadata ||= recoveredHookValue.metadataJson;
-                hook = HookSchema.parse(compact(recoveredHookValue));
-              }
+            const racedClaim = await getLiveHookClaim(eventData.token);
+            if (isOwnHookRow(racedHook)) {
+              await adoptOwnHookRow();
             } else {
-              const conflictEventData = {
-                token: eventData.token,
-                ...((racedHook?.runId ?? racedClaim?.runId)
-                  ? {
-                      conflictingRunId: racedHook?.runId ?? racedClaim?.runId,
-                    }
-                  : {}),
-              };
-              const [conflictValue] = await drizzle
-                .insert(events)
-                .values({
-                  runId: effectiveRunId,
-                  eventId,
-                  correlationId: data.correlationId,
-                  eventType: 'hook_conflict',
-                  eventData: conflictEventData,
-                  specVersion: effectiveSpecVersion,
-                })
-                .returning({ createdAt: events.createdAt });
-              if (!conflictValue) {
-                throw new EntityConflictError(
-                  `Event ${eventId} could not be created`
-                );
-              }
-              const parsedConflict = EventSchema.parse({
-                eventType: 'hook_conflict' as const,
-                correlationId: data.correlationId,
-                eventData: conflictEventData,
-                ...conflictValue,
-                runId: effectiveRunId,
-                eventId,
-                specVersion: effectiveSpecVersion,
-              });
-              const resolveData = params?.resolveData ?? 'all';
-              return {
-                event: stripEventDataRefs(parsedConflict, resolveData),
-                run,
-                step,
-                hook: undefined,
-              };
+              return await emitHookConflict(
+                racedHook?.runId ?? racedClaim?.runId
+              );
             }
-          }
-          if (hookValue) {
-            if (
-              existingClaim?.phase === 'start_claim' &&
-              !materializesStartClaim
-            ) {
-              await drizzle
-                .update(Schema.hookClaims)
-                .set({
-                  hookId: data.correlationId!,
-                  phase: 'materialized',
-                })
-                .where(
-                  and(
-                    eq(Schema.hookClaims.token, eventData.token),
-                    eq(Schema.hookClaims.runId, effectiveRunId),
-                    eq(Schema.hookClaims.phase, 'start_claim')
-                  )
-                );
-            }
-            hookValue.metadata ||= hookValue.metadataJson;
-            hook = HookSchema.parse(compact(hookValue));
           }
         }
       }
 
-      // Handle hook_disposed event: delete hook entity atomically.
-      // Uses DELETE ... RETURNING to ensure only one concurrent caller
-      // succeeds — if no rows are returned, the hook was already disposed.
+      // Handle hook_disposed event: delete the hook entity and settle its
+      // token claim atomically. The DELETE ... RETURNING ensures only one
+      // concurrent disposer succeeds (a losing tx rolls back its claim
+      // write); claims with a retention TTL stay behind as retained
+      // constraints so duplicate starts remain fenced, plain guards are
+      // released.
       if (data.eventType === 'hook_disposed' && data.correlationId) {
         const hookId = data.correlationId;
-        const [hookToDispose] = await drizzle
-          .select({
-            hookId: Schema.hooks.hookId,
-            token: Schema.hooks.token,
-            createdAt: Schema.hooks.createdAt,
-          })
-          .from(Schema.hooks)
-          .where(eq(Schema.hooks.hookId, hookId))
-          .limit(1);
-        if (!hookToDispose) {
-          throw new EntityConflictError(`Hook "${hookId}" already disposed`);
-        }
-        const [claim] = await drizzle
-          .select()
-          .from(Schema.hookClaims)
-          .where(eq(Schema.hookClaims.token, hookToDispose.token))
-          .limit(1);
         await drizzle.transaction(async (tx) => {
-          if (!claim || claim.ttlSeconds <= 0) {
+          const [disposed] = await tx
+            .delete(Schema.hooks)
+            .where(eq(Schema.hooks.hookId, hookId))
+            .returning({
+              runId: Schema.hooks.runId,
+              token: Schema.hooks.token,
+              createdAt: Schema.hooks.createdAt,
+            });
+          if (!disposed) {
+            throw new EntityConflictError(`Hook "${hookId}" already disposed`);
+          }
+          const [claim] = await tx
+            .select({
+              runId: Schema.hookClaims.runId,
+              ttlSeconds: Schema.hookClaims.ttlSeconds,
+              expiresAt: Schema.hookClaims.expiresAt,
+            })
+            .from(Schema.hookClaims)
+            .where(eq(Schema.hookClaims.token, disposed.token))
+            .limit(1);
+          // Only touch the claim if the disposed hook's run owns it.
+          if (!claim || claim.runId !== disposed.runId) return;
+          if (claim.ttlSeconds <= 0) {
             await tx
               .delete(Schema.hookClaims)
-              .where(eq(Schema.hookClaims.token, hookToDispose.token));
+              .where(
+                and(
+                  eq(Schema.hookClaims.token, disposed.token),
+                  eq(Schema.hookClaims.runId, disposed.runId)
+                )
+              );
           } else {
             const expiresAt = new Date(
               Math.max(
-                hookToDispose.createdAt.getTime() + claim.ttlSeconds * 1000,
+                disposed.createdAt.getTime() + claim.ttlSeconds * 1000,
+                claim.expiresAt?.getTime() ?? 0,
                 now.getTime()
               )
             );
             await tx
               .update(Schema.hookClaims)
-              .set({
-                expiresAt,
-                hookId: hookToDispose.hookId,
-                phase: 'retained',
-              })
-              .where(eq(Schema.hookClaims.token, hookToDispose.token));
-          }
-
-          const [deleted] = await tx
-            .delete(Schema.hooks)
-            .where(eq(Schema.hooks.hookId, hookId))
-            .returning({ hookId: Schema.hooks.hookId });
-          if (!deleted) {
-            throw new EntityConflictError(`Hook "${hookId}" already disposed`);
+              .set({ expiresAt, hookId })
+              .where(
+                and(
+                  eq(Schema.hookClaims.token, disposed.token),
+                  eq(Schema.hookClaims.runId, disposed.runId)
+                )
+              );
           }
         });
       }

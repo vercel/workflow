@@ -83,6 +83,20 @@ export interface SerializableSpecial {
     // TODO: Make this required when HookConflictError.conflictingRunId is required.
     conflictingRunId?: string;
   };
+  WorkflowStartError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    runId: string;
+    retryable: boolean;
+    status?: number;
+    url?: string;
+    code?: string;
+    retryAfter?: number;
+  } & (
+    | { stage: 'queue'; queued: 'unknown' }
+    | { stage: 'admission'; queued: true }
+  );
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
   Int32Array: string; // base64 string

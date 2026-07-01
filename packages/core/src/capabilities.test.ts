@@ -103,4 +103,30 @@ describe('getRunCapabilities', () => {
       expect(getRunCapabilities(version).framedByteStreams).toBe(true);
     });
   });
+
+  describe('experimentalStartHookAdmission', () => {
+    it('is false when version is missing or invalid', () => {
+      expect(getRunCapabilities(undefined).experimentalStartHookAdmission).toBe(
+        false
+      );
+      expect(
+        getRunCapabilities('not-a-version').experimentalStartHookAdmission
+      ).toBe(false);
+    });
+
+    it('is false before the start-hook admission cutoff', () => {
+      expect(
+        getRunCapabilities('5.0.0-beta.25').experimentalStartHookAdmission
+      ).toBe(false);
+    });
+
+    it('is true at and after the start-hook admission cutoff', () => {
+      expect(
+        getRunCapabilities('5.0.0-beta.26').experimentalStartHookAdmission
+      ).toBe(true);
+      expect(getRunCapabilities('5.0.0').experimentalStartHookAdmission).toBe(
+        true
+      );
+    });
+  });
 });

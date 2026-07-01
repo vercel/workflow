@@ -8,7 +8,6 @@ import type {
   Storage,
 } from '@workflow/world';
 import { HookSchema } from '@workflow/world';
-import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
@@ -20,24 +19,22 @@ import {
   writeJSON,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
-import { hashToken, hookRecoveryMarkerPath } from './helpers.js';
+import {
+  type HookTokenClaim,
+  hashToken,
+  hookRecoveryMarkerPath,
+  readHookTokenClaim,
+} from './helpers.js';
 
-const HookTokenClaimSchema = z.object({
-  token: z.string().optional(),
-  hookId: z.string().optional(),
-  runId: z.string(),
-  eventId: z.string().optional(),
-  ttlSeconds: z.number().int().positive().optional(),
-  startEventId: z.string().optional(),
-  createdAt: z.coerce.date().optional(),
-  expiresAt: z.coerce.date().optional(),
-  phase: z.enum(['start_claim', 'materialized', 'retained']).optional(),
-  tag: z.string().optional(),
-});
-
-async function retainStartHookClaim(
+/**
+ * Transitions a TTL-carrying claim to retained: the token stays fenced
+ * until at least `hookCreatedAt + ttl` (falling back to the claim's own
+ * createdAt when no hook was ever created), never shrinking an existing
+ * retention window and never expiring before `now`.
+ */
+export async function retainStartHookClaim(
   constraintPath: string,
-  claim: z.infer<typeof HookTokenClaimSchema>,
+  claim: HookTokenClaim,
   now: Date,
   hookCreatedAt?: Date
 ): Promise<void> {
@@ -62,7 +59,6 @@ async function retainStartHookClaim(
       ttlSeconds: claim.ttlSeconds,
       startEventId: claim.startEventId,
       createdAt: claim.createdAt,
-      phase: 'retained',
       tag: claim.tag,
       expiresAt,
     },
@@ -163,10 +159,16 @@ export function createHooksStorage(
 /**
  * Helper function to delete all hooks associated with a workflow run.
  * Called when a run reaches a terminal state.
+ *
+ * `releaseUnmaterializedClaims` (used for cancellation) additionally deletes
+ * start-hook claims the workflow never materialized into a hook, so
+ * cancel-then-retry — including `start()`'s own cleanup when queueing fails
+ * after admission — can reuse the token immediately.
  */
 export async function deleteAllHooksForRun(
   basedir: string,
-  runId: string
+  runId: string,
+  opts?: { releaseUnmaterializedClaims?: boolean }
 ): Promise<void> {
   const hooksDir = path.join(basedir, 'hooks');
   const files = await listJSONFiles(hooksDir);
@@ -188,7 +190,7 @@ export async function deleteAllHooksForRun(
         'tokens',
         `${hashToken(hook.token)}.json`
       );
-      const claim = await readJSON(constraintPath, HookTokenClaimSchema);
+      const claim = await readHookTokenClaim(constraintPath);
       if (claim?.runId === runId && claim.ttlSeconds) {
         await retainStartHookClaim(
           constraintPath,
@@ -209,8 +211,15 @@ export async function deleteAllHooksForRun(
   for (const file of await listJSONFiles(tokensDir)) {
     if (file.endsWith('.recovery')) continue;
     const constraintPath = path.join(tokensDir, `${file}.json`);
-    const claim = await readJSON(constraintPath, HookTokenClaimSchema);
-    if (claim?.runId === runId && claim.ttlSeconds) {
+    const claim = await readHookTokenClaim(constraintPath);
+    if (claim?.runId !== runId || !claim.ttlSeconds) continue;
+    if (
+      opts?.releaseUnmaterializedClaims &&
+      claim.hookId === undefined &&
+      claim.expiresAt === undefined
+    ) {
+      await deleteJSON(constraintPath);
+    } else {
       await retainStartHookClaim(constraintPath, claim, now);
     }
   }

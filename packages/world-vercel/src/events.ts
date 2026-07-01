@@ -179,6 +179,8 @@ interface SplitEventData {
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
     attributes?: Record<string, string>;
+    /** Experimental start-hook token claim (run_created / resilient start). */
+    experimentalStartHook?: { token: string; ttlSeconds: number };
     /** attr_set change list, included verbatim in frame meta. */
     changes?: Array<Record<string, unknown>>;
     /** attr_set writer provenance, included verbatim in frame meta. */
@@ -210,15 +212,10 @@ type MetaSourceField =
   | 'errorCode'
   | 'executionContext'
   | 'attributes'
+  | 'experimentalStartHook'
   | 'changes'
   | 'writer'
   | 'allowReservedAttributes';
-
-// Vercel start-hook admission cannot be enabled until workflow-server and
-// VQS enqueue are one recoverable backend operation. `createVercelWorld`
-// does not advertise the capability, so core `start()` rejects before this
-// field could reach the v4 event path.
-type UnsupportedSourceField = 'experimentalStartHook';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -234,10 +231,7 @@ type UnsupportedSourceField = 'experimentalStartHook';
  * the constraint '[never, never]'` — the historical "silently dropped"
  * footgun, now a build break that names the field.
  */
-type Unhandled = Exclude<
-  EventDataField,
-  PayloadField | MetaSourceField | UnsupportedSourceField
->;
+type Unhandled = Exclude<EventDataField, PayloadField | MetaSourceField>;
 type Stale = Exclude<MetaSourceField, EventDataField>;
 function assertEventDataWireContractExhaustive<
   _Check extends [never, never],
@@ -334,6 +328,16 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     typeof eventData.attributes === 'object'
   ) {
     meta.attributes = eventData.attributes as Record<string, string>;
+  }
+  if (
+    eventData.experimentalStartHook !== undefined &&
+    eventData.experimentalStartHook !== null &&
+    typeof eventData.experimentalStartHook === 'object'
+  ) {
+    meta.experimentalStartHook = eventData.experimentalStartHook as {
+      token: string;
+      ttlSeconds: number;
+    };
   }
   if (Array.isArray(eventData.changes)) {
     meta.changes = eventData.changes as Array<Record<string, unknown>>;
