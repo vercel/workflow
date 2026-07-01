@@ -123,7 +123,7 @@ export interface AnalyticsListEventsByCorrelationIdParams {
 }
 
 export interface AnalyticsListHooksParams {
-  runId?: string;
+  runId: string;
   pagination?: PaginationOptions;
 }
 
@@ -156,7 +156,7 @@ export interface Analytics {
   hooks: {
     get(hookId: string, params?: { runId?: string }): Promise<AnalyticsHook>;
     list(
-      params?: AnalyticsListHooksParams
+      params: AnalyticsListHooksParams
     ): Promise<PaginatedResponse<AnalyticsHook>>;
   };
   waits: {

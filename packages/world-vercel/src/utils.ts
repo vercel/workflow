@@ -412,10 +412,14 @@ export async function makeRequest<T>({
         });
 
         if (!response.ok) {
-          const errorData: { message?: string; code?: string } =
+          const errorData: { message?: string; code?: string; error?: string } =
             await parseResponseBody(response)
-              .then((r) => r.data as { message?: string; code?: string })
+              .then(
+                (r) =>
+                  r.data as { message?: string; code?: string; error?: string }
+              )
               .catch(() => ({}));
+          const errorCode = errorData.code ?? errorData.error;
           logCurlRepro(request.method, url, headers);
 
           // Used by 425 and 429. The RetryAgent no longer retries 429
@@ -434,12 +438,12 @@ export async function makeRequest<T>({
           // routed to the retryable transport path via `mitigated`.
           const error = errorForResponse(response.status, defaultMessage, {
             url,
-            code: errorData.code,
+            code: errorCode,
             retryAfter,
             mitigated: response.headers.get('x-vercel-mitigated'),
           });
           span?.setAttributes({
-            ...ErrorType(errorData.code || `HTTP ${response.status}`),
+            ...ErrorType(errorCode || `HTTP ${response.status}`),
           });
           span?.recordException?.(error);
           throw error;

@@ -305,6 +305,34 @@ describe('makeRequest body-parse retry', () => {
     ).rejects.toThrow('x-vercel-id=sfo1::req-deny; x-vercel-mitigated=deny');
   });
 
+  it('maps workflow-server error fields onto WorkflowWorldError.code', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'observability-upgrade-required',
+          message: 'run is outside the current observability lookback window',
+        }),
+        {
+          status: 402,
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const rejection = await makeRequest({
+      endpoint: '/v2/analytics/runs/wrun_test',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection).toMatchObject({
+      name: 'WorkflowWorldError',
+      status: 402,
+      code: 'observability-upgrade-required',
+    });
+  });
+
   it('maps a firewall challenge (429 + x-vercel-mitigated: challenge) to a retryable TRANSPORT error, not ThrottleError', async () => {
     // A challenge can't be solved by a server-to-server client, so it must NOT
     // become a ThrottleError (which the step_started path defers by re-enqueuing

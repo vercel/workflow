@@ -120,11 +120,9 @@ export function createAnalytics(config?: APIConfig): Analytics {
           schema: AnalyticsHookSchema,
         });
       },
-      list(params = {}) {
+      list(params) {
         const searchParams = new URLSearchParams();
-        if (params.runId) {
-          searchParams.set('runId', params.runId);
-        }
+        searchParams.set('runId', params.runId);
         appendPagination(searchParams, params.pagination);
 
         return makeRequest({
