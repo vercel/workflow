@@ -59,6 +59,26 @@ export interface RunCapabilities {
    * raw bytes (the legacy format) for compatibility with older runs.
    */
   framedByteStreams: boolean;
+
+  /**
+   * Whether the target run can decode the `framed-v2` wire format — each frame
+   * header carries a per-writer `[writerId][seq]` marker (see
+   * `serialization/frame-marker.ts`). This gates two coupled behaviors that
+   * must ship together:
+   *
+   *  - the producer stamps frames as `framed-v2` (both object and byte
+   *    streams), and
+   *  - the durable writer streams them in a single long-lived request
+   *    (`WorkflowServerWritableStream` segment manager), recovering from an
+   *    unclean disconnect by matching its own marker in the persisted tail.
+   *
+   * When false (older reader deployment, or an older writer per version-skew
+   * protection), the producer falls back to `framed-v1`/raw and the writer
+   * falls back to per-batch `writeMulti`. The reader must understand the
+   * marker or it would surface it as garbage inside the payload, so this is
+   * capability-gated exactly like {@link framedByteStreams}.
+   */
+  framedStreamMarkers: boolean;
 }
 
 /**
@@ -96,7 +116,16 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // to the next beta. A too-low cutoff makes new producers write framed bytes to
   // consumers that cannot unframe them (silent corruption); too-high merely
   // delays the optimization (safe).
-}> = [{ capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' }];
+}> = [
+  { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
+  // TODO(release): bump to the actual beta that ships framed-v2 + streaming
+  // writes if a "Version Packages (beta)" PR merges before this lands. Current
+  // dev version is 5.0.0-beta.26, so the next published beta is beta.27. A
+  // too-low cutoff makes new producers write framed-v2 markers to readers that
+  // can't strip them (garbage in the payload); too-high merely delays the
+  // optimization (safe — producer falls back to framed-v1 + per-batch writes).
+  { capability: 'framedStreamMarkers', minVersion: '5.0.0-beta.27' },
+];
 
 /**
  * The set of formats supported by all specVersion 2 runs, regardless of
@@ -123,6 +152,7 @@ export function getRunCapabilities(
     return {
       supportedFormats: BASELINE_FORMATS,
       framedByteStreams: false,
+      framedStreamMarkers: false,
     };
   }
 
@@ -137,6 +167,7 @@ export function getRunCapabilities(
   const result: RunCapabilities = {
     supportedFormats: formats,
     framedByteStreams: false,
+    framedStreamMarkers: false,
   };
 
   for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {
