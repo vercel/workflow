@@ -160,6 +160,49 @@ describe('re-enqueue active runs on start', () => {
     await restartedWorld0.close();
   });
 
+  it('untagged recovery skips tagged runs sharing the data dir', async () => {
+    // A vitest harness (tagged world) leaves an active run in the shared
+    // data directory. createRun leaves the run in `pending`, which recovery
+    // would otherwise pick up.
+    const taggedWorld = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    const taggedRun = await createRun(taggedWorld, {
+      deploymentId: 'dpl_1',
+      workflowName: 'taggedWorkflow',
+      input: new Uint8Array([1]),
+    });
+    await taggedWorld.close();
+
+    // An untagged run that recovery SHOULD pick up, to prove the filter
+    // isn't simply dropping everything.
+    const untaggedWorld = createLocalWorld({ dataDir });
+    const untaggedRun = await createRun(untaggedWorld, {
+      deploymentId: 'dpl_1',
+      workflowName: 'untaggedWorkflow',
+      input: new Uint8Array([2]),
+    });
+    await untaggedWorld.close();
+
+    // A normal dev server boots untagged on the same data dir.
+    const devWorld = createLocalWorld({ dataDir });
+    const receivedRunIds: string[] = [];
+    devWorld.registerHandler('__wkf_workflow_', async (req) => {
+      const body = await req.json();
+      receivedRunIds.push(body.runId);
+      return Response.json({ ok: true });
+    });
+
+    await devWorld.start();
+
+    await vi.waitFor(() => {
+      expect(receivedRunIds).toEqual([untaggedRun.runId]);
+    });
+    // The tagged run must never be re-enqueued: the untagged world cannot read
+    // it back, so run_started would fail with "did not return the run entity".
+    expect(receivedRunIds).not.toContain(taggedRun.runId);
+
+    await devWorld.close();
+  });
+
   it('keeps tag filtering when recovery paginates across multiple pages', async () => {
     const world0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
     const world1 = createLocalWorld({ dataDir, tag: 'vitest-1' });

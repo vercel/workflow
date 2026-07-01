@@ -19,7 +19,7 @@ catalog:
   esbuild: ^0.28.1
   nitro: ^3.0.260429-beta
   semver: 7.7.4
-  typescript: ^5.9.3
+  typescript: ^6.0.3
   ulid: ~3.0.1
   undici: 7.28.0
   vitest: ^4.0.18

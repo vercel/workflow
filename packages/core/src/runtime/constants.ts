@@ -5,13 +5,19 @@ import { runtimeLogger } from '../logger.js';
 // max visibility window (24 hours) so that our handler-side failure path
 // reliably executes before VQS expires the message.
 //
-// VQS retry schedule (with retryAfterSeconds: 5):
-//   Attempts 1–32:  linear backoff at 5s each  → 32 × 5s = 160s (~2.7 min)
-//   Attempts 33+:   exponential backoff: 60s × 2^(attempt-32),
-//                   capped at 7,200s (2h), floored at retryAfterSeconds
-//
-// At 48 attempts the total elapsed time is approximately 20 hours, which is
-// safely under the 24-hour message visibility limit.
+// The effective wall-clock survival depends on the per-redelivery backoff: the
+// `retry-after` the handler returns (see world-vercel
+// `getHandlerErrorRetryAfterSeconds`) fed through VQS `calculateBackoffDelay`.
+// VQS uses our value for the first 32 attempts (clamped to [5s, 900s]) then
+// applies its own exponential growth — every hop hard-capped at the SQS limit
+// of 900s. With the backoff ramping toward that 900s ceiling (reached by
+// ~delivery 11), 48 attempts span roughly 9–10 hours of wall-clock (~35,000s),
+// comfortably under the 24-hour message-visibility limit so the failure path
+// runs before the message expires. (A flatter, low-capped backoff exhausts the
+// budget in only a few hours, failing otherwise-healthy runs during a transient
+// backend outage; conversely, spanning the full 24h window would require a
+// substantially higher cap here, not a higher per-hop ceiling — VQS clamps
+// every hop at 900s.)
 export const MAX_QUEUE_DELIVERIES = 48;
 
 /**

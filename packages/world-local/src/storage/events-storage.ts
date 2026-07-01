@@ -39,12 +39,14 @@ import {
   assertSafeEntityId,
   deleteJSON,
   jsonReplacer,
+  jsonReviver,
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
   readJSONWithFallback,
   resolveWithinBase,
   taggedPath,
+  write,
   writeExclusive,
   writeJSON,
 } from '../fs.js';
@@ -396,10 +398,127 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
+export type LocalEventsStorage = Storage['events'] & {
+  clearCache(): void;
+};
+
 export function createEventsStorage(
   basedir: string,
   tag?: string
-): Storage['events'] {
+): LocalEventsStorage {
+  // Events are append-only. Keep a bounded window of locally persisted events
+  // available to immediate replay without rereading JSON files. Payload bytes
+  // and entry count are both bounded so active/waiting runs cannot retain
+  // unbounded histories in a long-lived development server.
+  const maxCachedEventBytes = 4 * 1024 * 1024;
+  const maxCachedEventEntries = 1000;
+  const eventCache = new Map<string, Event>();
+  const cachedEventBytes = new Map<string, number>();
+  const cachedPathsByRunId = new Map<string, Set<string>>();
+  let totalCachedEventBytes = 0;
+
+  function deleteCachedEvent(eventPath: string): void {
+    const event = eventCache.get(eventPath);
+    if (!event) {
+      return;
+    }
+    eventCache.delete(eventPath);
+    totalCachedEventBytes -= cachedEventBytes.get(eventPath) ?? 0;
+    cachedEventBytes.delete(eventPath);
+    const cachedPaths = cachedPathsByRunId.get(event.runId);
+    cachedPaths?.delete(eventPath);
+    if (cachedPaths?.size === 0) {
+      cachedPathsByRunId.delete(event.runId);
+    }
+  }
+
+  function clearRunCache(runId: string): void {
+    for (const cachedPath of cachedPathsByRunId.get(runId) ?? []) {
+      deleteCachedEvent(cachedPath);
+    }
+  }
+
+  function clearCache(): void {
+    eventCache.clear();
+    cachedEventBytes.clear();
+    cachedPathsByRunId.clear();
+    totalCachedEventBytes = 0;
+  }
+
+  function cacheEvent(
+    eventPath: string,
+    cachedEvent: Event,
+    serializedBytes: number
+  ): void {
+    if (serializedBytes > maxCachedEventBytes) {
+      return;
+    }
+
+    while (
+      eventCache.size > 0 &&
+      (eventCache.size >= maxCachedEventEntries ||
+        totalCachedEventBytes + serializedBytes > maxCachedEventBytes)
+    ) {
+      const oldestPath = eventCache.keys().next().value as string;
+      deleteCachedEvent(oldestPath);
+    }
+
+    eventCache.set(eventPath, cachedEvent);
+    cachedEventBytes.set(eventPath, serializedBytes);
+    totalCachedEventBytes += serializedBytes;
+    const cachedPaths =
+      cachedPathsByRunId.get(cachedEvent.runId) ?? new Set<string>();
+    cachedPaths.add(eventPath);
+    cachedPathsByRunId.set(cachedEvent.runId, cachedPaths);
+  }
+
+  // Update the in-memory cache for an event that was just persisted at
+  // `eventPath`. `serializedEvent` must be the exact byte payload written
+  // to disk: decoding it (instead of the caller's `event`) both detaches
+  // caller-owned payloads and matches disk-read normalization. Callers
+  // must capture `serializedEvent` *before* the write's `await` so the
+  // cached snapshot can never observe a later mutation.
+  function rememberStoredEvent(
+    event: Event,
+    eventPath: string,
+    serializedEvent: string
+  ): void {
+    // Terminal runs release their cached history so a long-lived dev
+    // server doesn't retain completed runs forever.
+    if (
+      event.eventType === 'run_completed' ||
+      event.eventType === 'run_failed' ||
+      event.eventType === 'run_cancelled'
+    ) {
+      clearRunCache(event.runId);
+      return;
+    }
+
+    const serializedBytes = Buffer.byteLength(serializedEvent);
+    if (serializedBytes > maxCachedEventBytes) {
+      return;
+    }
+
+    const cachedEvent = EventSchema.safeParse(
+      JSON.parse(serializedEvent, jsonReviver)
+    );
+    if (cachedEvent.success) {
+      cacheEvent(eventPath, cachedEvent.data, serializedBytes);
+    }
+  }
+
+  async function storeEvent(event: Event): Promise<void> {
+    const eventPath = taggedPath(
+      basedir,
+      'events',
+      `${event.runId}-${event.eventId}`,
+      tag
+    );
+    const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+    await write(eventPath, serializedEvent);
+    rememberStoredEvent(event, eventPath, serializedEvent);
+  }
+
   // Per-instance in-process mutexes. Two storage instances sharing
   // one data directory get independent lock maps, which makes them
   // behave like two separate OS processes from the locking
@@ -420,6 +539,7 @@ export function createEventsStorage(
   const hookLocks = new Map<string, Promise<unknown>>();
 
   return {
+    clearCache,
     async create(runId, data, params): Promise<EventResult> {
       // Validate request-supplied IDs before they're concatenated into
       // filesystem paths. This is the primary defense against path traversal
@@ -608,11 +728,7 @@ export function createEventsStorage(
                       runInputData.allowReservedAttributes,
                   },
                 };
-                const createdCompositeKey = `${effectiveRunId}-${runCreatedEventId}`;
-                await writeJSON(
-                  taggedPath(basedir, 'events', createdCompositeKey, tag),
-                  runCreatedEvent
-                );
+                await storeEvent(runCreatedEvent);
                 currentRun = createdRun;
               } else {
                 // Run already exists (concurrent run_created won the
@@ -705,11 +821,7 @@ export function createEventsStorage(
               createdAt: now,
               specVersion: effectiveSpecVersion,
             };
-            const compositeKey = `${effectiveRunId}-${eventId}`;
-            await writeJSON(
-              taggedPath(basedir, 'events', compositeKey, tag),
-              event
-            );
+            await storeEvent(event);
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
             return {
@@ -1637,11 +1749,10 @@ export function createEventsStorage(
                 specVersion: effectiveSpecVersion,
               };
 
-              const compositeKey = `${effectiveRunId}-${eventId}`;
-              await writeJSON(
-                taggedPath(basedir, 'events', compositeKey, tag),
-                conflictEvent
-              );
+              // Persist and cache the conflict event (create-only,
+              // same path the read cache keys on) so an immediate
+              // replay can serve it without rereading from disk.
+              await storeEvent(conflictEvent);
 
               const resolveData =
                 params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
@@ -1862,10 +1973,12 @@ export function createEventsStorage(
         // also the right surface — same shape as step_created's
         // claim-file behavior.
         const compositeKey = `${effectiveRunId}-${eventId}`;
-        const eventPublished = await writeExclusive(
-          taggedPath(basedir, 'events', compositeKey, tag),
-          JSON.stringify(event, jsonReplacer, 2)
-        );
+        const eventPath = taggedPath(basedir, 'events', compositeKey, tag);
+        // Capture the serialized payload before the write's `await` so the
+        // cached snapshot can't observe a later mutation (see
+        // rememberStoredEvent).
+        const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+        const eventPublished = await writeExclusive(eventPath, serializedEvent);
         if (!eventPublished) {
           // For `hook_created`, losing the event publish means the
           // event was already committed at this exact (canonical)
@@ -1891,6 +2004,10 @@ export function createEventsStorage(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`
           );
         }
+
+        // The event is now committed; cache it so an immediate sequential
+        // replay can serve it without rereading from disk.
+        rememberStoredEvent(event, eventPath, serializedEvent);
 
         // Write the hook entity ONLY now that the event publish has
         // committed. Doing this earlier (in the `hook_created`
@@ -1920,6 +2037,7 @@ export function createEventsStorage(
           const allEvents = await paginatedFileSystemQuery({
             directory: path.join(basedir, 'events'),
             schema: EventSchema,
+            cachedItems: eventCache,
             filePrefix: `${effectiveRunId}-`,
             sortOrder: 'asc',
             limit: 1000,
@@ -2023,6 +2141,7 @@ export function createEventsStorage(
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
+        cachedItems: eventCache,
         filePrefix: `${runId}-`,
         // Events in chronological order (oldest first) by default,
         // different from the default for other list calls.
@@ -2053,6 +2172,7 @@ export function createEventsStorage(
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
+        cachedItems: eventCache,
         // No filePrefix - search all events
         filter: (event) => event.correlationId === correlationId,
         // Events in chronological order (oldest first) by default,

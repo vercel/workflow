@@ -6,6 +6,7 @@ import type {
 } from '@workflow/world';
 import { z } from 'zod';
 import { getStreamDispatcher } from './http-client.js';
+import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -19,17 +20,22 @@ import {
  */
 export const MAX_CHUNKS_PER_REQUEST = 1000;
 
-// Stream writes (the PUT write/close path) go through the H2 stream
-// dispatcher (see getStreamDispatcher): they send a fully-buffered body (or
-// none), so they benefit from H2 multiplexing without hitting the duplex
-// issues that keep the long-lived live-read (GET) on plain fetch. Because
-// stream appends aren't idempotent, that stream dispatcher uses a deliberately
-// narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only on
-// transient connection errors and HTTP 429 — both of which guarantee the chunk
-// was never persisted — and never on 5xx, so a retry can't duplicate an
-// already-applied write. Snapshot reads (chunks/info) go
-// through makeRequest (default H1 dispatcher); the live-read and list use
-// plain fetch().
+// All stream requests share the instrumented envelope (`instrumentedFetch`):
+// an OTEL client span, trace-context injection, `DEBUG` logging, and the
+// x-vercel diagnostic headers — the same coverage the v3/v4 paths have.
+//
+// Writes (the PUT write/close path) go through the H2 stream dispatcher (see
+// getStreamDispatcher): they send a fully-buffered body (or none), so they
+// benefit from H2 multiplexing without hitting the duplex issues that keep the
+// long-lived live-read (GET) on the global dispatcher. Because stream appends
+// aren't idempotent, that stream dispatcher uses a deliberately narrowed retry
+// policy (see STREAM_RETRY_OPTIONS): it retries only on transient connection
+// errors and HTTP 429 — both of which guarantee the chunk was never persisted —
+// and never on 5xx, so a retry can't duplicate an already-applied write.
+// Snapshot reads (chunks/info) go through makeRequest (default H1 dispatcher);
+// the live-read (GET) and list keep the global dispatcher (no custom retry) and
+// no request timeout — the live read is long-lived and a whole-request deadline
+// would truncate it.
 
 // Writes (PUT) and stream completion use the v2 stream endpoint.
 function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
@@ -58,13 +64,10 @@ function createStreamRequestError(
   response: Response,
   text: string
 ): Error {
-  const context = [`PUT ${url.origin}${url.pathname}`];
-  for (const header of ['x-vercel-id', 'x-vercel-error']) {
-    const value = response.headers.get(header);
-    if (value) {
-      context.push(`${header}=${value}`);
-    }
-  }
+  const context = [
+    `PUT ${url.origin}${url.pathname}`,
+    ...getVercelDiagnostics(response.headers),
+  ];
 
   return new Error(
     `Stream ${operation} failed: HTTP ${response.status} (${context.join('; ')}): ${text}`
@@ -144,17 +147,19 @@ export function createStreamer(config?: APIConfig): Streamer {
 
         const httpConfig = await getHttpConfig(config);
         const url = getStreamUrl(name, resolvedRunId, httpConfig);
-        const response = await fetch(url, {
+        const response = await instrumentedFetch({
           method: 'PUT',
+          url: url.toString(),
           body: chunk,
           headers: httpConfig.headers,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
           dispatcher: getStreamDispatcher(config),
-        } as any);
-        const text = await response.text();
-        if (!response.ok) {
-          throw createStreamRequestError('write', url, response, text);
-        }
+          timeoutMs: null,
+          logLabel: url.pathname,
+          buildError: async (res) =>
+            createStreamRequestError('write', url, res, await res.text()),
+        });
+        // Drain the (empty) response so undici can release the pooled connection.
+        await response.text();
       },
 
       async writeMulti(
@@ -184,17 +189,19 @@ export function createStreamer(config?: APIConfig): Streamer {
           const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
           const body = encodeMultiChunks(batch);
           const url = getStreamUrl(name, resolvedRunId, httpConfig);
-          const response = await fetch(url, {
+          const response = await instrumentedFetch({
             method: 'PUT',
+            url: url.toString(),
             body,
             headers: httpConfig.headers,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
             dispatcher: getStreamDispatcher(config),
-          } as any);
-          const text = await response.text();
-          if (!response.ok) {
-            throw createStreamRequestError('write', url, response, text);
-          }
+            timeoutMs: null,
+            logLabel: url.pathname,
+            buildError: async (res) =>
+              createStreamRequestError('write', url, res, await res.text()),
+          });
+          // Drain so undici can release the pooled connection between pages.
+          await response.text();
         }
       },
 
@@ -205,16 +212,18 @@ export function createStreamer(config?: APIConfig): Streamer {
         const httpConfig = await getHttpConfig(config);
         httpConfig.headers.set('X-Stream-Done', 'true');
         const url = getStreamUrl(name, resolvedRunId, httpConfig);
-        const response = await fetch(url, {
+        const response = await instrumentedFetch({
           method: 'PUT',
+          url: url.toString(),
           headers: httpConfig.headers,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
           dispatcher: getStreamDispatcher(config),
-        } as any);
-        const text = await response.text();
-        if (!response.ok) {
-          throw createStreamRequestError('close', url, response, text);
-        }
+          timeoutMs: null,
+          logLabel: url.pathname,
+          buildError: async (res) =>
+            createStreamRequestError('close', url, res, await res.text()),
+        });
+        // Drain the (empty) response so undici can release the pooled connection.
+        await response.text();
       },
 
       async get(runId: string, name: string, startIndex?: number) {
@@ -223,12 +232,18 @@ export function createStreamer(config?: APIConfig): Streamer {
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }
-        const response = await fetch(url, {
+        // Live read: keep the global dispatcher and no request timeout so the
+        // long-lived, reconnecting read isn't truncated.
+        const response = await instrumentedFetch({
+          method: 'GET',
+          url: url.toString(),
           headers: httpConfig.headers,
+          dispatcher: undefined,
+          timeoutMs: null,
+          logLabel: url.pathname,
+          buildError: (res) =>
+            new Error(`Failed to fetch stream: ${res.status}`),
         });
-        if (!response.ok) {
-          throw new Error(`Failed to fetch stream: ${response.status}`);
-        }
         if (!response.body) {
           throw new Error('No response body for stream');
         }
@@ -270,12 +285,16 @@ export function createStreamer(config?: APIConfig): Streamer {
         const url = new URL(
           `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/streams`
         );
-        const response = await fetch(url, {
+        const response = await instrumentedFetch({
+          method: 'GET',
+          url: url.toString(),
           headers: httpConfig.headers,
+          dispatcher: undefined,
+          timeoutMs: null,
+          logLabel: url.pathname,
+          buildError: (res) =>
+            new Error(`Failed to list streams: ${res.status}`),
         });
-        if (!response.ok) {
-          throw new Error(`Failed to list streams: ${response.status}`);
-        }
         return (await response.json()) as string[];
       },
     },

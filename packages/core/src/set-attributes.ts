@@ -32,6 +32,20 @@ export async function experimental_setAttributes(
   const changes = normalizeAttributeChanges(attrs, options);
   if (changes.length === 0) return;
 
+  // Turbo optimistic start runs the step body before the backgrounded
+  // `run_started` is durable. Order this `attr_set` after the run exists so it
+  // never reaches the World before the run does (which would be rejected as
+  // run-not-found). A no-op outside turbo (barrier undefined) and on the await
+  // path. The rejection is swallowed for ordering only: if `run_started` truly
+  // failed the run does not exist, so the create below surfaces the real error.
+  if (store.runReadyBarrier) {
+    try {
+      await store.runReadyBarrier;
+    } catch {
+      // intentional: ordering barrier only — see above.
+    }
+  }
+
   const world = await getWorldLazy();
   await world.events.create(runId, {
     eventType: 'attr_set',

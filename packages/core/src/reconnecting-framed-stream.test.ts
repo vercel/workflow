@@ -1,4 +1,4 @@
-import type { World } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./version.js', () => ({ version: '0.0.0-test' }));
@@ -79,6 +79,7 @@ function makeWorldWithScriptedStreams(
 ): { world: World; calls: number[] } {
   const calls: number[] = [];
   const world = {
+    specVersion: SPEC_VERSION_CURRENT,
     streams: {
       get: vi.fn(async (_runId: string, _name: string, startIndex?: number) => {
         const idx = startIndex ?? 0;
@@ -185,6 +186,7 @@ describe('createReconnectingFramedStream', () => {
     const calls: number[] = [];
     let reopenAttempts = 0;
     const world = {
+      specVersion: SPEC_VERSION_CURRENT,
       streams: {
         get: vi.fn(
           async (_runId: string, _name: string, startIndex?: number) => {
@@ -321,7 +323,10 @@ describe('createReconnectingFramedStream', () => {
           { kind: 'close' },
         ])
     );
-    const world = { streams: { get: getSpy } } as unknown as World;
+    const world = {
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: { get: getSpy },
+    } as unknown as World;
     setWorld(world);
 
     const stream = createReconnectingFramedStream('run-abc', 'my-stream', 3);
@@ -336,6 +341,7 @@ describe('createReconnectingFramedStream', () => {
     // forever.
     const calls: number[] = [];
     const world = {
+      specVersion: SPEC_VERSION_CURRENT,
       streams: {
         get: vi.fn(
           async (_runId: string, _name: string, startIndex?: number) => {
@@ -369,6 +375,7 @@ describe('createReconnectingFramedStream', () => {
     const lastIndex = FRAMED_STREAM_MAX_RECONNECTS + 5;
     const calls: number[] = [];
     const world = {
+      specVersion: SPEC_VERSION_CURRENT,
       streams: {
         get: vi.fn(
           async (_runId: string, _name: string, startIndex?: number) => {
@@ -407,6 +414,7 @@ describe('createReconnectingFramedStream', () => {
     // guards against a misbehaving backend turning reconnect into a hang.
     let calls = 0;
     const world = {
+      specVersion: SPEC_VERSION_CURRENT,
       streams: {
         get: vi.fn(async () => {
           calls++;

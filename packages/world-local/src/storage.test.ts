@@ -5,7 +5,7 @@ import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeJSON } from './fs.js';
 import { hashToken } from './storage/helpers.js';
 import { createStorage } from './storage.js';
@@ -151,6 +151,7 @@ describe('Storage', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     // Clean up test dir
     await fs.rm(testDir, { recursive: true, force: true });
   });
@@ -1867,6 +1868,189 @@ describe('Storage', () => {
         expect(result.data[3].eventId).toBe(disposed.eventId);
         expect(result.data[3].eventType).toBe('hook_disposed');
       });
+    });
+
+    it('reuses locally appended events without exposing cached instances', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-cache',
+          workflowName: 'cached-event-workflow',
+          input: new Uint8Array([1]),
+        },
+      });
+      const runId = created.event.runId;
+      (created.event as any).eventData.input[0] = 9;
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      const first = await storage.events.list({ runId });
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads).toHaveLength(0);
+      expect((first.data[0] as any).eventData.input).toEqual(
+        new Uint8Array([1])
+      );
+
+      (first.data[0] as { eventType: string }).eventType = 'run_failed';
+      const second = await storage.events.list({ runId });
+      expect(second.data[0]?.eventType).toBe('run_created');
+    });
+
+    it('reuses sequential-step events with a relative data directory', async () => {
+      const relativeStorage = createStorage(
+        path.relative(process.cwd(), testDir)
+      );
+      const run = await createRun(relativeStorage, {
+        deploymentId: 'deployment-relative-cache',
+        workflowName: 'relative-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      await updateRun(relativeStorage, run.runId, 'run_started');
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      for (let i = 0; i < 5; i++) {
+        const stepId = `relative_step_${i}`;
+        await createStep(relativeStorage, run.runId, {
+          stepId,
+          stepName: `step-${i}`,
+          input: new Uint8Array([i]),
+        });
+        await updateStep(relativeStorage, run.runId, stepId, 'step_started');
+        await updateStep(relativeStorage, run.runId, stepId, 'step_completed', {
+          result: new Uint8Array([i]),
+        });
+
+        const events = await relativeStorage.events.list({ runId: run.runId });
+        expect(events.data).toHaveLength(2 + (i + 1) * 3);
+      }
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads).toHaveLength(0);
+    });
+
+    it('reuses locally appended events for correlation queries', async () => {
+      const stepId = 'cached-correlation-step';
+      await createStep(storage, testRunId, {
+        stepId,
+        stepName: 'cached-correlation-step',
+        input: new Uint8Array([1]),
+      });
+      await updateStep(storage, testRunId, stepId, 'step_started');
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      const events = await storage.events.listByCorrelationId({
+        correlationId: stepId,
+        pagination: {},
+      });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(events.data).toHaveLength(2);
+      expect(eventFileReads).toHaveLength(0);
+    });
+
+    it('reads oversized event payloads from disk instead of retaining them', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-large',
+          workflowName: 'large-event-workflow',
+          input: new Uint8Array(4 * 1024 * 1024),
+        },
+      });
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await storage.events.list({ runId: created.event.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('evicts old events once the recent-event byte bound is exceeded', async () => {
+      const hookId = 'bounded-cache-hook';
+      await createHook(storage, testRunId, {
+        hookId,
+        token: 'bounded-cache-token',
+      });
+
+      for (let i = 0; i < 4; i++) {
+        await storage.events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hookId,
+          eventData: { payload: new Uint8Array(1024 * 1024) },
+        });
+      }
+
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+      await storage.events.list({ runId: testRunId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('normalizes cached event metadata the same way as disk reads', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-normalized',
+          workflowName: 'normalized-cache-workflow',
+          input: new Uint8Array([1]),
+          executionContext: {
+            timestamp: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        },
+      });
+
+      const page = await storage.events.list({ runId: created.event.runId });
+
+      expect((page.data[0] as any).eventData.executionContext.timestamp).toBe(
+        '2026-01-01T00:00:00.000Z'
+      );
+    });
+
+    it('allows active-event cache contents to be explicitly released', async () => {
+      const localStorage = createStorage(testDir);
+      const run = await createRun(localStorage, {
+        deploymentId: 'deployment-clear',
+        workflowName: 'cleared-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      localStorage.clearCache();
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await localStorage.events.list({ runId: run.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('releases locally cached events after a run completes', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-complete',
+        workflowName: 'completed-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([2]),
+      });
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await storage.events.list({ runId: run.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
     });
   });
 

@@ -1,4 +1,4 @@
-const ELLIPSIS = '...';
+const ELLIPSIS = '…';
 const MIN_START = 3;
 const MIN_END = 3;
 const MIN_KEPT = MIN_START + MIN_END;
