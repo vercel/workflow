@@ -2381,6 +2381,131 @@ describe('Storage', () => {
       ).toHaveLength(1);
     });
 
+    it('rebuilds missing hook caches from a committed hook_created event', async () => {
+      // Regression for #2339: once hook_created is committed to the event log,
+      // the hook entity and token claim are cache files. If both are missing
+      // after a crash or upgrade, a normal hook read should rebuild them from
+      // the persisted event instead of treating the hook/token as gone.
+      const metadata = new Uint8Array([0xee]);
+      const hookId = 'hook_event_log_rebuild';
+      const token = 'event-log-rebuild-token';
+
+      const created = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata, isWebhook: true },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+
+      const hookPath = path.join(testDir, 'hooks', `${hookId}.json`);
+      const tokenClaimPath = path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken(token)}.json`
+      );
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+      await fs.writeFile(
+        path.join(testDir, 'events', 'wrun_malformed-event.json'),
+        '{'
+      );
+
+      const conflict = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_event_log_rebuild_conflict',
+        eventData: { token },
+      });
+      expect(conflict.event.eventType).toBe('hook_conflict');
+      expect((conflict.event as any).eventData.conflictingRunId).toBe(
+        testRunId
+      );
+
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        runId: testRunId,
+        hookId,
+        token,
+        metadata,
+        isWebhook: true,
+      });
+
+      const claim = JSON.parse(await fs.readFile(tokenClaimPath, 'utf8'));
+      expect(claim).toMatchObject({
+        runId: testRunId,
+        hookId,
+        eventId: created.event.eventId,
+      });
+    });
+
+    it('preserves legacy webhook default when rebuilding a hook without isWebhook', async () => {
+      const metadata = new Uint8Array([0xab]);
+      const hookId = 'hook_legacy_webhook_default';
+      const token = 'legacy-webhook-default-token';
+      const created = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+
+      await fs.unlink(path.join(testDir, 'hooks', `${hookId}.json`));
+      await fs.unlink(
+        path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`)
+      );
+
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        token,
+        metadata,
+        isWebhook: true,
+      });
+    });
+
+    it('does not rebuild a hook for a run already marked terminal', async () => {
+      const hookId = 'hook_terminal_run_cache';
+      const token = 'terminal-run-cache-token';
+      await createHook(storage, testRunId, { hookId, token });
+
+      const hookPath = path.join(testDir, 'hooks', `${hookId}.json`);
+      const tokenClaimPath = path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken(token)}.json`
+      );
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+
+      const run = await storage.runs.get(testRunId);
+      await writeJSON(
+        path.join(testDir, 'runs', `${testRunId}.json`),
+        {
+          ...run,
+          status: 'cancelled',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        },
+        { overwrite: true }
+      );
+
+      const nextRun = await createRun(storage, {
+        deploymentId: 'deployment-next',
+        workflowName: 'next-workflow',
+        input: new Uint8Array(),
+      });
+
+      const created = await storage.events.create(nextRun.runId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_terminal_run_cache_next',
+        eventData: { token },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+      expect(created.hook?.runId).toBe(nextRun.runId);
+    });
+
     it('repairs an event-first orphan via the legacy-claim probe path', async () => {
       // Same crash window as the test above, but exercised through
       // the legacy-claim branch: the claim file lacks `eventId` (as
