@@ -23,10 +23,11 @@ function getDefinedOptions(
 }
 
 export function resolveWorkflowTestOptions(
-  options?: WorkflowTestOptions
+  options: WorkflowTestOptions | undefined,
+  projectRoot: string
 ): ResolvedWorkflowTestOptions {
   const mergedOptions = getDefinedOptions(options);
-  const cwd = resolve(mergedOptions.cwd ?? process.cwd());
+  const cwd = resolve(mergedOptions.cwd ?? projectRoot);
   const rootDir = mergedOptions.rootDir
     ? resolve(cwd, mergedOptions.rootDir)
     : cwd;
@@ -46,5 +47,8 @@ export function resolveWorkflowTestOptions(
 export function readProvidedWorkflowTestOptions(
   value: unknown
 ): ResolvedWorkflowTestOptions {
-  return resolveWorkflowTestOptions(value as WorkflowTestOptions | undefined);
+  return resolveWorkflowTestOptions(
+    value as WorkflowTestOptions | undefined,
+    process.cwd()
+  );
 }
