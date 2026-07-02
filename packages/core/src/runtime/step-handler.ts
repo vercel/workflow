@@ -226,6 +226,9 @@ function createStepHandler(namespace?: string) {
           isVercel ? undefined : getPort(),
           getSpanKind('CONSUMER'),
         ]);
+
+        // TODO: resolve the workflow base URL through the World interface.
+        // This fallback cannot see local/Postgres baseUrl overrides or custom-world routing.
         const workflowBaseUrl = createWorkflowBaseUrl(
           isVercel
             ? `https://${process.env.VERCEL_URL}`
