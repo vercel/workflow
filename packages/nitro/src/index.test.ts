@@ -128,9 +128,7 @@ describe('@workflow/nitro world target bundling', () => {
 
     await nitroModule.setup(nitro);
 
-    const config: {
-      plugins: Array<{ name?: string; resolveId?: { order?: string } }>;
-    } = { plugins: [] };
+    const config: { plugins: any[] } = { plugins: [] };
     for (const hook of rollupBeforeHooks) {
       hook(nitro, config);
     }
@@ -141,6 +139,41 @@ describe('@workflow/nitro world target bundling', () => {
 
     expect(forceInlinePlugin).toBeDefined();
     expect(forceInlinePlugin?.resolveId?.order).toBe('pre');
+    await expect(
+      forceInlinePlugin.resolveId.handler.call(
+        {
+          resolve: async (source: string) => ({ id: `/tmp/${source}.js` }),
+        },
+        '@workflow/world-local',
+        '/tmp/importer.js',
+        {}
+      )
+    ).resolves.toEqual({
+      id: '/tmp/@workflow/world-local.js',
+      external: false,
+    });
+    await expect(
+      forceInlinePlugin.resolveId.handler.call(
+        {
+          resolve: async (source: string) => ({ id: `/tmp/${source}.js` }),
+        },
+        '@workflow/world-postgres',
+        '/tmp/importer.js',
+        {}
+      )
+    ).resolves.toBeNull();
+
+    const optionalPgNativePlugin = config.plugins.find(
+      (plugin: { name?: string }) =>
+        plugin.name === 'workflow:optional-pg-native'
+    );
+    expect(optionalPgNativePlugin).toBeDefined();
+    expect(optionalPgNativePlugin.resolveId('pg-native')).toBe(
+      '\0workflow:optional-pg-native'
+    );
+    expect(optionalPgNativePlugin.load('\0workflow:optional-pg-native')).toBe(
+      'export default {};'
+    );
   });
 
   it('resolves the configured world target alias from the app root', async () => {

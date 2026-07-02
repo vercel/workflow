@@ -52,7 +52,7 @@ function isNitroV2(nitro: Nitro): boolean {
  */
 function addNodeRequireBanner(config: RollupConfig): void {
   const banner =
-    "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+    "import { createRequire as __wkfCreateRequire } from 'node:module'; import { fileURLToPath as __wkfFileURLToPath } from 'node:url'; import { dirname as __wkfDirname } from 'node:path'; const __filename = __wkfFileURLToPath(import.meta.url); const __dirname = __wkfDirname(__filename); if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
   const output = config.output;
   if (output == null) {
     config.output = { banner };
@@ -70,7 +70,35 @@ function addNodeRequireBanner(config: RollupConfig): void {
   }
 }
 
-function createWorkflowForceInlinePlugin(workflowTargetWorldAlias: string) {
+const WORKFLOW_INLINE_PACKAGES = new Set([
+  'workflow',
+  'core',
+  'serde',
+  'errors',
+  'utils',
+  'builders',
+  'rollup',
+  'ai',
+  'world',
+]);
+
+function getWorkflowPackageName(source: string): string | null {
+  const packageSpecifier = source.match(/^@workflow\/([^/]+)/);
+  if (packageSpecifier) {
+    return packageSpecifier[1] ?? null;
+  }
+  if (source === 'workflow' || source.startsWith('workflow/')) {
+    return 'workflow';
+  }
+  const packagePath = source.match(/[\\/]packages[\\/]([^\\/]+)/);
+  return packagePath?.[1] ?? null;
+}
+
+function createWorkflowForceInlinePlugin(
+  workflowTargetWorld: string,
+  workflowTargetWorldAlias: string
+) {
+  const targetWorldPackage = getWorkflowPackageName(workflowTargetWorld);
   return {
     name: 'workflow:force-inline',
     // `order: 'pre'` is required: Nitro's `nitro:externals` plugin
@@ -99,11 +127,11 @@ function createWorkflowForceInlinePlugin(workflowTargetWorldAlias: string) {
         // Match workflow package specifiers OR direct paths into
         // packages/<name>/. Bail out early on non-workflow imports
         // so we don't intercept the rest of the resolution chain.
+        const packageName = getWorkflowPackageName(source);
         const isWorkflowPkg =
-          /^@?workflow(\/|$)/.test(source) ||
-          /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|astro|sveltekit|nest)[\\/]/.test(
-            source
-          );
+          packageName != null &&
+          (WORKFLOW_INLINE_PACKAGES.has(packageName) ||
+            packageName === targetWorldPackage);
         if (!isWorkflowPkg) return null;
         // Resolve via other resolvers, skipping ourselves so we
         // get a path. We don't gate on `resolved.external` because
@@ -125,6 +153,20 @@ function createWorkflowForceInlinePlugin(workflowTargetWorldAlias: string) {
         }
         return { id: resolvedId, external: false };
       },
+    },
+  };
+}
+
+function createOptionalPgNativePlugin() {
+  const moduleId = '\0workflow:optional-pg-native';
+  return {
+    name: 'workflow:optional-pg-native',
+    resolveId(source: string) {
+      return source === 'pg-native' ? moduleId : null;
+    },
+    load(id: string) {
+      if (id !== moduleId) return null;
+      return 'export default {};';
     },
   };
 }
@@ -225,8 +267,10 @@ export default {
     nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
       (config.plugins as Array<unknown>).unshift(
         createWorkflowForceInlinePlugin(
+          workflowTargetWorld,
           nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE]
-        )
+        ),
+        createOptionalPgNativePlugin()
       );
     });
 
