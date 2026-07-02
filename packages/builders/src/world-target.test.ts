@@ -1,8 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
   normalizeWorkflowTargetWorld,
+  resolveWorkflowTargetWorldAlias,
   resolveWorkflowTargetWorldSpecifier,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from './world-target.js';
@@ -43,6 +47,46 @@ describe('workflow world target', () => {
 
     expect(ensureWorkflowTargetWorldEnv(env)).toBe('@workflow/world-local');
     expect(env.WORKFLOW_TARGET_WORLD).toBe('@workflow/world-local');
+  });
+
+  it('resolves package aliases to concrete module paths', () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'workflow-world-target-'));
+    const packageDir = join(testDir, 'node_modules/@workflow/world-custom');
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(
+      join(packageDir, 'package.json'),
+      JSON.stringify({
+        name: '@workflow/world-custom',
+        type: 'module',
+        exports: './index.js',
+      })
+    );
+    writeFileSync(
+      join(packageDir, 'index.js'),
+      'export function createWorld() {}'
+    );
+
+    const alias = resolveWorkflowTargetWorldAlias({
+      workingDir: testDir,
+      targetWorld: '@workflow/world-custom',
+    });
+
+    try {
+      expect(alias.replace(/\\/g, '/')).toMatch(
+        /node_modules\/@workflow\/world-custom\/index\.js$/
+      );
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps unresolved custom aliases externalizable', () => {
+    expect(
+      resolveWorkflowTargetWorldAlias({
+        workingDir: process.cwd(),
+        targetWorld: '@workflow/world-custom',
+      })
+    ).toBe('@workflow/world-custom');
   });
 
   it('uses the core target module as the alias key', () => {

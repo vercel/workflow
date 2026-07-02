@@ -1,6 +1,7 @@
 import {
   createBuildQueue,
   ensureWorkflowTargetWorldEnv,
+  resolveWorkflowTargetWorldAlias,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -28,6 +29,10 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
       name: 'workflow:sveltekit',
       config() {
         const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+        const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
+          workingDir: process.cwd(),
+          targetWorld: workflowTargetWorld,
+        });
         return {
           define: {
             'process.env.WORKFLOW_TARGET_WORLD':
@@ -35,7 +40,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
           },
           resolve: {
             alias: {
-              [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
+              [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
             },
           },
         };

@@ -5,6 +5,7 @@ import {
   ensureWorkflowTargetWorldEnv,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
+  resolveWorkflowTargetWorldAlias,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
@@ -23,6 +24,7 @@ const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
 const WORKFLOW_SERVER_TRANSPILE_PACKAGES = [
+  'workflow',
   '@workflow/core',
   '@workflow/serde',
   '@workflow/errors',
@@ -388,6 +390,13 @@ export function withWorkflow(
       ...nextConfig.env,
       WORKFLOW_TARGET_WORLD: workflowTargetWorld,
     };
+    const workingDir = process.cwd();
+    const workflowTargetWorldWebpackAlias = resolveWorkflowTargetWorldAlias({
+      workingDir,
+      targetWorld: workflowTargetWorld,
+    });
+    const workflowTargetWorldTranspilePackages =
+      workflowTargetWorld === VERCEL_WORLD_PACKAGE ? [] : [workflowTargetWorld];
     nextConfig.serverExternalPackages = [
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
@@ -401,6 +410,7 @@ export function withWorkflow(
       ...new Set([
         ...(nextConfig.transpilePackages || []),
         ...WORKFLOW_SERVER_TRANSPILE_PACKAGES,
+        ...workflowTargetWorldTranspilePackages,
       ]),
     ];
     const existingCompiler = nextConfig.compiler ?? {};
@@ -465,7 +475,6 @@ export function withWorkflow(
       [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
     };
     const existingRules = nextConfig.turbopack.rules as any;
-    const workingDir = process.cwd();
     const nextVersion = resolveNextVersion(workingDir);
     const configuredProjectRoot =
       nextConfig.outputFileTracingRoot ?? nextConfig.turbopack?.root;
@@ -553,7 +562,7 @@ export function withWorkflow(
                   // Uses backreferences (\2, \3) to ensure matching quote types
                   {
                     content:
-                      /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
+                      /(use workflow|use step|@workflow\/core\/runtime\/world-target|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
                   },
                 ],
               },
@@ -591,13 +600,13 @@ export function withWorkflow(
           ...existingAlias,
           {
             name: WORKFLOW_WORLD_TARGET_MODULE,
-            alias: workflowTargetWorld,
+            alias: workflowTargetWorldWebpackAlias,
           },
         ];
       } else {
         webpackConfig.resolve.alias = {
           ...(existingAlias || {}),
-          [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
+          [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldWebpackAlias,
         };
       }
 

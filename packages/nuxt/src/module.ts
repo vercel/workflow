@@ -2,6 +2,7 @@ import { defineNuxtModule } from '@nuxt/kit';
 import type { NuxtModule } from '@nuxt/schema';
 import {
   ensureWorkflowTargetWorldEnv,
+  resolveWorkflowTargetWorldAlias,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import type { ModuleOptions as NitroModuleOptions } from '@workflow/nitro';
@@ -27,6 +28,10 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
   },
   setup(options, nuxt) {
     const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+    const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
+      workingDir: nuxt.options.rootDir,
+      targetWorld: workflowTargetWorld,
+    });
     nuxt.options.nitro ||= {};
     nuxt.options.nitro.modules ||= [];
 
@@ -57,11 +62,11 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
     if (Array.isArray(nuxt.options.vite.resolve.alias)) {
       nuxt.options.vite.resolve.alias.push({
         find: WORKFLOW_WORLD_TARGET_MODULE,
-        replacement: workflowTargetWorld,
+        replacement: workflowTargetWorldAlias,
       });
     } else {
       Object.assign(nuxt.options.vite.resolve.alias, {
-        [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
+        [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
       });
     }
     nuxt.options.vite.ssr ||= {};

@@ -37,6 +37,26 @@ function createResolverRequire(workingDir: string) {
   }
 }
 
+export function resolveWorkflowTargetWorldAlias({
+  workingDir,
+  targetWorld = ensureWorkflowTargetWorldEnv(),
+}: {
+  workingDir: string;
+  targetWorld?: string;
+}): string {
+  const normalizedTargetWorld =
+    normalizeWorkflowTargetWorld(targetWorld) ?? targetWorld;
+  const require = createResolverRequire(workingDir);
+
+  try {
+    return require.resolve(normalizedTargetWorld, {
+      paths: [workingDir],
+    });
+  } catch {
+    return normalizedTargetWorld;
+  }
+}
+
 export function createWorkflowWorldTargetEsbuildPlugin({
   workingDir,
   externalPackages = [],
@@ -59,16 +79,14 @@ export function createWorkflowWorldTargetEsbuildPlugin({
             return { path: normalizedTargetWorld, external: true };
           }
 
-          const require = createResolverRequire(workingDir);
-          try {
-            return {
-              path: require.resolve(normalizedTargetWorld, {
-                paths: [workingDir],
-              }),
-            };
-          } catch {
+          const alias = resolveWorkflowTargetWorldAlias({
+            workingDir,
+            targetWorld: normalizedTargetWorld,
+          });
+          if (alias === normalizedTargetWorld) {
             return { path: normalizedTargetWorld, external: true };
           }
+          return { path: alias };
         }
       );
     },

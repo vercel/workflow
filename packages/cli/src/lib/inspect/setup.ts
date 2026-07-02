@@ -1,6 +1,7 @@
-import { createWorld, setWorld } from '@workflow/core/runtime';
+import { setWorld } from '@workflow/core/runtime';
 import { isVercelWorldTarget } from '@workflow/utils';
 import type { World } from '@workflow/world';
+import { createWorld as createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
@@ -37,7 +38,7 @@ export const setupCliWorld = async (
   // Check for updates
   const updateCheck = await checkForUpdateCached(version);
 
-  const withAnsiLinks = flags.json ? false : true;
+  const withAnsiLinks = !flags.json;
   const docsUrl = withAnsiLinks
     ? terminalLink('https://workflow-sdk.dev/', 'https://workflow-sdk.dev/')
     : 'https://workflow-sdk.dev/';
@@ -129,8 +130,15 @@ export const setupCliWorld = async (
     });
   } else if (flags.backend === '@workflow/world-postgres') {
     world = await createPostgresCliWorld();
+  } else if (
+    flags.backend === 'local' ||
+    flags.backend === '@workflow/world-local'
+  ) {
+    world = createLocalWorld();
   } else {
-    world = await createWorld();
+    throw new Error(
+      `Unsupported workflow backend for CLI world initialization: ${flags.backend}`
+    );
   }
 
   // Store in the global cache so BaseCommand.finally() can find and close it.

@@ -232,6 +232,7 @@ describe('withWorkflow builder config', () => {
     );
     expect(nextConfig.transpilePackages).toEqual([
       'user-package',
+      'workflow',
       '@workflow/core',
       '@workflow/serde',
       '@workflow/errors',
@@ -248,8 +249,10 @@ describe('withWorkflow builder config', () => {
     ).toBe('@workflow/world-vercel');
     expect(webpackConfig?.resolve?.alias).toMatchObject({
       existing: 'existing-target',
-      '@workflow/core/runtime/world-target': '@workflow/world-vercel',
     });
+    expect(
+      webpackConfig?.resolve?.alias?.['@workflow/core/runtime/world-target']
+    ).toMatch(/packages[\\/]world-vercel[\\/]dist[\\/]index\.js$/);
   });
 
   it('defaults local builds to the local world package and data directory', () => {

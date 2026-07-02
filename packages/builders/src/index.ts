@@ -70,6 +70,7 @@ export {
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
   normalizeWorkflowTargetWorld,
+  resolveWorkflowTargetWorldAlias,
   resolveWorkflowTargetWorldSpecifier,
   WORKFLOW_WORLD_TARGET_MODULE,
   type WorkflowWorldTargetEnvironment,

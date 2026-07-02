@@ -4,6 +4,7 @@ import {
   type AstroConfig,
   createBuildQueue,
   ensureWorkflowTargetWorldEnv,
+  resolveWorkflowTargetWorldAlias,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -44,6 +45,10 @@ export function workflowPlugin(
         };
         const vitePlugins = [workflowTransformPlugin()];
         const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+        const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
+          workingDir: process.cwd(),
+          targetWorld: workflowTargetWorld,
+        });
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
           const builder = new LocalBuilder(builderOptions);
@@ -71,7 +76,7 @@ export function workflowPlugin(
             },
             resolve: {
               alias: {
-                [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
+                [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
               },
             },
             plugins: vitePlugins,
