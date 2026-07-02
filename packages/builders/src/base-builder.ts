@@ -1704,6 +1704,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     manifest: WorkflowManifest;
     stepsContext?: esbuild.BuildContext;
     interimBundleCtx?: esbuild.BuildContext;
+    workflowInterimBundleText?: string;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
     discoveredEntries: DiscoveredEntries;
     stepsManifest: WorkflowManifest;
@@ -1842,7 +1843,9 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     };
 
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
+    let combinedRouteWriteId = 0;
     const combinedBundleFinal = async (interimBundleText: string) => {
+      combinedRouteWriteId++;
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
       const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
         {
@@ -1851,6 +1854,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
       );
       const code = `// biome-ignore-all lint: generated file
 /* eslint-disable */
+// workflow route refresh ${combinedRouteWriteId}
 import { __steps_registered } from '${stepsRelativePath}';
 import { workflowEntrypoint } from 'workflow/runtime';
 
@@ -1872,6 +1876,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         manifest,
         stepsContext,
         interimBundleCtx: workflowsResult.interimBundleCtx,
+        workflowInterimBundleText: workflowVMCode,
         bundleFinal: combinedBundleFinal,
         discoveredEntries: effectiveDiscoveredEntries,
         stepsManifest,
