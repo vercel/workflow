@@ -4,20 +4,7 @@ const globalConfig = globalThis as typeof globalThis &
   Record<symbol, string | undefined>;
 
 export function setWorkflowBasePath(basePath: string | undefined): void {
-  if (!basePath) {
-    globalConfig[BASE_PATH_SYMBOL] = '';
-    return;
-  }
-  if (
-    basePath === '/' ||
-    !basePath.startsWith('/') ||
-    basePath.endsWith('/') ||
-    basePath.includes('?') ||
-    basePath.includes('#')
-  ) {
-    throw new Error(`Invalid workflow basePath: ${basePath}`);
-  }
-  globalConfig[BASE_PATH_SYMBOL] = basePath;
+  globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
 }
 
 function getWorkflowBasePath(): string {

@@ -32,20 +32,7 @@ const globalConfig = globalThis as typeof globalThis &
 
 // Keep this local: @workflow/next is CommonJS, while @workflow/utils is ESM-only.
 function setWorkflowBasePath(basePath: string | undefined): void {
-  if (!basePath) {
-    globalConfig[BASE_PATH_SYMBOL] = '';
-    return;
-  }
-  if (
-    basePath === '/' ||
-    !basePath.startsWith('/') ||
-    basePath.endsWith('/') ||
-    basePath.includes('?') ||
-    basePath.includes('#')
-  ) {
-    throw new Error(`Invalid workflow basePath: ${basePath}`);
-  }
-  globalConfig[BASE_PATH_SYMBOL] = basePath;
+  globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
 }
 
 interface WorkflowPatternMatch {

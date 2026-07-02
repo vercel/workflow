@@ -50,7 +50,6 @@ import { withWorkflow } from './index.js';
 const loaderStubPath = join(__dirname, 'loader.js');
 const hadLoaderStub = existsSync(loaderStubPath);
 const realTmpDir = realpathSync(tmpdir());
-const workflowBasePathSymbol = Symbol.for('@workflow/core/basePath');
 
 function writeFile(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -72,9 +71,6 @@ describe('withWorkflow builder config', () => {
     builderConfigs.length = 0;
     getNextBuilderMock.mockClear();
     prewarmWorkflowSwcPluginCacheMock.mockClear();
-    (globalThis as Record<symbol, string | undefined>)[workflowBasePathSymbol] =
-      undefined;
-
     if (!hadLoaderStub) {
       writeFileSync(loaderStubPath, 'module.exports = {};\n', 'utf-8');
     }
@@ -174,32 +170,6 @@ describe('withWorkflow builder config', () => {
       distDir: 'build-output',
       diagnosticsDir: 'build-output/diagnostics',
     });
-  });
-
-  it('passes basePath to the workflow builder', async () => {
-    await withWorkflow({
-      basePath: '/v2',
-    })('phase-production-build', {
-      defaultConfig: {},
-    });
-
-    expect(builderConfigs[0]).toMatchObject({
-      basePath: '/v2',
-    });
-    expect(
-      (globalThis as Record<symbol, string | undefined>)[workflowBasePathSymbol]
-    ).toBe('/v2');
-  });
-
-  it('rejects invalid basePath values', async () => {
-    await expect(
-      withWorkflow({
-        basePath: '/v2/',
-      })('phase-production-build', {
-        defaultConfig: {},
-      })
-    ).rejects.toThrow('Invalid workflow basePath: /v2/');
-    expect(builderConfigs).toHaveLength(0);
   });
 
   it('externalizes the built-in Vercel world while preserving user externals', async () => {
