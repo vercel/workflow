@@ -1,5 +1,9 @@
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
+import {
+  BaseBuilder,
+  createBaseBuilderConfig,
+  ensureWorkflowTargetWorldEnv,
+} from '@workflow/builders';
 import { join } from 'pathe';
 import { rewriteTsImportsInContent } from './cjs-rewrite.js';
 
@@ -60,11 +64,13 @@ export class NestLocalBuilder extends BaseBuilder {
     const workingDir = options.workingDir ?? process.cwd();
     const outDir = options.outDir ?? join(workingDir, '.nestjs/workflow');
     const dirs = options.dirs ?? ['src'];
+    const targetWorld = ensureWorkflowTargetWorldEnv();
     super({
       ...createBaseBuilderConfig({
         workingDir,
         watch: options.watch ?? false,
         dirs,
+        externalPackages: [targetWorld],
         sourcemap: options.sourcemap,
       }),
       // Use 'standalone' as base target - we handle the specific bundling ourselves
@@ -72,6 +78,7 @@ export class NestLocalBuilder extends BaseBuilder {
       stepsBundlePath: join(outDir, 'steps.mjs'),
       workflowsBundlePath: join(outDir, 'workflows.mjs'),
       webhookBundlePath: join(outDir, 'webhook.mjs'),
+      externalPackages: [targetWorld],
     });
     this.#outDir = outDir;
     this.#moduleType = options.moduleType ?? 'es6';
