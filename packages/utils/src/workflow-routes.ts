@@ -33,28 +33,6 @@ export function createWorkflowUrl(
   return url.toString();
 }
 
-export function createWorkflowRouteUrl(
-  baseUrl: string,
-  route: 'flow' | 'step'
-): string {
-  return createWorkflowUrl(baseUrl, { type: route });
-}
-
-export function createWorkflowManifestUrl(baseUrl: string): string {
-  return createWorkflowUrl(baseUrl, { type: 'manifest' });
-}
-
-export function createWorkflowWebhookUrl(
-  baseUrl: string,
-  token: string
-): string {
-  return createWorkflowUrl(baseUrl, { type: 'webhook', token });
-}
-
-export function createWorkflowHealthUrl(baseUrl: string): string {
-  return createWorkflowUrl(baseUrl, { type: 'health' });
-}
-
 function getWorkflowRouteEndpoint(route: WorkflowUrlRoute): string {
   switch (route.type) {
     case 'flow':
