@@ -3,7 +3,10 @@ import type {
   StreamChunksResponse,
   Streamer,
   StreamInfoResponse,
+  StreamWriteChannel,
+  StreamWriteChannelHandlers,
 } from '@workflow/world';
+import { WebSocket as UndiciWebSocket } from 'undici';
 import { z } from 'zod';
 import { getStreamDispatcher } from './http-client.js';
 import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
@@ -37,22 +40,31 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
 // no request timeout — the live read is long-lived and a whole-request deadline
 // would truncate it.
 
-// Writes (PUT) and stream completion use the v2 stream endpoint.
+// Batch writes (PUT write/writeMulti) and stream completion use the v2 stream
+// endpoint.
 function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
 }
 
-// The live-read (GET) endpoint is versioned at v3: on a max-duration timeout
-// (or a mid-stream connection drop) the server errors the response body
-// instead of closing it cleanly, which is what lets the reconnecting reader
-// (`createReconnectingFramedStream`) resume from the next chunk rather than
-// treating the timeout as end-of-stream. Reading from v2 would silently
-// truncate long-lived streams at the server's 2-minute limit. Only the live
-// read is affected by the timeout — writes, completion, and snapshot reads
-// (chunks/info/list) stay on v2.
-function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
+// The v3 stream endpoint carries the long-lived operations; its semantics
+// differ from v2 on both verbs:
+//  - GET (live read): on a max-duration timeout (or a mid-stream connection
+//    drop) the server errors the response body instead of closing it cleanly,
+//    which is what lets the reconnecting reader
+//    (`createReconnectingFramedStream`) resume from the next chunk rather
+//    than treating the timeout as end-of-stream. Reading from v2 would
+//    silently truncate long-lived streams at the server's 2-minute limit.
+//  - GET .../ws (write channel, `connectWrite`): upgrades to a WebSocket on
+//    which each binary message is one chunk, persisted + published on arrival
+//    and acked back on the same connection. The dedicated path also makes the
+//    rollout observable: any hit on it in request logs is a streaming-mode
+//    writer. (The v3 PUT exists server-side with matching per-chunk publish
+//    semantics, but streaming request bodies are buffered whole by the
+//    platform, so the SDK writes over WS instead.)
+// Batch writes, completion, and snapshot reads (chunks/info/list) stay on v2.
+function getStreamV3Url(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
@@ -111,39 +123,20 @@ export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
   return result;
 }
 
-/**
- * TransformStream that applies the multi-chunk length prefix to each frame as
- * it passes through: `[4-byte big-endian length][frame bytes]`. This is the
- * streaming, per-frame equivalent of {@link encodeMultiChunks}, used by
- * `writeStream` so a long-lived upload wraps frames incrementally (and honors
- * backpressure) instead of buffering the whole batch.
- */
-export function frameMultiChunkStream(): TransformStream<
-  Uint8Array,
-  Uint8Array
-> {
-  return new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      const framed = new Uint8Array(4 + chunk.length);
-      new DataView(framed.buffer).setUint32(0, chunk.length, false);
-      framed.set(chunk, 4);
-      controller.enqueue(framed);
-    },
-  });
-}
-
 const StreamInfoResponseSchema = z.object({
   tailIndex: z.number(),
   done: z.boolean(),
 });
 
 /**
- * Response of the streaming multi-chunk PUT: the backend chunk indices assigned
- * to the frames in this request, in order. `success` is always true on a 2xx
- * (a non-2xx throws before we parse). Tolerant of extra fields.
+ * One ack on the stream write channel: the 0-based ordinal of the chunk
+ * within the connection and the backend index it persisted under. Sent by the
+ * server as a JSON text message after each binary chunk message, in order.
+ * Tolerant of extra fields.
  */
-const StreamWriteResponseSchema = z.object({
-  chunkIndices: z.array(z.number()),
+const StreamWriteAckSchema = z.object({
+  index: z.number(),
+  chunkIndex: z.number(),
 });
 
 /**
@@ -235,49 +228,82 @@ export function createStreamer(config?: APIConfig): Streamer {
         }
       },
 
-      async writeStream(
-        runId: string | Promise<string>,
+      async connectWrite(
+        runId: string,
         name: string,
-        chunks: ReadableStream<Uint8Array>
-      ): Promise<{ chunkIndices: number[] }> {
-        // Await runId if it's a promise to ensure proper flushing
-        const resolvedRunId = await runId;
-
+        handlers: StreamWriteChannelHandlers
+      ): Promise<StreamWriteChannel> {
         const httpConfig = await getHttpConfig(config);
-        // Same wire format and server path as writeMulti — the only difference
-        // is the body is streamed incrementally instead of buffered whole.
-        httpConfig.headers.set('X-Stream-Multi', 'true');
-        const url = getStreamUrl(name, resolvedRunId, httpConfig);
+        const url = getStreamV3Url(name, runId, httpConfig);
+        url.pathname = `${url.pathname}/ws`;
+        url.protocol = 'wss:';
 
-        // Apply the multi-chunk length prefix per frame as it flows through,
-        // mirroring encodeMultiChunks — the world owns the wire encoding so the
-        // caller streams raw frames. The TransformStream preserves backpressure
-        // from the upload back to the producer.
-        const body = chunks.pipeThrough(frameMultiChunkStream());
-
-        // Long-lived streaming upload. Use the global dispatcher (no custom
-        // retry, no H2) and no request timeout — mirroring the live-read (GET):
-        //  - A consumed `ReadableStream` body cannot be replayed, so retrying is
-        //    unsafe; recovery (tail-read + replay of un-acked frames) lives at
-        //    the segment layer above, not in the transport.
-        //  - H2's duplex-streaming issues (which keep the live-read off the H2
-        //    stream dispatcher) apply to a streaming request body too, so we use
-        //    the same plain-fetch path that long-lived reads already rely on.
-        //  - The client soft-closes each segment well under any platform idle
-        //    bound, so there is no whole-request deadline to truncate it.
-        const response = await instrumentedFetch({
-          method: 'PUT',
-          url: url.toString(),
-          body,
-          headers: httpConfig.headers,
-          dispatcher: undefined,
-          timeoutMs: null,
-          logLabel: url.pathname,
-          buildError: async (res) =>
-            createStreamRequestError('write', url, res, await res.text()),
+        // undici's WebSocket (unlike the WHATWG global) accepts custom
+        // headers on the upgrade request, so the channel authenticates
+        // exactly like every HTTP call (Authorization + the trusted-OIDC
+        // deployment-protection bypass, both already set by getHttpConfig).
+        // (Plain record: undici's WebSocketInit headers type doesn't accept a
+        // WHATWG Headers instance.)
+        const ws = new UndiciWebSocket(url, {
+          headers: Object.fromEntries(httpConfig.headers),
         });
-        const text = await response.text();
-        return StreamWriteResponseSchema.parse(JSON.parse(text));
+
+        // onClose must fire exactly once, whether the socket errors, is
+        // closed by the server, or closed locally.
+        let closed = false;
+        const emitClose = (event: { code?: number; reason?: string }) => {
+          if (closed) return;
+          closed = true;
+          handlers.onClose(event);
+        };
+
+        ws.addEventListener('message', (event) => {
+          // Acks are JSON text messages `{ index, chunkIndex }`, in order.
+          try {
+            const ack = StreamWriteAckSchema.parse(
+              JSON.parse(String(event.data))
+            );
+            handlers.onAck(ack);
+          } catch {
+            // An unparseable server message means the two sides disagree on
+            // the protocol — fail the channel rather than silently dropping
+            // what might have been an ack.
+            emitClose({ reason: 'unparseable ack from server' });
+            ws.close();
+          }
+        });
+        ws.addEventListener('close', (event) => {
+          emitClose({ code: event.code, reason: event.reason });
+        });
+        ws.addEventListener('error', () => {
+          // 'close' follows 'error' per spec, but emit defensively in case
+          // the socket never completes the close handshake.
+          emitClose({ reason: 'connection error' });
+        });
+
+        await new Promise<void>((resolve, reject) => {
+          ws.addEventListener('open', () => resolve(), { once: true });
+          ws.addEventListener(
+            'close',
+            (event) =>
+              reject(
+                new Error(
+                  `Stream write channel failed to connect: ` +
+                    `${event.code ?? ''} ${event.reason ?? ''}`.trim()
+                )
+              ),
+            { once: true }
+          );
+        });
+
+        return {
+          send(chunk: Uint8Array) {
+            ws.send(chunk);
+          },
+          close() {
+            ws.close(1000, 'writer closing');
+          },
+        };
       },
 
       async close(runId: string | Promise<string>, name: string) {
@@ -303,7 +329,7 @@ export function createStreamer(config?: APIConfig): Streamer {
 
       async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamReadUrl(name, runId, httpConfig);
+        const url = getStreamV3Url(name, runId, httpConfig);
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }

@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { getRunCapabilities } from './capabilities.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  framedStreamMarkersEnabled,
+  getRunCapabilities,
+} from './capabilities.js';
 import { SerializationFormat } from './serialization.js';
 
 describe('getRunCapabilities', () => {
@@ -139,6 +142,23 @@ describe('getRunCapabilities', () => {
       const caps = getRunCapabilities('5.0.0-beta.20');
       expect(caps.framedByteStreams).toBe(true);
       expect(caps.framedStreamMarkers).toBe(false);
+    });
+
+    it('framedStreamMarkersEnabled follows the capability and honors the test override', () => {
+      expect(framedStreamMarkersEnabled('5.0.0-beta.20')).toBe(false);
+      expect(framedStreamMarkersEnabled('5.0.0-beta.27')).toBe(true);
+      expect(framedStreamMarkersEnabled(undefined)).toBe(false);
+
+      // WORKFLOW_EXPERIMENTAL_STREAM_MARKERS=1 force-enables so tests/e2e can
+      // exercise the marker path before the released version crosses the
+      // cutoff. Applies regardless of version input (both ends must set it).
+      vi.stubEnv('WORKFLOW_EXPERIMENTAL_STREAM_MARKERS', '1');
+      try {
+        expect(framedStreamMarkersEnabled('5.0.0-beta.20')).toBe(true);
+        expect(framedStreamMarkersEnabled(undefined)).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
   });
 });

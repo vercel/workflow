@@ -68,9 +68,10 @@ export interface RunCapabilities {
    *
    *  - the producer stamps frames as `framed-v2` (both object and byte
    *    streams), and
-   *  - the durable writer streams them in a single long-lived request
-   *    (`WorkflowServerWritableStream` segment manager), recovering from an
-   *    unclean disconnect by matching its own marker in the persisted tail.
+   *  - the durable writer sends them over a long-lived ack'd write channel
+   *    (`WorkflowServerWritableStream` socket sink), surviving an unclean
+   *    disconnect by resending unacked frames — the marker is what lets the
+   *    read side deduplicate the persisted-but-unacked overlap.
    *
    * When false (older reader deployment, or an older writer per version-skew
    * protection), the producer falls back to `framed-v1`/raw and the writer
@@ -177,4 +178,27 @@ export function getRunCapabilities(
   }
 
   return result;
+}
+
+/**
+ * Whether streams attached to a run on the given `@workflow/core` version
+ * carry framed-v2 writer markers. Both sides of a stream consult this with
+ * the same input — the version of the SDK executing the run (the writer
+ * passes its own version; an external reader passes the run's
+ * `executionContext.workflowCoreVersion`) — so they always agree.
+ *
+ * `WORKFLOW_EXPERIMENTAL_STREAM_MARKERS=1` force-enables it so tests/e2e can
+ * exercise the marker path before the released version crosses the capability
+ * cutoff. Both ends must set it (test-only).
+ */
+export function framedStreamMarkersEnabled(
+  workflowCoreVersion: string | undefined
+): boolean {
+  if (
+    typeof process !== 'undefined' &&
+    process.env?.WORKFLOW_EXPERIMENTAL_STREAM_MARKERS === '1'
+  ) {
+    return true;
+  }
+  return getRunCapabilities(workflowCoreVersion).framedStreamMarkers;
 }

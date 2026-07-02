@@ -241,3 +241,161 @@ describe('step-level getWritable', () => {
     await Promise.all(ctx.ops);
   });
 });
+
+describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', () => {
+  /** Chunks that arrived on the world's write channel, in order. */
+  let channelFrames: Uint8Array[];
+  let channelsOpened: number;
+
+  function installWorld(opts: { withConnectWrite: boolean }) {
+    channelFrames = [];
+    channelsOpened = 0;
+    writeCalls = [];
+    const streams: any = {
+      write: vi.fn(async (_r: string, _n: string, chunk: Uint8Array) => {
+        writeCalls.push(chunk);
+      }),
+      writeMulti: vi.fn(
+        async (_r: string, _n: string, chunks: Uint8Array[]) => {
+          writeCalls.push(...chunks);
+        }
+      ),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    if (opts.withConnectWrite) {
+      streams.connectWrite = vi.fn(
+        async (
+          _r: string,
+          _n: string,
+          handlers: {
+            onAck(ack: { index: number; chunkIndex: number }): void;
+          }
+        ) => {
+          channelsOpened++;
+          let index = 0;
+          return {
+            send(frame: Uint8Array) {
+              channelFrames.push(frame);
+              const i = index++;
+              queueMicrotask(() => handlers.onAck({ index: i, chunkIndex: i }));
+            },
+            close() {},
+          };
+        }
+      );
+    }
+    setWorld({ specVersion: SPEC_VERSION_CURRENT, streams } as any);
+  }
+
+  beforeEach(() => {
+    vi.stubEnv('WORKFLOW_EXPERIMENTAL_STREAM_MARKERS', '1');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setWorld(undefined);
+    vi.clearAllMocks();
+  });
+
+  async function writeThroughGetWritable(values: string[]) {
+    const { contextStorage } = await import('./context-storage.js');
+    const ctx = makeStepCtx();
+    const writable = await contextStorage.run(ctx, async () => {
+      const { getWritable } = await import('./writable-stream.js');
+      return getWritable<string>();
+    });
+    const writer = writable.getWriter();
+    for (const value of values) await writer.write(value);
+    await writer.close();
+    await Promise.all(ctx.ops as Promise<void>[]);
+    return writable;
+  }
+
+  it('sends framed-v2 frames over the write channel and round-trips them', async () => {
+    installWorld({ withConnectWrite: true });
+    const { FRAME_HEADER_SIZE, readFrameMarker } = await import(
+      '../serialization/frame-marker.js'
+    );
+    const { getDeserializeStream } = await import('../serialization.js');
+
+    const writable = await writeThroughGetWritable(['hello', 'world']);
+
+    // The channel carried the frames; the batch path was never used.
+    expect(channelsOpened).toBe(1);
+    expect(writeCalls).toHaveLength(0);
+    expect(channelFrames).toHaveLength(2);
+
+    // Every frame carries the SAME writerId with increasing seq.
+    const markers = channelFrames.map((f) =>
+      readFrameMarker(f.subarray(FRAME_HEADER_SIZE))
+    );
+    expect(markers[0].writerId).toEqual(markers[1].writerId);
+    expect(markers[1].seq).toBe(markers[0].seq + 1n);
+
+    // The forwarding tag matches, so descriptors reproduce the framing.
+    const { STREAM_FRAMING_SYMBOL } = await import('../symbols.js');
+    expect((writable as any)[STREAM_FRAMING_SYMBOL]).toBe('framed-v2');
+
+    // Frames round-trip through the framed-v2 deserializer back to values.
+    // Read concurrently with writing — the transform applies backpressure
+    // once its readable queue fills, so a write-everything-then-read pattern
+    // would deadlock.
+    const deserialize = getDeserializeStream({}, undefined, 'framed-v2');
+    const outPromise = (async () => {
+      const out: unknown[] = [];
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out.push(value);
+      }
+      return out;
+    })();
+    const w = deserialize.writable.getWriter();
+    for (const frame of channelFrames) await w.write(frame);
+    await w.close();
+    expect(await outPromise).toEqual(['hello', 'world']);
+  });
+
+  it('still emits framed-v2 markers on the batch path (world without channels)', async () => {
+    installWorld({ withConnectWrite: false });
+    const { FRAME_HEADER_SIZE, readFrameMarker } = await import(
+      '../serialization/frame-marker.js'
+    );
+
+    await writeThroughGetWritable(['solo']);
+
+    // The framing decision is independent of the transport: no channel, so
+    // frames went through write/writeMulti — but they still carry markers
+    // (the ref/descriptor says framed-v2, so readers strip them).
+    expect(channelsOpened).toBe(0);
+    expect(writeCalls.length).toBeGreaterThan(0);
+    const marker = readFrameMarker(writeCalls[0].subarray(FRAME_HEADER_SIZE));
+    expect(marker.writerId).toHaveLength(8);
+    expect(marker.seq).toBe(0n);
+  });
+
+  it('emits framed-v1 (no markers) when the override is off and the version gate is below the cutoff', async () => {
+    vi.unstubAllEnvs();
+    installWorld({ withConnectWrite: true });
+    const { getDeserializeStream } = await import('../serialization.js');
+
+    await writeThroughGetWritable(['legacy']);
+
+    // Dormant: version gate (current dev version < capability cutoff) keeps
+    // the writer on framed-v1 + the batch path, and plain deserialization
+    // reads it — exactly the pre-flip behavior.
+    expect(channelsOpened).toBe(0);
+    expect(writeCalls.length).toBeGreaterThan(0);
+    const deserialize = getDeserializeStream({}, undefined);
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      const { value } = await reader.read();
+      return value;
+    })();
+    const w = deserialize.writable.getWriter();
+    for (const frame of writeCalls) await w.write(frame);
+    await w.close();
+    expect(await readPromise).toBe('legacy');
+  });
+});

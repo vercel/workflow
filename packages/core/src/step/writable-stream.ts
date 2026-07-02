@@ -1,3 +1,4 @@
+import { framedStreamMarkersEnabled } from '../capabilities.js';
 import { throwNotInWorkflowOrStepContext } from '../context-errors.js';
 import {
   createFlushableState,
@@ -7,13 +8,16 @@ import {
 import {
   getExternalReducers,
   getSerializeStream,
+  newStableWriterId,
   WorkflowServerWritableStream,
 } from '../serialization.js';
 import {
+  STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from '../symbols.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { type CachedWritable, contextStorage } from './context-storage.js';
 
@@ -73,6 +77,14 @@ export function getWritable<W = any>(
     return cached.writable as WritableStream<W>;
   }
 
+  // This SDK executes the run, so the run's stream-marker capability is this
+  // SDK's own (external readers derive the same answer from the run's
+  // `executionContext.workflowCoreVersion`). With markers, frames carry this
+  // writer's id + seq, the durable writer uses the ack'd write channel when
+  // the world has one, and readers can deduplicate reconnect resends.
+  const framedV2 = framedStreamMarkersEnabled(workflowCoreVersion);
+  const writerId = framedV2 ? newStableWriterId(globalThis) : undefined;
+
   // Create a transform stream that serializes chunks and pipes to the workflow server.
   // The target run is the workflow run that owns this step, which (per
   // version skew protection) is on this same SDK version, so byte-stream
@@ -90,7 +102,8 @@ export function getWritable<W = any>(
       true,
       ctx.runReadyBarrier
     ),
-    ctx.encryptionKey
+    ctx.encryptionKey,
+    writerId
   );
 
   // Use flushable pipe so the ops promise resolves when the user releases
@@ -103,7 +116,8 @@ export function getWritable<W = any>(
   const serverWritable = new WorkflowServerWritableStream(
     runId,
     name,
-    ctx.runReadyBarrier
+    ctx.runReadyBarrier,
+    writerId
   );
   const state = createFlushableState();
   ctx.ops.push(state.promise);
@@ -138,6 +152,15 @@ export function getWritable<W = any>(
         writable: false,
       }
     );
+  }
+  if (framedV2) {
+    // Framing is per-stream: forwarding this writable (parent → child via
+    // start()) must carry the choice so every writer of the stream frames
+    // identically. The reducers read this tag into the descriptor.
+    Object.defineProperty(serialize.writable, STREAM_FRAMING_SYMBOL, {
+      value: 'framed-v2',
+      writable: false,
+    });
   }
 
   cache.set(name, { writable: serialize.writable, state });

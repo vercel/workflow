@@ -210,6 +210,16 @@ export interface SerializableSpecial {
      * the parent's key without fetching the parent run first.
      */
     deploymentId?: string;
+    /**
+     * Wire framing of the underlying server stream. A writable's framing is
+     * chosen once, by the stream's creator, and every writer must follow it:
+     * frames from concurrent writers interleave on one server stream, and a
+     * reader applies a single framing to all of them. `'framed-v2'` means
+     * every frame carries a per-writer `writerId`+`seq` marker (a forwarded
+     * writer derives its own writerId). Absent means plain length-prefixed
+     * frames, as before markers existed.
+     */
+    framing?: 'framed-v2';
   };
   AbortController: {
     streamName: string;

@@ -8,21 +8,11 @@ vi.mock('../runtime/get-world-lazy.js', () => ({
 
 const { WorkflowServerWritableStream } = await import('../serialization.js');
 
-async function drain(body: ReadableStream<Uint8Array>): Promise<Uint8Array[]> {
-  const reader = body.getReader();
-  const out: Uint8Array[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    out.push(value);
-  }
-  return out;
-}
-
-/** Fake streamer recording which write path was exercised. */
-function makeWorld(opts: { withWriteStream: boolean }) {
+/** Fake world recording which write path was exercised. */
+function makeWorld(opts: { withConnectWrite: boolean }) {
   const calls = {
-    writeStream: [] as Uint8Array[][],
+    channelFrames: [] as Uint8Array[],
+    channels: 0,
     writeMulti: [] as Uint8Array[][],
     write: [] as Uint8Array[],
     closed: 0,
@@ -44,16 +34,25 @@ function makeWorld(opts: { withWriteStream: boolean }) {
       return { data: [], cursor: null, hasMore: false, done: false };
     },
   };
-  if (opts.withWriteStream) {
-    let next = 0;
-    streams.writeStream = async (
+  if (opts.withConnectWrite) {
+    streams.connectWrite = async (
       _r: string,
       _n: string,
-      body: ReadableStream<Uint8Array>
+      handlers: { onAck(ack: { index: number; chunkIndex: number }): void }
     ) => {
-      const frames = await drain(body);
-      calls.writeStream.push(frames);
-      return { chunkIndices: frames.map(() => next++) };
+      calls.channels++;
+      let index = 0;
+      return {
+        send(frame: Uint8Array) {
+          calls.channelFrames.push(frame);
+          // Ack asynchronously, like a real backend.
+          const i = index++;
+          queueMicrotask(() =>
+            handlers.onAck({ index: i, chunkIndex: 100 + i })
+          );
+        },
+        close() {},
+      };
     };
   }
   // Minimal shape to satisfy getWorldLazy's consumer; protocol assert is bypassed
@@ -69,8 +68,8 @@ describe('WorkflowServerWritableStream sink selection', () => {
     vi.restoreAllMocks();
   });
 
-  it('streams via writeStream when the world supports it and a writerId is given', async () => {
-    const { world, calls } = makeWorld({ withWriteStream: true });
+  it('writes over the channel when the world supports connectWrite and a writerId is given', async () => {
+    const { world, calls } = makeWorld({ withConnectWrite: true });
     currentWorld = world;
 
     const ws = new WorkflowServerWritableStream(
@@ -84,17 +83,17 @@ describe('WorkflowServerWritableStream sink selection', () => {
     await writer.write(frame(20));
     await writer.close();
 
-    // One segment carried both frames; no per-batch path used.
-    expect(calls.writeStream).toHaveLength(1);
-    expect(calls.writeStream[0].map((f) => f[0])).toEqual([10, 20]);
+    // One channel carried both frames; no per-batch path used.
+    expect(calls.channels).toBe(1);
+    expect(calls.channelFrames.map((f) => f[0])).toEqual([10, 20]);
     expect(calls.writeMulti).toHaveLength(0);
     expect(calls.write).toHaveLength(0);
-    // X-Stream-Done sent after the frames committed.
+    // X-Stream-Done sent only after the frames were acked.
     expect(calls.closed).toBe(1);
   });
 
-  it('falls back to the per-batch path when the world has no writeStream', async () => {
-    const { world, calls } = makeWorld({ withWriteStream: false });
+  it('falls back to the per-batch path when the world has no connectWrite', async () => {
+    const { world, calls } = makeWorld({ withConnectWrite: false });
     currentWorld = world;
 
     const ws = new WorkflowServerWritableStream(
@@ -108,16 +107,16 @@ describe('WorkflowServerWritableStream sink selection', () => {
     await writer.write(frame(20));
     await writer.close();
 
-    // Per-batch path (writeMulti/write), never streamed. Sequential writer
+    // Per-batch path (writeMulti/write), never the channel. Sequential writer
     // writes flush one frame at a time, so they arrive via single write().
-    expect(calls.writeStream).toHaveLength(0);
+    expect(calls.channels).toBe(0);
     const batched = [...calls.writeMulti.flat(), ...calls.write];
     expect(batched.map((f) => f[0])).toEqual([10, 20]);
     expect(calls.closed).toBe(1);
   });
 
   it('uses the per-batch path when no writerId is provided (framed-v1)', async () => {
-    const { world, calls } = makeWorld({ withWriteStream: true });
+    const { world, calls } = makeWorld({ withConnectWrite: true });
     currentWorld = world;
 
     const ws = new WorkflowServerWritableStream('run-1', 'out');
@@ -125,14 +124,15 @@ describe('WorkflowServerWritableStream sink selection', () => {
     await writer.write(frame(10));
     await writer.close();
 
-    // writeStream is available but unused: without a writerId frames carry no
-    // marker, so recovery can't attribute them — stay on the batch path.
-    expect(calls.writeStream).toHaveLength(0);
+    // connectWrite is available but unused: without a writerId frames carry
+    // no marker, so the read side couldn't deduplicate a reconnect resend —
+    // stay on the batch path.
+    expect(calls.channels).toBe(0);
     expect(calls.closed).toBe(1);
   });
 
   it('sends the done marker for an empty stream (close with no writes)', async () => {
-    const { world, calls } = makeWorld({ withWriteStream: true });
+    const { world, calls } = makeWorld({ withConnectWrite: true });
     currentWorld = world;
 
     const ws = new WorkflowServerWritableStream(
@@ -143,7 +143,7 @@ describe('WorkflowServerWritableStream sink selection', () => {
     );
     await ws.getWriter().close();
 
-    expect(calls.writeStream).toHaveLength(0);
+    expect(calls.channels).toBe(0);
     expect(calls.closed).toBe(1);
   });
 });

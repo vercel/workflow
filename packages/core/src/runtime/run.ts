@@ -10,6 +10,7 @@ import {
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
+import { framedStreamMarkersEnabled } from '../capabilities.js';
 import { type CryptoKey, importKey } from '../encryption.js';
 import {
   getExternalRevivers,
@@ -278,14 +279,39 @@ export class Run<TResult> {
     // chunk, so creating or probing an empty stream cannot reject in the
     // background.
     const encryptionKey = this.#getEncryptionKeyLazily();
+
+    // Unlike in-run readers, there is no serialized ref here to carry the
+    // stream's framing, so derive it exactly the way the writer chose it:
+    // from the capability of the SDK version executing the run. Lazy
+    // thenable — the run fetch happens only when the deserializer sees its
+    // first chunk (never-read streams cost nothing, and a fetch failure
+    // errors the stream instead of rejecting unhandled in the background).
+    const worldPromise = this.#lazyWorldPromise;
+    const runId = this.runId;
+    let framingDecision: Promise<'framed-v2' | undefined> | null = null;
+    const framing: PromiseLike<'framed-v2' | undefined> = {
+      // biome-ignore lint/suspicious/noThenProperty: deliberately thenable — the run fetch must not start (or reject unhandled) unless the deserializer actually awaits the framing.
+      then: (onFulfilled, onRejected) => {
+        framingDecision ??= worldPromise.then(async (world) => {
+          const run = await world.runs.get(runId);
+          return framedStreamMarkersEnabled(
+            (run as { executionContext?: { workflowCoreVersion?: string } })
+              .executionContext?.workflowCoreVersion
+          )
+            ? ('framed-v2' as const)
+            : undefined;
+        });
+        return framingDecision.then(onFulfilled, onRejected);
+      },
+    };
+
     const stream = getExternalRevivers(global, ops, this.runId, encryptionKey)
       .ReadableStream!({
       name,
       startIndex,
+      framing: framing as never,
     }) as ReadableStream<R>;
 
-    const worldPromise = this.#lazyWorldPromise;
-    const runId = this.runId;
     return Object.assign(stream, {
       getTailIndex: async (): Promise<number> => {
         const world = await worldPromise;

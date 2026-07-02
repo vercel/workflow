@@ -33,6 +33,37 @@ import type {
   StepWithoutData,
 } from './steps.js';
 
+/**
+ * One acknowledgement from a stream write channel. `index` is the 0-based
+ * ordinal of the chunk within the channel (send order); `chunkIndex` is the
+ * backend index the chunk was persisted under. Acks arrive in send order, so
+ * an ack also confirms every earlier chunk on the same channel.
+ */
+export interface StreamWriteAck {
+  index: number;
+  chunkIndex: number;
+}
+
+/** Callbacks for one stream write channel. */
+export interface StreamWriteChannelHandlers {
+  /** A chunk (and, by ordering, all chunks before it) is durable. */
+  onAck(ack: StreamWriteAck): void;
+  /**
+   * The channel closed — fires exactly once, whether the close was clean
+   * (caller-initiated or backend connection bound) or a failure. After it,
+   * nothing more will be acked on this channel.
+   */
+  onClose(event: { code?: number; reason?: string }): void;
+}
+
+/** A live write channel returned by {@link Streamer}'s `connectWrite`. */
+export interface StreamWriteChannel {
+  /** Queue one chunk for delivery. Fire-and-forget; durability is signaled via onAck. */
+  send(chunk: Uint8Array): void;
+  /** Close the channel. Chunks already sent may still be acked before onClose. */
+  close(): void;
+}
+
 export interface Streamer {
   /**
    * Override the default flush interval (in milliseconds) for buffered stream writes.
@@ -72,33 +103,32 @@ export interface Streamer {
     ): Promise<void>;
 
     /**
-     * Write a stream of chunks in a single long-lived request, sending each
-     * chunk into the request body as it is produced rather than batching into
-     * many short requests. `chunks` yields one chunk (one frame) at a time;
-     * the world applies the same wire encoding as {@link writeMulti} (a
-     * `[4-byte length][chunk]` prefix per chunk) as it streams them to the
-     * backend, and honors the stream's backpressure so a slow upload throttles
-     * the producer rather than buffering unboundedly.
+     * Open a long-lived write channel to a stream. Each {@link
+     * StreamWriteChannel.send} carries one chunk; the backend persists and
+     * publishes it on arrival and acknowledges it via `handlers.onAck`, in
+     * send order. An acked chunk is durable — the caller can drop it from its
+     * replay buffer immediately, instead of holding everything written until
+     * a whole request completes.
      *
-     * Resolves with the backend chunk indices assigned to the chunks in this
-     * request (in order). The caller uses these as a recovery anchor: every
-     * chunk in a request that resolved cleanly is durable. If the request
-     * rejects (connection drop / 5xx), some prefix may or may not have
-     * persisted — the caller recovers by reading the tail and replaying its
-     * un-acknowledged chunks on a fresh request.
+     * The channel is not durable: the backend may close it at any time (its
+     * own connection bound, a deploy, a network cut). `handlers.onClose`
+     * fires exactly once per channel; after it, un-acked chunks may or may
+     * not have persisted, and the caller reconnects and resends them (the
+     * caller's framing layer is responsible for making that overlap safe,
+     * e.g. by deduplicating on the read side).
      *
-     * Optional: worlds that cannot stream a request body omit it, and callers
-     * fall back to {@link writeMulti} / {@link write}.
+     * Optional: worlds without a bidirectional transport omit it, and
+     * callers fall back to {@link writeMulti} / {@link write}.
      *
      * @param runId - The run ID
      * @param name - The stream name
-     * @param chunks - Chunks (frames) produced incrementally, one per read
+     * @param handlers - Ack/close callbacks for this channel
      */
-    writeStream?(
+    connectWrite?(
       runId: string,
       name: string,
-      chunks: ReadableStream<Uint8Array>
-    ): Promise<{ chunkIndices: number[] }>;
+      handlers: StreamWriteChannelHandlers
+    ): Promise<StreamWriteChannel>;
 
     close(runId: string, name: string): Promise<void>;
 

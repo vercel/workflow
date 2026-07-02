@@ -50,6 +50,7 @@ import {
 } from './serialization/format.js';
 import {
   buildFramedV2Frame,
+  deriveWriterId,
   FRAME_HEADER_SIZE,
   FRAME_MARKER_SIZE,
   readFrameMarker,
@@ -68,12 +69,8 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
-import { recoverStreamTail } from './serialization/segment-recovery.js';
-import {
-  DEFAULT_SEGMENT_CONFIG,
-  StreamSegmentWriter,
-} from './serialization/segment-writer.js';
 import * as stepModule from './serialization/step.js';
+import { StreamSocketWriter } from './serialization/stream-socket-writer.js';
 import {
   type FormatPrefix,
   isFormatPrefix,
@@ -128,6 +125,39 @@ export type SerializationFormatType =
  * (e.g., when starting a workflow or handling step return values).
  */
 const defaultUlid = monotonicFactory();
+
+/**
+ * The framing to hand `getDeserializeStream` for an object-stream ref: the
+ * ref's `framing` field when it says framed-v2, a PromiseLike as-is (the
+ * `getReadable` path resolves it from run metadata on first chunk), else
+ * undefined (legacy/framed-v1 object framing).
+ */
+function objectStreamFraming(value: {
+  framing?: unknown;
+}): 'framed-v2' | PromiseLike<'framed-v2' | undefined> | undefined {
+  const framing = value.framing;
+  if (framing === 'framed-v2') return framing;
+  if (
+    framing !== null &&
+    typeof framing === 'object' &&
+    typeof (framing as PromiseLike<unknown>).then === 'function'
+  ) {
+    return framing as PromiseLike<'framed-v2' | undefined>;
+  }
+  return undefined;
+}
+
+/**
+ * Mint a writerId for a framed-v2 stream writer. Seeded from the stable ULID
+ * source so it is replay-deterministic inside the workflow VM (and does not
+ * consume the VM's seeded RNG); outside the VM the fallback generator is fine
+ * because those writers are not replayed.
+ */
+export function newStableWriterId(
+  global: Record<string, any> = globalThis
+): Uint8Array {
+  return deriveWriterId(((global as any)[STABLE_ULID] || defaultUlid)());
+}
 
 /**
  * Detect if a readable stream is a byte stream.
@@ -302,13 +332,23 @@ export function getDeserializeStream(
   revivers: Partial<Revivers>,
   cryptoKey: EncryptionKeyParam,
   // When 'framed-v2', each frame carries a `[writerId][seq]` marker before the
-  // format-prefixed payload; it is stripped here and used to drop replays that
-  // recovery re-sent after they were already persisted.
-  framing?: 'framed-v2'
+  // format-prefixed payload; it is stripped here and used to drop frames that
+  // a reconnecting writer re-sent after they were already persisted. A
+  // PromiseLike defers the decision until the first chunk arrives — used by
+  // `getReadable`, which has no serialized ref to read the framing from and
+  // derives it from the run's metadata instead.
+  framing?: 'framed-v2' | PromiseLike<'framed-v2' | undefined>
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
-  const stripMarkers = framing === 'framed-v2';
+  let stripMarkers = framing === 'framed-v2';
+  let framingResolved = typeof framing !== 'object' || framing === null;
+  async function resolveFraming(): Promise<void> {
+    if (framingResolved) return;
+    stripMarkers =
+      (await (framing as PromiseLike<'framed-v2' | undefined>)) === 'framed-v2';
+    framingResolved = true;
+  }
   // framed-v2 only: highest seq already delivered per writerId (see the byte
   // unframer for the dedupe rationale). O(number of writers) memory.
   const maxSeqByWriter = new Map<string, bigint>();
@@ -418,6 +458,8 @@ export function getDeserializeStream(
 
   const stream = new TransformStream<Uint8Array, any>({
     async transform(chunk, controller) {
+      // Lazy framing (getReadable) settles before the first byte is parsed.
+      await resolveFraming();
       // framed-v2 is always length-prefixed (the writer opts in via the ref's
       // `framing` field), so skip the legacy-vs-framed sniffing entirely.
       if (stripMarkers) {
@@ -914,8 +956,8 @@ interface StreamSink {
 
 /**
  * Legacy sink: buffer frames and flush every `STREAM_FLUSH_INTERVAL_MS` via
- * `writeMulti` (one short PUT per batch). Used when the world cannot stream a
- * request body (`writeStream` absent) or the writer isn't framed-v2. `world` is
+ * `writeMulti` (one short PUT per batch). Used when the world has no write
+ * channel (`connectWrite` absent) or the writer isn't framed-v2. `world` is
  * already resolved; `ensureRunReady` orders the first write after the run
  * exists (turbo optimistic start).
  */
@@ -1016,66 +1058,44 @@ function createBatchSink(
 }
 
 /**
- * Streaming sink: drive frames through a single long-lived request via
- * {@link StreamSegmentWriter}, recovering from an unclean segment failure by
- * matching this writer's own framed-v2 markers in the persisted tail. Selected
- * only when the world supports `writeStream` and a `writerId` is present (so
- * frames carry the marker recovery relies on).
+ * Socket sink: drive frames through long-lived write channels via
+ * {@link StreamSocketWriter} — each frame is persisted, published, and acked
+ * as it arrives, and an unclean channel end is survived by resending the
+ * unacked frames on a fresh channel. Selected only when the world supports
+ * `connectWrite` and a `writerId` is present: resent frames can duplicate the
+ * persisted-but-unacked overlap, and it is the framed-v2 marker (which
+ * requires the writerId) that lets the read side deduplicate them.
  */
-function createSegmentSink(
+function createSocketSink(
   world: World,
   runId: string,
   name: string,
-  ensureRunReady: () => Promise<void>,
-  writerId: Uint8Array
+  ensureRunReady: () => Promise<void>
 ): StreamSink {
   // Presence is checked before this sink is chosen; capture it so the closures
   // don't need a non-null assertion on every call.
-  const { writeStream } = world.streams;
-  if (!writeStream) {
+  const { connectWrite } = world.streams;
+  if (!connectWrite) {
     throw new WorkflowRuntimeError(
-      'createSegmentSink requires a world that supports streaming writes.'
+      'createSocketSink requires a world that supports stream write channels.'
     );
   }
 
-  const transport = {
-    getInfo: () => world.streams.getInfo(runId, name),
-    getChunks: (opts: { limit?: number; cursor?: string }) =>
-      world.streams.getChunks(runId, name, opts),
-    writeStream: (frames: ReadableStream<Uint8Array>) =>
-      writeStream(runId, name, frames),
-  };
-
-  const segmentWriter = new StreamSegmentWriter(
-    {
-      writeStream: transport.writeStream,
-      ensureReady: ensureRunReady,
-      recover: (unconfirmed, priorIndices) => {
-        // The failed segment's frames were reserved at or after the highest
-        // index the prior clean segment confirmed.
-        const scanFromIndex = priorIndices.length
-          ? Math.max(...priorIndices) + 1
-          : 0;
-        return recoverStreamTail(
-          unconfirmed,
-          { writerId, scanFromIndex },
-          transport
-        );
-      },
-    },
-    DEFAULT_SEGMENT_CONFIG
-  );
+  const socketWriter = new StreamSocketWriter({
+    connect: (handlers) => connectWrite(runId, name, handlers),
+    ensureReady: ensureRunReady,
+  });
 
   return {
-    write: (chunk) => segmentWriter.write(chunk),
+    write: (chunk) => socketWriter.write(chunk),
     close: async () => {
-      // Commit all frames first; only then mark the stream done (X-Stream-Done
-      // must never race a pending segment/recovery).
-      await segmentWriter.close();
+      // Wait until every frame is acked (durable) before marking the stream
+      // done — X-Stream-Done must never race in-flight frames.
+      await socketWriter.close();
       await world.streams.close(runId, name);
     },
     abort: (reason) => {
-      void segmentWriter.abort(reason);
+      socketWriter.abort(reason);
     },
   };
 }
@@ -1090,10 +1110,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
    * flush/close orders the write after the run's creation. `undefined` outside
    * turbo and on the await path, where the run was already durable.
    * @param writerId When present (framed-v2), frames carry a per-writer marker,
-   * so the writer streams through a single long-lived request and recovers from
-   * an unclean disconnect by matching its own frames in the tail — provided the
-   * world supports `writeStream`. Absent, or on a world without streaming
-   * writes, the writer uses the legacy per-batch flush path.
+   * so the writer sends over a long-lived ack'd write channel and survives an
+   * unclean disconnect by resending unacked frames (the marker lets readers
+   * deduplicate the overlap) — provided the world supports `connectWrite`.
+   * Absent, or on a world without write channels, the writer uses the legacy
+   * per-batch flush path.
    */
   constructor(
     runId: string,
@@ -1128,16 +1149,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     };
 
     // The sink is chosen lazily on first use, once the world is resolved: the
-    // streaming segment writer when the world can stream a body and frames are
-    // framed-v2 (writerId present), else the legacy per-batch flush.
+    // ack-driven socket writer when the world has write channels and frames
+    // are framed-v2 (writerId present), else the legacy per-batch flush.
     // Encryption is handled at the framing level (getSerializeStream), not here.
     let sinkPromise: Promise<StreamSink> | null = null;
     const getSink = (): Promise<StreamSink> => {
       // Promise.resolve tolerates a world resolved synchronously (e.g. test
       // mocks of getWorldLazy that return a plain object, not a promise).
       sinkPromise ??= Promise.resolve(worldPromise).then((world) =>
-        writerId && typeof world.streams.writeStream === 'function'
-          ? createSegmentSink(world, runId, name, ensureRunReady, writerId)
+        writerId && typeof world.streams.connectWrite === 'function'
+          ? createSocketSink(world, runId, name, ensureRunReady)
           : createBatchSink(world, runId, name, ensureRunReady)
       );
       return sinkPromise;
@@ -1505,6 +1526,12 @@ export function getExternalReducers(
         if (typeof existingDeploymentId === 'string') {
           descriptor.deploymentId = existingDeploymentId;
         }
+        // Framing is per-stream, not per-writer: a receiver of this writable
+        // must frame exactly like the stream's creator (its frames interleave
+        // with everyone else's on one server stream).
+        if ((value as any)[STREAM_FRAMING_SYMBOL] === 'framed-v2') {
+          descriptor.framing = 'framed-v2';
+        }
         return descriptor;
       }
 
@@ -1605,6 +1632,11 @@ export function getWorkflowReducers(
       const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
+      }
+      // Per-stream framing survives the VM round-trip so the step-side
+      // writer frames like the stream's creator.
+      if (value[STREAM_FRAMING_SYMBOL] === 'framed-v2') {
+        s.framing = 'framed-v2';
       }
       return s;
     },
@@ -1760,6 +1792,11 @@ function getStepReducers(
       ];
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
+      }
+      // Per-stream framing: every writer of this stream must match its
+      // creator (see the external reducer's fast path).
+      if ((value as any)[STREAM_FRAMING_SYMBOL] === 'framed-v2') {
+        s.framing = 'framed-v2';
       }
       return s;
     },
@@ -2206,8 +2243,8 @@ export function getExternalRevivers(
 
         // Create an identity (or unframing) transform to give the user a readable
         const { readable: userReadable, writable } =
-          value.framing === 'framed-v1'
-            ? getByteUnframingStream()
+          value.framing === 'framed-v1' || value.framing === 'framed-v2'
+            ? getByteUnframingStream(value.framing)
             : new global.TransformStream();
 
         // Start the flushable pipe in the background
@@ -2230,7 +2267,8 @@ export function getExternalRevivers(
         );
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId, cryptoKey),
-          cryptoKey
+          cryptoKey,
+          objectStreamFraming(value)
         );
         const state = createFlushableState();
         ops.push(state.promise);
@@ -2256,13 +2294,21 @@ export function getExternalRevivers(
           ? cryptoKey
           : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
 
+      // The stream's creator fixed its framing; a framed-v2 stream needs this
+      // writer to stamp markers under its own identity so readers can
+      // deduplicate its frames independently of the other writers'.
+      const framedV2 = value.framing === 'framed-v2';
+      const writerId = framedV2 ? newStableWriterId(global) : undefined;
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
-        targetKey
+        targetKey,
+        writerId
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
-        value.name
+        value.name,
+        undefined,
+        writerId
       );
 
       // Create flushable state for this stream
@@ -2294,6 +2340,14 @@ export function getExternalRevivers(
             writable: false,
           }
         );
+      }
+      if (framedV2) {
+        // Keep the stream's framing on the handle so forwarding it onward
+        // (this writable serialized again) reproduces the same descriptor.
+        Object.defineProperty(serialize.writable, STREAM_FRAMING_SYMBOL, {
+          value: 'framed-v2',
+          writable: false,
+        });
       }
 
       return serialize.writable;
@@ -2407,6 +2461,12 @@ export function getWorkflowRevivers(
       if (typeof value.deploymentId === 'string') {
         descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
           value: value.deploymentId,
+          writable: false,
+        };
+      }
+      if (value.framing === 'framed-v2') {
+        descriptor[STREAM_FRAMING_SYMBOL] = {
+          value: 'framed-v2',
           writable: false,
         };
       }
@@ -2602,8 +2662,8 @@ function getStepRevivers(
 
         // Create an identity (or unframing) transform to give the user a readable
         const { readable: userReadable, writable } =
-          value.framing === 'framed-v1'
-            ? getByteUnframingStream()
+          value.framing === 'framed-v1' || value.framing === 'framed-v2'
+            ? getByteUnframingStream(value.framing)
             : new global.TransformStream();
 
         // Start the flushable pipe in the background
@@ -2618,7 +2678,8 @@ function getStepRevivers(
       } else {
         const transform = getDeserializeStream(
           getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
-          cryptoKey
+          cryptoKey,
+          objectStreamFraming(value)
         );
         const state = createFlushableState();
         ops.push(state.promise);
@@ -2659,13 +2720,20 @@ function getStepRevivers(
           ? cryptoKey
           : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
 
+      // Match the stream creator's framing (see the external reviver): a
+      // framed-v2 stream gets markers under this writer's own identity.
+      const framedV2 = value.framing === 'framed-v2';
+      const writerId = framedV2 ? newStableWriterId(global) : undefined;
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
-        targetKey
+        targetKey,
+        writerId
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
-        value.name
+        value.name,
+        undefined,
+        writerId
       );
 
       // Create flushable state for this stream
@@ -2703,6 +2771,14 @@ function getStepRevivers(
             writable: false,
           }
         );
+      }
+      if (framedV2) {
+        // Keep the stream's framing on the handle so forwarding it onward
+        // (this writable serialized again) reproduces the same descriptor.
+        Object.defineProperty(serialize.writable, STREAM_FRAMING_SYMBOL, {
+          value: 'framed-v2',
+          writable: false,
+        });
       }
 
       return serialize.writable;
