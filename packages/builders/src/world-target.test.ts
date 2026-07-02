@@ -6,8 +6,10 @@ import {
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
   normalizeWorkflowTargetWorld,
+  resolveWorkflowCoreRuntimeAlias,
   resolveWorkflowTargetWorldAlias,
   resolveWorkflowTargetWorldSpecifier,
+  WORKFLOW_CORE_RUNTIME_MODULE,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from './world-target.js';
 
@@ -110,5 +112,25 @@ describe('workflow world target', () => {
     expect(WORKFLOW_WORLD_TARGET_MODULE).toBe(
       '@workflow/core/runtime/world-target'
     );
+  });
+
+  it('resolves the core runtime module from the builder package when the app omits it', () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'workflow-world-target-'));
+
+    try {
+      const alias = resolveWorkflowCoreRuntimeAlias({
+        workingDir: testDir,
+      });
+
+      expect(alias.replace(/\\/g, '/')).toMatch(
+        /packages\/core\/dist\/runtime\.js$/
+      );
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the core runtime module as the runtime alias key', () => {
+    expect(WORKFLOW_CORE_RUNTIME_MODULE).toBe('@workflow/core/runtime');
   });
 });

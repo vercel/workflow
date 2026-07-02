@@ -71,8 +71,10 @@ export {
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
   normalizeWorkflowTargetWorld,
+  resolveWorkflowCoreRuntimeAlias,
   resolveWorkflowTargetWorldAlias,
   resolveWorkflowTargetWorldSpecifier,
+  WORKFLOW_CORE_RUNTIME_MODULE,
   WORKFLOW_WORLD_TARGET_MODULE,
   type WorkflowWorldTargetEnvironment,
 } from './world-target.js';

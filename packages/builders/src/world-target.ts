@@ -8,6 +8,7 @@ import type * as esbuild from 'esbuild';
 
 export const WORKFLOW_WORLD_TARGET_MODULE =
   '@workflow/core/runtime/world-target';
+export const WORKFLOW_CORE_RUNTIME_MODULE = '@workflow/core/runtime';
 
 export { getWorldImport } from '@workflow/utils';
 
@@ -57,6 +58,28 @@ export function resolveWorkflowTargetWorldAlias({
       return createRequire(import.meta.url).resolve(normalizedTargetWorld);
     } catch {
       return normalizedTargetWorld;
+    }
+  }
+}
+
+export function resolveWorkflowCoreRuntimeAlias({
+  workingDir,
+}: {
+  workingDir: string;
+}): string {
+  const require = createResolverRequire(workingDir);
+
+  try {
+    return require.resolve(WORKFLOW_CORE_RUNTIME_MODULE, {
+      paths: [workingDir],
+    });
+  } catch {
+    try {
+      return createRequire(import.meta.url).resolve(
+        WORKFLOW_CORE_RUNTIME_MODULE
+      );
+    } catch {
+      return WORKFLOW_CORE_RUNTIME_MODULE;
     }
   }
 }

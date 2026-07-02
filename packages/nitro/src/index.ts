@@ -3,6 +3,8 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ensureWorkflowTargetWorldEnv,
+  resolveWorkflowCoreRuntimeAlias,
+  WORKFLOW_CORE_RUNTIME_MODULE,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   WORKFLOW_QUEUE_TRIGGER,
   WORKFLOW_WORLD_TARGET_MODULE,
@@ -185,6 +187,8 @@ export default {
 
     nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE] =
       resolveWorkflowTargetWorldAlias(nitro, workflowTargetWorld);
+    nitro.options.alias[WORKFLOW_CORE_RUNTIME_MODULE] =
+      resolveWorkflowCoreRuntimeAlias({ workingDir: nitro.options.rootDir });
     nitro.options.alias['pg-native'] ??= WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS;
 
     // Add transform plugin at the BEGINNING to run before other transforms

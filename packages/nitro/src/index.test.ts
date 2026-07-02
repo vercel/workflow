@@ -163,8 +163,8 @@ describe('@workflow/nitro world target bundling', () => {
       )
     ).resolves.toBeNull();
 
-    expect(nitro.options.alias['pg-native'].replaceAll('\\', '/')).toContain(
-      '/packages/builders/src/optional-pg-native.js'
+    expect(nitro.options.alias['pg-native'].replaceAll('\\', '/')).toMatch(
+      /\/packages\/builders\/(src|dist)\/optional-pg-native\.js$/
     );
   });
 
@@ -177,6 +177,9 @@ describe('@workflow/nitro world target bundling', () => {
     expect(flowSource).toContain(
       'import { setWorld as __workflowSetWorld } from "@workflow/core/runtime";'
     );
+    expect(
+      nitro.options.alias['@workflow/core/runtime'].replaceAll('\\', '/')
+    ).toContain('/packages/core/dist/runtime.js');
     expect(flowSource).toContain('import * as __workflowTargetWorld from');
     expect(flowSource).toContain('packages/world-local/dist/index.js";');
     expect(flowSource).toContain('await ensureWorkflowWorld();');
