@@ -3,6 +3,7 @@ import {
   SerializationError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import type { World } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
@@ -42,18 +43,18 @@ import {
   rethrowIfRuntimeError,
 } from './serialization/errors.js';
 import {
+  decodeFormatPrefix,
+  encodeWithFormatPrefix,
+  isEncrypted,
+  peekFormatPrefix,
+} from './serialization/format.js';
+import {
   buildFramedV2Frame,
   FRAME_HEADER_SIZE,
   FRAME_MARKER_SIZE,
   readFrameMarker,
   writerIdKey,
 } from './serialization/frame-marker.js';
-import {
-  decodeFormatPrefix,
-  encodeWithFormatPrefix,
-  isEncrypted,
-  peekFormatPrefix,
-} from './serialization/format.js';
 import {
   getClassReducers,
   getClassRevivers,
@@ -67,6 +68,11 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
+import { recoverStreamTail } from './serialization/segment-recovery.js';
+import {
+  DEFAULT_SEGMENT_CONFIG,
+  StreamSegmentWriter,
+} from './serialization/segment-writer.js';
 import * as stepModule from './serialization/step.js';
 import {
   type FormatPrefix,
@@ -899,6 +905,181 @@ export function createReconnectingFramedStream(
  */
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
+/** The sink behavior the WritableStream delegates to, chosen per world. */
+interface StreamSink {
+  write(chunk: Uint8Array): Promise<void>;
+  close(): Promise<void>;
+  abort(reason?: unknown): void;
+}
+
+/**
+ * Legacy sink: buffer frames and flush every `STREAM_FLUSH_INTERVAL_MS` via
+ * `writeMulti` (one short PUT per batch). Used when the world cannot stream a
+ * request body (`writeStream` absent) or the writer isn't framed-v2. `world` is
+ * already resolved; `ensureRunReady` orders the first write after the run
+ * exists (turbo optimistic start).
+ */
+function createBatchSink(
+  world: World,
+  runId: string,
+  name: string,
+  ensureRunReady: () => Promise<void>
+): StreamSink {
+  let buffer: Uint8Array[] = [];
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let flushPromise: Promise<void> | null = null;
+  const flushIntervalMs =
+    world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+  let flushWaiters: Array<{
+    resolve: () => void;
+    reject: (err: unknown) => void;
+  }> = [];
+
+  const flush = async (): Promise<void> => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (buffer.length === 0) return;
+    await ensureRunReady();
+    // Copy chunks to flush, but don't clear the buffer until the write
+    // succeeds — this prevents data loss if the write operation fails.
+    const chunksToFlush = buffer.slice();
+    if (
+      typeof world.streams.writeMulti === 'function' &&
+      chunksToFlush.length > 1
+    ) {
+      await world.streams.writeMulti(runId, name, chunksToFlush);
+    } else {
+      for (const chunk of chunksToFlush) {
+        await world.streams.write(runId, name, chunk);
+      }
+    }
+    buffer = [];
+  };
+
+  const scheduleFlush = (): void => {
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      const currentWaiters = flushWaiters;
+      flushWaiters = [];
+      flushPromise = flush().then(
+        () => {
+          for (const w of currentWaiters) w.resolve();
+        },
+        (err) => {
+          for (const w of currentWaiters) w.reject(err);
+        }
+      );
+    }, flushIntervalMs);
+  };
+
+  return {
+    async write(chunk) {
+      if (flushPromise) {
+        await flushPromise;
+        flushPromise = null;
+      }
+      buffer.push(chunk);
+      scheduleFlush();
+      // Resolve only when the scheduled flush completes so callers (flushablePipe)
+      // know the data reached the server before decrementing pendingOps.
+      await new Promise<void>((resolve, reject) => {
+        flushWaiters.push({ resolve, reject });
+      });
+    },
+    async close() {
+      if (flushPromise) {
+        await flushPromise;
+        flushPromise = null;
+      }
+      await flush();
+      // A close with an empty buffer skips flush()'s write (and its barrier),
+      // but can itself be the first write to a brand-new stream — gate it too.
+      await ensureRunReady();
+      await world.streams.close(runId, name);
+    },
+    abort(reason) {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      buffer = [];
+      // Reject pending waiters so write() promises settle and don't leak.
+      const waiters = flushWaiters;
+      flushWaiters = [];
+      const abortError = reason ?? new Error('Stream aborted');
+      for (const w of waiters) w.reject(abortError);
+    },
+  };
+}
+
+/**
+ * Streaming sink: drive frames through a single long-lived request via
+ * {@link StreamSegmentWriter}, recovering from an unclean segment failure by
+ * matching this writer's own framed-v2 markers in the persisted tail. Selected
+ * only when the world supports `writeStream` and a `writerId` is present (so
+ * frames carry the marker recovery relies on).
+ */
+function createSegmentSink(
+  world: World,
+  runId: string,
+  name: string,
+  ensureRunReady: () => Promise<void>,
+  writerId: Uint8Array
+): StreamSink {
+  // Presence is checked before this sink is chosen; capture it so the closures
+  // don't need a non-null assertion on every call.
+  const { writeStream } = world.streams;
+  if (!writeStream) {
+    throw new WorkflowRuntimeError(
+      'createSegmentSink requires a world that supports streaming writes.'
+    );
+  }
+
+  const transport = {
+    getInfo: () => world.streams.getInfo(runId, name),
+    getChunks: (opts: { limit?: number; cursor?: string }) =>
+      world.streams.getChunks(runId, name, opts),
+    writeStream: (frames: ReadableStream<Uint8Array>) =>
+      writeStream(runId, name, frames),
+  };
+
+  const segmentWriter = new StreamSegmentWriter(
+    {
+      writeStream: transport.writeStream,
+      ensureReady: ensureRunReady,
+      recover: (unconfirmed, priorIndices) => {
+        // The failed segment's frames were reserved at or after the highest
+        // index the prior clean segment confirmed.
+        const scanFromIndex = priorIndices.length
+          ? Math.max(...priorIndices) + 1
+          : 0;
+        return recoverStreamTail(
+          unconfirmed,
+          { writerId, scanFromIndex },
+          transport
+        );
+      },
+    },
+    DEFAULT_SEGMENT_CONFIG
+  );
+
+  return {
+    write: (chunk) => segmentWriter.write(chunk),
+    close: async () => {
+      // Commit all frames first; only then mark the stream done (X-Stream-Done
+      // must never race a pending segment/recovery).
+      await segmentWriter.close();
+      await world.streams.close(runId, name);
+    },
+    abort: (reason) => {
+      void segmentWriter.abort(reason);
+    },
+  };
+}
+
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   /**
    * @param runReadyBarrier Turbo mode only: a promise that resolves once the
@@ -908,8 +1089,18 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
    * and be rejected as run-not-found. Awaiting this once before the first
    * flush/close orders the write after the run's creation. `undefined` outside
    * turbo and on the await path, where the run was already durable.
+   * @param writerId When present (framed-v2), frames carry a per-writer marker,
+   * so the writer streams through a single long-lived request and recovers from
+   * an unclean disconnect by matching its own frames in the tail — provided the
+   * world supports `writeStream`. Absent, or on a world without streaming
+   * writes, the writer uses the legacy per-batch flush path.
    */
-  constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
+  constructor(
+    runId: string,
+    name: string,
+    runReadyBarrier?: Promise<unknown>,
+    writerId?: Uint8Array
+  ) {
     if (typeof runId !== 'string') {
       throw new WorkflowRuntimeError(
         `"runId" must be a string, got "${typeof runId}"`
@@ -936,129 +1127,34 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
-    // Buffering state for batched writes
-    // Encryption/decryption is handled at the framing level by
-    // getSerializeStream/getDeserializeStream, not here.
-    let buffer: Uint8Array[] = [];
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    let flushPromise: Promise<void> | null = null;
-    let resolvedFlushIntervalMs: number | undefined;
-
-    const flush = async (): Promise<void> => {
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
-
-      if (buffer.length === 0) return;
-
-      // Order the first server write after the run exists (turbo optimistic
-      // start); a no-op on every later flush and outside turbo.
-      await ensureRunReady();
-
-      // Copy chunks to flush, but don't clear buffer until write succeeds
-      // This prevents data loss if the write operation fails
-      const chunksToFlush = buffer.slice();
-
-      const world = await worldPromise;
-      // Cache the flush interval from the world on first use
-      if (resolvedFlushIntervalMs === undefined) {
-        resolvedFlushIntervalMs =
-          world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
-      }
-      // Use writeMulti if available for batch writes
-      if (
-        typeof world.streams.writeMulti === 'function' &&
-        chunksToFlush.length > 1
-      ) {
-        await world.streams.writeMulti(runId, name, chunksToFlush);
-      } else {
-        // Fall back to sequential writes
-        for (const chunk of chunksToFlush) {
-          await world.streams.write(runId, name, chunk);
-        }
-      }
-
-      // Only clear buffer after successful write to prevent data loss
-      buffer = [];
-    };
-
-    /** Resolvers/rejectors waiting for the current scheduled flush */
-    let flushWaiters: Array<{
-      resolve: () => void;
-      reject: (err: unknown) => void;
-    }> = [];
-
-    const scheduleFlush = (): void => {
-      if (flushTimer) return; // Already scheduled
-
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        const currentWaiters = flushWaiters;
-        flushWaiters = [];
-        flushPromise = flush().then(
-          () => {
-            for (const w of currentWaiters) w.resolve();
-          },
-          (err) => {
-            for (const w of currentWaiters) w.reject(err);
-          }
-        );
-      }, resolvedFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
+    // The sink is chosen lazily on first use, once the world is resolved: the
+    // streaming segment writer when the world can stream a body and frames are
+    // framed-v2 (writerId present), else the legacy per-batch flush.
+    // Encryption is handled at the framing level (getSerializeStream), not here.
+    let sinkPromise: Promise<StreamSink> | null = null;
+    const getSink = (): Promise<StreamSink> => {
+      // Promise.resolve tolerates a world resolved synchronously (e.g. test
+      // mocks of getWorldLazy that return a plain object, not a promise).
+      sinkPromise ??= Promise.resolve(worldPromise).then((world) =>
+        writerId && typeof world.streams.writeStream === 'function'
+          ? createSegmentSink(world, runId, name, ensureRunReady, writerId)
+          : createBatchSink(world, runId, name, ensureRunReady)
+      );
+      return sinkPromise;
     };
 
     super({
       async write(chunk) {
-        // Wait for any in-progress flush to complete before adding to buffer
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
-        }
-
-        buffer.push(chunk);
-        scheduleFlush();
-
-        // Wait for the scheduled flush to complete so that callers
-        // (like flushablePipe) know data has reached the server
-        // before decrementing pendingOps. Without this, pendingOps
-        // reaches 0 when the buffered write returns (instant), but
-        // the 10ms flush timer hasn't fired yet.
-        await new Promise<void>((resolve, reject) => {
-          flushWaiters.push({ resolve, reject });
-        });
+        await (await getSink()).write(chunk);
       },
       async close() {
-        // Wait for any in-progress flush to complete
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
-        }
-
-        // Flush any remaining buffered chunks
-        await flush();
-
-        // A close with an empty buffer skips flush()'s write (and its barrier),
-        // but can itself be the first write to a brand-new stream — gate it too.
-        await ensureRunReady();
-
-        const world = await worldPromise;
-        await world.streams.close(runId, name);
+        // getSink() even with no prior write, so an empty stream still sends
+        // the done marker (and orders after the run-ready barrier).
+        await (await getSink()).close();
       },
-      abort(reason) {
-        // Clean up timer to prevent leaks
-        if (flushTimer) {
-          clearTimeout(flushTimer);
-          flushTimer = null;
-        }
-        // Discard buffered chunks - they won't be written
-        buffer = [];
-        // Reject any pending flushWaiters so the write() promises settle
-        // and don't leak. Without this, write() hangs forever on an
-        // unsettled promise because the cleared timer will never fire.
-        const waiters = flushWaiters;
-        flushWaiters = [];
-        const abortError = reason ?? new Error('Stream aborted');
-        for (const w of waiters) w.reject(abortError);
+      async abort(reason) {
+        // Only a sink that was actually created holds buffered state to discard.
+        if (sinkPromise) (await sinkPromise).abort(reason);
       },
     });
   }
