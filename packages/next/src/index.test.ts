@@ -10,7 +10,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { buildMock, builderConfigs, getNextBuilderMock } = vi.hoisted(() => {
+const {
+  buildMock,
+  builderConfigs,
+  getNextBuilderMock,
+  prewarmWorkflowSwcPluginCacheMock,
+} = vi.hoisted(() => {
   const buildMock = vi.fn(async () => {});
   const builderConfigs: Record<string, unknown>[] = [];
   const getNextBuilderMock = vi.fn(async () => {
@@ -22,11 +27,13 @@ const { buildMock, builderConfigs, getNextBuilderMock } = vi.hoisted(() => {
       }
     };
   });
+  const prewarmWorkflowSwcPluginCacheMock = vi.fn();
 
   return {
     buildMock,
     builderConfigs,
     getNextBuilderMock,
+    prewarmWorkflowSwcPluginCacheMock,
   };
 });
 
@@ -34,15 +41,13 @@ vi.mock('./builder.js', () => ({
   getNextBuilder: getNextBuilderMock,
 }));
 
+vi.mock('./swc-plugin-cache.js', () => ({
+  prewarmWorkflowSwcPluginCache: prewarmWorkflowSwcPluginCacheMock,
+}));
+
 import { withWorkflow } from './index.js';
 
-const loaderStubPath = join(
-  process.cwd(),
-  'packages',
-  'next',
-  'src',
-  'loader.js'
-);
+const loaderStubPath = join(__dirname, 'loader.js');
 const hadLoaderStub = existsSync(loaderStubPath);
 const realTmpDir = realpathSync(tmpdir());
 
@@ -65,6 +70,7 @@ describe('withWorkflow builder config', () => {
     buildMock.mockClear();
     builderConfigs.length = 0;
     getNextBuilderMock.mockClear();
+    prewarmWorkflowSwcPluginCacheMock.mockClear();
 
     if (!hadLoaderStub) {
       writeFileSync(loaderStubPath, 'module.exports = {};\n', 'utf-8');
@@ -115,6 +121,28 @@ describe('withWorkflow builder config', () => {
       moduleSpecifierRoot: process.cwd(),
       workingDir: process.cwd(),
     });
+  });
+
+  it.each([
+    'phase-production-build',
+    'phase-development-server',
+  ])('prewarms the SWC plugin cache during %s', async (phase) => {
+    const config = withWorkflow({});
+
+    await config(phase, { defaultConfig: {} });
+
+    expect(prewarmWorkflowSwcPluginCacheMock).toHaveBeenCalledOnce();
+    expect(prewarmWorkflowSwcPluginCacheMock).toHaveBeenCalledWith(
+      process.cwd()
+    );
+  });
+
+  it('does not prewarm the SWC plugin cache for the production server', async () => {
+    const config = withWorkflow({});
+
+    await config('phase-production-server', { defaultConfig: {} });
+
+    expect(prewarmWorkflowSwcPluginCacheMock).not.toHaveBeenCalled();
   });
 
   it('removes workflow packages from serverExternalPackages for this build', async () => {
