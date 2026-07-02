@@ -89,6 +89,23 @@ describe('workflow world target', () => {
     ).toBe('@workflow/world-custom');
   });
 
+  it('resolves built-in worlds from the builder package when the app omits them', () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'workflow-world-target-'));
+
+    try {
+      const alias = resolveWorkflowTargetWorldAlias({
+        workingDir: testDir,
+        targetWorld: '@workflow/world-local',
+      });
+
+      expect(alias.replace(/\\/g, '/')).toMatch(
+        /packages\/world-local\/dist\/index\.js$/
+      );
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses the core target module as the alias key', () => {
     expect(WORKFLOW_WORLD_TARGET_MODULE).toBe(
       '@workflow/core/runtime/world-target'

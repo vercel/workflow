@@ -1,6 +1,9 @@
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   createBuildQueue,
   ensureWorkflowTargetWorldEnv,
+  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   resolveWorkflowTargetWorldAlias,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
@@ -27,6 +30,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
     workflowTransformPlugin() as Plugin,
     {
       name: 'workflow:sveltekit',
+      enforce: 'post',
       config() {
         const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
         const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
@@ -41,6 +45,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
           resolve: {
             alias: {
               [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
+              'pg-native': WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
             },
           },
         };
@@ -84,7 +89,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
         }
 
         const banner =
-          "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+          "import { createRequire as __wkfCreateRequire } from 'node:module'; import { fileURLToPath as __wkfFileURLToPath } from 'node:url'; import { dirname as __wkfDirname } from 'node:path'; const __filename = __wkfFileURLToPath(import.meta.url); const __dirname = __wkfDirname(__filename); if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
         const rollupOptions = config.build.rollupOptions;
         rollupOptions.output ??= {};
         const output = rollupOptions.output;
@@ -101,10 +106,48 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
               : `${banner}\n${existing}`;
         }
       },
+      closeBundle() {
+        patchAdapterNodeServerChunks(process.cwd());
+      },
     },
     workflowHotUpdatePlugin({
       builder: () => builder,
       enqueue,
     }),
   ];
+}
+
+function patchAdapterNodeServerChunks(cwd: string): void {
+  const serverDir = join(cwd, 'build/server');
+  if (!existsSync(serverDir)) {
+    return;
+  }
+
+  const banner =
+    "import { fileURLToPath as __wkfFileURLToPath } from 'node:url'; import { dirname as __wkfDirname } from 'node:path'; const __filename = __wkfFileURLToPath(import.meta.url); const __dirname = __wkfDirname(__filename);";
+
+  const visit = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(file);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.js')) {
+        continue;
+      }
+
+      const source = readFileSync(file, 'utf-8');
+      const needsFilename =
+        /\b__(?:file|dir)name\b/.test(source) &&
+        !source.includes('const __filename =');
+      if (!needsFilename) {
+        continue;
+      }
+
+      writeFileSync(file, `${banner}\n${source}`);
+    }
+  };
+
+  visit(serverDir);
 }

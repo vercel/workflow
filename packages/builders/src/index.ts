@@ -28,6 +28,7 @@ export {
   resolveModuleSpecifier,
 } from './module-specifier.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
+export { WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS } from './optional-pg-native-alias.js';
 export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,

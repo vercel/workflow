@@ -1,7 +1,7 @@
-import { fileURLToPath } from 'node:url';
 import {
   createBuildQueue,
   ensureWorkflowTargetWorldEnv,
+  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   resolveWorkflowTargetWorldAlias,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
@@ -14,10 +14,6 @@ import type { Plugin, TransformResult } from 'vite';
 import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
-
-const OPTIONAL_PG_NATIVE_ALIAS = fileURLToPath(
-  new URL('./optional-pg-native.js', import.meta.url)
-);
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
@@ -42,7 +38,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         resolve: {
           alias: {
             [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
-            'pg-native': OPTIONAL_PG_NATIVE_ALIAS,
+            'pg-native': WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
           },
         },
       };

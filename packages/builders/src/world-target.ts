@@ -53,7 +53,11 @@ export function resolveWorkflowTargetWorldAlias({
       paths: [workingDir],
     });
   } catch {
-    return normalizedTargetWorld;
+    try {
+      return createRequire(import.meta.url).resolve(normalizedTargetWorld);
+    } catch {
+      return normalizedTargetWorld;
+    }
   }
 }
 

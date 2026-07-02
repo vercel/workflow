@@ -164,8 +164,22 @@ describe('@workflow/nitro world target bundling', () => {
     ).resolves.toBeNull();
 
     expect(nitro.options.alias['pg-native'].replaceAll('\\', '/')).toContain(
-      '/packages/nitro/src/optional-pg-native.js'
+      '/packages/builders/src/optional-pg-native.js'
     );
+  });
+
+  it('statically imports and seeds the configured world in dev virtual handlers', async () => {
+    const nitro = createNitroStub({ routing: true, dev: true });
+
+    await nitroModule.setup(nitro);
+
+    const flowSource = nitro.options.virtual['#workflow/workflows.mjs'];
+    expect(flowSource).toContain(
+      'import { setWorld as __workflowSetWorld } from "@workflow/core/runtime";'
+    );
+    expect(flowSource).toContain('import * as __workflowTargetWorld from');
+    expect(flowSource).toContain('packages/world-local/dist/index.js";');
+    expect(flowSource).toContain('await ensureWorkflowWorld();');
   });
 
   it('resolves the configured world target alias from the app root', async () => {

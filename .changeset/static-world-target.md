@@ -3,6 +3,7 @@
 '@workflow/builders': patch
 '@workflow/core': patch
 '@workflow/next': patch
+'@workflow/nest': patch
 '@workflow/nitro': patch
 '@workflow/nuxt': patch
 '@workflow/rollup': patch

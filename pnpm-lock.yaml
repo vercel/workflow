@@ -418,6 +418,12 @@ importers:
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
+      '@workflow/world-local':
+        specifier: workspace:*
+        version: link:../world-local
+      '@workflow/world-vercel':
+        specifier: workspace:*
+        version: link:../world-vercel
       builtin-modules:
         specifier: 5.0.0
         version: 5.0.0

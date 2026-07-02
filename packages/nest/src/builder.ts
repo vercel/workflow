@@ -93,7 +93,7 @@ export class NestLocalBuilder extends BaseBuilder {
       stepsOutfile: join(this.#outDir, 'steps.mjs'),
       flowOutfile: join(this.#outDir, 'workflows.mjs'),
       format: 'esm',
-      bundleFinalOutput: false,
+      bundleFinalOutput: true,
       externalizeNonSteps: true,
     });
 
@@ -107,7 +107,7 @@ export class NestLocalBuilder extends BaseBuilder {
 
     await this.createWebhookBundle({
       outfile: join(this.#outDir, 'webhook.mjs'),
-      bundle: false,
+      bundle: true,
     });
 
     // Generate manifest

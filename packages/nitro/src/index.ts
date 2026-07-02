@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ensureWorkflowTargetWorldEnv,
+  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   WORKFLOW_QUEUE_TRIGGER,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
@@ -157,10 +158,6 @@ function createWorkflowForceInlinePlugin(
   };
 }
 
-const OPTIONAL_PG_NATIVE_ALIAS = fileURLToPath(
-  new URL('./optional-pg-native.js', import.meta.url)
-);
-
 function createResolverRequire(nitro: Nitro) {
   return createRequire(join(nitro.options.rootDir, 'package.json'));
 }
@@ -188,7 +185,7 @@ export default {
 
     nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE] =
       resolveWorkflowTargetWorldAlias(nitro, workflowTargetWorld);
-    nitro.options.alias['pg-native'] ??= OPTIONAL_PG_NATIVE_ALIAS;
+    nitro.options.alias['pg-native'] ??= WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS;
 
     // Add transform plugin at the BEGINNING to run before other transforms
     // (especially before class property transforms that rename classes like _ClassName)
@@ -481,6 +478,65 @@ function addDashboardHandler(nitro: Nitro) {
 
 type VirtualHandlerPath = 'workflow/webhook.mjs' | 'workflow/workflows.mjs';
 
+function getStaticImportSpecifier(id: string): string {
+  if (id.startsWith('file://')) {
+    return id;
+  }
+  if (id.startsWith('/') || /^[A-Za-z]:[\\/]/.test(id)) {
+    return pathToFileURL(id).href;
+  }
+  return id;
+}
+
+function createDevWorldTargetSource(nitro: Nitro): string {
+  const workflowTargetWorldAlias =
+    nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE];
+  if (typeof workflowTargetWorldAlias !== 'string') {
+    throw new Error(
+      `Missing ${WORKFLOW_WORLD_TARGET_MODULE} alias for Nitro dev workflow handler`
+    );
+  }
+
+  const workflowTargetWorldImport = JSON.stringify(
+    getStaticImportSpecifier(workflowTargetWorldAlias)
+  );
+
+  return /* js */ `
+      import { setWorld as __workflowSetWorld } from "@workflow/core/runtime";
+      import * as __workflowTargetWorld from ${workflowTargetWorldImport};
+
+      let __workflowWorldPromise = null;
+
+      function __workflowCreateWorldFromModule(mod) {
+        if (typeof mod.createWorld === "function") {
+          return mod.createWorld();
+        }
+        if (typeof mod.createLocalWorld === "function") {
+          return mod.createLocalWorld();
+        }
+        if (typeof mod.createVercelWorld === "function") {
+          return mod.createVercelWorld();
+        }
+        if (typeof mod.default === "function") {
+          return mod.default();
+        }
+        if (mod.default && typeof mod.default === "object") {
+          return mod.default;
+        }
+        throw new Error("Configured workflow world module does not export a world factory");
+      }
+
+      async function ensureWorkflowWorld() {
+        if (!__workflowWorldPromise) {
+          __workflowWorldPromise = Promise.resolve(
+            __workflowCreateWorldFromModule(__workflowTargetWorld)
+          ).then(__workflowSetWorld);
+        }
+        await __workflowWorldPromise;
+      }
+  `;
+}
+
 function addVirtualHandler(
   nitro: Nitro,
   route: string,
@@ -502,6 +558,7 @@ function addVirtualHandler(
   };
 
   if (nitro.options.dev) {
+    const devWorldTargetSource = createDevWorldTargetSource(nitro);
     // Dev mode: load generated workflow bundles from disk at request time.
     // This keeps `.nitro/workflow/*.mjs` out of Nitro's own bundle graph,
     // which avoids rebuild loops and stale dependency graphs during HMR.
@@ -511,12 +568,14 @@ function addVirtualHandler(
       import { fromWebHandler } from "h3";
       import { statSync } from "node:fs";
       import { pathToFileURL } from "node:url";
+      ${devWorldTargetSource}
 
       const handlerPath = ${handlerImportPath};
       let currentVersion = "";
       let currentImportPath = "";
 
       async function loadPOST() {
+        await ensureWorkflowWorld();
         const version = String(statSync(handlerPath).mtimeMs);
         if (version !== currentVersion) {
           currentVersion = version;
@@ -535,12 +594,14 @@ function addVirtualHandler(
       nitro.options.virtual[`#${buildPath}`] = /* js */ `
       import { statSync } from "node:fs";
       import { pathToFileURL } from "node:url";
+      ${devWorldTargetSource}
 
       const handlerPath = ${handlerImportPath};
       let currentVersion = "";
       let currentImportPath = "";
 
       async function loadPOST() {
+        await ensureWorkflowWorld();
         const version = String(statSync(handlerPath).mtimeMs);
         if (version !== currentVersion) {
           currentVersion = version;
