@@ -44,7 +44,7 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { type EventTypeSchema, envNumber } from '@workflow/world';
+import type { EventTypeSchema } from '@workflow/world';
 import type { z } from 'zod';
 
 /** Every event type the world knows about (includes the server-only
@@ -153,24 +153,6 @@ export const MAX_EVENT_POST_RETRIES = 2;
  * queue's redelivery). */
 export const EVENT_POST_RETRY_BASE_MS = 100;
 const EVENT_POST_RETRY_JITTER_MS = 50;
-
-/** Effective event-POST retry count. Override: `WORKFLOW_MAX_EVENT_POST_RETRIES`. */
-const getMaxEventPostRetries = (): number =>
-  envNumber('WORKFLOW_MAX_EVENT_POST_RETRIES', MAX_EVENT_POST_RETRIES, {
-    integer: true,
-  });
-
-/** Effective retry base backoff. Override: `WORKFLOW_EVENT_POST_RETRY_BASE_MS`. */
-const getEventPostRetryBaseMs = (): number =>
-  envNumber('WORKFLOW_EVENT_POST_RETRY_BASE_MS', EVENT_POST_RETRY_BASE_MS, {
-    integer: true,
-  });
-
-/** Effective retry jitter. Override: `WORKFLOW_EVENT_POST_RETRY_JITTER_MS`. */
-const getEventPostRetryJitterMs = (): number =>
-  envNumber('WORKFLOW_EVENT_POST_RETRY_JITTER_MS', EVENT_POST_RETRY_JITTER_MS, {
-    integer: true,
-  });
 
 /** Transient transport error codes/names worth retrying. Mirrors undici's
  * default retryable `errorCodes` plus its timeout/retry codes. */
@@ -285,18 +267,15 @@ export async function withEventPostRetry<T>(
   eventType: WorkflowEventType
 ): Promise<T> {
   const retryable = EVENT_RETRY_ELIGIBILITY[eventType]?.retryable ?? false;
-  const maxRetries = getMaxEventPostRetries();
-  const retryBaseMs = getEventPostRetryBaseMs();
-  const retryJitterMs = getEventPostRetryJitterMs();
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
     } catch (err) {
       const transient = retryable && isRetryableEventPostError(err);
-      if (transient && attempt < maxRetries) {
+      if (transient && attempt < MAX_EVENT_POST_RETRIES) {
         const backoff =
-          retryBaseMs * 2 ** attempt +
-          Math.floor(Math.random() * retryJitterMs);
+          EVENT_POST_RETRY_BASE_MS * 2 ** attempt +
+          Math.floor(Math.random() * EVENT_POST_RETRY_JITTER_MS);
         logRetry('retrying event POST after transient failure', {
           eventType,
           attempt: attempt + 1,
