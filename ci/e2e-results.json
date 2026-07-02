@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-07-01T19:27:37.607Z",
-  "commit": "7eabc1f4c68af51eb99c23135ea3945b43842dbd",
+  "lastUpdated": "2026-07-02T06:08:56.566Z",
+  "commit": "532b0e10d6c3105aa86dc871a7a206f784d5a22d",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "passing",
-      "total": 4408,
-      "passed": 3870,
+      "total": 4256,
+      "passed": 3737,
       "failed": 0,
-      "skipped": 538,
+      "skipped": 519,
       "frameworks": {
         "astro": {
           "total": 304,
@@ -37,8 +37,8 @@
           "failed": 0
         },
         "nextjs-webpack": {
-          "total": 608,
-          "passed": 570,
+          "total": 456,
+          "passed": 437,
           "failed": 0
         },
         "nitro": {
@@ -126,10 +126,10 @@
     },
     "vercel": {
       "status": "passing",
-      "total": 1672,
-      "passed": 1442,
+      "total": 1824,
+      "passed": 1567,
       "failed": 0,
-      "skipped": 230,
+      "skipped": 257,
       "frameworks": {
         "astro": {
           "total": 152,
@@ -137,6 +137,11 @@
           "failed": 0
         },
         "express": {
+          "total": 152,
+          "passed": 125,
+          "failed": 0
+        },
+        "fastify": {
           "total": 152,
           "passed": 125,
           "failed": 0
