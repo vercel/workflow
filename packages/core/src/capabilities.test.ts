@@ -103,4 +103,21 @@ describe('getRunCapabilities', () => {
       expect(getRunCapabilities(version).framedByteStreams).toBe(true);
     });
   });
+
+  describe('startHookLoserAck', () => {
+    it('is false when version is missing or invalid', () => {
+      expect(getRunCapabilities(undefined).startHookLoserAck).toBe(false);
+      expect(getRunCapabilities('not-a-version').startHookLoserAck).toBe(false);
+    });
+
+    it('is false before the loser-ack cutoff', () => {
+      // beta.26 was published from main without loser-ack handling.
+      expect(getRunCapabilities('5.0.0-beta.26').startHookLoserAck).toBe(false);
+    });
+
+    it('is true at and after the loser-ack cutoff', () => {
+      expect(getRunCapabilities('5.0.0-beta.27').startHookLoserAck).toBe(true);
+      expect(getRunCapabilities('5.0.0').startHookLoserAck).toBe(true);
+    });
+  });
 });

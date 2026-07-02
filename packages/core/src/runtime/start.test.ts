@@ -1,9 +1,19 @@
-import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
+import { waitUntil } from '@vercel/functions';
+import {
+  EntityConflictError,
+  HookConflictError,
+  RUN_ERROR_CODES,
+  WorkflowRuntimeError,
+  WorkflowStartError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
+  type StartHookAdmissionCaps,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import {
   afterEach,
@@ -88,6 +98,10 @@ describe('start', () => {
   describe('specVersion', () => {
     let mockEventsCreate: ReturnType<typeof vi.fn>;
     let mockQueue: ReturnType<typeof vi.fn>;
+    const queueFirstStartHookAdmission: StartHookAdmissionCaps = {
+      maxTtlSeconds: 30 * 24 * 60 * 60,
+      maxTokenBytes: 255,
+    };
 
     beforeEach(() => {
       mockEventsCreate = vi.fn().mockImplementation((runId) => {
@@ -106,9 +120,20 @@ describe('start', () => {
     });
 
     afterEach(() => {
+      vi.useRealTimers();
       setWorld(undefined);
       vi.clearAllMocks();
     });
+
+    function setQueueFirstWorld(specVersion = SPEC_VERSION_CURRENT) {
+      setWorld({
+        specVersion,
+        startHookAdmission: queueFirstStartHookAdmission,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+    }
 
     it('rejects worlds that do not declare a specVersion', async () => {
       const validWorkflow = Object.assign(() => Promise.resolve('result'), {
@@ -259,6 +284,454 @@ describe('start', () => {
       expect(mockQueue.mock.calls[0]?.[1].runInput).not.toHaveProperty(
         'allowReservedAttributes'
       );
+    });
+
+    it('seeds start hook data on run_created and the resilient run input', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      // Worlds without caps declare an empty admission object.
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        startHookAdmission: {},
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(validWorkflow, [], {
+        hook: {
+          token: 'order:123',
+          experimental_ttl: '30 days',
+        },
+      });
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          eventData: expect.objectContaining({
+            startHook: {
+              token: 'order:123',
+              ttlSeconds: 30 * 24 * 60 * 60,
+            },
+          }),
+        }),
+        expect.anything()
+      );
+      expect(mockQueue.mock.calls[0]?.[1].runInput.startHook).toEqual({
+        token: 'order:123',
+        ttlSeconds: 30 * 24 * 60 * 60,
+      });
+
+      vi.useRealTimers();
+    });
+
+    it('omits ttlSeconds when experimental_ttl is not provided (token released at run end)', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setQueueFirstWorld();
+
+      await start(validWorkflow, [], {
+        hook: { token: 'order:123' },
+      });
+
+      expect(mockEventsCreate.mock.calls[0]?.[1].eventData.startHook).toEqual({
+        token: 'order:123',
+      });
+      expect(mockQueue.mock.calls[0]?.[1].runInput.startHook).toEqual({
+        token: 'order:123',
+      });
+    });
+
+    it('rejects empty start hook tokens', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: '',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toThrow(/token must be a non-empty string/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
+    });
+
+    it('queues before admitting experimental start hooks in queue-first worlds', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setQueueFirstWorld();
+
+      const run = await start(validWorkflow, [], {
+        hook: {
+          token: 'order:123',
+          experimental_ttl: '30 days',
+        },
+      });
+
+      expect(run.runId).toBe(mockEventsCreate.mock.calls[0]?.[0]);
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+      expect(mockEventsCreate).toHaveBeenCalledTimes(1);
+      expect(mockQueue.mock.calls[0]?.[1].runInput.startHook).toEqual({
+        token: 'order:123',
+        ttlSeconds: 30 * 24 * 60 * 60,
+      });
+      expect(mockEventsCreate.mock.calls[0]?.[1].eventData).toEqual(
+        expect.objectContaining({
+          startHook: {
+            token: 'order:123',
+            ttlSeconds: 30 * 24 * 60 * 60,
+          },
+        })
+      );
+      expect(mockQueue.mock.calls[0]?.[2]).not.toHaveProperty('idempotencyKey');
+      expect(mockQueue.mock.invocationCallOrder[0]).toBeLessThan(
+        mockEventsCreate.mock.invocationCallOrder[0]
+      );
+    });
+
+    it('throws WorkflowStartError without admission when queue-first enqueue fails', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      const queueError = new WorkflowWorldError('queue unavailable', {
+        status: 503,
+      });
+      mockQueue.mockRejectedValueOnce(queueError);
+      setQueueFirstWorld();
+
+      const startPromise = start(validWorkflow, [], {
+        hook: {
+          token: 'order:123',
+          experimental_ttl: '30 days',
+        },
+      });
+
+      await expect(startPromise).rejects.toBeInstanceOf(WorkflowStartError);
+      await expect(startPromise).rejects.toMatchObject({
+        name: 'WorkflowStartError',
+        stage: 'queue',
+        queued: 'unknown',
+        retryable: true,
+        status: 503,
+        cause: queueError,
+      });
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('throws WorkflowStartError when queue-first admission cannot be confirmed', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      const admissionError = new WorkflowWorldError('response lost', {
+        status: 500,
+      });
+      mockEventsCreate.mockRejectedValueOnce(admissionError);
+      setQueueFirstWorld();
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowStartError',
+        stage: 'admission',
+        queued: true,
+        retryable: true,
+        status: 500,
+        cause: admissionError,
+      });
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('wraps transient queue-first admission world errors after queueing', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      const admissionError = new WorkflowWorldError('service unavailable', {
+        status: 503,
+      });
+      mockEventsCreate.mockRejectedValueOnce(admissionError);
+      setQueueFirstWorld();
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowStartError',
+        stage: 'admission',
+        queued: true,
+        retryable: true,
+        status: 503,
+        cause: admissionError,
+      });
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('wraps non-retryable queue-first admission world errors after queueing', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      const admissionError = new WorkflowWorldError('forbidden', {
+        status: 403,
+      });
+      mockEventsCreate.mockRejectedValueOnce(admissionError);
+      setQueueFirstWorld();
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowStartError',
+        stage: 'admission',
+        queued: true,
+        retryable: false,
+        status: 403,
+        cause: admissionError,
+      });
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('wraps unknown queue-first admission failures after queueing', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      const admissionError = new TypeError('socket closed');
+      mockEventsCreate.mockRejectedValueOnce(admissionError);
+      setQueueFirstWorld();
+      const waitUntilCalls = vi.mocked(waitUntil).mock.calls.length;
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowStartError',
+        stage: 'admission',
+        queued: true,
+        retryable: false,
+        cause: admissionError,
+      });
+      await vi.waitFor(() =>
+        expect(vi.mocked(waitUntil).mock.calls.length).toBeGreaterThan(
+          waitUntilCalls
+        )
+      );
+    });
+
+    it('wraps durability-probe failures after a post-enqueue admission conflict', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      const probeError = new WorkflowWorldError('list unavailable', {
+        status: 503,
+      });
+      mockEventsCreate.mockRejectedValueOnce(
+        new EntityConflictError('Run already exists')
+      );
+      const mockEventsList = vi.fn().mockRejectedValue(probeError);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        startHookAdmission: queueFirstStartHookAdmission,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate, list: mockEventsList },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowStartError',
+        stage: 'admission',
+        queued: true,
+        retryable: true,
+        cause: probeError,
+      });
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('still surfaces HookConflictError after queue-first enqueue', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      mockEventsCreate.mockRejectedValueOnce(
+        new HookConflictError('order:123', 'wrun_conflicting')
+      );
+      setQueueFirstWorld();
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toThrow(HookConflictError);
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+      expect(mockQueue.mock.invocationCallOrder[0]).toBeLessThan(
+        mockEventsCreate.mock.invocationCallOrder[0]
+      );
+    });
+
+    it('rejects experimental start hook TTLs above the world cap before queueing', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setQueueFirstWorld();
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '31 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+      });
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
+    });
+
+    it('rejects queue-first start hooks with oversized tokens before queueing', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setQueueFirstWorld();
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'x'.repeat(256),
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+      });
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
+    });
+
+    it('rejects queue-first start hooks without runInput queue transport before queueing', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setQueueFirstWorld();
+
+      // Worlds must match the runtime spec version, so a pre-CBOR-transport
+      // run can only come from an explicit opts.specVersion override.
+      await expect(
+        start(validWorkflow, [], {
+          specVersion: SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+      });
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
+    });
+
+    it('rejects queue-first start hooks when the target deployment lacks runtime support', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        startHookAdmission: queueFirstStartHookAdmission,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_current'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        streams: {
+          get: vi.fn().mockResolvedValue(
+            new Response(
+              JSON.stringify({
+                healthy: true,
+                workflowCoreVersion: '5.0.0-beta.25',
+              })
+            ).body
+          ),
+        },
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          deploymentId: 'deploy_old',
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+      });
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+      expect(mockQueue.mock.calls[0]?.[0]).toContain('health_check');
+    });
+
+    it('rejects experimental start hooks when the world has not opted in', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_ttl: '30 days',
+          },
+        })
+      ).rejects.toThrow(/supports experimental start-hook admission/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
     });
 
     it('rejects initial attributes for pre-v4 runs', async () => {
@@ -732,13 +1205,12 @@ describe('start', () => {
       );
     });
 
-    it('should throw when queue fails even if events.create succeeds', async () => {
+    it('wraps queue failures in WorkflowStartError even if events.create succeeds', async () => {
       const mockEventsCreate = vi.fn().mockResolvedValue({
         run: { runId: 'wrun_test', status: 'pending' },
       });
-      const mockQueue = vi
-        .fn()
-        .mockRejectedValue(new Error('Queue unavailable'));
+      const queueError = new Error('Queue unavailable');
+      const mockQueue = vi.fn().mockRejectedValue(queueError);
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
@@ -747,9 +1219,13 @@ describe('start', () => {
         queue: mockQueue,
       });
 
-      await expect(start(validWorkflow, [])).rejects.toThrow(
-        'Queue unavailable'
-      );
+      await expect(start(validWorkflow, [])).rejects.toMatchObject({
+        name: 'WorkflowStartError',
+        stage: 'queue',
+        queued: 'unknown',
+        cause: queueError,
+        runId: expect.stringMatching(/^wrun_/),
+      });
     });
 
     it('should throw when events.create fails with a non-retryable error (e.g. 400)', async () => {

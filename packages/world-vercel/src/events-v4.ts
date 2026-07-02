@@ -21,6 +21,7 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import type { StartHook } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
@@ -136,6 +137,9 @@ export interface CreateEventV4Input {
    *  resilient-start path). Validated server-side against the attribute
    *  key/value/count caps. */
   attributes?: Record<string, string>;
+  /** Experimental start-hook token claim carried by run_created and the
+   *  resilient-start run_started fallback. */
+  startHook?: StartHook;
   /** attr_set's attribute change list ({key, value|null} entries). */
   changes?: Array<Record<string, unknown>>;
   /** attr_set's writer provenance ({type:'workflow'} or
@@ -219,6 +223,9 @@ function buildPostFrameMeta(
     meta.executionContext = input.executionContext;
   }
   if (input.attributes !== undefined) meta.attributes = input.attributes;
+  if (input.startHook !== undefined) {
+    meta.startHook = input.startHook;
+  }
   if (input.changes !== undefined) meta.changes = input.changes;
   if (input.writer !== undefined) meta.writer = input.writer;
   if (input.allowReservedAttributes !== undefined) {

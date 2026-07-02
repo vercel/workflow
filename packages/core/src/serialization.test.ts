@@ -5,6 +5,7 @@ import {
   HookConflictError,
   RetryableError,
   RuntimeDecryptionError,
+  WorkflowStartError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -2667,7 +2668,7 @@ describe('step function serialization', () => {
     const stepId = 'step//workflows/test.ts//addNumbers';
 
     // Create a VM context like the workflow runner does
-    const { context, globalThis: vmGlobalThis } = createContext({
+    const { globalThis: vmGlobalThis } = createContext({
       seed: 'test',
       fixedTimestamp: 1714857600000,
     });
@@ -2729,7 +2730,7 @@ describe('step function serialization', () => {
     const stepId = 'step//workflows/test.ts//missingUseStep';
 
     // Create a VM context WITHOUT setting up WORKFLOW_USE_STEP
-    const { context, globalThis: vmGlobalThis } = createContext({
+    const { globalThis: vmGlobalThis } = createContext({
       seed: 'test',
       fixedTimestamp: 1714857600000,
     });
@@ -3980,6 +3981,46 @@ describe('Workflow error serialization', () => {
       (serialized as Uint8Array).subarray(4)
     );
     expect(str).toContain('["HookConflictError",');
+    expect(str).not.toContain('["Error",');
+    expect(str).not.toContain('Instance');
+  });
+
+  it('should round-trip WorkflowStartError preserving recovery fields', async () => {
+    const error = new WorkflowStartError('queued but not admitted', {
+      runId: 'wrun_queued',
+      stage: 'admission',
+      retryable: true,
+      status: 408,
+      retryAfter: 2,
+    });
+    const hydrated = (await roundTrip(error)) as WorkflowStartError;
+
+    expect(hydrated).toBeInstanceOf(WorkflowStartError);
+    expect(WorkflowStartError.is(hydrated)).toBe(true);
+    expect(hydrated.runId).toBe('wrun_queued');
+    expect(hydrated.stage).toBe('admission');
+    expect(hydrated.queued).toBe(true);
+    expect(hydrated.retryable).toBe(true);
+    expect(hydrated.status).toBe(408);
+    expect(hydrated.retryAfter).toBe(2);
+  });
+
+  it('should serialize WorkflowStartError using its dedicated reducer key', async () => {
+    const error = new WorkflowStartError('queue response lost', {
+      runId: 'wrun_unknown',
+      stage: 'queue',
+      retryable: true,
+    });
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+
+    expect(str).toContain('["WorkflowStartError",');
     expect(str).not.toContain('["Error",');
     expect(str).not.toContain('Instance');
   });
@@ -5561,7 +5602,7 @@ describe('isEncrypted', () => {
 // ============================================================================
 
 describe('AbortController serialization', () => {
-  const { context, globalThis: vmGlobalThis } = createContext({
+  const { globalThis: vmGlobalThis } = createContext({
     seed: 'test-abort-serde',
     fixedTimestamp: 1714857600000,
   });

@@ -2,7 +2,10 @@
  * Shared types for the serialization system.
  */
 
-import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+import type {
+  RuntimeDecryptionErrorContext,
+  WorkflowStartErrorOptions,
+} from '@workflow/errors';
 
 // ---- Format Prefix ----
 
@@ -83,6 +86,12 @@ export interface SerializableSpecial {
     // TODO: Make this required when HookConflictError.conflictingRunId is required.
     conflictingRunId?: string;
   };
+  // `queued` is derived from `stage` by the constructor, so only the
+  // constructor options are serialized.
+  WorkflowStartError: {
+    message: string;
+    stack?: string;
+  } & WorkflowStartErrorOptions;
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
   Int32Array: string; // base64 string

@@ -16,6 +16,7 @@ import {
   type Revivers,
   serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
+import { WorkflowStartError } from '@workflow/errors';
 import { EVENT_DATA_REF_FIELDS } from '@workflow/world';
 
 const V4_EXTRA_EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
@@ -150,7 +151,7 @@ export function getWebRevivers(): Revivers {
     // `packages/core/src/serialization/reducers/common.ts`) emits a tagged
     // entry for each built-in Error subclass plus the workflow-specific
     // `FatalError` / `RetryableError` / `HookConflictError` /
-    // `RuntimeDecryptionError` and `AggregateError`. Without
+    // `WorkflowStartError` / `RuntimeDecryptionError` and `AggregateError`. Without
     // matching revivers here, `devalue.unflatten` throws "Unknown type X"
     // — which surfaces in the web o11y UI as "Failed to load resource
     // details: Unknown type FatalError".
@@ -209,6 +210,30 @@ export function getWebRevivers(): Revivers {
       if (value.conflictingRunId !== undefined) {
         error.conflictingRunId = value.conflictingRunId;
       }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        runId?: string;
+        stage?: string;
+        queued?: true | 'unknown';
+        retryable?: boolean;
+        status?: number;
+        url?: string;
+        code?: string;
+        retryAfter?: number;
+      };
+      error.name = 'WorkflowStartError';
+      error.runId = value.runId;
+      error.stage = value.stage;
+      error.queued = WorkflowStartError.queuedFromStage(value.stage);
+      error.retryable = value.retryable;
+      if (value.status !== undefined) error.status = value.status;
+      if (value.url !== undefined) error.url = value.url;
+      if (value.code !== undefined) error.code = value.code;
+      if (value.retryAfter !== undefined) error.retryAfter = value.retryAfter;
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },

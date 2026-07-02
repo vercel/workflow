@@ -15,6 +15,7 @@ import {
   HookConflictError,
   RetryableError,
   RuntimeDecryptionError,
+  WorkflowStartError,
 } from '@workflow/errors';
 import type { Reducers, Revivers, SerializableSpecial } from '../types.js';
 
@@ -228,6 +229,24 @@ export function getCommonReducers(
       }
       return reduced;
     },
+    WorkflowStartError: (value) => {
+      const base = reduceNamedErrorSubclassBase('WorkflowStartError', value);
+      if (!base) return false;
+      const error = value as WorkflowStartError;
+      const reduced: SerializableSpecial['WorkflowStartError'] = {
+        ...base,
+        runId: error.runId,
+        stage: error.stage,
+        retryable: error.retryable,
+      };
+      if (error.status !== undefined) reduced.status = error.status;
+      if (error.url !== undefined) reduced.url = error.url;
+      if (error.code !== undefined) reduced.code = error.code;
+      if (error.retryAfter !== undefined) {
+        reduced.retryAfter = error.retryAfter;
+      }
+      return reduced;
+    },
     RangeError: makeErrorSubclassReducer('RangeError'),
     ReferenceError: makeErrorSubclassReducer('ReferenceError'),
     // RetryableError carries an extra `retryAfter` Date that we serialize as
@@ -407,6 +426,24 @@ export function getCommonRevivers(
       if ('cause' in value) {
         (error as Error & { cause?: unknown }).cause = value.cause;
       }
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//WorkflowStartError')
+        ] as typeof WorkflowStartError | undefined) ?? WorkflowStartError;
+      const error = new Ctor(value.message, {
+        runId: value.runId,
+        stage: value.stage,
+        retryable: value.retryable,
+        status: value.status,
+        url: value.url,
+        code: value.code,
+        retryAfter: value.retryAfter,
+        ...('cause' in value ? { cause: value.cause } : {}),
+      });
+      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     RangeError: makeErrorSubclassReviver(global, 'RangeError'),

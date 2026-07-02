@@ -1,6 +1,5 @@
-import type { Queue } from './queue.js';
 import type { Storage } from './interfaces.js';
-import type { ValidQueueName } from './queue.js';
+import type { Queue, ValidQueueName } from './queue.js';
 
 /**
  * Re-enqueue all active (pending/running) workflow runs so they resume

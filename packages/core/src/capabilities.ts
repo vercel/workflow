@@ -31,6 +31,7 @@
  * - `gzip` (gzip payload compression): added in `5.0.0-beta.18`
  * - `zstd` (zstd payload compression, preferred codec): added in `5.0.0-beta.18`
  *   alongside gzip — they co-ship, so any run that can read one can read both.
+ * - `startHookLoserAck` (queued start-hook loser handling): added in `5.0.0-beta.27`
  */
 
 import semver from 'semver';
@@ -59,6 +60,13 @@ export interface RunCapabilities {
    * raw bytes (the legacy format) for compatibility with older runs.
    */
   framedByteStreams: boolean;
+
+  /**
+   * Whether the target workflow handler safely handles a queued start-hook
+   * run that LOST its token claim: turbo is disabled and `HookConflictError`
+   * during `run_started` is acknowledged without running user workflow code.
+   */
+  startHookLoserAck: boolean;
 }
 
 /**
@@ -96,7 +104,18 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // to the next beta. A too-low cutoff makes new producers write framed bytes to
   // consumers that cannot unframe them (silent corruption); too-high merely
   // delays the optimization (safe).
-}> = [{ capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' }];
+}> = [
+  { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
+  // beta.26 was published from main WITHOUT this change, so the cutoff must
+  // point past it. TODO(release): bump again if another "Version Packages
+  // (beta)" PR merges before this change ships. A too-low cutoff runs user
+  // workflow code on a lost claim (unsafe); too-high merely rejects
+  // cross-deployment start-hook starts (safe).
+  {
+    capability: 'startHookLoserAck',
+    minVersion: '5.0.0-beta.27',
+  },
+];
 
 /**
  * The set of formats supported by all specVersion 2 runs, regardless of
@@ -123,6 +142,7 @@ export function getRunCapabilities(
     return {
       supportedFormats: BASELINE_FORMATS,
       framedByteStreams: false,
+      startHookLoserAck: false,
     };
   }
 
@@ -137,6 +157,7 @@ export function getRunCapabilities(
   const result: RunCapabilities = {
     supportedFormats: formats,
     framedByteStreams: false,
+    startHookLoserAck: false,
   };
 
   for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {

@@ -159,6 +159,7 @@ const ERROR_REVIVER_KEYS = [
   'SyntaxError',
   'TypeError',
   'URIError',
+  'WorkflowStartError',
 ] as const;
 
 /**

@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { hydrateData } from '@workflow/core/serialization-format';
-import { getCLIRevivers } from '../../cli/src/lib/inspect/hydration.js';
-import { getWebRevivers } from '../src/lib/hydration.js';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { getCLIRevivers } from '../../cli/src/lib/inspect/hydration.js';
+import { getWebRevivers } from '../src/lib/hydration.js';
 
 const SERIALIZABLE_TYPES_PATH = fileURLToPath(
   new URL('../../core/src/serialization/types.ts', import.meta.url)
@@ -99,6 +99,21 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     'Hook token "approval-token" is already in use by another workflow (run "wrun_conflicting")',
     'approval-token',
     'wrun_conflicting',
+  ],
+  WorkflowStartError: [
+    ['WorkflowStartError', 1],
+    {
+      message: 2,
+      runId: 3,
+      stage: 4,
+      retryable: 5,
+      status: 6,
+    },
+    'Workflow run "wrun_queued" was queued, but start-hook admission could not be confirmed.',
+    'wrun_queued',
+    'admission',
+    false,
+    403,
   ],
   Instance: [
     ['Instance', 1],

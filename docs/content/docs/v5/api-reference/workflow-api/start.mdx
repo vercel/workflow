@@ -56,10 +56,11 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * In v5, `start()` can also be called directly from a workflow function to spawn a child run or continue work in a new run. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) and [Versioning](/docs/foundations/versioning).
 * This is different from calling workflow functions directly, which is the typical pattern in Next.js applications.
 * The function returns immediately after enqueuing the workflow - it doesn't wait for the workflow to complete.
-* Each call to `start()` creates a new workflow run. If retried requests must route to one active workflow, have the workflow create a deterministic hook token and use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to reuse an already-registered active hook. The lookup is not atomic with `start()`, so concurrent callers can still create extra runs before the hook is registered; handle that race inside the workflow by checking `await hook.getConflict()` before duplicate-sensitive work — on a conflict it resolves with the run that owns the token, so the duplicate can return the active owner to the caller. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
+* Each call to `start()` creates a new workflow run unless you opt into an idempotency mechanism. The stable pattern is to have the workflow create a deterministic hook token and use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to reuse an already-registered active hook. The lookup is not atomic with `start()`, so concurrent callers can still create extra runs before the hook is registered; handle that race inside the workflow by checking `await hook.getConflict()` before duplicate-sensitive work. If duplicates must be rejected before duplicate workflow code can run, use the experimental `hook` start option in a supporting World. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
 * All arguments must be [serializable](/docs/foundations/serialization).
 * When `deploymentId` is provided, the argument types and return type become `unknown` since there is no guarantee the workflow function's types will be consistent across different deployments.
 * `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later. Keys that start with `$` are reserved for framework and library code; framework-level callers can pass `allowReservedAttributes: true` to seed reserved keys, with the same semantics as the [`experimental_setAttributes`](/docs/api-reference/workflow/experimental-set-attributes) option of the same name.
+* `hook` (experimental) reserves a deterministic hook token as part of start admission in Worlds that support it. Admission is queue-first: the run is enqueued, then admitted — duplicate starts throw [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error), and a queued run whose admission cannot be confirmed throws [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error). Turbo mode is disabled for the first invocation of a start-hook run, and Worlds may cap the TTL and token size. Without `experimental_ttl`, the token is released when the hook is disposed or the run ends; with it, the token stays fenced for the TTL. See [Run idempotency](/docs/foundations/idempotency#atomic-start-hook-idempotency).
 
 <Callout type="info">
 If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`, the passed function was not transformed as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
@@ -86,6 +87,29 @@ const run = await start(myWorkflow, ["arg1", "arg2"], { // [!code highlight]
   deploymentId: "custom-deployment-id", // [!code highlight]
   attributes: { source: "checkout" } // [!code highlight]
 }); // [!code highlight]
+```
+
+### With the `hook` option
+
+Use the experimental `hook` option when duplicate starts must be rejected before duplicate workflow code can run. The workflow should still create the same hook token and check `hook.getConflict()` so the queued invocation can materialize the reserved hook and so non-supporting Worlds have the same in-workflow guard.
+
+```typescript
+import { start } from "workflow/api";
+import { processOrder } from "./workflows/process-order";
+
+try {
+  const run = await start(processOrder, ["order_123"], {
+    hook: {
+      token: "order:order_123",
+      experimental_ttl: "30 days",
+    },
+  });
+  console.log("Started run", run.runId);
+} catch (error) {
+  // HookConflictError means another active or retained run owns the token.
+  // WorkflowStartError means the run may already be queued; inspect error.runId.
+  throw error;
+}
 ```
 
 ### Using `deploymentId: "latest"`

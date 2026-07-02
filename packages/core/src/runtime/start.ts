@@ -1,4 +1,12 @@
-import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  HookConflictError,
+  RUN_ERROR_CODES,
+  WorkflowRuntimeError,
+  WorkflowStartError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import { parseDurationToDate } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
@@ -7,6 +15,7 @@ import {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
+import type { StringValue } from 'ms';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
 import { getRunCapabilities } from '../capabilities.js';
@@ -37,6 +46,7 @@ import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
  * deployments don't recognize the health check at all.
  */
 const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
+const textEncoder = new TextEncoder();
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -55,6 +65,89 @@ let hasWarnedLatestNoOp = false;
  */
 export function _resetLatestNoOpWarnForTests(): void {
   hasWarnedLatestNoOp = false;
+}
+
+interface StartHookOptions {
+  token: string;
+  /**
+   * How long the token stays fenced after the hook is disposed or the run
+   * completes/fails, so duplicate starts keep being rejected. Without it,
+   * the token is released as soon as the hook is disposed or the run
+   * reaches a terminal state (cancellation always releases a token whose
+   * hook was never created).
+   */
+  experimental_ttl?: StringValue | number;
+}
+
+function normalizeStartHookOptions(hook: StartHookOptions): {
+  token: string;
+  ttlSeconds?: number;
+} {
+  if (!hook.token) {
+    throw new WorkflowRuntimeError('hook.token must be a non-empty string.');
+  }
+  if (hook.experimental_ttl === undefined) {
+    return { token: hook.token };
+  }
+
+  const ttlMilliseconds =
+    parseDurationToDate(hook.experimental_ttl).getTime() - Date.now();
+  if (!Number.isFinite(ttlMilliseconds) || ttlMilliseconds <= 0) {
+    throw new WorkflowRuntimeError(
+      'hook.experimental_ttl must be a positive duration.'
+    );
+  }
+
+  return {
+    token: hook.token,
+    ttlSeconds: Math.max(1, Math.floor(ttlMilliseconds / 1000)),
+  };
+}
+
+async function hasDurableRunCreatedEvent(
+  world: World,
+  runId: string
+): Promise<boolean> {
+  const page = await world.events.list({
+    runId,
+    pagination: { limit: 1, sortOrder: 'asc' },
+    resolveData: 'none',
+  });
+  return page.data.some((event) => event.eventType === 'run_created');
+}
+
+function getRunCreatedResult(
+  result: Awaited<ReturnType<World['events']['create']>>,
+  expectedRunId?: string
+) {
+  if (!result.run) {
+    throw new WorkflowRuntimeError(
+      "Missing 'run' in server response for 'run_created' event"
+    );
+  }
+  if (expectedRunId !== undefined && result.run.runId !== expectedRunId) {
+    throw new WorkflowRuntimeError(
+      `Server returned different runId than requested: expected ${expectedRunId}, got ${result.run.runId}`
+    );
+  }
+  return result.run;
+}
+
+function isWorkflowWorldError(error: unknown): error is WorkflowWorldError {
+  // `.is()` alone misses subclasses (their `name` differs, e.g.
+  // ThrottleError); `instanceof` alone misses cross-realm base instances.
+  // World code runs in the host realm, so together they cover both.
+  return error instanceof WorkflowWorldError || WorkflowWorldError.is(error);
+}
+
+function getWorkflowWorldErrorDetails(error: unknown) {
+  if (!isWorkflowWorldError(error)) return {};
+  return {
+    status: error.status,
+    url: error.url,
+    code: error.code,
+    retryAfter: error.retryAfter,
+  };
 }
 
 export interface StartOptionsBase {
@@ -89,6 +182,16 @@ export interface StartOptionsBase {
    * the `experimental_setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * EXPERIMENTAL: atomically reserve a hook token as part of run admission.
+   *
+   * If another active or retained run already owns the token, `start()`
+   * throws `HookConflictError`. In queue-first Worlds the queue may already
+   * have accepted the losing run before the conflict is observed; that
+   * queued invocation exits without running user workflow code.
+   */
+  hook?: StartHookOptions;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -250,12 +353,15 @@ export async function start<TArgs extends unknown[], TResult>(
       // mocks) can't service health checks, so we skip the probe for them.
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
+      let targetSupportsStartHookAdmission: boolean;
       if (deploymentId === currentDeploymentId) {
         framedByteStreams = true;
         targetSupportsCompression = true;
+        targetSupportsStartHookAdmission = true;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
+        targetSupportsStartHookAdmission = false;
       } else {
         const probe = await healthCheck(world, 'workflow', {
           deploymentId,
@@ -266,9 +372,28 @@ export async function start<TArgs extends unknown[], TResult>(
         targetSupportsCompression = capabilities.supportedFormats.has(
           SerializationFormat.GZIP
         );
+        targetSupportsStartHookAdmission = capabilities.startHookLoserAck;
       }
 
       const ops: Promise<void>[] = [];
+      let opsFlushScheduled = false;
+      const scheduleOpsFlush = () => {
+        if (opsFlushScheduled) return;
+        opsFlushScheduled = true;
+        // These argument-stream ops are flushed in the background; the promise
+        // handed to waitUntil must never reject (an unconsumed waitUntil
+        // rejection crashes the process as unhandledRejection), so unexpected
+        // failures are logged instead.
+        safeWaitUntil(Promise.all(ops), (err) => {
+          runtimeLogger.warn(
+            'Background flush of workflow argument streams failed',
+            {
+              workflowRunId: runId,
+              error: err instanceof Error ? err.message : String(err),
+            }
+          );
+        });
+      };
 
       // Generate runId client-side so we have it before serialization
       // (required for future E2E encryption where runId is part of the encryption context)
@@ -281,6 +406,54 @@ export async function start<TArgs extends unknown[], TResult>(
       // itself has already been checked against this runtime's spec version.
       const specVersion = opts.specVersion ?? world.specVersion;
       const v1Compat = isLegacySpecVersion(specVersion);
+      const startHook = opts.hook
+        ? normalizeStartHookOptions(opts.hook)
+        : undefined;
+      const startHookAdmission = world.startHookAdmission;
+      if (startHook) {
+        if (v1Compat) {
+          throw new WorkflowRuntimeError(
+            'The start() hook option requires an event-sourced World.'
+          );
+        }
+        if (startHookAdmission === undefined) {
+          throw new WorkflowRuntimeError(
+            'The start() hook option requires a World that supports experimental start-hook admission.'
+          );
+        }
+        const contractError = (message: string) =>
+          new WorkflowWorldError(message, {
+            code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+          });
+        if (!targetSupportsStartHookAdmission) {
+          throw contractError(
+            'The start() hook option requires a target deployment that supports queue-first start-hook admission.'
+          );
+        }
+        if (
+          startHookAdmission.maxTtlSeconds !== undefined &&
+          startHook.ttlSeconds !== undefined &&
+          startHook.ttlSeconds > startHookAdmission.maxTtlSeconds
+        ) {
+          throw contractError(
+            `hook.experimental_ttl exceeds this World's maximum of ${startHookAdmission.maxTtlSeconds} seconds.`
+          );
+        }
+        if (
+          startHookAdmission.maxTokenBytes !== undefined &&
+          textEncoder.encode(startHook.token).byteLength >
+            startHookAdmission.maxTokenBytes
+        ) {
+          throw contractError(
+            `hook.token exceeds this World's maximum of ${startHookAdmission.maxTokenBytes} bytes.`
+          );
+        }
+        if (specVersion < SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT) {
+          throw contractError(
+            'The start() hook option requires a spec version that supports runInput queue transport.'
+          );
+        }
+      }
       const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;
       if (opts.attributes && Object.keys(opts.attributes).length > 0) {
@@ -318,6 +491,7 @@ export async function start<TArgs extends unknown[], TResult>(
               : {}),
           }
         : {};
+      const startHookSeed = startHook ? { startHook } : {};
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
@@ -358,115 +532,173 @@ export async function start<TArgs extends unknown[], TResult>(
         features: { encryption: !!encryptionKey },
       };
 
-      // Call events.create (run_created) and queue in parallel.
-      // If events.create fails with 429/5xx, the run was still accepted
-      // via the queue and creation will be re-tried async by the runtime.
-      const [runCreatedResult, queueResult] = await Promise.allSettled([
-        world.events.create(
-          runId,
-          {
-            eventType: 'run_created',
-            specVersion,
-            eventData: {
-              deploymentId: deploymentId,
-              workflowName: workflowName,
-              input: workflowArguments,
-              executionContext,
-              ...attributeSeed,
-            },
-          },
-          { v1Compat }
-        ),
-        world.queue(
-          getWorkflowQueueName(workflowName),
+      const runCreatedEvent = {
+        eventType: 'run_created' as const,
+        specVersion,
+        eventData: {
+          deploymentId: deploymentId,
+          workflowName: workflowName,
+          input: workflowArguments,
+          executionContext,
+          ...attributeSeed,
+          ...startHookSeed,
+        },
+      };
+      const queuePayload = {
+        runId,
+        traceCarrier,
+        ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+          ? {
+              runInput: {
+                input: workflowArguments,
+                deploymentId,
+                workflowName,
+                specVersion,
+                executionContext,
+                ...attributeSeed,
+                ...startHookSeed,
+              },
+            }
+          : {}),
+      } satisfies WorkflowInvokePayload;
+
+      const createRunEvent = () =>
+        world.events.create(runId, runCreatedEvent, { v1Compat });
+      const enqueueRun = () =>
+        world.queue(getWorkflowQueueName(workflowName), queuePayload, {
+          deploymentId,
+          specVersion,
+        });
+      const wrapQueueError = (error: unknown) =>
+        new WorkflowStartError(
+          `Workflow start failed while enqueueing run "${runId}". The queue may have accepted the message; inspect this run ID or retry the start call.`,
           {
             runId,
-            traceCarrier,
-            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-              ? {
-                  runInput: {
-                    input: workflowArguments,
-                    deploymentId,
-                    workflowName,
-                    specVersion,
-                    executionContext,
-                    ...attributeSeed,
-                  },
-                }
-              : {}),
-          } satisfies WorkflowInvokePayload,
-          {
-            deploymentId,
-            specVersion,
-          }
-        ),
-      ]);
-
-      // Queue failure is always fatal — the run was not enqueued
-      if (queueResult.status === 'rejected') {
-        throw queueResult.reason;
-      }
-
-      // Handle events.create result
-      let resilientStart = false;
-      if (runCreatedResult.status === 'rejected') {
-        const err = runCreatedResult.reason;
-        if (EntityConflictError.is(err)) {
-          // 409: The run already exists. This can happen in extreme cases where
-          // the run creation call gets a cold start or other slowdown, and the queue
-          // + run_started call completes faster. We expect this to be <=1% of cases.
-          // In this case, we can safely return.
-        } else if (isRetryableWorldError(err)) {
-          // 429 (ThrottleError), 5xx, and transient transport failures
-          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
-          // queue and creation will be re-tried by the runtime when it calls
-          // run_started.
-          resilientStart = true;
-          runtimeLogger.warn(
-            'Run creation event failed, but the run was accepted via the queue. ' +
-              'The run_created event will be re-tried async by the runtime.',
-            { workflowRunId: runId, error: err.message }
-          );
-        } else {
-          throw err;
-        }
-      } else {
-        const result = runCreatedResult.value;
-        // Assert that the run was created
-        if (!result.run) {
-          throw new WorkflowRuntimeError(
-            "Missing 'run' in server response for 'run_created' event"
-          );
-        }
-
-        // Verify server accepted our runId
-        if (!v1Compat && result.run.runId !== runId) {
-          throw new WorkflowRuntimeError(
-            `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
-          );
-        }
-      }
-
-      // These argument-stream ops are flushed in the background; the promise
-      // handed to waitUntil must never reject (an unconsumed waitUntil
-      // rejection crashes the process as unhandledRejection), so unexpected
-      // failures are logged instead.
-      safeWaitUntil(Promise.all(ops), (err) => {
-        runtimeLogger.warn(
-          'Background flush of workflow argument streams failed',
-          {
-            workflowRunId: runId,
-            error: err instanceof Error ? err.message : String(err),
+            stage: 'queue',
+            retryable: isRetryableWorldError(error),
+            cause: error,
+            ...getWorkflowWorldErrorDetails(error),
           }
         );
-      });
+      const wrapAdmissionError = (error: unknown) =>
+        new WorkflowStartError(
+          `Workflow run "${runId}" was queued, but start-hook admission could not be confirmed. Inspect this run ID or retry the start call; a retry may conflict if the queued run starts successfully.`,
+          {
+            runId,
+            stage: 'admission',
+            retryable: isRetryableWorldError(error),
+            cause: error,
+            ...getWorkflowWorldErrorDetails(error),
+          }
+        );
+
+      let resilientStart = false;
+      let createdRunForSpan:
+        | NonNullable<Awaited<ReturnType<typeof world.events.create>>['run']>
+        | undefined;
+      // The finally guarantees the argument-stream ops flush is scheduled on
+      // every admission exit path — success or throw. An unflushed rejected
+      // ops promise would crash the process as an unhandledRejection.
+      try {
+        if (startHook) {
+          // Queue-first admission: enqueue, then create run_created (which
+          // claims the token). A crash after the enqueue cannot orphan the
+          // claim — the queued message bootstraps admission itself via the
+          // resilient run_started path, and a queued run that loses its
+          // claim acknowledges without running user code.
+          try {
+            await enqueueRun();
+          } catch (error) {
+            throw wrapQueueError(error);
+          }
+
+          try {
+            createdRunForSpan = getRunCreatedResult(
+              await createRunEvent(),
+              runId
+            );
+          } catch (error) {
+            if (HookConflictError.is(error)) {
+              throw error;
+            }
+            if (!EntityConflictError.is(error)) {
+              throw wrapAdmissionError(error);
+            }
+            // The durability probe is itself a world call; if it fails,
+            // surface the same post-enqueue WorkflowStartError contract
+            // instead of leaking a raw world error (the run may already
+            // be queued either way).
+            let runCreatedDurable: boolean;
+            try {
+              runCreatedDurable = await hasDurableRunCreatedEvent(world, runId);
+            } catch (probeError) {
+              throw wrapAdmissionError(probeError);
+            }
+            if (!runCreatedDurable) {
+              throw error;
+            }
+            resilientStart = true;
+            runtimeLogger.warn(
+              'Run creation conflicted after start-hook queue acceptance, but the run_created event is durable.',
+              { workflowRunId: runId, error: error.message }
+            );
+          }
+        } else {
+          // Call events.create (run_created) and queue in parallel.
+          // If events.create fails with 429/5xx, the run was still accepted
+          // via the queue and creation will be re-tried async by the runtime.
+          const [runCreatedResult, queueResult] = await Promise.allSettled([
+            createRunEvent(),
+            enqueueRun(),
+          ]);
+
+          // Queue failure is fatal. It is surfaced as WorkflowStartError
+          // (stage 'queue') because the outcome is ambiguous: the queue may
+          // have accepted the message before failing, and the parallel
+          // run_created may have succeeded — carry the runId so callers can
+          // inspect or retry.
+          if (queueResult.status === 'rejected') {
+            throw wrapQueueError(queueResult.reason);
+          }
+
+          // Handle events.create result
+          if (runCreatedResult.status === 'rejected') {
+            const err = runCreatedResult.reason;
+            if (EntityConflictError.is(err)) {
+              // 409: The run already exists. This can happen in extreme cases where
+              // the run creation call gets a cold start or other slowdown, and the queue
+              // + run_started call completes faster. We expect this to be <=1% of cases.
+              // In this case, we can safely return.
+            } else if (isRetryableWorldError(err)) {
+              // 429 (ThrottleError), 5xx, and transient transport failures
+              // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via
+              // the queue and creation will be re-tried by the runtime when it
+              // calls run_started.
+              resilientStart = true;
+              runtimeLogger.warn(
+                'Run creation event failed, but the run was accepted via the queue. ' +
+                  'The run_created event will be re-tried async by the runtime.',
+                { workflowRunId: runId, error: err.message }
+              );
+            } else {
+              throw err;
+            }
+          } else {
+            createdRunForSpan = getRunCreatedResult(
+              runCreatedResult.value,
+              v1Compat ? undefined : runId
+            );
+          }
+        }
+      } finally {
+        scheduleOpsFlush();
+      }
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.DeploymentId(deploymentId),
-        ...(runCreatedResult.status === 'fulfilled' &&
-        runCreatedResult.value.run
-          ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
+        ...(createdRunForSpan
+          ? Attribute.WorkflowRunStatus(createdRunForSpan.status)
           : {}),
       });
 

@@ -290,6 +290,26 @@ const AttrSetEventSchema = BaseEventSchema.extend({
   }),
 });
 
+/**
+ * Start-hook claim data: `start()` reserves `token` atomically with run
+ * admission, fencing duplicate starts for `ttlSeconds` past hook creation /
+ * run completion. Rides on `run_created` (and the resilient-start
+ * `run_started` fallback + queue runInput) so every admission path validates
+ * the same shape.
+ */
+export const StartHookSchema = z.object({
+  token: z.string().min(1),
+  /**
+   * Retention window (seconds past hook creation / run completion) during
+   * which the token stays fenced. Absent = no retention: the claim is
+   * released when the hook is disposed or the run reaches a terminal
+   * state, like a plain `createHook` token guard.
+   */
+  ttlSeconds: z.number().int().positive().optional(),
+});
+
+export type StartHook = z.infer<typeof StartHookSchema>;
+
 // =============================================================================
 // Run lifecycle events
 // =============================================================================
@@ -307,6 +327,7 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
     executionContext: z.record(z.string(), z.any()).optional(),
     attributes: z.record(z.string(), z.string()).optional(),
     allowReservedAttributes: z.literal(true).optional(),
+    startHook: StartHookSchema.optional(),
   }),
 });
 
@@ -329,6 +350,7 @@ const RunStartedEventSchema = BaseEventSchema.extend({
       executionContext: z.record(z.string(), z.any()).optional(),
       attributes: z.record(z.string(), z.string()).optional(),
       allowReservedAttributes: z.literal(true).optional(),
+      startHook: StartHookSchema.optional(),
     })
     .optional(),
 });

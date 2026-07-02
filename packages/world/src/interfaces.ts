@@ -272,6 +272,15 @@ export interface Storage {
 }
 
 /**
+ * Optional caps a World places on start-hook admission claims. See
+ * `World.startHookAdmission`.
+ */
+export interface StartHookAdmissionCaps {
+  maxTtlSeconds?: number;
+  maxTokenBytes?: number;
+}
+
+/**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
@@ -292,6 +301,17 @@ export interface World extends Queue, Streamer, Storage {
    * `SPEC_VERSION_CURRENT` before they create or replay runs.
    */
   specVersion: number;
+
+  /**
+   * Declares that this World atomically reserves
+   * `run_created.eventData.startHook` tokens with run
+   * admission. Admission is queue-first: `start()` enqueues the run (the
+   * queued message can bootstrap admission itself via the resilient
+   * `run_started` path, so a crash cannot orphan a claimed token), then
+   * creates `run_created`, which claims the token. Optional caps bound the
+   * claim's TTL and token size.
+   */
+  startHookAdmission?: StartHookAdmissionCaps;
 
   /**
    * Whether calling `process.exit(1)` from a queue handler is observed by

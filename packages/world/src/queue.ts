@@ -1,4 +1,5 @@
-import { z } from 'zod/v4';
+import { z } from 'zod';
+import { StartHookSchema } from './events.js';
 
 export type QueueKind = 'workflow' | 'step';
 
@@ -115,6 +116,8 @@ export const RunInputSchema = z.object({
   executionContext: z.record(z.string(), z.any()).optional(),
   /** Initial plaintext run attributes, for resilient run creation. */
   attributes: z.record(z.string(), z.string()).optional(),
+  /** Start-hook claim data, for resilient run creation. */
+  startHook: StartHookSchema.optional(),
   /**
    * Permits reserved `$`-prefixed keys in `attributes`, mirrored from the
    * `start()` option so resilient run creation validates the same way as

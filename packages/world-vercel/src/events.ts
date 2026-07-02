@@ -40,6 +40,7 @@ import {
   type EventResult,
   EventSchema,
   EventTypeSchema,
+  type StartHook,
   type GetEventParams,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
@@ -184,6 +185,8 @@ interface SplitEventData {
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
     attributes?: Record<string, string>;
+    /** Experimental start-hook token claim (run_created / resilient start). */
+    startHook?: StartHook;
     /** attr_set change list, included verbatim in frame meta. */
     changes?: Array<Record<string, unknown>>;
     /** attr_set writer provenance, included verbatim in frame meta. */
@@ -215,6 +218,7 @@ type MetaSourceField =
   | 'errorCode'
   | 'executionContext'
   | 'attributes'
+  | 'startHook'
   | 'changes'
   | 'writer'
   | 'allowReservedAttributes';
@@ -330,6 +334,13 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     typeof eventData.attributes === 'object'
   ) {
     meta.attributes = eventData.attributes as Record<string, string>;
+  }
+  if (
+    eventData.startHook !== undefined &&
+    eventData.startHook !== null &&
+    typeof eventData.startHook === 'object'
+  ) {
+    meta.startHook = eventData.startHook as StartHook;
   }
   if (Array.isArray(eventData.changes)) {
     meta.changes = eventData.changes as Array<Record<string, unknown>>;
