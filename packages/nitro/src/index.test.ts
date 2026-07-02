@@ -175,11 +175,10 @@ describe('@workflow/nitro world target bundling', () => {
 
     const flowSource = nitro.options.virtual['#workflow/workflows.mjs'];
     expect(flowSource).toContain(
-      'import { setWorld as __workflowSetWorld } from "@workflow/core/runtime";'
+      'import { setWorld as __workflowSetWorld } from "file://'
     );
-    expect(
-      nitro.options.alias['@workflow/core/runtime'].replaceAll('\\', '/')
-    ).toContain('/packages/core/dist/runtime.js');
+    expect(flowSource).toContain('/packages/core/dist/runtime.js";');
+    expect(nitro.options.alias['@workflow/core/runtime']).toBeUndefined();
     expect(flowSource).toContain('import * as __workflowTargetWorld from');
     expect(flowSource).toContain('packages/world-local/dist/index.js";');
     expect(flowSource).toContain('await ensureWorkflowWorld();');

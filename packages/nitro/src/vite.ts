@@ -1,9 +1,7 @@
 import {
   createBuildQueue,
   ensureWorkflowTargetWorldEnv,
-  resolveWorkflowCoreRuntimeAlias,
   resolveWorkflowTargetWorldAlias,
-  WORKFLOW_CORE_RUNTIME_MODULE,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
@@ -40,9 +38,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         resolve: {
           alias: {
             [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
-            [WORKFLOW_CORE_RUNTIME_MODULE]: resolveWorkflowCoreRuntimeAlias({
-              workingDir: process.cwd(),
-            }),
             'pg-native': WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
           },
         },

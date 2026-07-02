@@ -4,7 +4,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ensureWorkflowTargetWorldEnv,
   resolveWorkflowCoreRuntimeAlias,
-  WORKFLOW_CORE_RUNTIME_MODULE,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   WORKFLOW_QUEUE_TRIGGER,
   WORKFLOW_WORLD_TARGET_MODULE,
@@ -187,8 +186,6 @@ export default {
 
     nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE] =
       resolveWorkflowTargetWorldAlias(nitro, workflowTargetWorld);
-    nitro.options.alias[WORKFLOW_CORE_RUNTIME_MODULE] =
-      resolveWorkflowCoreRuntimeAlias({ workingDir: nitro.options.rootDir });
     nitro.options.alias['pg-native'] ??= WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS;
 
     // Add transform plugin at the BEGINNING to run before other transforms
@@ -504,9 +501,14 @@ function createDevWorldTargetSource(nitro: Nitro): string {
   const workflowTargetWorldImport = JSON.stringify(
     getStaticImportSpecifier(workflowTargetWorldAlias)
   );
+  const workflowCoreRuntimeImport = JSON.stringify(
+    getStaticImportSpecifier(
+      resolveWorkflowCoreRuntimeAlias({ workingDir: nitro.options.rootDir })
+    )
+  );
 
   return /* js */ `
-      import { setWorld as __workflowSetWorld } from "@workflow/core/runtime";
+      import { setWorld as __workflowSetWorld } from ${workflowCoreRuntimeImport};
       import * as __workflowTargetWorld from ${workflowTargetWorldImport};
 
       let __workflowWorldPromise = null;
