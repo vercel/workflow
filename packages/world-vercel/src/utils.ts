@@ -9,12 +9,12 @@ import { getDispatcher } from './http-client.js';
 import {
   errorForResponse,
   formatVercelDiagnostics,
+  getRequestTimeoutMs,
   HTTP_DEBUG_ENABLED,
   httpClientSpanAttributes,
   httpLog,
   logCurlRepro,
   parseRetryAfter,
-  REQUEST_TIMEOUT_MS,
 } from './http-core.js';
 
 import {
@@ -390,7 +390,7 @@ export async function makeRequest<T>({
 
         // Compose user-passed abort signal (unused at time of writing)
         // with the max request timeout
-        const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+        const timeoutSignal = AbortSignal.timeout(getRequestTimeoutMs());
         const signal = options.signal
           ? AbortSignal.any([options.signal, timeoutSignal])
           : timeoutSignal;
