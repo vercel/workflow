@@ -163,16 +163,8 @@ describe('@workflow/nitro world target bundling', () => {
       )
     ).resolves.toBeNull();
 
-    const optionalPgNativePlugin = config.plugins.find(
-      (plugin: { name?: string }) =>
-        plugin.name === 'workflow:optional-pg-native'
-    );
-    expect(optionalPgNativePlugin).toBeDefined();
-    expect(optionalPgNativePlugin.resolveId('pg-native')).toBe(
-      '\0workflow:optional-pg-native'
-    );
-    expect(optionalPgNativePlugin.load('\0workflow:optional-pg-native')).toBe(
-      'export default {};'
+    expect(nitro.options.alias['pg-native'].replaceAll('\\', '/')).toContain(
+      '/packages/nitro/src/optional-pg-native.js'
     );
   });
 

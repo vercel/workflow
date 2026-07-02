@@ -1,3 +1,6 @@
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setWorld } from '@workflow/core/runtime';
 import { isVercelWorldTarget } from '@workflow/utils';
 import type { World } from '@workflow/world';
@@ -148,7 +151,10 @@ export const setupCliWorld = async (
 
 async function createPostgresCliWorld(): Promise<World> {
   const postgresWorldPackage = '@workflow/world-postgres';
-  const mod = (await import(postgresWorldPackage)) as {
+  const postgresWorldPath = createRequire(
+    join(process.cwd(), 'package.json')
+  ).resolve(postgresWorldPackage, { paths: [process.cwd()] });
+  const mod = (await import(pathToFileURL(postgresWorldPath).href)) as {
     createWorld: () => World | Promise<World>;
   };
   return mod.createWorld();

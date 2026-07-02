@@ -157,19 +157,9 @@ function createWorkflowForceInlinePlugin(
   };
 }
 
-function createOptionalPgNativePlugin() {
-  const moduleId = '\0workflow:optional-pg-native';
-  return {
-    name: 'workflow:optional-pg-native',
-    resolveId(source: string) {
-      return source === 'pg-native' ? moduleId : null;
-    },
-    load(id: string) {
-      if (id !== moduleId) return null;
-      return 'export default {};';
-    },
-  };
-}
+const OPTIONAL_PG_NATIVE_ALIAS = fileURLToPath(
+  new URL('./optional-pg-native.js', import.meta.url)
+);
 
 function createResolverRequire(nitro: Nitro) {
   return createRequire(join(nitro.options.rootDir, 'package.json'));
@@ -198,6 +188,7 @@ export default {
 
     nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE] =
       resolveWorkflowTargetWorldAlias(nitro, workflowTargetWorld);
+    nitro.options.alias['pg-native'] ??= OPTIONAL_PG_NATIVE_ALIAS;
 
     // Add transform plugin at the BEGINNING to run before other transforms
     // (especially before class property transforms that rename classes like _ClassName)
@@ -269,8 +260,7 @@ export default {
         createWorkflowForceInlinePlugin(
           workflowTargetWorld,
           nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE]
-        ),
-        createOptionalPgNativePlugin()
+        )
       );
     });
 
