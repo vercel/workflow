@@ -1,6 +1,11 @@
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
-import { join } from 'pathe';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  BaseBuilder,
+  createBaseBuilderConfig,
+  readJsonObjectIfExists,
+  resolveProjectRoot,
+} from '@workflow/builders';
+import { join, resolve } from 'pathe';
 import { rewriteTsImportsInContent } from './cjs-rewrite.js';
 
 export interface NestBuilderOptions {
@@ -11,9 +16,14 @@ export interface NestBuilderOptions {
   workingDir?: string;
   /**
    * Directories to scan for workflow files
-   * @default ['src']
+   * @default nest-cli.json sourceRoot or ['src']
    */
   dirs?: string[];
+  /**
+   * Project root used for monorepo workspace imports.
+   * @default nearest workspace root, or workingDir when none is found
+   */
+  projectRoot?: string;
   /**
    * Output directory for generated workflow bundles
    * @default '.nestjs/workflow'
@@ -30,14 +40,14 @@ export interface NestBuilderOptions {
    * When 'commonjs', the builder rewrites externalized imports in the
    * steps bundle to use require() via createRequire, avoiding ESM/CJS
    * named-export interop issues with SWC's _export() wrapper pattern.
-   * @default 'es6'
+   * @default .swcrc module.type, tsconfig module, or 'es6'
    */
   moduleType?: 'es6' | 'commonjs';
   /**
    * Directory where NestJS compiles .ts source files to .js (relative to workingDir).
    * Used when moduleType is 'commonjs' to resolve compiled file paths.
    * This should match the `outDir` in your tsconfig.json.
-   * @default 'dist'
+   * @default tsconfig compilerOptions.outDir or 'dist'
    */
   distDir?: string;
   /**
@@ -57,16 +67,24 @@ export class NestLocalBuilder extends BaseBuilder {
   #workingDir: string;
 
   constructor(options: NestBuilderOptions = {}) {
-    const workingDir = options.workingDir ?? process.cwd();
-    const outDir = options.outDir ?? join(workingDir, '.nestjs/workflow');
-    const dirs = options.dirs ?? ['src'];
+    const {
+      workingDir,
+      outDir,
+      dirs,
+      projectRoot,
+      moduleSpecifierRoot,
+      moduleType,
+      distDir,
+    } = resolveNestBuilderConfig(options);
     super({
       ...createBaseBuilderConfig({
         workingDir,
+        projectRoot,
         watch: options.watch ?? false,
         dirs,
         sourcemap: options.sourcemap,
       }),
+      moduleSpecifierRoot,
       // Use 'standalone' as base target - we handle the specific bundling ourselves
       buildTarget: 'standalone',
       stepsBundlePath: join(outDir, 'steps.mjs'),
@@ -74,8 +92,8 @@ export class NestLocalBuilder extends BaseBuilder {
       webhookBundlePath: join(outDir, 'webhook.mjs'),
     });
     this.#outDir = outDir;
-    this.#moduleType = options.moduleType ?? 'es6';
-    this.#distDir = options.distDir ?? 'dist';
+    this.#moduleType = moduleType;
+    this.#distDir = distDir;
     this.#dirs = dirs;
     this.#workingDir = workingDir;
   }
@@ -161,5 +179,87 @@ export class NestLocalBuilder extends BaseBuilder {
     ].join('\n');
 
     await writeFile(stepsPath, requireShim + rewritten);
+  }
+}
+
+type NestCliConfig = { sourceRoot?: unknown };
+type SwcConfig = { module?: { type?: unknown } };
+type TsConfig = { compilerOptions?: { module?: unknown; outDir?: unknown } };
+
+interface ResolvedNestBuilderConfig {
+  workingDir: string;
+  outDir: string;
+  dirs: string[];
+  projectRoot: string;
+  moduleSpecifierRoot: string;
+  moduleType: 'es6' | 'commonjs';
+  distDir: string;
+}
+
+/** @internal */
+export function resolveNestBuilderConfig(
+  options: NestBuilderOptions = {}
+): ResolvedNestBuilderConfig {
+  const workingDir = resolve(options.workingDir ?? process.cwd());
+  const nestCli = readJsonObjectIfExists<NestCliConfig>(
+    join(workingDir, 'nest-cli.json')
+  );
+  const swcrc = readJsonObjectIfExists<SwcConfig>(join(workingDir, '.swcrc'));
+  const tsconfig = readJsonObjectIfExists<TsConfig>(
+    join(workingDir, 'tsconfig.json')
+  );
+  const moduleType =
+    options.moduleType ??
+    readModuleType(readString(swcrc?.module?.type, '.swcrc module.type')) ??
+    readModuleType(
+      readString(tsconfig?.compilerOptions?.module, 'tsconfig module')
+    ) ??
+    'es6';
+
+  return {
+    workingDir,
+    outDir: options.outDir ?? join(workingDir, '.nestjs/workflow'),
+    dirs: options.dirs ?? [
+      readString(nestCli?.sourceRoot, 'nest-cli sourceRoot') ?? 'src',
+    ],
+    projectRoot: options.projectRoot ?? resolveProjectRoot(workingDir),
+    moduleSpecifierRoot: workingDir,
+    moduleType,
+    distDir:
+      options.distDir ??
+      readString(tsconfig?.compilerOptions?.outDir, 'tsconfig outDir') ??
+      'dist',
+  };
+}
+
+function readString(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`Expected ${name} to be a string.`);
+  }
+  return value;
+}
+
+function readModuleType(
+  value: string | undefined
+): 'es6' | 'commonjs' | undefined {
+  switch (value?.toLowerCase()) {
+    case undefined:
+      return undefined;
+    case 'commonjs':
+      return 'commonjs';
+    case 'es6':
+    case 'es2015':
+    case 'es2020':
+    case 'es2022':
+    case 'esnext':
+    case 'node16':
+    case 'node18':
+    case 'node20':
+    case 'nodenext':
+    case 'preserve':
+      return 'es6';
+    default:
+      throw new Error(`Unsupported Nest module type: ${value}`);
   }
 }

@@ -1,4 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
@@ -110,4 +112,44 @@ export function createBaseBuilderConfig(options: {
     runtime: options.runtime,
     sourcemap: options.sourcemap,
   };
+}
+
+export function resolveProjectRoot(workingDir: string): string {
+  return findPnpmWorkspaceRoot(workingDir) ?? resolve(workingDir);
+}
+
+export function readJsonObjectIfExists<T extends object>(
+  path: string
+): T | undefined {
+  let content: string;
+  try {
+    content = readFileSync(path, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  }
+
+  const value = JSON5.parse(content);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Expected ${path} to contain a JSON object.`);
+  }
+  return value as T;
+}
+
+function findPnpmWorkspaceRoot(workingDir: string): string | undefined {
+  let current = resolve(workingDir);
+
+  while (true) {
+    if (existsSync(join(current, 'pnpm-workspace.yaml'))) {
+      return current;
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
 }
