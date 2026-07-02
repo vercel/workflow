@@ -304,16 +304,29 @@ export function buildDataset({
     });
   }
 
-  indexTraces.sort((a, b) => a.label.localeCompare(b.label));
+  // Merge into an existing dataset index (upsert by trace id) so runs can be
+  // imported incrementally — a fresh import of the same id replaces just that entry.
+  const indexPath = join(datasetDir, 'index.json');
+  let existing = [];
+  if (existsSync(indexPath)) {
+    try {
+      existing = JSON.parse(readFileSync(indexPath, 'utf8')).traces ?? [];
+    } catch {
+      existing = [];
+    }
+  }
+  const newIds = new Set(indexTraces.map((t) => t.id));
+  const merged = [...existing.filter((t) => !newIds.has(t.id)), ...indexTraces];
+  merged.sort((a, b) => a.label.localeCompare(b.label));
   writeFileSync(
-    join(datasetDir, 'index.json'),
-    `${JSON.stringify({ source, title, traces: indexTraces }, null, 2)}\n`
+    indexPath,
+    `${JSON.stringify({ source, title, traces: merged }, null, 2)}\n`
   );
   registerDataset(outDir, {
     id,
     title,
     source,
-    traceCount: indexTraces.length,
+    traceCount: merged.length,
     importedAt: new Date().toISOString(),
   });
   return indexTraces.length;
