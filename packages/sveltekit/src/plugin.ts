@@ -1,4 +1,8 @@
-import { createBuildQueue } from '@workflow/builders';
+import {
+  createBuildQueue,
+  ensureWorkflowTargetWorldEnv,
+  WORKFLOW_WORLD_TARGET_MODULE,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Plugin } from 'vite';
@@ -22,6 +26,20 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
     workflowTransformPlugin() as Plugin,
     {
       name: 'workflow:sveltekit',
+      config() {
+        const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+        return {
+          define: {
+            'process.env.WORKFLOW_TARGET_WORLD':
+              JSON.stringify(workflowTargetWorld),
+          },
+          resolve: {
+            alias: {
+              [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
+            },
+          },
+        };
+      },
       // SvelteKit bundles the server (including undici, via the world adapter)
       // into ESM output. undici loads most node: builtins as ESM imports, but
       // pulls in `node:http2` lazily via a bare `require('node:http2')` inside a

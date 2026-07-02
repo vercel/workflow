@@ -2,8 +2,10 @@ import { copyFileSync, mkdirSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+  ensureWorkflowTargetWorldEnv,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
+  WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
@@ -338,18 +340,15 @@ export function withWorkflow(
     };
   } = {}
 ) {
+  const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+  if (workflowTargetWorld === '@workflow/world-local') {
+    process.env.WORKFLOW_LOCAL_DATA_DIR ??= '.next/workflow-data';
+  }
+
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
-    if (!process.env.WORKFLOW_TARGET_WORLD) {
-      process.env.WORKFLOW_TARGET_WORLD = 'local';
-      process.env.WORKFLOW_LOCAL_DATA_DIR = '.next/workflow-data';
-    }
     const maybePort = workflows?.local?.port;
     if (maybePort) {
       process.env.PORT = maybePort.toString();
-    }
-  } else {
-    if (!process.env.WORKFLOW_TARGET_WORLD) {
-      process.env.WORKFLOW_TARGET_WORLD = 'vercel';
     }
   }
 
@@ -378,6 +377,10 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    nextConfig.env = {
+      ...nextConfig.env,
+      WORKFLOW_TARGET_WORLD: workflowTargetWorld,
+    };
     nextConfig.serverExternalPackages = [
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
@@ -444,6 +447,10 @@ export function withWorkflow(
     if (!nextConfig.turbopack.rules) {
       nextConfig.turbopack.rules = {};
     }
+    nextConfig.turbopack.resolveAlias = {
+      ...((nextConfig.turbopack.resolveAlias as Record<string, unknown>) || {}),
+      [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
+    };
     const existingRules = nextConfig.turbopack.rules as any;
     const workingDir = process.cwd();
     const nextVersion = resolveNextVersion(workingDir);
@@ -546,7 +553,11 @@ export function withWorkflow(
     // configure the loader for webpack
     const existingWebpackModify = nextConfig.webpack;
     nextConfig.webpack = (...args) => {
-      const [webpackConfig] = args;
+      let [webpackConfig] = args;
+      webpackConfig = existingWebpackModify
+        ? (existingWebpackModify(...args) ?? webpackConfig)
+        : webpackConfig;
+
       if (!webpackConfig.module) {
         webpackConfig.module = {};
       }
@@ -560,9 +571,24 @@ export function withWorkflow(
         loader: loaderPath,
       });
 
-      return existingWebpackModify
-        ? (existingWebpackModify(...args) ?? webpackConfig)
-        : webpackConfig;
+      webpackConfig.resolve ||= {};
+      const existingAlias = webpackConfig.resolve.alias;
+      if (Array.isArray(existingAlias)) {
+        webpackConfig.resolve.alias = [
+          ...existingAlias,
+          {
+            name: WORKFLOW_WORLD_TARGET_MODULE,
+            alias: workflowTargetWorld,
+          },
+        ];
+      } else {
+        webpackConfig.resolve.alias = {
+          ...(existingAlias || {}),
+          [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
+        };
+      }
+
+      return webpackConfig;
     };
     // only run this in the main process so it only runs once
     // as Next.js uses child processes for different builds

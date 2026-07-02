@@ -57,6 +57,11 @@
       "workflow": "./dist/workflow/world-init-stub.js",
       "default": "./dist/runtime/world-init.js"
     },
+    "./runtime/world-target": {
+      "types": "./dist/runtime/world-target.d.ts",
+      "workflow": "./dist/workflow/world-init-stub.js",
+      "default": "./dist/runtime/world-target.js"
+    },
     "./class-serialization": {
       "types": "./dist/class-serialization.d.ts",
       "default": "./dist/class-serialization.js"

@@ -127,6 +127,8 @@ export const setupCliWorld = async (
         teamId: vercelEnvVars.teamId,
       },
     });
+  } else if (flags.backend === '@workflow/world-postgres') {
+    world = await createPostgresCliWorld();
   } else {
     world = await createWorld();
   }
@@ -135,3 +137,11 @@ export const setupCliWorld = async (
   setWorld(world);
   return world;
 };
+
+async function createPostgresCliWorld(): Promise<World> {
+  const postgresWorldPackage = '@workflow/world-postgres';
+  const mod = (await import(postgresWorldPackage)) as {
+    createWorld: () => World | Promise<World>;
+  };
+  return mod.createWorld();
+}

@@ -40,6 +40,10 @@ import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
+import {
+  createWorkflowWorldTargetEsbuildPlugin,
+  ensureWorkflowTargetWorldEnv,
+} from './world-target.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
@@ -235,6 +239,7 @@ export abstract class BaseBuilder {
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
 
   constructor(config: WorkflowConfig) {
+    ensureWorkflowTargetWorldEnv();
     this.config = config;
   }
 
@@ -244,6 +249,13 @@ export abstract class BaseBuilder {
 
   protected get moduleSpecifierRoot(): string {
     return this.config.moduleSpecifierRoot || this.transformProjectRoot;
+  }
+
+  private createWorkflowWorldTargetPlugin(): esbuild.Plugin {
+    return createWorkflowWorldTargetEsbuildPlugin({
+      workingDir: this.config.workingDir,
+      externalPackages: this.config.externalPackages,
+    });
   }
 
   protected logBaseBuilderInfo(...args: unknown[]): void {
@@ -1540,6 +1552,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
           write: true,
           keepNames: true,
           minify: false,
+          plugins: [this.createWorkflowWorldTargetPlugin()],
           external: ['@aws-sdk/credential-provider-web-identity'],
         });
 
@@ -1737,6 +1750,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         keepNames: true,
         minify: false,
         define: importMetaDefine,
+        plugins: [this.createWorkflowWorldTargetPlugin()],
         external: ['@aws-sdk/credential-provider-web-identity'],
       });
       this.logEsbuildMessages(finalResult, 'combined bundle', true);
@@ -2026,6 +2040,7 @@ export const OPTIONS = handler;`;
       ],
       sourcemap: this.resolveSourcemap(EMIT_SOURCEMAPS_FOR_DEBUGGING),
       mainFields: ['module', 'main'],
+      plugins: [this.createWorkflowWorldTargetPlugin()],
       // Don't externalize anything - bundle everything including workflow packages
       external: [],
     });

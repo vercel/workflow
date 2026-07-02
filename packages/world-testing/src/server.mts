@@ -1,8 +1,12 @@
 import fs from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
+import { getWorldImport } from '@workflow/utils';
+import type { World } from '@workflow/world';
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { getWorld } from 'workflow/runtime';
+import { getWorld, setWorld } from 'workflow/runtime';
 import * as z from 'zod';
 import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
@@ -15,6 +19,58 @@ if (!process.env.WORKFLOW_TARGET_WORLD) {
   );
   process.exit(1);
 }
+
+type WorldFactoryModule = {
+  createWorld?: () => World | Promise<World>;
+  createLocalWorld?: () => World | Promise<World>;
+  createVercelWorld?: () => World | Promise<World>;
+  default?: (() => World | Promise<World>) | World;
+};
+
+function normalizeTargetWorldSpecifier(targetWorld: string): string {
+  if (targetWorld.startsWith('./') || targetWorld.startsWith('../')) {
+    return pathToFileURL(resolve(process.cwd(), targetWorld)).href;
+  }
+  return getWorldImport({ WORKFLOW_TARGET_WORLD: targetWorld });
+}
+
+function createWorldFromModule(
+  mod: WorldFactoryModule
+): World | Promise<World> {
+  if (typeof mod.createWorld === 'function') {
+    return mod.createWorld();
+  }
+  if (typeof mod.createLocalWorld === 'function') {
+    return mod.createLocalWorld();
+  }
+  if (typeof mod.createVercelWorld === 'function') {
+    return mod.createVercelWorld();
+  }
+  if (typeof mod.default === 'function') {
+    return mod.default();
+  }
+  if (mod.default && typeof mod.default === 'object') {
+    return mod.default as World;
+  }
+
+  throw new Error(
+    'Invalid target world module: must export createWorld(), createLocalWorld(), createVercelWorld(), a default factory, or a default World instance.'
+  );
+}
+
+async function initializeTestWorld() {
+  const targetWorld = process.env.WORKFLOW_TARGET_WORLD;
+  if (!targetWorld) {
+    throw new Error('WORKFLOW_TARGET_WORLD environment variable is not set.');
+  }
+
+  const mod = (await import(
+    normalizeTargetWorldSpecifier(targetWorld)
+  )) as WorldFactoryModule;
+  setWorld(await createWorldFromModule(mod));
+}
+
+await initializeTestWorld();
 
 type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
@@ -118,7 +174,7 @@ const app = new Hono()
     const runId = ctx.req.param('runId');
     const world = await getWorld();
     const allEvents: { eventType: string; correlationId?: string }[] = [];
-    let cursor: string | undefined = undefined;
+    let cursor: string | undefined;
     while (true) {
       const page = await world.events.list({
         runId,

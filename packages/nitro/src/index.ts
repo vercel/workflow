@@ -1,7 +1,11 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  ensureWorkflowTargetWorldEnv,
+  WORKFLOW_QUEUE_TRIGGER,
+  WORKFLOW_WORLD_TARGET_MODULE,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -71,9 +75,12 @@ export default {
   async setup(nitro: Nitro) {
     const isVercelDeploy =
       !nitro.options.dev && nitro.options.preset === 'vercel';
+    const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
 
     // Pre-built workflow bundles directory - must be excluded from re-transformation
     const workflowBuildDir = join(nitro.options.buildDir, 'workflow');
+
+    nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE] = workflowTargetWorld;
 
     // Add transform plugin at the BEGINNING to run before other transforms
     // (especially before class property transforms that rename classes like _ClassName)
@@ -103,7 +110,7 @@ export default {
 
     // NOTE: Temporary workaround for debug unenv mock
     if (!nitro.options.workflow?._vite) {
-      nitro.options.alias['debug'] ??= 'debug';
+      nitro.options.alias.debug ??= 'debug';
     }
 
     if (nitro.options.dev) {
@@ -157,7 +164,13 @@ export default {
             resolveId: {
               order: 'pre',
               async handler(
-                this: { resolve: Function },
+                this: {
+                  resolve: (
+                    source: string,
+                    importer: string | undefined,
+                    options: { skipSelf?: boolean }
+                  ) => Promise<{ id: string } | null>;
+                },
                 source: string,
                 importer: string | undefined,
                 options: { skipSelf?: boolean }

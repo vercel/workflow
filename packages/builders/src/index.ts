@@ -65,3 +65,12 @@ export type {
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
+export {
+  createWorkflowWorldTargetEsbuildPlugin,
+  ensureWorkflowTargetWorldEnv,
+  getWorldImport,
+  normalizeWorkflowTargetWorld,
+  resolveWorkflowTargetWorldSpecifier,
+  WORKFLOW_WORLD_TARGET_MODULE,
+  type WorkflowWorldTargetEnvironment,
+} from './world-target.js';
