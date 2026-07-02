@@ -204,6 +204,7 @@ describe('withWorkflow builder config', () => {
       return webpackConfig;
     });
     const config = withWorkflow({
+      transpilePackages: ['user-package'],
       webpack: userWebpack,
       turbopack: {
         resolveAlias: {
@@ -229,6 +230,14 @@ describe('withWorkflow builder config', () => {
     expect(nextConfig.env?.WORKFLOW_TARGET_WORLD).toBe(
       '@workflow/world-vercel'
     );
+    expect(nextConfig.transpilePackages).toEqual([
+      'user-package',
+      '@workflow/core',
+      '@workflow/serde',
+      '@workflow/errors',
+      '@workflow/utils',
+      '@workflow/ai',
+    ]);
     expect((nextConfig.turbopack?.resolveAlias as any)?.existing).toBe(
       'existing-target'
     );

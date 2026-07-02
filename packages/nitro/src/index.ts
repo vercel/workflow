@@ -70,6 +70,80 @@ function addNodeRequireBanner(config: RollupConfig): void {
   }
 }
 
+function createWorkflowForceInlinePlugin(workflowTargetWorldAlias: string) {
+  return {
+    name: 'workflow:force-inline',
+    // `order: 'pre'` is required: Nitro's `nitro:externals` plugin
+    // uses `order: 'pre'` for its resolveId hook and spreads our
+    // resolution result while forcing `external: true`. Without
+    // `pre` here, our `external: false` decision gets overwritten
+    // and `@workflow/*` imports end up externalized in the bundle.
+    resolveId: {
+      order: 'pre' as const,
+      async handler(
+        this: {
+          resolve: (
+            source: string,
+            importer: string | undefined,
+            options: { skipSelf?: boolean }
+          ) => Promise<{ id: string } | null>;
+        },
+        source: string,
+        importer: string | undefined,
+        options: { skipSelf?: boolean }
+      ) {
+        if (source === WORKFLOW_WORLD_TARGET_MODULE) {
+          return { id: workflowTargetWorldAlias, external: false };
+        }
+        if (!importer) return null;
+        // Match workflow package specifiers OR direct paths into
+        // packages/<name>/. Bail out early on non-workflow imports
+        // so we don't intercept the rest of the resolution chain.
+        const isWorkflowPkg =
+          /^@?workflow(\/|$)/.test(source) ||
+          /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|astro|sveltekit|nest)[\\/]/.test(
+            source
+          );
+        if (!isWorkflowPkg) return null;
+        // Resolve via other resolvers, skipping ourselves so we
+        // get a path. We don't gate on `resolved.external` because
+        // `nitro:externals` spreads our result and overrides
+        // `external: true` regardless of what we return — we want
+        // to win that race by returning first under `order: 'pre'`.
+        const resolved = await this.resolve(source, importer, {
+          ...options,
+          skipSelf: true,
+        });
+        if (!resolved) return null;
+        let resolvedId = resolved.id;
+        // Strip file:// protocol if present — Rollup needs a plain
+        // filesystem path to load the module. `fileURLToPath`
+        // correctly handles Windows paths (e.g., file:///C:/...
+        // -> C:\...) and percent-decoding.
+        if (resolvedId.startsWith('file://')) {
+          resolvedId = fileURLToPath(resolvedId);
+        }
+        return { id: resolvedId, external: false };
+      },
+    },
+  };
+}
+
+function createResolverRequire(nitro: Nitro) {
+  return createRequire(join(nitro.options.rootDir, 'package.json'));
+}
+
+function resolveWorkflowTargetWorldAlias(
+  nitro: Nitro,
+  targetWorld: string
+): string {
+  try {
+    return createResolverRequire(nitro).resolve(targetWorld);
+  } catch {
+    return targetWorld;
+  }
+}
+
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
@@ -80,7 +154,8 @@ export default {
     // Pre-built workflow bundles directory - must be excluded from re-transformation
     const workflowBuildDir = join(nitro.options.buildDir, 'workflow');
 
-    nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE] = workflowTargetWorld;
+    nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE] =
+      resolveWorkflowTargetWorldAlias(nitro, workflowTargetWorld);
 
     // Add transform plugin at the BEGINNING to run before other transforms
     // (especially before class property transforms that rename classes like _ClassName)
@@ -132,84 +207,28 @@ export default {
       }
     }
 
-    // In dev mode, force workflow SDK packages to be bundled by Nitro's
-    // Rollup rather than externalized. This ensures the SWC transform
-    // plugin processes files containing workflow patterns (like
-    // @workflow/core/dist/runtime/run.js) and adds the classId
-    // registration IIFEs needed for serialization. Without this, serde
-    // classes from npm packages (like `Run`) would be externalized, the
-    // SWC transform would never fire on them, and serialization would
-    // fail with "must have a static classId property".
+    // Force workflow SDK packages to be bundled by Nitro's Rollup rather than
+    // externalized. This lets the static world-target alias resolve inside the
+    // host server bundle instead of falling through to the unaliased core stub.
+    // It also ensures the SWC transform plugin processes files containing
+    // workflow patterns (like @workflow/core/dist/runtime/run.js) and adds the
+    // classId registration IIFEs needed for serialization. Without this, serde
+    // classes from npm packages (like `Run`) would be externalized, the SWC
+    // transform would never fire on them, and serialization would fail with
+    // "must have a static classId property".
     //
     // We use a Rollup resolveId hook (added BEFORE the externalization
     // plugin) that intercepts workflow package imports and marks them
     // as non-external. This is more targeted than `noExternals = true`
     // which would bundle ALL dependencies and cause TDZ errors from
     // circular imports in packages like vue-bundle-renderer/h3.
-    if (nitro.options.dev) {
-      nitro.hooks.hook(
-        'rollup:before',
-        (_nitro: Nitro, config: RollupConfig) => {
-          (config.plugins as Array<unknown>).unshift({
-            name: 'workflow:force-inline',
-            // `order: 'pre'` is required: Nitro's `nitro:externals` plugin
-            // uses `order: 'pre'` for its resolveId hook and spreads our
-            // resolution result while forcing `external: true`. Without
-            // `pre` here, our `external: false` decision gets overwritten
-            // and `@workflow/*` imports end up externalized in the dev
-            // bundle — which means the SWC-injected `static classId` IIFE
-            // in (e.g.) `@workflow/core/dist/runtime/run.js` is never
-            // applied, and step return values that include `Run`
-            // instances fail to serialize at runtime.
-            resolveId: {
-              order: 'pre',
-              async handler(
-                this: {
-                  resolve: (
-                    source: string,
-                    importer: string | undefined,
-                    options: { skipSelf?: boolean }
-                  ) => Promise<{ id: string } | null>;
-                },
-                source: string,
-                importer: string | undefined,
-                options: { skipSelf?: boolean }
-              ) {
-                if (!importer) return null;
-                // Match workflow package specifiers OR direct paths into
-                // packages/<name>/. Bail out early on non-workflow imports
-                // so we don't intercept the rest of the resolution chain.
-                const isWorkflowPkg =
-                  /^@?workflow(\/|$)/.test(source) ||
-                  /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|astro|sveltekit|nest)[\\/]/.test(
-                    source
-                  );
-                if (!isWorkflowPkg) return null;
-                // Resolve via other resolvers, skipping ourselves so we
-                // get a path. We don't gate on `resolved.external` because
-                // `nitro:externals` spreads our result and overrides
-                // `external: true` regardless of what we return — we want
-                // to win that race by returning first under `order: 'pre'`.
-                const resolved = await this.resolve(source, importer, {
-                  ...options,
-                  skipSelf: true,
-                });
-                if (!resolved) return null;
-                let resolvedId = resolved.id;
-                // Strip file:// protocol if present — Rollup needs a plain
-                // filesystem path to load the module. `fileURLToPath`
-                // correctly handles Windows paths (e.g., file:///C:/...
-                // -> C:\...) and percent-decoding.
-                if (resolvedId.startsWith('file://')) {
-                  resolvedId = fileURLToPath(resolvedId);
-                }
-                return { id: resolvedId, external: false };
-              },
-            },
-          });
-        }
+    nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
+      (config.plugins as Array<unknown>).unshift(
+        createWorkflowForceInlinePlugin(
+          nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE]
+        )
       );
-    }
+    });
 
     // Add tsConfig plugin
     if (nitro.options.workflow?.typescriptPlugin) {

@@ -8,6 +8,7 @@ type StubOptions = {
   majorVersion?: number;
   dev?: boolean;
   preset?: string;
+  rootDir?: string;
   workspaceDir?: string;
   workflow?: { dirs?: string[]; runtime?: string };
   externals?: {
@@ -21,6 +22,7 @@ function createNitroStub({
   majorVersion,
   dev = false,
   preset = 'node-server',
+  rootDir = '/tmp/project',
   workspaceDir = '/tmp/project',
   workflow = {},
   externals,
@@ -36,7 +38,7 @@ function createNitroStub({
       externals: externals ?? {},
       handlers: [],
       preset,
-      rootDir: '/tmp/project',
+      rootDir,
       typescript: {},
       vercel: vercel ?? {},
       virtual: {},
@@ -109,6 +111,82 @@ describe('@workflow/nitro virtual handlers', () => {
       expect(source).toContain(
         `import { POST } from "/tmp/.nitro/workflow/${buildPath}";`
       );
+    }
+  });
+});
+
+describe('@workflow/nitro world target bundling', () => {
+  it('forces workflow SDK packages inline in production builds so aliases can resolve', async () => {
+    const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+    const nitro = createNitroStub({ routing: true, dev: false });
+    nitro.hooks.hook = (
+      name: string,
+      fn: (nitro: any, config: any) => void
+    ) => {
+      if (name === 'rollup:before') rollupBeforeHooks.push(fn);
+    };
+
+    await nitroModule.setup(nitro);
+
+    const config: {
+      plugins: Array<{ name?: string; resolveId?: { order?: string } }>;
+    } = { plugins: [] };
+    for (const hook of rollupBeforeHooks) {
+      hook(nitro, config);
+    }
+
+    const forceInlinePlugin = config.plugins.find(
+      (plugin: { name?: string }) => plugin.name === 'workflow:force-inline'
+    );
+
+    expect(forceInlinePlugin).toBeDefined();
+    expect(forceInlinePlugin?.resolveId?.order).toBe('pre');
+  });
+
+  it('resolves the configured world target alias from the app root', async () => {
+    const previous = process.env.WORKFLOW_TARGET_WORLD;
+    process.env.WORKFLOW_TARGET_WORLD = '@workflow/world-postgres';
+    try {
+      const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+      const nitro = createNitroStub({
+        routing: true,
+        rootDir: `${process.cwd()}/workbench/express`,
+      });
+      nitro.hooks.hook = (
+        name: string,
+        fn: (nitro: any, config: any) => void
+      ) => {
+        if (name === 'rollup:before') rollupBeforeHooks.push(fn);
+      };
+
+      await nitroModule.setup(nitro);
+
+      const worldTargetAlias =
+        nitro.options.alias['@workflow/core/runtime/world-target'];
+      expect(worldTargetAlias.replaceAll('\\', '/')).toContain(
+        '/packages/world-postgres/dist/index.js'
+      );
+
+      const config: { plugins: any[] } = { plugins: [] };
+      for (const hook of rollupBeforeHooks) {
+        hook(nitro, config);
+      }
+      const forceInlinePlugin = config.plugins.find(
+        (plugin: { name?: string }) => plugin.name === 'workflow:force-inline'
+      );
+      await expect(
+        forceInlinePlugin.resolveId.handler(
+          '@workflow/core/runtime/world-target',
+          undefined,
+          {}
+        )
+      ).resolves.toEqual({ id: worldTargetAlias, external: false });
+    } finally {
+      if (previous == null) {
+        delete process.env.WORKFLOW_TARGET_WORLD;
+      } else {
+        process.env.WORKFLOW_TARGET_WORLD = previous;
+      }
     }
   });
 });

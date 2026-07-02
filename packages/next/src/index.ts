@@ -22,6 +22,13 @@ const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
+const WORKFLOW_SERVER_TRANSPILE_PACKAGES = [
+  '@workflow/core',
+  '@workflow/serde',
+  '@workflow/errors',
+  '@workflow/utils',
+  '@workflow/ai',
+];
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
 const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
@@ -388,6 +395,12 @@ export function withWorkflow(
         // local builds do not try to parse @vercel/queue's keyring dependency
         // tree.
         ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
+      ]),
+    ];
+    nextConfig.transpilePackages = [
+      ...new Set([
+        ...(nextConfig.transpilePackages || []),
+        ...WORKFLOW_SERVER_TRANSPILE_PACKAGES,
       ]),
     ];
     const existingCompiler = nextConfig.compiler ?? {};
