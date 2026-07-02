@@ -664,26 +664,9 @@ describe('e2e', () => {
     expect(returnValue[2].body).toBe('{"message":"three"}');
   });
 
-  // Skipped on world-postgres: the same-tick replay pattern this test
-  // stresses also surfaces a SEPARATE, pre-existing world-postgres bug
-  // — the step entity UPDATE and the event INSERT are not atomic, so a
-  // late concurrent `step_started` can pass the non-terminal
-  // conditional UPDATE before `step_completed` commits but append its
-  // event after it, producing a duplicate `step_started` after
-  // `step_completed` in the log and a `CorruptedEventLogError` on
-  // replay. That is a step-lifecycle ordering bug, not the hook
-  // self-conflict fixed by this PR (the postgres log in the failing CI
-  // run shows duplicate `hook_created` inserts were correctly rejected
-  // by `workflow_events_entity_creation_unique`). Tracked separately
-  // in https://github.com/vercel/workflow/issues/2331 — re-enable on
-  // postgres when that lands. The deterministic unit tests in
-  // `world-local` and `world-postgres` cover the hook idempotency
-  // invariant on both worlds regardless.
-  const isPostgresWorld =
-    !!process.env.WORKFLOW_TARGET_WORLD?.includes('postgres');
-  test.skipIf(isPostgresWorld)(
+  test(
     'parallelStepsThenWebhookWorkflow - no hook_conflict from same-tick replay race',
-    { timeout: 120_000 },
+    { timeout: 180_000 },
     async () => {
       // Regression test for https://github.com/vercel/workflow/issues/1665
       // and https://github.com/vercel/workflow/issues/2283.
