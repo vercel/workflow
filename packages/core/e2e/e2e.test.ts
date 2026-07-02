@@ -10,10 +10,7 @@ import {
   WorkflowRunFailedError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import {
-  createWorkflowHealthUrl,
-  createWorkflowWebhookUrl,
-} from '@workflow/utils';
+import { createWorkflowUrl } from '@workflow/utils';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import {
   afterAll,
@@ -116,7 +113,7 @@ const e2e = (fn: string) =>
   getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
 
 const workflowWebhookUrl = (token: string) =>
-  createWorkflowWebhookUrl(deploymentUrl, token);
+  createWorkflowUrl(deploymentUrl, { type: 'webhook', token });
 
 type WorkflowEvent = Awaited<
   ReturnType<World['events']['list']>
@@ -2530,10 +2527,13 @@ describe('e2e', () => {
       // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
-      const flowRes = await fetch(createWorkflowHealthUrl(deploymentUrl), {
-        method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
-      });
+      const flowRes = await fetch(
+        createWorkflowUrl(deploymentUrl, { type: 'health' }),
+        {
+          method: 'POST',
+          headers: await getTrustedSourcesHeaders(),
+        }
+      );
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
       const flowBody = await flowRes.json();

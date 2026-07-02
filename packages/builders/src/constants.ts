@@ -84,6 +84,15 @@ export function createWorkflowEntrypointOptionsCode(options?: {
   return `, { ${fields.join(', ')} }`;
 }
 
+export function createWorkflowRouteHandlersCode(
+  workflowEntrypointCall: string
+) {
+  return `export const POST = ${workflowEntrypointCall};
+export const GET = POST;
+export const HEAD = POST;
+export const OPTIONS = POST;`;
+}
+
 /**
  * Default queue trigger (no namespace). Backward compatible.
  */

@@ -50,7 +50,7 @@ import { withWorkflow } from './index.js';
 const loaderStubPath = join(__dirname, 'loader.js');
 const hadLoaderStub = existsSync(loaderStubPath);
 const realTmpDir = realpathSync(tmpdir());
-const workflowBasePathSymbol = Symbol.for('@workflow/base-path');
+const workflowBasePathSymbol = Symbol.for('@workflow/core/basePath');
 
 function writeFile(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true });

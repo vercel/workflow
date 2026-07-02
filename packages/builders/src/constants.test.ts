@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
+  createWorkflowRouteHandlersCode,
 } from './constants.js';
 
 describe('createWorkflowQueueTrigger', () => {
@@ -23,6 +24,17 @@ describe('createWorkflowQueueTrigger', () => {
     process.env.WORKFLOW_QUEUE_NAMESPACE = 'custom';
 
     expect(createWorkflowQueueTrigger().topic).toBe('__custom_wkf_workflow_*');
+  });
+});
+
+describe('createWorkflowRouteHandlersCode', () => {
+  it('exports health-capable methods for generated workflow routes', () => {
+    expect(
+      createWorkflowRouteHandlersCode('workflowEntrypoint(workflowCode)')
+    ).toBe(`export const POST = workflowEntrypoint(workflowCode);
+export const GET = POST;
+export const HEAD = POST;
+export const OPTIONS = POST;`);
   });
 });
 

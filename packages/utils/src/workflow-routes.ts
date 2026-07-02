@@ -1,5 +1,5 @@
 export const WORKFLOW_ROUTE_BASE = '/.well-known/workflow/v1';
-const BASE_PATH_SYMBOL = Symbol.for('@workflow/base-path');
+const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
 const globalConfig = globalThis as typeof globalThis &
   Record<symbol, string | undefined>;
 
@@ -29,10 +29,19 @@ export function createWorkflowBaseUrl(origin: string): string {
   return `${origin.replace(/[?#].*$/, '').replace(/\/+$/, '')}${getWorkflowBasePath()}`;
 }
 
-function createWorkflowEndpointUrl(baseUrl: string, endpoint: string): string {
+export type WorkflowUrlRoute =
+  | { type: 'flow' | 'step' }
+  | { type: 'manifest' }
+  | { type: 'webhook'; token: string }
+  | { type: 'health' };
+
+export function createWorkflowUrl(
+  baseUrl: string,
+  route: WorkflowUrlRoute
+): string {
   const url = new URL(baseUrl);
-  url.pathname = `${url.pathname.replace(/\/+$/, '')}${WORKFLOW_ROUTE_BASE}/${endpoint}`;
-  url.search = '';
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}${WORKFLOW_ROUTE_BASE}/${getWorkflowRouteEndpoint(route)}`;
+  url.search = route.type === 'health' ? '__health' : '';
   url.hash = '';
   return url.toString();
 }
@@ -41,27 +50,38 @@ export function createWorkflowRouteUrl(
   baseUrl: string,
   route: 'flow' | 'step'
 ): string {
-  return createWorkflowEndpointUrl(baseUrl, route);
+  return createWorkflowUrl(baseUrl, { type: route });
 }
 
 export function createWorkflowManifestUrl(baseUrl: string): string {
-  return createWorkflowEndpointUrl(baseUrl, 'manifest.json');
+  return createWorkflowUrl(baseUrl, { type: 'manifest' });
 }
 
 export function createWorkflowWebhookUrl(
   baseUrl: string,
   token: string
 ): string {
-  return createWorkflowEndpointUrl(
-    baseUrl,
-    `webhook/${encodeURIComponent(token)}`
-  );
+  return createWorkflowUrl(baseUrl, { type: 'webhook', token });
 }
 
 export function createWorkflowHealthUrl(baseUrl: string): string {
-  const url = new URL(createWorkflowRouteUrl(baseUrl, 'flow'));
-  url.search = '__health';
-  return url.toString();
+  return createWorkflowUrl(baseUrl, { type: 'health' });
+}
+
+function getWorkflowRouteEndpoint(route: WorkflowUrlRoute): string {
+  switch (route.type) {
+    case 'flow':
+    case 'health':
+      return 'flow';
+    case 'step':
+      return 'step';
+    case 'manifest':
+      return 'manifest.json';
+    case 'webhook':
+      return `webhook/${encodeURIComponent(route.token)}`;
+  }
+  const exhaustive: never = route;
+  return exhaustive;
 }
 
 export function createWorkflowHealthEndpoint(): string {

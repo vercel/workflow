@@ -16,8 +16,10 @@ export {
   createWorkflowHealthUrl,
   createWorkflowManifestUrl,
   createWorkflowRouteUrl,
+  createWorkflowUrl,
   createWorkflowWebhookUrl,
   setWorkflowBasePath,
+  type WorkflowUrlRoute,
   WORKFLOW_ROUTE_BASE,
 } from './workflow-routes.js';
 export {

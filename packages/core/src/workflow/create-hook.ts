@@ -1,4 +1,4 @@
-import { createWorkflowWebhookUrl } from '@workflow/utils';
+import { createWorkflowUrl } from '@workflow/utils';
 import {
   aliasSerializationClass,
   RUN_CLASS_ID,
@@ -76,7 +76,7 @@ export function createWebhook(
     | Webhook<RequestWithResponse>;
 
   const { url } = getWorkflowMetadata();
-  hook.url = createWorkflowWebhookUrl(url, hook.token);
+  hook.url = createWorkflowUrl(url, { type: 'webhook', token: hook.token });
 
   return hook;
 }

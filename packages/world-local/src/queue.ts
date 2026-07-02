@@ -1,6 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { createWorkflowRouteUrl } from '@workflow/utils';
+import { createWorkflowUrl } from '@workflow/utils';
 import {
   MessageId,
   parseQueueName,
@@ -214,7 +214,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           try {
             if (directHandler) {
               const req = new Request(
-                createWorkflowRouteUrl(resolveDirectBaseUrl(config), pathname),
+                createWorkflowUrl(resolveDirectBaseUrl(config), {
+                  type: pathname,
+                }),
                 { method: 'POST', headers, body }
               );
               response = await directHandler(req);
@@ -222,7 +224,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               const baseUrl = await resolveBaseUrl(config);
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
               response = await fetch(
-                createWorkflowRouteUrl(baseUrl, pathname),
+                createWorkflowUrl(baseUrl, { type: pathname }),
                 {
                   method: 'POST',
                   duplex: 'half',

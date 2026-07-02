@@ -5,7 +5,7 @@ import type { Transport } from '@vercel/queue';
 import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
-  createWorkflowRouteUrl,
+  createWorkflowUrl,
 } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
@@ -366,12 +366,15 @@ export function createQueue(
     }
     const pathname = getQueueRoute(queueName);
 
-    const response = await fetch(createWorkflowRouteUrl(baseUrl, pathname), {
-      method: 'POST',
-      duplex: 'half',
-      headers,
-      body,
-    } as any);
+    const response = await fetch(
+      createWorkflowUrl(baseUrl, { type: pathname }),
+      {
+        method: 'POST',
+        duplex: 'half',
+        headers,
+        body,
+      } as any
+    );
     const text = await response.text();
 
     if (!response.ok) {
