@@ -17,7 +17,7 @@ import nitroModule from './index.js';
 type StubOptions = {
   routing: boolean;
   workspaceDir?: string;
-  workflow?: { runtime?: string };
+  workflow?: { dirs?: string[]; runtime?: string };
 };
 
 function createNitroStub({
@@ -164,6 +164,18 @@ describe('@workflow/nitro projectRoot', () => {
         });
         const builder = new Builder(nitro) as any;
         expect(builder.config.projectRoot).toBe('/tmp');
+      });
+
+      it('forwards workflow.dirs to the workflow builder', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          workflow: { dirs: ['server/workflows', 'layers/custom/workflows'] },
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.dirs).toEqual([
+          'server/workflows',
+          'layers/custom/workflows',
+        ]);
       });
     });
   }
