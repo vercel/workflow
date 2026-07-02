@@ -65,12 +65,14 @@ export class NestLocalBuilder extends BaseBuilder {
     const outDir = options.outDir ?? join(workingDir, '.nestjs/workflow');
     const dirs = options.dirs ?? ['src'];
     const targetWorld = ensureWorkflowTargetWorldEnv();
+    const externalPackages =
+      targetWorld === '@workflow/world-local' ? [] : [targetWorld];
     super({
       ...createBaseBuilderConfig({
         workingDir,
         watch: options.watch ?? false,
         dirs,
-        externalPackages: [targetWorld],
+        externalPackages,
         sourcemap: options.sourcemap,
       }),
       // Use 'standalone' as base target - we handle the specific bundling ourselves
@@ -78,7 +80,7 @@ export class NestLocalBuilder extends BaseBuilder {
       stepsBundlePath: join(outDir, 'steps.mjs'),
       workflowsBundlePath: join(outDir, 'workflows.mjs'),
       webhookBundlePath: join(outDir, 'webhook.mjs'),
-      externalPackages: [targetWorld],
+      externalPackages,
     });
     this.#outDir = outDir;
     this.#moduleType = options.moduleType ?? 'es6';

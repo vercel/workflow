@@ -16,7 +16,17 @@ describe('NestLocalBuilder', () => {
     }
   });
 
-  test('externalizes the statically configured world package', () => {
+  test('bundles the default local world package', () => {
+    delete process.env.WORKFLOW_TARGET_WORLD;
+
+    const builder = new NestLocalBuilder();
+
+    expect(getBuilderConfig(builder).externalPackages).not.toContain(
+      '@workflow/world-local'
+    );
+  });
+
+  test('externalizes a non-local statically configured world package', () => {
     process.env.WORKFLOW_TARGET_WORLD = '@workflow/world-postgres';
 
     const builder = new NestLocalBuilder();
