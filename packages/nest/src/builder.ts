@@ -1,7 +1,11 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
-import { dirname, join, resolve } from 'pathe';
+import {
+  BaseBuilder,
+  createBaseBuilderConfig,
+  readJsonObjectIfExists,
+  resolveProjectRoot,
+} from '@workflow/builders';
+import { join, resolve } from 'pathe';
 import { rewriteTsImportsInContent } from './cjs-rewrite.js';
 
 export interface NestBuilderOptions {
@@ -63,8 +67,15 @@ export class NestLocalBuilder extends BaseBuilder {
   #workingDir: string;
 
   constructor(options: NestBuilderOptions = {}) {
-    const { workingDir, outDir, dirs, projectRoot, moduleType, distDir } =
-      resolveNestBuilderConfig(options);
+    const {
+      workingDir,
+      outDir,
+      dirs,
+      projectRoot,
+      moduleSpecifierRoot,
+      moduleType,
+      distDir,
+    } = resolveNestBuilderConfig(options);
     super({
       ...createBaseBuilderConfig({
         workingDir,
@@ -73,6 +84,7 @@ export class NestLocalBuilder extends BaseBuilder {
         dirs,
         sourcemap: options.sourcemap,
       }),
+      moduleSpecifierRoot,
       // Use 'standalone' as base target - we handle the specific bundling ourselves
       buildTarget: 'standalone',
       stepsBundlePath: join(outDir, 'steps.mjs'),
@@ -174,21 +186,26 @@ type NestCliConfig = { sourceRoot?: unknown };
 type SwcConfig = { module?: { type?: unknown } };
 type TsConfig = { compilerOptions?: { module?: unknown; outDir?: unknown } };
 
-/** @internal */
-export function resolveNestBuilderConfig(options: NestBuilderOptions = {}): {
+interface ResolvedNestBuilderConfig {
   workingDir: string;
   outDir: string;
   dirs: string[];
   projectRoot: string;
+  moduleSpecifierRoot: string;
   moduleType: 'es6' | 'commonjs';
   distDir: string;
-} {
+}
+
+/** @internal */
+export function resolveNestBuilderConfig(
+  options: NestBuilderOptions = {}
+): ResolvedNestBuilderConfig {
   const workingDir = resolve(options.workingDir ?? process.cwd());
-  const nestCli = readJsonIfExists<NestCliConfig>(
+  const nestCli = readJsonObjectIfExists<NestCliConfig>(
     join(workingDir, 'nest-cli.json')
   );
-  const swcrc = readJsonIfExists<SwcConfig>(join(workingDir, '.swcrc'));
-  const tsconfig = readJsonIfExists<TsConfig>(
+  const swcrc = readJsonObjectIfExists<SwcConfig>(join(workingDir, '.swcrc'));
+  const tsconfig = readJsonObjectIfExists<TsConfig>(
     join(workingDir, 'tsconfig.json')
   );
   const moduleType =
@@ -205,23 +222,14 @@ export function resolveNestBuilderConfig(options: NestBuilderOptions = {}): {
     dirs: options.dirs ?? [
       readString(nestCli?.sourceRoot, 'nest-cli sourceRoot') ?? 'src',
     ],
-    projectRoot: options.projectRoot ?? findPnpmWorkspaceRoot(workingDir),
+    projectRoot: options.projectRoot ?? resolveProjectRoot(workingDir),
+    moduleSpecifierRoot: workingDir,
     moduleType,
     distDir:
       options.distDir ??
       readString(tsconfig?.compilerOptions?.outDir, 'tsconfig outDir') ??
       'dist',
   };
-}
-
-function readJsonIfExists<T extends object>(path: string): T | undefined {
-  if (!existsSync(path)) return undefined;
-
-  const value = JSON.parse(readFileSync(path, 'utf-8'));
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`Expected ${path} to contain a JSON object.`);
-  }
-  return value as T;
 }
 
 function readString(value: unknown, name: string): string | undefined {
@@ -253,21 +261,5 @@ function readModuleType(
       return 'es6';
     default:
       throw new Error(`Unsupported Nest module type: ${value}`);
-  }
-}
-
-function findPnpmWorkspaceRoot(workingDir: string): string {
-  let current = resolve(workingDir);
-
-  while (true) {
-    if (existsSync(join(current, 'pnpm-workspace.yaml'))) {
-      return current;
-    }
-
-    const parent = dirname(current);
-    if (parent === current) {
-      return workingDir;
-    }
-    current = parent;
   }
 }

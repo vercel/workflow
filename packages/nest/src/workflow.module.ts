@@ -5,8 +5,11 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { createBuildQueue } from '@workflow/builders';
-import { join } from 'pathe';
-import { type NestBuilderOptions, NestLocalBuilder } from './builder.js';
+import {
+  type NestBuilderOptions,
+  NestLocalBuilder,
+  resolveNestBuilderConfig,
+} from './builder.js';
 import {
   configureWorkflowController,
   WorkflowController,
@@ -19,8 +22,6 @@ export interface WorkflowModuleOptions extends NestBuilderOptions {
    */
   skipBuild?: boolean;
 }
-
-const DEFAULT_OUT_DIR = '.nestjs/workflow';
 
 /**
  * NestJS module that provides workflow functionality.
@@ -44,18 +45,14 @@ export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
    * ```
    */
   static forRoot(options: WorkflowModuleOptions = {}): DynamicModule {
-    const workingDir = options.workingDir ?? process.cwd();
-    const outDir = options.outDir ?? join(workingDir, DEFAULT_OUT_DIR);
+    const { outDir } = resolveNestBuilderConfig(options);
 
     // Configure the controller with the output directory
     configureWorkflowController(outDir);
 
     // Create builder if we're not skipping builds
     if (!options.skipBuild) {
-      WorkflowModule.builder = new NestLocalBuilder({
-        ...options,
-        outDir,
-      });
+      WorkflowModule.builder = new NestLocalBuilder(options);
     }
 
     return {
