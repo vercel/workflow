@@ -54,6 +54,7 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
  */
 export function createWorkflowEntrypointOptionsCode(options?: {
   namespace?: string;
+  basePath?: string;
   /** Raw code identifier/expression emitted into generated route files, not data. */
   routeModuleBodyStartedAt?: string;
 }) {
@@ -64,6 +65,10 @@ export function createWorkflowEntrypointOptionsCode(options?: {
     // Reuse prefix construction for namespace validation.
     getQueueTopicPrefix('workflow', namespace);
     fields.push(`namespace: ${JSON.stringify(namespace)}`);
+  }
+
+  if (options?.basePath !== undefined) {
+    fields.push(`basePath: ${JSON.stringify(options.basePath)}`);
   }
 
   if (options?.routeModuleBodyStartedAt) {

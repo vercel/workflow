@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { createWorkflowManifestUrl } from '@workflow/utils';
 import { createVercelWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
@@ -372,7 +373,7 @@ export async function fetchManifest(
   const forceRefresh = options?.forceRefresh ?? false;
   if (cachedManifest && !forceRefresh) return cachedManifest;
 
-  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
+  const url = createWorkflowManifestUrl(deploymentUrl);
   const res = await fetch(url, {
     headers: await getTrustedSourcesHeaders(),
   });

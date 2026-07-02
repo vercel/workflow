@@ -9,7 +9,12 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { formatStepName, pluralize, stepDisplayName } from '@workflow/utils';
+import {
+  createWorkflowBaseUrl,
+  formatStepName,
+  pluralize,
+  stepDisplayName,
+} from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
@@ -221,6 +226,11 @@ function createStepHandler(namespace?: string) {
           isVercel ? undefined : getPort(),
           getSpanKind('CONSUMER'),
         ]);
+        const workflowBaseUrl = createWorkflowBaseUrl(
+          isVercel
+            ? `https://${process.env.VERCEL_URL}`
+            : `http://localhost:${port ?? 3000}`
+        );
 
         return trace(
           `step.execute ${stepDisplayName(stepName)}`,
@@ -666,11 +676,7 @@ function createStepHandler(namespace?: string) {
                       workflowName,
                       workflowRunId,
                       workflowStartedAt: new Date(+workflowStartedAt),
-                      // TODO: there should be a getUrl method on the world interface itself. This
-                      // solution only works for vercel + local worlds.
-                      url: isVercel
-                        ? `https://${process.env.VERCEL_URL}`
-                        : `http://localhost:${port ?? 3000}`,
+                      url: workflowBaseUrl,
                       features: { encryption: !!encryptionKey },
                     },
                     workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,

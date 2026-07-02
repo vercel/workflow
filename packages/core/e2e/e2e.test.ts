@@ -10,6 +10,10 @@ import {
   WorkflowRunFailedError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import {
+  createWorkflowHealthUrl,
+  createWorkflowWebhookUrl,
+} from '@workflow/utils';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import {
   afterAll,
@@ -110,6 +114,9 @@ function writeE2EMetadata() {
  */
 const e2e = (fn: string) =>
   getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
+
+const workflowWebhookUrl = (token: string) =>
+  createWorkflowWebhookUrl(deploymentUrl, token);
 
 type WorkflowEvent = Awaited<
   ReturnType<World['events']['list']>
@@ -532,17 +539,11 @@ describe('e2e', () => {
       expect(hook.runId).toBe(run.runId);
 
       // Attempt to resume via the public webhook endpoint — should get 404
-      const res = await fetch(
-        new URL(
-          `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
-          deploymentUrl
-        ),
-        {
-          method: 'POST',
-          headers: await getTrustedSourcesHeaders(),
-          body: JSON.stringify({ message: 'should-be-rejected' }),
-        }
-      );
+      const res = await fetch(workflowWebhookUrl(token), {
+        method: 'POST',
+        headers: await getTrustedSourcesHeaders(),
+        body: JSON.stringify({ message: 'should-be-rejected' }),
+      });
       expect(res.status).toBe(404);
 
       // Now resume via server-side resumeHook() — should work
@@ -587,79 +588,46 @@ describe('e2e', () => {
     const [token, token2, token3] = hooks.map((h) => h.token);
 
     // Webhook with default response
-    const res = await fetch(
-      new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
-        deploymentUrl
-      ),
-      {
-        method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
-        body: JSON.stringify({ message: 'one' }),
-      }
-    );
+    const res = await fetch(workflowWebhookUrl(token), {
+      method: 'POST',
+      headers: await getTrustedSourcesHeaders(),
+      body: JSON.stringify({ message: 'one' }),
+    });
     expect(res.status).toBe(202);
     const body = await res.text();
     expect(body).toBe('');
 
     // Webhook with static response
-    const res2 = await fetch(
-      new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token2)}`,
-        deploymentUrl
-      ),
-      {
-        method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
-        body: JSON.stringify({ message: 'two' }),
-      }
-    );
+    const res2 = await fetch(workflowWebhookUrl(token2), {
+      method: 'POST',
+      headers: await getTrustedSourcesHeaders(),
+      body: JSON.stringify({ message: 'two' }),
+    });
     expect(res2.status).toBe(402);
     const body2 = await res2.text();
     expect(body2).toBe('Hello from static response!');
 
     // Webhook with manual response
-    const res3 = await fetch(
-      new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token3)}`,
-        deploymentUrl
-      ),
-      {
-        method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
-        body: JSON.stringify({ message: 'three' }),
-      }
-    );
+    const res3 = await fetch(workflowWebhookUrl(token3), {
+      method: 'POST',
+      headers: await getTrustedSourcesHeaders(),
+      body: JSON.stringify({ message: 'three' }),
+    });
     expect(res3.status).toBe(200);
     const body3 = await res3.text();
     expect(body3).toBe('Hello from webhook!');
 
     const returnValue = await run.returnValue;
     expect(returnValue).toHaveLength(3);
-    expect(returnValue[0].url).toBe(
-      new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
-        deploymentUrl
-      ).href
-    );
+    expect(returnValue[0].url).toBe(workflowWebhookUrl(token));
     expect(returnValue[0].method).toBe('POST');
     expect(returnValue[0].body).toBe('{"message":"one"}');
 
-    expect(returnValue[1].url).toBe(
-      new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token2)}`,
-        deploymentUrl
-      ).href
-    );
+    expect(returnValue[1].url).toBe(workflowWebhookUrl(token2));
     expect(returnValue[1].method).toBe('POST');
     expect(returnValue[1].body).toBe('{"message":"two"}');
 
-    expect(returnValue[2].url).toBe(
-      new URL(
-        `/.well-known/workflow/v1/webhook/${encodeURIComponent(token3)}`,
-        deploymentUrl
-      ).href
-    );
+    expect(returnValue[2].url).toBe(workflowWebhookUrl(token3));
     expect(returnValue[2].method).toBe('POST');
     expect(returnValue[2].body).toBe('{"message":"three"}');
   });
@@ -747,17 +715,11 @@ describe('e2e', () => {
           continue;
         }
 
-        const res = await fetch(
-          new URL(
-            `/.well-known/workflow/v1/webhook/${encodeURIComponent(unservedHook.token)}`,
-            deploymentUrl
-          ),
-          {
-            method: 'POST',
-            headers: await getTrustedSourcesHeaders(),
-            body: `body-${unservedHook.token}`,
-          }
-        );
+        const res = await fetch(workflowWebhookUrl(unservedHook.token), {
+          method: 'POST',
+          headers: await getTrustedSourcesHeaders(),
+          body: `body-${unservedHook.token}`,
+        });
         expect(res.status).toBe(202);
         servedTokens.add(unservedHook.token);
       }
@@ -803,11 +765,7 @@ describe('e2e', () => {
   );
 
   test('webhook route with invalid token', { timeout: 60_000 }, async () => {
-    const invalidWebhookUrl = new URL(
-      `/.well-known/workflow/v1/webhook/${encodeURIComponent('invalid')}`,
-      deploymentUrl
-    );
-    const res = await fetch(invalidWebhookUrl, {
+    const res = await fetch(workflowWebhookUrl('invalid'), {
       method: 'POST',
       headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({}),
@@ -2572,11 +2530,7 @@ describe('e2e', () => {
       // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
-      const flowHealthUrl = new URL(
-        '/.well-known/workflow/v1/flow?__health',
-        deploymentUrl
-      );
-      const flowRes = await fetch(flowHealthUrl, {
+      const flowRes = await fetch(createWorkflowHealthUrl(deploymentUrl), {
         method: 'POST',
         headers: await getTrustedSourcesHeaders(),
       });
