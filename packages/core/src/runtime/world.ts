@@ -16,14 +16,20 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
 
-type WorldFactoryModule = {
+export type WorldFactoryModule = {
   createWorld?: () => World | Promise<World>;
   createLocalWorld?: () => World | Promise<World>;
   createVercelWorld?: () => World | Promise<World>;
   default?: (() => World | Promise<World>) | World;
 };
 
-function createWorldFromModule(
+/**
+ * Create a World instance from a world factory module. Shared by
+ * `createWorld()` (for the statically injected target world module) and
+ * tooling that loads a world module dynamically (e.g. the Nitro dev
+ * handler and `@workflow/world-testing`).
+ */
+export function createWorldFromModule(
   mod: WorldFactoryModule
 ): World | Promise<World> {
   if (typeof mod.createWorld === 'function') {

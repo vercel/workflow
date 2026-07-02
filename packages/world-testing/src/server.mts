@@ -2,8 +2,11 @@ import fs from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
+import {
+  createWorldFromModule,
+  type WorldFactoryModule,
+} from '@workflow/core/runtime';
 import { getWorldImport } from '@workflow/utils';
-import type { World } from '@workflow/world';
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld, setWorld } from 'workflow/runtime';
@@ -20,42 +23,11 @@ if (!process.env.WORKFLOW_TARGET_WORLD) {
   process.exit(1);
 }
 
-type WorldFactoryModule = {
-  createWorld?: () => World | Promise<World>;
-  createLocalWorld?: () => World | Promise<World>;
-  createVercelWorld?: () => World | Promise<World>;
-  default?: (() => World | Promise<World>) | World;
-};
-
 function normalizeTargetWorldSpecifier(targetWorld: string): string {
   if (targetWorld.startsWith('./') || targetWorld.startsWith('../')) {
     return pathToFileURL(resolve(process.cwd(), targetWorld)).href;
   }
   return getWorldImport({ WORKFLOW_TARGET_WORLD: targetWorld });
-}
-
-function createWorldFromModule(
-  mod: WorldFactoryModule
-): World | Promise<World> {
-  if (typeof mod.createWorld === 'function') {
-    return mod.createWorld();
-  }
-  if (typeof mod.createLocalWorld === 'function') {
-    return mod.createLocalWorld();
-  }
-  if (typeof mod.createVercelWorld === 'function') {
-    return mod.createVercelWorld();
-  }
-  if (typeof mod.default === 'function') {
-    return mod.default();
-  }
-  if (mod.default && typeof mod.default === 'object') {
-    return mod.default as World;
-  }
-
-  throw new Error(
-    'Invalid target world module: must export createWorld(), createLocalWorld(), createVercelWorld(), a default factory, or a default World instance.'
-  );
 }
 
 async function initializeTestWorld() {

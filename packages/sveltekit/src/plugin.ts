@@ -3,8 +3,10 @@ import { join } from 'node:path';
 import {
   createBuildQueue,
   ensureWorkflowTargetWorldEnv,
-  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   resolveWorkflowTargetWorldAlias,
+  WORKFLOW_NODE_COMPAT_BANNER,
+  WORKFLOW_NODE_FILENAME_BANNER,
+  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -88,8 +90,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
           return;
         }
 
-        const banner =
-          "import { createRequire as __wkfCreateRequire } from 'node:module'; import { fileURLToPath as __wkfFileURLToPath } from 'node:url'; import { dirname as __wkfDirname } from 'node:path'; const __filename = __wkfFileURLToPath(import.meta.url); const __dirname = __wkfDirname(__filename); if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+        const banner = WORKFLOW_NODE_COMPAT_BANNER;
         const rollupOptions = config.build.rollupOptions;
         rollupOptions.output ??= {};
         const output = rollupOptions.output;
@@ -123,8 +124,7 @@ function patchAdapterNodeServerChunks(cwd: string): void {
     return;
   }
 
-  const banner =
-    "import { fileURLToPath as __wkfFileURLToPath } from 'node:url'; import { dirname as __wkfDirname } from 'node:path'; const __filename = __wkfFileURLToPath(import.meta.url); const __dirname = __wkfDirname(__filename);";
+  const banner = WORKFLOW_NODE_FILENAME_BANNER;
 
   const visit = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -138,10 +138,15 @@ function patchAdapterNodeServerChunks(cwd: string): void {
       }
 
       const source = readFileSync(file, 'utf-8');
-      const needsFilename =
-        /\b__(?:file|dir)name\b/.test(source) &&
-        !source.includes('const __filename =');
-      if (!needsFilename) {
+      // Only patch chunks that reference __filename/__dirname without
+      // declaring their own binding. Prepending the banner onto a chunk
+      // that already declares either identifier (const/let/var, e.g. a
+      // CJS-interop shim) would produce a duplicate top-level declaration
+      // and crash the server with a SyntaxError at startup.
+      const referencesFilename = /\b__(?:file|dir)name\b/.test(source);
+      const declaresOwnBinding =
+        /\b(?:const|let|var)\s+__(?:file|dir)name\b/.test(source);
+      if (!referencesFilename || declaresOwnBinding) {
         continue;
       }
 

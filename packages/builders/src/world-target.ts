@@ -10,31 +10,45 @@ export const WORKFLOW_WORLD_TARGET_MODULE =
   '@workflow/core/runtime/world-target';
 export const WORKFLOW_CORE_RUNTIME_MODULE = '@workflow/core/runtime';
 
-export { getWorldImport } from '@workflow/utils';
+export {
+  getWorldImport,
+  normalizeWorkflowTargetWorldImport,
+} from '@workflow/utils';
 
 export type WorkflowWorldTargetEnvironment = Record<string, string | undefined>;
-
-export const normalizeWorkflowTargetWorld = normalizeWorkflowTargetWorldImport;
-
-export function resolveWorkflowTargetWorldSpecifier(
-  env: WorkflowWorldTargetEnvironment = process.env
-): string {
-  return getWorldImport(env);
-}
 
 export function ensureWorkflowTargetWorldEnv(
   env: WorkflowWorldTargetEnvironment = process.env
 ): string {
-  const targetWorld = resolveWorkflowTargetWorldSpecifier(env);
+  const targetWorld = getWorldImport(env);
   env.WORKFLOW_TARGET_WORLD = targetWorld;
   return targetWorld;
 }
 
-function createResolverRequire(workingDir: string) {
+/**
+ * Resolve a module specifier from the app's working directory, falling back
+ * to this package's own dependencies (for built-in worlds the app doesn't
+ * depend on directly), and finally to the bare specifier so callers can
+ * externalize modules that aren't installed.
+ */
+function resolveFromWorkingDir(specifier: string, workingDir: string): string {
+  let require: NodeJS.Require;
   try {
-    return createRequire(join(workingDir, 'package.json'));
+    require = createRequire(join(workingDir, 'package.json'));
   } catch {
-    return createRequire(import.meta.url);
+    require = createRequire(import.meta.url);
+  }
+
+  try {
+    return require.resolve(specifier, {
+      paths: [workingDir],
+    });
+  } catch {
+    try {
+      return createRequire(import.meta.url).resolve(specifier);
+    } catch {
+      return specifier;
+    }
   }
 }
 
@@ -46,20 +60,8 @@ export function resolveWorkflowTargetWorldAlias({
   targetWorld?: string;
 }): string {
   const normalizedTargetWorld =
-    normalizeWorkflowTargetWorld(targetWorld) ?? targetWorld;
-  const require = createResolverRequire(workingDir);
-
-  try {
-    return require.resolve(normalizedTargetWorld, {
-      paths: [workingDir],
-    });
-  } catch {
-    try {
-      return createRequire(import.meta.url).resolve(normalizedTargetWorld);
-    } catch {
-      return normalizedTargetWorld;
-    }
-  }
+    normalizeWorkflowTargetWorldImport(targetWorld) ?? targetWorld;
+  return resolveFromWorkingDir(normalizedTargetWorld, workingDir);
 }
 
 export function resolveWorkflowCoreRuntimeAlias({
@@ -67,21 +69,7 @@ export function resolveWorkflowCoreRuntimeAlias({
 }: {
   workingDir: string;
 }): string {
-  const require = createResolverRequire(workingDir);
-
-  try {
-    return require.resolve(WORKFLOW_CORE_RUNTIME_MODULE, {
-      paths: [workingDir],
-    });
-  } catch {
-    try {
-      return createRequire(import.meta.url).resolve(
-        WORKFLOW_CORE_RUNTIME_MODULE
-      );
-    } catch {
-      return WORKFLOW_CORE_RUNTIME_MODULE;
-    }
-  }
+  return resolveFromWorkingDir(WORKFLOW_CORE_RUNTIME_MODULE, workingDir);
 }
 
 export function createWorkflowWorldTargetEsbuildPlugin({
@@ -94,7 +82,7 @@ export function createWorkflowWorldTargetEsbuildPlugin({
   targetWorld?: string;
 }): esbuild.Plugin {
   const normalizedTargetWorld =
-    normalizeWorkflowTargetWorld(targetWorld) ?? targetWorld;
+    normalizeWorkflowTargetWorldImport(targetWorld) ?? targetWorld;
 
   return {
     name: 'workflow:world-target',

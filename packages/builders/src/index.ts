@@ -27,6 +27,10 @@ export {
   type ModuleSpecifierResult,
   resolveModuleSpecifier,
 } from './module-specifier.js';
+export {
+  WORKFLOW_NODE_COMPAT_BANNER,
+  WORKFLOW_NODE_FILENAME_BANNER,
+} from './node-compat-banner.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 export { WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS } from './optional-pg-native-alias.js';
 export {
@@ -70,10 +74,9 @@ export {
   createWorkflowWorldTargetEsbuildPlugin,
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
-  normalizeWorkflowTargetWorld,
+  normalizeWorkflowTargetWorldImport,
   resolveWorkflowCoreRuntimeAlias,
   resolveWorkflowTargetWorldAlias,
-  resolveWorkflowTargetWorldSpecifier,
   WORKFLOW_CORE_RUNTIME_MODULE,
   WORKFLOW_WORLD_TARGET_MODULE,
   type WorkflowWorldTargetEnvironment,

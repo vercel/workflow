@@ -5,40 +5,33 @@ import { describe, expect, it } from 'vitest';
 import {
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
-  normalizeWorkflowTargetWorld,
+  normalizeWorkflowTargetWorldImport,
   resolveWorkflowCoreRuntimeAlias,
   resolveWorkflowTargetWorldAlias,
-  resolveWorkflowTargetWorldSpecifier,
   WORKFLOW_CORE_RUNTIME_MODULE,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from './world-target.js';
 
 describe('workflow world target', () => {
   it('normalizes built-in aliases to package specifiers', () => {
-    expect(normalizeWorkflowTargetWorld('local')).toBe('@workflow/world-local');
-    expect(normalizeWorkflowTargetWorld('vercel')).toBe(
+    expect(normalizeWorkflowTargetWorldImport('local')).toBe(
+      '@workflow/world-local'
+    );
+    expect(normalizeWorkflowTargetWorldImport('vercel')).toBe(
       '@workflow/world-vercel'
     );
-    expect(normalizeWorkflowTargetWorld('@workflow/world-postgres')).toBe(
+    expect(normalizeWorkflowTargetWorldImport('@workflow/world-postgres')).toBe(
       '@workflow/world-postgres'
     );
   });
 
   it('defaults to local outside Vercel', () => {
     expect(getWorldImport({})).toBe('@workflow/world-local');
-    expect(resolveWorkflowTargetWorldSpecifier({})).toBe(
-      '@workflow/world-local'
-    );
   });
 
   it('defaults to Vercel when deployed on Vercel', () => {
     expect(
       getWorldImport({
-        VERCEL_DEPLOYMENT_ID: 'dpl_123',
-      })
-    ).toBe('@workflow/world-vercel');
-    expect(
-      resolveWorkflowTargetWorldSpecifier({
         VERCEL_DEPLOYMENT_ID: 'dpl_123',
       })
     ).toBe('@workflow/world-vercel');

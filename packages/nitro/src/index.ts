@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ensureWorkflowTargetWorldEnv,
   resolveWorkflowCoreRuntimeAlias,
+  WORKFLOW_NODE_COMPAT_BANNER,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   WORKFLOW_QUEUE_TRIGGER,
   WORKFLOW_WORLD_TARGET_MODULE,
@@ -53,8 +54,7 @@ function isNitroV2(nitro: Nitro): boolean {
  * support.
  */
 function addNodeRequireBanner(config: RollupConfig): void {
-  const banner =
-    "import { createRequire as __wkfCreateRequire } from 'node:module'; import { fileURLToPath as __wkfFileURLToPath } from 'node:url'; import { dirname as __wkfDirname } from 'node:path'; const __filename = __wkfFileURLToPath(import.meta.url); const __dirname = __wkfDirname(__filename); if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+  const banner = WORKFLOW_NODE_COMPAT_BANNER;
   const output = config.output;
   if (output == null) {
     config.output = { banner };
@@ -508,29 +508,13 @@ function createDevWorldTargetSource(nitro: Nitro): string {
   );
 
   return /* js */ `
-      import { setWorld as __workflowSetWorld } from ${workflowCoreRuntimeImport};
+      import {
+        createWorldFromModule as __workflowCreateWorldFromModule,
+        setWorld as __workflowSetWorld,
+      } from ${workflowCoreRuntimeImport};
       import * as __workflowTargetWorld from ${workflowTargetWorldImport};
 
       let __workflowWorldPromise = null;
-
-      function __workflowCreateWorldFromModule(mod) {
-        if (typeof mod.createWorld === "function") {
-          return mod.createWorld();
-        }
-        if (typeof mod.createLocalWorld === "function") {
-          return mod.createLocalWorld();
-        }
-        if (typeof mod.createVercelWorld === "function") {
-          return mod.createVercelWorld();
-        }
-        if (typeof mod.default === "function") {
-          return mod.default();
-        }
-        if (mod.default && typeof mod.default === "object") {
-          return mod.default;
-        }
-        throw new Error("Configured workflow world module does not export a world factory");
-      }
 
       async function ensureWorkflowWorld() {
         if (!__workflowWorldPromise) {
