@@ -37,6 +37,7 @@ import {
   cliInspectJson,
   fetchManifest,
   getCollectedRunIds,
+  getDeploymentUrl,
   getWorkflowMetadata,
   hasNestedStepStackFrames,
   hasStepSourceMaps,
@@ -48,10 +49,7 @@ import {
   writeDiagnosticsSidecar,
 } from './utils';
 
-const deploymentUrl = process.env.DEPLOYMENT_URL;
-if (!deploymentUrl) {
-  throw new Error('`DEPLOYMENT_URL` environment variable is not set');
-}
+const deploymentUrl = getDeploymentUrl();
 
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
 const RACE_WINNER_MAX_DURATION_MS = 5_000;
@@ -2527,19 +2525,17 @@ describe('e2e', () => {
       // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
-      const flowRes = await fetch(
-        createWorkflowUrl(deploymentUrl, { type: 'health' }),
-        {
-          method: 'POST',
-          headers: await getTrustedSourcesHeaders(),
-        }
-      );
+      const healthUrl = createWorkflowUrl(deploymentUrl, { type: 'health' });
+      const flowRes = await fetch(healthUrl, {
+        method: 'POST',
+        headers: await getTrustedSourcesHeaders(),
+      });
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
       const flowBody = await flowRes.json();
       expect(flowBody).toEqual({
         healthy: true,
-        endpoint: '/.well-known/workflow/v1/flow',
+        endpoint: new URL(healthUrl).pathname,
         // specVersion comes from the World's declared specVersion (e.g. 3
         // for world-vercel) or falls back to SPEC_VERSION_CURRENT (2).
         specVersion: expect.any(Number),
@@ -2547,6 +2543,45 @@ describe('e2e', () => {
       });
       expect(flowBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
       // V2: no separate step endpoint — combined into the flow handler.
+    }
+  );
+
+  test.runIf(process.env.WORKFLOW_E2E_BASE_PATH)(
+    'base path health endpoint is mounted below the framework route base',
+    { timeout: 30_000 },
+    async () => {
+      const healthUrl = createWorkflowUrl(deploymentUrl, { type: 'health' });
+
+      const healthMethods = [
+        { method: 'GET', status: 200 },
+        { method: 'HEAD', status: 200 },
+        { method: 'OPTIONS', status: 204 },
+      ] as const;
+
+      for (const { method, status } of healthMethods) {
+        const res = await fetch(healthUrl, {
+          method,
+          headers: await getTrustedSourcesHeaders(),
+        });
+        expect(res.status).toBe(status);
+      }
+
+      const rootDeploymentUrl = process.env.DEPLOYMENT_URL;
+      assert(
+        rootDeploymentUrl,
+        '`DEPLOYMENT_URL` environment variable is not set'
+      );
+      const rootHealthUrl = createWorkflowUrl(rootDeploymentUrl, {
+        type: 'health',
+      });
+      if (rootHealthUrl !== healthUrl) {
+        const rootRes = await fetch(rootHealthUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: await getTrustedSourcesHeaders(),
+        });
+        expect(rootRes.status).not.toBe(200);
+      }
     }
   );
 

@@ -3,6 +3,7 @@
   "extends": ["//"],
   "tasks": {
     "build": {
+      "env": ["WORKFLOW_E2E_BASE_PATH"],
       "outputs": [".output/**", ".nuxt/**", ".nitro/**"]
     }
   }

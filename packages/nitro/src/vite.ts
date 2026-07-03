@@ -1,17 +1,18 @@
-import { createBuildQueue } from '@workflow/builders';
+import { createBuildQueue, joinWorkflowBasePath } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
 import type {} from 'nitro/vite';
 import { join } from 'pathe';
 import type { Plugin } from 'vite';
-import { LocalBuilder } from './builders.js';
+import { getNitroBasePath, LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
   let workflowBuildDir: string;
+  let workflowRoutePrefix = '/.well-known/workflow/v1/';
   const enqueue = createBuildQueue();
 
   // Create a lazy transform plugin that excludes the workflow build directory
@@ -36,6 +37,10 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         setup: (nitro: Nitro) => {
           // Capture the workflow build directory for exclusion
           workflowBuildDir = join(nitro.options.buildDir, 'workflow');
+          workflowRoutePrefix = joinWorkflowBasePath(
+            getNitroBasePath(nitro),
+            '/.well-known/workflow/v1/'
+          );
           nitro.options.workflow = {
             ...nitro.options.workflow,
             ...options,
@@ -54,7 +59,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         return () => {
           server.middlewares.use((req, res, next) => {
             // Only handle workflow webhook routes
-            if (!req.url?.startsWith('/.well-known/workflow/v1/')) {
+            if (!req.url?.startsWith(workflowRoutePrefix)) {
               return next();
             }
 

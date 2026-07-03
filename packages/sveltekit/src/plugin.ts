@@ -3,6 +3,7 @@ import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Plugin } from 'vite';
 import { SvelteKitBuilder } from './builder.js';
+import { loadSvelteKitBasePath } from './config.js';
 
 export interface WorkflowPluginOptions {
   /**
@@ -15,7 +16,7 @@ export interface WorkflowPluginOptions {
 }
 
 export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
-  const builder = new SvelteKitBuilder({ sourcemap: options.sourcemap });
+  let builder: SvelteKitBuilder | undefined;
   const enqueue = createBuildQueue();
 
   return [
@@ -48,7 +49,12 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
       // functional `require`, not a broken stub. The behavior to watch for is a
       // bundled lib that, on seeing `require`, does `require()` of an ESM-only
       // dependency on a Node version without `require(ESM)` support.
-      configResolved(config) {
+      async configResolved(config) {
+        builder ??= new SvelteKitBuilder({
+          sourcemap: options.sourcemap,
+          basePath: await loadSvelteKitBasePath(),
+        });
+
         if (!config.build?.ssr) {
           return;
         }
@@ -72,7 +78,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
       },
     },
     workflowHotUpdatePlugin({
-      builder,
+      builder: () => builder,
       enqueue,
     }),
   ];

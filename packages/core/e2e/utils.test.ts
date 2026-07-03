@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { hasStepSourceMaps } from './utils';
+import { getDeploymentUrl, hasStepSourceMaps } from './utils';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -72,5 +72,24 @@ describe('hasStepSourceMaps', () => {
 
     setStepSourceMapEnv({ appName: 'nest', dev: false });
     expect(hasStepSourceMaps()).toBe(false);
+  });
+});
+
+describe('getDeploymentUrl', () => {
+  test('keeps deployment URLs unchanged without WORKFLOW_E2E_BASE_PATH', () => {
+    process.env.DEPLOYMENT_URL = 'http://localhost:3000';
+    delete process.env.WORKFLOW_E2E_BASE_PATH;
+
+    expect(getDeploymentUrl()).toBe('http://localhost:3000');
+  });
+
+  test('appends WORKFLOW_E2E_BASE_PATH once', () => {
+    process.env.DEPLOYMENT_URL = 'http://localhost:3000';
+    process.env.WORKFLOW_E2E_BASE_PATH = '/app/';
+
+    expect(getDeploymentUrl()).toBe('http://localhost:3000/app');
+
+    process.env.DEPLOYMENT_URL = 'http://localhost:3000/app';
+    expect(getDeploymentUrl()).toBe('http://localhost:3000/app');
   });
 });

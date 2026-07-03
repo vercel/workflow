@@ -119,6 +119,29 @@ export function isLocalDeployment(): boolean {
   return localHosts.some((host) => deploymentUrl.includes(host));
 }
 
+export function getDeploymentUrl(): string {
+  const deploymentUrl = process.env.DEPLOYMENT_URL;
+  if (!deploymentUrl) {
+    throw new Error('`DEPLOYMENT_URL` environment variable is not set');
+  }
+  return withE2EBasePath(deploymentUrl);
+}
+
+function withE2EBasePath(deploymentUrl: string): string {
+  const basePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(/\/+$/, '');
+  if (!basePath) {
+    return deploymentUrl;
+  }
+
+  const url = new URL(deploymentUrl);
+  if (url.pathname.replace(/\/+$/, '') === basePath) {
+    return url.toString();
+  }
+
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}${basePath}`;
+  return url.toString();
+}
+
 /**
  * Checks if step error source maps are expected to work in the current test environment.
  * TODO: ideally it should work consistently everywhere and we should fix the issues and
@@ -801,7 +824,7 @@ export const cliHealthJson = async (options?: {
   // For local deployments, set WORKFLOW_LOCAL_BASE_URL from DEPLOYMENT_URL
   // since different frameworks use different default ports (Astro: 4321, SvelteKit: 5173, etc.)
   if (isLocalDeployment() && process.env.DEPLOYMENT_URL) {
-    envOverrides.WORKFLOW_LOCAL_BASE_URL = process.env.DEPLOYMENT_URL;
+    envOverrides.WORKFLOW_LOCAL_BASE_URL = getDeploymentUrl();
   }
 
   const result = await awaitCommand(

@@ -1,3 +1,4 @@
+import { createWorkflowUrl } from '@workflow/utils';
 import { createVercelWorld } from '@workflow/world-vercel';
 import fs from 'fs';
 import path from 'path';
@@ -5,12 +6,13 @@ import { bench, describe } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { setWorld, start } from '../src/runtime';
-import { getWorkbenchAppPath, isLocalDeployment } from './utils';
+import {
+  getDeploymentUrl,
+  getWorkbenchAppPath,
+  isLocalDeployment,
+} from './utils';
 
-const deploymentUrl = process.env.DEPLOYMENT_URL;
-if (!deploymentUrl) {
-  throw new Error('`DEPLOYMENT_URL` environment variable is not set');
-}
+const deploymentUrl = getDeploymentUrl();
 
 // Configure the World for the bench runner process (same as e2e tests)
 if (isLocalDeployment()) {
@@ -54,7 +56,7 @@ let cachedManifest: WorkflowManifest | null = null;
 
 async function fetchManifest(): Promise<WorkflowManifest> {
   if (cachedManifest) return cachedManifest;
-  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
+  const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
   const res = await fetch(url, {
     headers: await getTrustedSourcesHeaders(),
     signal: AbortSignal.timeout(30_000),

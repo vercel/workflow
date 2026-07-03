@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   NORMALIZE_REQUEST_CODE,
+  normalizeWorkflowBasePath,
   type SvelteKitConfig,
 } from '@workflow/builders';
 
@@ -21,6 +22,21 @@ const SVELTEKIT_VIRTUAL_MODULES = [
   '$lib/*', // All $lib subpaths
   '$app/*', // All $app subpaths
 ];
+
+export function getSvelteKitStaticManifestDir(workingDir: string): string {
+  return join(workingDir, 'static/.well-known/workflow/v1');
+}
+
+export function createSvelteKitFlowRouteCode(source: string): string {
+  return source.replace(
+    /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
+    (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
+export const POST = async ({request}) => {
+  const normalRequest = await normalizeRequest(request);
+  return workflowEntrypoint(workflowCode${options})(normalRequest);
+}`
+  );
+}
 
 export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<SvelteKitConfig>) {
@@ -36,6 +52,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       workingDir,
       externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
       sourcemap: config?.sourcemap,
+      basePath: normalizeWorkflowBasePath(config?.basePath),
     });
   }
 
@@ -78,16 +95,8 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Post-process the generated file to wrap with SvelteKit request converter
     const workflowsRouteFile = join(flowRouteDir, '+server.js');
-    let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
-
-    // Replace the default export with SvelteKit-compatible handler
-    workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
-      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
-}`
+    const workflowsRouteContent = createSvelteKitFlowRouteCode(
+      await readFile(workflowsRouteFile, 'utf-8')
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
@@ -104,9 +113,8 @@ export const POST = async ({request}) => {
     // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
     // SvelteKit serves files from static/ at the root URL.
     if (this.shouldExposePublicManifest && manifestJson) {
-      const staticManifestDir = join(
-        this.config.workingDir,
-        'static/.well-known/workflow/v1'
+      const staticManifestDir = getSvelteKitStaticManifestDir(
+        this.config.workingDir
       );
       await mkdir(staticManifestDir, { recursive: true });
       if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {

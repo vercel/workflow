@@ -10,12 +10,14 @@ import {
   start as rawStart,
   resumeHook,
 } from '../src/runtime';
-import { getWorkflowMetadata, setupWorld, trackRun } from './utils';
+import {
+  getDeploymentUrl,
+  getWorkflowMetadata,
+  setupWorld,
+  trackRun,
+} from './utils';
 
-const deploymentUrl = process.env.DEPLOYMENT_URL;
-if (!deploymentUrl) {
-  throw new Error('`DEPLOYMENT_URL` environment variable is not set');
-}
+const deploymentUrl = getDeploymentUrl();
 
 const RESULT_PATH = path.resolve(
   process.cwd(),

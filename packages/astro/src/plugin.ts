@@ -1,4 +1,7 @@
-import { createBuildQueue } from '@workflow/builders';
+import {
+  createBuildQueue,
+  normalizeWorkflowBasePath,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
@@ -17,15 +20,23 @@ export interface WorkflowPluginOptions {
 export function workflowPlugin(
   options: WorkflowPluginOptions = {}
 ): AstroIntegration {
-  const builder = new LocalBuilder({ sourcemap: options.sourcemap });
+  let builder: LocalBuilder | undefined;
+  let basePath = '';
   const enqueue = createBuildQueue();
 
   return {
     name: 'workflow:astro',
     hooks: {
       'astro:config:setup': async ({
+        config,
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
+        basePath = normalizeWorkflowBasePath(config.base);
+        builder = new LocalBuilder({
+          sourcemap: options.sourcemap,
+          basePath,
+        });
+
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
           try {
@@ -43,7 +54,7 @@ export function workflowPlugin(
               workflowTransformPlugin(),
               // Cast needed due to Astro using a different internal Vite version
               workflowHotUpdatePlugin({
-                builder,
+                builder: () => builder,
                 enqueue,
               }) as any,
             ],
@@ -54,6 +65,7 @@ export function workflowPlugin(
         if (process.env.VERCEL_DEPLOYMENT_ID) {
           const vercelBuilder = new VercelBuilder({
             sourcemap: options.sourcemap,
+            basePath,
           });
           await vercelBuilder.build();
         }

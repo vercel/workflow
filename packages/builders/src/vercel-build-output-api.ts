@@ -1,7 +1,39 @@
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
+import {
+  createBasePathRouteRegexPrefix,
+  joinWorkflowBasePath,
+  normalizeWorkflowBasePath,
+} from './base-path.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+
+export function createBuildOutputApiRoutes(basePath?: string) {
+  const prefix = createBasePathRouteRegexPrefix(basePath);
+
+  return [
+    {
+      src: `${prefix}\\.well-known\\/workflow\\/v1\\/flow\\/?$`,
+      dest: '/.well-known/workflow/v1/flow',
+    },
+    {
+      src: `${prefix}\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+?)\\/?$`,
+      dest: '/.well-known/workflow/v1/webhook/[token]',
+    },
+  ];
+}
+
+export function getBuildOutputStaticManifestDir(
+  outputDir: string,
+  basePath?: string
+): string {
+  return join(
+    outputDir,
+    'static',
+    normalizeWorkflowBasePath(basePath).slice(1),
+    '.well-known/workflow/v1'
+  );
+}
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -59,9 +91,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
     // Vercel Build Output API serves static files from .vercel/output/static/
     if (this.shouldExposePublicManifest && manifestJson) {
-      const staticManifestDir = join(
+      const staticManifestDir = getBuildOutputStaticManifestDir(
         outputDir,
-        'static/.well-known/workflow/v1'
+        this.config.basePath
       );
       await mkdir(staticManifestDir, { recursive: true });
       if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
@@ -107,12 +139,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create config.json for Build Output API
     const buildOutputConfig = {
       version: 3,
-      routes: [
-        {
-          src: '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$',
-          dest: '/.well-known/workflow/v1/webhook/[token]',
-        },
-      ],
+      routes: createBuildOutputApiRoutes(this.config.basePath),
     };
 
     await writeFile(
@@ -122,10 +149,10 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
 
     this.logBaseBuilderInfo(`Build Output API created at ${outputDir}`);
     this.logBaseBuilderInfo(
-      'Combined function available at /.well-known/workflow/v1/flow'
+      `Combined function available at ${joinWorkflowBasePath(this.config.basePath, '/.well-known/workflow/v1/flow')}`
     );
     this.logBaseBuilderInfo(
-      'Webhook function available at /.well-known/workflow/v1/webhook/[token]'
+      `Webhook function available at ${joinWorkflowBasePath(this.config.basePath, '/.well-known/workflow/v1/webhook/[token]')}`
     );
   }
 }

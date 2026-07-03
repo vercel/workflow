@@ -1,6 +1,11 @@
 export type { WorkflowManifest } from './apply-swc-transform.js';
 export { applySwcTransform } from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';
+export {
+  createBasePathRouteRegexPrefix,
+  joinWorkflowBasePath,
+  normalizeWorkflowBasePath,
+} from './base-path.js';
 export { createBuildQueue } from './build-queue.js';
 export {
   createBaseBuilderConfig,

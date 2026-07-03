@@ -9,9 +9,14 @@ const adapter = process.env.VERCEL_DEPLOYMENT_ID
   : node({
       mode: 'standalone',
     });
+const workflowBasePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(
+  /\/+$/,
+  ''
+);
 
 // https://astro.build/config
 export default defineConfig({
+  base: workflowBasePath || undefined,
   output: 'server',
   integrations: [workflow()],
   adapter: adapter,

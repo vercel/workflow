@@ -9,6 +9,8 @@ type StubOptions = {
   dev?: boolean;
   preset?: string;
   workspaceDir?: string;
+  baseURL?: string;
+  appBaseURL?: string;
   workflow?: { runtime?: string };
   externals?: {
     external?: Array<string | RegExp | ((id: string) => boolean)>;
@@ -22,6 +24,8 @@ function createNitroStub({
   dev = false,
   preset = 'node-server',
   workspaceDir = '/tmp/project',
+  baseURL,
+  appBaseURL,
   workflow = {},
   externals,
   vercel,
@@ -32,6 +36,7 @@ function createNitroStub({
     options: {
       alias: {},
       buildDir: '/tmp/.nitro',
+      ...(baseURL !== undefined && { baseURL }),
       dev,
       externals: externals ?? {},
       handlers: [],
@@ -42,6 +47,7 @@ function createNitroStub({
       virtual: {},
       workspaceDir,
       workflow,
+      ...(appBaseURL !== undefined && { app: { baseURL: appBaseURL } }),
     },
     hooks: {
       hook() {},
@@ -111,6 +117,32 @@ describe('@workflow/nitro virtual handlers', () => {
       );
     }
   });
+
+  it('registers workflow handlers, dashboard, and manifest as Nitro internal routes', async () => {
+    const previous = process.env.WORKFLOW_PUBLIC_MANIFEST;
+    process.env.WORKFLOW_PUBLIC_MANIFEST = '1';
+    try {
+      const nitro = createNitroStub({
+        routing: true,
+        dev: true,
+        baseURL: '/app/',
+      });
+
+      await nitroModule.setup(nitro);
+
+      const routes = nitro.options.handlers.map(
+        (handler: { route: string }) => handler.route
+      );
+      expect(routes).toContain('/.well-known/workflow/v1/flow');
+      expect(routes).toContain('/.well-known/workflow/v1/webhook/:token');
+      expect(routes).toContain('/.well-known/workflow/v1/manifest.json');
+      expect(routes).toContain('/_workflow');
+      expect(routes).not.toContain('/app/.well-known/workflow/v1/flow');
+    } finally {
+      if (previous === undefined) delete process.env.WORKFLOW_PUBLIC_MANIFEST;
+      else process.env.WORKFLOW_PUBLIC_MANIFEST = previous;
+    }
+  });
 });
 
 describe('@workflow/nitro Vercel functionRules', () => {
@@ -146,6 +178,22 @@ describe('@workflow/nitro Vercel functionRules', () => {
       nitro.options.vercel.functionRules['/.well-known/workflow/v1/flow'];
     expect(flowRule.maxDuration).toBe('max');
     expect(flowRule.experimentalTriggers).toEqual([WORKFLOW_QUEUE_TRIGGER]);
+  });
+
+  it('keeps functionRules on Nitro internal routes when baseURL is set', async () => {
+    const nitro = createNitroStub({
+      routing: true,
+      preset: 'vercel',
+      baseURL: '/app/',
+      workflow: { runtime: 'nodejs22.x' },
+    });
+
+    await nitroModule.setup(nitro);
+
+    const rules = nitro.options.vercel.functionRules;
+    expect(rules).toHaveProperty('/.well-known/workflow/v1/flow');
+    expect(rules).toHaveProperty('/.well-known/workflow/v1/webhook/:token');
+    expect(rules).not.toHaveProperty('/app/.well-known/workflow/v1/flow');
   });
 
   it('uses the handler route pattern (`:token`, not `**`) for the webhook functionRule', async () => {
@@ -330,6 +378,24 @@ describe('@workflow/nitro externals forwarding', () => {
         });
         const builder = new Builder(nitro) as any;
         expect(builder.config.projectRoot).toBe('/tmp');
+      });
+
+      it('forwards Nitro baseURL as the workflow basePath', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          baseURL: '/app/',
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.basePath).toBe('/app');
+      });
+
+      it('falls back to Nuxt app.baseURL for the workflow basePath', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          appBaseURL: '/nuxt/',
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.basePath).toBe('/nuxt');
       });
 
       it('forwards string entries from nitro.options.externals.external', () => {

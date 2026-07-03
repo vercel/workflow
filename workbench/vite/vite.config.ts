@@ -3,6 +3,12 @@ import { nitro } from 'nitro/vite';
 import { defineConfig } from 'vite';
 import { workflow } from 'workflow/vite';
 
+const workflowBasePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(
+  /\/+$/,
+  ''
+);
+const workflowBaseURL = workflowBasePath ? `${workflowBasePath}/` : undefined;
+
 export default defineConfig({
   plugins: [nitro(), workflow()],
   // Mirror the `@repo/*` tsconfig path alias for Vite's bundler. Nitro
@@ -17,6 +23,7 @@ export default defineConfig({
     },
   },
   nitro: {
+    baseURL: workflowBaseURL,
     serverDir: './',
     plugins: ['plugins/start-pg-world.ts'],
   },

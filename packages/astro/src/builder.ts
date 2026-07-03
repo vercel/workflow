@@ -4,24 +4,39 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
+  createBasePathRouteRegexPrefix,
   NORMALIZE_REQUEST_CODE,
+  normalizeWorkflowBasePath,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 
-const WORKFLOW_ROUTES = [
-  {
-    src: '^/\\.well-known/workflow/v1/flow/?$',
-    dest: '/.well-known/workflow/v1/flow',
-  },
-  {
-    src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
-    dest: '/.well-known/workflow/v1/webhook/[token]',
-  },
-];
+export function createAstroWorkflowRoutes(basePath?: string) {
+  const prefix = createBasePathRouteRegexPrefix(basePath);
+
+  return [
+    {
+      src: `${prefix}\\.well-known/workflow/v1/flow/?$`,
+      dest: '/.well-known/workflow/v1/flow',
+    },
+    {
+      src: `${prefix}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
+      dest: '/.well-known/workflow/v1/webhook/[token]',
+    },
+  ];
+}
+
+export function createAstroBasePathGuard(basePath: string | undefined): string {
+  if (!basePath) return '';
+  return `  if (!new URL(request.url).pathname.startsWith(${JSON.stringify(`${basePath}/`)})) {
+    return new Response("Not Found", { status: 404 });
+  }
+`;
+}
 
 export class LocalBuilder extends BaseBuilder {
   constructor(options?: {
     sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+    basePath?: string;
   }) {
     super({
       dirs: ['src/pages', 'src/workflows'],
@@ -32,6 +47,7 @@ export class LocalBuilder extends BaseBuilder {
       workingDir: process.cwd(),
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
       sourcemap: options?.sourcemap,
+      basePath: normalizeWorkflowBasePath(options?.basePath),
     });
   }
 
@@ -68,12 +84,14 @@ export class LocalBuilder extends BaseBuilder {
     // Post-process the generated file to wrap with Astro request converter
     const workflowsRouteFile = join(workflowGeneratedDir, 'flow.js');
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
+    const basePathGuard = createAstroBasePathGuard(this.config.basePath);
 
     // Normalize request, needed for preserving request through astro
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
       (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
 export const POST = async ({request}) => {
+${basePathGuard}
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode${options})(normalRequest);
 }
@@ -97,7 +115,8 @@ export const prerender = false;`
     if (this.shouldExposePublicManifest && manifestJson) {
       await writeFile(
         join(workflowGeneratedDir, 'manifest.json.js'),
-        `export function GET() {
+        `export function GET({ request }) {
+${basePathGuard}
   return new Response(${JSON.stringify(manifestJson)}, {
     headers: { "content-type": "application/json" },
   });
@@ -123,6 +142,7 @@ export const prerender = false;\n`
 
     // Post-process the generated file to wrap with Astro request converter
     let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
+    const basePathGuard = createAstroBasePathGuard(this.config.basePath);
 
     // Update handler signature to accept token as parameter
     webhookRouteContent = webhookRouteContent.replace(
@@ -141,6 +161,7 @@ export const prerender = false;\n`
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
       `${NORMALIZE_REQUEST_CODE}
 const createHandler = (method) => async ({ request, params, platform }) => {
+${basePathGuard}
   const normalRequest = await normalizeRequest(request);
   const response = await handler(normalRequest, params.token);
   return response;
@@ -170,6 +191,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         dirs: ['src/pages', 'src/workflows'],
         runtime: config?.runtime,
         sourcemap: config?.sourcemap,
+        basePath: config?.basePath,
       }),
       buildTarget: 'vercel-build-output-api',
       debugFilePrefix: '_',
@@ -205,7 +227,11 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     }
 
     // Insert workflow routes right after
-    config.routes.splice(insertIndex + 1, 0, ...WORKFLOW_ROUTES);
+    config.routes.splice(
+      insertIndex + 1,
+      0,
+      ...createAstroWorkflowRoutes(this.config.basePath)
+    );
 
     // Bundles workflows for vercel
     await super.build();

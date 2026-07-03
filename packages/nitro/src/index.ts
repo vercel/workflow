@@ -267,20 +267,16 @@ export default {
         addDashboardHandler(nitro);
       }
 
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/webhook/:token',
-        'workflow/webhook.mjs'
-      );
+      const webhookPath = '/.well-known/workflow/v1/webhook/:token';
+      const flowPath = '/.well-known/workflow/v1/flow';
+      const manifestPath = '/.well-known/workflow/v1/manifest.json';
+
+      addVirtualHandler(nitro, webhookPath, 'workflow/webhook.mjs');
 
       // V2: single combined handler for both workflow and step execution.
       // The step registrations are imported as side effects by the combined
       // handler — no separate step route needed.
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/flow',
-        'workflow/workflows.mjs'
-      );
+      addVirtualHandler(nitro, flowPath, 'workflow/workflows.mjs');
 
       // Nitro v3+ Vercel deploy: configure function rules for the combined
       // flow handler so it gets the queue triggers + max duration that the
@@ -289,8 +285,9 @@ export default {
       // user-provided values for these routes; unrelated fields the user
       // sets (e.g. `memory`) pass through untouched.
       //
-      // Pattern keys must match the route patterns the handlers are
-      // registered with so nitro reuses the same function directory.
+      // Pattern keys must match Nitro's internal route patterns so the Vercel
+      // preset reuses the same function directory. Nitro prefixes these with
+      // `baseURL` when it writes Build Output routes.
       // Using a `webhook/**` catch-all here would create a second
       // `webhook/[...].func` next to the `webhook/[token].func` that
       // `addVirtualHandler` produces.
@@ -301,7 +298,6 @@ export default {
         const runtime = nitro.options.workflow?.runtime;
         const rules = nitro.options.vercel.functionRules;
 
-        const flowPath = '/.well-known/workflow/v1/flow';
         rules[flowPath] = {
           ...rules[flowPath],
           ...(runtime && { runtime }),
@@ -313,11 +309,9 @@ export default {
         };
 
         if (runtime) {
-          const webhookPath = '/.well-known/workflow/v1/webhook/:token';
           rules[webhookPath] = { ...rules[webhookPath], runtime };
 
           if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
-            const manifestPath = '/.well-known/workflow/v1/manifest.json';
             rules[manifestPath] = { ...rules[manifestPath], runtime };
           }
         }
@@ -339,7 +333,7 @@ export default {
             'export default async () => new Response("Manifest not found", { status: 404 });\n'
           );
         }
-        addManifestHandler(nitro);
+        addManifestHandler(nitro, manifestPath);
       }
     }
   },
@@ -348,8 +342,10 @@ export default {
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
 
 function addDashboardHandler(nitro: Nitro) {
-  const route = '/_workflow';
-  nitro.options.handlers.push({ route, handler: DASHBOARD_VIRTUAL_ID });
+  nitro.options.handlers.push({
+    route: '/_workflow',
+    handler: DASHBOARD_VIRTUAL_ID,
+  });
 
   // Resolve `@workflow/web/server` relative to this module so consumers don't
   // need a direct dependency on `@workflow/web`. The path is inlined into the
@@ -530,8 +526,7 @@ function addVirtualHandler(
 
 const MANIFEST_VIRTUAL_ID = '#workflow/manifest-handler';
 
-function addManifestHandler(nitro: Nitro) {
-  const route = '/.well-known/workflow/v1/manifest.json';
+function addManifestHandler(nitro: Nitro, route: string) {
   const manifestPath = join(nitro.options.buildDir, 'workflow/manifest.json');
   const handlerPath = join(
     nitro.options.buildDir,

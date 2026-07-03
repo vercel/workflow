@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
+  normalizeWorkflowBasePath,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
@@ -18,6 +19,8 @@ import { join } from 'pathe';
  * returns undefined.
  */
 type NitroV2ExternalsOptions = { externals?: { external?: unknown[] } };
+type NitroBaseUrlOptions = { baseURL?: string; app?: { baseURL?: string } };
+
 function getNitroStringExternals(nitro: Nitro): string[] | undefined {
   const external = (nitro.options as NitroV2ExternalsOptions).externals
     ?.external;
@@ -31,6 +34,11 @@ function getNitroProjectRoot(nitro: Nitro): string {
   return nitro.options.workspaceDir ?? nitro.options.rootDir;
 }
 
+export function getNitroBasePath(nitro: Nitro): string {
+  const options = nitro.options as typeof nitro.options & NitroBaseUrlOptions;
+  return normalizeWorkflowBasePath(options.baseURL ?? options.app?.baseURL);
+}
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
@@ -41,6 +49,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         runtime: nitro.options.workflow?.runtime,
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
+        basePath: getNitroBasePath(nitro),
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -70,6 +79,7 @@ export class LocalBuilder extends BaseBuilder {
         dirs: ['.'], // Different apps that use nitro have different directories
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
+        basePath: getNitroBasePath(nitro),
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });

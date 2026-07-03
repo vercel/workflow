@@ -14,16 +14,14 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Run } from '../src/runtime';
 import { start as rawStart } from '../src/runtime';
 import {
+  getDeploymentUrl,
   getWorkflowMetadata,
   setupRunTracking,
   setupWorld,
   trackRun,
 } from './utils';
 
-const deploymentUrl = process.env.DEPLOYMENT_URL;
-if (!deploymentUrl) {
-  throw new Error('`DEPLOYMENT_URL` environment variable is not set');
-}
+const deploymentUrl = getDeploymentUrl();
 
 async function start<T>(
   ...args: Parameters<typeof rawStart<T>>

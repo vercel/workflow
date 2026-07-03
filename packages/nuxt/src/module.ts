@@ -24,6 +24,8 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
   setup(options, nuxt) {
     nuxt.options.nitro ||= {};
     nuxt.options.nitro.modules ||= [];
+    (nuxt.options.nitro as { baseURL?: string }).baseURL ??=
+      nuxt.options.app.baseURL;
 
     if (!nuxt.options.nitro.modules.includes('@workflow/nitro')) {
       nuxt.options.nitro.workflow ||= {} as NitroModuleOptions;

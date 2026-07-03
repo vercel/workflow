@@ -3,9 +3,11 @@ import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import fs from 'fs-extra';
 
 import { SvelteKitBuilder } from './builder.js';
+import { loadSvelteKitBasePath } from './config.js';
 import { stripWorkflowQueueTriggers } from './vc-config.js';
 
-const builder = new SvelteKitBuilder();
+const basePath = await loadSvelteKitBasePath();
+const builder = new SvelteKitBuilder({ basePath });
 
 // This needs to be in the top-level as we need to create these
 // entries before svelte plugin is started or the entries are
@@ -19,15 +21,24 @@ process.on('beforeExit', () => {
   }
   // V2: Only the combined flow handler needs queue triggers.
   // The separate step route was removed.
-  for (const { file, config } of [
-    {
-      file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
-      config: {
-        maxDuration: 'max',
-        experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
-      },
-    },
-  ]) {
+  const flowConfigFiles = [
+    '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
+    ...(basePath
+      ? [
+          path.join(
+            '.vercel/output/functions',
+            basePath.slice(1),
+            '.well-known/workflow/v1/flow.func/.vc-config.json'
+          ),
+        ]
+      : []),
+  ];
+
+  for (const file of flowConfigFiles) {
+    const config = {
+      maxDuration: 'max',
+      experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+    };
     const funcDir = path.dirname(file);
     if (!fs.existsSync(funcDir)) {
       continue;
