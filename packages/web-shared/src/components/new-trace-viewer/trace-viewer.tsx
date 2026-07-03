@@ -28,7 +28,10 @@ import {
   type SelectedSpanInfo,
 } from '../sidebar/entity-detail-panel';
 import { useSidebarData } from '../sidebar/sidebar-data-context';
-import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import {
+  formatDurationPrecise,
+  getHighResInMs,
+} from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
 import { Kbd } from '../ui/kbd';
 import { Spinner } from '../ui/spinner';
@@ -495,7 +498,7 @@ function NewTraceViewerContent({
     if (hoverFraction == null) return null;
     const absTime = viewport.start + hoverFraction * viewDuration;
     const offset = absTime - root.startTime;
-    return { fraction: hoverFraction, label: formatDuration(offset, true) };
+    return { fraction: hoverFraction, label: formatDurationPrecise(offset) };
   }, [hoverFraction, viewport.start, viewDuration, root.startTime]);
 
   const handleTimelineMouseMove = useCallback(
