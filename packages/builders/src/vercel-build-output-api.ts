@@ -9,26 +9,12 @@ import {
   parse,
   relative,
   resolve,
-  sep,
 } from 'node:path';
 import { type NodeFileTraceReasonType, nodeFileTrace } from '@vercel/nft';
 import { pluralize } from '@workflow/utils';
 import { type Metafile, transform } from 'esbuild';
 import { BaseBuilder } from './base-builder.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
-
-/**
- * Files the builder generates at the root of flow.func. Traced runtime
- * assets must never overwrite these.
- */
-const GENERATED_FUNCTION_FILES = new Set([
-  '.vc-config.json',
-  '__step_registrations.mjs',
-  '__step_registrations.mjs.map',
-  'index.mjs',
-  'index.mjs.map',
-  'package.json',
-]);
 
 const SECRET_FILE_NAMES = new Set(['.env', '.npmrc']);
 const SECRET_FILE_EXTENSIONS = new Set(['.key', '.pem']);
@@ -65,6 +51,31 @@ function isRuntimeAsset(
   return (
     file.endsWith('.node') ||
     reasonTypes.some((type) => type === 'asset' || type === 'sharedlib')
+  );
+}
+
+/**
+ * Maps a traced runtime asset to its location inside the function
+ * directory. Assets keep their path below the innermost node_modules
+ * directory, which flattens pnpm/store layouts
+ * (node_modules/.pnpm/<pkg>@<v>/node_modules/.prisma/client/engine.node)
+ * to the plain layout runtime lookups expect
+ * (node_modules/.prisma/client/engine.node), resolved against the function
+ * root — which is process.cwd() at runtime. Files outside node_modules
+ * (app files, credentials) are never copied; returns null for those.
+ */
+function getRuntimeAssetOutputPath(
+  functionDir: string,
+  sourcePath: string
+): string | null {
+  const normalizedSource = sourcePath.replace(/\\/g, '/');
+  const marker = '/node_modules/';
+  const markerIndex = normalizedSource.lastIndexOf(marker);
+  if (markerIndex === -1) return null;
+  return join(
+    functionDir,
+    'node_modules',
+    normalizedSource.slice(markerIndex + marker.length)
   );
 }
 
@@ -211,8 +222,10 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
    * The steps-bundle metafile lists every module esbuild inlined. Tracing
    * those modules with @vercel/nft (at their original on-disk locations,
    * where relative asset references still resolve) surfaces the runtime
-   * assets they reference, which are then copied into the function
-   * directory so runtime lookups relative to process.cwd() succeed.
+   * assets they reference. Assets that live inside node_modules are copied
+   * into the function directory so runtime lookups relative to
+   * process.cwd() succeed. Files outside node_modules (app files, secrets)
+   * are deliberately never copied.
    *
    * Known limitation: lookups relative to __dirname/import.meta.url inside
    * bundled code resolve against the function root (esbuild rewrites them),
@@ -226,7 +239,24 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     metafile: Metafile | undefined
   ): Promise<void> {
     if (!metafile) return;
+    try {
+      await this.traceAndCopyRuntimeAssets(functionDir, metafile);
+    } catch (error) {
+      // Best-effort: a tracing failure must not break builds that don't
+      // depend on runtime assets. Degrade to the previous behavior
+      // (nothing copied) with a warning.
+      console.warn(
+        `Failed to trace runtime assets for the workflow function: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
 
+  private async traceAndCopyRuntimeAssets(
+    functionDir: string,
+    metafile: Metafile
+  ): Promise<void> {
     // Metafile input keys are relative to the esbuild working directory.
     // Plugin-virtual modules (e.g. pseudo-packages) and the stdin entry
     // don't exist on disk and are filtered out.
@@ -255,9 +285,11 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       const reason = reasons.get(file);
       if (!reason || !isRuntimeAsset(file, reason.type)) continue;
 
+      // nft returns paths relative to the trace base, but files it cannot
+      // relativize (e.g. on another Windows drive) stay absolute.
       const asset = await this.resolveTracedRuntimeAsset(
         functionDir,
-        join(traceBase, file)
+        isAbsolute(file) ? file : join(traceBase, file)
       );
       if (!asset) continue;
       await this.copyRuntimeAssetOnce(asset, copied, functionDir);
@@ -325,61 +357,14 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     const stats = await stat(sourcePath).catch(() => null);
     if (!stats?.isFile()) return null;
 
-    const outputPath = this.getRuntimeAssetOutputPath(functionDir, sourcePath);
+    const outputPath = getRuntimeAssetOutputPath(functionDir, sourcePath);
     if (outputPath === null) {
       console.warn(
-        `Skipping runtime asset outside the app directory: ${sourcePath}`
-      );
-      return null;
-    }
-    const outputFile = relative(functionDir, outputPath).replace(/\\/g, '/');
-    if (GENERATED_FUNCTION_FILES.has(outputFile)) {
-      console.warn(
-        `Skipping runtime asset that conflicts with the generated function output: ${sourcePath}`
+        `Runtime asset outside node_modules is not copied into the workflow function: ${sourcePath}`
       );
       return null;
     }
     return { sourcePath, outputPath };
-  }
-
-  /**
-   * Maps a traced runtime asset to its location inside the function
-   * directory. Returns null when the asset has no safe location (files
-   * outside both node_modules and the app directory).
-   */
-  private getRuntimeAssetOutputPath(
-    functionDir: string,
-    sourcePath: string
-  ): string | null {
-    // Assets inside node_modules keep their path below the innermost
-    // node_modules directory. This flattens pnpm/store layouts
-    // (node_modules/.pnpm/<pkg>@<v>/node_modules/.prisma/client/engine.node)
-    // to the plain layout runtime lookups expect
-    // (node_modules/.prisma/client/engine.node), resolved against the
-    // function root — which is process.cwd() at runtime.
-    const normalizedSource = sourcePath.replace(/\\/g, '/');
-    const marker = '/node_modules/';
-    const markerIndex = normalizedSource.lastIndexOf(marker);
-    if (markerIndex !== -1) {
-      return join(
-        functionDir,
-        'node_modules',
-        normalizedSource.slice(markerIndex + marker.length)
-      );
-    }
-
-    // App files keep their app-directory-relative path: the bundle sits at
-    // the function root, which is also process.cwd() at runtime, so
-    // cwd-relative reads resolve unchanged.
-    const appPath = relative(this.config.workingDir, sourcePath);
-    if (
-      appPath === '..' ||
-      appPath.startsWith(`..${sep}`) ||
-      isAbsolute(appPath)
-    ) {
-      return null;
-    }
-    return join(functionDir, appPath);
   }
 
   private async buildWebhookFunction({

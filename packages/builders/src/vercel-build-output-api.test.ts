@@ -187,7 +187,7 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
   );
 
   it(
-    'flattens pnpm store paths, keeps app assets, and never copies secrets',
+    'flattens pnpm store paths and copies only node_modules assets',
     { timeout: BUILD_TIMEOUT },
     async () => {
       await writeWorkflowRuntimeStub(workingDir);
@@ -241,9 +241,9 @@ export async function reportWorkflow(): Promise<string> {
           'utf8'
         )
       ).toBe(engineContents);
-      expect(
-        await readFile(join(flowFuncDir, 'data/template.txt'), 'utf8')
-      ).toBe('template asset\n');
+      // Files outside node_modules are never copied — app data files and
+      // credentials both stay out of the deployed function.
+      expect(existsSync(join(flowFuncDir, 'data/template.txt'))).toBe(false);
       expect(existsSync(join(flowFuncDir, '.env'))).toBe(false);
     }
   );
