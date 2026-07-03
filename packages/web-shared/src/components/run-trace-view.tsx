@@ -2,6 +2,7 @@
 
 import type { Event, Hook, WorkflowRun } from '@workflow/world';
 import { AlertCircle } from 'lucide-react';
+import type { WorkflowSpanTimingMap } from '../lib/workflow-span-timing';
 import type { FetchSpanDetail } from './sidebar/use-selected-span-detail';
 import { WorkflowTraceViewer } from './workflow-trace-view';
 
@@ -27,6 +28,8 @@ interface RunTraceViewProps {
   hasMoreSpans?: boolean;
   isLoadingMoreSpans?: boolean;
   showSeparateEventOccurrenceTimestamps?: boolean;
+  showWorkflowTimingBreakdown?: boolean;
+  spanTimings?: WorkflowSpanTimingMap;
 }
 
 export function RunTraceView({
@@ -44,6 +47,8 @@ export function RunTraceView({
   hasMoreSpans,
   isLoadingMoreSpans,
   showSeparateEventOccurrenceTimestamps,
+  showWorkflowTimingBreakdown = false,
+  spanTimings,
 }: RunTraceViewProps) {
   if (error && !run) {
     return (
@@ -74,6 +79,8 @@ export function RunTraceView({
         showSeparateEventOccurrenceTimestamps={
           showSeparateEventOccurrenceTimestamps
         }
+        showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
+        spanTimings={spanTimings}
       />
     </div>
   );

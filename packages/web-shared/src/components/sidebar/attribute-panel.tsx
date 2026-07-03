@@ -4,10 +4,18 @@ import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import { format } from 'date-fns';
-import type { KeyboardEvent, ReactNode } from 'react';
-import { useCallback, useContext, useMemo, useState } from 'react';
+import {
+  Fragment,
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+} from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import type { WorkflowSpanTiming } from '../../lib/workflow-span-timing';
 import {
   Collapsible,
   CollapsibleContent,
@@ -31,6 +39,7 @@ import {
 } from './attributes-block';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
+import { WorkflowTimingBreakdown } from './workflow-timing-breakdown';
 
 /**
  * Tab button for conversation/JSON toggle
@@ -740,6 +749,8 @@ export const AttributePanel = ({
   onDecrypt,
   isDecrypting = false,
   resource,
+  workflowTiming,
+  showWorkflowTimingBreakdown = false,
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
@@ -756,6 +767,10 @@ export const AttributePanel = ({
   isDecrypting?: boolean;
   /** Resource type of the selected span — used to show targeted loading skeletons. */
   resource?: string;
+  /** Log-derived timing data for the selected workflow run or step span. */
+  workflowTiming?: WorkflowSpanTiming;
+  /** Show log-derived cold start, module init, and workflow overhead timing rows. */
+  showWorkflowTimingBreakdown?: boolean;
 }) => {
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
@@ -848,13 +863,18 @@ export const AttributePanel = ({
         hasEncryptedData: outerDecryptCtx?.hasEncryptedData,
       }
     : outerDecryptCtx;
+  const hasCompletedAttribute = orderedBasicAttributes.includes('completedAt');
+  const shouldShowWorkflowTiming =
+    showWorkflowTimingBreakdown && Boolean(workflowTiming);
+  const showMetadata =
+    visibleBasicAttributes.length > 0 || shouldShowWorkflowTiming;
 
   return (
     <ContextCardProvider>
       <RunClickContext.Provider value={onRunClick}>
         <StreamClickContext.Provider value={onStreamClick}>
           <DecryptClickContext.Provider value={decryptValue}>
-            {visibleBasicAttributes.length > 0 && (
+            {showMetadata && (
               <CollapsibleRoot defaultOpen>
                 <CollapsibleTrigger>Metadata</CollapsibleTrigger>
                 <CollapsibleContent className="mt-0 mb-2">
@@ -870,16 +890,32 @@ export const AttributePanel = ({
                       const label = getAttributeDisplayName(attribute);
 
                       return (
-                        <DetailMonoKeyValueRow
-                          key={attribute}
-                          label={label}
-                          value={displayValue}
-                          copyText={
-                            isCopyableBasicAttribute ? displayValue : undefined
-                          }
-                        />
+                        <Fragment key={attribute}>
+                          <DetailMonoKeyValueRow
+                            label={label}
+                            value={displayValue}
+                            copyText={
+                              isCopyableBasicAttribute
+                                ? displayValue
+                                : undefined
+                            }
+                          />
+                          {attribute === 'completedAt' &&
+                            shouldShowWorkflowTiming && (
+                              <WorkflowTimingBreakdown
+                                resource={resource}
+                                timing={workflowTiming}
+                              />
+                            )}
+                        </Fragment>
                       );
                     })}
+                    {!hasCompletedAttribute && shouldShowWorkflowTiming && (
+                      <WorkflowTimingBreakdown
+                        resource={resource}
+                        timing={workflowTiming}
+                      />
+                    )}
                     {isLoading &&
                       resource === 'sleep' &&
                       !displayData.resumeAt && (

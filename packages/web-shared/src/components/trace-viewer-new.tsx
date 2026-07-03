@@ -2,6 +2,10 @@ import type { WorkflowRun } from '@workflow/core/runtime';
 import type { Event } from '@workflow/world';
 import { useMemo } from 'react';
 import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
+import {
+  type WorkflowSpanTimingMap,
+  withWorkflowSpanTimings,
+} from '../lib/workflow-span-timing';
 import { TraceViewerSkeleton } from './new-trace-viewer/components/trace-viewer-skeleton';
 import { NewTraceViewer as NewTraceViewerComponent } from './new-trace-viewer/trace-viewer';
 import {
@@ -17,6 +21,8 @@ const NewTraceViewer = ({
   hasMore,
   isLoadingMore,
   loading = false,
+  showWorkflowTimingBreakdown = false,
+  spanTimings,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -25,14 +31,19 @@ const NewTraceViewer = ({
   hasMore?: boolean;
   isLoadingMore?: boolean;
   loading?: boolean;
+  showWorkflowTimingBreakdown?: boolean;
+  spanTimings?: WorkflowSpanTimingMap;
 }) => {
   const trace: TraceWithMeta | undefined = useMemo(() => {
     if (!run?.runId) {
       return undefined;
     }
-    return buildTrace(run, events, new Date());
+    return withWorkflowSpanTimings(
+      buildTrace(run, events, new Date()),
+      spanTimings
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `new Date()` is intentionally not a dep
-  }, [run, events]);
+  }, [run, events, spanTimings]);
 
   if (!trace || (loading && events.length === 0)) {
     return <TraceViewerSkeleton />;
@@ -46,6 +57,7 @@ const NewTraceViewer = ({
           onLoadMore={onLoadMore}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
+          showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
         />
       </div>
     </SidebarDataProvider>

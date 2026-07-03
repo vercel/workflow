@@ -5,6 +5,7 @@ import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
+import type { WorkflowSpanTiming } from '../../lib/workflow-span-timing';
 import { DecryptClickContext } from '../ui/data-inspector';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
@@ -27,6 +28,7 @@ export type SpanSelectionInfo = {
   resource: 'run' | 'step' | 'hook' | 'sleep';
   resourceId: string;
   runId?: string;
+  spanId?: string;
 };
 
 /**
@@ -39,6 +41,8 @@ export interface SelectedSpanInfo {
   resource?: string;
   /** The span ID (correlationId for filtering events) */
   spanId?: string;
+  /** Optional log-derived timing data for run and step invocations. */
+  timing?: WorkflowSpanTiming;
   /** Raw correlated events from the store (NOT from the trace worker pipeline) */
   rawEvents?: Event[];
 }
@@ -62,6 +66,7 @@ export function EntityDetailPanel({
   isDecrypting = false,
   selectedSpan,
   showSeparateEventOccurrenceTimestamps = false,
+  showWorkflowTimingBreakdown = false,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -95,6 +100,8 @@ export function EntityDetailPanel({
   selectedSpan: SelectedSpanInfo | null;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** Show log-derived cold start, module init, and workflow overhead timing rows. */
+  showWorkflowTimingBreakdown?: boolean;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -368,6 +375,8 @@ export function EntityDetailPanel({
             onDecrypt={onDecrypt}
             isDecrypting={isDecrypting}
             resource={resource}
+            workflowTiming={selectedSpan.timing}
+            showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
           />
 
           {rawEvents && (

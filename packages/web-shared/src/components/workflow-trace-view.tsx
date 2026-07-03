@@ -22,6 +22,11 @@ import {
   filterSpanRawEvents,
   type TraceWithMeta,
 } from '../lib/trace-builder';
+import {
+  getWorkflowSpanTiming,
+  type WorkflowSpanTimingMap,
+  withWorkflowSpanTimings,
+} from '../lib/workflow-span-timing';
 import { ErrorBoundary } from './error-boundary';
 import {
   EntityDetailPanel,
@@ -620,18 +625,33 @@ function SelectionBridge({
   const { selected } = state;
   const onSelectionChangeRef = useRef(onSelectionChange);
   onSelectionChangeRef.current = onSelectionChange;
-  const prevSpanIdRef = useRef<string | undefined>(undefined);
+  const prevSelectionRef = useRef<{
+    spanId: string | undefined;
+    timing: ReturnType<typeof getWorkflowSpanTiming>;
+  }>({ spanId: undefined, timing: undefined });
 
   useEffect(() => {
     const currentSpanId = selected?.span.spanId;
-    if (currentSpanId === prevSpanIdRef.current) return;
-    prevSpanIdRef.current = currentSpanId;
+    const currentTiming = selected
+      ? getWorkflowSpanTiming(selected.span.attributes)
+      : undefined;
+    if (
+      currentSpanId === prevSelectionRef.current.spanId &&
+      currentTiming === prevSelectionRef.current.timing
+    ) {
+      return;
+    }
+    prevSelectionRef.current = {
+      spanId: currentSpanId,
+      timing: currentTiming,
+    };
 
     if (selected) {
       onSelectionChangeRef.current({
         data: selected.span.attributes?.data,
         resource: selected.span.attributes?.resource as string | undefined,
         spanId: selected.span.spanId,
+        timing: currentTiming,
       });
     } else {
       onSelectionChangeRef.current(null);
@@ -779,6 +799,8 @@ export const WorkflowTraceViewer = ({
   onDecrypt,
   isDecrypting = false,
   showSeparateEventOccurrenceTimestamps = false,
+  showWorkflowTimingBreakdown = false,
+  spanTimings,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -819,6 +841,10 @@ export const WorkflowTraceViewer = ({
   isDecrypting?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** Show log-derived cold start, module init, and workflow overhead timing rows. */
+  showWorkflowTimingBreakdown?: boolean;
+  /** Optional log-derived timing data keyed by trace span ID. */
+  spanTimings?: WorkflowSpanTimingMap;
 }) => {
   const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
@@ -839,9 +865,12 @@ export const WorkflowTraceViewer = ({
     if (!run?.runId) {
       return undefined;
     }
-    return buildTrace(run, events, new Date());
+    return withWorkflowSpanTimings(
+      buildTrace(run, events, new Date()),
+      spanTimings
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `new Date()` is intentionally not a dep; useLiveTick handles live growth
-  }, [run, events]);
+  }, [run, events, spanTimings]);
   const trace = traceWithMeta;
 
   useEffect(() => {
@@ -1159,6 +1188,7 @@ export const WorkflowTraceViewer = ({
                 showSeparateEventOccurrenceTimestamps={
                   showSeparateEventOccurrenceTimestamps
                 }
+                showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
               />
             </ErrorBoundary>
           </div>

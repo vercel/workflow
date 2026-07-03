@@ -22,6 +22,7 @@ import {
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { filterSpanRawEvents } from '../../lib/trace-builder';
+import { getWorkflowSpanTiming } from '../../lib/workflow-span-timing';
 import { ErrorBoundary } from '../error-boundary';
 import {
   EntityDetailPanel,
@@ -57,6 +58,7 @@ interface NewTraceViewerProps {
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;
+  showWorkflowTimingBreakdown?: boolean;
 }
 
 const MIN_VIEWPORT_MS = 0.001;
@@ -161,6 +163,7 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
       data: activeSpan.attributes?.data,
       resource,
       spanId: activeSpan.spanId,
+      timing: getWorkflowSpanTiming(activeSpan.attributes),
       rawEvents,
     };
   }, [activeSpan, sidebar]);
@@ -175,6 +178,7 @@ export function NewTraceViewer({
   onLoadMore,
   hasMore,
   isLoadingMore,
+  showWorkflowTimingBreakdown = false,
 }: NewTraceViewerProps): ReactNode {
   return (
     <TooltipProvider delayDuration={300}>
@@ -184,6 +188,7 @@ export function NewTraceViewer({
           onLoadMore={onLoadMore}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
+          showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
         />
       </ActiveSpanProvider>
     </TooltipProvider>
@@ -195,6 +200,7 @@ function NewTraceViewerContent({
   onLoadMore,
   hasMore,
   isLoadingMore,
+  showWorkflowTimingBreakdown = false,
 }: NewTraceViewerProps): ReactNode {
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
@@ -840,6 +846,7 @@ function NewTraceViewerContent({
                 showSeparateEventOccurrenceTimestamps={
                   sidebar.showSeparateEventOccurrenceTimestamps
                 }
+                showWorkflowTimingBreakdown={showWorkflowTimingBreakdown}
               />
             </ErrorBoundary>
           </div>
