@@ -192,7 +192,8 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       symlinkSync(
         relative(appNodeModules, join(storePackageRoot, 'fake-prisma-client')),
         join(appNodeModules, 'fake-prisma-client'),
-        'dir'
+        // Junctions don't need symlink privileges on Windows runners
+        process.platform === 'win32' ? 'junction' : 'dir'
       );
 
       await writeStepUsingFakePrisma(workingDir);

@@ -184,6 +184,13 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
    * where relative asset references still resolve) surfaces the runtime
    * assets they reference, which are then copied into the function
    * directory so runtime lookups relative to process.cwd() succeed.
+   *
+   * Known limitation: lookups relative to __dirname/import.meta.url inside
+   * bundled code resolve against the function root (esbuild rewrites them),
+   * not the copied node_modules path. Packages that also probe
+   * process.cwd()-based locations — like Prisma's
+   * node_modules/.prisma/client fallback — work; pure __dirname lookups
+   * from bundled dependencies are not remapped.
    */
   private async copyTracedRuntimeAssets(
     functionDir: string,
