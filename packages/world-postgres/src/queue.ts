@@ -61,7 +61,7 @@ const GraphileHelpers = z.object({
     attempts: z.number().int().positive(),
   }),
 });
-const TimeoutSeconds = z.number().finite().nonnegative();
+const TimeoutSeconds = z.number().nonnegative();
 const QueueHandlerHttpResponseSchema = z.union([
   z.object({ ok: z.literal(true) }).strict(),
   z.object({ timeoutSeconds: TimeoutSeconds }).strict(),
@@ -911,6 +911,7 @@ export function createQueue(
   };
 
   return {
+    inProcessQueueHandlers: true,
     createQueueHandler,
     getDeploymentId,
     queue,

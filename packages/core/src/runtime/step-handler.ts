@@ -59,7 +59,7 @@ import {
 } from './helpers.js';
 import { safeWaitUntil } from './wait-until.js';
 import {
-  getPostgresRegistrationWorld,
+  getInProcessQueueWorld,
   getWorld,
   getWorldHandlers,
   type WorldHandlers,
@@ -1170,7 +1170,7 @@ let stepHandlerPromise:
   | undefined;
 
 async function loadStepWorldHandlers() {
-  return (await getPostgresRegistrationWorld()) ?? getWorldHandlers();
+  return getInProcessQueueWorld() ?? (await getWorldHandlers());
 }
 
 async function getStepHandler(worldHandlers?: WorldHandlers) {
@@ -1186,21 +1186,20 @@ async function getStepHandler(worldHandlers?: WorldHandlers) {
   return stepHandlerPromise;
 }
 
-async function registerPostgresStepHandler() {
-  const world = await getPostgresRegistrationWorld();
-  if (world) {
-    await getStepHandler(world);
-  }
-}
-
 export const stepEntrypoint: (req: Request) => Promise<Response> =
   /* @__PURE__ */ withHealthCheck(
     async (req) => {
       return (await getStepHandler())(req);
     },
     {
+      // In-process-queue worlds POST this health path to warm the step
+      // route; register the step queue handler in response so their queue
+      // can execute step jobs directly.
       onPostHealthCheck: () => {
-        void registerPostgresStepHandler().catch(() => {});
+        const world = getInProcessQueueWorld();
+        if (world) {
+          void getStepHandler(world).catch(() => {});
+        }
       },
     }
   );

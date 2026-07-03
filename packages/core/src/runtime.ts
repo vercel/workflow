@@ -54,9 +54,10 @@ import { executeStep } from './runtime/step-executor.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
-  getPostgresRegistrationWorld,
+  getInProcessQueueWorld,
   getWorld,
   getWorldHandlers,
+  onceInProcessQueueWorld,
   type WorldHandlers,
 } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
@@ -2072,11 +2073,11 @@ export function workflowEntrypoint(
   const loadWorldHandlers = async (
     withSpan: boolean
   ): Promise<WorldHandlers> => {
-    // Postgres worlds need the full world instance so the queue handler
-    // registers against the same queue that runs the Graphile runner.
-    const postgresWorld = await getPostgresRegistrationWorld();
-    if (postgresWorld) {
-      return postgresWorld;
+    // In-process-queue worlds need the full world instance so the queue
+    // handler registers against the same queue that consumes the jobs.
+    const inProcessQueueWorld = getInProcessQueueWorld();
+    if (inProcessQueueWorld) {
+      return inProcessQueueWorld;
     }
     if (withSpan) {
       return trace('workflow.route.get_world_handlers', async () =>
@@ -2103,60 +2104,51 @@ export function workflowEntrypoint(
     return handlerPromise;
   };
 
-  const registerPostgresHandler = async () => {
-    const world = await getPostgresRegistrationWorld();
-    if (world) {
-      await getHandler(false, world);
-    }
-  };
+  // Worlds whose queue consumes in-process handlers need this entrypoint's
+  // handler registered before any HTTP request arrives. Fires immediately
+  // when such a world is already cached, or as soon as one is created.
+  onceInProcessQueueWorld((world) => {
+    void getHandler(false, world).catch(() => {});
+  });
 
-  void registerPostgresHandler().catch(() => {});
+  return withHealthCheck(async (req) => {
+    invocationCount += 1;
+    const handlerCached = handlerPromise !== undefined;
+    const spanKind = await getSpanKind('SERVER');
 
-  return withHealthCheck(
-    async (req) => {
-      invocationCount += 1;
-      const handlerCached = handlerPromise !== undefined;
-      const spanKind = await getSpanKind('SERVER');
-
-      return trace(
-        'workflow.route.flow',
-        {
-          kind: spanKind,
-          attributes: {
-            ...Attribute.WorkflowRouteType('flow'),
-            ...Attribute.WorkflowRouteHandlerCached(handlerCached),
-            ...Attribute.WorkflowRouteInvocationCount(invocationCount),
-            ...Attribute.WorkflowRouteEntrypointAgeMs(
-              Date.now() - entrypointCreatedAt
-            ),
-            ...(routeModuleBodyInitMs === undefined
-              ? {}
-              : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
-            ...Attribute.HttpRequestMethod(req.method),
-            ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
-          },
+    return trace(
+      'workflow.route.flow',
+      {
+        kind: spanKind,
+        attributes: {
+          ...Attribute.WorkflowRouteType('flow'),
+          ...Attribute.WorkflowRouteHandlerCached(handlerCached),
+          ...Attribute.WorkflowRouteInvocationCount(invocationCount),
+          ...Attribute.WorkflowRouteEntrypointAgeMs(
+            Date.now() - entrypointCreatedAt
+          ),
+          ...(routeModuleBodyInitMs === undefined
+            ? {}
+            : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
+          ...Attribute.HttpRequestMethod(req.method),
+          ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
         },
-        async (span) => {
-          const routeHandler = handlerCached
-            ? await getHandler(true)
-            : await trace('workflow.route.init', async () => {
-                return getHandler(true);
-              });
-
-          const response = await routeHandler(req);
-          if (response instanceof Response) {
-            span?.setAttributes(
-              Attribute.HttpResponseStatusCode(response.status)
-            );
-          }
-          return response;
-        }
-      );
-    },
-    {
-      onPostHealthCheck: () => {
-        void registerPostgresHandler().catch(() => {});
       },
-    }
-  );
+      async (span) => {
+        const routeHandler = handlerCached
+          ? await getHandler(true)
+          : await trace('workflow.route.init', async () => {
+              return getHandler(true);
+            });
+
+        const response = await routeHandler(req);
+        if (response instanceof Response) {
+          span?.setAttributes(
+            Attribute.HttpResponseStatusCode(response.status)
+          );
+        }
+        return response;
+      }
+    );
+  });
 }

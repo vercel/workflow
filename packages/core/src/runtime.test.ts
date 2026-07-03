@@ -136,8 +136,7 @@ describe('workflowEntrypoint replay guards', () => {
     `;globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
 
-  it('eagerly registers the workflow queue handler for Postgres worlds', async () => {
-    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@workflow/world-postgres');
+  it('eagerly registers the workflow queue handler for in-process queue worlds', async () => {
     const createQueueHandler = vi.fn(
       (
         _prefix: string,
@@ -148,7 +147,7 @@ describe('workflowEntrypoint replay guards', () => {
     );
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      getDeploymentId: vi.fn(async () => 'local'),
+      inProcessQueueHandlers: true,
       createQueueHandler,
     } as any);
 
@@ -166,8 +165,7 @@ describe('workflowEntrypoint replay guards', () => {
     });
   });
 
-  it('registers the workflow queue handler during Postgres POST health probes', async () => {
-    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@workflow/world-postgres');
+  it('registers the workflow queue handler when an in-process queue world appears later', async () => {
     const createQueueHandler = vi.fn(
       (
         _prefix: string,
@@ -176,25 +174,20 @@ describe('workflowEntrypoint replay guards', () => {
         async () =>
           new Response(null, { status: 204 })
     );
-    setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
-      createQueueHandler,
-    } as any);
 
-    const response = await workflowEntrypoint(
+    workflowEntrypoint(
       `async function workflow() {
         return 'done';
       }${getWorkflowTransformCode('workflow')}`
-    )(
-      new Request(
-        'https://example.test/.well-known/workflow/v1/flow?__health',
-        {
-          method: 'POST',
-        }
-      )
     );
+    expect(createQueueHandler).not.toHaveBeenCalled();
 
-    expect(response.status).toBe(200);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      inProcessQueueHandlers: true,
+      createQueueHandler,
+    } as any);
+
     await vi.waitFor(() => {
       expect(createQueueHandler).toHaveBeenCalledWith(
         '__wkf_workflow_',
@@ -203,8 +196,7 @@ describe('workflowEntrypoint replay guards', () => {
     });
   });
 
-  it('does not register the workflow queue handler during local POST health probes', async () => {
-    vi.stubEnv('WORKFLOW_TARGET_WORLD', 'local');
+  it('does not register the workflow queue handler for worlds without in-process queue handlers', async () => {
     const createQueueHandler = vi.fn(
       (
         _prefix: string,
@@ -233,44 +225,6 @@ describe('workflowEntrypoint replay guards', () => {
 
     expect(response.status).toBe(200);
     expect(createQueueHandler).not.toHaveBeenCalled();
-  });
-
-  it('registers an injected Postgres world during POST health probes', async () => {
-    vi.stubEnv('WORKFLOW_TARGET_WORLD', 'local');
-    const createQueueHandler = vi.fn(
-      (
-        _prefix: string,
-        _handler: (message: unknown, metadata: unknown) => Promise<unknown>
-      ) =>
-        async () =>
-          new Response(null, { status: 204 })
-    );
-    setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
-      getDeploymentId: vi.fn(async () => 'postgres'),
-      createQueueHandler,
-    } as any);
-
-    const response = await workflowEntrypoint(
-      `async function workflow() {
-        return 'done';
-      }${getWorkflowTransformCode('workflow')}`
-    )(
-      new Request(
-        'https://example.test/.well-known/workflow/v1/flow?__health',
-        {
-          method: 'POST',
-        }
-      )
-    );
-
-    expect(response.status).toBe(200);
-    await vi.waitFor(() => {
-      expect(createQueueHandler).toHaveBeenCalledWith(
-        '__wkf_workflow_',
-        expect.any(Function)
-      );
-    });
   });
 
   it('records run_failed when run_started response schema validation fails', async () => {

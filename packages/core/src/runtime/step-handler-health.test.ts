@@ -10,11 +10,9 @@ describe('stepEntrypoint health probes', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();
-    vi.unstubAllEnvs();
   });
 
-  it('does not register the step queue handler during local POST health probes', async () => {
-    vi.stubEnv('WORKFLOW_TARGET_WORLD', 'local');
+  it('does not register the step queue handler for worlds without in-process queue handlers', async () => {
     const createQueueHandler = vi.fn(
       (
         _prefix: string,
@@ -25,7 +23,6 @@ describe('stepEntrypoint health probes', () => {
     );
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      getDeploymentId: vi.fn(async () => 'local'),
       createQueueHandler,
     } as any);
 
@@ -40,8 +37,7 @@ describe('stepEntrypoint health probes', () => {
     expect(createQueueHandler).not.toHaveBeenCalled();
   });
 
-  it('registers the step queue handler during Postgres POST health probes', async () => {
-    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@workflow/world-postgres');
+  it('registers the step queue handler during POST health probes for in-process queue worlds', async () => {
     const createQueueHandler = vi.fn(
       (
         _prefix: string,
@@ -52,6 +48,7 @@ describe('stepEntrypoint health probes', () => {
     );
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      inProcessQueueHandlers: true,
       createQueueHandler,
     } as any);
 

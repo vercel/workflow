@@ -34,12 +34,16 @@ const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
 const StubbedWorldCachePromise = Symbol.for(
   '@workflow/world//stubbedCachePromise'
 );
+const WorldAvailableListeners = Symbol.for(
+  '@workflow/world//availableListeners'
+);
 
 const globalSymbols: typeof globalThis & {
   [WorldCache]?: World;
   [StubbedWorldCache]?: World;
   [WorldCachePromise]?: Promise<World>;
   [StubbedWorldCachePromise]?: Promise<World>;
+  [WorldAvailableListeners]?: Set<(world: World) => void>;
 } = globalThis;
 
 // Dynamic import for custom world modules. Uses a standard import()
@@ -163,40 +167,49 @@ export const createWorld = async (): Promise<World> => {
 
 export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;
 
-function isPostgresTargetWorld(targetWorld: string): boolean {
-  return (
-    targetWorld === 'postgres' || targetWorld === '@workflow/world-postgres'
-  );
-}
-
 function getCachedWorld(): World | undefined {
   return globalSymbols[WorldCache] ?? globalSymbols[StubbedWorldCache];
 }
 
-async function hasPostgresDeploymentId(world: World | undefined) {
-  if (world === undefined || typeof world.getDeploymentId !== 'function') {
-    return false;
-  }
-  try {
-    return (await world.getDeploymentId()) === 'postgres';
-  } catch {
-    // e.g. the Vercel world throws when VERCEL_DEPLOYMENT_ID is not set.
-    // A world we cannot identify is not a Postgres world.
-    return false;
+/**
+ * Returns the current world when its queue executes messages by invoking
+ * queue handlers registered in-process (`world.inProcessQueueHandlers`).
+ * Such worlds need route entrypoints to register their handlers proactively
+ * instead of waiting for a first HTTP request. Never creates a world.
+ */
+export function getInProcessQueueWorld(): World | undefined {
+  const world = getCachedWorld();
+  return world?.inProcessQueueHandlers ? world : undefined;
+}
+
+function notifyWorldAvailable(world: World | undefined) {
+  const listeners = globalSymbols[WorldAvailableListeners];
+  if (!world || !listeners) return;
+  for (const listener of [...listeners]) {
+    listener(world);
   }
 }
 
-export async function getPostgresRegistrationWorld() {
-  const cachedWorld = getCachedWorld();
-  if (await hasPostgresDeploymentId(cachedWorld)) {
-    return cachedWorld;
+/**
+ * Invokes `listener` once as soon as a world with in-process queue handlers
+ * is available: immediately when one is already cached, otherwise when one
+ * is later created or injected (possibly from another bundle — the listener
+ * set lives on globalThis, like the world caches). Never creates a world.
+ */
+export function onceInProcessQueueWorld(listener: (world: World) => void) {
+  const world = getInProcessQueueWorld();
+  if (world) {
+    listener(world);
+    return;
   }
-
-  if (isPostgresTargetWorld(resolveWorkflowTargetWorld())) {
-    return getWorld();
-  }
-
-  return undefined;
+  globalSymbols[WorldAvailableListeners] ??= new Set();
+  const listeners = globalSymbols[WorldAvailableListeners];
+  const onAvailable = (candidate: World) => {
+    if (!candidate.inProcessQueueHandlers) return;
+    listeners.delete(onAvailable);
+    listener(candidate);
+  };
+  listeners.add(onAvailable);
 }
 
 /**
@@ -222,6 +235,7 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
   }
   const _world = await globalSymbols[StubbedWorldCachePromise];
   globalSymbols[StubbedWorldCache] = _world;
+  notifyWorldAvailable(_world);
   return {
     createQueueHandler: _world.createQueueHandler,
     specVersion: _world.specVersion,
@@ -241,6 +255,7 @@ export const getWorld = async (): Promise<World> => {
     });
   }
   globalSymbols[WorldCache] = await globalSymbols[WorldCachePromise];
+  notifyWorldAvailable(globalSymbols[WorldCache]);
   return globalSymbols[WorldCache];
 };
 
@@ -253,6 +268,7 @@ export const setWorld = (world: World | undefined): void => {
   globalSymbols[StubbedWorldCache] = world;
   globalSymbols[WorldCachePromise] = undefined;
   globalSymbols[StubbedWorldCachePromise] = undefined;
+  notifyWorldAvailable(world);
 };
 
 // Register getWorld on globalThis so getWorldLazy can call it directly when
