@@ -25,9 +25,15 @@ export const MAX_QUEUE_DELIVERIES = 48;
  * Effective max queue deliveries. Override via `WORKFLOW_MAX_QUEUE_DELIVERIES`.
  */
 export function getMaxQueueDeliveries(): number {
+  // Only ever lower the delivery budget. The default is calibrated so the
+  // handler-side failure path runs before VQS message-retention expiry (see
+  // MAX_QUEUE_DELIVERIES above); a higher value would bypass that invariant and
+  // let a bad deployment redeliver until queue expiry instead of recording
+  // run_fail. `max` clamps a too-high override back down to the safe default.
   return envNumber('WORKFLOW_MAX_QUEUE_DELIVERIES', MAX_QUEUE_DELIVERIES, {
     integer: true,
     min: 1,
+    max: MAX_QUEUE_DELIVERIES,
   });
 }
 

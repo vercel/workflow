@@ -106,14 +106,24 @@ export function getWaitContinuationDispatch(
   waitCorrelationId: string,
   now: number = Date.now()
 ): WaitContinuationDispatch {
-  if (timeoutSeconds <= getNearElapsedWaitThresholdSeconds()) {
+  const maxDelaySeconds = getWaitContinuationMaxDelaySeconds();
+  // The near-elapsed branch returns the full remaining time as the delay, so
+  // its threshold can never exceed the max delay — otherwise a wait between the
+  // max and the threshold would be dispatched with a delay above the max. Cap
+  // the threshold at the max so every branch yields a delay within it. (With
+  // defaults — threshold 2s, max 82_800s — this is a no-op; it only bites when
+  // the max is tuned down below the threshold for testing.)
+  const nearElapsedThreshold = Math.min(
+    getNearElapsedWaitThresholdSeconds(),
+    maxDelaySeconds
+  );
+  if (timeoutSeconds <= nearElapsedThreshold) {
     return {
       delaySeconds: timeoutSeconds,
       idempotencyKey: `${waitCorrelationId}:${Math.floor(now / 1000)}`,
     };
   }
 
-  const maxDelaySeconds = getWaitContinuationMaxDelaySeconds();
   const hop = Math.ceil(timeoutSeconds / maxDelaySeconds);
   return {
     delaySeconds: Math.min(timeoutSeconds, maxDelaySeconds),
