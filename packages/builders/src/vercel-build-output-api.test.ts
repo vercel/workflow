@@ -100,6 +100,10 @@ async function writeFakePrismaClient(packageRoot: string): Promise<void> {
     "module.exports = require('.fake-prisma/client');\n"
   );
   await write(
+    join(packageRoot, '.fake-prisma/client/package.json'),
+    JSON.stringify({ name: '.fake-prisma/client', main: 'index.js' })
+  );
+  await write(
     join(packageRoot, '.fake-prisma/client/index.js'),
     `const { readFileSync } = require('fs');
 const path = require('path');
@@ -172,6 +176,13 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       expect(
         await readFile(join(clientOutputDir, 'schema.prisma'), 'utf8')
       ).toBe(schemaContents);
+      // The owning package.json comes along so runtime resolution of the
+      // copied files keeps working.
+      expect(
+        JSON.parse(
+          await readFile(join(clientOutputDir, 'package.json'), 'utf8')
+        ).main
+      ).toBe('index.js');
     }
   );
 

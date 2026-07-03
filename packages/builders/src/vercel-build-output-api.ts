@@ -34,8 +34,11 @@ const SECRET_FILE_NAMES = new Set(['.env', '.npmrc']);
 const SECRET_FILE_EXTENSIONS = new Set(['.key', '.pem']);
 
 /**
- * Credential files must never be copied into the deployed function output,
- * even when runtime code reads them (e.g. dotenv reading `.env`).
+ * Best-effort denylist so common credential files (env files, npm auth,
+ * private keys) aren't copied into the deployed function output even when
+ * runtime code reads them (e.g. dotenv reading `.env`). Not exhaustive:
+ * runtime code legitimately needs most files it reads, so anything not
+ * matched here is copied.
  */
 function isSecretFile(filePath: string): boolean {
   const name = basename(filePath);
@@ -63,6 +66,32 @@ function isRuntimeAsset(
     file.endsWith('.node') ||
     reasonTypes.some((type) => type === 'asset' || type === 'sharedlib')
   );
+}
+
+/**
+ * The package.json of the package that owns a copied node_modules asset.
+ * Runtime resolution of the copied files needs it — e.g. a bare require of
+ * a native package whose package.json points `main` at a `.node` binary.
+ */
+function getOwningPackageJsonPath(sourcePath: string): string | null {
+  const normalized = sourcePath.replace(/\\/g, '/');
+  const markerIndex = normalized.lastIndexOf('/node_modules/');
+  if (markerIndex === -1) return null;
+
+  // Walk up from the asset towards the innermost node_modules directory.
+  const nodeModulesDir = normalized.slice(
+    0,
+    markerIndex + '/node_modules'.length
+  );
+  for (
+    let dir = dirname(normalized);
+    dir.length > nodeModulesDir.length;
+    dir = dirname(dir)
+  ) {
+    const candidate = `${dir}/package.json`;
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 const TRANSPILE_LOADERS: Record<string, 'ts' | 'tsx' | 'jsx'> = {
@@ -231,22 +260,19 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
         join(traceBase, file)
       );
       if (!asset) continue;
+      await this.copyRuntimeAssetOnce(asset, copied, functionDir);
 
-      // Two packages can flatten to the same output path (e.g. nested vs
-      // hoisted copies of a package); the first one in trace order wins.
-      const existingSource = copied.get(asset.outputPath);
-      if (existingSource !== undefined) {
-        if (existingSource !== asset.sourcePath) {
-          console.warn(
-            `Conflicting runtime assets for ${relative(functionDir, asset.outputPath)}: keeping ${existingSource}, skipping ${asset.sourcePath}`
-          );
-        }
-        continue;
+      // Copy the owning package.json alongside node_modules assets so
+      // runtime resolution of the copied files keeps working.
+      const packageJsonPath = getOwningPackageJsonPath(asset.sourcePath);
+      if (packageJsonPath === null) continue;
+      const packageJsonAsset = await this.resolveTracedRuntimeAsset(
+        functionDir,
+        packageJsonPath
+      );
+      if (packageJsonAsset) {
+        await this.copyRuntimeAssetOnce(packageJsonAsset, copied, functionDir);
       }
-
-      await mkdir(dirname(asset.outputPath), { recursive: true });
-      await copyFile(asset.sourcePath, asset.outputPath);
-      copied.set(asset.outputPath, asset.sourcePath);
     }
 
     if (copied.size > 0) {
@@ -254,6 +280,30 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
         `Copied ${copied.size} traced runtime ${pluralize('asset', 'assets', copied.size)} into the workflow function`
       );
     }
+  }
+
+  /**
+   * Copies a runtime asset unless its output path is already claimed.
+   * Two packages can flatten to the same output path (e.g. nested vs
+   * hoisted copies of a package); the first one in trace order wins.
+   */
+  private async copyRuntimeAssetOnce(
+    asset: { sourcePath: string; outputPath: string },
+    copied: Map<string, string>,
+    functionDir: string
+  ): Promise<void> {
+    const existingSource = copied.get(asset.outputPath);
+    if (existingSource !== undefined) {
+      if (existingSource !== asset.sourcePath) {
+        console.warn(
+          `Conflicting runtime assets for ${relative(functionDir, asset.outputPath)}: keeping ${existingSource}, skipping ${asset.sourcePath}`
+        );
+      }
+      return;
+    }
+    await mkdir(dirname(asset.outputPath), { recursive: true });
+    await copyFile(asset.sourcePath, asset.outputPath);
+    copied.set(asset.outputPath, asset.sourcePath);
   }
 
   /**
