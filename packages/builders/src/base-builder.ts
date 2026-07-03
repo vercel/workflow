@@ -906,6 +906,12 @@ export const __steps_registered = true;
   }): Promise<{
     context: esbuild.BuildContext | undefined;
     manifest: WorkflowManifest;
+    /**
+     * esbuild metafile for the steps bundle. Lists every module that was
+     * inlined into the bundle, so builders can trace runtime assets
+     * (native binaries, data files) those modules load from disk.
+     */
+    metafile?: esbuild.Metafile;
   }> {
     const stepsBundleStart = Date.now();
     const workflowManifest: WorkflowManifest = {};
@@ -946,6 +952,7 @@ export const __steps_registered = true;
       externalizeNonSteps &&
       !bundleTransitiveLocalStepDependencies
     ) {
+      // No esbuild bundle is produced on this path, so no metafile either.
       return {
         context: undefined,
         manifest: await this.createStepSourceRegistrationFile({
@@ -1089,6 +1096,10 @@ export const __steps_registered = true;
       : this.getEsmRequireBanner(format);
 
     const esbuildCtx = await esbuild.context({
+      // Skip the metafile in watch mode: it would be regenerated on every
+      // dev rebuild but is only read by production builds that trace
+      // runtime assets (VercelBuildOutputAPIBuilder.copyTracedRuntimeAssets).
+      metafile: !this.config.watch,
       banner: {
         js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}${esmRequireBanner}`,
       },
@@ -1200,10 +1211,18 @@ export const __steps_registered = true;
     await this.ensureSwcIgnored();
 
     if (this.config.watch) {
-      return { context: esbuildCtx, manifest: workflowManifest };
+      return {
+        context: esbuildCtx,
+        manifest: workflowManifest,
+        metafile: stepsResult.metafile,
+      };
     }
     await esbuildCtx.dispose();
-    return { context: undefined, manifest: workflowManifest };
+    return {
+      context: undefined,
+      manifest: workflowManifest,
+      metafile: stepsResult.metafile,
+    };
   }
 
   /**
@@ -1627,6 +1646,8 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     discoveredEntries: DiscoveredEntries;
     stepsManifest: WorkflowManifest;
     workflowsManifest: WorkflowManifest;
+    /** esbuild metafile for the steps bundle (see createStepsBundle). */
+    stepsMetafile?: esbuild.Metafile;
   }> {
     this.startWorkflowBuildTimer();
     const effectiveDiscoveredEntries =
@@ -1639,27 +1660,30 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
 
     // 1. Build step registrations bundle (used as separate file for
     // bundleFinalOutput: false, or read back for inline content when true)
-    const { context: stepsContext, manifest: stepsManifest } =
-      await this.createStepsBundle({
-        inputFiles,
-        outfile: stepsOutfile,
-        // When bundleFinalOutput is true, use ESM for the steps bundle
-        // regardless of the final output format. The final esbuild pass
-        // converts everything to the target format. Using CJS here causes
-        // a module.exports collision: the steps bundle's top-level
-        // module.exports overwrites the combined route's module.exports
-        // when esbuild inlines the steps without a __commonJS wrapper.
-        format: bundleFinalOutput ? 'esm' : format,
-        externalizeNonSteps,
-        bundleTransitiveLocalStepDependencies,
-        sourceStepRegistrationImports,
-        tsconfigPath,
-        discoveredEntries: effectiveDiscoveredEntries,
-        // Skip the createRequire banner here — when bundleFinalOutput is true
-        // the outer esbuild pass will inline this bundle and add its own
-        // banner. Emitting it twice declares __createRequire twice.
-        skipEsmRequireBanner: bundleFinalOutput,
-      });
+    const {
+      context: stepsContext,
+      manifest: stepsManifest,
+      metafile: stepsMetafile,
+    } = await this.createStepsBundle({
+      inputFiles,
+      outfile: stepsOutfile,
+      // When bundleFinalOutput is true, use ESM for the steps bundle
+      // regardless of the final output format. The final esbuild pass
+      // converts everything to the target format. Using CJS here causes
+      // a module.exports collision: the steps bundle's top-level
+      // module.exports overwrites the combined route's module.exports
+      // when esbuild inlines the steps without a __commonJS wrapper.
+      format: bundleFinalOutput ? 'esm' : format,
+      externalizeNonSteps,
+      bundleTransitiveLocalStepDependencies,
+      sourceStepRegistrationImports,
+      tsconfigPath,
+      discoveredEntries: effectiveDiscoveredEntries,
+      // Skip the createRequire banner here — when bundleFinalOutput is true
+      // the outer esbuild pass will inline this bundle and add its own
+      // banner. Emitting it twice declares __createRequire twice.
+      skipEsmRequireBanner: bundleFinalOutput,
+    });
 
     // 2. Build workflow VM code
     const tempWorkflowOutfile = `${flowOutfile}.__wf_tmp.js`;
@@ -1794,6 +1818,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         discoveredEntries: effectiveDiscoveredEntries,
         stepsManifest,
         workflowsManifest: workflowsResult.manifest,
+        stepsMetafile,
       };
     }
 
@@ -1802,6 +1827,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
       discoveredEntries: effectiveDiscoveredEntries,
       stepsManifest,
       workflowsManifest: workflowsResult.manifest,
+      stepsMetafile,
     };
   }
 
