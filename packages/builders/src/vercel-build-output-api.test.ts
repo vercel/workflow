@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { VercelBuildOutputConfig } from './types.js';
 import { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
@@ -200,8 +200,10 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       );
       await writeFakePrismaClient(storePackageRoot);
       const appNodeModules = join(workingDir, 'node_modules');
+      // Absolute target: Windows junctions resolve relative targets against
+      // process.cwd(), not the link directory.
       symlinkSync(
-        relative(appNodeModules, join(storePackageRoot, 'fake-prisma-client')),
+        join(storePackageRoot, 'fake-prisma-client'),
         join(appNodeModules, 'fake-prisma-client'),
         // Junctions don't need symlink privileges on Windows runners
         process.platform === 'win32' ? 'junction' : 'dir'
