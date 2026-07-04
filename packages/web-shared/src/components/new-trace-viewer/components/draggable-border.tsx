@@ -196,11 +196,17 @@ export function DraggableBorder({
       onKeyDown={handleKeyDown}
     >
       {/* Center line: sits exactly over the panel's 1px border and highlights
-          on hover/drag/focus (delayed so incidental mouse-overs don't flash). */}
+          on hover/drag/focus (delayed so incidental mouse-overs don't flash).
+          pointer-events-none is load-bearing: without it this 1px line is a
+          hit target, so a double-click aimed at the line lands one click on
+          the line and (after sub-pixel jitter) the other on the strip. A
+          native dblclick only fires when both clicks share a target, so the
+          reset silently fails on the line but works just beside it. Keeping
+          the line inert makes the separator div the sole target everywhere. */}
       <span
         aria-hidden
         className={cn(
-          'absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors delay-75 duration-100',
+          'pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors delay-75 duration-100',
           'group-hover:bg-gray-500 group-focus-visible:bg-[var(--ds-focus-color)]',
           isDragging && 'bg-gray-500'
         )}
