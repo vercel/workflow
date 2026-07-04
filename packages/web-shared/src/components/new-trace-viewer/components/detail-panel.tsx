@@ -71,9 +71,7 @@ export function TraceDetailPanel({
   onNavigateToSpan,
   onClose,
 }: {
-  /** The pane-root element whose width bounds the panel. */
   containerRef: RefObject<HTMLDivElement | null>;
-  /** Change the selection (scrolls the row into view and re-zooms). */
   onNavigateToSpan: (spanId: string) => void;
   onClose: () => void;
 }): ReactNode {
@@ -82,8 +80,6 @@ export function TraceDetailPanel({
   const selectedSpan = useSelectedSpanInfo();
   const isOpen = Boolean(activeSpan);
 
-  // Width model (see detail-panel-width.ts): the stored preference is
-  // clamped against the live container width at render time.
   const [storedWidth, setStoredWidth] = useState<number>(() =>
     readStoredPanelWidth()
   );
@@ -123,7 +119,6 @@ export function TraceDetailPanel({
     if (nextSpanId) onNavigateToSpan(nextSpanId);
   }, [nextSpanId, onNavigateToSpan]);
 
-  // J/K (and arrow-key) navigation between spans while the panel is open.
   useEffect(() => {
     if (!isOpen) return;
 
