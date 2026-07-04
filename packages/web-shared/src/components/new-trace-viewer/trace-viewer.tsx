@@ -1,15 +1,6 @@
 'use client';
 
-import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import {
-  ChevronDown,
-  ChevronUp,
-  RotateCcw,
-  Search,
-  X,
-  ZoomIn,
-  ZoomOut,
-} from 'lucide-react';
+import { RotateCcw, Search, ZoomIn, ZoomOut } from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
@@ -21,23 +12,12 @@ import {
 } from 'react';
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
-import { filterSpanRawEvents } from '../../lib/trace-builder';
-import { ErrorBoundary } from '../error-boundary';
-import {
-  EntityDetailPanel,
-  type SelectedSpanInfo,
-} from '../sidebar/entity-detail-panel';
-import { useSidebarData } from '../sidebar/sidebar-data-context';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
 import { Kbd } from '../ui/kbd';
 import { Spinner } from '../ui/spinner';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '../ui/tooltip';
+import { TooltipProvider } from '../ui/tooltip';
+import { TraceDetailPanel } from './components/detail-panel';
 import EventList from './components/event-list';
 import { SplitPane } from './components/split-pane';
 import {
@@ -140,33 +120,6 @@ function useAnimatedViewport(initial: Viewport) {
 }
 
 // ---------------------------------------------------------------------------
-// Hook: bridge ActiveSpanContext + SidebarDataContext → SelectedSpanInfo
-// ---------------------------------------------------------------------------
-
-function useSelectedSpanInfo(): SelectedSpanInfo | null {
-  const { activeSpan } = useActiveSpan();
-  const sidebar = useSidebarData();
-
-  return useMemo(() => {
-    if (!activeSpan) return null;
-
-    const resource = activeSpan.attributes?.resource as string | undefined;
-    const rawEvents = filterSpanRawEvents(
-      sidebar.events,
-      resource,
-      activeSpan.spanId
-    );
-
-    return {
-      data: activeSpan.attributes?.data,
-      resource,
-      spanId: activeSpan.spanId,
-      rawEvents,
-    };
-  }, [activeSpan, sidebar]);
-}
-
-// ---------------------------------------------------------------------------
 // Root component
 // ---------------------------------------------------------------------------
 
@@ -196,15 +149,15 @@ function NewTraceViewerContent({
   hasMore,
   isLoadingMore,
 }: NewTraceViewerProps): ReactNode {
-  const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
-    useActiveSpan();
+  const { activeSpanId, setActiveSpan, clearActiveSpan } = useActiveSpan();
 
-  const sidebar = useSidebarData();
-  const selectedSpan = useSelectedSpanInfo();
   const reducedMotion = useReducedMotion();
 
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
+
+  // The pane-root element; TraceDetailPanel measures it to bound its width.
+  const paneRootRef = useRef<HTMLDivElement>(null);
 
   const searchResult = useMemo(
     () => searchSpans(trace.spans, deferredSearchQuery),
@@ -439,38 +392,13 @@ function NewTraceViewerContent({
 
   const [altHeld, setAltHeld] = useState(false);
 
+  // J/K span navigation lives in TraceDetailPanel; this handles the rest.
   useEffect(() => {
-    const handleSidebarNavKey = (e: KeyboardEvent): void => {
-      const target = e.target as HTMLElement | null;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target?.isContentEditable
-      ) {
-        return;
-      }
-      const targetId =
-        e.key === 'k' || e.key === 'ArrowUp'
-          ? prevSpanIdRef.current
-          : nextSpanIdRef.current;
-      if (targetId) {
-        e.preventDefault();
-        navigateToSpanRef.current(targetId);
-      }
-    };
-
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         handleClearActiveSpan();
       } else if (e.key === 'Alt') {
         setAltHeld(true);
-      } else if (
-        e.key === 'j' ||
-        e.key === 'k' ||
-        e.key === 'ArrowDown' ||
-        e.key === 'ArrowUp'
-      ) {
-        handleSidebarNavKey(e);
       }
     };
     const onKeyUp = (e: KeyboardEvent): void => {
@@ -606,60 +534,15 @@ function NewTraceViewerContent({
     return () => el.removeEventListener('wheel', onWheel);
   }, [root.startTime, root.duration, setViewport]);
 
-  // Derive the selected span name and metadata for the panel header
-  const selectedSpanName = useMemo(() => {
-    if (!selectedSpan?.data) return 'Details';
-    const data = selectedSpan.data as Record<string, unknown>;
-    if (selectedSpan.resource === 'hook') {
-      return (data.token as string | undefined) ?? (data.hookId as string);
-    }
-
-    const stepName = data.stepName as string | undefined;
-    const workflowName = data.workflowName as string | undefined;
-    return (
-      (stepName ? parseStepName(stepName)?.shortName : undefined) ??
-      (workflowName ? parseWorkflowName(workflowName)?.shortName : undefined) ??
-      stepName ??
-      workflowName ??
-      (data.hookId as string) ??
-      'Details'
-    );
-  }, [selectedSpan?.data, selectedSpan?.resource]);
-
-  const { prevSpanId, nextSpanId } = useMemo(() => {
-    if (!activeSpanId) return { prevSpanId: null, nextSpanId: null };
-    const i = trace.spans.findIndex((s) => s.spanId === activeSpanId);
-    if (i === -1) return { prevSpanId: null, nextSpanId: null };
-    return {
-      prevSpanId: trace.spans[i - 1]?.spanId ?? null,
-      nextSpanId: trace.spans[i + 1]?.spanId ?? null,
-    };
-  }, [activeSpanId, trace.spans]);
-
-  const handleSelectPrevSpan = useCallback(() => {
-    if (prevSpanId) navigateToSpan(prevSpanId);
-  }, [prevSpanId, navigateToSpan]);
-
-  const handleSelectNextSpan = useCallback(() => {
-    if (nextSpanId) navigateToSpan(nextSpanId);
-  }, [nextSpanId, navigateToSpan]);
-
-  const prevSpanIdRef = useRef(prevSpanId);
-  const nextSpanIdRef = useRef(nextSpanId);
-  const navigateToSpanRef = useRef(navigateToSpan);
-  prevSpanIdRef.current = prevSpanId;
-  nextSpanIdRef.current = nextSpanId;
-  navigateToSpanRef.current = navigateToSpan;
-
   return (
     <div
+      ref={paneRootRef}
       data-pane="pane-root"
-      data-has-detail={activeSpan ? '' : undefined}
-      className="relative grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,360px,100%)]"
+      className="relative flex w-full h-full max-h-full"
     >
       <div
         id="trace-parent"
-        className="grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
+        className="flex-1 min-w-0 grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
         <SplitPane
           scrollContainerRef={scrollContainerRef}
@@ -767,84 +650,11 @@ function NewTraceViewerContent({
         </div>
       </div>
 
-      {/* Detail panel */}
-      {activeSpan ? (
-        <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
-          {/* Panel header */}
-          <div className="flex items-center justify-between gap-2 shrink-0 px-4 py-[7.5px]">
-            <span className="text-label-14 font-medium text-gray-1000 truncate block">
-              {selectedSpanName}
-            </span>
-            <div className="flex items-center gap-0.5 shrink-0">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <IconButton
-                    aria-label="Navigate up"
-                    aria-keyshortcuts="K"
-                    onClick={handleSelectPrevSpan}
-                    disabled={!prevSpanId}
-                  >
-                    <ChevronUp className="w-4 h-4" />
-                  </IconButton>
-                </TooltipTrigger>
-                {prevSpanId ? (
-                  <TooltipContent>
-                    Navigate up
-                    <Kbd>K</Kbd>
-                  </TooltipContent>
-                ) : null}
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <IconButton
-                    aria-label="Navigate down"
-                    aria-keyshortcuts="J"
-                    onClick={handleSelectNextSpan}
-                    disabled={!nextSpanId}
-                  >
-                    <ChevronDown className="w-4 h-4" />
-                  </IconButton>
-                </TooltipTrigger>
-                {nextSpanId ? (
-                  <TooltipContent>
-                    Navigate down
-                    <Kbd>J</Kbd>
-                  </TooltipContent>
-                ) : null}
-              </Tooltip>
-              <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
-              <IconButton
-                aria-label="Close span details"
-                aria-keyshortcuts="Escape"
-                onClick={handleClearActiveSpan}
-              >
-                <X className="w-4 h-4" />
-              </IconButton>
-            </div>
-          </div>
-          {/* Panel body */}
-          <div className="flex-1 overflow-y-auto">
-            <ErrorBoundary>
-              <EntityDetailPanel
-                run={sidebar.run}
-                onStreamClick={sidebar.onStreamClick}
-                onRunClick={sidebar.onRunClick}
-                fetchSpanDetail={sidebar.fetchSpanDetail}
-                onWakeUpSleep={sidebar.onWakeUpSleep}
-                onLoadEventData={sidebar.onLoadEventData}
-                onResolveHook={sidebar.onResolveHook}
-                encryptionKey={sidebar.encryptionKey}
-                onDecrypt={sidebar.onDecrypt}
-                isDecrypting={sidebar.isDecrypting}
-                selectedSpan={selectedSpan}
-                showSeparateEventOccurrenceTimestamps={
-                  sidebar.showSeparateEventOccurrenceTimestamps
-                }
-              />
-            </ErrorBoundary>
-          </div>
-        </aside>
-      ) : null}
+      <TraceDetailPanel
+        containerRef={paneRootRef}
+        onNavigateToSpan={navigateToSpan}
+        onClose={handleClearActiveSpan}
+      />
 
       <TraceShortcutHelper
         hasMultipleSpans={trace.spans.length > 1}
