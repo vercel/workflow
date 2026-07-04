@@ -53,9 +53,6 @@ export function SplitPane({
   const rafRef = useRef<number | null>(null);
   const pendingPx = useRef(DEFAULT_START_PX);
   const pointerIdRef = useRef<number | null>(null);
-  // The container can resize live underneath this pane (the outer
-  // detail-panel drag, window resizes) — startPx alone is only clamped
-  // during drag.
   const containerWidth = useElementWidth(containerRef);
 
   useEffect(() => {

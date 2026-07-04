@@ -156,7 +156,6 @@ function NewTraceViewerContent({
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
-  // The pane-root element; TraceDetailPanel measures it to bound its width.
   const paneRootRef = useRef<HTMLDivElement>(null);
 
   const searchResult = useMemo(
@@ -392,7 +391,6 @@ function NewTraceViewerContent({
 
   const [altHeld, setAltHeld] = useState(false);
 
-  // J/K span navigation lives in TraceDetailPanel; this handles the rest.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
