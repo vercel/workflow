@@ -51,6 +51,7 @@ export function workflowPlugin(
         updateConfig({
           vite: {
             plugins: [
+              workflowBasePathDevGuard(basePath),
               workflowTransformPlugin(),
               // Cast needed due to Astro using a different internal Vite version
               workflowHotUpdatePlugin({
@@ -70,6 +71,36 @@ export function workflowPlugin(
           await vercelBuilder.build();
         }
       },
+    },
+  };
+}
+
+function workflowBasePathDevGuard(basePath: string) {
+  return {
+    name: 'workflow:astro-base-path-dev-guard',
+    enforce: 'post',
+    configureServer(server: any) {
+      if (!basePath) return;
+
+      return () => {
+        server.middlewares.stack.unshift({
+          route: '',
+          handle: (req: any, res: any, next: () => void) => {
+            const path = req.url.split(/[?#]/, 1)[0];
+            if (
+              path === '/.well-known/workflow/v1/flow' ||
+              path === '/.well-known/workflow/v1/manifest.json' ||
+              path.startsWith('/.well-known/workflow/v1/webhook/')
+            ) {
+              res.statusCode = 404;
+              res.end('Not Found');
+              return;
+            }
+
+            next();
+          },
+        });
+      };
     },
   };
 }

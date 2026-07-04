@@ -25,6 +25,25 @@ export function createAstroWorkflowRoutes(basePath?: string) {
   ];
 }
 
+export function createAstroRootWorkflowBlockRoutes(basePath?: string) {
+  if (!normalizeWorkflowBasePath(basePath)) return [];
+
+  return [
+    {
+      src: '^/\\.well-known/workflow/v1/flow/?$',
+      status: 404,
+    },
+    {
+      src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
+      status: 404,
+    },
+    {
+      src: '^/\\.well-known/workflow/v1/manifest\\.json/?$',
+      status: 404,
+    },
+  ];
+}
+
 export function createAstroBasePathGuard(basePath: string | undefined): string {
   if (!basePath) return '';
   return `  if (!new URL(request.url).pathname.startsWith(${JSON.stringify(`${basePath}/`)})) {
@@ -214,9 +233,13 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     );
 
     // Find the index right after the "filesystem" handler and "continue: true" routes
-    let insertIndex = config.routes.findIndex(
+    let filesystemIndex = config.routes.findIndex(
       (route: any) => route.handle === 'filesystem'
     );
+    if (filesystemIndex === -1) {
+      filesystemIndex = 0;
+    }
+    let insertIndex = filesystemIndex;
 
     // Move past any routes with "continue: true" (like _astro cache headers)
     while (
@@ -225,6 +248,12 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     ) {
       insertIndex++;
     }
+
+    const rootBlockRoutes = createAstroRootWorkflowBlockRoutes(
+      this.config.basePath
+    );
+    config.routes.splice(filesystemIndex, 0, ...rootBlockRoutes);
+    insertIndex += rootBlockRoutes.length;
 
     // Insert workflow routes right after
     config.routes.splice(

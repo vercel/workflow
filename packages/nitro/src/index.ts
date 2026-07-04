@@ -1,11 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
-import { join } from 'pathe';
-import { LocalBuilder, VercelBuilder } from './builders.js';
+import { dirname, join } from 'pathe';
+import { getNitroBasePath, LocalBuilder, VercelBuilder } from './builders.js';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
@@ -294,6 +294,9 @@ export default {
       if (isVercelDeploy) {
         nitro.options.vercel ??= {};
         nitro.options.vercel.functionRules ??= {};
+        nitro.hooks.hook('compiled', () => {
+          patchNativeVercelWorkflowRoutes(nitro);
+        });
 
         const runtime = nitro.options.workflow?.runtime;
         const rules = nitro.options.vercel.functionRules;
@@ -334,6 +337,12 @@ export default {
           );
         }
         addManifestHandler(nitro, manifestPath);
+
+        if (isVercelDeploy) {
+          nitro.hooks.hook('compiled', () => {
+            copyPublicManifestToVercelStaticOutput(nitro);
+          });
+        }
       }
     }
   },
@@ -615,4 +624,36 @@ export default fromWebHandler(() => new Response("Manifest not found", { status:
 `;
     writeFileSync(handlerPath, fallback);
   }
+}
+
+function copyPublicManifestToVercelStaticOutput(nitro: Nitro) {
+  const source = join(nitro.options.buildDir, 'workflow/manifest.json');
+  const destination = join(
+    nitro.options.rootDir,
+    '.vercel/output/static',
+    getNitroBasePath(nitro).slice(1),
+    '.well-known/workflow/v1/manifest.json'
+  );
+
+  mkdirSync(dirname(destination), { recursive: true });
+  copyFileSync(source, destination);
+}
+
+function patchNativeVercelWorkflowRoutes(nitro: Nitro) {
+  const configPath = join(nitro.options.rootDir, '.vercel/output/config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf-8')) as {
+    routes: Array<{ src?: string; dest?: string }>;
+  };
+  const workflowPrefix = `${getNitroBasePath(nitro)}/.well-known/workflow/v1`;
+
+  for (const route of config.routes) {
+    if (
+      route.src === `${workflowPrefix}/flow` ||
+      route.src?.startsWith(`${workflowPrefix}/webhook/`)
+    ) {
+      route.dest = '/__server';
+    }
+  }
+
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
