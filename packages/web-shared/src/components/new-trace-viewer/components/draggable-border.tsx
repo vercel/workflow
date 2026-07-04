@@ -10,19 +10,6 @@ import {
 } from 'react';
 import { cn } from '../../../lib/cn';
 
-const KEYBOARD_STEP_PX = 16;
-const KEYBOARD_STEP_LARGE_PX = 64;
-
-/** Movement (px) beyond which a pointer interaction counts as a drag. */
-const DRAG_MOVE_THRESHOLD_PX = 4;
-
-/**
- * Pointer-capture drags still generate click/dblclick events (unlike HTML5
- * drag, which suppresses them), so a dblclick landing within this window of a
- * real drag is treated as an accident and does not reset.
- */
-const DRAG_SUPPRESS_RESET_MS = 500;
-
 interface DraggableBorderProps {
   /** The panel whose width this border adjusts (measured on interaction). */
   element: RefObject<HTMLElement | null>;
@@ -43,14 +30,10 @@ interface DraggableBorderProps {
 }
 
 /**
- * Overlay drag handle straddling a panel edge — the same interaction pattern
- * as vercel/front's `DraggableBorder` (used by the agent-runs observability
- * detail panel): an invisible strip over the panel border whose center line
- * highlights on hover/drag, with double-click reset.
- *
- * Deliberate divergence from front: pointer capture instead of HTML5 drag
- * events (no ghost image, works with touch/pen, no Firefox `clientX`
- * workaround), and keyboard/ARIA separator support.
+ * Overlay drag handle straddling a panel edge: an invisible strip over the
+ * panel's border whose center line highlights on hover/drag, with
+ * double-click reset, pointer-capture dragging (works with touch/pen, no
+ * ghost image), and keyboard/ARIA window-splitter support.
  *
  * The panel's positioning ancestor must not clip overflow — the strip hangs
  * ~8px past the panel edge.
@@ -126,7 +109,7 @@ export function DraggableBorder({
   // document-level listeners are needed.
   const handlePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (pointerIdRef.current !== e.pointerId) return;
-    if (Math.abs(e.clientX - startXRef.current) > DRAG_MOVE_THRESHOLD_PX) {
+    if (Math.abs(e.clientX - startXRef.current) > 4) {
       movedRef.current = true;
     }
     const delta =
@@ -155,9 +138,12 @@ export function DraggableBorder({
   };
 
   const handleDoubleClick = () => {
+    // Pointer-capture drags still emit click/dblclick (unlike HTML5 drag), so
+    // a dblclick during or right after a real drag is two resize nudges, not
+    // a reset request.
     if (
       movedRef.current ||
-      performance.now() - lastDragEndAtRef.current < DRAG_SUPPRESS_RESET_MS
+      performance.now() - lastDragEndAtRef.current < 500
     ) {
       return;
     }
@@ -167,7 +153,7 @@ export function DraggableBorder({
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const el = element.current;
     if (!el) return;
-    const step = e.shiftKey ? KEYBOARD_STEP_LARGE_PX : KEYBOARD_STEP_PX;
+    const step = e.shiftKey ? 64 : 16;
     // Arrows move the border in screen direction: for a left-edge border,
     // ArrowLeft grows the panel.
     const grow = position === 'left' ? 1 : -1;
@@ -210,7 +196,7 @@ export function DraggableBorder({
       onKeyDown={handleKeyDown}
     >
       {/* Center line: sits exactly over the panel's 1px border and highlights
-          on hover/drag/focus (slightly delayed, like front's fakeBorder). */}
+          on hover/drag/focus (delayed so incidental mouse-overs don't flash). */}
       <span
         aria-hidden
         className={cn(

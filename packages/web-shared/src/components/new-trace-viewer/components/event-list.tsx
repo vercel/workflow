@@ -1,7 +1,6 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
-import type { Span } from '../types';
 import { formatDurationPrecise } from '../../trace-viewer/util/timing';
 import {
   SleepIcon,
@@ -10,6 +9,7 @@ import {
   WorkflowIcon,
 } from '../icons';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
+import type { Span } from '../types';
 import { getSpanDurationMs } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
@@ -74,6 +74,7 @@ const EventRow = ({
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
+      <div className="absolute inset-x-0 bottom-0 h-px bg-gray-alpha-400 pointer-events-none" />
       <div className="h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200">
         <div className="flex h-full min-w-0 items-center pl-4 pr-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -114,7 +115,7 @@ const EventList = ({
       ref={listRef}
       id="event-list"
       role="tree"
-      className="block min-h-0 overflow-visible divide-y divide-gray-alpha-400 border-b border-gray-alpha-400"
+      className="block min-h-0 overflow-visible border-b border-gray-alpha-400"
       style={{
         paddingTop: start * ROW_HEIGHT_PX,
         paddingBottom: (spans.length - end) * ROW_HEIGHT_PX,

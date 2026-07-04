@@ -82,10 +82,8 @@ export function TraceDetailPanel({
   const selectedSpan = useSelectedSpanInfo();
   const isOpen = Boolean(activeSpan);
 
-  // Width model (mirrors the agent-runs observability panel on vercel/front):
-  // the stored value is the user's preference, persisted on change; the
-  // container-relative max is applied at render time so a width preferred on a
-  // wide screen survives a narrow session and restores when the viewer grows.
+  // Width model (see detail-panel-width.ts): the stored preference is
+  // clamped against the live container width at render time.
   const [storedWidth, setStoredWidth] = useState<number>(() =>
     readStoredPanelWidth()
   );

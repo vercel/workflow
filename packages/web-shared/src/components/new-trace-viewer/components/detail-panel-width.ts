@@ -1,10 +1,9 @@
 /**
- * Width model for the span detail panel, mirroring the agent-runs
- * observability panel on vercel/front: the stored value is the user's
+ * Width model for the span detail panel: the stored value is the user's
  * preferred width (absolute px, persisted to localStorage on explicit
- * interaction only), while the container-relative maximum is applied at render
- * time — so a width preferred on a wide screen survives a narrower session
- * and restores when the viewer grows again.
+ * interaction only), while the container-relative maximum is applied at
+ * render time — so a width preferred on a wide screen survives a narrower
+ * session and restores when the viewer grows again.
  */
 
 /** Floor for the detail panel — matches the previous `clamp(280px, …)` floor. */
