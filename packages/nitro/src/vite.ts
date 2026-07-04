@@ -12,7 +12,8 @@ import nitroModule from './index.js';
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
   let workflowBuildDir: string;
-  let workflowRoutePrefix = '/.well-known/workflow/v1/';
+  const workflowRootRoutePrefix = '/.well-known/workflow/v1';
+  let workflowRoutePrefix = workflowRootRoutePrefix;
   const enqueue = createBuildQueue();
 
   // Create a lazy transform plugin that excludes the workflow build directory
@@ -25,12 +26,61 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       const plugin = workflowTransformPlugin({
         exclude: workflowBuildDir ? [workflowBuildDir] : [],
       });
-      return (plugin.transform as Function)?.call(this, code, id);
+      const transform = plugin.transform;
+      if (typeof transform !== 'function') return;
+      return transform.call(this, code, id);
+    },
+  };
+
+  const devRoutePlugin: Plugin = {
+    name: 'workflow:vite-dev-routes',
+    enforce: 'pre',
+    // NOTE: This is a workaround because Nitro passes the 404 requests to the
+    // dev server to handle. For workflow routes, we override to send an empty
+    // body to prevent Hono/Vite's SPA fallback.
+    configureServer(server) {
+      // Add middleware to intercept workflow routes before Nitro/Vite.
+      server.middlewares.use((req, res, next) => {
+        const url = req.url ?? '';
+        if (
+          workflowRoutePrefix !== workflowRootRoutePrefix &&
+          isWorkflowRoute(url, workflowRootRoutePrefix)
+        ) {
+          res.writeHead(404, { 'Content-Length': '0' });
+          res.end();
+          return;
+        }
+
+        // Only handle workflow routes
+        if (!isWorkflowRoute(url, workflowRoutePrefix)) {
+          return next();
+        }
+
+        // Wrap writeHead to ensure we send empty body for 404s
+        const originalWriteHead = res.writeHead;
+        res.writeHead = function (this: typeof res, ...args: any[]) {
+          const statusCode = typeof args[0] === 'number' ? args[0] : 200;
+
+          // NOTE: Workaround because Nitro passes 404 requests to the vite to handle.
+          // Causes `webhook route with invalid token` test to fail.
+          // For 404s on workflow routes, ensure we're sending the right headers
+          if (statusCode === 404) {
+            // Set content-length to 0 to prevent Vite from overriding
+            res.setHeader('Content-Length', '0');
+          }
+
+          // @ts-expect-error - Complex overload signature
+          return originalWriteHead.apply(this, args);
+        } as any;
+
+        next();
+      });
     },
   };
 
   return [
     lazyTransformPlugin,
+    devRoutePlugin,
     {
       name: 'workflow:nitro',
       nitro: {
@@ -39,7 +89,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           workflowBuildDir = join(nitro.options.buildDir, 'workflow');
           workflowRoutePrefix = joinWorkflowBasePath(
             getNitroBasePath(nitro),
-            '/.well-known/workflow/v1/'
+            workflowRootRoutePrefix
           );
           nitro.options.workflow = {
             ...nitro.options.workflow,
@@ -52,42 +102,15 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           return nitroModule.setup(nitro);
         },
       },
-      // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
-      // For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.
-      configureServer(server) {
-        // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
-        return () => {
-          server.middlewares.use((req, res, next) => {
-            // Only handle workflow webhook routes
-            if (!req.url?.startsWith(workflowRoutePrefix)) {
-              return next();
-            }
-
-            // Wrap writeHead to ensure we send empty body for 404s
-            const originalWriteHead = res.writeHead;
-            res.writeHead = function (this: typeof res, ...args: any[]) {
-              const statusCode = typeof args[0] === 'number' ? args[0] : 200;
-
-              // NOTE: Workaround because Nitro passes 404 requests to the vite to handle.
-              // Causes `webhook route with invalid token` test to fail.
-              // For 404s on workflow routes, ensure we're sending the right headers
-              if (statusCode === 404) {
-                // Set content-length to 0 to prevent Vite from overriding
-                res.setHeader('Content-Length', '0');
-              }
-
-              // @ts-expect-error - Complex overload signature
-              return originalWriteHead.apply(this, args);
-            } as any;
-
-            next();
-          });
-        };
-      },
     },
     workflowHotUpdatePlugin({
       builder: () => builder,
       enqueue,
     }),
   ];
+}
+
+function isWorkflowRoute(url: string, routePrefix: string): boolean {
+  const [pathname] = url.split(/[?#]/, 1);
+  return pathname === routePrefix || pathname.startsWith(`${routePrefix}/`);
 }
