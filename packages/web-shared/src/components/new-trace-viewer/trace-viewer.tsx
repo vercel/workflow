@@ -327,6 +327,8 @@ function NewTraceViewerContent({
 
   const zoomIn = useCallback(() => zoomBy(ZOOM_FACTOR), [zoomBy]);
   const zoomOut = useCallback(() => zoomBy(1 / ZOOM_FACTOR), [zoomBy]);
+  const isAtMinZoom = viewDuration >= root.duration;
+  const isAtMaxZoom = viewDuration <= MIN_VIEWPORT_MS;
 
   const focusViewportOnSpan = useCallback(
     (spanId: string) => {
@@ -744,6 +746,7 @@ function NewTraceViewerContent({
             variant="muted"
             size="small"
             onClick={zoomOut}
+            disabled={isAtMinZoom}
             aria-label="Zoom out"
           >
             <ZoomOut className="w-4 h-4" />
@@ -760,6 +763,7 @@ function NewTraceViewerContent({
             variant="muted"
             size="small"
             onClick={zoomIn}
+            disabled={isAtMaxZoom}
             aria-label="Zoom in"
           >
             <ZoomIn className="w-4 h-4" />
