@@ -9,14 +9,12 @@ const adapter = process.env.VERCEL_DEPLOYMENT_ID
   : node({
       mode: 'standalone',
     });
-const workflowBasePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(
-  /\/+$/,
-  ''
-);
+// E2E-only: mount the app below a base path (WORKFLOW_E2E_BASE_PATH=/app)
+const e2eBasePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(/\/+$/, '');
 
 // https://astro.build/config
 export default defineConfig({
-  base: workflowBasePath || undefined,
+  base: e2eBasePath || undefined,
   output: 'server',
   integrations: [workflow()],
   adapter: adapter,

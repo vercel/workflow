@@ -30,9 +30,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       const plugin = workflowTransformPlugin({
         exclude: workflowBuildDir ? [workflowBuildDir] : [],
       });
-      const transform = plugin.transform;
-      if (typeof transform !== 'function') return;
-      return transform.call(this, code, id);
+      return (plugin.transform as Function)?.call(this, code, id);
     },
   };
 

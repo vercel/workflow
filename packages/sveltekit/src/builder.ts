@@ -23,17 +23,6 @@ const SVELTEKIT_VIRTUAL_MODULES = [
   '$app/*', // All $app subpaths
 ];
 
-export function createSvelteKitFlowRouteCode(source: string): string {
-  return source.replace(
-    /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
-    (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
-}`
-  );
-}
-
 export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<SvelteKitConfig>) {
     const workingDir = config?.workingDir || process.cwd();
@@ -48,7 +37,8 @@ export class SvelteKitBuilder extends BaseBuilder {
       workingDir,
       externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
       sourcemap: config?.sourcemap,
-      basePath: normalizeWorkflowBasePath(config?.basePath),
+      // `undefined` (not '') when unset so generated routes carry no basePath
+      basePath: normalizeWorkflowBasePath(config?.basePath) || undefined,
     });
   }
 
@@ -91,8 +81,16 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Post-process the generated file to wrap with SvelteKit request converter
     const workflowsRouteFile = join(flowRouteDir, '+server.js');
-    const workflowsRouteContent = createSvelteKitFlowRouteCode(
-      await readFile(workflowsRouteFile, 'utf-8')
+    let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
+
+    // Replace the default export with SvelteKit-compatible handler
+    workflowsRouteContent = workflowsRouteContent.replace(
+      /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
+      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
+export const POST = async ({request}) => {
+  const normalRequest = await normalizeRequest(request);
+  return workflowEntrypoint(workflowCode${options})(normalRequest);
+}`
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 

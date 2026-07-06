@@ -49,7 +49,8 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         runtime: nitro.options.workflow?.runtime,
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
-        basePath: getNitroBasePath(nitro),
+        // `undefined` (not '') when unset so generated routes carry no basePath
+        basePath: getNitroBasePath(nitro) || undefined,
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -79,7 +80,8 @@ export class LocalBuilder extends BaseBuilder {
         dirs: ['.'], // Different apps that use nitro have different directories
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
-        basePath: getNitroBasePath(nitro),
+        // `undefined` (not '') when unset so generated routes carry no basePath
+        basePath: getNitroBasePath(nitro) || undefined,
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });

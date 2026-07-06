@@ -9,38 +9,37 @@ import {
 } from './base-path.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 
-export function createBuildOutputApiRootBlockRoutes(basePath?: string) {
-  if (!normalizeWorkflowBasePath(basePath)) return [];
+/**
+ * Routes that rewrite base-path-prefixed workflow URLs to the internal
+ * (root-relative) workflow functions.
+ */
+export function createBuildOutputApiWorkflowRoutes(basePath?: string) {
+  const prefix = createBasePathRouteRegexPrefix(basePath);
 
   return [
     {
-      src: '^/\\.well-known\\/workflow\\/v1\\/flow\\/?$',
-      status: 404,
+      src: `${prefix}\\.well-known/workflow/v1/flow/?$`,
+      dest: `${WORKFLOW_ROUTE_BASE}/flow`,
     },
     {
-      src: '^/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+?)\\/?$',
-      status: 404,
-    },
-    {
-      src: '^/\\.well-known\\/workflow\\/v1\\/manifest\\.json\\/?$',
-      status: 404,
+      src: `${prefix}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
+      dest: `${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
     },
   ];
 }
 
-export function createBuildOutputApiRoutes(basePath?: string) {
-  const prefix = createBasePathRouteRegexPrefix(basePath);
+/**
+ * When a base path is configured, block the root-relative workflow endpoints
+ * so they are only reachable below the base path (matching Next.js basePath
+ * behavior). Returns no routes when no base path is set.
+ */
+export function createBuildOutputApiRootBlockRoutes(basePath?: string) {
+  if (!normalizeWorkflowBasePath(basePath)) return [];
 
   return [
-    ...createBuildOutputApiRootBlockRoutes(basePath),
-    {
-      src: `${prefix}\\.well-known\\/workflow\\/v1\\/flow\\/?$`,
-      dest: `${WORKFLOW_ROUTE_BASE}/flow`,
-    },
-    {
-      src: `${prefix}\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+?)\\/?$`,
-      dest: `${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
-    },
+    { src: '^/\\.well-known/workflow/v1/flow/?$', status: 404 },
+    { src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$', status: 404 },
+    { src: '^/\\.well-known/workflow/v1/manifest\\.json/?$', status: 404 },
   ];
 }
 
@@ -160,7 +159,10 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create config.json for Build Output API
     const buildOutputConfig = {
       version: 3,
-      routes: createBuildOutputApiRoutes(this.config.basePath),
+      routes: [
+        ...createBuildOutputApiRootBlockRoutes(this.config.basePath),
+        ...createBuildOutputApiWorkflowRoutes(this.config.basePath),
+      ],
     };
 
     await writeFile(

@@ -303,9 +303,15 @@ export default {
       if (isVercelDeploy) {
         nitro.options.vercel ??= {};
         nitro.options.vercel.functionRules ??= {};
-        nitro.hooks.hook('compiled', () => {
-          patchNativeVercelWorkflowRoutes(nitro);
-        });
+
+        // With a baseURL, Nitro's generated Build Output routes point the
+        // base-prefixed workflow routes at dangling per-route functions —
+        // repoint them at the catch-all server and block the root routes.
+        if (getNitroBasePath(nitro)) {
+          nitro.hooks.hook('compiled', () => {
+            patchNativeVercelWorkflowRoutes(nitro);
+          });
+        }
 
         const runtime = nitro.options.workflow?.runtime;
         const rules = nitro.options.vercel.functionRules;
@@ -347,7 +353,10 @@ export default {
         }
         addManifestHandler(nitro, manifestPath);
 
-        if (isVercelDeploy) {
+        // With a baseURL, serve the manifest via the static filesystem
+        // handling since Nitro's generated manifest route is not reachable
+        // below the base path.
+        if (isVercelDeploy && getNitroBasePath(nitro)) {
           nitro.hooks.hook('compiled', () => {
             copyPublicManifestToVercelStaticOutput(nitro);
           });
@@ -360,9 +369,15 @@ export default {
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
 const BASE_PATH_VIRTUAL_ID = '#workflow/base-path';
 
+/**
+ * Sets the workflow base path global in the Nitro server via a plugin that
+ * runs before any user code, so runtime URL generation (queue delivery,
+ * webhook URLs) includes the base path.
+ */
 function addWorkflowBasePathPlugin(nitro: Nitro) {
   const basePath = getNitroBasePath(nitro);
   setWorkflowBasePath(basePath);
+  if (!basePath) return;
   nitro.options.plugins ||= [];
   nitro.options.plugins.unshift(BASE_PATH_VIRTUAL_ID);
   nitro.options.virtual[BASE_PATH_VIRTUAL_ID] = /* js */ `
@@ -372,10 +387,8 @@ function addWorkflowBasePathPlugin(nitro: Nitro) {
 }
 
 function addDashboardHandler(nitro: Nitro) {
-  nitro.options.handlers.push({
-    route: '/_workflow',
-    handler: DASHBOARD_VIRTUAL_ID,
-  });
+  const route = '/_workflow';
+  nitro.options.handlers.push({ route, handler: DASHBOARD_VIRTUAL_ID });
 
   // Resolve `@workflow/web/server` relative to this module so consumers don't
   // need a direct dependency on `@workflow/web`. The path is inlined into the

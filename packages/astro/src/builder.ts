@@ -4,30 +4,16 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
-  createBasePathRouteRegexPrefix,
   createBuildOutputApiRootBlockRoutes,
+  createBuildOutputApiWorkflowRoutes,
   NORMALIZE_REQUEST_CODE,
   normalizeWorkflowBasePath,
   VercelBuildOutputAPIBuilder,
-  WORKFLOW_ROUTE_BASE,
 } from '@workflow/builders';
 
-export function createAstroWorkflowRoutes(basePath?: string) {
-  const prefix = createBasePathRouteRegexPrefix(basePath);
-
-  return [
-    {
-      src: `${prefix}\\.well-known/workflow/v1/flow/?$`,
-      dest: `${WORKFLOW_ROUTE_BASE}/flow`,
-    },
-    {
-      src: `${prefix}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
-      dest: `${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
-    },
-  ];
-}
-
-export function createAstroBasePathGuard(basePath: string | undefined): string {
+// Astro serves generated pages both at the configured base and at the root,
+// so generated handlers 404 requests that don't carry the base path.
+function createAstroBasePathGuard(basePath: string | undefined): string {
   if (!basePath) return '';
   return `  if (!new URL(request.url).pathname.startsWith(${JSON.stringify(`${basePath}/`)})) {
     return new Response("Not Found", { status: 404 });
@@ -49,7 +35,8 @@ export class LocalBuilder extends BaseBuilder {
       workingDir: process.cwd(),
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
       sourcemap: options?.sourcemap,
-      basePath: normalizeWorkflowBasePath(options?.basePath),
+      // `undefined` (not '') when unset so generated routes carry no basePath
+      basePath: normalizeWorkflowBasePath(options?.basePath) || undefined,
     });
   }
 
@@ -193,7 +180,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         dirs: ['src/pages', 'src/workflows'],
         runtime: config?.runtime,
         sourcemap: config?.sourcemap,
-        basePath: config?.basePath,
+        basePath: config?.basePath || undefined,
       }),
       buildTarget: 'vercel-build-output-api',
       debugFilePrefix: '_',
@@ -242,7 +229,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     config.routes.splice(
       insertIndex + 1,
       0,
-      ...createAstroWorkflowRoutes(this.config.basePath)
+      ...createBuildOutputApiWorkflowRoutes(this.config.basePath)
     );
 
     // Bundles workflows for vercel

@@ -64,8 +64,9 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
         if (!config.build?.ssr) {
           return;
         }
-        const banner = `${createWorkflowBasePathRuntimeCode(basePath)}
-import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }`;
+        // Base path first (when configured) so the runtime global is set
+        // before any bundled code runs.
+        const banner = `${basePath ? `${createWorkflowBasePathRuntimeCode(basePath)}\n` : ''}import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }`;
         const rollupOptions = config.build.rollupOptions;
         if (rollupOptions.output == null) {
           rollupOptions.output = {};

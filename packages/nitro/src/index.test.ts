@@ -67,7 +67,7 @@ afterEach(() => {
 });
 
 describe('@workflow/nitro virtual handlers', () => {
-  it('registers runtime base path before user Nitro plugins', async () => {
+  it('registers the runtime base path plugin only when a baseURL is set', async () => {
     const nitro = createNitroStub({
       routing: true,
       baseURL: '/app/',
@@ -79,6 +79,10 @@ describe('@workflow/nitro virtual handlers', () => {
     expect(nitro.options.virtual['#workflow/base-path']).toContain(
       'globalThis[Symbol.for(\'@workflow/core/basePath\')] = "/app"'
     );
+
+    const bare = createNitroStub({ routing: true });
+    await nitroModule.setup(bare);
+    expect(bare.options.plugins ?? []).not.toContain('#workflow/base-path');
   });
 
   it('registers the combined flow + webhook virtual handlers for Nitro v2', async () => {
@@ -143,11 +147,9 @@ describe('@workflow/nitro virtual handlers', () => {
     }
   });
 
-  it('registers workflow handlers, dashboard, and manifest as Nitro internal routes', async () => {
-    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
+  it('keeps handler routes internal (unprefixed) when baseURL is set — Nitro applies baseURL when serving', async () => {
     const nitro = createNitroStub({
       routing: true,
-      dev: true,
       baseURL: '/app/',
     });
 
@@ -158,8 +160,6 @@ describe('@workflow/nitro virtual handlers', () => {
     );
     expect(routes).toContain('/.well-known/workflow/v1/flow');
     expect(routes).toContain('/.well-known/workflow/v1/webhook/:token');
-    expect(routes).toContain('/.well-known/workflow/v1/manifest.json');
-    expect(routes).toContain('/_workflow');
     expect(routes).not.toContain('/app/.well-known/workflow/v1/flow');
   });
 });
@@ -326,12 +326,17 @@ describe('@workflow/nitro Vercel functionRules', () => {
   });
 });
 
-describe('@workflow/nitro Vercel public manifest', () => {
-  it('routes native Nitro workflow handlers through the Vercel server function', async () => {
+describe('@workflow/nitro Vercel output patching with baseURL', () => {
+  it('blocks root routes, repoints prefixed routes at the server function, and copies the manifest into static output', async () => {
+    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
+
     const dir = await mkdtemp(join(tmpdir(), 'workflow-nitro-'));
     try {
       const rootDir = join(dir, 'app');
+      const buildDir = join(dir, '.nitro');
+      await mkdir(join(buildDir, 'workflow'), { recursive: true });
       await mkdir(join(rootDir, '.vercel/output'), { recursive: true });
+      await writeFile(join(buildDir, 'workflow/manifest.json'), '{"ok":true}');
       await writeFile(
         join(rootDir, '.vercel/output/config.json'),
         JSON.stringify({
@@ -346,70 +351,9 @@ describe('@workflow/nitro Vercel public manifest', () => {
               src: '/app/.well-known/workflow/v1/webhook/(?<token>[^/]+)',
               dest: '/.well-known/workflow/v1/webhook/[token]',
             },
-            {
-              src: '/app/.well-known/workflow/v1/manifest.json',
-              dest: '/.well-known/workflow/v1/manifest.json',
-            },
             { src: '/(.*)', dest: '/__server' },
           ],
         })
-      );
-
-      const compiledHooks: Array<() => void> = [];
-      const nitro = createNitroStub({
-        routing: true,
-        preset: 'vercel',
-        baseURL: '/app/',
-        rootDir,
-      });
-      nitro.hooks.hook = (name: string, fn: () => void) => {
-        if (name === 'compiled') compiledHooks.push(fn);
-      };
-
-      await nitroModule.setup(nitro);
-      for (const hook of compiledHooks) hook();
-
-      const config = JSON.parse(
-        await readFile(join(rootDir, '.vercel/output/config.json'), 'utf-8')
-      );
-      expect(
-        config.routes
-          .slice(0, 3)
-          .map((route: { status?: number }) => route.status)
-      ).toEqual([404, 404, 404]);
-      expect(config.routes[3]).toMatchObject({
-        handle: 'filesystem',
-      });
-      expect(config.routes[4]).toMatchObject({
-        src: '/app/.well-known/workflow/v1/flow',
-        dest: '/__server',
-      });
-      expect(config.routes[5]).toMatchObject({
-        src: '/app/.well-known/workflow/v1/webhook/(?<token>[^/]+)',
-        dest: '/__server',
-      });
-      expect(config.routes[6]).toMatchObject({
-        src: '/app/.well-known/workflow/v1/manifest.json',
-        dest: '/.well-known/workflow/v1/manifest.json',
-      });
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('copies native Nitro manifests into base-prefixed static output', async () => {
-    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
-
-    const dir = await mkdtemp(join(tmpdir(), 'workflow-nitro-'));
-    try {
-      const rootDir = join(dir, 'app');
-      const buildDir = join(dir, '.nitro');
-      await mkdir(join(buildDir, 'workflow'), { recursive: true });
-      await mkdir(join(rootDir, '.vercel/output'), { recursive: true });
-      await writeFile(join(buildDir, 'workflow/manifest.json'), '{"ok":true}');
-      await writeFile(
-        join(rootDir, '.vercel/output/config.json'),
-        JSON.stringify({ routes: [] })
       );
 
       const compiledHooks: Array<() => void> = [];
@@ -427,6 +371,27 @@ describe('@workflow/nitro Vercel public manifest', () => {
       await nitroModule.setup(nitro);
       for (const hook of compiledHooks) hook();
 
+      const config = JSON.parse(
+        await readFile(join(rootDir, '.vercel/output/config.json'), 'utf-8')
+      );
+      // Root workflow routes blocked ahead of filesystem handling
+      expect(
+        config.routes
+          .slice(0, 3)
+          .map((route: { status?: number }) => route.status)
+      ).toEqual([404, 404, 404]);
+      expect(config.routes[3]).toMatchObject({ handle: 'filesystem' });
+      // Prefixed routes repointed at the catch-all server function
+      expect(config.routes[4]).toMatchObject({
+        src: '/app/.well-known/workflow/v1/flow',
+        dest: '/__server',
+      });
+      expect(config.routes[5]).toMatchObject({
+        src: '/app/.well-known/workflow/v1/webhook/(?<token>[^/]+)',
+        dest: '/__server',
+      });
+
+      // Public manifest copied below the base path in static output
       await expect(
         readFile(
           join(
@@ -479,9 +444,9 @@ describe('@workflow/nitro isNitroV2 detection', () => {
       expect(compiledHooks.length).toBe(1);
       expect(nitro.options.vercel?.functionRules ?? {}).toEqual({});
     } else {
-      // v3 path: functionRules plus a compiled hook to patch Nitro's
-      // generated Vercel routes to the catch-all server function.
-      expect(compiledHooks.length).toBe(1);
+      // v3 path: functionRules wired up, no `compiled` hook
+      // (the Vercel output patch hook is only added with a baseURL)
+      expect(compiledHooks.length).toBe(0);
       expect(
         nitro.options.vercel.functionRules['/.well-known/workflow/v1/flow']
       ).toBeDefined();

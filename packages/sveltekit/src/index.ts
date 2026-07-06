@@ -21,24 +21,26 @@ process.on('beforeExit', () => {
   }
   // V2: Only the combined flow handler needs queue triggers.
   // The separate step route was removed.
+  const config = {
+    maxDuration: 'max',
+    experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+  };
   const flowConfigFiles = [
     '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
-    ...(basePath
-      ? [
-          path.join(
-            '.vercel/output/functions',
-            basePath.slice(1),
-            '.well-known/workflow/v1/flow.func/.vc-config.json'
-          ),
-        ]
-      : []),
   ];
+  // With a base path, the SvelteKit adapter emits the flow function below
+  // the base path instead — patch whichever exists.
+  if (basePath) {
+    flowConfigFiles.push(
+      path.join(
+        '.vercel/output/functions',
+        basePath.slice(1),
+        '.well-known/workflow/v1/flow.func/.vc-config.json'
+      )
+    );
+  }
 
   for (const file of flowConfigFiles) {
-    const config = {
-      maxDuration: 'max',
-      experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
-    };
     const funcDir = path.dirname(file);
     if (!fs.existsSync(funcDir)) {
       continue;

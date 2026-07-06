@@ -55,7 +55,7 @@ export function workflowPlugin(
         updateConfig({
           vite: {
             plugins: [
-              workflowBasePathPlugin(basePath),
+              ...(basePath ? [workflowBasePathPlugin(basePath)] : []),
               workflowTransformPlugin(),
               // Cast needed due to Astro using a different internal Vite version
               workflowHotUpdatePlugin({
@@ -79,25 +79,28 @@ export function workflowPlugin(
   };
 }
 
+/**
+ * Makes the base path visible at runtime: injects the base path global into
+ * SSR build output, and 404s root-relative workflow routes in the dev server
+ * (Astro's dev middleware serves pages at both the base and the root).
+ */
 function workflowBasePathPlugin(basePath: string) {
   return {
     name: 'workflow:astro-base-path',
+    enforce: 'post',
     configResolved(config: any) {
       if (config.command !== 'build' || !config.build?.ssr) return;
       const banner = createWorkflowBasePathRuntimeCode(basePath);
       const rollupOptions = config.build.rollupOptions;
       rollupOptions.output ??= {};
-      const output = rollupOptions.output;
-      const outputs = Array.isArray(output) ? output : [output];
-      for (const o of outputs) {
-        o.banner = prependBanner(o.banner, banner);
+      const outputs = Array.isArray(rollupOptions.output)
+        ? rollupOptions.output
+        : [rollupOptions.output];
+      for (const output of outputs) {
+        output.banner = prependBanner(output.banner, banner);
       }
     },
-    enforce: 'post',
     configureServer(server: any) {
-      setWorkflowBasePath(basePath);
-      if (!basePath) return;
-
       return () => {
         server.middlewares.stack.unshift({
           route: '',
@@ -122,9 +125,6 @@ function workflowBasePathPlugin(basePath: string) {
 }
 
 function prependBanner(existing: any, banner: string) {
-  if (typeof existing === 'string' && existing.includes(banner)) {
-    return existing;
-  }
   if (existing == null) return banner;
   if (typeof existing === 'function') {
     return async (chunk: unknown) => `${banner}\n${await existing(chunk)}`;
