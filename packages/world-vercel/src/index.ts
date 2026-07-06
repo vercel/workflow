@@ -1,5 +1,6 @@
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { createAnalytics } from './analytics.js';
 import { createRunId } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
@@ -9,6 +10,7 @@ import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
+export { createAnalytics } from './analytics.js';
 export { createRunId } from './create-run-id.js';
 export {
   createGetEncryptionKeyForRun,
@@ -43,6 +45,7 @@ export function createVercelWorld(config?: APIConfig): World {
     processExitTriggersQueueRedelivery: true,
     ...createQueue(config),
     ...createStorage(config),
+    analytics: createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(

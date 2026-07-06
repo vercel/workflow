@@ -1,3 +1,4 @@
+import type { Analytics } from './analytics.js';
 import type {
   AttributeChange,
   ExperimentalSetAttributesResult,
@@ -274,6 +275,16 @@ export interface Storage {
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
+  /**
+   * Optional analytics read namespace for observability surfaces.
+   *
+   * These APIs return metadata-only rows intended for UI/CLI listing and
+   * trace views. Payload-bearing fields remain on the canonical runtime
+   * storage APIs (`runs`, `steps`, `events`, `hooks`) and their RemoteRef
+   * resolution path.
+   */
+  analytics?: Analytics;
+
   /**
    * The Workflow protocol spec version this World implements.
    *
