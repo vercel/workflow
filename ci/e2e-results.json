@@ -1,6 +1,6 @@
 {
-  "lastUpdated": "2026-07-06T18:31:54.764Z",
-  "commit": "eb7f60c7e950b21c8f927b538dc64ff877ce7bb9",
+  "lastUpdated": "2026-07-06T19:25:57.445Z",
+  "commit": "cc7f076528ca8ba6ee824628b82bee64fd5672a8",
   "branch": "main",
   "type": "e2e",
   "worlds": {
@@ -33,13 +33,13 @@
         },
         "nextjs-turbopack": {
           "total": 760,
-          "passed": 721,
-          "failed": 1
+          "passed": 722,
+          "failed": 0
         },
         "nextjs-webpack": {
           "total": 608,
-          "passed": 570,
-          "failed": 0
+          "passed": 569,
+          "failed": 1
         },
         "nitro": {
           "total": 304,
