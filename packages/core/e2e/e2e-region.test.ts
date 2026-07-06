@@ -1,9 +1,8 @@
 import { decode, isTagged } from '@workflow/world-vercel/run-id';
 import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
-import type { Run } from '../src/runtime';
-import { getWorld, start as rawStart } from '../src/runtime';
+import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { getRun, getWorld } from '../src/runtime';
 import {
-  getWorkflowMetadata,
   isLocalDeployment,
   setupRunTracking,
   setupWorld,
@@ -18,16 +17,22 @@ import {
  * `@workflow/world-vercel` region routing:
  *
  *   1. `start(..., { region })` mints a region-TAGGED run ID for the
- *      requested region (vercel/workflow#1981).
- *   2. The run EXECUTES in that region: the flow message is routed to the
- *      region's queue and delivered to that region's function instance,
- *      so the workflow and its steps observe `VERCEL_REGION` equal to the
- *      requested region. This requires the workbench app to be deployed
- *      multi-region (workbench/nextjs-turbopack vercel.json pins
- *      iad1+sfo1+fra1).
+ *      requested region.
+ *   2. The run EXECUTES in that region: the initial flow message is
+ *      published to the region's queue and delivered to that region's
+ *      function instance, so the workflow and its steps observe
+ *      `VERCEL_REGION` equal to the requested region. This requires the
+ *      workbench app to be deployed multi-region
+ *      (workbench/nextjs-turbopack vercel.json pins iad1+sfo1+fra1).
  *   3. The run completes and its server-side status is `completed` —
  *      i.e. the run's data followed the same region resolution end to
  *      end (guarding against cross-region misrouting regressions).
+ *
+ * Runs are started via the workbench's /api/e2e-region-start route so the
+ * queue publish happens IN-FUNCTION (direct regional queue routing — the
+ * path production traffic takes). Starting from this external test
+ * process would use the api.vercel.com token proxy, which does not (yet)
+ * route queue sends by region; see the route's doc comment.
  *
  * Runs as its own CI job (see e2e-vercel-multi-region in tests.yml)
  * against the nextjs-turbopack workbench deployment only.
@@ -41,26 +46,38 @@ if (!deploymentUrl) {
 /** Regions the workbench app is deployed to (workbench vercel.json). */
 const REGIONS = ['iad1', 'sfo1', 'fra1'] as const;
 
-/** Tracked wrapper around start() for run diagnostics on failure. */
-async function start<T>(
-  ...args: Parameters<typeof rawStart<T>>
-): Promise<Run<T>> {
-  const run = await rawStart<T>(...args);
-  trackRun(run);
-  return run;
-}
-
-const regionProbe = () =>
-  getWorkflowMetadata(
-    deploymentUrl,
-    'workflows/99_e2e.ts',
-    'regionProbeWorkflow'
-  );
-
 interface RegionProbeResult {
   label: string;
   workflowRegion: string | null;
   stepRegion: string | null;
+}
+
+/**
+ * Trigger the region probe workflow from inside the deployment and return
+ * a tracked Run handle for it.
+ */
+async function startRegionProbe(region: string, label: string) {
+  const url = new URL('/api/e2e-region-start', deploymentUrl);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(await getTrustedSourcesHeaders()),
+    },
+    body: JSON.stringify({ region, label }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Failed to start region probe: ${res.url} ${res.status}: ${await res.text()}`
+    );
+  }
+  const result = (await res.json()) as { runId: string };
+  const run = getRun<RegionProbeResult>(result.runId);
+  trackRun(run, {
+    workflowFile: 'workflows/99_e2e.ts',
+    workflowFn: 'regionProbeWorkflow',
+  });
+  return run;
 }
 
 describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
@@ -75,11 +92,7 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
   test.each(
     REGIONS
   )('start({ region: %s }) mints a tagged run ID and executes there', async (region) => {
-    const run = await start<RegionProbeResult>(
-      await regionProbe(),
-      [`e2e-${region}`],
-      { region }
-    );
+    const run = await startRegionProbe(region, `e2e-${region}`);
 
     // 1. The run ID is region-tagged for the requested region.
     expect(run.runId).toMatch(/^wrun_/);
@@ -101,7 +114,7 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
 
     // 3. The server agrees the run completed (data reachable via the
     // same tag-derived region routing the writes used).
-    const world = getWorld();
+    const world = await getWorld();
     const serverRun = await world.runs.get(run.runId);
     expect(serverRun.status).toBe('completed');
   });
@@ -109,13 +122,12 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
   test('concurrent starts across all regions stay isolated', async () => {
     // Concurrent traffic touching multiple regions in one process must
     // not cross-wire run placement or execution.
-    const probe = await regionProbe();
     const runs = await Promise.all(
       REGIONS.flatMap((region) =>
         Array.from({ length: 3 }, (_, i) =>
-          start<RegionProbeResult>(probe, [`e2e-concurrent-${region}-${i}`], {
-            region,
-          }).then((run) => ({ region, i, run }))
+          startRegionProbe(region, `e2e-concurrent-${region}-${i}`).then(
+            (run) => ({ region, i, run })
+          )
         )
       )
     );
