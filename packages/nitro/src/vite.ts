@@ -1,4 +1,8 @@
-import { createBuildQueue, joinWorkflowBasePath } from '@workflow/builders';
+import {
+  createBuildQueue,
+  joinWorkflowBasePath,
+  WORKFLOW_ROUTE_BASE,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
@@ -12,7 +16,7 @@ import nitroModule from './index.js';
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
   let workflowBuildDir: string;
-  const workflowRootRoutePrefix = '/.well-known/workflow/v1';
+  const workflowRootRoutePrefix = WORKFLOW_ROUTE_BASE;
   let workflowRoutePrefix = workflowRootRoutePrefix;
   const enqueue = createBuildQueue();
 
@@ -41,10 +45,10 @@ export function workflow(options?: ModuleOptions): Plugin[] {
     configureServer(server) {
       // Add middleware to intercept workflow routes before Nitro/Vite.
       server.middlewares.use((req, res, next) => {
-        const url = req.url ?? '';
+        const [pathname] = (req.url ?? '').split(/[?#]/, 1);
         if (
           workflowRoutePrefix !== workflowRootRoutePrefix &&
-          isWorkflowRoute(url, workflowRootRoutePrefix)
+          isWorkflowRoute(pathname, workflowRootRoutePrefix)
         ) {
           res.writeHead(404, { 'Content-Length': '0' });
           res.end();
@@ -52,7 +56,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         }
 
         // Only handle workflow routes
-        if (!isWorkflowRoute(url, workflowRoutePrefix)) {
+        if (!isWorkflowRoute(pathname, workflowRoutePrefix)) {
           return next();
         }
 
@@ -110,7 +114,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
   ];
 }
 
-function isWorkflowRoute(url: string, routePrefix: string): boolean {
-  const [pathname] = url.split(/[?#]/, 1);
+function isWorkflowRoute(pathname: string, routePrefix: string): boolean {
   return pathname === routePrefix || pathname.startsWith(`${routePrefix}/`);
 }

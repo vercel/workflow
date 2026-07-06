@@ -1,5 +1,6 @@
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { WORKFLOW_ROUTE_BASE } from '@workflow/utils';
 import { BaseBuilder } from './base-builder.js';
 import {
   createBasePathRouteRegexPrefix,
@@ -14,11 +15,11 @@ export function createBuildOutputApiRoutes(basePath?: string) {
   return [
     {
       src: `${prefix}\\.well-known\\/workflow\\/v1\\/flow\\/?$`,
-      dest: '/.well-known/workflow/v1/flow',
+      dest: `${WORKFLOW_ROUTE_BASE}/flow`,
     },
     {
       src: `${prefix}\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+?)\\/?$`,
-      dest: '/.well-known/workflow/v1/webhook/[token]',
+      dest: `${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
     },
   ];
 }

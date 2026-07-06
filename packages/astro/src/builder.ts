@@ -8,6 +8,7 @@ import {
   NORMALIZE_REQUEST_CODE,
   normalizeWorkflowBasePath,
   VercelBuildOutputAPIBuilder,
+  WORKFLOW_ROUTE_BASE,
 } from '@workflow/builders';
 
 export function createAstroWorkflowRoutes(basePath?: string) {
@@ -16,11 +17,11 @@ export function createAstroWorkflowRoutes(basePath?: string) {
   return [
     {
       src: `${prefix}\\.well-known/workflow/v1/flow/?$`,
-      dest: '/.well-known/workflow/v1/flow',
+      dest: `${WORKFLOW_ROUTE_BASE}/flow`,
     },
     {
       src: `${prefix}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
-      dest: '/.well-known/workflow/v1/webhook/[token]',
+      dest: `${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
     },
   ];
 }

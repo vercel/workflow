@@ -23,10 +23,6 @@ const SVELTEKIT_VIRTUAL_MODULES = [
   '$app/*', // All $app subpaths
 ];
 
-export function getSvelteKitStaticManifestDir(workingDir: string): string {
-  return join(workingDir, 'static/.well-known/workflow/v1');
-}
-
 export function createSvelteKitFlowRouteCode(source: string): string {
   return source.replace(
     /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
@@ -113,8 +109,9 @@ export class SvelteKitBuilder extends BaseBuilder {
     // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
     // SvelteKit serves files from static/ at the root URL.
     if (this.shouldExposePublicManifest && manifestJson) {
-      const staticManifestDir = getSvelteKitStaticManifestDir(
-        this.config.workingDir
+      const staticManifestDir = join(
+        this.config.workingDir,
+        'static/.well-known/workflow/v1'
       );
       await mkdir(staticManifestDir, { recursive: true });
       if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {

@@ -2558,13 +2558,13 @@ describe('e2e', () => {
         { method: 'OPTIONS', status: 204 },
       ] as const;
 
-      for (const { method, status } of healthMethods) {
-        const res = await fetch(healthUrl, {
-          method,
-          headers: await getTrustedSourcesHeaders(),
-        });
-        expect(res.status).toBe(status);
-      }
+      const headers = await getTrustedSourcesHeaders();
+      await Promise.all(
+        healthMethods.map(async ({ method, status }) => {
+          const res = await fetch(healthUrl, { method, headers });
+          expect(res.status).toBe(status);
+        })
+      );
 
       const rootDeploymentUrl = process.env.DEPLOYMENT_URL;
       assert(
@@ -2578,7 +2578,7 @@ describe('e2e', () => {
         const rootRes = await fetch(rootHealthUrl, {
           method: 'GET',
           redirect: 'manual',
-          headers: await getTrustedSourcesHeaders(),
+          headers,
         });
         expect(rootRes.status).not.toBe(200);
       }

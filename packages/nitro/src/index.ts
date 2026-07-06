@@ -1,7 +1,12 @@
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  getBuildOutputStaticManifestDir,
+  joinWorkflowBasePath,
+  WORKFLOW_QUEUE_TRIGGER,
+  WORKFLOW_ROUTE_BASE,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { dirname, join } from 'pathe';
@@ -267,9 +272,9 @@ export default {
         addDashboardHandler(nitro);
       }
 
-      const webhookPath = '/.well-known/workflow/v1/webhook/:token';
-      const flowPath = '/.well-known/workflow/v1/flow';
-      const manifestPath = '/.well-known/workflow/v1/manifest.json';
+      const webhookPath = `${WORKFLOW_ROUTE_BASE}/webhook/:token`;
+      const flowPath = `${WORKFLOW_ROUTE_BASE}/flow`;
+      const manifestPath = `${WORKFLOW_ROUTE_BASE}/manifest.json`;
 
       addVirtualHandler(nitro, webhookPath, 'workflow/webhook.mjs');
 
@@ -628,11 +633,10 @@ export default fromWebHandler(() => new Response("Manifest not found", { status:
 
 function copyPublicManifestToVercelStaticOutput(nitro: Nitro) {
   const source = join(nitro.options.buildDir, 'workflow/manifest.json');
+  const outputDir = join(nitro.options.rootDir, '.vercel/output');
   const destination = join(
-    nitro.options.rootDir,
-    '.vercel/output/static',
-    getNitroBasePath(nitro).slice(1),
-    '.well-known/workflow/v1/manifest.json'
+    getBuildOutputStaticManifestDir(outputDir, getNitroBasePath(nitro)),
+    'manifest.json'
   );
 
   mkdirSync(dirname(destination), { recursive: true });
@@ -644,7 +648,10 @@ function patchNativeVercelWorkflowRoutes(nitro: Nitro) {
   const config = JSON.parse(readFileSync(configPath, 'utf-8')) as {
     routes: Array<{ src?: string; dest?: string }>;
   };
-  const workflowPrefix = `${getNitroBasePath(nitro)}/.well-known/workflow/v1`;
+  const workflowPrefix = joinWorkflowBasePath(
+    getNitroBasePath(nitro),
+    WORKFLOW_ROUTE_BASE
+  );
 
   for (const route of config.routes) {
     if (

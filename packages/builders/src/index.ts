@@ -1,3 +1,4 @@
+export { WORKFLOW_ROUTE_BASE } from '@workflow/utils';
 export type { WorkflowManifest } from './apply-swc-transform.js';
 export { applySwcTransform } from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';
@@ -66,5 +67,8 @@ export type {
   WorkflowConfig,
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';
-export { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
+export {
+  getBuildOutputStaticManifestDir,
+  VercelBuildOutputAPIBuilder,
+} from './vercel-build-output-api.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';

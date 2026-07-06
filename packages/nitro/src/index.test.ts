@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 
@@ -61,6 +61,10 @@ function createNitroStub({
     },
   } as any;
 }
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('@workflow/nitro virtual handlers', () => {
   it('registers the combined flow + webhook virtual handlers for Nitro v2', async () => {
@@ -126,29 +130,23 @@ describe('@workflow/nitro virtual handlers', () => {
   });
 
   it('registers workflow handlers, dashboard, and manifest as Nitro internal routes', async () => {
-    const previous = process.env.WORKFLOW_PUBLIC_MANIFEST;
-    process.env.WORKFLOW_PUBLIC_MANIFEST = '1';
-    try {
-      const nitro = createNitroStub({
-        routing: true,
-        dev: true,
-        baseURL: '/app/',
-      });
+    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
+    const nitro = createNitroStub({
+      routing: true,
+      dev: true,
+      baseURL: '/app/',
+    });
 
-      await nitroModule.setup(nitro);
+    await nitroModule.setup(nitro);
 
-      const routes = nitro.options.handlers.map(
-        (handler: { route: string }) => handler.route
-      );
-      expect(routes).toContain('/.well-known/workflow/v1/flow');
-      expect(routes).toContain('/.well-known/workflow/v1/webhook/:token');
-      expect(routes).toContain('/.well-known/workflow/v1/manifest.json');
-      expect(routes).toContain('/_workflow');
-      expect(routes).not.toContain('/app/.well-known/workflow/v1/flow');
-    } finally {
-      if (previous === undefined) delete process.env.WORKFLOW_PUBLIC_MANIFEST;
-      else process.env.WORKFLOW_PUBLIC_MANIFEST = previous;
-    }
+    const routes = nitro.options.handlers.map(
+      (handler: { route: string }) => handler.route
+    );
+    expect(routes).toContain('/.well-known/workflow/v1/flow');
+    expect(routes).toContain('/.well-known/workflow/v1/webhook/:token');
+    expect(routes).toContain('/.well-known/workflow/v1/manifest.json');
+    expect(routes).toContain('/_workflow');
+    expect(routes).not.toContain('/app/.well-known/workflow/v1/flow');
   });
 });
 
@@ -232,29 +230,23 @@ describe('@workflow/nitro Vercel functionRules', () => {
   });
 
   it('propagates workflow.runtime to flow + webhook (and manifest when public) on Nitro v3 Vercel', async () => {
-    const previous = process.env.WORKFLOW_PUBLIC_MANIFEST;
-    process.env.WORKFLOW_PUBLIC_MANIFEST = '1';
-    try {
-      const nitro = createNitroStub({
-        routing: true,
-        preset: 'vercel',
-        workflow: { runtime: 'nodejs22.x' },
-      });
+    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
+    const nitro = createNitroStub({
+      routing: true,
+      preset: 'vercel',
+      workflow: { runtime: 'nodejs22.x' },
+    });
 
-      await nitroModule.setup(nitro);
+    await nitroModule.setup(nitro);
 
-      const rules = nitro.options.vercel.functionRules;
-      expect(rules['/.well-known/workflow/v1/flow'].runtime).toBe('nodejs22.x');
-      expect(rules['/.well-known/workflow/v1/webhook/:token'].runtime).toBe(
-        'nodejs22.x'
-      );
-      expect(rules['/.well-known/workflow/v1/manifest.json'].runtime).toBe(
-        'nodejs22.x'
-      );
-    } finally {
-      if (previous === undefined) delete process.env.WORKFLOW_PUBLIC_MANIFEST;
-      else process.env.WORKFLOW_PUBLIC_MANIFEST = previous;
-    }
+    const rules = nitro.options.vercel.functionRules;
+    expect(rules['/.well-known/workflow/v1/flow'].runtime).toBe('nodejs22.x');
+    expect(rules['/.well-known/workflow/v1/webhook/:token'].runtime).toBe(
+      'nodejs22.x'
+    );
+    expect(rules['/.well-known/workflow/v1/manifest.json'].runtime).toBe(
+      'nodejs22.x'
+    );
   });
 
   it('omits the webhook + manifest functionRule entries when workflow.runtime is unset', async () => {
@@ -384,8 +376,7 @@ describe('@workflow/nitro Vercel public manifest', () => {
   });
 
   it('copies native Nitro manifests into base-prefixed static output', async () => {
-    const previous = process.env.WORKFLOW_PUBLIC_MANIFEST;
-    process.env.WORKFLOW_PUBLIC_MANIFEST = '1';
+    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
 
     const dir = await mkdtemp(join(tmpdir(), 'workflow-nitro-'));
     try {
@@ -424,8 +415,6 @@ describe('@workflow/nitro Vercel public manifest', () => {
         )
       ).resolves.toBe('{"ok":true}');
     } finally {
-      if (previous === undefined) delete process.env.WORKFLOW_PUBLIC_MANIFEST;
-      else process.env.WORKFLOW_PUBLIC_MANIFEST = previous;
       await rm(dir, { recursive: true, force: true });
     }
   });

@@ -1,6 +1,7 @@
 import {
   createBuildQueue,
   normalizeWorkflowBasePath,
+  WORKFLOW_ROUTE_BASE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
@@ -88,9 +89,9 @@ function workflowBasePathDevGuard(basePath: string) {
           handle: (req: any, res: any, next: () => void) => {
             const path = req.url.split(/[?#]/, 1)[0];
             if (
-              path === '/.well-known/workflow/v1/flow' ||
-              path === '/.well-known/workflow/v1/manifest.json' ||
-              path.startsWith('/.well-known/workflow/v1/webhook/')
+              path === `${WORKFLOW_ROUTE_BASE}/flow` ||
+              path === `${WORKFLOW_ROUTE_BASE}/manifest.json` ||
+              path.startsWith(`${WORKFLOW_ROUTE_BASE}/webhook/`)
             ) {
               res.statusCode = 404;
               res.end('Not Found');
