@@ -1092,6 +1092,11 @@ function createSocketSink(
       // Wait until every frame is acked (durable) before marking the stream
       // done — X-Stream-Done must never race in-flight frames.
       await socketWriter.close();
+      // An empty-stream close never opens a channel, so socketWriter.close()
+      // skips ensureReady - but this close can itself be the first write to a
+      // brand-new stream, so gate X-Stream-Done on the run-ready barrier too
+      // (a no-op once a channel already awaited it in turbo optimistic start).
+      await ensureRunReady();
       await world.streams.close(runId, name);
     },
     abort: (reason) => {
