@@ -70,12 +70,13 @@ process.on('beforeExit', () => {
     // workflow queue triggers after the dedicated function is copied out.
     stripWorkflowQueueTriggers(path.join(sourceFuncDir, '.vc-config.json'));
 
-    // With a base path, Vercel queue triggers invoke this function with the
-    // root-relative route path, which the SvelteKit server (mounted below
-    // `kit.paths.base`) responds to with a 404 — so queue deliveries would
-    // retry forever and runs would stay pending. Wrap the handler to rewrite
-    // queue deliveries to the base-prefixed path. Plain HTTP requests are
-    // left untouched, so root-relative URLs keep 404ing.
+    // Vercel's queue infrastructure doesn't know about the framework base
+    // path: triggers invoke this function at its function-directory path
+    // (the root-relative route id), while the SvelteKit server inside is
+    // mounted below `kit.paths.base` and 404s that path — so deliveries
+    // would retry forever and runs would stay pending. Wrap the handler to
+    // move queue deliveries onto the base-prefixed route. Plain HTTP
+    // requests are left untouched, so root-relative URLs keep 404ing.
     if (basePath) {
       const vcConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
       const handler = vcConfig.handler as string;
@@ -85,7 +86,7 @@ process.on('beforeExit', () => {
       );
       fs.writeFileSync(
         path.join(funcDir, wrapperHandler),
-        createQueueBasePathEntryCode(path.basename(handler), basePath)
+        createQueueDeliveryEntryCode(path.basename(handler), basePath)
       );
       fs.writeFileSync(
         file,
@@ -95,7 +96,7 @@ process.on('beforeExit', () => {
   }
 });
 
-function createQueueBasePathEntryCode(
+function createQueueDeliveryEntryCode(
   handlerFile: string,
   basePath: string
 ): string {

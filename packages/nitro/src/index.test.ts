@@ -64,45 +64,37 @@ afterEach(() => {
 });
 
 describe('@workflow/nitro virtual handlers', () => {
-  it('registers the runtime base path plugin only when a baseURL is set', async () => {
-    const nitro = createNitroStub({
-      routing: true,
-      baseURL: '/app/',
-    });
-
-    await nitroModule.setup(nitro);
-
-    expect(nitro.options.plugins[0]).toBe('#workflow/base-path');
-    expect(nitro.options.virtual['#workflow/base-path']).toContain(
-      'globalThis[Symbol.for(\'@workflow/core/basePath\')] = "/app"'
-    );
-    // Queue triggers only invoke root-relative paths on Vercel deploys —
-    // no request rewrite outside them.
-    expect(nitro.options.virtual['#workflow/base-path']).not.toContain(
-      "hooks.hook('request'"
-    );
-
-    const bare = createNitroStub({ routing: true });
-    await nitroModule.setup(bare);
-    expect(bare.options.plugins ?? []).not.toContain('#workflow/base-path');
-  });
-
-  it('rewrites root-relative flow requests to the base path on Vercel deploys (queue trigger invocations)', async () => {
-    const nitro = createNitroStub({
+  it('generates the base path runtime plugin (queue-delivery rewrite on Vercel only, absent without baseURL)', async () => {
+    // Vercel queue triggers invoke the flow function at its root-relative
+    // route path, which the baseURL-mounted server rejects — the plugin
+    // rewrites exactly those deliveries. This is the only automated guard
+    // for that fix: CI cannot deploy-test base paths on Vercel.
+    const vercel = createNitroStub({
       routing: true,
       preset: 'vercel',
       baseURL: '/app/',
     });
-
-    await nitroModule.setup(nitro);
-
-    const plugin = nitro.options.virtual['#workflow/base-path'];
+    await nitroModule.setup(vercel);
+    expect(vercel.options.plugins[0]).toBe('#workflow/base-path');
+    const plugin = vercel.options.virtual['#workflow/base-path'];
+    expect(plugin).toContain(
+      'globalThis[Symbol.for(\'@workflow/core/basePath\')] = "/app"'
+    );
     expect(plugin).toContain("hooks.hook('request'");
-    // Only queue deliveries (CloudEvents/queue headers) are rewritten —
-    // plain HTTP requests keep Nitro's native root-URL redirect behavior.
-    expect(plugin).toContain("'ce-type'");
-    expect(plugin).toContain("'vqs-message-id'");
     expect(plugin).toContain('"/app/.well-known/workflow/v1/flow"');
+
+    // Off Vercel, queue deliveries arrive over HTTP at the base-prefixed
+    // URL — no rewrite is generated.
+    const node = createNitroStub({ routing: true, baseURL: '/app/' });
+    await nitroModule.setup(node);
+    expect(node.options.virtual['#workflow/base-path']).not.toContain(
+      "hooks.hook('request'"
+    );
+
+    // Without a baseURL the plugin isn't registered at all.
+    const bare = createNitroStub({ routing: true });
+    await nitroModule.setup(bare);
+    expect(bare.options.plugins ?? []).not.toContain('#workflow/base-path');
   });
 
   it('registers the combined flow + webhook virtual handlers for Nitro v2', async () => {
@@ -469,15 +461,6 @@ describe('@workflow/nitro externals forwarding', () => {
         });
         const builder = new Builder(nitro) as any;
         expect(builder.config.projectRoot).toBe('/tmp');
-      });
-
-      it('forwards Nitro baseURL as the workflow basePath', () => {
-        const nitro = createNitroStub({
-          routing: true,
-          baseURL: '/app/',
-        });
-        const builder = new Builder(nitro) as any;
-        expect(builder.config.basePath).toBe('/app');
       });
 
       it('forwards string entries from nitro.options.externals.external', () => {

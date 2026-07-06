@@ -70,7 +70,6 @@ export type {
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export {
   createBuildOutputApiWorkflowRoutes,
-  getBuildOutputStaticManifestDir,
   VercelBuildOutputAPIBuilder,
 } from './vercel-build-output-api.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
