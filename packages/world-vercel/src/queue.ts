@@ -212,7 +212,19 @@ export function createQueue(config?: APIConfig): Queue {
       resolveBaseUrl: () => new URL(`${baseUrl}/queues-proxy`),
       token: config?.token,
     }),
-    headers: Object.fromEntries(headers.entries()),
+    headers: {
+      ...Object.fromEntries(headers.entries()),
+      // When sending through the api.vercel.com proxy, the fixed
+      // `resolveBaseUrl` above replaces the queue SDK's own
+      // region -> `<region>.vercel-queue.com` base-URL resolution, so
+      // the region the client was constructed with must travel as a
+      // header instead: the proxy forwards the send to that region's
+      // VQS dataplane host when `x-vercel-queue-region` is present
+      // (vercel/api#79056). This gives token/proxy clients parity with
+      // the direct in-function path, where the SDK itself dials the
+      // regional host.
+      ...(usingProxy && { 'x-vercel-queue-region': region }),
+    },
   };
 
   const queue: QueueFunction = async (
