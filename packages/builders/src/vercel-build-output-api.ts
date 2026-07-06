@@ -338,12 +338,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
    * store-relative path (Prisma generated into a monorepo store) cannot
    * find; those setups need the package externalized instead of bundled.
    *
-   * Known limitation: lookups relative to __dirname/import.meta.url inside
-   * bundled code resolve against the function root (esbuild rewrites them),
-   * not the copied node_modules path. Packages that also probe
-   * process.cwd()-based locations — like Prisma's cwd-relative engine
-   * probe — work; pure __dirname lookups from bundled dependencies are not
-   * remapped.
+   * Known limitation: __dirname-relative references that escape the
+   * function root (e.g. geoip-lite's join(__dirname, '../data')) resolve
+   * outside /var/task at runtime and cannot be satisfied by copying.
    */
   private async copyTracedRuntimeAssets(
     functionDir: string,
