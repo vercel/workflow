@@ -12,6 +12,7 @@ import {
   type LocalWorld,
 } from '@workflow/world-local';
 import type { Plugin } from 'vite';
+import type { VitestPluginContext } from 'vitest/node';
 import {
   resolveWorkflowTestOptions,
   WORKFLOW_VITEST_OPTIONS_KEY,
@@ -62,7 +63,7 @@ class VitestBuilder extends BaseBuilder {
 export interface WorkflowTestOptions {
   /**
    * The working directory of the project (where workflows/ lives).
-   * Defaults to process.cwd().
+   * Defaults to the resolved Vitest project root.
    */
   cwd?: string;
   /**
@@ -99,27 +100,33 @@ export interface WorkflowTestOptions {
  * ```
  */
 export function workflow(options?: WorkflowTestOptions): Plugin[] {
-  const resolvedOptions = resolveWorkflowTestOptions(options);
-  const { outDir } = resolvedOptions;
+  const transformExcludes: string[] = [];
   const dir = fileURLToPath(new URL('.', import.meta.url));
+  const vitestPlugin = {
+    name: 'workflow:vitest',
+    config() {
+      return {
+        test: {
+          globalSetup: [join(dir, 'global-setup.js')],
+          setupFiles: [join(dir, 'setup-file.js')],
+        },
+      } as Record<string, unknown>;
+    },
+    configureVitest({ project }: VitestPluginContext) {
+      const resolvedOptions = resolveWorkflowTestOptions(
+        options,
+        project.config.root
+      );
+      transformExcludes.push(`${resolvedOptions.outDir}/`);
+      project.provide(WORKFLOW_VITEST_OPTIONS_KEY, resolvedOptions);
+    },
+  };
+
   return [
     workflowTransformPlugin({
-      exclude: [outDir + '/'],
+      exclude: transformExcludes,
     }),
-    {
-      name: 'workflow:vitest',
-      config() {
-        return {
-          test: {
-            globalSetup: [join(dir, 'global-setup.js')],
-            setupFiles: [join(dir, 'setup-file.js')],
-            provide: {
-              [WORKFLOW_VITEST_OPTIONS_KEY]: resolvedOptions,
-            },
-          },
-        } as Record<string, unknown>;
-      },
-    },
+    vitestPlugin,
   ];
 }
 
@@ -131,7 +138,10 @@ export function workflow(options?: WorkflowTestOptions): Plugin[] {
 export async function buildWorkflowTests(
   options?: WorkflowTestOptions
 ): Promise<void> {
-  const { cwd, dataDir, outDir } = resolveWorkflowTestOptions(options);
+  const { cwd, dataDir, outDir } = resolveWorkflowTestOptions(
+    options,
+    process.cwd()
+  );
   const builder = new VitestBuilder(cwd, outDir);
   await builder.build();
   // Pre-create the shared data directory so workers don't race on mkdir
@@ -157,7 +167,10 @@ export async function setupWorkflowTests(
     world = undefined;
   }
 
-  const { dataDir, outDir } = resolveWorkflowTestOptions(options);
+  const { dataDir, outDir } = resolveWorkflowTestOptions(
+    options,
+    process.cwd()
+  );
 
   // Lazy-load bundles on first dispatch instead of eagerly at setup time.
   // Eager native import() during setupFiles loads step dependencies into

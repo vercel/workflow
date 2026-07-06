@@ -5,6 +5,10 @@ import { workflow } from 'workflow/vite';
 
 // E2E-only: mount the app below a base path (WORKFLOW_E2E_BASE_PATH=/app)
 const e2eBasePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(/\/+$/, '');
+const nitroPlugins =
+  process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
+    ? ['plugins/start-pg-world.ts']
+    : [];
 
 export default defineConfig({
   plugins: [nitro(), workflow()],
@@ -22,6 +26,6 @@ export default defineConfig({
   nitro: {
     baseURL: e2eBasePath ? `${e2eBasePath}/` : undefined,
     serverDir: './',
-    plugins: ['plugins/start-pg-world.ts'],
+    plugins: nitroPlugins,
   },
 });

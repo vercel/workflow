@@ -172,6 +172,21 @@ describe('withWorkflow builder config', () => {
     });
   });
 
+  it('passes Next basePath to the workflow builder', async () => {
+    const config = withWorkflow({
+      basePath: '/v2',
+    });
+
+    await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      basePath: '/v2',
+    });
+  });
+
   it('externalizes the built-in Vercel world while preserving user externals', async () => {
     const config = withWorkflow({
       serverExternalPackages: ['@node-rs/xxhash'],
@@ -190,6 +205,75 @@ describe('withWorkflow builder config', () => {
       '@napi-rs/keyring',
     ]);
     expect(nextConfig.outputFileTracingIncludes).toBeUndefined();
+  });
+
+  it('normalizes and aliases the workflow target world for Next bundlers', async () => {
+    process.env.WORKFLOW_TARGET_WORLD = 'vercel';
+    const userWebpack = vi.fn((webpackConfig: any) => {
+      webpackConfig.resolve = {
+        alias: {
+          existing: 'existing-target',
+        },
+      };
+      return webpackConfig;
+    });
+    const config = withWorkflow({
+      transpilePackages: ['user-package'],
+      webpack: userWebpack,
+      turbopack: {
+        resolveAlias: {
+          existing: 'existing-target',
+        },
+      } as any,
+    });
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+    const webpackConfig = nextConfig.webpack?.(
+      {
+        externals: [],
+        module: {
+          rules: [],
+        },
+      },
+      {} as any
+    );
+
+    expect(process.env.WORKFLOW_TARGET_WORLD).toBe('@workflow/world-vercel');
+    expect(nextConfig.env?.WORKFLOW_TARGET_WORLD).toBe(
+      '@workflow/world-vercel'
+    );
+    expect(nextConfig.transpilePackages).toEqual([
+      'user-package',
+      'workflow',
+      '@workflow/core',
+      '@workflow/serde',
+      '@workflow/errors',
+      '@workflow/utils',
+      '@workflow/ai',
+    ]);
+    expect((nextConfig.turbopack?.resolveAlias as any)?.existing).toBe(
+      'existing-target'
+    );
+    expect(
+      (nextConfig.turbopack?.resolveAlias as any)?.[
+        '@workflow/core/runtime/world-target'
+      ]
+    ).toBe('@workflow/world-vercel');
+    expect(webpackConfig?.resolve?.alias).toMatchObject({
+      existing: 'existing-target',
+    });
+    expect(
+      webpackConfig?.resolve?.alias?.['@workflow/core/runtime/world-target']
+    ).toMatch(/packages[\\/]world-vercel[\\/]dist[\\/]index\.js$/);
+  });
+
+  it('defaults local builds to the local world package and data directory', () => {
+    withWorkflow({});
+
+    expect(process.env.WORKFLOW_TARGET_WORLD).toBe('@workflow/world-local');
+    expect(process.env.WORKFLOW_LOCAL_DATA_DIR).toBe('.next/workflow-data');
   });
 
   it('preserves user webpack externals without adding Vercel world dependency externals', async () => {

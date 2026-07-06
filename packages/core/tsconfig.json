@@ -2,6 +2,9 @@
   "extends": "@workflow/tsconfig/base.json",
   "compilerOptions": {
     "outDir": "dist",
+    "paths": {
+      "@workflow/core/runtime/world-target": ["./src/runtime/world-target.ts"]
+    },
     "rootDir": "./src"
   },
   "include": ["src"],

@@ -14,6 +14,8 @@ export {
   type DecoratorOptionsWithConfigPath,
   getDecoratorOptionsForDirectory,
   getDecoratorOptionsForDirectoryWithConfigPath,
+  resolveConfiguredProjectRoot,
+  resolveProjectRoot,
 } from './config-helpers.js';
 export {
   createWorkflowEntrypointOptionsCode,
@@ -31,7 +33,12 @@ export {
   type ModuleSpecifierResult,
   resolveModuleSpecifier,
 } from './module-specifier.js';
+export {
+  WORKFLOW_NODE_COMPAT_BANNER,
+  WORKFLOW_NODE_FILENAME_BANNER,
+} from './node-compat-banner.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
+export { WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS } from './optional-pg-native-alias.js';
 export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,
@@ -72,3 +79,14 @@ export {
   VercelBuildOutputAPIBuilder,
 } from './vercel-build-output-api.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
+export {
+  createWorkflowWorldTargetEsbuildPlugin,
+  ensureWorkflowTargetWorldEnv,
+  getWorldImport,
+  normalizeWorkflowTargetWorldImport,
+  resolveWorkflowCoreRuntimeAlias,
+  resolveWorkflowTargetWorldAlias,
+  WORKFLOW_CORE_RUNTIME_MODULE,
+  WORKFLOW_WORLD_TARGET_MODULE,
+  type WorkflowWorldTargetEnvironment,
+} from './world-target.js';

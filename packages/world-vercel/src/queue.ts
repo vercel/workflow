@@ -212,7 +212,12 @@ export function createQueue(config?: APIConfig): Queue {
       resolveBaseUrl: () => new URL(`${baseUrl}/queues-proxy`),
       token: config?.token,
     }),
-    headers: Object.fromEntries(headers.entries()),
+    headers: {
+      ...Object.fromEntries(headers.entries()),
+      // The proxy's fixed base URL bypasses the SDK's regional host
+      // resolution, so the region travels as a header instead.
+      ...(usingProxy && { 'x-vercel-queue-region': region }),
+    },
   };
 
   const queue: QueueFunction = async (

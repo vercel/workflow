@@ -1,8 +1,14 @@
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
+  type AstroConfig,
   createBuildQueue,
   createWorkflowBasePathRuntimeCode,
+  ensureWorkflowTargetWorldEnv,
   normalizeWorkflowBasePath,
+  resolveWorkflowTargetWorldAlias,
   setWorkflowBasePath,
+  WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
@@ -22,8 +28,9 @@ export interface WorkflowPluginOptions {
 export function workflowPlugin(
   options: WorkflowPluginOptions = {}
 ): AstroIntegration {
-  let builder: LocalBuilder | undefined;
-  let basePath = '';
+  let builderOptions: Partial<AstroConfig> = {
+    sourcemap: options.sourcemap,
+  };
   const enqueue = createBuildQueue();
 
   return {
@@ -33,15 +40,27 @@ export function workflowPlugin(
         config,
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
-        basePath = normalizeWorkflowBasePath(config.base);
+        const srcDir = fileURLToPath(config.srcDir);
+        const basePath = normalizeWorkflowBasePath(config.base);
         setWorkflowBasePath(basePath);
-        builder = new LocalBuilder({
+        builderOptions = {
+          workingDir: fileURLToPath(config.root),
+          dirs: [join(srcDir, 'pages'), join(srcDir, 'workflows')],
           sourcemap: options.sourcemap,
           basePath,
+        };
+        const vitePlugins = [workflowTransformPlugin()];
+        if (basePath) {
+          vitePlugins.unshift(workflowBasePathPlugin(basePath));
+        }
+        const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+        const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
+          workingDir: process.cwd(),
+          targetWorld: workflowTargetWorld,
         });
-
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
+          const builder = new LocalBuilder(builderOptions);
           try {
             await builder.build();
           } catch (buildError) {
@@ -50,27 +69,32 @@ export function workflowPlugin(
             console.error('Build failed during config setup:', buildError);
             throw buildError;
           }
+          vitePlugins.push(
+            // Cast needed due to Astro using a different internal Vite version
+            workflowHotUpdatePlugin({
+              builder,
+              enqueue,
+            }) as any
+          );
         }
         updateConfig({
           vite: {
-            plugins: [
-              ...(basePath ? [workflowBasePathPlugin(basePath)] : []),
-              workflowTransformPlugin(),
-              // Cast needed due to Astro using a different internal Vite version
-              workflowHotUpdatePlugin({
-                builder: () => builder,
-                enqueue,
-              }) as any,
-            ],
+            define: {
+              'process.env.WORKFLOW_TARGET_WORLD':
+                JSON.stringify(workflowTargetWorld),
+            },
+            resolve: {
+              alias: {
+                [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
+              },
+            },
+            plugins: vitePlugins,
           },
         });
       },
       'astro:build:done': async () => {
         if (process.env.VERCEL_DEPLOYMENT_ID) {
-          const vercelBuilder = new VercelBuilder({
-            sourcemap: options.sourcemap,
-            basePath,
-          });
+          const vercelBuilder = new VercelBuilder(builderOptions);
           await vercelBuilder.build();
         }
       },
