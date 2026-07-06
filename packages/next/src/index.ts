@@ -1,6 +1,10 @@
 import { copyFileSync, mkdirSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
+import {
+  resolveConfiguredProjectRoot,
+  resolveProjectRoot,
+} from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
@@ -16,7 +20,6 @@ const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
-
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
 const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
@@ -442,7 +445,13 @@ export function withWorkflow(
       nextConfig.turbopack.rules = {};
     }
     const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = resolveNextVersion(process.cwd());
+    const workingDir = process.cwd();
+    const nextVersion = resolveNextVersion(workingDir);
+    const configuredProjectRoot =
+      nextConfig.outputFileTracingRoot ?? nextConfig.turbopack?.root;
+    const projectRoot = configuredProjectRoot
+      ? resolveConfiguredProjectRoot(workingDir, configuredProjectRoot)
+      : resolveProjectRoot(workingDir);
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
     const shouldWatch = process.env.NODE_ENV === 'development';
@@ -474,9 +483,9 @@ export function withWorkflow(
               'jsx',
               'js',
             ],
-            projectRoot: nextConfig.outputFileTracingRoot,
-            moduleSpecifierRoot: process.cwd(),
-            workingDir: process.cwd(),
+            projectRoot,
+            moduleSpecifierRoot: workingDir,
+            workingDir,
             distDir,
             diagnosticsDir: `${distDir}/diagnostics`,
             buildTarget: 'next',

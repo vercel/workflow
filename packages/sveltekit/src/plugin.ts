@@ -15,7 +15,7 @@ export interface WorkflowPluginOptions {
 }
 
 export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
-  const builder = new SvelteKitBuilder({ sourcemap: options.sourcemap });
+  let builder: SvelteKitBuilder | undefined;
   const enqueue = createBuildQueue();
 
   return [
@@ -49,30 +49,38 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
       // bundled lib that, on seeing `require`, does `require()` of an ESM-only
       // dependency on a Node version without `require(ESM)` support.
       configResolved(config) {
+        if (config.command === 'serve') {
+          builder = new SvelteKitBuilder({
+            workingDir: config.root,
+            sourcemap: options.sourcemap,
+          });
+        }
+
         if (!config.build?.ssr) {
           return;
         }
+
         const banner =
           "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
         const rollupOptions = config.build.rollupOptions;
-        if (rollupOptions.output == null) {
-          rollupOptions.output = {};
-        }
+        rollupOptions.output ??= {};
         const output = rollupOptions.output;
         const outputs = Array.isArray(output) ? output : [output];
-        for (const o of outputs) {
-          const existing = o.banner;
-          o.banner =
-            existing == null
-              ? banner
-              : typeof existing === 'function'
-                ? async (chunk) => `${banner}\n${await existing(chunk)}`
-                : `${banner}\n${existing}`;
+        for (const output of outputs) {
+          const existing = output.banner;
+          if (existing == null) {
+            output.banner = banner;
+            continue;
+          }
+          output.banner =
+            typeof existing === 'function'
+              ? async (chunk) => `${banner}\n${await existing(chunk)}`
+              : `${banner}\n${existing}`;
         }
       },
     },
     workflowHotUpdatePlugin({
-      builder,
+      builder: () => builder,
       enqueue,
     }),
   ];

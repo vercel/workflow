@@ -1,10 +1,11 @@
-import type {
-  GetChunksOptions,
-  StreamChunksResponse,
-  Streamer,
-  StreamInfoResponse,
-  StreamWriteChannel,
-  StreamWriteChannelHandlers,
+import {
+  envNumber,
+  type GetChunksOptions,
+  type StreamChunksResponse,
+  type Streamer,
+  type StreamInfoResponse,
+  type StreamWriteChannel,
+  type StreamWriteChannelHandlers,
 } from '@workflow/world';
 import { WebSocket as UndiciWebSocket } from 'undici';
 import { z } from 'zod';
@@ -22,6 +23,17 @@ import {
  * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
  */
 export const MAX_CHUNKS_PER_REQUEST = 1000;
+
+/**
+ * Effective max chunks per write request. Override via
+ * `WORKFLOW_MAX_CHUNKS_PER_REQUEST` — lower it (paired with the server's
+ * `MAX_CHUNKS_PER_BATCH` override) to exercise the batch-splitting path.
+ */
+const getMaxChunksPerRequest = (): number =>
+  envNumber('WORKFLOW_MAX_CHUNKS_PER_REQUEST', MAX_CHUNKS_PER_REQUEST, {
+    integer: true,
+    min: 1,
+  });
 
 // All stream requests share the instrumented envelope (`instrumentedFetch`):
 // an OTEL client span, trace-context injection, `DEBUG` logging, and the
@@ -204,8 +216,9 @@ export function createStreamer(config?: APIConfig): Streamer {
         // will be re-sent on retry, producing duplicates. This is acceptable
         // because the alternative (400 on all >1000 chunk flushes) is worse,
         // and the scenario requires a network failure mid-batch.
-        for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
-          const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
+        const maxChunksPerRequest = getMaxChunksPerRequest();
+        for (let i = 0; i < chunks.length; i += maxChunksPerRequest) {
+          const batch = chunks.slice(i, i + maxChunksPerRequest);
           const body = encodeMultiChunks(batch);
           const url = getStreamUrl(name, resolvedRunId, httpConfig);
           const response = await instrumentedFetch({

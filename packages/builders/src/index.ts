@@ -8,6 +8,8 @@ export {
   type DecoratorOptionsWithConfigPath,
   getDecoratorOptionsForDirectory,
   getDecoratorOptionsForDirectoryWithConfigPath,
+  resolveConfiguredProjectRoot,
+  resolveProjectRoot,
 } from './config-helpers.js';
 export {
   createWorkflowEntrypointOptionsCode,
