@@ -19,7 +19,9 @@ import { join } from 'pathe';
  * returns undefined.
  */
 type NitroV2ExternalsOptions = { externals?: { external?: unknown[] } };
-type NitroBaseUrlOptions = { baseURL?: string; app?: { baseURL?: string } };
+// Nitro v3 doesn't type `baseURL` on its options object yet, but honors it
+// (Nuxt lowers `app.baseURL` into it natively).
+type NitroBaseUrlOptions = { baseURL?: string };
 
 function getNitroStringExternals(nitro: Nitro): string[] | undefined {
   const external = (nitro.options as NitroV2ExternalsOptions).externals
@@ -36,7 +38,7 @@ function getNitroProjectRoot(nitro: Nitro): string {
 
 export function getNitroBasePath(nitro: Nitro): string {
   const options = nitro.options as typeof nitro.options & NitroBaseUrlOptions;
-  return normalizeWorkflowBasePath(options.baseURL ?? options.app?.baseURL);
+  return normalizeWorkflowBasePath(options.baseURL);
 }
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {

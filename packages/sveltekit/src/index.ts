@@ -21,26 +21,18 @@ process.on('beforeExit', () => {
   }
   // V2: Only the combined flow handler needs queue triggers.
   // The separate step route was removed.
-  const config = {
-    maxDuration: 'max',
-    experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
-  };
-  const flowConfigFiles = [
-    '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
-  ];
-  // With a base path, the SvelteKit adapter emits the flow function below
-  // the base path instead — patch whichever exists.
-  if (basePath) {
-    flowConfigFiles.push(
-      path.join(
-        '.vercel/output/functions',
-        basePath.slice(1),
-        '.well-known/workflow/v1/flow.func/.vc-config.json'
-      )
-    );
-  }
-
-  for (const file of flowConfigFiles) {
+  // Note: the adapter emits this function at the root-relative path even
+  // when `kit.paths.base` is set (functions are keyed by route id, not
+  // public URL), so no base-prefixed variant is needed here.
+  for (const { file, config } of [
+    {
+      file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
+      config: {
+        maxDuration: 'max',
+        experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+      },
+    },
+  ]) {
     const funcDir = path.dirname(file);
     if (!fs.existsSync(funcDir)) {
       continue;
@@ -72,7 +64,63 @@ process.on('beforeExit', () => {
     // The source function may be a shared catchall. It must not keep stale
     // workflow queue triggers after the dedicated function is copied out.
     stripWorkflowQueueTriggers(path.join(sourceFuncDir, '.vc-config.json'));
+
+    // With a base path, Vercel queue triggers invoke this function with the
+    // root-relative route path, which the SvelteKit server (mounted below
+    // `kit.paths.base`) responds to with a 404 — so queue deliveries would
+    // retry forever and runs would stay pending. Wrap the handler to rewrite
+    // queue deliveries (identified by their Vqs-* headers) to the
+    // base-prefixed path. Plain HTTP requests are left untouched, so
+    // root-relative URLs keep 404ing.
+    if (basePath) {
+      const vcConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const handler = vcConfig.handler as string;
+      const wrapperHandler = path.join(
+        path.dirname(handler),
+        'workflow-flow-entry.mjs'
+      );
+      fs.writeFileSync(
+        path.join(funcDir, wrapperHandler),
+        createQueueBasePathEntryCode(path.basename(handler), basePath)
+      );
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ ...vcConfig, handler: wrapperHandler })
+      );
+    }
   }
 });
+
+function createQueueBasePathEntryCode(
+  handlerFile: string,
+  basePath: string
+): string {
+  return `import server from './${handlerFile}';
+
+const FLOW_PATH = '/.well-known/workflow/v1/flow';
+
+// Queue deliveries carry CloudEvents/queue headers; plain HTTP requests
+// don't and keep SvelteKit's native 404 for root-relative URLs.
+function isQueueDelivery(request) {
+  return (
+    request.headers.get('ce-type')?.startsWith('com.vercel.queue.') ||
+    request.headers.get('vqs-message-id') !== null
+  );
+}
+
+export default {
+  fetch(request) {
+    if (isQueueDelivery(request)) {
+      const url = new URL(request.url);
+      if (url.pathname === FLOW_PATH) {
+        url.pathname = ${JSON.stringify(basePath)} + FLOW_PATH;
+        request = new Request(url, request);
+      }
+    }
+    return server.fetch(request);
+  },
+};
+`;
+}
 
 export { workflowPlugin } from './plugin.js';

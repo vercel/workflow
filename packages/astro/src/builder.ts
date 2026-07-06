@@ -4,7 +4,6 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
-  createBuildOutputApiRootBlockRoutes,
   createBuildOutputApiWorkflowRoutes,
   NORMALIZE_REQUEST_CODE,
   normalizeWorkflowBasePath,
@@ -209,28 +208,37 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     if (filesystemIndex === -1) {
       filesystemIndex = 0;
     }
-    let insertIndex = filesystemIndex;
 
-    // Move past any routes with "continue: true" (like _astro cache headers)
-    while (
-      insertIndex < config.routes.length - 1 &&
-      config.routes[insertIndex + 1]?.continue === true
-    ) {
-      insertIndex++;
+    if (this.config.basePath) {
+      // With a base path, the workflow routes must run BEFORE `handle:
+      // filesystem`: they normalize base-prefixed URLs onto the workflow
+      // function paths, and post-filesystem rewrites don't re-check the
+      // filesystem (observed as platform 404s on preview deployments).
+      // Root-relative workflow URLs match no route or function and fall
+      // through to Astro, which 404s them.
+      config.routes.splice(
+        filesystemIndex,
+        0,
+        ...createBuildOutputApiWorkflowRoutes(this.config.basePath)
+      );
+    } else {
+      // Without a base path, requests match the workflow functions directly
+      // during filesystem handling; keep the legacy route placement after
+      // the filesystem handler and any "continue: true" routes (like _astro
+      // cache headers).
+      let insertIndex = filesystemIndex;
+      while (
+        insertIndex < config.routes.length - 1 &&
+        config.routes[insertIndex + 1]?.continue === true
+      ) {
+        insertIndex++;
+      }
+      config.routes.splice(
+        insertIndex + 1,
+        0,
+        ...createBuildOutputApiWorkflowRoutes(this.config.basePath)
+      );
     }
-
-    const rootBlockRoutes = createBuildOutputApiRootBlockRoutes(
-      this.config.basePath
-    );
-    config.routes.splice(filesystemIndex, 0, ...rootBlockRoutes);
-    insertIndex += rootBlockRoutes.length;
-
-    // Insert workflow routes right after
-    config.routes.splice(
-      insertIndex + 1,
-      0,
-      ...createBuildOutputApiWorkflowRoutes(this.config.basePath)
-    );
 
     // Bundles workflows for vercel
     await super.build();

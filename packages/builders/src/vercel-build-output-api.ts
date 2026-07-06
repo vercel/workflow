@@ -10,37 +10,37 @@ import {
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 
 /**
- * Routes that rewrite base-path-prefixed workflow URLs to the internal
- * (root-relative) workflow functions.
+ * Routes that map the public workflow URLs to the workflow functions. The
+ * functions live below the base path (see `getBuildOutputFunctionsPrefix`),
+ * so both `src` and `dest` carry it: root-relative URLs match nothing and
+ * 404 naturally, mirroring Next.js basePath behavior.
  */
 export function createBuildOutputApiWorkflowRoutes(basePath?: string) {
-  const prefix = createBasePathRouteRegexPrefix(basePath);
+  const srcPrefix = createBasePathRouteRegexPrefix(basePath);
+  const destPrefix = joinWorkflowBasePath(basePath, WORKFLOW_ROUTE_BASE);
 
   return [
     {
-      src: `${prefix}\\.well-known/workflow/v1/flow/?$`,
-      dest: `${WORKFLOW_ROUTE_BASE}/flow`,
+      src: `${srcPrefix}\\.well-known/workflow/v1/flow/?$`,
+      dest: `${destPrefix}/flow`,
     },
     {
-      src: `${prefix}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
-      dest: `${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
+      src: `${srcPrefix}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
+      dest: `${destPrefix}/webhook/[token]`,
     },
   ];
 }
 
 /**
- * When a base path is configured, block the root-relative workflow endpoints
- * so they are only reachable below the base path (matching Next.js basePath
- * behavior). Returns no routes when no base path is set.
+ * Directory (relative to `.vercel/output/functions`) that workflow functions
+ * are emitted into — below the base path so the public URLs match the
+ * function paths directly.
  */
-export function createBuildOutputApiRootBlockRoutes(basePath?: string) {
-  if (!normalizeWorkflowBasePath(basePath)) return [];
-
-  return [
-    { src: '^/\\.well-known/workflow/v1/flow/?$', status: 404 },
-    { src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$', status: 404 },
-    { src: '^/\\.well-known/workflow/v1/manifest\\.json/?$', status: 404 },
-  ];
+export function getBuildOutputFunctionsPrefix(basePath?: string): string {
+  return join(
+    normalizeWorkflowBasePath(basePath).slice(1),
+    '.well-known/workflow/v1'
+  );
 }
 
 export function getBuildOutputStaticManifestDir(
@@ -59,7 +59,10 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
     const outputDir = resolve(this.config.workingDir, '.vercel/output');
     const functionsDir = join(outputDir, 'functions');
-    const workflowGeneratedDir = join(functionsDir, '.well-known/workflow/v1');
+    const workflowGeneratedDir = join(
+      functionsDir,
+      getBuildOutputFunctionsPrefix(this.config.basePath)
+    );
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
@@ -159,10 +162,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create config.json for Build Output API
     const buildOutputConfig = {
       version: 3,
-      routes: [
-        ...createBuildOutputApiRootBlockRoutes(this.config.basePath),
-        ...createBuildOutputApiWorkflowRoutes(this.config.basePath),
-      ],
+      routes: createBuildOutputApiWorkflowRoutes(this.config.basePath),
     };
 
     await writeFile(

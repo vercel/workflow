@@ -13,7 +13,6 @@ type StubOptions = {
   preset?: string;
   workspaceDir?: string;
   baseURL?: string;
-  appBaseURL?: string;
   workflow?: { runtime?: string };
   buildDir?: string;
   rootDir?: string;
@@ -32,7 +31,6 @@ function createNitroStub({
   buildDir = '/tmp/.nitro',
   rootDir = '/tmp/project',
   baseURL,
-  appBaseURL,
   workflow = {},
   externals,
   vercel,
@@ -54,7 +52,6 @@ function createNitroStub({
       virtual: {},
       workspaceDir,
       workflow,
-      ...(appBaseURL !== undefined && { app: { baseURL: appBaseURL } }),
     },
     hooks: {
       hook() {},
@@ -79,10 +76,33 @@ describe('@workflow/nitro virtual handlers', () => {
     expect(nitro.options.virtual['#workflow/base-path']).toContain(
       'globalThis[Symbol.for(\'@workflow/core/basePath\')] = "/app"'
     );
+    // Queue triggers only invoke root-relative paths on Vercel deploys —
+    // no request rewrite outside them.
+    expect(nitro.options.virtual['#workflow/base-path']).not.toContain(
+      "hooks.hook('request'"
+    );
 
     const bare = createNitroStub({ routing: true });
     await nitroModule.setup(bare);
     expect(bare.options.plugins ?? []).not.toContain('#workflow/base-path');
+  });
+
+  it('rewrites root-relative flow requests to the base path on Vercel deploys (queue trigger invocations)', async () => {
+    const nitro = createNitroStub({
+      routing: true,
+      preset: 'vercel',
+      baseURL: '/app/',
+    });
+
+    await nitroModule.setup(nitro);
+
+    const plugin = nitro.options.virtual['#workflow/base-path'];
+    expect(plugin).toContain("hooks.hook('request'");
+    // Only queue deliveries (CloudEvents/queue headers) are rewritten —
+    // plain HTTP requests keep Nitro's native root-URL redirect behavior.
+    expect(plugin).toContain("'ce-type'");
+    expect(plugin).toContain("'vqs-message-id'");
+    expect(plugin).toContain('"/app/.well-known/workflow/v1/flow"');
   });
 
   it('registers the combined flow + webhook virtual handlers for Nitro v2', async () => {
@@ -327,16 +347,11 @@ describe('@workflow/nitro Vercel functionRules', () => {
 });
 
 describe('@workflow/nitro Vercel output patching with baseURL', () => {
-  it('blocks root routes, repoints prefixed routes at the server function, and copies the manifest into static output', async () => {
-    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
-
+  it('repoints base-prefixed flow/webhook routes at the catch-all server function', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-nitro-'));
     try {
       const rootDir = join(dir, 'app');
-      const buildDir = join(dir, '.nitro');
-      await mkdir(join(buildDir, 'workflow'), { recursive: true });
       await mkdir(join(rootDir, '.vercel/output'), { recursive: true });
-      await writeFile(join(buildDir, 'workflow/manifest.json'), '{"ok":true}');
       await writeFile(
         join(rootDir, '.vercel/output/config.json'),
         JSON.stringify({
@@ -351,6 +366,10 @@ describe('@workflow/nitro Vercel output patching with baseURL', () => {
               src: '/app/.well-known/workflow/v1/webhook/(?<token>[^/]+)',
               dest: '/.well-known/workflow/v1/webhook/[token]',
             },
+            {
+              src: '/app/.well-known/workflow/v1/manifest.json',
+              dest: '/.well-known/workflow/v1/manifest.json',
+            },
             { src: '/(.*)', dest: '/__server' },
           ],
         })
@@ -361,7 +380,6 @@ describe('@workflow/nitro Vercel output patching with baseURL', () => {
         routing: true,
         preset: 'vercel',
         baseURL: '/app/',
-        buildDir,
         rootDir,
       });
       nitro.hooks.hook = (name: string, fn: () => void) => {
@@ -374,33 +392,21 @@ describe('@workflow/nitro Vercel output patching with baseURL', () => {
       const config = JSON.parse(
         await readFile(join(rootDir, '.vercel/output/config.json'), 'utf-8')
       );
-      // Root workflow routes blocked ahead of filesystem handling
-      expect(
-        config.routes
-          .slice(0, 3)
-          .map((route: { status?: number }) => route.status)
-      ).toEqual([404, 404, 404]);
-      expect(config.routes[3]).toMatchObject({ handle: 'filesystem' });
-      // Prefixed routes repointed at the catch-all server function
-      expect(config.routes[4]).toMatchObject({
+      expect(config.routes[0]).toMatchObject({ handle: 'filesystem' });
+      // Flow + webhook repointed at the catch-all server function; the
+      // manifest route resolves natively and stays untouched.
+      expect(config.routes[1]).toMatchObject({
         src: '/app/.well-known/workflow/v1/flow',
         dest: '/__server',
       });
-      expect(config.routes[5]).toMatchObject({
+      expect(config.routes[2]).toMatchObject({
         src: '/app/.well-known/workflow/v1/webhook/(?<token>[^/]+)',
         dest: '/__server',
       });
-
-      // Public manifest copied below the base path in static output
-      await expect(
-        readFile(
-          join(
-            rootDir,
-            '.vercel/output/static/app/.well-known/workflow/v1/manifest.json'
-          ),
-          'utf-8'
-        )
-      ).resolves.toBe('{"ok":true}');
+      expect(config.routes[3]).toMatchObject({
+        src: '/app/.well-known/workflow/v1/manifest.json',
+        dest: '/.well-known/workflow/v1/manifest.json',
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -482,15 +488,6 @@ describe('@workflow/nitro externals forwarding', () => {
         });
         const builder = new Builder(nitro) as any;
         expect(builder.config.basePath).toBe('/app');
-      });
-
-      it('falls back to Nuxt app.baseURL for the workflow basePath', () => {
-        const nitro = createNitroStub({
-          routing: true,
-          appBaseURL: '/nuxt/',
-        });
-        const builder = new Builder(nitro) as any;
-        expect(builder.config.basePath).toBe('/nuxt');
       });
 
       it('forwards string entries from nitro.options.externals.external', () => {

@@ -5,8 +5,8 @@ import {
   normalizeWorkflowBasePath,
 } from './base-path.js';
 import {
-  createBuildOutputApiRootBlockRoutes,
   createBuildOutputApiWorkflowRoutes,
+  getBuildOutputFunctionsPrefix,
   getBuildOutputStaticManifestDir,
 } from './vercel-build-output-api.js';
 
@@ -27,34 +27,40 @@ describe('workflow base paths', () => {
   });
 });
 
-describe('Vercel Build Output API workflow routes', () => {
-  it('prefixes public route sources with the base path, keeping internal destinations', () => {
+describe('Vercel Build Output API workflow output', () => {
+  it('prefixes route sources and destinations with the base path', () => {
     expect(createBuildOutputApiWorkflowRoutes('/app/')).toEqual([
       {
         src: '^/app/\\.well-known/workflow/v1/flow/?$',
-        dest: '/.well-known/workflow/v1/flow',
+        dest: '/app/.well-known/workflow/v1/flow',
       },
       {
         src: '^/app/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
+        dest: '/app/.well-known/workflow/v1/webhook/[token]',
+      },
+    ]);
+  });
+
+  it('keeps routes root-relative without a base path', () => {
+    expect(createBuildOutputApiWorkflowRoutes('')).toEqual([
+      {
+        src: '^/\\.well-known/workflow/v1/flow/?$',
+        dest: '/.well-known/workflow/v1/flow',
+      },
+      {
+        src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
         dest: '/.well-known/workflow/v1/webhook/[token]',
       },
     ]);
   });
 
-  it('keeps route sources root-relative without a base path', () => {
-    expect(
-      createBuildOutputApiWorkflowRoutes('').map((route) => route.src)
-    ).toEqual([
-      '^/\\.well-known/workflow/v1/flow/?$',
-      '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
-    ]);
-  });
-
-  it('only blocks root workflow routes when a base path is configured', () => {
-    expect(createBuildOutputApiRootBlockRoutes('')).toEqual([]);
-    expect(
-      createBuildOutputApiRootBlockRoutes('/app/').map((route) => route.status)
-    ).toEqual([404, 404, 404]);
+  it('places functions below the base path so root-relative URLs 404 naturally', () => {
+    expect(getBuildOutputFunctionsPrefix('/app/')).toBe(
+      join('app', '.well-known/workflow/v1')
+    );
+    expect(getBuildOutputFunctionsPrefix('')).toBe(
+      join('.well-known/workflow/v1')
+    );
   });
 
   it('places public manifests below the base path in static output', () => {

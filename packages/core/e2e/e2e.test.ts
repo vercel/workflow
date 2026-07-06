@@ -2546,7 +2546,11 @@ describe('e2e', () => {
     }
   );
 
-  test.runIf(process.env.WORKFLOW_E2E_BASE_PATH)(
+  // Like the HTTP health check above, direct HTTP access to the flow
+  // endpoint is only guaranteed for local deployments (on Vercel, queue
+  // deliveries invoke the flow function directly and several frameworks
+  // never expose it over plain HTTP).
+  test.runIf(process.env.WORKFLOW_E2E_BASE_PATH && isLocalDeployment())(
     'base path health endpoint is mounted below the framework route base',
     { timeout: 30_000 },
     async () => {

@@ -68,7 +68,6 @@ export type {
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export {
-  createBuildOutputApiRootBlockRoutes,
   createBuildOutputApiWorkflowRoutes,
   getBuildOutputStaticManifestDir,
   VercelBuildOutputAPIBuilder,

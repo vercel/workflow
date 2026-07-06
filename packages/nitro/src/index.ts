@@ -1,10 +1,8 @@
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  createBuildOutputApiRootBlockRoutes,
   createWorkflowBasePathRuntimeCode,
-  getBuildOutputStaticManifestDir,
   joinWorkflowBasePath,
   setWorkflowBasePath,
   WORKFLOW_QUEUE_TRIGGER,
@@ -12,7 +10,7 @@ import {
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
-import { dirname, join } from 'pathe';
+import { join } from 'pathe';
 import { getNitroBasePath, LocalBuilder, VercelBuilder } from './builders.js';
 import type { ModuleOptions } from './types';
 
@@ -221,7 +219,15 @@ export default {
     // `.vercel/output/config.json`. This path is independent of nitro's own
     // bundle and is only used for nitropack v2 (e.g. Nuxt 4 still uses it).
     const useLegacyVercelBuild = isVercelDeploy && isNitroV2(nitro);
-    addWorkflowBasePathPlugin(nitro);
+    addWorkflowBasePathPlugin(nitro, {
+      // Nitro v3 Vercel functions mount all routes below `baseURL`, but
+      // queue triggers invoke the flow function with the root-relative
+      // route path (observed 302-redirect loops on preview deployments) —
+      // rewrite those deliveries (identified by their Vqs-* headers) to the
+      // base-prefixed path before routing. Plain HTTP requests keep Nitro's
+      // native behavior: root-relative URLs redirect to the base path.
+      rewriteRootFlowRequests: isVercelDeploy && !isNitroV2(nitro),
+    });
 
     if (useLegacyVercelBuild) {
       nitro.hooks.hook('compiled', async () => {
@@ -304,9 +310,13 @@ export default {
         nitro.options.vercel ??= {};
         nitro.options.vercel.functionRules ??= {};
 
-        // With a baseURL, Nitro's generated Build Output routes point the
-        // base-prefixed workflow routes at dangling per-route functions —
-        // repoint them at the catch-all server and block the root routes.
+        // With a baseURL, Nitro's generated Build Output routes rewrite the
+        // base-prefixed flow/webhook URLs to root-relative dests that
+        // Vercel's router fails to resolve to the per-route functions
+        // (observed as platform 404s on preview deployments) — repoint
+        // them at the catch-all server function, which serves the same
+        // handlers. Root-relative URLs need no handling: Nitro emits a
+        // redirect to the base-prefixed URL for them.
         if (getNitroBasePath(nitro)) {
           nitro.hooks.hook('compiled', () => {
             patchNativeVercelWorkflowRoutes(nitro);
@@ -352,15 +362,6 @@ export default {
           );
         }
         addManifestHandler(nitro, manifestPath);
-
-        // With a baseURL, serve the manifest via the static filesystem
-        // handling since Nitro's generated manifest route is not reachable
-        // below the base path.
-        if (isVercelDeploy && getNitroBasePath(nitro)) {
-          nitro.hooks.hook('compiled', () => {
-            copyPublicManifestToVercelStaticOutput(nitro);
-          });
-        }
       }
     }
   },
@@ -372,17 +373,37 @@ const BASE_PATH_VIRTUAL_ID = '#workflow/base-path';
 /**
  * Sets the workflow base path global in the Nitro server via a plugin that
  * runs before any user code, so runtime URL generation (queue delivery,
- * webhook URLs) includes the base path.
+ * webhook URLs) includes the base path. With `rewriteRootFlowRequests`, the
+ * plugin also rewrites root-relative flow requests (Vercel queue trigger
+ * invocations) to the base-prefixed path so they match the mounted route.
  */
-function addWorkflowBasePathPlugin(nitro: Nitro) {
+function addWorkflowBasePathPlugin(
+  nitro: Nitro,
+  options: { rewriteRootFlowRequests: boolean }
+) {
   const basePath = getNitroBasePath(nitro);
   setWorkflowBasePath(basePath);
   if (!basePath) return;
+
+  const flowPath = `${WORKFLOW_ROUTE_BASE}/flow`;
+  const rewriteCode = options.rewriteRootFlowRequests
+    ? /* js */ `
+  nitroApp.hooks.hook('request', (event) => {
+    const headers = event.req?.headers;
+    const isQueueDelivery =
+      headers?.get?.('ce-type')?.startsWith('com.vercel.queue.') ||
+      headers?.get?.('vqs-message-id');
+    if (isQueueDelivery && event.url?.pathname === ${JSON.stringify(flowPath)}) {
+      event.url.pathname = ${JSON.stringify(joinWorkflowBasePath(basePath, flowPath))};
+    }
+  });`
+    : '';
+
   nitro.options.plugins ||= [];
   nitro.options.plugins.unshift(BASE_PATH_VIRTUAL_ID);
   nitro.options.virtual[BASE_PATH_VIRTUAL_ID] = /* js */ `
     ${createWorkflowBasePathRuntimeCode(basePath)}
-    export default () => {};
+    export default (nitroApp) => {${rewriteCode}};
   `;
 }
 
@@ -660,30 +681,15 @@ export default fromWebHandler(() => new Response("Manifest not found", { status:
   }
 }
 
-function copyPublicManifestToVercelStaticOutput(nitro: Nitro) {
-  const source = join(nitro.options.buildDir, 'workflow/manifest.json');
-  const outputDir = join(nitro.options.rootDir, '.vercel/output');
-  const destination = join(
-    getBuildOutputStaticManifestDir(outputDir, getNitroBasePath(nitro)),
-    'manifest.json'
-  );
-
-  mkdirSync(dirname(destination), { recursive: true });
-  copyFileSync(source, destination);
-}
-
 function patchNativeVercelWorkflowRoutes(nitro: Nitro) {
   const configPath = join(nitro.options.rootDir, '.vercel/output/config.json');
   const config = JSON.parse(readFileSync(configPath, 'utf-8')) as {
-    routes: Array<{
-      src?: string;
-      dest?: string;
-      handle?: string;
-      status?: number;
-    }>;
+    routes: Array<{ src?: string; dest?: string }>;
   };
-  const basePath = getNitroBasePath(nitro);
-  const workflowPrefix = joinWorkflowBasePath(basePath, WORKFLOW_ROUTE_BASE);
+  const workflowPrefix = joinWorkflowBasePath(
+    getNitroBasePath(nitro),
+    WORKFLOW_ROUTE_BASE
+  );
 
   for (const route of config.routes) {
     if (
@@ -693,16 +699,6 @@ function patchNativeVercelWorkflowRoutes(nitro: Nitro) {
       route.dest = '/__server';
     }
   }
-
-  const rootBlockRoutes = createBuildOutputApiRootBlockRoutes(basePath);
-  const filesystemIndex = config.routes.findIndex(
-    (route) => route.handle === 'filesystem'
-  );
-  config.routes.splice(
-    filesystemIndex === -1 ? 0 : filesystemIndex,
-    0,
-    ...rootBlockRoutes
-  );
 
   writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
