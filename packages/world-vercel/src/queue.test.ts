@@ -62,9 +62,7 @@ describe('createQueue', () => {
   describe('proxy region header', () => {
     it('sends x-vercel-queue-region when using the api.vercel.com proxy', async () => {
       // `./utils.js` is module-mocked with `usingProxy: false`; flip it to
-      // proxy mode for this construction. The proxy's fixed resolveBaseUrl
-      // discards the region, so it must ride along as a header for
-      // regional VQS routing (vercel/api#79056).
+      // proxy mode for this construction.
       vi.mocked(getHttpUrl).mockReturnValueOnce({
         baseUrl: 'https://api.vercel.com/v1/workflow',
         usingProxy: true,
