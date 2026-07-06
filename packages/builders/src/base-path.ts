@@ -40,9 +40,12 @@ export function joinWorkflowBasePath(
 }
 
 /**
- * Statement that sets the runtime base path global (read by
- * `@workflow/utils` workflow-routes helpers) — injected into server
- * bundles so runtime URL generation includes the base path.
+ * Statement that sets the runtime base path global — injected into server
+ * bundles so runtime URL generation includes the base path. The symbol
+ * string must stay in sync with the canonical definition in
+ * `@workflow/utils/src/workflow-routes.ts` (which reads it) and the CJS
+ * copy in `@workflow/next`; it is inlined here because this is generated
+ * code, evaluated in bundles where no `@workflow/utils` import exists.
  */
 export function createWorkflowBasePathRuntimeCode(basePath: string): string {
   return `globalThis[Symbol.for('@workflow/core/basePath')] = ${JSON.stringify(basePath)};`;

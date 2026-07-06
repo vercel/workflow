@@ -41,6 +41,10 @@ const workflowSerdeComputedPropertyPattern =
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
+// Duplicated from the canonical definition in
+// `@workflow/utils/src/workflow-routes.ts` — the symbol string must stay in
+// sync with it (and with `createWorkflowBasePathRuntimeCode` in
+// `@workflow/builders`), or base path propagation silently breaks.
 const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
 const globalConfig = globalThis as typeof globalThis &
   Record<symbol, string | undefined>;
