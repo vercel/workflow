@@ -23,7 +23,10 @@ import {
   applySwcTransform,
   type WorkflowManifest,
 } from './apply-swc-transform.js';
-import { createWorkflowEntrypointOptionsCode } from './constants.js';
+import {
+  createWorkflowEntrypointOptionsCode,
+  createWorkflowRouteHandlersCode,
+} from './constants.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
   type DiscoveredEntries,
@@ -1564,6 +1567,7 @@ export const __steps_registered = true;
 
       const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
         {
+          basePath: this.config.basePath,
           routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
         }
       );
@@ -1578,7 +1582,7 @@ import { workflowEntrypoint } from 'workflow/runtime';
 const workflowRouteModuleBodyStartedAt = Date.now();
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {
@@ -1771,6 +1775,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     const stepsRelativePath = `./${basename(stepsOutfile).replace(/\\/g, '/')}`;
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
     const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
+      basePath: this.config.basePath,
       routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
     });
 
@@ -1786,7 +1791,7 @@ void __steps_registered;
 
 const workflowCode = \`${escapedVMCode}\`;
 
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
     if (!bundleFinalOutput) {
       await this.writeGeneratedFile(flowOutfile, combinedFunctionCode);
@@ -1849,6 +1854,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
       const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
         {
+          basePath: this.config.basePath,
           routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
         }
       );
@@ -1864,7 +1870,7 @@ void __steps_registered;
 
 const workflowCode = \`${escaped}\`;
 
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
       const outputDir = dirname(flowOutfile);
       await mkdir(outputDir, { recursive: true });

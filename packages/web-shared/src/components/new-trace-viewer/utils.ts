@@ -1,4 +1,8 @@
-import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import {
+  formatDuration,
+  formatDurationPrecise,
+  getHighResInMs,
+} from '../trace-viewer/util/timing';
 import type { Span, SpanEvent } from './types';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +60,8 @@ const NICE_INTERVALS = [
 
 const MAX_MARKERS = 8;
 
+const MS_IN_SECOND = 1000;
+
 function pickInterval(viewDuration: number, maxTicks: number): number {
   for (const interval of NICE_INTERVALS) {
     if (viewDuration / interval <= maxTicks) return interval;
@@ -72,6 +78,13 @@ export function computeTimeMarkers(
   const maxTicks = 6;
   const interval = pickInterval(viewDuration, maxTicks);
 
+  // Sub-second steps need fractional labels, or ticks past 1s collide as
+  // duplicate whole seconds ("…1s, 2s, 2s, 3s"). Scale decimals to the step.
+  const fractionDigits =
+    interval >= MS_IN_SECOND
+      ? 0
+      : Math.ceil(-Math.log10(interval / MS_IN_SECOND));
+
   const firstTick = Math.ceil(offset / interval) * interval;
   const markers: TimeMarker[] = [];
 
@@ -80,7 +93,10 @@ export function computeTimeMarkers(
     if (position < -0.01 || position > 1.01) continue;
     markers.push({
       position: Math.min(Math.max(position, 0), 1),
-      label: formatDuration(Math.abs(t), true),
+      label:
+        fractionDigits === 0
+          ? formatDuration(Math.abs(t), true)
+          : formatDurationPrecise(Math.abs(t), fractionDigits),
       value: t,
     });
     if (markers.length >= MAX_MARKERS) break;
