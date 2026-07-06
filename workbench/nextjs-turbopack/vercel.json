@@ -1,5 +1,6 @@
 {
   "env": {
     "WORKFLOW_PUBLIC_MANIFEST": "1"
-  }
+  },
+  "regions": ["iad1", "sfo1", "fra1"]
 }

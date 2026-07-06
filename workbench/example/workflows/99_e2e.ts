@@ -3644,3 +3644,26 @@ export async function parallelStepsThenWebhookWorkflow(iterations: number) {
   }
   return tokens;
 }
+
+/**
+ * Multi-region e2e probe (see packages/core/e2e/e2e-region.test.ts).
+ *
+ * Returns the `VERCEL_REGION` observed by both the workflow (flow route)
+ * and a step invocation, so the suite can assert that a run started with
+ * `start(..., { region })` was actually EXECUTED in the intended region —
+ * not just tagged with it. Regional execution requires the workbench app
+ * to be deployed to the target regions (workbench/nextjs-turbopack
+ * vercel.json pins iad1+sfo1+fra1) and the world's queue to route the
+ * flow message by the run ID's region tag (@workflow/world-vercel).
+ */
+export async function regionProbeWorkflow(label: string) {
+  'use workflow';
+  const workflowRegion = process.env.VERCEL_REGION ?? null;
+  const stepRegion = await regionProbeStep();
+  return { label, workflowRegion, stepRegion };
+}
+
+async function regionProbeStep(): Promise<string | null> {
+  'use step';
+  return process.env.VERCEL_REGION ?? null;
+}
