@@ -19,6 +19,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  HookConflictError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -152,10 +153,29 @@ export function parseRetryAfter(
 }
 
 /**
+ * Shape of a workflow-server error response body, as read by both request
+ * paths (`makeRequest` in utils.ts and `errorFromV4Response` in
+ * events-v4.ts) before mapping to a typed error via `errorForResponse`.
+ * Every field is optional — bodies may be empty or non-JSON.
+ */
+export interface WorldErrorResponseBody {
+  message?: string;
+  code?: string;
+  /** Legacy alias for `code` on some endpoints. */
+  error?: string;
+  /** Hook token from a 409 `hook_conflict` response. */
+  token?: string;
+  /** Owning run from a 409 `hook_conflict` response. */
+  conflictingRunId?: string;
+}
+
+/**
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *
- *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
+ *   - 409 → EntityConflictError (start() dedupe, terminal-state
+ *     transitions), EXCEPT code 'hook_conflict' → HookConflictError (the
+ *     start-hook token is owned by another run)
  *   - 410 → RunExpiredError (runtime exits without retrying)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for what
  *     happens when a 425 degrades into an untyped error)
@@ -176,9 +196,19 @@ export function errorForResponse(
     code?: string;
     url?: string;
     mitigated?: string | null;
+    /** Hook token from a 409 `hook_conflict` response body. */
+    token?: string;
+    /** Owning run from a 409 `hook_conflict` response body. */
+    conflictingRunId?: string;
   } = {}
 ): Error {
   const { retryAfter, code, url, mitigated } = opts;
+  // A 409 carrying the server's hook_conflict code is a start-hook token
+  // conflict, not a generic entity conflict — surface it as the typed error
+  // the runtime and start() branch on.
+  if (status === 409 && code === 'hook_conflict') {
+    return new HookConflictError(opts.token ?? '', opts.conflictingRunId);
+  }
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) return new RunExpiredError(message);
   if (status === 425) return new TooEarlyError(message, { retryAfter });

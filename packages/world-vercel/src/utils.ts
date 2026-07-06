@@ -9,6 +9,7 @@ import { getDispatcher } from './http-client.js';
 import {
   errorForResponse,
   formatVercelDiagnostics,
+  type WorldErrorResponseBody,
   getRequestTimeoutMs,
   HTTP_DEBUG_ENABLED,
   httpClientSpanAttributes,
@@ -436,13 +437,11 @@ export async function makeRequest<T>({
         });
 
         if (!response.ok) {
-          const errorData: { message?: string; code?: string; error?: string } =
-            await parseResponseBody(response)
-              .then(
-                (r) =>
-                  r.data as { message?: string; code?: string; error?: string }
-              )
-              .catch(() => ({}));
+          const errorData: WorldErrorResponseBody = await parseResponseBody(
+            response
+          )
+            .then((r) => r.data as WorldErrorResponseBody)
+            .catch(() => ({}));
           const errorCode = errorData.code ?? errorData.error;
           logCurlRepro(request.method, url, headers);
 
@@ -464,6 +463,8 @@ export async function makeRequest<T>({
             url,
             code: errorCode,
             retryAfter,
+            token: errorData.token,
+            conflictingRunId: errorData.conflictingRunId,
             mitigated: response.headers.get('x-vercel-mitigated'),
           });
           span?.setAttributes({

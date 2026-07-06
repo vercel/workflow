@@ -9,6 +9,14 @@ import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
+// Client-side mirrors of the workflow-server admission caps so start()
+// rejects out-of-range values before queueing. Keep in sync with
+// `START_HOOK_TTL_MAX_SECONDS` / `MAX_HOOK_TOKEN_BYTES` in
+// workflow-server's lib/data/errors.ts — drift silently changes which
+// side rejects.
+const START_HOOK_TTL_MAX_SECONDS = 30 * 24 * 60 * 60;
+const START_HOOK_TOKEN_MAX_BYTES = 255;
+
 export { createAnalytics } from './analytics.js';
 export {
   createGetEncryptionKeyForRun,
@@ -41,6 +49,10 @@ export function createVercelWorld(config?: APIConfig): World {
     // `process.exit(1)` is an acceptable response to an exhausted replay
     // budget.
     processExitTriggersQueueRedelivery: true,
+    startHookAdmission: {
+      maxTtlSeconds: START_HOOK_TTL_MAX_SECONDS,
+      maxTokenBytes: START_HOOK_TOKEN_MAX_BYTES,
+    },
     ...createQueue(config),
     ...createStorage(config),
     analytics: createAnalytics(config),

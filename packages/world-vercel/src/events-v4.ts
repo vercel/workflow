@@ -29,6 +29,7 @@ import {
   errorForResponse,
   instrumentedFetch,
   parseRetryAfter,
+  type WorldErrorResponseBody,
 } from './http-core.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
@@ -254,10 +255,16 @@ function errorFromV4Response(
 ): Error {
   let message = `v4 ${opName} failed: HTTP ${statusCode}`;
   let code: string | undefined;
+  let token: string | undefined;
+  let conflictingRunId: string | undefined;
   try {
-    const json = JSON.parse(errorBody) as { message?: string; code?: string };
+    const json = JSON.parse(errorBody) as WorldErrorResponseBody;
     if (typeof json.message === 'string') message = json.message;
     if (typeof json.code === 'string') code = json.code;
+    if (typeof json.token === 'string') token = json.token;
+    if (typeof json.conflictingRunId === 'string') {
+      conflictingRunId = json.conflictingRunId;
+    }
   } catch {
     // body wasn't JSON — keep the default message, append raw text below
     if (errorBody) message += ` ${errorBody}`;
@@ -272,6 +279,8 @@ function errorFromV4Response(
     retryAfter,
     code,
     url,
+    token,
+    conflictingRunId,
     mitigated: readHeader(responseHeaders, 'x-vercel-mitigated'),
   });
 }

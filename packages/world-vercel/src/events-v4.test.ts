@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  HookConflictError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -43,6 +44,25 @@ describe('throwForErrorResponse', () => {
 
   it('maps 409 to EntityConflictError', () => {
     expect(() => call(409)).toThrowError(EntityConflictError);
+  });
+
+  it('maps hook-conflict 409s to HookConflictError', () => {
+    try {
+      call(
+        409,
+        JSON.stringify({
+          code: 'hook_conflict',
+          message: 'hook conflict',
+          token: 'order:123',
+          conflictingRunId: 'wrun_owner',
+        })
+      );
+      expect.unreachable();
+    } catch (err) {
+      expect(HookConflictError.is(err)).toBe(true);
+      expect((err as HookConflictError).token).toBe('order:123');
+      expect((err as HookConflictError).conflictingRunId).toBe('wrun_owner');
+    }
   });
 
   it('maps 410 to RunExpiredError (terminal run — runtime must not retry)', () => {

@@ -218,7 +218,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-`experimental_ttl` is optional: without it, the token is released as soon as the hook is disposed or the run reaches a terminal state — duplicate starts are fenced only while the run is active. With a TTL, the claim is retained until at least the later of hook creation plus TTL and run completion, so duplicates keep being rejected for the retention window. Cancelling a run before it has created its hook always releases the claim immediately, so an explicit cancel-then-retry can reuse the token without waiting out the TTL. Worlds may cap `experimental_ttl` and the token byte length; values above a cap fail with a world contract error before queueing, and cross-deployment starts fail before queueing unless the target deployment reports support for queued start-hook handling.
+`experimental_ttl` is optional: without it, the token is released as soon as the hook is disposed or the run reaches a terminal state — duplicate starts are fenced only while the run is active. With a TTL, the claim is retained until at least the later of hook creation plus TTL and run completion, so duplicates keep being rejected for the retention window. Cancelling a run before it has created its hook always releases the claim immediately, so an explicit cancel-then-retry can reuse the token without waiting out the TTL. On Vercel, `experimental_ttl` is capped at 30 days and hook tokens at 255 bytes; values above either cap fail with a world contract error before queueing, and cross-deployment starts fail before queueing unless the target deployment reports support for queued start-hook handling.
 
 ### Conflict-handling strategies
 
