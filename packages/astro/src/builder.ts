@@ -10,16 +10,6 @@ import {
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 
-// Astro serves generated pages both at the configured base and at the root,
-// so generated handlers 404 requests that don't carry the base path.
-function createAstroBasePathGuard(basePath: string | undefined): string {
-  if (!basePath) return '';
-  return `  if (!new URL(request.url).pathname.startsWith(${JSON.stringify(`${basePath}/`)})) {
-    return new Response("Not Found", { status: 404 });
-  }
-`;
-}
-
 export class LocalBuilder extends BaseBuilder {
   constructor(options?: {
     sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
@@ -72,14 +62,12 @@ export class LocalBuilder extends BaseBuilder {
     // Post-process the generated file to wrap with Astro request converter
     const workflowsRouteFile = join(workflowGeneratedDir, 'flow.js');
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
-    const basePathGuard = createAstroBasePathGuard(this.config.basePath);
 
     // Normalize request, needed for preserving request through astro
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
       (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
 export const POST = async ({request}) => {
-${basePathGuard}
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode${options})(normalRequest);
 }
@@ -103,8 +91,7 @@ export const prerender = false;`
     if (this.shouldExposePublicManifest && manifestJson) {
       await writeFile(
         join(workflowGeneratedDir, 'manifest.json.js'),
-        `export function GET({ request }) {
-${basePathGuard}
+        `export function GET() {
   return new Response(${JSON.stringify(manifestJson)}, {
     headers: { "content-type": "application/json" },
   });
@@ -130,7 +117,6 @@ export const prerender = false;\n`
 
     // Post-process the generated file to wrap with Astro request converter
     let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
-    const basePathGuard = createAstroBasePathGuard(this.config.basePath);
 
     // Update handler signature to accept token as parameter
     webhookRouteContent = webhookRouteContent.replace(
@@ -149,7 +135,6 @@ export const prerender = false;\n`
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
       `${NORMALIZE_REQUEST_CODE}
 const createHandler = (method) => async ({ request, params, platform }) => {
-${basePathGuard}
   const normalRequest = await normalizeRequest(request);
   const response = await handler(normalRequest, params.token);
   return response;

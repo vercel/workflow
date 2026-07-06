@@ -3,7 +3,6 @@ import {
   createWorkflowBasePathRuntimeCode,
   normalizeWorkflowBasePath,
   setWorkflowBasePath,
-  WORKFLOW_ROUTE_BASE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
@@ -80,9 +79,8 @@ export function workflowPlugin(
 }
 
 /**
- * Makes the base path visible at runtime: injects the base path global into
- * SSR build output, and 404s root-relative workflow routes in the dev server
- * (Astro's dev middleware serves pages at both the base and the root).
+ * Injects the base path global into SSR build output so runtime URL
+ * generation (queue delivery, webhook URLs) includes the base path.
  */
 function workflowBasePathPlugin(basePath: string) {
   return {
@@ -99,27 +97,6 @@ function workflowBasePathPlugin(basePath: string) {
       for (const output of outputs) {
         output.banner = prependBanner(output.banner, banner);
       }
-    },
-    configureServer(server: any) {
-      return () => {
-        server.middlewares.stack.unshift({
-          route: '',
-          handle: (req: any, res: any, next: () => void) => {
-            const path = req.url.split(/[?#]/, 1)[0];
-            if (
-              path === `${WORKFLOW_ROUTE_BASE}/flow` ||
-              path === `${WORKFLOW_ROUTE_BASE}/manifest.json` ||
-              path.startsWith(`${WORKFLOW_ROUTE_BASE}/webhook/`)
-            ) {
-              res.statusCode = 404;
-              res.end('Not Found');
-              return;
-            }
-
-            next();
-          },
-        });
-      };
     },
   };
 }
