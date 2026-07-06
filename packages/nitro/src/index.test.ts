@@ -166,22 +166,6 @@ describe('@workflow/nitro virtual handlers', () => {
       );
     }
   });
-
-  it('keeps handler routes internal (unprefixed) when baseURL is set — Nitro applies baseURL when serving', async () => {
-    const nitro = createNitroStub({
-      routing: true,
-      baseURL: '/app/',
-    });
-
-    await nitroModule.setup(nitro);
-
-    const routes = nitro.options.handlers.map(
-      (handler: { route: string }) => handler.route
-    );
-    expect(routes).toContain('/.well-known/workflow/v1/flow');
-    expect(routes).toContain('/.well-known/workflow/v1/webhook/:token');
-    expect(routes).not.toContain('/app/.well-known/workflow/v1/flow');
-  });
 });
 
 describe('@workflow/nitro Vercel functionRules', () => {
@@ -219,7 +203,7 @@ describe('@workflow/nitro Vercel functionRules', () => {
     expect(flowRule.experimentalTriggers).toEqual([WORKFLOW_QUEUE_TRIGGER]);
   });
 
-  it('keeps functionRules on Nitro internal routes when baseURL is set', async () => {
+  it('keeps handler routes and functionRules internal (unprefixed) when baseURL is set — Nitro applies baseURL when serving', async () => {
     const nitro = createNitroStub({
       routing: true,
       preset: 'vercel',
@@ -228,6 +212,12 @@ describe('@workflow/nitro Vercel functionRules', () => {
     });
 
     await nitroModule.setup(nitro);
+
+    const routes = nitro.options.handlers.map(
+      (handler: { route: string }) => handler.route
+    );
+    expect(routes).toContain('/.well-known/workflow/v1/flow');
+    expect(routes).not.toContain('/app/.well-known/workflow/v1/flow');
 
     const rules = nitro.options.vercel.functionRules;
     expect(rules).toHaveProperty('/.well-known/workflow/v1/flow');

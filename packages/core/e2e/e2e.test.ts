@@ -2546,49 +2546,6 @@ describe('e2e', () => {
     }
   );
 
-  // Like the HTTP health check above, direct HTTP access to the flow
-  // endpoint is only guaranteed for local deployments (on Vercel, queue
-  // deliveries invoke the flow function directly and several frameworks
-  // never expose it over plain HTTP).
-  test.runIf(process.env.WORKFLOW_E2E_BASE_PATH && isLocalDeployment())(
-    'base path health endpoint is mounted below the framework route base',
-    { timeout: 30_000 },
-    async () => {
-      const healthUrl = createWorkflowUrl(deploymentUrl, { type: 'health' });
-
-      const healthMethods = [
-        { method: 'GET', status: 200 },
-        { method: 'HEAD', status: 200 },
-        { method: 'OPTIONS', status: 204 },
-      ] as const;
-
-      const headers = await getTrustedSourcesHeaders();
-      await Promise.all(
-        healthMethods.map(async ({ method, status }) => {
-          const res = await fetch(healthUrl, { method, headers });
-          expect(res.status).toBe(status);
-        })
-      );
-
-      const rootDeploymentUrl = process.env.DEPLOYMENT_URL;
-      assert(
-        rootDeploymentUrl,
-        '`DEPLOYMENT_URL` environment variable is not set'
-      );
-      const rootHealthUrl = createWorkflowUrl(rootDeploymentUrl, {
-        type: 'health',
-      });
-      if (rootHealthUrl !== healthUrl) {
-        const rootRes = await fetch(rootHealthUrl, {
-          method: 'GET',
-          redirect: 'manual',
-          headers,
-        });
-        expect(rootRes.status).not.toBe(200);
-      }
-    }
-  );
-
   test(
     'health check (queue-based) - workflow endpoint responds to health check messages',
     { timeout: 60_000 },

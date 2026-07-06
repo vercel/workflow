@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   createWorkflowBasePathRuntimeCode,
   joinWorkflowBasePath,
+  QUEUE_DELIVERY_HEADERS_GUARD_CODE,
   setWorkflowBasePath,
   WORKFLOW_QUEUE_TRIGGER,
   WORKFLOW_ROUTE_BASE,
@@ -388,12 +389,12 @@ function addWorkflowBasePathPlugin(
   const flowPath = `${WORKFLOW_ROUTE_BASE}/flow`;
   const rewriteCode = options.rewriteRootFlowRequests
     ? /* js */ `
+  const isQueueDelivery = ${QUEUE_DELIVERY_HEADERS_GUARD_CODE};
   nitroApp.hooks.hook('request', (event) => {
-    const headers = event.req?.headers;
-    const isQueueDelivery =
-      headers?.get?.('ce-type')?.startsWith('com.vercel.queue.') ||
-      headers?.get?.('vqs-message-id');
-    if (isQueueDelivery && event.url?.pathname === ${JSON.stringify(flowPath)}) {
+    if (
+      event.url?.pathname === ${JSON.stringify(flowPath)} &&
+      isQueueDelivery(event.req?.headers)
+    ) {
       event.url.pathname = ${JSON.stringify(joinWorkflowBasePath(basePath, flowPath))};
     }
   });`

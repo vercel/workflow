@@ -6,6 +6,7 @@ export {
   createWorkflowBasePathRuntimeCode,
   joinWorkflowBasePath,
   normalizeWorkflowBasePath,
+  QUEUE_DELIVERY_HEADERS_GUARD_CODE,
 } from './base-path.js';
 export { createBuildQueue } from './build-queue.js';
 export {

@@ -1,5 +1,10 @@
 import path from 'node:path';
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  joinWorkflowBasePath,
+  QUEUE_DELIVERY_HEADERS_GUARD_CODE,
+  WORKFLOW_QUEUE_TRIGGER,
+  WORKFLOW_ROUTE_BASE,
+} from '@workflow/builders';
 import fs from 'fs-extra';
 
 import { SvelteKitBuilder } from './builder.js';
@@ -69,9 +74,8 @@ process.on('beforeExit', () => {
     // root-relative route path, which the SvelteKit server (mounted below
     // `kit.paths.base`) responds to with a 404 — so queue deliveries would
     // retry forever and runs would stay pending. Wrap the handler to rewrite
-    // queue deliveries (identified by their Vqs-* headers) to the
-    // base-prefixed path. Plain HTTP requests are left untouched, so
-    // root-relative URLs keep 404ing.
+    // queue deliveries to the base-prefixed path. Plain HTTP requests are
+    // left untouched, so root-relative URLs keep 404ing.
     if (basePath) {
       const vcConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
       const handler = vcConfig.handler as string;
@@ -95,27 +99,20 @@ function createQueueBasePathEntryCode(
   handlerFile: string,
   basePath: string
 ): string {
+  const flowPath = `${WORKFLOW_ROUTE_BASE}/flow`;
   return `import server from './${handlerFile}';
 
-const FLOW_PATH = '/.well-known/workflow/v1/flow';
-
-// Queue deliveries carry CloudEvents/queue headers; plain HTTP requests
-// don't and keep SvelteKit's native 404 for root-relative URLs.
-function isQueueDelivery(request) {
-  return (
-    request.headers.get('ce-type')?.startsWith('com.vercel.queue.') ||
-    request.headers.get('vqs-message-id') !== null
-  );
-}
+const isQueueDelivery = ${QUEUE_DELIVERY_HEADERS_GUARD_CODE};
 
 export default {
   fetch(request) {
-    if (isQueueDelivery(request)) {
-      const url = new URL(request.url);
-      if (url.pathname === FLOW_PATH) {
-        url.pathname = ${JSON.stringify(basePath)} + FLOW_PATH;
-        request = new Request(url, request);
-      }
+    const url = new URL(request.url);
+    if (
+      url.pathname === ${JSON.stringify(flowPath)} &&
+      isQueueDelivery(request.headers)
+    ) {
+      url.pathname = ${JSON.stringify(joinWorkflowBasePath(basePath, flowPath))};
+      request = new Request(url, request);
     }
     return server.fetch(request);
   },

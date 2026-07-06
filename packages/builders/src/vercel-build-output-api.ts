@@ -3,11 +3,19 @@ import { join, resolve } from 'node:path';
 import { WORKFLOW_ROUTE_BASE } from '@workflow/utils';
 import { BaseBuilder } from './base-builder.js';
 import {
-  createBasePathRouteRegexPrefix,
   joinWorkflowBasePath,
   normalizeWorkflowBasePath,
 } from './base-path.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+
+const REGEXP_SPECIAL_CHARS = /[.*+?^${}()|[\]\\]/g;
+
+function createBasePathRouteRegexPrefix(basePath: string | undefined): string {
+  const normalized = normalizeWorkflowBasePath(basePath);
+  return normalized
+    ? `^${normalized.replace(REGEXP_SPECIAL_CHARS, '\\$&')}/`
+    : '^/';
+}
 
 /**
  * Routes that map the public workflow URLs to the workflow functions. The
