@@ -172,6 +172,21 @@ describe('withWorkflow builder config', () => {
     });
   });
 
+  it('passes Next basePath to the workflow builder', async () => {
+    const config = withWorkflow({
+      basePath: '/v2',
+    });
+
+    await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      basePath: '/v2',
+    });
+  });
+
   it('externalizes the built-in Vercel world while preserving user externals', async () => {
     const config = withWorkflow({
       serverExternalPackages: ['@node-rs/xxhash'],
