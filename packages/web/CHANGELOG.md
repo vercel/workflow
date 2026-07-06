@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.12
+
+### Patch Changes
+
+- [#2328](https://github.com/vercel/workflow/pull/2328) [`161431b`](https://github.com/vercel/workflow/commit/161431b1d08a46767b76ae9389011ae24d4d2ad7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show relative time display card on date hover
+
 ## 4.1.11
 
 ## 4.1.10

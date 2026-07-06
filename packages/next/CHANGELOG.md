@@ -1,5 +1,34 @@
 # @workflow/next
 
+## 4.1.0
+
+### Minor Changes
+
+- [#2545](https://github.com/vercel/workflow/pull/2545) [`c5d14c8`](https://github.com/vercel/workflow/commit/c5d14c8a89b12cabd6ce9e008afb41780bff2adc) Thanks [@ijjk](https://github.com/ijjk)! - Remove the Next.js lazy discovery/deferred builder path and the `workflows.lazyDiscovery` option.
+
+  Fall back to direct generated-file overwrites on Windows when atomic rename is blocked by Next.js dev server file handles.
+
+### Patch Changes
+
+- [#2417](https://github.com/vercel/workflow/pull/2417) [`977a4a2`](https://github.com/vercel/workflow/commit/977a4a29d9d900380fa8f6058e9dab6514b64de6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Clarify that workflow packages removed from `serverExternalPackages` are still compiled during the build.
+
+- [#2725](https://github.com/vercel/workflow/pull/2725) [`c4bc5a1`](https://github.com/vercel/workflow/commit/c4bc5a1590d4df06a9ed76e93512e1b9082921d1) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Share framework project root detection across Astro, Next.js, and SvelteKit.
+
+- [#2546](https://github.com/vercel/workflow/pull/2546) [`ba62f57`](https://github.com/vercel/workflow/commit/ba62f575e249845d762984f75fcb1a7405a3c8fc) Thanks [@ijjk](https://github.com/ijjk)! - Optimize eager workflow discovery and improve default eager build compatibility. Also fixes NestJS builds pulling SDK build-tooling into the runtime steps bundle, which crashed step handlers at runtime.
+
+- [#2455](https://github.com/vercel/workflow/pull/2455) [`578f7e1`](https://github.com/vercel/workflow/commit/578f7e1f1b03d2a7eb39591aa457931b960755cb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix Next.js lazy discovery workflow IDs for monorepo workspace packages by resolving module specifiers relative to the app package instead of the tracing root.
+
+- [#2729](https://github.com/vercel/workflow/pull/2729) [`01265b7`](https://github.com/vercel/workflow/commit/01265b748c951c647dc9ab39f6449b41bcfe23b2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Derive the workflow builder project root from Next.js workspace root configuration.
+
+- [#2538](https://github.com/vercel/workflow/pull/2538) [`aa9919b`](https://github.com/vercel/workflow/commit/aa9919b14eb697da039a05c699b1ee2fda0eae48) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Prewarm the Workflow SWC plugin cache before Next.js starts parallel loader workers.
+
+- [#2564](https://github.com/vercel/workflow/pull/2564) [`8db7b7f`](https://github.com/vercel/workflow/commit/8db7b7f864c8570c7363130cab09fbfc56d5ae8d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Discover workflows imported by Next.js instrumentation, middleware, and proxy entrypoints.
+
+- Updated dependencies [[`f2ad726`](https://github.com/vercel/workflow/commit/f2ad7261b14dd64085c80584b9d472019414b512), [`20a6d73`](https://github.com/vercel/workflow/commit/20a6d73a0aa03b4b2f7318d97e12a5e7818c67d9), [`c4bc5a1`](https://github.com/vercel/workflow/commit/c4bc5a1590d4df06a9ed76e93512e1b9082921d1), [`015452a`](https://github.com/vercel/workflow/commit/015452a70c52044635d24a134b7b984b6d2e1142), [`ba62f57`](https://github.com/vercel/workflow/commit/ba62f575e249845d762984f75fcb1a7405a3c8fc), [`504cf88`](https://github.com/vercel/workflow/commit/504cf88465cfe6502c4e8d87b3bcfac2534e22c8), [`578f7e1`](https://github.com/vercel/workflow/commit/578f7e1f1b03d2a7eb39591aa457931b960755cb), [`d0e4191`](https://github.com/vercel/workflow/commit/d0e4191b7e4dd4122cc0fdcb123de9b36b9c0237), [`8bbf331`](https://github.com/vercel/workflow/commit/8bbf3312adf8eb9b910aa6161e578ac83ef293f5), [`5a4c6cf`](https://github.com/vercel/workflow/commit/5a4c6cff3ec52038a417cb68bc720bfa15f090e0), [`db8a2c4`](https://github.com/vercel/workflow/commit/db8a2c49820530f7a331bb4c1f0a803e03547831), [`170ea96`](https://github.com/vercel/workflow/commit/170ea9659a2b9c26e611bab8bb5131f9c6cdc14d), [`0a5e2aa`](https://github.com/vercel/workflow/commit/0a5e2aa247bc8e4e45d389a2af839110723ce863), [`a4dd59b`](https://github.com/vercel/workflow/commit/a4dd59be8c023dad2c173ad4cf1ed565ced34c56), [`4c49cc8`](https://github.com/vercel/workflow/commit/4c49cc88957bedcc59f16f2bb4b905a0056d5eff), [`c5d14c8`](https://github.com/vercel/workflow/commit/c5d14c8a89b12cabd6ce9e008afb41780bff2adc), [`b357137`](https://github.com/vercel/workflow/commit/b3571378b8ce9964843d76ce1c5b6e5e2c4cf5da), [`8d1f299`](https://github.com/vercel/workflow/commit/8d1f2993cb8e266e6b688d461160d847011b8393), [`67fcf1a`](https://github.com/vercel/workflow/commit/67fcf1a7505d131e6fbcaffc0d28551e4b17b8a7)]:
+  - @workflow/core@4.6.0
+  - @workflow/builders@4.1.1
+  - @workflow/swc-plugin@4.1.2
+
 ## 4.0.11
 
 ### Patch Changes

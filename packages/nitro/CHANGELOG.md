@@ -1,5 +1,25 @@
 # @workflow/nitro
 
+## 4.1.2
+
+### Patch Changes
+
+- [#2645](https://github.com/vercel/workflow/pull/2645) [`db90c40`](https://github.com/vercel/workflow/commit/db90c40a13d214230c5a67fd4411ca09399df1c3) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Route Nitro Vercel workflow HTTP endpoints through generated Vercel functions.
+
+- [#2722](https://github.com/vercel/workflow/pull/2722) [`980933f`](https://github.com/vercel/workflow/commit/980933fd439fab5e5fa06562f05b56c576ba9b2e) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Pass configured Nitro workflow scan directories through to Workflow builders.
+
+- [#2572](https://github.com/vercel/workflow/pull/2572) [`af08c04`](https://github.com/vercel/workflow/commit/af08c04da63d5d9ffa119bbfd153f8b516806f11) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Reload rebuilt step bundles during Vite development.
+
+- [#2713](https://github.com/vercel/workflow/pull/2713) [`f927d69`](https://github.com/vercel/workflow/commit/f927d6933bd8ac63ccaa3bf3f5ea15b833d5c01a) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Use Nitro's workspace root for workflow module resolution so Nitro and Nuxt monorepo apps can import sibling workspace packages without extra config.
+
+- Updated dependencies [[`f2ad726`](https://github.com/vercel/workflow/commit/f2ad7261b14dd64085c80584b9d472019414b512), [`20a6d73`](https://github.com/vercel/workflow/commit/20a6d73a0aa03b4b2f7318d97e12a5e7818c67d9), [`c4bc5a1`](https://github.com/vercel/workflow/commit/c4bc5a1590d4df06a9ed76e93512e1b9082921d1), [`015452a`](https://github.com/vercel/workflow/commit/015452a70c52044635d24a134b7b984b6d2e1142), [`ba62f57`](https://github.com/vercel/workflow/commit/ba62f575e249845d762984f75fcb1a7405a3c8fc), [`504cf88`](https://github.com/vercel/workflow/commit/504cf88465cfe6502c4e8d87b3bcfac2534e22c8), [`578f7e1`](https://github.com/vercel/workflow/commit/578f7e1f1b03d2a7eb39591aa457931b960755cb), [`d0e4191`](https://github.com/vercel/workflow/commit/d0e4191b7e4dd4122cc0fdcb123de9b36b9c0237), [`8bbf331`](https://github.com/vercel/workflow/commit/8bbf3312adf8eb9b910aa6161e578ac83ef293f5), [`5a4c6cf`](https://github.com/vercel/workflow/commit/5a4c6cff3ec52038a417cb68bc720bfa15f090e0), [`db8a2c4`](https://github.com/vercel/workflow/commit/db8a2c49820530f7a331bb4c1f0a803e03547831), [`170ea96`](https://github.com/vercel/workflow/commit/170ea9659a2b9c26e611bab8bb5131f9c6cdc14d), [`0a5e2aa`](https://github.com/vercel/workflow/commit/0a5e2aa247bc8e4e45d389a2af839110723ce863), [`a4dd59b`](https://github.com/vercel/workflow/commit/a4dd59be8c023dad2c173ad4cf1ed565ced34c56), [`4c49cc8`](https://github.com/vercel/workflow/commit/4c49cc88957bedcc59f16f2bb4b905a0056d5eff), [`161431b`](https://github.com/vercel/workflow/commit/161431b1d08a46767b76ae9389011ae24d4d2ad7), [`c5d14c8`](https://github.com/vercel/workflow/commit/c5d14c8a89b12cabd6ce9e008afb41780bff2adc), [`b357137`](https://github.com/vercel/workflow/commit/b3571378b8ce9964843d76ce1c5b6e5e2c4cf5da), [`8d1f299`](https://github.com/vercel/workflow/commit/8d1f2993cb8e266e6b688d461160d847011b8393), [`67fcf1a`](https://github.com/vercel/workflow/commit/67fcf1a7505d131e6fbcaffc0d28551e4b17b8a7)]:
+  - @workflow/core@4.6.0
+  - @workflow/builders@4.1.1
+  - @workflow/web@4.1.12
+  - @workflow/swc-plugin@4.1.2
+  - @workflow/rollup@4.0.11
+  - @workflow/vite@4.0.11
+
 ## 4.1.1
 
 ### Patch Changes

@@ -1,5 +1,27 @@
 # @workflow/world-vercel
 
+## 4.5.0
+
+### Minor Changes
+
+- [#2414](https://github.com/vercel/workflow/pull/2414) [`2a688f0`](https://github.com/vercel/workflow/commit/2a688f0a037e8d72bbc7164adc9f3be0924c62a3) Thanks [@github-actions](https://github.com/apps/github-actions)! - New internal API format: separately encode event metadata from user payloads. Eliminates the need for calling separate endpoints for ref resolution, which improves performance especially on longer runs.
+
+### Patch Changes
+
+- [#2534](https://github.com/vercel/workflow/pull/2534) [`ab24408`](https://github.com/vercel/workflow/commit/ab244082447eb60ad24faaad91ff4745af2481c5) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Update `undici` to 7.28.0.
+
+- [#2580](https://github.com/vercel/workflow/pull/2580) [`9fba14e`](https://github.com/vercel/workflow/commit/9fba14e409e1393e3abb01bd5ec4f3ebb5295c14) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Send optional client-side event occurrence timestamps through world event creation.
+
+- [#2508](https://github.com/vercel/workflow/pull/2508) [`b06fa65`](https://github.com/vercel/workflow/commit/b06fa657f5e216fd3281534de96619a1d502ef4c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add run IDs on world storage telemetry spans.
+
+- [#2445](https://github.com/vercel/workflow/pull/2445) [`67fcf1a`](https://github.com/vercel/workflow/commit/67fcf1a7505d131e6fbcaffc0d28551e4b17b8a7) Thanks [@pranaygp](https://github.com/pranaygp)! - Treat transient world-vercel transport failures as retryable, surfacing them as a `TRANSPORT` type `WorkflowWorldError`, to be retried by the queue instead of failing the run.
+
+- [#2414](https://github.com/vercel/workflow/pull/2414) [`2a688f0`](https://github.com/vercel/workflow/commit/2a688f0a037e8d72bbc7164adc9f3be0924c62a3) Thanks [@github-actions](https://github.com/apps/github-actions)! - Skip transferring event payload bytes when listing events with `resolveData: 'none'` using the v4 API.
+
+- Updated dependencies [[`f9119d4`](https://github.com/vercel/workflow/commit/f9119d4b6a39f93df8d97c338c62eb0b6bccad8d), [`db8a2c4`](https://github.com/vercel/workflow/commit/db8a2c49820530f7a331bb4c1f0a803e03547831), [`9fba14e`](https://github.com/vercel/workflow/commit/9fba14e409e1393e3abb01bd5ec4f3ebb5295c14), [`2a688f0`](https://github.com/vercel/workflow/commit/2a688f0a037e8d72bbc7164adc9f3be0924c62a3), [`6dbe2de`](https://github.com/vercel/workflow/commit/6dbe2de33ff95fe16b627d77e9c690582a6857f2), [`87d213c`](https://github.com/vercel/workflow/commit/87d213c096ab88ec2c32c231440a65037f82bbf4)]:
+  - @workflow/world@4.2.1
+  - @workflow/errors@4.1.4
+
 ## 4.4.1
 
 ### Patch Changes
