@@ -6,7 +6,13 @@
  * a fully-formed Trace ready for the trace viewer.
  */
 
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  isHookLifecycleEventType,
+  isStepEventType,
+  isWaitEventType,
+  type WorkflowRun,
+} from '@workflow/world';
 import type { Span } from '../components/trace-viewer/types';
 import {
   getEventTimestamp,
@@ -22,15 +28,12 @@ import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 // Event type classifiers
 // ---------------------------------------------------------------------------
 
-export const isStepEvent = (eventType: string) => eventType.startsWith('step_');
+export const isStepEvent = (eventType: string) => isStepEventType(eventType);
 
-export const isTimerEvent = (eventType: string) =>
-  eventType === 'wait_created' || eventType === 'wait_completed';
+export const isTimerEvent = (eventType: string) => isWaitEventType(eventType);
 
 export const isHookLifecycleEvent = (eventType: string) =>
-  eventType === 'hook_received' ||
-  eventType === 'hook_created' ||
-  eventType === 'hook_disposed';
+  isHookLifecycleEventType(eventType);
 
 /**
  * Events that belong to the run root span rather than a child entity span.

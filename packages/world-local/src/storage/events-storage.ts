@@ -23,8 +23,12 @@ import {
   applyAttributeChanges,
   EventSchema,
   HookSchema,
+  isChildEntityCreationEventType,
+  isHookEventRequiringExistence,
   isLegacySpecVersion,
+  isStepEventType,
   isTerminalRunEventType,
+  isTerminalStepEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
@@ -566,13 +570,7 @@ export function createEventsStorage(
       // step_completed / step_failed / step_retrying is atomic. step_created
       // is also serialized so duplicate-create races don't leave extra
       // step_created events in the log.
-      const isStepEvent =
-        data.eventType === 'step_created' ||
-        data.eventType === 'step_started' ||
-        data.eventType === 'step_completed' ||
-        data.eventType === 'step_failed' ||
-        data.eventType === 'step_retrying';
-      if (isStepEvent && runId && data.correlationId) {
+      if (isStepEventType(data.eventType) && runId && data.correlationId) {
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
@@ -796,12 +794,6 @@ export function createEventsStorage(
 
         // Run terminal state validation
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
-          const runTerminalEvents = [
-            'run_started',
-            'run_completed',
-            'run_failed',
-          ];
-
           // Idempotent operation: run_cancelled on already cancelled run is allowed
           if (
             data.eventType === 'run_cancelled' &&
@@ -833,10 +825,7 @@ export function createEventsStorage(
           }
 
           // Other run state transitions are not allowed on terminal runs
-          if (
-            runTerminalEvents.includes(data.eventType) ||
-            data.eventType === 'run_cancelled'
-          ) {
+          if (isTerminalRunEventType(data.eventType)) {
             throw new EntityConflictError(
               `Cannot transition run from terminal state "${currentRun.status}"`
             );
@@ -846,12 +835,7 @@ export function createEventsStorage(
           // step_started creates a step, so it is rejected here too — a bare
           // (non-lazy) step_started falls through to the step-validation
           // block below, which uses RunExpiredError for terminal runs.
-          if (
-            data.eventType === 'step_created' ||
-            data.eventType === 'hook_created' ||
-            data.eventType === 'wait_created' ||
-            lazyStepStart
-          ) {
+          if (isChildEntityCreationEventType(data.eventType) || lazyStepStart) {
             throw new EntityConflictError(
               `Cannot create new entities on run in terminal state "${currentRun.status}"`
             );
@@ -867,13 +851,9 @@ export function createEventsStorage(
         // Step-related event validation (ordering and terminal state)
         // Store existingStep so we can reuse it later (avoid double read)
         let validatedStep: Step | null = null;
-        const stepEvents = [
-          'step_started',
-          'step_completed',
-          'step_failed',
-          'step_retrying',
-        ];
-        if (stepEvents.includes(data.eventType) && data.correlationId) {
+        const stepEventRequiresExistingStep =
+          isStepEventType(data.eventType) && data.eventType !== 'step_created';
+        if (stepEventRequiresExistingStep && data.correlationId) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           validatedStep = await readJSONWithFallback(
             basedir,
@@ -928,9 +908,8 @@ export function createEventsStorage(
         }
 
         // Hook-related event validation (ordering)
-        const hookEventsRequiringExistence = ['hook_disposed', 'hook_received'];
         if (
-          hookEventsRequiringExistence.includes(data.eventType) &&
+          isHookEventRequiringExistence(data.eventType) &&
           data.correlationId
         ) {
           const existingHook = await readJSONWithFallback(
@@ -2073,8 +2052,7 @@ export function createEventsStorage(
         // step_failed), and run-terminal events end the loop. `resolveData`
         // matches the list path so eventData refs are handled identically.
         if (
-          (data.eventType === 'step_completed' ||
-            data.eventType === 'step_failed') &&
+          isTerminalStepEventType(data.eventType) &&
           typeof params?.sinceCursor === 'string'
         ) {
           // Intentionally no `limit`: this returns a single default-size page,

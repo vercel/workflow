@@ -44,7 +44,7 @@ function getHookCreatedToken(event: Event): string | undefined {
   return typeof token === 'string' ? token : undefined;
 }
 
-function hookFromCreatedEvent(event: Event & HookCreatedEvent): Hook {
+function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
   const { token, metadata, isWebhook, isSystem } = event.eventData;
   return {
     runId: event.runId,
@@ -64,7 +64,7 @@ function hookFromCreatedEvent(event: Event & HookCreatedEvent): Hook {
 function isMatchingHookCreatedEvent(
   event: Event,
   matches: (event: Event) => boolean
-): event is Event & HookCreatedEvent {
+): event is HookCreatedEvent {
   return (
     event.eventType === 'hook_created' &&
     typeof event.correlationId === 'string' &&
@@ -72,10 +72,7 @@ function isMatchingHookCreatedEvent(
   );
 }
 
-function closesLiveHook(
-  event: Event,
-  liveEvent: Event & HookCreatedEvent
-): boolean {
+function closesLiveHook(event: Event, liveEvent: HookCreatedEvent): boolean {
   if (event.runId !== liveEvent.runId) return false;
   return (
     (event.eventType === 'hook_disposed' &&
@@ -114,7 +111,7 @@ async function findLiveHookCreatedEvent(
   basedir: string,
   matches: (event: Event) => boolean,
   tag?: string
-): Promise<(Event & HookCreatedEvent) | null> {
+): Promise<HookCreatedEvent | null> {
   const eventsDir = path.join(basedir, 'events');
   const events: Event[] = [];
 
@@ -131,7 +128,7 @@ async function findLiveHookCreatedEvent(
     return byTime === 0 ? a.eventId.localeCompare(b.eventId) : byTime;
   });
 
-  let liveEvent: (Event & HookCreatedEvent) | null = null;
+  let liveEvent: HookCreatedEvent | null = null;
   for (const event of events) {
     if (isMatchingHookCreatedEvent(event, matches)) {
       liveEvent = event;
@@ -152,7 +149,7 @@ async function findLiveHookCreatedEvent(
 
 async function restoreHookCachesFromEvent(
   basedir: string,
-  event: Event & HookCreatedEvent,
+  event: HookCreatedEvent,
   tag?: string
 ): Promise<Hook> {
   const hook = hookFromCreatedEvent(event);

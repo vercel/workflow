@@ -162,8 +162,8 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.workflowName).toBe('wf');
   });
 
-  it('carries attributes on resilient-start run_started', () => {
-    const { meta } = splitEventDataForV4({
+  it('splits resilient-start run_started input into the payload body', () => {
+    const { payload, meta } = splitEventDataForV4({
       eventType: 'run_started',
       specVersion: 4,
       eventData: {
@@ -174,6 +174,8 @@ describe('splitEventDataForV4 attribute fields', () => {
       },
     } as AnyEventRequest);
 
+    expect(payload).toBeInstanceOf(Uint8Array);
+    expect(meta.input).toBeUndefined();
     expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
   });
 

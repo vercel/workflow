@@ -2,6 +2,7 @@ import readline from 'node:readline';
 import { Args, Flags } from '@oclif/core';
 import { cancelRun } from '@workflow/core/runtime';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
+import { WorkflowRunStatusSchema } from '@workflow/world';
 import chalk from 'chalk';
 import Table from 'easy-table';
 import { BaseCommand } from '../base.js';
@@ -41,7 +42,7 @@ export default class Cancel extends BaseCommand {
     status: Flags.string({
       description: 'Filter runs by status for bulk cancel',
       required: false,
-      options: ['running', 'completed', 'failed', 'cancelled', 'pending'],
+      options: [...WorkflowRunStatusSchema.options],
       helpGroup: 'Bulk Cancel',
       helpLabel: '--status',
     }),

@@ -16,20 +16,10 @@ import {
   type Revivers,
   serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
-import { EVENT_DATA_REF_FIELDS } from '@workflow/world';
+import { getEventDataRefFields as getWorldEventDataRefFields } from '@workflow/world';
 
-const V4_EXTRA_EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
-  run_started: ['input'],
-  step_started: ['input'],
-};
-
-export function getEventDataRefFields(eventType: string): string[] {
-  return [
-    ...new Set([
-      ...(EVENT_DATA_REF_FIELDS[eventType] ?? []),
-      ...(V4_EXTRA_EVENT_DATA_REF_FIELDS[eventType] ?? []),
-    ]),
-  ];
+export function getEventDataRefFields(eventType: string): readonly string[] {
+  return getWorldEventDataRefFields(eventType);
 }
 
 // Re-export types and utilities that consumers need

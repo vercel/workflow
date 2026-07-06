@@ -3,56 +3,6 @@ import { AttributeChangesSchema } from './attributes.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
-/**
- * Fields within eventData that hold ref/payload data per event type.
- * When resolveData is 'none', only these fields are stripped — all other
- * metadata (stepName, workflowName, etc.) is preserved.
- */
-export const EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
-  run_created: ['input'],
-  run_completed: ['output'],
-  run_failed: ['error'],
-  step_created: ['input'],
-  step_completed: ['result'],
-  step_failed: ['error'],
-  step_retrying: ['error'],
-  hook_created: ['metadata'],
-  hook_received: ['payload'],
-};
-
-/**
- * Strip ref/payload fields from eventData based on resolveData setting.
- * When resolveData is 'none', removes only large data fields (refs) from
- * eventData while preserving metadata like stepName, workflowName, etc.
- */
-export function stripEventDataRefs(
-  event: Event,
-  resolveData: ResolveData
-): Event {
-  if (resolveData !== 'none') return event;
-  if (!('eventData' in event)) return event;
-
-  const eventData = (event as any).eventData;
-  if (!eventData || typeof eventData !== 'object') {
-    const { eventData: _, ...rest } = event as any;
-    return rest;
-  }
-
-  const refFields = EVENT_DATA_REF_FIELDS[event.eventType];
-  if (!refFields || refFields.length === 0) return event;
-
-  const stripped = { ...eventData };
-  for (const field of refFields) {
-    delete stripped[field];
-  }
-
-  const { eventData: _, ...rest } = event as any;
-  return {
-    ...rest,
-    ...(Object.keys(stripped).length > 0 ? { eventData: stripped } : {}),
-  };
-}
-
 // Event type enum
 export const EventTypeSchema = z.enum([
   // Run lifecycle events
@@ -79,6 +29,21 @@ export const EventTypeSchema = z.enum([
   'wait_completed',
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
+
+export const RunEventTypeSchema = EventTypeSchema.extract([
+  'run_created',
+  'run_started',
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+] as const);
+export type RunEventType = z.infer<typeof RunEventTypeSchema>;
+export const RUN_EVENT_TYPES = RunEventTypeSchema.options;
+
+export function isRunEventType(eventType: string): eventType is RunEventType {
+  return RUN_EVENT_TYPES.includes(eventType as RunEventType);
+}
+
 export const TerminalRunEventTypeSchema = EventTypeSchema.extract([
   'run_completed',
   'run_failed',
@@ -91,6 +56,189 @@ export function isTerminalRunEventType(
   eventType: string
 ): eventType is TerminalRunEventType {
   return TERMINAL_RUN_EVENT_TYPES.includes(eventType as TerminalRunEventType);
+}
+
+export const StepEventTypeSchema = EventTypeSchema.extract([
+  'step_created',
+  'step_completed',
+  'step_failed',
+  'step_retrying',
+  'step_started',
+] as const);
+export type StepEventType = z.infer<typeof StepEventTypeSchema>;
+export const STEP_EVENT_TYPES = StepEventTypeSchema.options;
+
+export function isStepEventType(eventType: string): eventType is StepEventType {
+  return STEP_EVENT_TYPES.includes(eventType as StepEventType);
+}
+
+export const TerminalStepEventTypeSchema = EventTypeSchema.extract([
+  'step_completed',
+  'step_failed',
+] as const);
+export type TerminalStepEventType = z.infer<typeof TerminalStepEventTypeSchema>;
+export const TERMINAL_STEP_EVENT_TYPES = TerminalStepEventTypeSchema.options;
+
+export function isTerminalStepEventType(
+  eventType: string
+): eventType is TerminalStepEventType {
+  return TERMINAL_STEP_EVENT_TYPES.includes(eventType as TerminalStepEventType);
+}
+
+export const HookLifecycleEventTypeSchema = EventTypeSchema.extract([
+  'hook_created',
+  'hook_received',
+  'hook_disposed',
+] as const);
+export type HookLifecycleEventType = z.infer<
+  typeof HookLifecycleEventTypeSchema
+>;
+export const HOOK_LIFECYCLE_EVENT_TYPES = HookLifecycleEventTypeSchema.options;
+
+export function isHookLifecycleEventType(
+  eventType: string
+): eventType is HookLifecycleEventType {
+  return HOOK_LIFECYCLE_EVENT_TYPES.includes(
+    eventType as HookLifecycleEventType
+  );
+}
+
+export const HookEventRequiringExistenceTypeSchema = EventTypeSchema.extract([
+  'hook_disposed',
+  'hook_received',
+] as const);
+export type HookEventRequiringExistenceType = z.infer<
+  typeof HookEventRequiringExistenceTypeSchema
+>;
+export const HOOK_EVENTS_REQUIRING_EXISTENCE =
+  HookEventRequiringExistenceTypeSchema.options;
+
+export function isHookEventRequiringExistence(
+  eventType: string
+): eventType is HookEventRequiringExistenceType {
+  return HOOK_EVENTS_REQUIRING_EXISTENCE.includes(
+    eventType as HookEventRequiringExistenceType
+  );
+}
+
+export const WaitEventTypeSchema = EventTypeSchema.extract([
+  'wait_created',
+  'wait_completed',
+] as const);
+export type WaitEventType = z.infer<typeof WaitEventTypeSchema>;
+export const WAIT_EVENT_TYPES = WaitEventTypeSchema.options;
+
+export function isWaitEventType(eventType: string): eventType is WaitEventType {
+  return WAIT_EVENT_TYPES.includes(eventType as WaitEventType);
+}
+
+export const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
+  'step_created',
+  'hook_created',
+  'wait_created',
+] as const);
+export type ChildEntityCreationEventType = z.infer<
+  typeof ChildEntityCreationEventTypeSchema
+>;
+export const CHILD_ENTITY_CREATION_EVENT_TYPES =
+  ChildEntityCreationEventTypeSchema.options;
+
+export function isChildEntityCreationEventType(
+  eventType: string
+): eventType is ChildEntityCreationEventType {
+  return CHILD_ENTITY_CREATION_EVENT_TYPES.includes(
+    eventType as ChildEntityCreationEventType
+  );
+}
+
+/**
+ * Fields within eventData that hold ref/payload data per event type.
+ * When resolveData is 'none', only these fields are stripped — all other
+ * metadata (stepName, workflowName, etc.) is preserved.
+ */
+export const EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
+  run_created: ['input'],
+  run_started: ['input'],
+  run_completed: ['output'],
+  run_failed: ['error'],
+  step_created: ['input'],
+  step_started: ['input'],
+  step_completed: ['result'],
+  step_failed: ['error'],
+  step_retrying: ['error'],
+  hook_created: ['metadata'],
+  hook_received: ['payload'],
+} satisfies Partial<Record<EventType, string[]>>;
+
+export function getEventDataRefFields(eventType: string): readonly string[] {
+  return EVENT_DATA_REF_FIELDS[eventType] ?? [];
+}
+
+/**
+ * Field within eventData that carries the opaque user payload for event types
+ * that have one. V4 worlds split this field into the wire body while keeping
+ * the remaining eventData fields in metadata.
+ */
+export const EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE = {
+  run_created: 'input',
+  run_started: 'input',
+  run_completed: 'output',
+  run_failed: 'error',
+  step_created: 'input',
+  step_started: 'input',
+  step_completed: 'result',
+  step_failed: 'error',
+  step_retrying: 'error',
+  hook_created: 'metadata',
+  hook_received: 'payload',
+} as const satisfies Partial<Record<EventType, string>>;
+
+export type EventDataPayloadEventType =
+  keyof typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE;
+export type EventDataPayloadField =
+  (typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE)[EventDataPayloadEventType];
+
+export function getEventDataPayloadField(
+  eventType: string
+): EventDataPayloadField | undefined {
+  return (
+    EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE as Partial<
+      Record<string, EventDataPayloadField>
+    >
+  )[eventType];
+}
+
+/**
+ * Strip ref/payload fields from eventData based on resolveData setting.
+ * When resolveData is 'none', removes only large data fields (refs) from
+ * eventData while preserving metadata like stepName, workflowName, etc.
+ */
+export function stripEventDataRefs(
+  event: Event,
+  resolveData: ResolveData
+): Event {
+  if (resolveData !== 'none') return event;
+  if (!('eventData' in event)) return event;
+
+  const eventData = (event as any).eventData;
+  if (!eventData || typeof eventData !== 'object') {
+    const { eventData: _, ...rest } = event as any;
+    return rest;
+  }
+
+  const refFields = getEventDataRefFields(event.eventType);
+  if (refFields.length === 0) return event;
+
+  const stripped = { ...eventData };
+  for (const field of refFields) {
+    delete stripped[field];
+  }
+
+  const { eventData: _, ...rest } = event as any;
+  return {
+    ...rest,
+    ...(Object.keys(stripped).length > 0 ? { eventData: stripped } : {}),
+  };
 }
 
 // Base event schema with common properties
@@ -198,7 +346,7 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
  * Event created when a hook is first invoked. The World implementation
  * atomically creates both the event and the hook entity.
  */
-export const HookCreatedEventSchema = BaseEventSchema.extend({
+const HookCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_created'),
   correlationId: z.string(),
   eventData: z.object({
@@ -435,7 +583,15 @@ export const EventSchema = AllEventsSchema.and(
 
 // Inferred types
 export type Event = z.infer<typeof EventSchema>;
-export type HookCreatedEvent = z.infer<typeof HookCreatedEventSchema>;
+export type AnyPersistedEvent = z.infer<typeof AllEventsSchema>;
+export type EventOfType<T extends EventType> = Event &
+  Extract<AnyPersistedEvent, { eventType: T }>;
+export type EventRequestOfType<T extends EventType> = Extract<
+  AnyEventRequest,
+  { eventType: T }
+>;
+export type HookCreatedEvent = EventOfType<'hook_created'>;
+export type HookCreatedEventRequest = EventRequestOfType<'hook_created'>;
 export type HookReceivedEvent = z.infer<typeof HookReceivedEventSchema>;
 export type HookConflictEvent = z.infer<typeof HookConflictEventSchema>;
 

@@ -2,7 +2,11 @@
  * Color utilities for workflow traces
  */
 
-import type { Step, WorkflowRun } from '@workflow/world';
+import {
+  isHookLifecycleEventType,
+  type Step,
+  type WorkflowRun,
+} from '@workflow/world';
 import styles from '../trace-viewer/trace-viewer.module.css';
 import type { SpanNode, SpanNodeEvent } from '../trace-viewer/types';
 
@@ -99,11 +103,7 @@ export const getCustomSpanEventClassName = (
   }
 
   // Webhook-related events - Purple
-  if (
-    eventName === 'hook_created' ||
-    eventName === 'hook_received' ||
-    eventName === 'hook_disposed'
-  ) {
+  if (isHookLifecycleEventType(eventName)) {
     return styles.eventHook;
   }
 
