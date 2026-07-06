@@ -30,9 +30,108 @@ import {
   readJSONWithFallback,
   taggedPath,
   writeExclusive,
+  writeJSON,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
-import { hashToken, hookRecoveryMarkerPath } from './helpers.js';
+import {
+  canReuseExpiredStartClaim,
+  type HookTokenClaim,
+  hookRecoveryMarkerPath,
+  hookTokenClaimPath,
+  readHookTokenClaim,
+  withTokenClaimLock,
+} from './helpers.js';
+
+/**
+ * Transitions a TTL-carrying claim to retained: the token stays fenced
+ * until at least `hookCreatedAt + ttl` (falling back to the claim's own
+ * createdAt when no hook was ever created), never shrinking an existing
+ * retention window and never expiring before `now`.
+ */
+async function retainStartHookClaim(
+  constraintPath: string,
+  claim: HookTokenClaim,
+  now: Date,
+  hookCreatedAt?: Date
+): Promise<void> {
+  if (!claim.ttlSeconds) return;
+
+  const ttlBase = hookCreatedAt ?? claim.createdAt ?? now;
+  const expiresAt = new Date(
+    Math.max(
+      ttlBase.getTime() + claim.ttlSeconds * 1000,
+      claim.expiresAt?.getTime() ?? 0,
+      now.getTime()
+    )
+  );
+
+  await writeJSON(constraintPath, { ...claim, expiresAt }, { overwrite: true });
+}
+
+/**
+ * Settles a disposed hook's token claim: TTL-carrying claims are retained
+ * (duplicate starts stay fenced past disposal), plain createHook guards are
+ * deleted to free the token. Shared by hook_disposed and terminal-run
+ * cleanup.
+ */
+export async function settleClaimForDisposedHook(
+  basedir: string,
+  hook: Pick<Hook, 'token' | 'runId' | 'createdAt'>,
+  now: Date
+): Promise<string> {
+  const constraintPath = hookTokenClaimPath(basedir, hook.token);
+  // Settle under the claim lock and re-validate ownership: once a run is
+  // terminal, its expired claim becomes reclaimable, so an unguarded
+  // read-then-write here could clobber a fresh claim a new run just
+  // installed. Claims owned by another run are left alone. A contended
+  // lock skips the settle — the claim then expires via its
+  // createdAt + ttl fallback instead of the hookCreatedAt + ttl anchor.
+  // Bounded retry: a briefly contended lock must not skip the settle (a
+  // skipped plain-guard delete would fence the token until the owning run
+  // ends). If all attempts stay contended, canReuseExpiredStartClaim's
+  // run-liveness rule self-heals the leak once the owner is terminal.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const settled = await withTokenClaimLock(basedir, hook.token, async () => {
+      const claim = await readHookTokenClaim(constraintPath);
+      if (!claim || claim.runId !== hook.runId) return true;
+      if (claim.ttlSeconds) {
+        await retainStartHookClaim(
+          constraintPath,
+          { ...claim, token: hook.token },
+          now,
+          hook.createdAt
+        );
+      } else {
+        await deleteJSON(constraintPath);
+      }
+      return true;
+    });
+    if (settled) break;
+    await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+  }
+  return constraintPath;
+}
+
+/**
+ * Re-reads a token claim under its lock and acts only when `revalidate`
+ * still holds — the shared lock + re-validation discipline for claim writes
+ * (see settleClaimForDisposedHook). A contended lock skips the best-effort
+ * operation.
+ */
+async function withRevalidatedClaim(
+  basedir: string,
+  token: string,
+  constraintPath: string,
+  revalidate: (latest: HookTokenClaim) => boolean | Promise<boolean>,
+  act: (latest: HookTokenClaim) => Promise<void>
+): Promise<void> {
+  await withTokenClaimLock(basedir, token, async () => {
+    const latest = await readHookTokenClaim(constraintPath);
+    if (latest && (await revalidate(latest))) {
+      await act(latest);
+    }
+  });
+}
 
 function isVisibleToTag(fileId: string, tag: string | undefined): boolean {
   return tag ? isUntagged(fileId) || hasTag(fileId, tag) : isUntagged(fileId);
@@ -157,12 +256,7 @@ async function restoreHookCachesFromEvent(
 ): Promise<Hook> {
   const hook = hookFromCreatedEvent(event);
 
-  const claimPath = path.join(
-    basedir,
-    'hooks',
-    'tokens',
-    `${hashToken(hook.token)}.json`
-  );
+  const claimPath = hookTokenClaimPath(basedir, hook.token);
   await writeExclusive(
     claimPath,
     JSON.stringify({
@@ -170,6 +264,9 @@ async function restoreHookCachesFromEvent(
       hookId: hook.hookId,
       runId: hook.runId,
       eventId: event.eventId,
+      // Persisted so claim-liveness checks resolve the owning run in the
+      // right namespace (see canReuseExpiredStartClaim).
+      tag,
     })
   );
   await writeExclusive(
@@ -313,34 +410,109 @@ export function createHooksStorage(
 /**
  * Helper function to delete all hooks associated with a workflow run.
  * Called when a run reaches a terminal state.
+ *
+ * `releaseUnmaterializedClaims` (used for cancellation) additionally deletes
+ * start-hook claims the workflow never materialized into a hook, so
+ * cancel-then-retry — including `start()`'s own cleanup when queueing fails
+ * after admission — can reuse the token immediately.
  */
 export async function deleteAllHooksForRun(
   basedir: string,
-  runId: string
+  runId: string,
+  opts?: { releaseUnmaterializedClaims?: boolean; tag?: string }
 ): Promise<void> {
   const hooksDir = path.join(basedir, 'hooks');
   const files = await listJSONFiles(hooksDir);
+  const tokensDir = path.join(hooksDir, 'tokens');
+  const now = new Date();
 
+  // Settle claims through the run's hook entities (retain TTL claims, free
+  // plain guards), and delete the hooks + recovery markers. The marker's
+  // filename hash includes `(token, runId, hookId)` so a leaked marker can
+  // never corrupt a different lifetime — cleaning it up here keeps the
+  // tokens/ directory from accumulating recovered-hook sidecars over time.
+  const settledClaimPaths = new Set<string>();
   for (const file of files) {
     const hookPath = path.join(hooksDir, `${file}.json`);
     const hook = await readJSON(hookPath, HookSchema);
     if (hook && hook.runId === runId) {
-      // Delete the token constraint file to free up the token, and
-      // delete the recovery marker (if any) for disk hygiene. The
-      // marker's filename hash includes `(token, runId, hookId)` so
-      // a leaked marker can never corrupt a different lifetime — but
-      // cleaning it up here keeps the tokens/ directory from
-      // accumulating recovered-hook sidecars over time.
-      const constraintPath = path.join(
-        hooksDir,
-        'tokens',
-        `${hashToken(hook.token)}.json`
+      settledClaimPaths.add(
+        await settleClaimForDisposedHook(basedir, hook, now)
       );
-      await deleteJSON(constraintPath);
       await deleteJSON(
         hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
       );
       await deleteJSON(hookPath);
     }
   }
+
+  // Sweep the tokens directory for claims with no hook entity: this run's
+  // unmaterialized start claims (retain or, on cancellation, release), plus
+  // opportunistic GC of other runs' dead claims so the directory doesn't
+  // grow forever.
+  const tokenFiles = await listJSONFiles(tokensDir);
+  await Promise.all(
+    tokenFiles.map(async (file) => {
+      if (file.endsWith('.recovery')) return;
+      const constraintPath = path.join(tokensDir, `${file}.json`);
+      if (settledClaimPaths.has(constraintPath)) return;
+      const claim = await readHookTokenClaim(constraintPath);
+      if (!claim) return;
+      if (claim.runId !== runId) {
+        // A foreign claim with no retention window is settled by its own
+        // run's termination (and self-heals via lazy claim-time reclaim if
+        // that sweep was skipped) — checking it here would cost a run read
+        // per foreign plain guard on every terminal event.
+        if (!claim.token || (!claim.ttlSeconds && !claim.expiresAt)) return;
+        // A claim is dead only when expired AND its owning run is gone or
+        // terminal — an active run keeps its token fenced even past the
+        // TTL. Deletion re-validates under the claim lock so it cannot
+        // race a reclaim that just installed a fresh claim; a contended
+        // lock simply skips this best-effort GC.
+        if (await canReuseExpiredStartClaim(basedir, opts?.tag, claim)) {
+          await withRevalidatedClaim(
+            basedir,
+            claim.token,
+            constraintPath,
+            (latest) => canReuseExpiredStartClaim(basedir, opts?.tag, latest),
+            () => deleteJSON(constraintPath)
+          );
+        }
+        return;
+      }
+      if (!claim.token) return;
+      if (!claim.ttlSeconds) {
+        // A start claim without a retention TTL dies with its run — release
+        // it here instead of leaving debris for lazy reclaim.
+        await withRevalidatedClaim(
+          basedir,
+          claim.token,
+          constraintPath,
+          (latest) => latest.runId === runId && !latest.ttlSeconds,
+          () => deleteJSON(constraintPath)
+        );
+        return;
+      }
+      // Same lock + re-validation discipline as settleClaimForDisposedHook:
+      // this run is already terminal, so its expired claim may have been
+      // reclaimed by a new run between the read above and the write below.
+      await withRevalidatedClaim(
+        basedir,
+        claim.token,
+        constraintPath,
+        (latest) => latest.runId === runId && !!latest.ttlSeconds,
+        async (latest) => {
+          if (
+            opts?.releaseUnmaterializedClaims &&
+            latest.hookId === undefined &&
+            latest.expiresAt === undefined
+          ) {
+            await deleteJSON(constraintPath);
+          } else {
+            await retainStartHookClaim(constraintPath, latest, now);
+          }
+        }
+      );
+    })
+  );
 }

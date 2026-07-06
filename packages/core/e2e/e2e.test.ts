@@ -1863,6 +1863,43 @@ describe('e2e', () => {
     }
   );
 
+  // Postgres world support lands in the next PR of this stack; drop the
+  // WORKFLOW_TARGET_WORLD clause there.
+  test.skipIf(
+    !!process.env.WORKFLOW_VERCEL_ENV ||
+      process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
+  )(
+    'startHook rejects duplicate starts before hook materialization',
+    { timeout: 60_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const workflow = await e2e('startHookWorkflow');
+      const startOptions = {
+        hook: {
+          token,
+          experimental_ttl: 60_000,
+        },
+      };
+
+      const run = await start(workflow, [token], startOptions);
+
+      const duplicateError = await start(workflow, [token], startOptions).catch(
+        (error: unknown) => error
+      );
+      expect(HookConflictError.is(duplicateError)).toBe(true);
+      assert(HookConflictError.is(duplicateError));
+      expect(duplicateError.conflictingRunId).toBe(run.runId);
+
+      const hook = await waitForHook(token, { runId: run.runId });
+      await resumeHook(hook, { message: 'accepted' });
+
+      await expect(run.returnValue).resolves.toEqual({
+        role: 'owner',
+        message: 'accepted',
+      });
+    }
+  );
+
   test('hookGetConflictWorkflow - awaiting hook.getConflict() registers hook without payload', async () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);

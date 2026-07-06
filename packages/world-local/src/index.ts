@@ -17,7 +17,11 @@ import {
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
-import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
+import {
+  hookRecoveryMarkerPath,
+  hookTokenClaimPath,
+  readHookTokenClaim,
+} from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -69,6 +73,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = mergedConfig.recoverActiveRuns ?? true;
   return {
     specVersion: SPEC_VERSION_CURRENT,
+    startHookAdmission: {},
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
@@ -128,9 +133,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
               HookSchema
             );
             if (hook?.token) {
-              await deleteJSON(
-                path.join(hooksDir, 'tokens', `${hashToken(hook.token)}.json`)
-              );
+              await deleteJSON(hookTokenClaimPath(basedir, hook.token));
               await deleteJSON(
                 hookRecoveryMarkerPath(
                   basedir,
@@ -141,6 +144,29 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
               );
             }
           })
+        );
+        const tokensDir = path.join(hooksDir, 'tokens');
+        const tokenFiles = await fs.readdir(tokensDir).catch(() => []);
+        await Promise.all(
+          tokenFiles
+            .filter((tokenFile) => tokenFile.endsWith('.json'))
+            .map(async (tokenFile) => {
+              const claimPath = path.join(tokensDir, tokenFile);
+              const claim = await readHookTokenClaim(claimPath);
+              if (claim?.tag !== tag) return;
+
+              await deleteJSON(claimPath);
+              if (claim.token && claim.hookId) {
+                await deleteJSON(
+                  hookRecoveryMarkerPath(
+                    basedir,
+                    claim.token,
+                    claim.runId,
+                    claim.hookId
+                  )
+                );
+              }
+            })
         );
 
         // Delete tagged entity files across all directories

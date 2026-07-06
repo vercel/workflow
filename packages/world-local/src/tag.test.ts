@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listJSONFiles, stripTag } from './fs.js';
 import { createStorage } from './storage.js';
@@ -268,6 +269,44 @@ describe('File tagging', () => {
       await world1.close?.();
     });
 
+    it('should not reclaim another tag active start hook claim after ttl', async () => {
+      const { createLocalWorld } = await import('./index.js');
+
+      const world0 = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world1 = createLocalWorld({ dataDir: testDir, tag: 'vitest-1' });
+      await world0.start?.();
+
+      const token = 'cross-tag-active-start-hook-token';
+      await world0.events.create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dep-1',
+          workflowName: 'wf-0',
+          input: new Uint8Array(),
+          startHook: { token, ttlSeconds: 1 },
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+      await expect(
+        world1.events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'dep-2',
+            workflowName: 'wf-1',
+            input: new Uint8Array(),
+            startHook: { token, ttlSeconds: 1 },
+          },
+        })
+      ).rejects.toThrow();
+
+      await world0.close?.();
+      await world1.close?.();
+    });
+
     it('should clear events, steps, hooks, and waits', async () => {
       const { createLocalWorld } = await import('./index.js');
 
@@ -348,6 +387,49 @@ describe('File tagging', () => {
 
       const constraintsAfter = await fs.readdir(tokensDir);
       expect(constraintsAfter).toHaveLength(0);
+
+      await world.close?.();
+    });
+
+    it('should clear unmaterialized start hook token claims', async () => {
+      const { createLocalWorld } = await import('./index.js');
+
+      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      await world.start?.();
+
+      const token = 'tagged-start-hook-token';
+      await world.events.create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dep-1',
+          workflowName: 'start-hook-wf',
+          input: new Uint8Array(),
+          startHook: { token, ttlSeconds: 60 },
+        },
+      });
+
+      const tokensDir = path.join(testDir, 'hooks', 'tokens');
+      expect(await fs.readdir(tokensDir)).toHaveLength(1);
+
+      await world.clear();
+
+      expect(await fs.readdir(tokensDir)).toHaveLength(0);
+      await expect(
+        world.events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'dep-2',
+            workflowName: 'start-hook-wf-2',
+            input: new Uint8Array(),
+            startHook: { token, ttlSeconds: 60 },
+          },
+        })
+      ).resolves.toMatchObject({
+        event: { eventType: 'run_created' },
+        run: { workflowName: 'start-hook-wf-2' },
+      });
 
       await world.close?.();
     });

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   EntityConflictError,
+  HookConflictError,
   HookNotFoundError,
   RunExpiredError,
   RunNotSupportedError,
@@ -12,6 +13,7 @@ import {
 import type {
   Event,
   EventResult,
+  StartHook,
   Hook,
   SerializedData,
   Step,
@@ -30,7 +32,6 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
-  ulidToDate,
   validateAttributeChanges,
   validateUlidTimestamp,
   WaitSchema,
@@ -55,14 +56,20 @@ import {
 } from '../fs.js';
 import { stripEventDataRefs } from './filters.js';
 import {
+  canReuseExpiredStartClaim,
+  eventIdToDate,
   getObjectCreatedAt,
-  hashToken,
+  type HookTokenClaim,
   hookRecoveryMarkerPath,
+  hookTokenClaimPath,
   monotonicUlid,
+  readHookTokenClaim,
+  withTokenClaimLock,
 } from './helpers.js';
 import {
   deleteAllHooksForRun,
   rebuildLiveHookByTokenFromEventLog,
+  settleClaimForDisposedHook,
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
@@ -90,26 +97,6 @@ import { withRunFileLock } from './runs-storage.js';
 // but a shared filesystem), exactly matching the cross-process
 // semantics without spawning subprocesses.
 
-const HookTokenClaimSchema = z.object({
-  // The token-claim writer below has always persisted `hookId`, but
-  // this read schema previously omitted it, which is the bug fixed
-  // by https://github.com/vercel/workflow/issues/2283. `optional()`
-  // is defensive: any claim file that somehow lacks the field still
-  // parses (yielding `undefined`) and falls through to the cross-
-  // hook conflict branch, matching pre-fix behavior.
-  hookId: z.string().optional(),
-  runId: z.string(),
-  // `eventId` is the canonical hook_created event ID the claiming
-  // worker committed to publishing. Persisting it here turns the
-  // claim file into a durable convergence key for cross-worker /
-  // cross-process retries (see comment on the hook_created branch).
-  // `optional()` for backward compatibility: a legacy claim file
-  // written before this field existed falls through to the recovery-
-  // marker upgrade path, which atomically pins a canonical eventId
-  // via a sidecar marker (also a `writeExclusive`).
-  eventId: z.string().optional(),
-});
-
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
  * eventId for a legacy token claim — one written by a version of
@@ -131,17 +118,136 @@ const HookRecoveryMarkerSchema = z.object({
   eventId: z.string(),
 });
 
-async function readHookTokenClaim(
-  constraintPath: string
-): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
-  try {
-    return await readJSON(constraintPath, HookTokenClaimSchema);
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError) {
-      return null;
-    }
-    throw error;
+async function replaceExpiredStartClaim(
+  basedir: string,
+  tag: string | undefined,
+  token: string,
+  currentClaim: HookTokenClaim,
+  nextClaim: HookTokenClaim
+): Promise<boolean> {
+  // Cheap pre-check on the caller's snapshot: an unexpired claim can never
+  // be reclaimed, so skip the lock + re-reads entirely. The in-lock check
+  // below stays authoritative.
+  if (!(await canReuseExpiredStartClaim(basedir, tag, currentClaim))) {
+    return false;
   }
+  const replaced = await withTokenClaimLock(basedir, token, async () => {
+    const constraintPath = hookTokenClaimPath(basedir, token);
+    const latestClaim = await readHookTokenClaim(constraintPath);
+    if (
+      !latestClaim ||
+      !(await canReuseExpiredStartClaim(basedir, tag, latestClaim))
+    ) {
+      return false;
+    }
+    await writeJSON(constraintPath, nextClaim, { overwrite: true });
+    return true;
+  });
+  return replaced ?? false;
+}
+
+/**
+ * Binds an unmaterialized same-run start claim to a hook. Fails (returns
+ * false) when the claim is gone, owned by another run, already bound to a
+ * hook, or retained.
+ */
+async function materializeStartHookClaim(
+  basedir: string,
+  token: string,
+  nextClaim: HookTokenClaim
+): Promise<boolean> {
+  // Retry briefly on lock contention: reporting a contended lock as a lost
+  // materialization would make the caller's convergence read (which can
+  // observe the still-unmaterialized claim while the winner holds the
+  // lock) record a spurious self hook_conflict.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const materialized = await withTokenClaimLock(basedir, token, async () => {
+      const constraintPath = hookTokenClaimPath(basedir, token);
+      const latestClaim = await readHookTokenClaim(constraintPath);
+      if (
+        !latestClaim ||
+        latestClaim.runId !== nextClaim.runId ||
+        latestClaim.hookId !== undefined ||
+        latestClaim.expiresAt !== undefined
+      ) {
+        return false;
+      }
+      await writeJSON(constraintPath, nextClaim, { overwrite: true });
+      return true;
+    });
+    if (materialized !== undefined) return materialized;
+    await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+  }
+  return false;
+}
+
+/**
+ * Claims `token` for `runId`'s run_created event. Returns the canonical
+ * run_created eventId for the run: the caller's `eventId` when this call
+ * created (or reclaimed) the token, or the eventId recorded by a previous
+ * same-run attempt — every duplicate delivery converges on one event path,
+ * so the exclusive event publish downstream dedups instead of appending a
+ * second run_created. Throws HookConflictError when another run holds a
+ * live claim.
+ */
+async function claimStartHookToken(
+  basedir: string,
+  runId: string,
+  eventId: string,
+  startHook: StartHook,
+  tag?: string
+): Promise<string> {
+  const constraintPath = hookTokenClaimPath(basedir, startHook.token);
+  const nextClaim: HookTokenClaim = {
+    token: startHook.token,
+    runId,
+    ttlSeconds: startHook.ttlSeconds,
+    startEventId: eventId,
+    createdAt: new Date(),
+    tag,
+  };
+  const claimed = await writeExclusive(
+    constraintPath,
+    JSON.stringify(nextClaim)
+  );
+  if (claimed) return eventId;
+
+  const existingClaim = await readHookTokenClaim(constraintPath);
+  if (existingClaim?.runId === runId) {
+    return existingClaim.startEventId ?? eventId;
+  }
+  if (
+    existingClaim &&
+    (await replaceExpiredStartClaim(
+      basedir,
+      tag,
+      startHook.token,
+      existingClaim,
+      nextClaim
+    ))
+  ) {
+    return eventId;
+  }
+
+  // Do not throw from the (possibly stale) snapshot: the claim may have
+  // been reclaimed by another start or GC'd by terminal cleanup since the
+  // read above. Re-read and converge; if the token was freed entirely,
+  // retry the exclusive create once.
+  const currentClaim = await readHookTokenClaim(constraintPath);
+  if (!currentClaim) {
+    if (await writeExclusive(constraintPath, JSON.stringify(nextClaim))) {
+      return eventId;
+    }
+    const raced = await readHookTokenClaim(constraintPath);
+    if (raced?.runId === runId) {
+      return raced.startEventId ?? eventId;
+    }
+    throw new HookConflictError(startHook.token, raced?.runId);
+  }
+  if (currentClaim.runId === runId) {
+    return currentClaim.startEventId ?? eventId;
+  }
+  throw new HookConflictError(startHook.token, currentClaim.runId);
 }
 
 async function readHookRecoveryMarker(
@@ -662,6 +768,7 @@ export function createEventsStorage(
               executionContext?: Record<string, any>;
               attributes?: Record<string, string>;
               allowReservedAttributes?: true;
+              startHook?: StartHook;
             };
             if (
               runInputData.deploymentId &&
@@ -697,6 +804,20 @@ export function createEventsStorage(
                 createdAt: now,
                 updatedAt: now,
               };
+              // For start-hook runs, claimStartHookToken returns the
+              // canonical run_created eventId — duplicate deliveries of the
+              // same runId converge on one event path so the exclusive
+              // event write below dedups.
+              let runCreatedEventId = `evnt_${monotonicUlid()}`;
+              if (runInputData.startHook) {
+                runCreatedEventId = await claimStartHookToken(
+                  basedir,
+                  effectiveRunId,
+                  runCreatedEventId,
+                  runInputData.startHook,
+                  tag
+                );
+              }
               const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
               const created = await writeExclusive(
                 runPath,
@@ -705,7 +826,6 @@ export function createEventsStorage(
 
               if (created) {
                 // We created the run — also write the run_created event.
-                const runCreatedEventId = `evnt_${monotonicUlid()}`;
                 const runCreatedEvent: Event = {
                   eventType: 'run_created',
                   runId: effectiveRunId,
@@ -720,13 +840,17 @@ export function createEventsStorage(
                     attributes: runInputData.attributes,
                     allowReservedAttributes:
                       runInputData.allowReservedAttributes,
+                    startHook: runInputData.startHook,
                   },
                 };
                 await storeEvent(runCreatedEvent);
                 currentRun = createdRun;
               } else {
                 // Run already exists (concurrent run_created won the
-                // race). Re-read it so downstream logic sees the real state.
+                // race). Re-read it so downstream logic sees the real
+                // state. Any start-hook claim stays: same-run attempts
+                // share the canonical event path, and a claim orphaned by
+                // a truly divergent writer expires via its TTL.
                 currentRun = await readJSONWithFallback(
                   basedir,
                   'runs',
@@ -1005,6 +1129,7 @@ export function createEventsStorage(
             executionContext?: Record<string, any>;
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
+            startHook?: StartHook;
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -1015,6 +1140,34 @@ export function createEventsStorage(
               allowReservedAttributes: runData.allowReservedAttributes === true,
             }
           );
+          // For start-hook runs, claimStartHookToken returns the canonical
+          // run_created eventId — duplicate deliveries converge on one
+          // event path so the exclusive event publish downstream dedups.
+          // `ownsStartHookClaim` records whether this call created the
+          // claim (canonical id === ours) or adopted a previous same-run
+          // attempt's.
+          let ownsStartHookClaim = false;
+          if (runData.startHook) {
+            const canonicalEventId = await claimStartHookToken(
+              basedir,
+              effectiveRunId,
+              eventId,
+              runData.startHook,
+              tag
+            );
+            ownsStartHookClaim = canonicalEventId === eventId;
+            if (!ownsStartHookClaim) {
+              // Rebuild the pending event around the adopted canonical id so
+              // the persisted event body always matches its file path — even
+              // when this writer goes on to win the run-entity write.
+              eventId = canonicalEventId;
+              event = {
+                ...event,
+                eventId,
+                createdAt: eventIdToDate(eventId) ?? now,
+              };
+            }
+          }
           run = {
             runId: effectiveRunId,
             deploymentId: runData.deploymentId,
@@ -1042,9 +1195,63 @@ export function createEventsStorage(
             JSON.stringify(run, jsonReplacer, 2)
           );
           if (!created) {
-            throw new EntityConflictError(
-              `Workflow run "${effectiveRunId}" already exists`
-            );
+            // Lost the run write to a concurrent same-run creation. For
+            // start-hook runs whose claim we share, converge on the winner:
+            // reuse the existing run and the canonical eventId, and let the
+            // exclusive event publish downstream dedup. The claim is left
+            // alone — same-run attempts share it, and a claim orphaned by a
+            // truly divergent writer expires via its TTL.
+            const startHook = runData.startHook;
+            const startHookClaim =
+              startHook && !ownsStartHookClaim
+                ? await readHookTokenClaim(
+                    hookTokenClaimPath(basedir, startHook.token)
+                  )
+                : null;
+            const existingRun =
+              startHook &&
+              !ownsStartHookClaim &&
+              startHookClaim?.runId === effectiveRunId &&
+              startHookClaim.startEventId
+                ? await readJSONWithFallback(
+                    basedir,
+                    'runs',
+                    effectiveRunId,
+                    WorkflowRunSchema,
+                    tag
+                  )
+                : null;
+
+            if (existingRun && startHook && startHookClaim?.startEventId) {
+              eventId = startHookClaim.startEventId;
+              event = {
+                eventType: 'run_created',
+                runId: effectiveRunId,
+                eventId,
+                createdAt: eventIdToDate(eventId) ?? now,
+                specVersion: effectiveSpecVersion,
+                eventData: {
+                  deploymentId: existingRun.deploymentId,
+                  workflowName: existingRun.workflowName,
+                  input: existingRun.input,
+                  executionContext: existingRun.executionContext,
+                  attributes: existingRun.attributes,
+                  ...(runData.allowReservedAttributes
+                    ? { allowReservedAttributes: true as const }
+                    : {}),
+                  startHook: {
+                    token: startHook.token,
+                    ttlSeconds:
+                      startHookClaim.ttlSeconds ?? startHook.ttlSeconds,
+                  },
+                },
+              };
+              run = existingRun;
+            } else {
+              throw new EntityConflictError(
+                `Workflow run "${effectiveRunId}" already exists`
+              );
+            }
           }
         } else if (data.eventType === 'run_started') {
           // Reuse currentRun from validation (already read above)
@@ -1108,7 +1315,7 @@ export function createEventsStorage(
               }
             );
             await Promise.all([
-              deleteAllHooksForRun(basedir, effectiveRunId),
+              deleteAllHooksForRun(basedir, effectiveRunId, { tag }),
               deleteAllWaitsForRun(basedir, effectiveRunId),
             ]);
           }
@@ -1146,7 +1353,7 @@ export function createEventsStorage(
               }
             );
             await Promise.all([
-              deleteAllHooksForRun(basedir, effectiveRunId),
+              deleteAllHooksForRun(basedir, effectiveRunId, { tag }),
               deleteAllWaitsForRun(basedir, effectiveRunId),
             ]);
           }
@@ -1176,7 +1383,10 @@ export function createEventsStorage(
               }
             );
             await Promise.all([
-              deleteAllHooksForRun(basedir, effectiveRunId),
+              deleteAllHooksForRun(basedir, effectiveRunId, {
+                releaseUnmaterializedClaims: true,
+                tag,
+              }),
               deleteAllWaitsForRun(basedir, effectiveRunId),
             ]);
           }
@@ -1557,12 +1767,7 @@ export function createEventsStorage(
 
           // Atomically claim the token using an exclusive-create constraint file.
           // This avoids the TOCTOU race of the previous read-all-then-check approach.
-          const constraintPath = path.join(
-            basedir,
-            'hooks',
-            'tokens',
-            `${hashToken(hookData.token)}.json`
-          );
+          const constraintPath = hookTokenClaimPath(basedir, hookData.token);
           // When the claim is absent, the event log is the only durable source
           // that can distinguish a first hook from a crash-lost token cache.
           if (!(await readHookTokenClaim(constraintPath))) {
@@ -1576,13 +1781,14 @@ export function createEventsStorage(
           // process retries can converge on a single canonical
           // `hook_created` event path. See the recovery comment
           // below.
-          const tokenClaimed = await writeExclusive(
+          let tokenClaimed = await writeExclusive(
             constraintPath,
             JSON.stringify({
               token: hookData.token,
               hookId: data.correlationId,
               runId: effectiveRunId,
               eventId,
+              tag,
             })
           );
 
@@ -1624,11 +1830,66 @@ export function createEventsStorage(
           let writeHookEntityWithOverwrite = false;
 
           if (!tokenClaimed) {
-            const existingClaim = await readHookTokenClaim(constraintPath);
+            let existingClaim = await readHookTokenClaim(constraintPath);
 
             if (
               existingClaim?.runId === effectiveRunId &&
-              existingClaim.hookId === data.correlationId
+              existingClaim.hookId === undefined &&
+              existingClaim.expiresAt === undefined
+            ) {
+              // Unmaterialized same-run start claim: bind it to this hook.
+              tokenClaimed = await materializeStartHookClaim(
+                basedir,
+                hookData.token,
+                {
+                  token: hookData.token,
+                  hookId: data.correlationId,
+                  runId: effectiveRunId,
+                  eventId,
+                  ttlSeconds: existingClaim.ttlSeconds,
+                  startEventId: existingClaim.startEventId,
+                  createdAt: existingClaim.createdAt,
+                  tag: existingClaim.tag,
+                }
+              );
+              if (!tokenClaimed) {
+                // Lost a concurrent materialize. Re-read so the dedup
+                // branch below sees the winner's claim — if the winner was
+                // a duplicate of this very (runId, hookId), this converges
+                // on its canonical eventId instead of emitting a spurious
+                // self-conflict.
+                existingClaim = await readHookTokenClaim(constraintPath);
+              }
+            }
+            // No expiry-shape gate here: retained claims carry an explicit
+            // expiresAt, but an expired *unmaterialized* orphan only has
+            // createdAt + ttlSeconds — replaceExpiredStartClaim derives
+            // both and refuses anything unexpired or still owned by an
+            // active run.
+            if (
+              !tokenClaimed &&
+              existingClaim &&
+              (await replaceExpiredStartClaim(
+                basedir,
+                tag,
+                hookData.token,
+                existingClaim,
+                {
+                  token: hookData.token,
+                  hookId: data.correlationId,
+                  runId: effectiveRunId,
+                  eventId,
+                }
+              ))
+            ) {
+              tokenClaimed = true;
+            }
+
+            if (
+              !tokenClaimed &&
+              existingClaim?.runId === effectiveRunId &&
+              existingClaim.hookId === data.correlationId &&
+              existingClaim.expiresAt === undefined
             ) {
               // Adopt a canonical eventId for the recovery write. The
               // outer event publish (`writeExclusive(eventPath)`)
@@ -1722,8 +1983,7 @@ export function createEventsStorage(
               // (a ULID) so two workers writing the same event
               // produce byte-identical content.
               eventId = canonicalEventId;
-              const canonicalCreatedAt =
-                ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
+              const canonicalCreatedAt = eventIdToDate(eventId) ?? now;
               event = {
                 ...data,
                 runId: effectiveRunId,
@@ -1732,7 +1992,7 @@ export function createEventsStorage(
                 specVersion: effectiveSpecVersion,
               };
               writeHookEntityWithOverwrite = true;
-            } else {
+            } else if (!tokenClaimed) {
               // Cross-hook / cross-run conflict: a different
               // (runId, hookId) holds this token. Create a
               // hook_conflict event so the workflow can fail
@@ -1844,19 +2104,10 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Delete the token constraint file to free up the token
-            // for reuse, and delete this hook's recovery marker (if
-            // any) for disk hygiene. The marker's filename hash
-            // includes `(token, runId, hookId)` so different
-            // lifetimes never collide, but cleaning up reduces disk
-            // leak for hooks that go through the recovery path.
-            const disposedConstraintPath = path.join(
-              basedir,
-              'hooks',
-              'tokens',
-              `${hashToken(existingHook.token)}.json`
-            );
-            await deleteJSON(disposedConstraintPath);
+            // Normal hook disposal frees the token; start-hook claims carry
+            // ttlSeconds and are retained so duplicate starts remain fenced
+            // after the active hook entity is gone.
+            await settleClaimForDisposedHook(basedir, existingHook, now);
             await deleteJSON(
               hookRecoveryMarkerPath(
                 basedir,
