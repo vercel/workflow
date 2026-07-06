@@ -57,3 +57,7 @@ export function createVercelWorld(config?: APIConfig): World {
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
   };
 }
+
+export function createWorld(config?: APIConfig): World {
+  return createVercelWorld(config);
+}

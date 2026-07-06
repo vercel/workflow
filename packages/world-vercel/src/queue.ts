@@ -323,6 +323,18 @@ export function createQueue(config?: APIConfig): Queue {
 
     const client = new QueueClient({
       ...clientOptions,
+      // When sending through the api.vercel.com proxy, the fixed
+      // `resolveBaseUrl` above replaces the queue SDK's own
+      // region -> `<region>.vercel-queue.com` base-URL resolution, so
+      // the per-send resolved region must travel as a header instead:
+      // the proxy forwards the send to that region's VQS dataplane
+      // host when `x-vercel-queue-region` is present (vercel/api#79056).
+      ...(usingProxy && {
+        headers: {
+          ...clientOptions.headers,
+          'x-vercel-queue-region': region,
+        },
+      }),
       region,
       deploymentId,
       transport,

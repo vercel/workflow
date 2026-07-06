@@ -1,4 +1,3 @@
-export { pluralize } from './pluralize.js';
 export {
   formatStepName,
   formatWorkflowName,
@@ -8,10 +7,13 @@ export {
   stepDisplayName,
   workflowDisplayName,
 } from './parse-name.js';
+export { pluralize } from './pluralize.js';
 export { once, type PromiseWithResolvers, withResolvers } from './promise.js';
 export { parseDurationToDate } from './time.js';
 export {
+  getWorldImport,
   isVercelWorldTarget,
+  normalizeWorkflowTargetWorldImport,
   resolveWorkflowTargetWorld,
   usesVercelWorld,
 } from './world-target.js';

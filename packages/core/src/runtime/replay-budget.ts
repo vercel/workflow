@@ -3,7 +3,7 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
-import { getReplayTimeoutMs, REPLAY_TIMEOUT_MAX_RETRIES } from './constants.js';
+import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import { getWorld } from './world.js';
 
@@ -175,13 +175,14 @@ export async function handleReplayBudgetExhausted(args: {
     return;
   }
 
-  if (attempt <= REPLAY_TIMEOUT_MAX_RETRIES) {
+  const maxRetries = getReplayTimeoutMaxRetries();
+  if (attempt <= maxRetries) {
     runLogger.warn(
       'Workflow replay exceeded timeout but will be re-attempted (attempt < maxRetries)',
       {
         timeoutMs: limitMs,
         attempt,
-        maxRetries: REPLAY_TIMEOUT_MAX_RETRIES,
+        maxRetries,
       }
     );
     process.exit(1);
@@ -196,7 +197,7 @@ export async function handleReplayBudgetExhausted(args: {
     {
       timeoutMs: limitMs,
       attempt,
-      maxRetries: REPLAY_TIMEOUT_MAX_RETRIES,
+      maxRetries,
       errorCode: replayTimeoutDescription.errorCode,
       errorAttribution: replayTimeoutDescription.attribution,
     }

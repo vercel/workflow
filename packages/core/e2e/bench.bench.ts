@@ -1,8 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { createVercelWorld } from '@workflow/world-vercel';
-import fs from 'fs';
-import path from 'path';
 import { bench, describe } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { createWorld as createPostgresWorld } from '../../world-postgres/src/index.js';
 import type { Run } from '../src/runtime';
 import { setWorld, start } from '../src/runtime';
 import { getWorkbenchAppPath, isLocalDeployment } from './utils';
@@ -20,6 +21,9 @@ if (isLocalDeployment()) {
   const isNextJs = appName.includes('nextjs') || appName.includes('next-');
   const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
   process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+  if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+    setWorld(createPostgresWorld());
+  }
 } else if (process.env.WORKFLOW_VERCEL_ENV) {
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     throw new Error(
