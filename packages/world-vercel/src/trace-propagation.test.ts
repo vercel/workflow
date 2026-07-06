@@ -22,6 +22,7 @@ import { getWorkflowRunEventsV4 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { makeRequest } from './utils.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
@@ -119,7 +120,8 @@ describe('makeRequest trace propagation', () => {
 
 describe('v4 event requests (fetchV4) trace propagation', () => {
   it('sends traceparent on the outgoing v4 request, propagating the active context to workflow-server', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
     agent

@@ -156,7 +156,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('captures an explicit hasMore from the sentinel, independent of next', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -197,7 +198,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('leaves hasMore undefined for a legacy sentinel without the flag', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -274,7 +276,8 @@ describe('v4 transport uses global fetch (observability)', () => {
   });
 
   it('routes a v4 LIST through globalThis.fetch', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
     agent
@@ -349,7 +352,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('forwards skipPreload in the run_started frame meta (turbo preload opt-out)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -409,7 +413,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('omits skipPreload from the frame meta when not set (default / old SDK parity)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
