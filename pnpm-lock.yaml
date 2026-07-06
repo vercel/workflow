@@ -418,6 +418,12 @@ importers:
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
+      '@workflow/world-local':
+        specifier: workspace:*
+        version: link:../world-local
+      '@workflow/world-vercel':
+        specifier: workspace:*
+        version: link:../world-vercel
       builtin-modules:
         specifier: 5.0.0
         version: 5.0.0
@@ -837,6 +843,9 @@ importers:
       '@nuxt/kit':
         specifier: 4.4.7
         version: 4.4.7(magicast@0.5.2)
+      '@workflow/builders':
+        specifier: workspace:*
+        version: link:../builders
       '@workflow/nitro':
         specifier: workspace:*
         version: link:../nitro
@@ -1457,9 +1466,15 @@ importers:
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
+      '@workflow/world-local':
+        specifier: workspace:*
+        version: link:../world-local
       chalk:
         specifier: 5.6.2
         version: 5.6.2

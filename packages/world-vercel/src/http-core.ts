@@ -24,6 +24,7 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { envNumber } from '@workflow/world';
 import {
   ErrorType,
   getSpanKind,
@@ -47,6 +48,16 @@ import {
  * upstream timeout handlers (e.g. the replay timeout).
  */
 export const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * Effective per-request timeout. Override via `WORKFLOW_REQUEST_TIMEOUT_MS`
+ * (e.g. dialled down on an e2e deployment to exercise the timeout path).
+ */
+export const getRequestTimeoutMs = (): number =>
+  envNumber('WORKFLOW_REQUEST_TIMEOUT_MS', REQUEST_TIMEOUT_MS, {
+    integer: true,
+    min: 1,
+  });
 
 /**
  * Lightweight debug logger toggle for HTTP requests. Activated when the DEBUG
@@ -331,7 +342,7 @@ export async function instrumentedFetch(
     body,
     dispatcher,
     peerService = 'workflow-server',
-    timeoutMs = REQUEST_TIMEOUT_MS,
+    timeoutMs = getRequestTimeoutMs(),
     signal: callerSignal,
     injectTraceContext = true,
     cacheBust = true,

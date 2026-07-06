@@ -32,9 +32,9 @@ import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
+  getMaxQueueDeliveries,
+  getReplayDivergenceMaxRetries,
   isTurboEnabled,
-  MAX_QUEUE_DELIVERIES,
-  REPLAY_DIVERGENCE_MAX_RETRIES,
 } from './runtime/constants.js';
 import {
   getQueueOverhead,
@@ -123,9 +123,11 @@ export {
 // filesystem operations into the flow route bundle.
 export {
   createWorld,
+  createWorldFromModule,
   getWorld,
   getWorldHandlers,
   setWorld,
+  type WorldFactoryModule,
 } from './runtime/world.js';
 
 function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
@@ -344,13 +346,14 @@ export function workflowEntrypoint(
         // log line and child loggers below, so callers don't repeat it.
         const runLogger = runtimeLogger.forRun(runId, workflowName);
 
-        if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+        const maxQueueDeliveries = getMaxQueueDeliveries();
+        if (metadata.attempt > maxQueueDeliveries) {
           const maxDeliveriesDescription = describeError(
             undefined,
             RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
           );
           runLogger.error(
-            `Workflow handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+            `Workflow handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
             {
               attempt: metadata.attempt,
               errorCode: maxDeliveriesDescription.errorCode,
@@ -361,7 +364,7 @@ export function workflowEntrypoint(
             const world = await getWorld();
             const getEncryptionKey = memoizeEncryptionKey(world, runId);
             const err = new FatalError(
-              `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
+              `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
             );
             await world.events.create(
               runId,
@@ -1895,10 +1898,10 @@ export function workflowEntrypoint(
                         if (ReplayDivergenceError.is(err)) {
                           const divergenceCount =
                             (replayDivergence?.count ?? 0) + 1;
+                          const maxRecoveryReplays =
+                            getReplayDivergenceMaxRetries();
 
-                          if (
-                            divergenceCount <= REPLAY_DIVERGENCE_MAX_RETRIES
-                          ) {
+                          if (divergenceCount <= maxRecoveryReplays) {
                             runLogger.warn(
                               'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
                               {
@@ -1908,8 +1911,7 @@ export function workflowEntrypoint(
                                   replayDivergence?.eventId,
                                 divergenceCount,
                                 deliveryAttempt: metadata.attempt,
-                                maxRecoveryReplays:
-                                  REPLAY_DIVERGENCE_MAX_RETRIES,
+                                maxRecoveryReplays,
                                 errorMessage: err.message,
                               }
                             );
@@ -1930,7 +1932,7 @@ export function workflowEntrypoint(
                           }
 
                           terminalError = new CorruptedEventLogError(
-                            `Workflow replay diverged ${divergenceCount} times after ${REPLAY_DIVERGENCE_MAX_RETRIES} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
+                            `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
                             { cause: err }
                           );
                         }

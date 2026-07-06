@@ -3,12 +3,14 @@ import { runtimeLogger } from '../logger.js';
 import {
   _resetReplayTimeoutWarnCacheForTests,
   getMaxInlineSteps,
+  getMaxQueueDeliveries,
   getReplayTimeoutMs,
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
+  MAX_QUEUE_DELIVERIES,
   MAX_REPLAY_TIMEOUT_MS,
   MIN_MAX_INLINE_STEPS,
   MIN_REPLAY_TIMEOUT_MS,
@@ -280,5 +282,34 @@ describe('isTurboEnabled', () => {
     expect(isTurboEnabled()).toBe(true);
     process.env.WORKFLOW_TURBO = 'yes';
     expect(isTurboEnabled()).toBe(true);
+  });
+});
+
+describe('getMaxQueueDeliveries', () => {
+  const ENV = 'WORKFLOW_MAX_QUEUE_DELIVERIES';
+
+  beforeEach(() => {
+    delete process.env[ENV];
+  });
+
+  afterEach(() => {
+    delete process.env[ENV];
+  });
+
+  it('returns the default when unset', () => {
+    expect(getMaxQueueDeliveries()).toBe(MAX_QUEUE_DELIVERIES);
+  });
+
+  it('allows a stricter (lower) override', () => {
+    process.env[ENV] = String(MAX_QUEUE_DELIVERIES - 1);
+    expect(getMaxQueueDeliveries()).toBe(MAX_QUEUE_DELIVERIES - 1);
+  });
+
+  it('clamps an above-default override back to the retention-safe default', () => {
+    // The delivery budget must stay within VQS message retention so the
+    // handler-side failure path runs before the message expires; an override
+    // may only lower it, never raise it.
+    process.env[ENV] = String(MAX_QUEUE_DELIVERIES + 100);
+    expect(getMaxQueueDeliveries()).toBe(MAX_QUEUE_DELIVERIES);
   });
 });
