@@ -10,6 +10,7 @@ import type { Event, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import { framedStreamMarkersEnabled } from './capabilities.js';
 import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
@@ -30,6 +31,7 @@ import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
+  WORKFLOW_DEFAULT_STREAM_FRAMING,
   WORKFLOW_GET_STREAM_ID,
   WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
@@ -38,6 +40,7 @@ import {
 import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
+import { version as workflowCoreVersion } from './version.js';
 import { createContext } from './vm/index.js';
 import { runCachedWorkflowScript } from './vm/script-cache.js';
 import {
@@ -310,6 +313,18 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
+    // The framing every stream of this run uses, derived host-side from the
+    // run's capability gate (this SDK executes the run, so its own version is
+    // the run's version). Workflow-context `getWritable()` tags its handles
+    // with it so step-side and external writers reviving those handles frame
+    // exactly like the run's readers (e.g. `Run.getReadable`) expect.
+    // Version-derived, so it is identical on every deterministic replay.
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[WORKFLOW_DEFAULT_STREAM_FRAMING] = framedStreamMarkersEnabled(
+      workflowCoreVersion
+    )
+      ? 'framed-v2'
+      : undefined;
 
     // TODO: there should be a getUrl method on the world interface itself. This
     // solution only works for vercel + local worlds.
