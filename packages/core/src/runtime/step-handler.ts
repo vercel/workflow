@@ -40,7 +40,7 @@ import {
   normalizeUnknownError,
 } from '../types.js';
 
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import { getMaxQueueDeliveries } from './constants.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -90,9 +90,10 @@ const stepHandler = createQueueHandler(
     // of the step details, etc. We simply attempt to mark the step as failed
     // and enqueue the workflow once, and if either of those fails, the message
     // is still consumed but with adequate logging that an error occurred.
-    if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+    const maxQueueDeliveries = getMaxQueueDeliveries();
+    if (metadata.attempt > maxQueueDeliveries) {
       runtimeLogger.error(
-        `Step handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+        `Step handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
         {
           workflowRunId,
           stepId,
@@ -110,7 +111,7 @@ const stepHandler = createQueueHandler(
             correlationId: stepId,
             eventData: {
               stepName: stepNameFromQueue,
-              error: `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+              error: `Step exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
             },
           },
           { requestId }

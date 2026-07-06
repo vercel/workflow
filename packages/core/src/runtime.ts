@@ -25,8 +25,8 @@ import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
-  MAX_QUEUE_DELIVERIES,
-  REPLAY_DIVERGENCE_MAX_RETRIES,
+  getMaxQueueDeliveries,
+  getReplayDivergenceMaxRetries,
   REPLAY_TIMEOUT_MAX_RETRIES,
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
@@ -175,9 +175,10 @@ export function workflowEntrypoint(
       // of the workflow events, etc. We simply attempt to mark the run as failed
       // and if that fails, the message is still consumed but with adequate logging
       // that an error occurred preventing us from failing the run.
-      if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+      const maxQueueDeliveries = getMaxQueueDeliveries();
+      if (metadata.attempt > maxQueueDeliveries) {
         runtimeLogger.error(
-          `Workflow handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+          `Workflow handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
           { workflowRunId: runId, workflowName, attempt: metadata.attempt }
         );
         try {
@@ -189,7 +190,7 @@ export function workflowEntrypoint(
               specVersion: SPEC_VERSION_CURRENT,
               eventData: {
                 error: {
-                  message: `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+                  message: `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
                 },
                 errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
               },
@@ -761,8 +762,9 @@ export function workflowEntrypoint(
                   let terminalError = err;
                   if (ReplayDivergenceError.is(err)) {
                     const divergenceCount = (replayDivergence?.count ?? 0) + 1;
+                    const maxRecoveryReplays = getReplayDivergenceMaxRetries();
 
-                    if (divergenceCount <= REPLAY_DIVERGENCE_MAX_RETRIES) {
+                    if (divergenceCount <= maxRecoveryReplays) {
                       runtimeLogger.warn(
                         'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
                         {
@@ -772,7 +774,7 @@ export function workflowEntrypoint(
                           priorDivergenceEventId: replayDivergence?.eventId,
                           divergenceCount,
                           deliveryAttempt: metadata.attempt,
-                          maxRecoveryReplays: REPLAY_DIVERGENCE_MAX_RETRIES,
+                          maxRecoveryReplays,
                           errorMessage: err.message,
                         }
                       );
@@ -798,7 +800,7 @@ export function workflowEntrypoint(
                     }
 
                     terminalError = new CorruptedEventLogError(
-                      `Workflow replay diverged ${divergenceCount} times after ${REPLAY_DIVERGENCE_MAX_RETRIES} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
+                      `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
                       { cause: err }
                     );
                   }

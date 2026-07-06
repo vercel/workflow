@@ -1,3 +1,5 @@
+import { envNumber } from '@workflow/world';
+
 // Maximum number of queue delivery attempts before the handler gives up and
 // gracefully fails the run/step. This must be bounded under the VQS message
 // max visibility window (24 hours) so that our handler-side failure path
@@ -18,6 +20,22 @@
 // every hop at 900s.)
 export const MAX_QUEUE_DELIVERIES = 48;
 
+/**
+ * Effective max queue deliveries. Override via `WORKFLOW_MAX_QUEUE_DELIVERIES`.
+ */
+export function getMaxQueueDeliveries(): number {
+  // Only ever lower the delivery budget. The default is calibrated so the
+  // handler-side failure path runs before VQS message-retention expiry (see
+  // MAX_QUEUE_DELIVERIES above); a higher value would bypass that invariant and
+  // let a bad deployment redeliver until queue expiry instead of recording
+  // run_fail. `max` clamps a too-high override back down to the safe default.
+  return envNumber('WORKFLOW_MAX_QUEUE_DELIVERIES', MAX_QUEUE_DELIVERIES, {
+    integer: true,
+    min: 1,
+    max: MAX_QUEUE_DELIVERIES,
+  });
+}
+
 // Maximum time allowed for a single workflow replay execution (in ms).
 // If a replay exceeds this duration, the process exits so the queue can retry.
 // This must be lower than the function's maxDuration to ensure the
@@ -33,7 +51,31 @@ export const REPLAY_TIMEOUT_MS = 240_000;
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
 
+/**
+ * Effective replay-timeout retry budget. Override via
+ * `WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES`.
+ */
+export function getReplayTimeoutMaxRetries(): number {
+  return envNumber(
+    'WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES',
+    REPLAY_TIMEOUT_MAX_RETRIES,
+    { integer: true }
+  );
+}
+
 // A replay-consumer mismatch can be caused by a transient divergent replay
 // rather than an invalid persisted history. Queue bounded recovery replays
 // before recording terminal corruption for a run that cannot replay.
 export const REPLAY_DIVERGENCE_MAX_RETRIES = 3;
+
+/**
+ * Effective replay-divergence recovery budget. Override via
+ * `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`.
+ */
+export function getReplayDivergenceMaxRetries(): number {
+  return envNumber(
+    'WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES',
+    REPLAY_DIVERGENCE_MAX_RETRIES,
+    { integer: true }
+  );
+}

@@ -1,3 +1,8 @@
+export {
+  _resetEnvWarnCacheForTests,
+  type EnvNumberOptions,
+  envNumber,
+} from './env-config.js';
 export type * from './events.js';
 export {
   BaseEventSchema,

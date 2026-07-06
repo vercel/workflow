@@ -8,7 +8,11 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
+import {
+  envNumber,
+  type StructuredError,
+  StructuredErrorSchema,
+} from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
@@ -91,6 +95,16 @@ const WORKFLOW_SERVER_URL_OVERRIDE = '';
  * and defeating upstream timeout handlers (e.g. the replay timeout).
  */
 const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * Effective per-request timeout. Override via `WORKFLOW_REQUEST_TIMEOUT_MS`
+ * (e.g. dialled down on an e2e deployment to exercise the timeout path).
+ */
+const getRequestTimeoutMs = (): number =>
+  envNumber('WORKFLOW_REQUEST_TIMEOUT_MS', REQUEST_TIMEOUT_MS, {
+    integer: true,
+    min: 1,
+  });
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
@@ -177,6 +191,26 @@ function getTransientTransportCode(error: unknown): string | undefined {
  */
 const getWorkflowServerUrlOverride = (): string =>
   WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
+
+/**
+ * Header the server reads to tighten its own limits (stream max-duration,
+ * chunk-batch size, …) per request — only ever to a stricter value than the
+ * deployment default. See `world-vercel`'s server counterpart.
+ */
+const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
+
+/**
+ * Forward server-side limit overrides set via `WORKFLOW_TEST_LIMIT_OVERRIDES`.
+ *
+ * The value is a JSON object of server-constant name → value (e.g.
+ * `{"STREAM_MAX_DURATION_MS":5000}`) sent verbatim as
+ * `x-workflow-test-limit-overrides`. The server validates and clamps it
+ * (stricter-only), so a malformed value is harmlessly ignored there — we don't
+ * parse it here. Intended for a dedicated e2e deployment so the suite exercises
+ * edge paths (stream reconnect, batch splitting) quickly; unset in production.
+ */
+const getTestLimitOverridesHeader = (): string =>
+  process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
 
 export interface APIConfig {
   token?: string;
@@ -341,6 +375,10 @@ export const getHeaders = (
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
   headers.set('User-Agent', getUserAgent());
+  const testLimitOverrides = getTestLimitOverridesHeader();
+  if (testLimitOverrides) {
+    headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
+  }
   if (projectConfig) {
     headers.set(
       'x-vercel-environment',
@@ -484,7 +522,7 @@ export async function makeRequest<T>({
 
         // Compose user-passed abort signal (unused at time of writing)
         // with the max request timeout
-        const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+        const timeoutSignal = AbortSignal.timeout(getRequestTimeoutMs());
         const signal = options.signal
           ? AbortSignal.any([options.signal, timeoutSignal])
           : timeoutSignal;

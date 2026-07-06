@@ -1,4 +1,5 @@
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
+import { envNumber } from '@workflow/world';
 
 /**
  * Polling interval (in ms) for lock release detection.
@@ -19,6 +20,13 @@ import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
  * is released.
  */
 export const LOCK_POLL_INTERVAL_MS = 100;
+
+/** Effective lock-poll interval. Override: `WORKFLOW_LOCK_POLL_INTERVAL_MS`. */
+const getLockPollIntervalMs = (): number =>
+  envNumber('WORKFLOW_LOCK_POLL_INTERVAL_MS', LOCK_POLL_INTERVAL_MS, {
+    integer: true,
+    min: 1,
+  });
 
 /**
  * State tracker for flushable stream operations.
@@ -153,7 +161,7 @@ export function pollWritableLock(
       clearInterval(intervalId);
       state.writablePollingInterval = undefined;
     }
-  }, LOCK_POLL_INTERVAL_MS);
+  }, getLockPollIntervalMs());
 
   state.writablePollingInterval = intervalId;
 }
@@ -192,7 +200,7 @@ export function pollReadableLock(
       clearInterval(intervalId);
       state.readablePollingInterval = undefined;
     }
-  }, LOCK_POLL_INTERVAL_MS);
+  }, getLockPollIntervalMs());
 
   state.readablePollingInterval = intervalId;
 }
