@@ -89,41 +89,52 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The Vercel World requires no configuration when deployed to Vercel. For advanced use cases, you can override settings programmatically via `createVercelWorld()`.
+The Vercel World requires no configuration when deployed to Vercel — the platform injects everything the runtime needs (`VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and the deployment encryption key).
+
+The `WORKFLOW_VERCEL_*` variables below configure **tooling that talks to the Vercel World from outside a deployment** — the `workflow` CLI, the web UI, and tests. They have no effect inside a deployed Vercel function (the runtime warns if they're set there); the CLI infers all of them from your `.vercel` directory and Vercel CLI login when unset.
 
 ### `WORKFLOW_VERCEL_ENV`
 
-The Vercel environment to use. Options: `production`, `preview`, `development`. Automatically detected.
+The Vercel environment to target. Options: `production`, `preview`, `development`. Default: `production`.
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
-Authentication token for API requests. Automatically detected.
+Vercel API authentication token (secret — keep it in your environment, not in code). Falls back to `VERCEL_TOKEN`, then to your Vercel CLI login.
 
 ### `WORKFLOW_VERCEL_PROJECT`
 
-Vercel project ID for API requests. Automatically detected.
+Vercel project ID (`prj_...`).
+
+### `WORKFLOW_VERCEL_PROJECT_NAME`
+
+Vercel project name/slug, used for dashboard links.
 
 ### `WORKFLOW_VERCEL_TEAM`
 
-Vercel team ID for API requests. Automatically detected.
+Vercel team ID.
 
 ### `WORKFLOW_VERCEL_BACKEND_URL`
 
-Custom base URL for the Vercel workflow API. Automatically detected.
+Custom base URL for the Vercel workflow API proxy. Default: `https://api.vercel.com/v1/workflow`.
+
+### `VERCEL_QUEUE_MAX_DELAY_SECONDS`
+
+Maximum delay of a single queue message; longer sleeps chain messages. Read inside the deployment. Default: `82800` (23 hours).
 
 ### Programmatic configuration
 
+Options passed to `createVercelWorld()` take precedence over the environment variables above:
+
 {/*@skip-typecheck: incomplete code sample*/}
 
-```typescript title="workflow.config.ts" lineNumbers
+```typescript title="my-world.ts" lineNumbers
 import { createVercelWorld } from "@workflow/world-vercel";
 
 const world = createVercelWorld({
   token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-  baseUrl: "https://api.vercel.com/v1/workflow",
   projectConfig: {
-    projectId: "my-project",
-    teamId: "my-team",
+    projectId: "prj_...",
+    teamId: "team_...",
     environment: "production",
   },
 });

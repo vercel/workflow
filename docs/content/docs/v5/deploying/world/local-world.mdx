@@ -56,20 +56,25 @@ Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 
-Maximum number of concurrent queue workers. Default: `100`
+Maximum number of concurrent queue message handlers. Default: `1000`
 
 ### Programmatic configuration
 
-{/* @skip-typecheck: incomplete code sample */}
-```typescript title="workflow.config.ts" lineNumbers
+Options passed to `createLocalWorld()` take precedence over the environment variables above. Export the configured World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
+
+```typescript title="my-world.ts" lineNumbers
 import { createLocalWorld } from "@workflow/world-local";
 
-const world = createLocalWorld({
+export default createLocalWorld({
   dataDir: "./custom-workflow-data",
   port: 5173,
   // baseUrl overrides port if set
   baseUrl: "https://local.example.com:3000",
 });
+```
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
 ## Limitations
