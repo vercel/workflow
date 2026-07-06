@@ -47,18 +47,3 @@ export function joinWorkflowBasePath(
 export function createWorkflowBasePathRuntimeCode(basePath: string): string {
   return `globalThis[Symbol.for('@workflow/core/basePath')] = ${JSON.stringify(basePath)};`;
 }
-
-/**
- * Function expression that detects Vercel queue trigger deliveries from a
- * `Headers` object. Queue deliveries invoke the flow function with the
- * root-relative route path, so servers mounted below a base path must
- * rewrite exactly these requests (and no plain HTTP requests) onto the
- * base-prefixed route. Deliveries always carry the CloudEvents type header;
- * `vqs-message-id` is kept as a fallback since some launchers surface only
- * that one.
- */
-export const QUEUE_DELIVERY_HEADERS_GUARD_CODE = `(headers) =>
-  Boolean(
-    headers?.get?.('ce-type')?.startsWith('com.vercel.queue.') ||
-      headers?.get?.('vqs-message-id')
-  )`;
