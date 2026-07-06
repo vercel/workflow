@@ -99,6 +99,28 @@ export interface Streamer {
     close(runId: string, name: string): Promise<void>;
 
     /**
+     * Abort a stream write in progress.
+     *
+     * Unlike `close` (which drains everything written and then marks the
+     * stream done), `abort` tears down any transport-level write state the
+     * world holds for this stream — abandoning unconfirmed chunks — without
+     * completing the stream. It is invoked when the writer is aborted rather
+     * than closed (e.g. `WritableStream.abort()`), so a world that keeps a
+     * long-lived, reconnecting write channel (see {@link StreamWriteOptions}
+     * `retransmitSafe`) must stop reconnecting and resending here; otherwise
+     * an aborted stream would keep a connection open and deliver data that
+     * was never meant to be committed.
+     *
+     * OPTIONAL: worlds that hold no per-stream write state (every write is a
+     * standalone request) can omit it — there is nothing to tear down.
+     *
+     * @param runId - The run ID
+     * @param name - The stream name
+     * @param reason - The abort reason, if any
+     */
+    abort?(runId: string, name: string, reason?: unknown): Promise<void>;
+
+    /**
      * Read from a stream starting at the given chunk index.
      * Positive values skip that many chunks from the start (0-based).
      * Negative values start that many chunks before the current end

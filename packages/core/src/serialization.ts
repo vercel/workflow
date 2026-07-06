@@ -989,7 +989,7 @@ const getStreamFlushIntervalMs = (): number =>
 interface StreamSink {
   write(chunk: Uint8Array): Promise<void>;
   close(): Promise<void>;
-  abort(reason?: unknown): void;
+  abort(reason?: unknown): void | Promise<void>;
 }
 
 /**
@@ -1102,6 +1102,14 @@ function createBatchSink(
       flushWaiters = [];
       const abortError = reason ?? new Error('Stream aborted');
       for (const w of waiters) w.reject(abortError);
+      // Tear down any transport-level write state the world holds for this
+      // stream. For a `retransmitSafe` transport (world-vercel's long-lived
+      // acknowledged WebSocket channel) this is essential: without it, an
+      // aborted stream leaks its socket writer and keeps reconnecting and
+      // resending unconfirmed frames — delivering data for a stream that was
+      // never meant to complete. Worlds that hold no per-stream state omit
+      // the method (feature-detected), leaving abort a purely local discard.
+      return world.streams.abort?.(runId, name, reason);
     },
   };
 }
@@ -1179,7 +1187,10 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       },
       async abort(reason) {
         // Only a sink that was actually created holds buffered state to discard.
-        if (sinkPromise) (await sinkPromise).abort(reason);
+        // Await the sink's abort so any world-level teardown (e.g. tearing
+        // down a long-lived write channel) completes before the writable
+        // settles into its aborted state.
+        if (sinkPromise) await (await sinkPromise).abort(reason);
       },
     });
   }

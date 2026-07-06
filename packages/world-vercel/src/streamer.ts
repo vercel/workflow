@@ -395,6 +395,28 @@ export function createStreamer(config?: APIConfig): Streamer {
         await response.text();
       },
 
+      async abort(
+        runId: string | Promise<string>,
+        name: string,
+        reason?: unknown
+      ) {
+        // Await runId if it's a promise to stay consistent with the other
+        // methods (a write may still be resolving it).
+        const resolvedRunId = await runId;
+
+        // Tear down the stream's socket writer, if any: abort abandons
+        // unconfirmed frames, clears the recycle timer, closes the WebSocket,
+        // and rejects in-flight waiters. Removing it from the map is what
+        // stops it from lingering (unbounded growth) and from reconnecting to
+        // resend frames for a stream that was aborted rather than completed.
+        const key = socketWriterKey(resolvedRunId, name);
+        const writer = socketWriters.get(key);
+        if (writer) {
+          socketWriters.delete(key);
+          writer.abort(reason);
+        }
+      },
+
       async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
         const url = getStreamUrl(name, runId, httpConfig);
