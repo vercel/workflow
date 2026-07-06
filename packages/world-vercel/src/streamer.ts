@@ -16,11 +16,33 @@ import {
   type StreamWriteChannelHandlers,
 } from './stream-socket-writer.js';
 import {
+  getSpanKind,
+  injectTraceContextIntoHeaders,
+  trace,
+  UrlFull,
+} from './telemetry.js';
+import {
   type APIConfig,
   getHttpConfig,
   type HttpConfig,
   makeRequest,
 } from './utils.js';
+
+/**
+ * Best-effort platform lifetime extension: keep the invocation alive until
+ * `promise` settles, via the ambient Vercel request context (the same hook
+ * `@vercel/functions`' `waitUntil` reads). No-op outside a Vercel function
+ * invocation (local dev, tests, CLI).
+ */
+function waitUntilAmbient(promise: Promise<unknown>): void {
+  const requestContext = (
+    globalThis as unknown as Record<
+      symbol,
+      { get?: () => { waitUntil?: (p: Promise<unknown>) => void } } | undefined
+    >
+  )[Symbol.for('@vercel/request-context')];
+  requestContext?.get?.()?.waitUntil?.(promise);
+}
 
 /**
  * Maximum number of chunks per request, matching the server-side
@@ -180,6 +202,30 @@ async function openWriteChannel(
   url.pathname = `${url.pathname}/ws`;
   url.protocol = 'wss:';
 
+  // The upgrade is a client span like every other request to the backend,
+  // and the W3C trace context rides its headers so the server parents the
+  // connection's spans to the caller. (Chunks sent later on the socket
+  // carry no per-message headers — the upgrade is the one place the trace
+  // link can be established.)
+  return trace(
+    `WS ${url.pathname}`,
+    {
+      kind: await getSpanKind('CLIENT'),
+      attributes: UrlFull(url.toString()),
+    },
+    async () => {
+      await injectTraceContextIntoHeaders(httpConfig.headers);
+      return openWriteSocket(url, httpConfig, handlers);
+    }
+  );
+}
+
+/** The raw socket construction behind {@link openWriteChannel}. */
+async function openWriteSocket(
+  url: URL,
+  httpConfig: HttpConfig,
+  handlers: StreamWriteChannelHandlers
+): Promise<StreamWriteChannel> {
   // undici's WebSocket (unlike the WHATWG global) accepts custom
   // headers on the upgrade request, so the channel authenticates
   // exactly like every HTTP call (Authorization + the trusted-OIDC
@@ -327,6 +373,12 @@ export function createStreamer(config?: APIConfig): Streamer {
             socketWriters.delete(socketWriterKey(resolvedRunId, name));
             throw error;
           }
+          // Resolving on admission lets flushes pipeline, but the platform
+          // must not suspend the invocation while this batch is still
+          // awaiting durability confirmation — a frozen process can't
+          // resend frames whose connection died. Hold the invocation open
+          // until everything admitted so far is acked (never rejects).
+          waitUntilAmbient(writer.ackBarrier());
           return;
         }
 

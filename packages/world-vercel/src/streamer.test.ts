@@ -538,11 +538,12 @@ describe('writeMulti over the WebSocket write channel', () => {
     ).rejects.toThrow(/failed/);
 
     // The failed writer was evicted: the next write opens a fresh channel
-    // (fresh budgets) instead of rejecting forever.
+    // (fresh budgets) instead of rejecting forever. The write resolves on
+    // admission, so wait for the (async) connect to construct the socket.
     await streamer.streams.writeMulti?.('run-9', 'out', ['c'], {
       retransmitSafe: true,
     });
-    expect(fakeSockets.length).toBe(2);
+    await vi.waitFor(() => expect(fakeSockets.length).toBe(2));
   });
 
   it('fails the channel on an unparseable server message', async () => {

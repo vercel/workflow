@@ -95,9 +95,11 @@ export const DEFAULT_SOCKET_WRITER_CONFIG: SocketWriterConfig = {
   // Two-minute connections, rotated with ~10s of headroom under the server
   // route's 150s maxDuration.
   recycleMs: 110_000,
-  // Must stay below the server's per-connection backlog cap (it sheds
-  // connections whose unprocessed backlog exceeds one batch, 1000 chunks).
-  maxInFlightFrames: 256,
+  // Must stay comfortably below the server's per-connection backlog cap
+  // (100 received-but-unprocessed chunks): the server sheds a connection
+  // whose backlog exceeds it, and a client window at or above the cap could
+  // shed → resend → shed in a loop until the reconnect budget dies.
+  maxInFlightFrames: 64,
   maxInFlightBytes: 4 * 1024 * 1024,
   maxConsecutiveReconnects: 5,
   maxTotalReconnects: 64,
@@ -187,6 +189,11 @@ export class StreamSocketWriter {
   private recycleTimer: unknown = null;
   private ensureReadyPromise: Promise<void> | null = null;
 
+  /** Lifetime counters + waiters backing {@link ackBarrier}. */
+  private admitted = 0;
+  private acked = 0;
+  private ackBarriers: { threshold: number; resolve: () => void }[] = [];
+
   constructor(deps: SocketWriterDeps, config?: Partial<SocketWriterConfig>) {
     this.deps = deps;
     this.config = { ...resolveSocketWriterConfig(), ...config };
@@ -208,7 +215,25 @@ export class StreamSocketWriter {
     }
     this.buffer.push({ frame, sentIndex: null });
     this.bufferedBytes += frame.byteLength;
+    this.admitted++;
     this.pump();
+  }
+
+  /**
+   * Resolves once every frame admitted before this call has been acked (or
+   * the writer has failed/aborted). It never rejects: its consumer is
+   * platform lifetime extension (`waitUntil`, so a function invocation is
+   * not suspended while admitted frames are still awaiting durability
+   * confirmation), not error propagation — write failures surface through
+   * `write()`/`close()`.
+   */
+  ackBarrier(): Promise<void> {
+    if (this.fatalError || this.acked >= this.admitted) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.ackBarriers.push({ threshold: this.admitted, resolve });
+    });
   }
 
   /** Resolves once every written frame is durable and the channel is closed. */
@@ -254,6 +279,11 @@ export class StreamSocketWriter {
     this.releaseWaiters();
     this.drainWaiter?.();
     this.drainWaiter = null;
+    // Ack barriers only extend the function's lifetime; on failure there is
+    // nothing left to wait for (the error surfaces through write/close).
+    const barriers = this.ackBarriers;
+    this.ackBarriers = [];
+    for (const { resolve } of barriers) resolve();
   }
 
   private releaseWaiters(): void {
@@ -283,8 +313,24 @@ export class StreamSocketWriter {
   /** Send whatever the window allows; lazily (re)open the channel. */
   private pump(): void {
     if (this.fatalError) return;
+    if (this.buffer.length === 0) {
+      // Fully drained. Settle a pending close() FIRST — resolving the drain
+      // must not depend on channel state, or a rotation completing on the
+      // final ack would tear the channel down and strand the waiter forever.
+      if (this.drainWaiter) {
+        const resolve = this.drainWaiter;
+        this.drainWaiter = null;
+        resolve();
+      }
+      // An empty buffer satisfies a pending rotation immediately.
+      if (this.rotateRequested && this.channel) {
+        this.rotateRequested = false;
+        this.teardownChannel();
+      }
+      return;
+    }
     if (!this.channel) {
-      if (this.buffer.length > 0) void this.ensureChannel();
+      void this.ensureChannel();
       return;
     }
     if (this.rotateRequested) {
@@ -301,11 +347,6 @@ export class StreamSocketWriter {
       if (entry.sentIndex !== null) continue;
       entry.sentIndex = this.sentInEpoch++;
       this.channel.send(entry.frame);
-    }
-    if (this.buffer.length === 0 && this.drainWaiter) {
-      const resolve = this.drainWaiter;
-      this.drainWaiter = null;
-      resolve();
     }
   }
 
@@ -366,6 +407,17 @@ export class StreamSocketWriter {
     }
     this.buffer.shift();
     this.bufferedBytes -= head.frame.byteLength;
+    this.acked++;
+    if (this.ackBarriers.length > 0) {
+      const still = this.ackBarriers.filter((barrier) => {
+        if (barrier.threshold <= this.acked) {
+          barrier.resolve();
+          return false;
+        }
+        return true;
+      });
+      this.ackBarriers = still;
+    }
     this.consecutiveReconnects = 0;
     this.releaseWaiters();
     this.pump();
@@ -386,6 +438,25 @@ export class StreamSocketWriter {
     if (this.recycleTimer !== null) {
       (this.deps.clearTimer ?? clearTimeout)(this.recycleTimer as never);
       this.recycleTimer = null;
+    }
+
+    // 1009 (message too big) is deterministic: the server's per-message size
+    // cap rejected a frame, and resending would hit the same cap until the
+    // reconnect budget dies with an opaque error. Fail immediately with the
+    // actual cause instead.
+    if (event.code === 1009) {
+      const largest = this.buffer.reduce(
+        (max, entry) => Math.max(max, entry.frame.byteLength),
+        0
+      );
+      this.fail(
+        new WorkflowRuntimeError(
+          `Stream write channel rejected a chunk as too large ` +
+            `(largest in-flight chunk: ${largest} bytes). Split the data ` +
+            `into smaller chunks before writing.`
+        )
+      );
+      return;
     }
 
     // Everything unacked may or may not have persisted: mark it unsent and

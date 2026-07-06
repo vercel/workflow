@@ -317,6 +317,92 @@ describe('StreamSocketWriter', () => {
     await h.writer.close();
   });
 
+  it('close() drain completes when the recycle rotation races the final ack', async () => {
+    const h = makeHarness();
+
+    await h.writer.write(frame(1));
+    await tick();
+
+    let closed = false;
+    const closePromise = h.writer.close().then(() => {
+      closed = true;
+    });
+    await tick();
+    expect(closed).toBe(false);
+
+    // The recycle timer fires while the drain is pending, so the rotation
+    // completes on the same ack that empties the buffer. The drain must
+    // still resolve — rotation tearing down the channel used to strand it.
+    h.fireTimer();
+    await tick();
+    h.connections[0].ackNext();
+    await closePromise;
+    expect(h.connections[0].closedByWriter).toBe(true);
+  });
+
+  it('fails immediately with a chunk-size error on a 1009 close (no resend loop)', async () => {
+    const h = makeHarness();
+
+    await h.writer.write(frame(1));
+    await h.writer.write(new Uint8Array(2048));
+    await tick();
+
+    // Server (`ws` maxPayload) rejects the oversized message and closes with
+    // 1009. Resending would fail deterministically, so the writer must not
+    // burn its reconnect budget on it.
+    h.connections[0].handlers.onClose({ code: 1009, reason: '' });
+
+    await expect(h.writer.write(frame(2))).rejects.toThrow(
+      /too large.*2048 bytes/
+    );
+    expect(h.connections).toHaveLength(1); // no reconnect attempted
+    expect(h.timers).toHaveLength(0); // no backoff timer armed
+  });
+
+  it('ackBarrier resolves once frames admitted before the call are acked', async () => {
+    const h = makeHarness();
+
+    await h.writer.write(frame(1));
+    await h.writer.write(frame(2));
+    const barrier = h.writer.ackBarrier();
+    let settled = false;
+    void barrier.then(() => {
+      settled = true;
+    });
+    await tick();
+    expect(settled).toBe(false);
+
+    h.connections[0].ackNext();
+    await tick();
+    expect(settled).toBe(false); // one of two acked
+
+    h.connections[0].ackNext();
+    await barrier;
+
+    // Later writes don't re-arm an already-satisfied barrier, and a barrier
+    // taken while fully drained resolves immediately.
+    await expect(h.writer.ackBarrier()).resolves.toBeUndefined();
+  });
+
+  it('ackBarrier resolves (not rejects) when the writer fails', async () => {
+    const h = makeHarness({
+      maxConsecutiveReconnects: 0,
+      reconnectBackoffMs: [1],
+    });
+
+    await h.writer.write(frame(1));
+    await tick();
+    const barrier = h.writer.ackBarrier();
+
+    h.connections[0].die();
+    await tick();
+
+    // The barrier only extends the function's lifetime; the failure itself
+    // surfaces through write()/close().
+    await expect(barrier).resolves.toBeUndefined();
+    await expect(h.writer.close()).rejects.toThrow(/failed/);
+  });
+
   it('abort drops the buffer, closes the channel, and poisons the writer', async () => {
     const h = makeHarness();
 
