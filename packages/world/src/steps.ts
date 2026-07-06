@@ -73,6 +73,20 @@ export const StepSchema = z.object({
 
 // Inferred types
 export type StepStatus = z.infer<typeof StepStatusSchema>;
+export const TerminalStepStatusSchema = StepStatusSchema.extract([
+  'completed',
+  'failed',
+  'cancelled',
+] as const);
+export type TerminalStepStatus = z.infer<typeof TerminalStepStatusSchema>;
+export const TERMINAL_STEP_STATUSES = TerminalStepStatusSchema.options;
+
+export function isTerminalStepStatus(
+  status: string
+): status is TerminalStepStatus {
+  return TERMINAL_STEP_STATUSES.includes(status as TerminalStepStatus);
+}
+
 export type Step = z.infer<typeof StepSchema>;
 
 /**

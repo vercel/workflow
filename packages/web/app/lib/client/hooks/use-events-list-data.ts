@@ -1,15 +1,12 @@
 'use client';
 
-import type { Event } from '@workflow/world';
 import type {
   ExactIdSearchResult,
   ExactWorkflowSearchIdKind,
 } from '@workflow/web-shared';
+import { hydrateResourceIOAsync } from '@workflow/web-shared';
+import type { Event } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  hydrateResourceIO,
-  hydrateResourceIOWithKey,
-} from '@workflow/web-shared';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
 import {
   fetchEvent,
@@ -52,14 +49,8 @@ export function useEventsListData(
   encryptionKeyRef.current = encryptionKey;
 
   const hydrateEvents = useCallback(async (rawEvents: Event[]) => {
-    const hydrated = rawEvents.map(hydrateResourceIO);
     const key = encryptionKeyRef.current;
-    if (key) {
-      return Promise.all(
-        hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
-      );
-    }
-    return hydrated;
+    return Promise.all(rawEvents.map((ev) => hydrateResourceIOAsync(ev, key)));
   }, []);
 
   const fetchInitial = useCallback(async () => {
@@ -102,7 +93,7 @@ export function useEventsListData(
   useEffect(() => {
     if (!encryptionKey || events.length === 0) return;
     let cancelled = false;
-    Promise.all(events.map((ev) => hydrateResourceIOWithKey(ev, encryptionKey)))
+    Promise.all(events.map((ev) => hydrateResourceIOAsync(ev, encryptionKey)))
       .then((decrypted) => {
         if (!cancelled) setEvents(decrypted);
       })

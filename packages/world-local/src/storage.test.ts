@@ -5,7 +5,7 @@ import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeJSON } from './fs.js';
 import { hashToken } from './storage/helpers.js';
 import { createStorage } from './storage.js';
@@ -151,6 +151,7 @@ describe('Storage', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     // Clean up test dir
     await fs.rm(testDir, { recursive: true, force: true });
   });
@@ -1303,24 +1304,24 @@ describe('Storage', () => {
         // never be mistaken for the complete delta.
         await updateRun(storage, testRunId, 'run_started');
 
-        // Open many hooks BEFORE the cursor so they are not part of the delta;
-        // their in-band deliveries (below) are.
-        const HOOK_COUNT = 25; // > paginatedFileSystemQuery default limit (20)
-        for (let i = 0; i < HOOK_COUNT; i++) {
-          await createHook(storage, testRunId, {
-            hookId: `corr_hook_${i}`,
-            token: `tok_${i}`,
-          });
-        }
+        await createHook(storage, testRunId, {
+          hookId: 'corr_delta_page_hook',
+          token: 'tok_delta_page_hook',
+        });
         const sinceCursor = await currentCursor();
 
-        // A burst of in-band hook deliveries lands while the step runs, then
-        // the sequential step itself — together far more than one page.
-        for (let i = 0; i < HOOK_COUNT; i++) {
+        // A burst of in-band hook deliveries lands while the step runs. One
+        // hook is enough here; the assertion is about delta pagination, not
+        // creating many distinct hook tokens.
+        const DELTA_FILLER_EVENT_COUNT = 21; // > default page limit (20)
+        for (let i = 0; i < DELTA_FILLER_EVENT_COUNT; i++) {
           await storage.events.create(testRunId, {
             eventType: 'hook_received' as const,
-            correlationId: `corr_hook_${i}`,
-            eventData: { token: `tok_${i}`, payload: new Uint8Array([i]) },
+            correlationId: 'corr_delta_page_hook',
+            eventData: {
+              token: 'tok_delta_page_hook',
+              payload: new Uint8Array([i]),
+            },
           });
         }
         await createStep(storage, testRunId, {
@@ -1350,7 +1351,9 @@ describe('Storage', () => {
 
         expect(result.hasMore).toBe(true);
         expect(firstPage.hasMore).toBe(true);
-        expect(result.events?.length).toBeLessThan(HOOK_COUNT + 3);
+        expect(result.events?.length).toBeLessThan(
+          DELTA_FILLER_EVENT_COUNT + 3
+        );
         expect(result.events?.map((e) => e.eventId)).toEqual(
           firstPage.data.map((e) => e.eventId)
         );
@@ -1867,6 +1870,189 @@ describe('Storage', () => {
         expect(result.data[3].eventId).toBe(disposed.eventId);
         expect(result.data[3].eventType).toBe('hook_disposed');
       });
+    });
+
+    it('reuses locally appended events without exposing cached instances', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-cache',
+          workflowName: 'cached-event-workflow',
+          input: new Uint8Array([1]),
+        },
+      });
+      const runId = created.event.runId;
+      (created.event as any).eventData.input[0] = 9;
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      const first = await storage.events.list({ runId });
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads).toHaveLength(0);
+      expect((first.data[0] as any).eventData.input).toEqual(
+        new Uint8Array([1])
+      );
+
+      (first.data[0] as { eventType: string }).eventType = 'run_failed';
+      const second = await storage.events.list({ runId });
+      expect(second.data[0]?.eventType).toBe('run_created');
+    });
+
+    it('reuses sequential-step events with a relative data directory', async () => {
+      const relativeStorage = createStorage(
+        path.relative(process.cwd(), testDir)
+      );
+      const run = await createRun(relativeStorage, {
+        deploymentId: 'deployment-relative-cache',
+        workflowName: 'relative-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      await updateRun(relativeStorage, run.runId, 'run_started');
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      for (let i = 0; i < 5; i++) {
+        const stepId = `relative_step_${i}`;
+        await createStep(relativeStorage, run.runId, {
+          stepId,
+          stepName: `step-${i}`,
+          input: new Uint8Array([i]),
+        });
+        await updateStep(relativeStorage, run.runId, stepId, 'step_started');
+        await updateStep(relativeStorage, run.runId, stepId, 'step_completed', {
+          result: new Uint8Array([i]),
+        });
+
+        const events = await relativeStorage.events.list({ runId: run.runId });
+        expect(events.data).toHaveLength(2 + (i + 1) * 3);
+      }
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads).toHaveLength(0);
+    });
+
+    it('reuses locally appended events for correlation queries', async () => {
+      const stepId = 'cached-correlation-step';
+      await createStep(storage, testRunId, {
+        stepId,
+        stepName: 'cached-correlation-step',
+        input: new Uint8Array([1]),
+      });
+      await updateStep(storage, testRunId, stepId, 'step_started');
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      const events = await storage.events.listByCorrelationId({
+        correlationId: stepId,
+        pagination: {},
+      });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(events.data).toHaveLength(2);
+      expect(eventFileReads).toHaveLength(0);
+    });
+
+    it('reads oversized event payloads from disk instead of retaining them', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-large',
+          workflowName: 'large-event-workflow',
+          input: new Uint8Array(4 * 1024 * 1024),
+        },
+      });
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await storage.events.list({ runId: created.event.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('evicts old events once the recent-event byte bound is exceeded', async () => {
+      const hookId = 'bounded-cache-hook';
+      await createHook(storage, testRunId, {
+        hookId,
+        token: 'bounded-cache-token',
+      });
+
+      for (let i = 0; i < 4; i++) {
+        await storage.events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hookId,
+          eventData: { payload: new Uint8Array(1024 * 1024) },
+        });
+      }
+
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+      await storage.events.list({ runId: testRunId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('normalizes cached event metadata the same way as disk reads', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-normalized',
+          workflowName: 'normalized-cache-workflow',
+          input: new Uint8Array([1]),
+          executionContext: {
+            timestamp: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        },
+      });
+
+      const page = await storage.events.list({ runId: created.event.runId });
+
+      expect((page.data[0] as any).eventData.executionContext.timestamp).toBe(
+        '2026-01-01T00:00:00.000Z'
+      );
+    });
+
+    it('allows active-event cache contents to be explicitly released', async () => {
+      const localStorage = createStorage(testDir);
+      const run = await createRun(localStorage, {
+        deploymentId: 'deployment-clear',
+        workflowName: 'cleared-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      localStorage.clearCache();
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await localStorage.events.list({ runId: run.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('releases locally cached events after a run completes', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-complete',
+        workflowName: 'completed-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([2]),
+      });
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await storage.events.list({ runId: run.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
     });
   });
 
@@ -3137,6 +3323,131 @@ describe('Storage', () => {
             event.eventType === 'hook_created' && event.correlationId === hookId
         )
       ).toHaveLength(1);
+    });
+
+    it('rebuilds missing hook caches from a committed hook_created event', async () => {
+      // Regression for #2339: once hook_created is committed to the event log,
+      // the hook entity and token claim are cache files. If both are missing
+      // after a crash or upgrade, a normal hook read should rebuild them from
+      // the persisted event instead of treating the hook/token as gone.
+      const metadata = new Uint8Array([0xee]);
+      const hookId = 'hook_event_log_rebuild';
+      const token = 'event-log-rebuild-token';
+
+      const created = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata, isWebhook: true },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+
+      const hookPath = path.join(testDir, 'hooks', `${hookId}.json`);
+      const tokenClaimPath = path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken(token)}.json`
+      );
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+      await fs.writeFile(
+        path.join(testDir, 'events', 'wrun_malformed-event.json'),
+        '{'
+      );
+
+      const conflict = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_event_log_rebuild_conflict',
+        eventData: { token },
+      });
+      expect(conflict.event.eventType).toBe('hook_conflict');
+      expect((conflict.event as any).eventData.conflictingRunId).toBe(
+        testRunId
+      );
+
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        runId: testRunId,
+        hookId,
+        token,
+        metadata,
+        isWebhook: true,
+      });
+
+      const claim = JSON.parse(await fs.readFile(tokenClaimPath, 'utf8'));
+      expect(claim).toMatchObject({
+        runId: testRunId,
+        hookId,
+        eventId: created.event.eventId,
+      });
+    });
+
+    it('preserves legacy webhook default when rebuilding a hook without isWebhook', async () => {
+      const metadata = new Uint8Array([0xab]);
+      const hookId = 'hook_legacy_webhook_default';
+      const token = 'legacy-webhook-default-token';
+      const created = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+
+      await fs.unlink(path.join(testDir, 'hooks', `${hookId}.json`));
+      await fs.unlink(
+        path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`)
+      );
+
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        token,
+        metadata,
+        isWebhook: true,
+      });
+    });
+
+    it('does not rebuild a hook for a run already marked terminal', async () => {
+      const hookId = 'hook_terminal_run_cache';
+      const token = 'terminal-run-cache-token';
+      await createHook(storage, testRunId, { hookId, token });
+
+      const hookPath = path.join(testDir, 'hooks', `${hookId}.json`);
+      const tokenClaimPath = path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken(token)}.json`
+      );
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+
+      const run = await storage.runs.get(testRunId);
+      await writeJSON(
+        path.join(testDir, 'runs', `${testRunId}.json`),
+        {
+          ...run,
+          status: 'cancelled',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        },
+        { overwrite: true }
+      );
+
+      const nextRun = await createRun(storage, {
+        deploymentId: 'deployment-next',
+        workflowName: 'next-workflow',
+        input: new Uint8Array(),
+      });
+
+      const created = await storage.events.create(nextRun.runId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_terminal_run_cache_next',
+        eventData: { token },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+      expect(created.hook?.runId).toBe(nextRun.runId);
     });
 
     it('repairs an event-first orphan via the legacy-claim probe path', async () => {

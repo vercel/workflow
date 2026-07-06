@@ -31,9 +31,41 @@ WORKFLOW_POSTGRES_URL="postgres://user:password@host:5432/database"
 
 Run the migration script to create the necessary tables in your database. Ensure `WORKFLOW_POSTGRES_URL` is set when running this command:
 
+<Tabs items={["npm", "pnpm", "Yarn", "Bun"]}>
+
+<Tab value="npm">
+
 ```bash
-npx workflow-postgres-setup
+npx --package=@workflow/world-postgres bootstrap
 ```
+
+</Tab>
+
+<Tab value="pnpm">
+
+```bash
+pnpm dlx --package @workflow/world-postgres bootstrap
+```
+
+</Tab>
+
+<Tab value="Yarn">
+
+```bash
+yarn dlx --package @workflow/world-postgres bootstrap
+```
+
+</Tab>
+
+<Tab value="Bun">
+
+```bash
+bunx --package @workflow/world-postgres bootstrap
+```
+
+</Tab>
+
+</Tabs>
 
 <Callout type="info">
 The migration is idempotent and can safely be run as a post-deployment lifecycle script.

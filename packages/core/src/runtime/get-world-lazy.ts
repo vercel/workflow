@@ -29,16 +29,27 @@
  */
 
 import type { World } from '@workflow/world';
+import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
 const WorldCacheKey = Symbol.for('@workflow/world//cache');
 const WorldCachePromiseKey = Symbol.for('@workflow/world//cachePromise');
 const GetWorldFnKey = Symbol.for('@workflow/world//getWorldFn');
 
+type GlobalWorldCache = typeof globalThis & {
+  [WorldCacheKey]?: World;
+  [WorldCachePromiseKey]?: Promise<World>;
+  [GetWorldFnKey]?: () => Promise<World>;
+};
+
 export async function getWorldLazy(): Promise<World> {
-  const g = globalThis as any;
-  if (g[WorldCacheKey]) return g[WorldCacheKey];
+  const g = globalThis as GlobalWorldCache;
+  if (g[WorldCacheKey]) {
+    assertWorldSupportsRuntimeProtocol(g[WorldCacheKey]);
+    return g[WorldCacheKey];
+  }
   if (g[WorldCachePromiseKey]) {
     g[WorldCacheKey] = await g[WorldCachePromiseKey];
+    assertWorldSupportsRuntimeProtocol(g[WorldCacheKey]);
     return g[WorldCacheKey];
   }
   // If world.ts is statically present in this bundle, it has registered
@@ -46,8 +57,12 @@ export async function getWorldLazy(): Promise<World> {
   // import fallback, which doesn't survive Next.js inlining get-world-lazy
   // into a route bundle (the relative './world.js' resolves against the
   // bundled location, where no sibling world.js exists).
-  const getWorldFn = g[GetWorldFnKey] as (() => Promise<World>) | undefined;
-  if (getWorldFn) return getWorldFn();
+  const getWorldFn = g[GetWorldFnKey];
+  if (getWorldFn) {
+    const world = await getWorldFn();
+    assertWorldSupportsRuntimeProtocol(world);
+    return world;
+  }
   // Last resort: dynamic import for environments where world.ts wasn't
   // bundled but is reachable as a sibling module on disk. The specifier is
   // built at runtime so esbuild can't trace it into the step bundle.

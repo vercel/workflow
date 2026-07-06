@@ -1,10 +1,20 @@
 'use client';
 
-import { EVENT_DATA_REF_FIELDS, type Event } from '@workflow/world';
+import type { Event } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../lib/cn';
-import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
+import {
+  getEventDataRefFields,
+  hasEncryptedFields,
+  isExpiredMarker,
+} from '../../lib/hydration';
 import { formatEventGap } from '../../lib/utils';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from '../ui/collapsible';
 import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
@@ -12,7 +22,6 @@ import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-import { DetailCard } from './detail-card';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -37,6 +46,28 @@ const DATA_EVENT_TYPES = new Set([
   'attr_set',
 ]);
 
+const parseDateValue = (value: unknown): Date | null => {
+  if (value == null) return null;
+
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const getEffectiveEventDate = (
+  event: Pick<Event, 'createdAt' | 'occurredAt'>
+): Date => parseDateValue(event.occurredAt) ?? new Date(event.createdAt);
+
+const formatEventTimestamp = (date: Date): string =>
+  date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    fractionalSecondDigits: 3,
+    timeZoneName: 'short',
+  });
+
 /**
  * Inter-event gaps at or above this threshold are visually emphasized so long
  * waits (sleeps, retries, queue backlog) stand out from the rapid
@@ -50,7 +81,7 @@ const LARGE_GAP_MS = 60_000;
  * persists it, falling back to the server `createdAt`.
  */
 function eventTimeMs(event: Event): number {
-  return new Date(event.occurredAt ?? event.createdAt).getTime();
+  return getEffectiveEventDate(event).getTime();
 }
 
 /**
@@ -61,6 +92,7 @@ function EventItem({
   previousTimeMs,
   onLoadEventData,
   encryptionKey,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   event: Event;
   /**
@@ -74,6 +106,8 @@ function EventItem({
   ) => Promise<unknown | null>;
   /** When this changes (e.g., Decrypt was clicked), invalidate cached data */
   encryptionKey?: Uint8Array;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) {
   const [loadedData, setLoadedData] = useState<unknown | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -125,6 +159,9 @@ function EventItem({
     void loadEventData({ force: true });
   }, [encryptionKey, loadEventData]);
 
+  // `occurredAt` still feeds the optional separate "Occurred" row in the
+  // expanded content when showSeparateEventOccurrenceTimestamps is set.
+  const occurredAt = parseDateValue(event.occurredAt);
   const timeMs = eventTimeMs(event);
   const isFirst = previousTimeMs === undefined;
   // The first row anchors with an absolute time; later rows show the gap
@@ -145,10 +182,17 @@ function EventItem({
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
   return (
-    <DetailCard
+    <CollapsibleRoot
       variant="card"
-      summaryClassName="px-3 py-2"
-      summary={
+      onOpenChange={
+        canHaveData
+          ? (open) => {
+              if (open) handleExpand();
+            }
+          : undefined
+      }
+    >
+      <CollapsibleTrigger className="px-3 py-2">
         <div className="flex w-full items-center justify-between gap-3">
           <span className="text-gray-1000 text-label-12 font-mono">
             {event.eventType}
@@ -164,64 +208,70 @@ function EventItem({
             </span>
           </TimestampTooltip>
         </div>
-      }
-      onToggle={
-        canHaveData
-          ? (open) => {
-              if (open) handleExpand();
-            }
-          : undefined
-      }
-    >
-      {/* Event attributes */}
-      <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
-        <div className="flex items-center justify-between gap-2 py-2 px-3">
-          <span className="text-label-12 text-gray-900">Event ID</span>
-          <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-            {event.eventId}
-          </span>
-        </div>
-        {event.correlationId && (
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {/* Event attributes */}
+        <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
+          {showSeparateEventOccurrenceTimestamps && occurredAt && (
+            <div className="flex items-center justify-between gap-2 py-2 px-3">
+              <span className="text-label-12 text-gray-900">Occurred</span>
+              <TimestampTooltip date={occurredAt}>
+                <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+                  {formatEventTimestamp(occurredAt)}
+                </span>
+              </TimestampTooltip>
+            </div>
+          )}
           <div className="flex items-center justify-between gap-2 py-2 px-3">
-            <span className="text-label-12 text-gray-900">Correlation ID</span>
+            <span className="text-label-12 text-gray-900">Event ID</span>
             <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-              {event.correlationId}
+              {event.eventId}
             </span>
           </div>
+          {event.correlationId && (
+            <div className="flex items-center justify-between gap-2 py-2 px-3">
+              <span className="text-label-12 text-gray-900">
+                Correlation ID
+              </span>
+              <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+                {event.correlationId}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Loading state */}
+        {isLoading && (
+          <div className="p-3">
+            <Skeleton className="h-4 w-[35%]" />
+            <Skeleton className="mt-2 h-4 w-[90%]" />
+            <Skeleton className="mt-2 h-4 w-[75%]" />
+          </div>
         )}
-      </div>
 
-      {/* Loading state */}
-      {isLoading && (
-        <div className="p-3">
-          <Skeleton className="h-4 w-[35%]" />
-          <Skeleton className="mt-2 h-4 w-[90%]" />
-          <Skeleton className="mt-2 h-4 w-[75%]" />
-        </div>
-      )}
+        {/* Error state */}
+        {loadError && (
+          <ErrorCard
+            title="Failed to load event data"
+            details={loadError}
+            className="mt-2"
+          />
+        )}
 
-      {/* Error state */}
-      {loadError && (
-        <ErrorCard
-          title="Failed to load event data"
-          details={loadError}
-          className="mt-2"
-        />
-      )}
-
-      {/* Event data */}
-      {displayPayload != null && (
-        <div className="[&>div]:border-none [&>div]:rounded-none">
-          <EventDataBlock eventType={event.eventType} data={displayPayload} />
-        </div>
-      )}
-    </DetailCard>
+        {/* Event data */}
+        {displayPayload != null && (
+          <div className="[&>div]:border-none [&>div]:rounded-none">
+            <EventDataBlock eventType={event.eventType} data={displayPayload} />
+          </div>
+        )}
+      </CollapsibleContent>
+    </CollapsibleRoot>
   );
 }
 
 /**
  * Check if an eventData object has only expired marker values in ref/payload
- * fields for this event type (see {@link EVENT_DATA_REF_FIELDS}). Other keys
+ * fields for this event type (see {@link getEventDataRefFields}). Other keys
  * (e.g. `resumeAt`, `stepName`) are ignored.
  */
 function hasOnlyExpiredFields(data: unknown, eventType: string): boolean {
@@ -229,7 +279,7 @@ function hasOnlyExpiredFields(data: unknown, eventType: string): boolean {
     return false;
   }
   const record = data as Record<string, unknown>;
-  const refKeys = EVENT_DATA_REF_FIELDS[eventType] ?? [];
+  const refKeys = getEventDataRefFields(eventType);
   const presentKeys = refKeys.filter((k) => k in record);
   return (
     presentKeys.length > 0 &&
@@ -310,6 +360,7 @@ export function EventsList({
   onStreamClick,
   onRunClick,
   encryptionKey,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   events: Event[];
   isLoading?: boolean;
@@ -322,8 +373,10 @@ export function EventsList({
   onRunClick?: (runId: string) => void;
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */
   encryptionKey?: Uint8Array;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) {
-  // Sort chronologically by effective event time (occurredAt ?? createdAt)
+  // Sort chronologically by effective event time (occurredAt ?? createdAt).
   const sortedEvents = useMemo(
     () => [...events].sort((a, b) => eventTimeMs(a) - eventTimeMs(b)),
     [events]
@@ -332,43 +385,49 @@ export function EventsList({
   const hasEvents = sortedEvents.length > 0 && !error;
 
   if (!hasEvents && !isLoading) {
-    return <DetailCard summary="Events" disabled />;
+    return <Collapsible label="Events" disabled />;
   }
 
   return (
     <RunClickContext.Provider value={onRunClick}>
       <StreamClickContext.Provider value={onStreamClick}>
-        <DetailCard summary="Events" contentClassName="mb-0" defaultOpen>
-          {isLoading ? (
-            <div className="flex flex-col -mx-4">
-              {[0, 1, 2].map((i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between gap-3 bg-background-200 px-4 py-2"
-                >
-                  <Skeleton className="h-4 w-32 rounded" />
-                  <Skeleton className="h-3 w-16 rounded" />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex flex-col -mx-4">
-              {sortedEvents.map((event, index) => (
-                <EventItem
-                  key={event.eventId}
-                  event={event}
-                  previousTimeMs={
-                    index === 0
-                      ? undefined
-                      : eventTimeMs(sortedEvents[index - 1])
-                  }
-                  onLoadEventData={onLoadEventData}
-                  encryptionKey={encryptionKey}
-                />
-              ))}
-            </div>
-          )}
-        </DetailCard>
+        <CollapsibleRoot defaultOpen>
+          <CollapsibleTrigger>Events</CollapsibleTrigger>
+          <CollapsibleContent className="mb-0">
+            {isLoading ? (
+              <div className="flex flex-col -mx-4">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between gap-3 bg-background-200 px-4 py-2"
+                  >
+                    <Skeleton className="h-4 w-32 rounded" />
+                    <Skeleton className="h-3 w-16 rounded" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col -mx-4">
+                {sortedEvents.map((event, index) => (
+                  <EventItem
+                    key={event.eventId}
+                    event={event}
+                    previousTimeMs={
+                      index === 0
+                        ? undefined
+                        : eventTimeMs(sortedEvents[index - 1])
+                    }
+                    onLoadEventData={onLoadEventData}
+                    encryptionKey={encryptionKey}
+                    showSeparateEventOccurrenceTimestamps={
+                      showSeparateEventOccurrenceTimestamps
+                    }
+                  />
+                ))}
+              </div>
+            )}
+          </CollapsibleContent>
+        </CollapsibleRoot>
       </StreamClickContext.Provider>
     </RunClickContext.Provider>
   );

@@ -78,7 +78,18 @@ export function getWritable<W = any>(
   // version skew protection) is on this same SDK version, so byte-stream
   // framing is always safe here.
   const serialize = getSerializeStream(
-    getExternalReducers(globalThis, ctx.ops, runId, ctx.encryptionKey, true),
+    // In turbo optimistic start the body runs before `run_started` is durable.
+    // Thread the run-ready barrier so that a nested ReadableStream written into
+    // this writable is piped to its own server stream only after the run
+    // exists. Undefined outside turbo / on the await path.
+    getExternalReducers(
+      globalThis,
+      ctx.ops,
+      runId,
+      ctx.encryptionKey,
+      true,
+      ctx.runReadyBarrier
+    ),
     ctx.encryptionKey
   );
 
@@ -86,7 +97,14 @@ export function getWritable<W = any>(
   // their writer lock, not only when the stream is explicitly closed.
   // Without this, Vercel functions hang until the runtime timeout because
   // .pipeTo() only resolves on stream close.
-  const serverWritable = new WorkflowServerWritableStream(runId, name);
+  // In turbo optimistic start the body runs before `run_started` is durable;
+  // pass the run-ready barrier so the first server write orders after the run
+  // exists. Undefined outside turbo / on the await path (run already durable).
+  const serverWritable = new WorkflowServerWritableStream(
+    runId,
+    name,
+    ctx.runReadyBarrier
+  );
   const state = createFlushableState();
   ctx.ops.push(state.promise);
 

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { parseWindowsNetstatPortsForPid } from './get-port-internals.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -168,30 +169,10 @@ async function getWindowsPorts(pid: number): Promise<number[]> {
   try {
     const { stdout } = await execFileAsync('cmd', [
       '/c',
-      `netstat -ano | findstr ${pid} | findstr LISTENING`,
+      'netstat -ano -p tcp | findstr LISTENING',
     ]);
 
-    const ports: number[] = [];
-    const trimmedOutput = stdout.trim();
-
-    if (trimmedOutput) {
-      const lines = trimmedOutput.split('\n');
-      for (const line of lines) {
-        // Extract port from the local address column
-        // Matches both IPv4 (e.g., "127.0.0.1:3000") and IPv6 bracket notation (e.g., "[::1]:3000")
-        const match = line
-          .trim()
-          .match(/^\s*TCP\s+(?:\[[\da-f:]+\]|[\d.]+):(\d+)\s+/i);
-        if (match) {
-          const port = parsePort(match[1]);
-          if (port !== undefined) {
-            ports.push(port);
-          }
-        }
-      }
-    }
-
-    return ports;
+    return parseWindowsNetstatPortsForPid(stdout, pid);
   } catch {
     return [];
   }

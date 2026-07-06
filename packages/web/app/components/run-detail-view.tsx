@@ -1,11 +1,10 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { SpanSelectionInfo } from '@workflow/web-shared';
+import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
   EventListView,
-  hydrateResourceIO,
-  hydrateResourceIOWithKey,
+  hydrateResourceIOAsync,
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
@@ -56,10 +55,10 @@ import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
+  fetchSpanDetailResource,
   recreateRun,
   resumeHook,
   unwrapServerActionResult,
-  useWorkflowResourceData,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   wakeUpRun,
@@ -204,7 +203,6 @@ type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
 export function RunDetailView({
   runId,
-  // TODO: This should open the right sidebar within the trace viewer
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const navigate = useNavigate();
@@ -301,9 +299,10 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      const fullEvent = await hydrateResourceIOAsync(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
@@ -321,9 +320,10 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      const fullEvent = await hydrateResourceIOAsync(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
@@ -373,34 +373,18 @@ export function RunDetailView({
     enabled: activeTab === 'events',
   });
 
-  const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
-    null
-  );
-  const {
-    data: spanDetailData,
-    loading: spanDetailLoading,
-    error: spanDetailError,
-    refresh: refreshSpanDetail,
-  } = useWorkflowResourceData(
-    env,
-    spanSelection?.resource ?? 'run',
-    spanSelection?.resourceId ?? '',
-    {
-      runId: spanSelection?.runId,
-      enabled: Boolean(
-        spanSelection?.resource &&
-          spanSelection?.resourceId &&
-          spanSelection.resource !== 'hook'
-      ),
-      encryptionKey: encryptionKey ?? undefined,
-    }
+  const fetchSpanDetail = useCallback<FetchSpanDetail>(
+    (selection) =>
+      fetchSpanDetailResource(env, selection, {
+        encryptionKey: encryptionKey ?? undefined,
+      }),
+    [env, encryptionKey]
   );
 
   const [isDecrypting, setIsDecrypting] = useState(false);
 
   const handleDecrypt = useCallback(async () => {
     if (encryptionKey) {
-      refreshSpanDetail();
       return;
     }
     setIsDecrypting(true);
@@ -419,20 +403,13 @@ export function RunDetailView({
     } finally {
       setIsDecrypting(false);
     }
-  }, [encryptionKey, env, runId, refreshSpanDetail]);
-
-  const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
-    setSpanSelection(info);
-  }, []);
+  }, [encryptionKey, env, runId]);
 
   const sidebarData = useMemo<SidebarDataContextValue>(
     () => ({
       run,
       events: allEvents ?? [],
-      spanDetailData: spanDetailData ?? null,
-      spanDetailError,
-      spanDetailLoading,
-      onSpanSelect: handleSpanSelect,
+      fetchSpanDetail,
       onStreamClick: handleStreamClick,
       onRunClick: handleRunRefClick,
       onWakeUpSleep: handleWakeUpSleep,
@@ -446,10 +423,7 @@ export function RunDetailView({
     [
       run,
       allEvents,
-      spanDetailData,
-      spanDetailError,
-      spanDetailLoading,
-      handleSpanSelect,
+      fetchSpanDetail,
       handleStreamClick,
       handleRunRefClick,
       handleWakeUpSleep,
