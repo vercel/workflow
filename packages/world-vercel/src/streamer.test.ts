@@ -356,7 +356,7 @@ describe('writeMulti pagination', () => {
     await streamer.streams.writeMulti?.('run-1', 's', chunks);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    // Batch writes target the v3 endpoint (per-chunk publish), not v2.
+    // Batch writes target the v3 endpoint, not v2.
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
     expect(url.pathname).toBe('/v3/runs/run-1/stream/s');
   });

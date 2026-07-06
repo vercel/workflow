@@ -52,25 +52,21 @@ const getMaxChunksPerRequest = (): number =>
 // no request timeout — the live read is long-lived and a whole-request deadline
 // would truncate it.
 
-// All stream reads and writes use the v3 stream endpoint; its semantics
-// differ from v2 on both verbs:
+// All stream reads and writes use the v3 stream endpoint:
 //  - GET (live read): on a max-duration timeout (or a mid-stream connection
 //    drop) the server errors the response body instead of closing it cleanly,
 //    which is what lets the reconnecting reader
 //    (`createReconnectingFramedStream`) resume from the next chunk rather
 //    than treating the timeout as end-of-stream. Reading from v2 would
 //    silently truncate long-lived streams at the server's 2-minute limit.
-//  - PUT (write/writeMulti/close): the server publishes each chunk's
-//    availability event as soon as its write lands, so live readers wake
-//    per-chunk while the request body is still being processed (v2 defers
-//    all publishes to the end of the request body).
 //  - GET .../ws (write channel, `connectWrite`): upgrades to a WebSocket on
 //    which each binary message is one chunk, persisted + published on arrival
-//    and acked back on the same connection. The dedicated path also makes the
-//    rollout observable: any hit on it in request logs is a streaming-mode
-//    writer. (The v3 PUT has the same per-chunk publish semantics, but
-//    streaming request bodies are buffered whole by the platform, so
-//    long-lived writes go over WS; PUT carries the batched fallback path.)
+//    and acked back on the same connection — the write path for framed-v2
+//    streams. The dedicated path also makes the rollout observable: any hit
+//    on it in request logs is a streaming-mode writer.
+//  - PUT (write/writeMulti/close): the batched fallback path and the done
+//    marker. Handler semantics match v2; keeping current-generation writers
+//    on one version makes rollout and request-log analysis unambiguous.
 // Snapshot reads (chunks/info) and the stream list stay on v2.
 function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(

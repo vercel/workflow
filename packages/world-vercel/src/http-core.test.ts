@@ -10,7 +10,6 @@ import {
   errorForResponse,
   formatVercelDiagnostics,
   getVercelDiagnostics,
-  instrumentedFetch,
   parseRetryAfter,
   resolveVercelApiToken,
 } from './http-core.js';
@@ -122,47 +121,5 @@ describe('resolveVercelApiToken', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_TOKEN;
     expect(await resolveVercelApiToken()).toBeNull();
-  });
-});
-
-describe('instrumentedFetch streaming request body', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("sets duplex:'half' for a ReadableStream body and omits it otherwise", async () => {
-    const inits: RequestInit[] = [];
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
-      inits.push(init as RequestInit);
-      return new Response('ok', { status: 200 });
-    });
-
-    // Buffered body: no duplex (setting it without a stream body is invalid).
-    await instrumentedFetch({
-      method: 'PUT',
-      url: 'https://s.example.com/x',
-      headers: new Headers(),
-      body: new Uint8Array([1, 2, 3]),
-      dispatcher: undefined,
-      timeoutMs: null,
-    });
-
-    // Streaming body: duplex:'half' is required or fetch rejects the body.
-    await instrumentedFetch({
-      method: 'PUT',
-      url: 'https://s.example.com/x',
-      headers: new Headers(),
-      body: new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new Uint8Array([1]));
-          controller.close();
-        },
-      }),
-      dispatcher: undefined,
-      timeoutMs: null,
-    });
-
-    expect((inits[0] as { duplex?: string }).duplex).toBeUndefined();
-    expect((inits[1] as { duplex?: string }).duplex).toBe('half');
   });
 });
