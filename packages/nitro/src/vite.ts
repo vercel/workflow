@@ -1,24 +1,17 @@
-import {
-  createBuildQueue,
-  joinWorkflowBasePath,
-  WORKFLOW_ROUTE_BASE,
-} from '@workflow/builders';
+import { createBuildQueue, WORKFLOW_ROUTE_BASE } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
 import type {} from 'nitro/vite';
 import { join } from 'pathe';
 import type { Plugin } from 'vite';
-import { getNitroBasePath, LocalBuilder } from './builders.js';
+import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
   let workflowBuildDir: string;
-  // With a baseURL, Nitro dev serves routes at both the root-relative and
-  // base-prefixed paths — the 404 workaround below must cover both aliases.
-  let workflowRoutePrefix = WORKFLOW_ROUTE_BASE;
   const enqueue = createBuildQueue();
 
   // Create a lazy transform plugin that excludes the workflow build directory
@@ -43,10 +36,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         setup: (nitro: Nitro) => {
           // Capture the workflow build directory for exclusion
           workflowBuildDir = join(nitro.options.buildDir, 'workflow');
-          workflowRoutePrefix = joinWorkflowBasePath(
-            getNitroBasePath(nitro),
-            WORKFLOW_ROUTE_BASE
-          );
           nitro.options.workflow = {
             ...nitro.options.workflow,
             ...options,
@@ -64,11 +53,10 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
         return () => {
           server.middlewares.use((req, res, next) => {
-            // Only handle workflow routes (both path aliases)
-            if (
-              !req.url?.startsWith(`${WORKFLOW_ROUTE_BASE}/`) &&
-              !req.url?.startsWith(`${workflowRoutePrefix}/`)
-            ) {
+            // Only handle workflow routes. With a baseURL, Nitro dev serves
+            // them at both the root-relative and base-prefixed paths, so
+            // match the workflow marker anywhere in the path.
+            if (!req.url?.includes(`${WORKFLOW_ROUTE_BASE}/`)) {
               return next();
             }
 

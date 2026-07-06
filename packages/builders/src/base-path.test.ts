@@ -1,11 +1,6 @@
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { normalizeWorkflowBasePath } from './base-path.js';
-import {
-  createBuildOutputApiWorkflowRoutes,
-  getBuildOutputFunctionsPrefix,
-  getBuildOutputStaticManifestDir,
-} from './vercel-build-output-api.js';
+import { createBuildOutputApiWorkflowRoutes } from './vercel-build-output-api.js';
 
 describe('workflow base paths', () => {
   it.each([
@@ -35,17 +30,5 @@ describe('workflow base paths', () => {
       src: '^/\\.well-known/workflow/v1/flow/?$',
       dest: '/.well-known/workflow/v1/flow',
     });
-  });
-
-  it('places functions and public manifests below the base path so root-relative URLs 404 naturally', () => {
-    expect(getBuildOutputFunctionsPrefix('/app/')).toBe(
-      join('app', '.well-known/workflow/v1')
-    );
-    expect(getBuildOutputFunctionsPrefix('')).toBe(
-      join('.well-known/workflow/v1')
-    );
-    expect(getBuildOutputStaticManifestDir('/tmp/output', '/app/')).toBe(
-      join('/tmp/output', 'static/app/.well-known/workflow/v1')
-    );
   });
 });

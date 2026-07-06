@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 
@@ -58,10 +58,6 @@ function createNitroStub({
     },
   } as any;
 }
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
 
 describe('@workflow/nitro virtual handlers', () => {
   it('registers the base path runtime plugin only when a baseURL is set', async () => {
@@ -226,23 +222,29 @@ describe('@workflow/nitro Vercel functionRules', () => {
   });
 
   it('propagates workflow.runtime to flow + webhook (and manifest when public) on Nitro v3 Vercel', async () => {
-    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
-    const nitro = createNitroStub({
-      routing: true,
-      preset: 'vercel',
-      workflow: { runtime: 'nodejs22.x' },
-    });
+    const previous = process.env.WORKFLOW_PUBLIC_MANIFEST;
+    process.env.WORKFLOW_PUBLIC_MANIFEST = '1';
+    try {
+      const nitro = createNitroStub({
+        routing: true,
+        preset: 'vercel',
+        workflow: { runtime: 'nodejs22.x' },
+      });
 
-    await nitroModule.setup(nitro);
+      await nitroModule.setup(nitro);
 
-    const rules = nitro.options.vercel.functionRules;
-    expect(rules['/.well-known/workflow/v1/flow'].runtime).toBe('nodejs22.x');
-    expect(rules['/.well-known/workflow/v1/webhook/:token'].runtime).toBe(
-      'nodejs22.x'
-    );
-    expect(rules['/.well-known/workflow/v1/manifest.json'].runtime).toBe(
-      'nodejs22.x'
-    );
+      const rules = nitro.options.vercel.functionRules;
+      expect(rules['/.well-known/workflow/v1/flow'].runtime).toBe('nodejs22.x');
+      expect(rules['/.well-known/workflow/v1/webhook/:token'].runtime).toBe(
+        'nodejs22.x'
+      );
+      expect(rules['/.well-known/workflow/v1/manifest.json'].runtime).toBe(
+        'nodejs22.x'
+      );
+    } finally {
+      if (previous === undefined) delete process.env.WORKFLOW_PUBLIC_MANIFEST;
+      else process.env.WORKFLOW_PUBLIC_MANIFEST = previous;
+    }
   });
 
   it('omits the webhook + manifest functionRule entries when workflow.runtime is unset', async () => {

@@ -19,9 +19,9 @@ function createBasePathRouteRegexPrefix(basePath: string | undefined): string {
 
 /**
  * Routes that map the public workflow URLs to the workflow functions. The
- * functions live below the base path (see `getBuildOutputFunctionsPrefix`),
- * so both `src` and `dest` carry it: root-relative URLs match nothing and
- * 404 naturally, mirroring Next.js basePath behavior.
+ * functions live below the base path, so both `src` and `dest` carry it:
+ * root-relative URLs match nothing and 404 naturally, mirroring Next.js
+ * basePath behavior.
  */
 export function createBuildOutputApiWorkflowRoutes(basePath?: string) {
   const srcPrefix = createBasePathRouteRegexPrefix(basePath);
@@ -39,37 +39,16 @@ export function createBuildOutputApiWorkflowRoutes(basePath?: string) {
   ];
 }
 
-/**
- * Directory (relative to `.vercel/output/functions`) that workflow functions
- * are emitted into — below the base path so the public URLs match the
- * function paths directly.
- */
-export function getBuildOutputFunctionsPrefix(basePath?: string): string {
-  return join(
-    normalizeWorkflowBasePath(basePath).slice(1),
-    '.well-known/workflow/v1'
-  );
-}
-
-export function getBuildOutputStaticManifestDir(
-  outputDir: string,
-  basePath?: string
-): string {
-  return join(
-    outputDir,
-    'static',
-    normalizeWorkflowBasePath(basePath).slice(1),
-    '.well-known/workflow/v1'
-  );
-}
-
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
     const outputDir = resolve(this.config.workingDir, '.vercel/output');
     const functionsDir = join(outputDir, 'functions');
+    // Functions live below the base path so the public URLs (and the paths
+    // Vercel queue triggers invoke functions at) match the function paths.
     const workflowGeneratedDir = join(
       functionsDir,
-      getBuildOutputFunctionsPrefix(this.config.basePath)
+      normalizeWorkflowBasePath(this.config.basePath).slice(1),
+      '.well-known/workflow/v1'
     );
 
     // Ensure output directories exist
@@ -122,9 +101,11 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
     // Vercel Build Output API serves static files from .vercel/output/static/
     if (this.shouldExposePublicManifest && manifestJson) {
-      const staticManifestDir = getBuildOutputStaticManifestDir(
+      const staticManifestDir = join(
         outputDir,
-        this.config.basePath
+        'static',
+        normalizeWorkflowBasePath(this.config.basePath).slice(1),
+        '.well-known/workflow/v1'
       );
       await mkdir(staticManifestDir, { recursive: true });
       if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
