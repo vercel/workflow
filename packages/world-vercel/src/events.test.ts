@@ -8,8 +8,11 @@ import {
   splitEventDataForV4,
 } from './events.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { getHttpUrl } from './utils.js';
 
-const ORIGIN = 'https://vercel-workflow.com';
+// Derived from the real config so the MockAgent intercepts the same origin
+// the client resolves — including when a branch deployment override is set.
+const ORIGIN = new URL(getHttpUrl().baseUrl).origin;
 
 function mockAgent() {
   const agent = new MockAgent();

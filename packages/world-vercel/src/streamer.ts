@@ -40,15 +40,7 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
 // no request timeout — the live read is long-lived and a whole-request deadline
 // would truncate it.
 
-// Batch writes (PUT write/writeMulti) and stream completion use the v2 stream
-// endpoint.
-function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
-  return new URL(
-    `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
-  );
-}
-
-// The v3 stream endpoint carries the long-lived operations; its semantics
+// All stream reads and writes use the v3 stream endpoint; its semantics
 // differ from v2 on both verbs:
 //  - GET (live read): on a max-duration timeout (or a mid-stream connection
 //    drop) the server errors the response body instead of closing it cleanly,
@@ -56,15 +48,19 @@ function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
 //    (`createReconnectingFramedStream`) resume from the next chunk rather
 //    than treating the timeout as end-of-stream. Reading from v2 would
 //    silently truncate long-lived streams at the server's 2-minute limit.
+//  - PUT (write/writeMulti/close): the server publishes each chunk's
+//    availability event as soon as its write lands, so live readers wake
+//    per-chunk while the request body is still being processed (v2 defers
+//    all publishes to the end of the request body).
 //  - GET .../ws (write channel, `connectWrite`): upgrades to a WebSocket on
 //    which each binary message is one chunk, persisted + published on arrival
 //    and acked back on the same connection. The dedicated path also makes the
 //    rollout observable: any hit on it in request logs is a streaming-mode
-//    writer. (The v3 PUT exists server-side with matching per-chunk publish
-//    semantics, but streaming request bodies are buffered whole by the
-//    platform, so the SDK writes over WS instead.)
-// Batch writes, completion, and snapshot reads (chunks/info/list) stay on v2.
-function getStreamV3Url(name: string, runId: string, httpConfig: HttpConfig) {
+//    writer. (The v3 PUT has the same per-chunk publish semantics, but
+//    streaming request bodies are buffered whole by the platform, so
+//    long-lived writes go over WS; PUT carries the batched fallback path.)
+// Snapshot reads (chunks/info) and the stream list stay on v2.
+function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
@@ -234,7 +230,7 @@ export function createStreamer(config?: APIConfig): Streamer {
         handlers: StreamWriteChannelHandlers
       ): Promise<StreamWriteChannel> {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamV3Url(name, runId, httpConfig);
+        const url = getStreamUrl(name, runId, httpConfig);
         url.pathname = `${url.pathname}/ws`;
         url.protocol = 'wss:';
 
@@ -329,7 +325,7 @@ export function createStreamer(config?: APIConfig): Streamer {
 
       async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamV3Url(name, runId, httpConfig);
+        const url = getStreamUrl(name, runId, httpConfig);
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }

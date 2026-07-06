@@ -7,7 +7,14 @@ import {
   getHttpUrl,
   MAX_BODY_PARSE_RETRIES,
   makeRequest,
+  WORKFLOW_SERVER_URL_OVERRIDE,
 } from './utils.js';
+
+// These tests assert the unset-override defaults (default host, env-var
+// precedence), which don't hold while a branch deployment override is baked
+// into WORKFLOW_SERVER_URL_OVERRIDE — it takes precedence over both. They
+// re-enable automatically when the override is reverted to ''.
+const itWithoutInlineOverride = it.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '');
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
@@ -26,20 +33,27 @@ describe('getHttpUrl', () => {
     process.env = originalEnv;
   });
 
-  it('uses default workflow-server URL when no config and no env override', () => {
-    expect(getHttpUrl()).toEqual({
-      baseUrl: 'https://vercel-workflow.com/api',
-      usingProxy: false,
-    });
-  });
+  itWithoutInlineOverride(
+    'uses default workflow-server URL when no config and no env override',
+    () => {
+      expect(getHttpUrl()).toEqual({
+        baseUrl: 'https://vercel-workflow.com/api',
+        usingProxy: false,
+      });
+    }
+  );
 
-  it('respects VERCEL_WORKFLOW_SERVER_URL when set (no proxy)', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom-host.example.com';
-    expect(getHttpUrl()).toEqual({
-      baseUrl: 'https://custom-host.example.com/api',
-      usingProxy: false,
-    });
-  });
+  itWithoutInlineOverride(
+    'respects VERCEL_WORKFLOW_SERVER_URL when set (no proxy)',
+    () => {
+      process.env.VERCEL_WORKFLOW_SERVER_URL =
+        'https://custom-host.example.com';
+      expect(getHttpUrl()).toEqual({
+        baseUrl: 'https://custom-host.example.com/api',
+        usingProxy: false,
+      });
+    }
+  );
 
   it('uses proxy when projectId + teamId are provided', () => {
     expect(
@@ -84,18 +98,24 @@ describe('getHeaders', () => {
     expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
   });
 
-  it('omits x-vercel-workflow-api-url when override is unset', () => {
-    const headers = getHeaders(undefined, { usingProxy: true });
-    expect(headers.get('x-vercel-workflow-api-url')).toBeNull();
-  });
+  itWithoutInlineOverride(
+    'omits x-vercel-workflow-api-url when override is unset',
+    () => {
+      const headers = getHeaders(undefined, { usingProxy: true });
+      expect(headers.get('x-vercel-workflow-api-url')).toBeNull();
+    }
+  );
 
-  it('sets x-vercel-workflow-api-url when VERCEL_WORKFLOW_SERVER_URL is set and using proxy', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom.example.com';
-    const headers = getHeaders(undefined, { usingProxy: true });
-    expect(headers.get('x-vercel-workflow-api-url')).toBe(
-      'https://custom.example.com'
-    );
-  });
+  itWithoutInlineOverride(
+    'sets x-vercel-workflow-api-url when VERCEL_WORKFLOW_SERVER_URL is set and using proxy',
+    () => {
+      process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom.example.com';
+      const headers = getHeaders(undefined, { usingProxy: true });
+      expect(headers.get('x-vercel-workflow-api-url')).toBe(
+        'https://custom.example.com'
+      );
+    }
+  );
 
   it('omits x-vercel-workflow-api-url when override is set but not using proxy', () => {
     // Direct-to-workflow-server mode uses baseUrl, so the header is redundant.

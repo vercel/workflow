@@ -31,8 +31,15 @@ import { version } from './version.js';
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
+ *
+ * Exported so tests that assert the unset-override defaults can skip
+ * themselves while a branch override is active.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+// TEMPORARY: points e2e at the backend preview deployment that serves the
+// v3 stream write endpoints. Must be reverted to '' before merge (the lint
+// guard enforces this).
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-peter-streaming-writes.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
