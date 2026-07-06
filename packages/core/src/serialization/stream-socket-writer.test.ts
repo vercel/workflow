@@ -2,9 +2,10 @@ import type {
   StreamWriteChannel,
   StreamWriteChannelHandlers,
 } from '@workflow/world';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SOCKET_WRITER_CONFIG,
+  resolveSocketWriterConfig,
   type SocketWriterConfig,
   StreamSocketWriter,
 } from './stream-socket-writer.js';
@@ -88,6 +89,52 @@ function makeHarness(config?: Partial<SocketWriterConfig>) {
     },
   };
 }
+
+describe('resolveSocketWriterConfig', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('returns the compiled-in defaults when no env overrides are set', () => {
+    expect(resolveSocketWriterConfig()).toEqual(DEFAULT_SOCKET_WRITER_CONFIG);
+  });
+
+  it('resolves WORKFLOW_STREAM_WRITE_* env overrides per knob', () => {
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_RECYCLE_MS', '3000');
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_IN_FLIGHT_FRAMES', '2');
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_IN_FLIGHT_BYTES', '1024');
+    const config = resolveSocketWriterConfig();
+    expect(config.recycleMs).toBe(3000);
+    expect(config.maxInFlightFrames).toBe(2);
+    expect(config.maxInFlightBytes).toBe(1024);
+    // Untouched knobs keep their defaults.
+    expect(config.maxConsecutiveReconnects).toBe(
+      DEFAULT_SOCKET_WRITER_CONFIG.maxConsecutiveReconnects
+    );
+    expect(config.maxTotalReconnects).toBe(
+      DEFAULT_SOCKET_WRITER_CONFIG.maxTotalReconnects
+    );
+  });
+
+  it('clamps the recycle interval to its floor (connection-churn guard)', () => {
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_RECYCLE_MS', '1');
+    expect(resolveSocketWriterConfig().recycleMs).toBe(250);
+  });
+
+  it('explicit constructor config wins over env overrides', () => {
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_IN_FLIGHT_FRAMES', '7');
+    const h = makeHarness({ maxInFlightFrames: 3 });
+    // Reach through the public backpressure behavior: the 4th write blocks.
+    void h.writer.write(frame(1));
+    void h.writer.write(frame(2));
+    void h.writer.write(frame(3));
+    let fourthAccepted = false;
+    void h.writer.write(frame(4)).then(() => {
+      fourthAccepted = true;
+    });
+    return tick().then(() => expect(fourthAccepted).toBe(false));
+  });
+});
 
 describe('StreamSocketWriter', () => {
   it('lazily connects once, sends in order, and close waits for all acks', async () => {

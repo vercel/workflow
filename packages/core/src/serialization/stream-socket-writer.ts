@@ -24,9 +24,10 @@
 // and resends rather than guessing.
 
 import { WorkflowRuntimeError } from '@workflow/errors';
-import type {
-  StreamWriteChannel,
-  StreamWriteChannelHandlers,
+import {
+  envNumber,
+  type StreamWriteChannel,
+  type StreamWriteChannelHandlers,
 } from '@workflow/world';
 
 /** Injected transport + scheduling dependencies (all test-fakeable). */
@@ -76,6 +77,50 @@ export const DEFAULT_SOCKET_WRITER_CONFIG: SocketWriterConfig = {
   reconnectBackoffMs: [100, 500, 2000],
 };
 
+/**
+ * Effective writer config: each numeric knob reads a `WORKFLOW_STREAM_WRITE_*`
+ * env override (for dedicated e2e deployments that dial limits down so the
+ * suite exercises rotation, backpressure, and reconnect paths quickly),
+ * falling back to {@link DEFAULT_SOCKET_WRITER_CONFIG}. Explicit constructor
+ * config takes precedence over both. The recycle floor keeps a misconfigured
+ * override from thrashing the backend with connection churn — every rotation
+ * costs a full authenticated upgrade.
+ */
+export function resolveSocketWriterConfig(): SocketWriterConfig {
+  const defaults = DEFAULT_SOCKET_WRITER_CONFIG;
+  return {
+    recycleMs: envNumber(
+      'WORKFLOW_STREAM_WRITE_RECYCLE_MS',
+      defaults.recycleMs,
+      {
+        integer: true,
+        min: 250,
+      }
+    ),
+    maxInFlightFrames: envNumber(
+      'WORKFLOW_STREAM_WRITE_MAX_IN_FLIGHT_FRAMES',
+      defaults.maxInFlightFrames,
+      { integer: true, min: 1 }
+    ),
+    maxInFlightBytes: envNumber(
+      'WORKFLOW_STREAM_WRITE_MAX_IN_FLIGHT_BYTES',
+      defaults.maxInFlightBytes,
+      { integer: true, min: 1 }
+    ),
+    maxConsecutiveReconnects: envNumber(
+      'WORKFLOW_STREAM_WRITE_MAX_CONSECUTIVE_RECONNECTS',
+      defaults.maxConsecutiveReconnects,
+      { integer: true }
+    ),
+    maxTotalReconnects: envNumber(
+      'WORKFLOW_STREAM_WRITE_MAX_TOTAL_RECONNECTS',
+      defaults.maxTotalReconnects,
+      { integer: true }
+    ),
+    reconnectBackoffMs: defaults.reconnectBackoffMs,
+  };
+}
+
 interface BufferedFrame {
   frame: Uint8Array;
   /** Ordinal this frame was sent under on the current channel, if sent. */
@@ -117,7 +162,7 @@ export class StreamSocketWriter {
 
   constructor(deps: SocketWriterDeps, config?: Partial<SocketWriterConfig>) {
     this.deps = deps;
-    this.config = { ...DEFAULT_SOCKET_WRITER_CONFIG, ...config };
+    this.config = { ...resolveSocketWriterConfig(), ...config };
   }
 
   /** Frames written but not yet acked (exposed for tests/diagnostics). */
