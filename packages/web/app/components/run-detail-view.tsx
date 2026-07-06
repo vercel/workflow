@@ -203,7 +203,6 @@ type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
 export function RunDetailView({
   runId,
-  // TODO: This should open the right sidebar within the trace viewer
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const navigate = useNavigate();

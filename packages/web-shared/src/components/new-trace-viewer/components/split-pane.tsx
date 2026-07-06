@@ -11,20 +11,17 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
-
-const GUTTER_PX = 1;
-const MIN_PX = 50;
-const DEFAULT_START_PX = 340;
-
-export function Divider() {
-  return <div aria-hidden className="h-full w-px shrink-0 bg-gray-alpha-400" />;
-}
+import {
+  DEFAULT_START_PX,
+  GUTTER_PX,
+  MIN_PX,
+  paneColTemplate,
+} from './pane-constants';
+import { useElementWidth } from './use-element-width';
 
 export interface SplitPaneProps {
   children: ReactNode;
   className?: string;
-  /** Fixed pixel width for the start (left) pane. Default 220. */
-  defaultStartWidth?: number;
   /** Fixed (non-scrolling) header rendered above the start pane. */
   startHeader?: ReactNode;
   /** Fixed (non-scrolling) header rendered above the end pane. */
@@ -35,7 +32,6 @@ export interface SplitPaneProps {
 export function SplitPane({
   children,
   className,
-  defaultStartWidth = DEFAULT_START_PX,
   startHeader,
   endHeader,
   scrollContainerRef,
@@ -46,13 +42,18 @@ export function SplitPane({
   }
   const [start, end] = parts;
 
-  const [startPx, setStartPx] = useState(defaultStartWidth);
+  // `startPx` is the user's preferred width; the rendered width is derived by
+  // clamping against the live container width (same model as the detail
+  // panel), so shrinking the container compresses the pane without destroying
+  // the preference, and re-growing restores it.
+  const [startPx, setStartPx] = useState(DEFAULT_START_PX);
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
-  const pendingPx = useRef(defaultStartWidth);
+  const pendingPx = useRef(DEFAULT_START_PX);
   const pointerIdRef = useRef<number | null>(null);
+  const containerWidth = useElementWidth(containerRef);
 
   useEffect(() => {
     return () => {
@@ -134,8 +135,14 @@ export function SplitPane({
     }
   };
 
-  const colTemplate = `${startPx}px ${GUTTER_PX}px minmax(${MIN_PX}px, 1fr)`;
-  const hasHeaders = startHeader != null || endHeader != null;
+  // Floor applied last so the start column can never collapse below MIN_PX
+  // (which would produce an invalid negative grid track on tiny containers).
+  const effectiveStartPx =
+    containerWidth > 0
+      ? Math.max(MIN_PX, Math.min(containerWidth - MIN_PX - GUTTER_PX, startPx))
+      : startPx;
+
+  const colTemplate = paneColTemplate(effectiveStartPx);
 
   const gutter = (
     <div
@@ -151,48 +158,30 @@ export function SplitPane({
     </div>
   );
 
-  if (hasHeaders) {
-    return (
-      <div className={cn('flex flex-col h-full min-h-0', className)}>
-        <div
-          className="shrink-0 grid"
-          style={{ gridTemplateColumns: colTemplate }}
-        >
-          <div>{startHeader}</div>
-          <div className="flex justify-center">
-            <span className="h-full w-px bg-gray-alpha-400" aria-hidden />
-          </div>
-          <div>{endHeader}</div>
-        </div>
-        <div
-          ref={setContainerRef}
-          className={cn(
-            'grid flex-1 min-h-0 overflow-x-hidden overflow-y-auto',
-            isDragging && 'select-none'
-          )}
-          style={{ gridTemplateColumns: colTemplate }}
-        >
-          {start}
-          {gutter}
-          {end}
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div
-      ref={setContainerRef}
-      className={cn(
-        'grid h-full min-h-0 content-start overflow-x-hidden overflow-y-auto',
-        isDragging && 'select-none',
-        className
-      )}
-      style={{ gridTemplateColumns: colTemplate, height: '100%' }}
-    >
-      {start}
-      {gutter}
-      {end}
+    <div className={cn('flex flex-col h-full min-h-0', className)}>
+      <div
+        className="shrink-0 grid"
+        style={{ gridTemplateColumns: colTemplate }}
+      >
+        <div>{startHeader}</div>
+        <div className="flex justify-center">
+          <span className="h-full w-px bg-gray-alpha-400" aria-hidden />
+        </div>
+        <div>{endHeader}</div>
+      </div>
+      <div
+        ref={setContainerRef}
+        className={cn(
+          'grid flex-1 min-h-0 overflow-x-hidden overflow-y-auto',
+          isDragging && 'select-none'
+        )}
+        style={{ gridTemplateColumns: colTemplate }}
+      >
+        {start}
+        {gutter}
+        {end}
+      </div>
     </div>
   );
 }

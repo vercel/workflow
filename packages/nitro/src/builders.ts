@@ -31,13 +31,17 @@ function getNitroProjectRoot(nitro: Nitro): string {
   return nitro.options.workspaceDir ?? nitro.options.rootDir;
 }
 
+function getNitroWorkflowDirs(nitro: Nitro): string[] {
+  return nitro.options.workflow?.dirs ?? ['.'];
+}
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
         projectRoot: getNitroProjectRoot(nitro),
-        dirs: ['.'], // Different apps that use nitro have different directories
+        dirs: getNitroWorkflowDirs(nitro),
         runtime: nitro.options.workflow?.runtime,
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
@@ -67,7 +71,7 @@ export class LocalBuilder extends BaseBuilder {
         workingDir: nitro.options.rootDir,
         projectRoot: getNitroProjectRoot(nitro),
         watch: nitro.options.dev,
-        dirs: ['.'], // Different apps that use nitro have different directories
+        dirs: getNitroWorkflowDirs(nitro),
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
       }),

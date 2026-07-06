@@ -1,5 +1,11 @@
 # @workflow/typescript-plugin
 
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#2769](https://github.com/vercel/workflow/pull/2769) [`eb7f60c`](https://github.com/vercel/workflow/commit/eb7f60c7e950b21c8f927b538dc64ff877ce7bb9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Stop warning on direct workflow calls from workflow code, where direct-await composition is valid.
+
 ## 5.0.0-beta.4
 
 ### Patch Changes

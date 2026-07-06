@@ -1,6 +1,13 @@
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { getLoaderSourceMapOptions } from './loader.ts';
+import {
+  ensureWorkflowTargetWorldEnv,
+  WORKFLOW_WORLD_TARGET_MODULE,
+} from '@workflow/builders';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  getLoaderSourceMapOptions,
+  injectWorkflowTargetWorldImport,
+} from './loader.ts';
 
 describe('getLoaderSourceMapOptions', () => {
   it('emits source maps for app files and uses the upstream source map', () => {
@@ -48,5 +55,36 @@ describe('getLoaderSourceMapOptions', () => {
       sourceMaps: false,
       inlineSourcesContent: false,
     });
+  });
+});
+
+describe('injectWorkflowTargetWorldImport', () => {
+  const originalTargetWorld = process.env.WORKFLOW_TARGET_WORLD;
+
+  afterEach(() => {
+    if (originalTargetWorld === undefined) {
+      delete process.env.WORKFLOW_TARGET_WORLD;
+    } else {
+      process.env.WORKFLOW_TARGET_WORLD = originalTargetWorld;
+    }
+  });
+
+  it('statically replaces the core world-target import', async () => {
+    process.env.WORKFLOW_TARGET_WORLD = 'local';
+
+    await expect(
+      injectWorkflowTargetWorldImport(
+        "import * as targetWorldModule from '@workflow/core/runtime/world-target';",
+        { ensureWorkflowTargetWorldEnv, WORKFLOW_WORLD_TARGET_MODULE }
+      )
+    ).resolves.toBe(
+      "import * as targetWorldModule from '@workflow/world-local';"
+    );
+  });
+
+  it('leaves unrelated imports unchanged', async () => {
+    await expect(
+      injectWorkflowTargetWorldImport("import { start } from 'workflow';")
+    ).resolves.toBe("import { start } from 'workflow';");
   });
 });

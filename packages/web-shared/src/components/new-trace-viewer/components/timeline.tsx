@@ -13,7 +13,6 @@ import {
 } from 'react';
 import { cn } from '../../../lib/cn';
 import {
-  formatDuration,
   formatDurationPrecise,
   getHighResInMs,
 } from '../../trace-viewer/util/timing';
@@ -733,7 +732,7 @@ export function Timeline({
               key={gap.rowIndex}
               leftFrac={gap.leftFrac}
               rightFrac={gap.rightFrac}
-              label={formatDuration(gap.gapMs, true)}
+              label={formatDurationPrecise(gap.gapMs)}
               rowIndex={gap.rowIndex}
             />
           ))}

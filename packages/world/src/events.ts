@@ -78,6 +78,20 @@ export const EventTypeSchema = z.enum([
   'wait_created',
   'wait_completed',
 ]);
+export type EventType = z.infer<typeof EventTypeSchema>;
+export const TerminalRunEventTypeSchema = EventTypeSchema.extract([
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+] as const);
+export type TerminalRunEventType = z.infer<typeof TerminalRunEventTypeSchema>;
+export const TERMINAL_RUN_EVENT_TYPES = TerminalRunEventTypeSchema.options;
+
+export function isTerminalRunEventType(
+  eventType: string
+): eventType is TerminalRunEventType {
+  return TERMINAL_RUN_EVENT_TYPES.includes(eventType as TerminalRunEventType);
+}
 
 // Base event schema with common properties
 // TODO: Event data on all specific event schemas can actually be undefined,
@@ -184,7 +198,7 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
  * Event created when a hook is first invoked. The World implementation
  * atomically creates both the event and the hook entity.
  */
-const HookCreatedEventSchema = BaseEventSchema.extend({
+export const HookCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_created'),
   correlationId: z.string(),
   eventData: z.object({
@@ -421,6 +435,7 @@ export const EventSchema = AllEventsSchema.and(
 
 // Inferred types
 export type Event = z.infer<typeof EventSchema>;
+export type HookCreatedEvent = z.infer<typeof HookCreatedEventSchema>;
 export type HookReceivedEvent = z.infer<typeof HookReceivedEventSchema>;
 export type HookConflictEvent = z.infer<typeof HookConflictEventSchema>;
 

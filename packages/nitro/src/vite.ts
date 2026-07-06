@@ -1,10 +1,16 @@
-import { createBuildQueue } from '@workflow/builders';
+import {
+  createBuildQueue,
+  ensureWorkflowTargetWorldEnv,
+  resolveWorkflowTargetWorldAlias,
+  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
+  WORKFLOW_WORLD_TARGET_MODULE,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
 import type {} from 'nitro/vite';
 import { join } from 'pathe';
-import type { Plugin } from 'vite';
+import type { Plugin, TransformResult } from 'vite';
 import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
@@ -18,13 +24,51 @@ export function workflow(options?: ModuleOptions): Plugin[] {
   // The exclusion path is set during nitro setup, so we need to defer plugin creation
   const lazyTransformPlugin: Plugin = {
     name: 'workflow:transform',
-    transform(code, id) {
+    config() {
+      const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+      const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
+        workingDir: process.cwd(),
+        targetWorld: workflowTargetWorld,
+      });
+      return {
+        define: {
+          'process.env.WORKFLOW_TARGET_WORLD':
+            JSON.stringify(workflowTargetWorld),
+        },
+        resolve: {
+          alias: {
+            [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
+            'pg-native': WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
+          },
+        },
+      };
+    },
+    async resolveId(source, importer, options) {
+      if (source !== WORKFLOW_WORLD_TARGET_MODULE) {
+        return null;
+      }
+      const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+      const resolved = await this.resolve(workflowTargetWorld, importer, {
+        ...options,
+        skipSelf: true,
+      });
+      return resolved ?? { id: workflowTargetWorld, external: true };
+    },
+    transform(code, id, options) {
       // Delegate to the actual transform plugin with exclusion
       // workflowBuildDir is set during nitro setup before transforms run
       const plugin = workflowTransformPlugin({
         exclude: workflowBuildDir ? [workflowBuildDir] : [],
       });
-      return (plugin.transform as Function)?.call(this, code, id);
+      const transform = plugin.transform as
+        | ((
+            this: unknown,
+            code: string,
+            id: string,
+            options?: { ssr?: boolean }
+          ) => TransformResult | Promise<TransformResult>)
+        | undefined;
+      return transform?.call(this, code, id, options);
     },
   };
 

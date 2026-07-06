@@ -188,3 +188,9 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
     },
   };
 }
+
+export function createWorld(): LocalWorld {
+  return createLocalWorld({
+    dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
+  });
+}

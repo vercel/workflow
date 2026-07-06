@@ -24,6 +24,9 @@ import {
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
+  isTerminalRunEventType,
+  isTerminalStepStatus,
+  isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
@@ -57,7 +60,10 @@ import {
   hookRecoveryMarkerPath,
   monotonicUlid,
 } from './helpers.js';
-import { deleteAllHooksForRun } from './hooks-storage.js';
+import {
+  deleteAllHooksForRun,
+  rebuildLiveHookByTokenFromEventLog,
+} from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
 
@@ -259,7 +265,7 @@ async function repairHookEntityFromPersistedEvent(
     environment: 'local',
     createdAt: persistedEvent.createdAt,
     specVersion: persistedEvent.specVersion,
-    isWebhook: eventData.isWebhook ?? false,
+    isWebhook: eventData.isWebhook ?? true,
     isSystem: eventData.isSystem ?? false,
   };
   await writeExclusive(
@@ -485,11 +491,7 @@ export function createEventsStorage(
   ): void {
     // Terminal runs release their cached history so a long-lived dev
     // server doesn't retain completed runs forever.
-    if (
-      event.eventType === 'run_completed' ||
-      event.eventType === 'run_failed' ||
-      event.eventType === 'run_cancelled'
-    ) {
+    if (isTerminalRunEventType(event.eventType)) {
       clearRunCache(event.runId);
       return;
     }
@@ -625,14 +627,6 @@ export function createEventsStorage(
 
         // specVersion is always sent by the runtime, but we provide a fallback for safety
         const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
-
-        // Helper to check if run is in terminal state
-        const isRunTerminal = (status: string) =>
-          ['completed', 'failed', 'cancelled'].includes(status);
-
-        // Helper to check if step is in terminal state
-        const isStepTerminal = (status: string) =>
-          ['completed', 'failed', 'cancelled'].includes(status);
 
         // Get current run state for validation (if not creating a new run)
         // Skip run validation for step_completed and step_retrying - they only operate
@@ -801,7 +795,7 @@ export function createEventsStorage(
           (data.eventData as { input?: unknown }).input !== undefined;
 
         // Run terminal state validation
-        if (currentRun && isRunTerminal(currentRun.status)) {
+        if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
           const runTerminalEvents = [
             'run_started',
             'run_completed',
@@ -916,14 +910,14 @@ export function createEventsStorage(
           // the lazy-start path (no step yet) — there is nothing terminal to
           // guard against in that case, so these checks are skipped.
           if (validatedStep) {
-            if (isStepTerminal(validatedStep.status)) {
+            if (isTerminalStepStatus(validatedStep.status)) {
               throw new EntityConflictError(
                 `Cannot modify step in terminal state "${validatedStep.status}"`
               );
             }
 
             // On terminal runs: only allow completing/failing in-progress steps
-            if (currentRun && isRunTerminal(currentRun.status)) {
+            if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
               if (validatedStep.status !== 'running') {
                 throw new RunExpiredError(
                   `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
@@ -1429,7 +1423,7 @@ export function createEventsStorage(
               StepSchema,
               tag
             );
-            if (freshStep && isStepTerminal(freshStep.status)) {
+            if (freshStep && isTerminalStepStatus(freshStep.status)) {
               throw new EntityConflictError(
                 `Cannot modify step in terminal state "${freshStep.status}"`
               );
@@ -1569,6 +1563,15 @@ export function createEventsStorage(
             'tokens',
             `${hashToken(hookData.token)}.json`
           );
+          // When the claim is absent, the event log is the only durable source
+          // that can distinguish a first hook from a crash-lost token cache.
+          if (!(await readHookTokenClaim(constraintPath))) {
+            await rebuildLiveHookByTokenFromEventLog(
+              basedir,
+              hookData.token,
+              tag
+            );
+          }
           // Persist `eventId` in the claim so concurrent / cross-
           // process retries can converge on a single canonical
           // `hook_created` event path. See the recovery comment

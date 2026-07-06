@@ -52,7 +52,7 @@ import {
   promoteAbortErrorToFatal,
 } from '../types.js';
 
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import { getMaxQueueDeliveries } from './constants.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -132,9 +132,10 @@ function createStepHandler(namespace?: string) {
         { stepId, stepName: stepNameFromQueue }
       );
 
-      if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+      const maxQueueDeliveries = getMaxQueueDeliveries();
+      if (metadata.attempt > maxQueueDeliveries) {
         stepRuntimeLogger.error(
-          `Step handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+          `Step handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
           {
             attempt: metadata.attempt,
           }
@@ -143,7 +144,7 @@ function createStepHandler(namespace?: string) {
           const world = await getWorld();
           const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
           const err = new FatalError(
-            `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
+            `Step exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
           );
           await world.events.create(
             workflowRunId,

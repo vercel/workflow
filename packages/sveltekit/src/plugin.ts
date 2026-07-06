@@ -1,4 +1,14 @@
-import { createBuildQueue } from '@workflow/builders';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  createBuildQueue,
+  ensureWorkflowTargetWorldEnv,
+  resolveWorkflowTargetWorldAlias,
+  WORKFLOW_NODE_COMPAT_BANNER,
+  WORKFLOW_NODE_FILENAME_BANNER,
+  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
+  WORKFLOW_WORLD_TARGET_MODULE,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Plugin } from 'vite';
@@ -15,13 +25,33 @@ export interface WorkflowPluginOptions {
 }
 
 export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
-  const builder = new SvelteKitBuilder({ sourcemap: options.sourcemap });
+  let builder: SvelteKitBuilder | undefined;
   const enqueue = createBuildQueue();
 
   return [
     workflowTransformPlugin() as Plugin,
     {
       name: 'workflow:sveltekit',
+      enforce: 'post',
+      config() {
+        const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+        const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
+          workingDir: process.cwd(),
+          targetWorld: workflowTargetWorld,
+        });
+        return {
+          define: {
+            'process.env.WORKFLOW_TARGET_WORLD':
+              JSON.stringify(workflowTargetWorld),
+          },
+          resolve: {
+            alias: {
+              [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
+              'pg-native': WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
+            },
+          },
+        };
+      },
       // SvelteKit bundles the server (including undici, via the world adapter)
       // into ESM output. undici loads most node: builtins as ESM imports, but
       // pulls in `node:http2` lazily via a bare `require('node:http2')` inside a
@@ -49,31 +79,80 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
       // bundled lib that, on seeing `require`, does `require()` of an ESM-only
       // dependency on a Node version without `require(ESM)` support.
       configResolved(config) {
+        if (config.command === 'serve') {
+          builder = new SvelteKitBuilder({
+            workingDir: config.root,
+            sourcemap: options.sourcemap,
+          });
+        }
+
         if (!config.build?.ssr) {
           return;
         }
-        const banner =
-          "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+
+        const banner = WORKFLOW_NODE_COMPAT_BANNER;
         const rollupOptions = config.build.rollupOptions;
-        if (rollupOptions.output == null) {
-          rollupOptions.output = {};
-        }
+        rollupOptions.output ??= {};
         const output = rollupOptions.output;
         const outputs = Array.isArray(output) ? output : [output];
-        for (const o of outputs) {
-          const existing = o.banner;
-          o.banner =
-            existing == null
-              ? banner
-              : typeof existing === 'function'
-                ? async (chunk) => `${banner}\n${await existing(chunk)}`
-                : `${banner}\n${existing}`;
+        for (const output of outputs) {
+          const existing = output.banner;
+          if (existing == null) {
+            output.banner = banner;
+            continue;
+          }
+          output.banner =
+            typeof existing === 'function'
+              ? async (chunk) => `${banner}\n${await existing(chunk)}`
+              : `${banner}\n${existing}`;
         }
+      },
+      closeBundle() {
+        patchAdapterNodeServerChunks(process.cwd());
       },
     },
     workflowHotUpdatePlugin({
-      builder,
+      builder: () => builder,
       enqueue,
     }),
   ];
+}
+
+function patchAdapterNodeServerChunks(cwd: string): void {
+  const serverDir = join(cwd, 'build/server');
+  if (!existsSync(serverDir)) {
+    return;
+  }
+
+  const banner = WORKFLOW_NODE_FILENAME_BANNER;
+
+  const visit = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(file);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.js')) {
+        continue;
+      }
+
+      const source = readFileSync(file, 'utf-8');
+      // Only patch chunks that reference __filename/__dirname without
+      // declaring their own binding. Prepending the banner onto a chunk
+      // that already declares either identifier (const/let/var, e.g. a
+      // CJS-interop shim) would produce a duplicate top-level declaration
+      // and crash the server with a SyntaxError at startup.
+      const referencesFilename = /\b__(?:file|dir)name\b/.test(source);
+      const declaresOwnBinding =
+        /\b(?:const|let|var)\s+__(?:file|dir)name\b/.test(source);
+      if (!referencesFilename || declaresOwnBinding) {
+        continue;
+      }
+
+      writeFileSync(file, `${banner}\n${source}`);
+    }
+  };
+
+  visit(serverDir);
 }

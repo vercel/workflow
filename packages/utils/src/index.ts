@@ -19,7 +19,9 @@ export {
   WORKFLOW_ROUTE_BASE,
 } from './workflow-routes.js';
 export {
+  getWorldImport,
   isVercelWorldTarget,
+  normalizeWorkflowTargetWorldImport,
   resolveWorkflowTargetWorld,
   usesVercelWorld,
 } from './world-target.js';

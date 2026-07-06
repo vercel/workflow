@@ -1,5 +1,21 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.21
+
+### Minor Changes
+
+- [#2705](https://github.com/vercel/workflow/pull/2705) [`97b8469`](https://github.com/vercel/workflow/commit/97b846902087fd2f7e8d5fd708a20eb175e4d636) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Move Workflow Postgres enum types into the workflow schema.
+
+### Patch Changes
+
+- [#2714](https://github.com/vercel/workflow/pull/2714) [`dd36e26`](https://github.com/vercel/workflow/commit/dd36e269624ab3ebfe7c38cff7dc312c4621c698) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix Postgres step lifecycle event ordering so a late concurrent step_started is no longer logged after step_completed.
+
+- Updated dependencies [[`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`fc5bdcb`](https://github.com/vercel/workflow/commit/fc5bdcb003051815e84f60ee00f5d8d6cc11c663), [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399)]:
+  - @workflow/utils@5.0.0-beta.5
+  - @workflow/world-local@5.0.0-beta.23
+  - @workflow/world@5.0.0-beta.15
+  - @workflow/errors@5.0.0-beta.9
+
 ## 5.0.0-beta.20
 
 ### Patch Changes
