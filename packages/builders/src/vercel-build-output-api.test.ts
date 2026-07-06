@@ -182,13 +182,6 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       expect(
         await readFile(join(clientOutputDir, 'schema.prisma'), 'utf8')
       ).toBe(schemaContents);
-      // The owning package.json comes along so runtime resolution of the
-      // copied files keeps working.
-      expect(
-        JSON.parse(
-          await readFile(join(clientOutputDir, 'package.json'), 'utf8')
-        ).main
-      ).toBe('index.js');
 
       // The bundle must execute under plain Node (not vitest's module
       // runner): inlined CJS referencing __dirname at module scope (like
@@ -242,6 +235,9 @@ export async function readTemplate(): Promise<string> {
   'use step';
   try {
     readFileSync(join(process.cwd(), '.env'), 'utf8');
+    // An app file whose cwd-relative path collides with a generated
+    // function file — it must never clobber the bundle.
+    readFileSync(join(process.cwd(), 'index.mjs'), 'utf8');
   } catch {}
   return readFileSync(join(process.cwd(), 'data/template.txt'), 'utf8');
 }
@@ -254,6 +250,10 @@ export async function reportWorkflow(): Promise<string> {
       );
       await write(join(workingDir, 'data/template.txt'), 'template asset\n');
       await write(join(workingDir, '.env'), 'SECRET=do-not-copy\n');
+      await write(
+        join(workingDir, 'index.mjs'),
+        'app sentinel — not the bundle\n'
+      );
 
       await createBuilder(workingDir).build();
 
@@ -284,6 +284,10 @@ export async function reportWorkflow(): Promise<string> {
         await readFile(join(flowFuncDir, 'data/template.txt'), 'utf8')
       ).toBe('template asset\n');
       expect(existsSync(join(flowFuncDir, '.env'))).toBe(false);
+      // The app's root index.mjs must not clobber the generated bundle.
+      expect(await readFile(join(flowFuncDir, 'index.mjs'), 'utf8')).not.toBe(
+        'app sentinel — not the bundle\n'
+      );
     }
   );
 });

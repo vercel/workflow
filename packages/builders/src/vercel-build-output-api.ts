@@ -120,32 +120,6 @@ function getRuntimeAssetOutputPaths(
   return [...outputPaths];
 }
 
-/**
- * The package.json of the package that owns a copied node_modules asset.
- * Runtime resolution of the copied files needs it — e.g. a bare require of
- * a native package whose package.json points `main` at a `.node` binary.
- */
-function getOwningPackageJsonPath(sourcePath: string): string | null {
-  const normalized = sourcePath.replace(/\\/g, '/');
-  const markerIndex = normalized.lastIndexOf('/node_modules/');
-  if (markerIndex === -1) return null;
-
-  // Walk up from the asset towards the innermost node_modules directory.
-  const nodeModulesDir = normalized.slice(
-    0,
-    markerIndex + '/node_modules'.length
-  );
-  for (
-    let dir = dirname(normalized);
-    dir.length > nodeModulesDir.length;
-    dir = dirname(dir)
-  ) {
-    const candidate = `${dir}/package.json`;
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
 const TRANSPILE_LOADERS: Record<string, 'ts' | 'tsx' | 'jsx'> = {
   '.ts': 'ts',
   '.mts': 'ts',
@@ -332,19 +306,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       // nft returns paths relative to the trace base, but files it cannot
       // relativize (e.g. on another Windows drive) stay absolute.
       const sourcePath = isAbsolute(file) ? file : join(traceBase, file);
-      const copiedAsset = await this.copyTracedRuntimeAsset(
-        functionDir,
-        sourcePath,
-        copied
-      );
-      if (!copiedAsset) continue;
-
-      // Copy the owning package.json alongside node_modules assets so
-      // runtime resolution of the copied files keeps working.
-      const packageJsonPath = getOwningPackageJsonPath(sourcePath);
-      if (packageJsonPath !== null) {
-        await this.copyTracedRuntimeAsset(functionDir, packageJsonPath, copied);
-      }
+      await this.copyTracedRuntimeAsset(functionDir, sourcePath, copied);
     }
 
     if (copied.size > 0) {
@@ -363,43 +325,40 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     asset: { sourcePath: string; outputPath: string },
     copied: Map<string, string>,
     functionDir: string
-  ): Promise<boolean> {
+  ): Promise<void> {
     const existingSource = copied.get(asset.outputPath);
     if (existingSource !== undefined) {
       if (existingSource !== asset.sourcePath) {
         console.warn(
           `Conflicting runtime assets for ${relative(functionDir, asset.outputPath)}: keeping ${existingSource}, skipping ${asset.sourcePath}`
         );
-        return false;
       }
-      return true;
+      return;
     }
     await mkdir(dirname(asset.outputPath), { recursive: true });
     await copyFile(asset.sourcePath, asset.outputPath);
     copied.set(asset.outputPath, asset.sourcePath);
-    return true;
   }
 
   /**
    * Filters a traced file down to a copyable runtime asset and copies it
-   * to every output location runtime lookups may probe. Returns false when
-   * the file must not (or cannot) be copied.
+   * to every output location runtime lookups may probe.
    */
   private async copyTracedRuntimeAsset(
     functionDir: string,
     sourcePath: string,
     copied: Map<string, string>
-  ): Promise<boolean> {
+  ): Promise<void> {
     if (isSecretFile(sourcePath)) {
       this.logBaseBuilderInfo(
         `Skipping secret-like runtime asset: ${sourcePath}`
       );
-      return false;
+      return;
     }
     // nft can emit directories and symlinks; only regular files are copied
     // (stat follows symlinks to the real contents).
     const stats = await stat(sourcePath).catch(() => null);
-    if (!stats?.isFile()) return false;
+    if (!stats?.isFile()) return;
 
     const outputPaths = getRuntimeAssetOutputPaths(
       functionDir,
@@ -410,10 +369,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       console.warn(
         `Runtime asset outside the app directory and node_modules is not copied into the workflow function: ${sourcePath}`
       );
-      return false;
+      return;
     }
 
-    let copiedAny = false;
     for (const outputPath of outputPaths) {
       const outputFile = relative(functionDir, outputPath).replace(/\\/g, '/');
       if (GENERATED_FUNCTION_FILES.has(outputFile)) {
@@ -422,14 +380,12 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
         );
         continue;
       }
-      copiedAny =
-        (await this.copyRuntimeAssetOnce(
-          { sourcePath, outputPath },
-          copied,
-          functionDir
-        )) || copiedAny;
+      await this.copyRuntimeAssetOnce(
+        { sourcePath, outputPath },
+        copied,
+        functionDir
+      );
     }
-    return copiedAny;
   }
 
   private async buildWebhookFunction({
