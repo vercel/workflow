@@ -2,5 +2,16 @@
   "env": {
     "WORKFLOW_PUBLIC_MANIFEST": "1"
   },
-  "regions": ["iad1", "sfo1", "fra1"]
+  "regions": ["iad1", "sfo1", "fra1"],
+  "functions": {
+    "app/api/e2e-region-implicit/iad1/route.ts": {
+      "regions": ["iad1"]
+    },
+    "app/api/e2e-region-implicit/sfo1/route.ts": {
+      "regions": ["sfo1"]
+    },
+    "app/api/e2e-region-implicit/fra1/route.ts": {
+      "regions": ["fra1"]
+    }
+  }
 }
