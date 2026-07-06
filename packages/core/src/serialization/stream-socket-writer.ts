@@ -240,13 +240,19 @@ export class StreamSocketWriter {
   private async ensureChannel(): Promise<void> {
     if (this.channel || this.connecting || this.fatalError) return;
     this.connecting = true;
+    // Claim this connect attempt's epoch up front so the captured value stays
+    // stable across the whole attempt. The transport may deliver its own
+    // onClose (which drives onChannelClose with this epoch) *before* the
+    // connect promise rejects; passing the captured epoch — rather than the
+    // live this.epoch — into the catch keeps the second call a stale no-op, so
+    // one failed connect counts as exactly one reconnect.
+    const epoch = ++this.epoch;
+    this.sentInEpoch = 0;
     try {
       if (this.deps.ensureReady) {
         this.ensureReadyPromise ??= this.deps.ensureReady();
         await this.ensureReadyPromise;
       }
-      const epoch = ++this.epoch;
-      this.sentInEpoch = 0;
       const channel = await this.deps.connect({
         onAck: (ack) => this.onAck(epoch, ack.index),
         onClose: (event) => this.onChannelClose(epoch, event),
@@ -261,7 +267,7 @@ export class StreamSocketWriter {
       this.pump();
     } catch (error) {
       this.connecting = false;
-      this.onChannelClose(this.epoch, {
+      this.onChannelClose(epoch, {
         reason: error instanceof Error ? error.message : String(error),
       });
       return;
