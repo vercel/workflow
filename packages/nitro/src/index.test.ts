@@ -67,6 +67,20 @@ afterEach(() => {
 });
 
 describe('@workflow/nitro virtual handlers', () => {
+  it('registers runtime base path before user Nitro plugins', async () => {
+    const nitro = createNitroStub({
+      routing: true,
+      baseURL: '/app/',
+    });
+
+    await nitroModule.setup(nitro);
+
+    expect(nitro.options.plugins[0]).toBe('#workflow/base-path');
+    expect(nitro.options.virtual['#workflow/base-path']).toContain(
+      'globalThis[Symbol.for(\'@workflow/core/basePath\')] = "/app"'
+    );
+  });
+
   it('registers the combined flow + webhook virtual handlers for Nitro v2', async () => {
     const nitro = createNitroStub({ routing: false });
 
@@ -358,15 +372,23 @@ describe('@workflow/nitro Vercel public manifest', () => {
       const config = JSON.parse(
         await readFile(join(rootDir, '.vercel/output/config.json'), 'utf-8')
       );
-      expect(config.routes[1]).toMatchObject({
+      expect(
+        config.routes
+          .slice(0, 3)
+          .map((route: { status?: number }) => route.status)
+      ).toEqual([404, 404, 404]);
+      expect(config.routes[3]).toMatchObject({
+        handle: 'filesystem',
+      });
+      expect(config.routes[4]).toMatchObject({
         src: '/app/.well-known/workflow/v1/flow',
         dest: '/__server',
       });
-      expect(config.routes[2]).toMatchObject({
+      expect(config.routes[5]).toMatchObject({
         src: '/app/.well-known/workflow/v1/webhook/(?<token>[^/]+)',
         dest: '/__server',
       });
-      expect(config.routes[3]).toMatchObject({
+      expect(config.routes[6]).toMatchObject({
         src: '/app/.well-known/workflow/v1/manifest.json',
         dest: '/.well-known/workflow/v1/manifest.json',
       });

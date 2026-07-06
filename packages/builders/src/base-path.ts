@@ -25,6 +25,10 @@ export function joinWorkflowBasePath(
   return `${normalizeWorkflowBasePath(basePath)}${path}`;
 }
 
+export function createWorkflowBasePathRuntimeCode(basePath: string): string {
+  return `globalThis[Symbol.for('@workflow/core/basePath')] = ${JSON.stringify(basePath)};`;
+}
+
 export function createBasePathRouteRegexPrefix(
   basePath: string | undefined
 ): string {

@@ -9,10 +9,30 @@ import {
 } from './base-path.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 
+export function createBuildOutputApiRootBlockRoutes(basePath?: string) {
+  if (!normalizeWorkflowBasePath(basePath)) return [];
+
+  return [
+    {
+      src: '^/\\.well-known\\/workflow\\/v1\\/flow\\/?$',
+      status: 404,
+    },
+    {
+      src: '^/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+?)\\/?$',
+      status: 404,
+    },
+    {
+      src: '^/\\.well-known\\/workflow\\/v1\\/manifest\\.json\\/?$',
+      status: 404,
+    },
+  ];
+}
+
 export function createBuildOutputApiRoutes(basePath?: string) {
   const prefix = createBasePathRouteRegexPrefix(basePath);
 
   return [
+    ...createBuildOutputApiRootBlockRoutes(basePath),
     {
       src: `${prefix}\\.well-known\\/workflow\\/v1\\/flow\\/?$`,
       dest: `${WORKFLOW_ROUTE_BASE}/flow`,

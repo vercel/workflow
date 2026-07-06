@@ -1,6 +1,8 @@
 import {
   createBuildQueue,
+  createWorkflowBasePathRuntimeCode,
   normalizeWorkflowBasePath,
+  setWorkflowBasePath,
   WORKFLOW_ROUTE_BASE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -33,6 +35,7 @@ export function workflowPlugin(
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
         basePath = normalizeWorkflowBasePath(config.base);
+        setWorkflowBasePath(basePath);
         builder = new LocalBuilder({
           sourcemap: options.sourcemap,
           basePath,
@@ -52,7 +55,7 @@ export function workflowPlugin(
         updateConfig({
           vite: {
             plugins: [
-              workflowBasePathDevGuard(basePath),
+              workflowBasePathPlugin(basePath),
               workflowTransformPlugin(),
               // Cast needed due to Astro using a different internal Vite version
               workflowHotUpdatePlugin({
@@ -76,11 +79,23 @@ export function workflowPlugin(
   };
 }
 
-function workflowBasePathDevGuard(basePath: string) {
+function workflowBasePathPlugin(basePath: string) {
   return {
-    name: 'workflow:astro-base-path-dev-guard',
+    name: 'workflow:astro-base-path',
+    configResolved(config: any) {
+      if (config.command !== 'build' || !config.build?.ssr) return;
+      const banner = createWorkflowBasePathRuntimeCode(basePath);
+      const rollupOptions = config.build.rollupOptions;
+      rollupOptions.output ??= {};
+      const output = rollupOptions.output;
+      const outputs = Array.isArray(output) ? output : [output];
+      for (const o of outputs) {
+        o.banner = prependBanner(o.banner, banner);
+      }
+    },
     enforce: 'post',
     configureServer(server: any) {
+      setWorkflowBasePath(basePath);
       if (!basePath) return;
 
       return () => {
@@ -104,4 +119,15 @@ function workflowBasePathDevGuard(basePath: string) {
       };
     },
   };
+}
+
+function prependBanner(existing: any, banner: string) {
+  if (typeof existing === 'string' && existing.includes(banner)) {
+    return existing;
+  }
+  if (existing == null) return banner;
+  if (typeof existing === 'function') {
+    return async (chunk: unknown) => `${banner}\n${await existing(chunk)}`;
+  }
+  return `${banner}\n${existing}`;
 }

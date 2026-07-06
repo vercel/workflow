@@ -1,4 +1,8 @@
-import { createBuildQueue } from '@workflow/builders';
+import {
+  createBuildQueue,
+  createWorkflowBasePathRuntimeCode,
+  setWorkflowBasePath,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Plugin } from 'vite';
@@ -50,16 +54,18 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
       // bundled lib that, on seeing `require`, does `require()` of an ESM-only
       // dependency on a Node version without `require(ESM)` support.
       async configResolved(config) {
+        const basePath = await loadSvelteKitBasePath();
+        setWorkflowBasePath(basePath);
         builder ??= new SvelteKitBuilder({
           sourcemap: options.sourcemap,
-          basePath: await loadSvelteKitBasePath(),
+          basePath,
         });
 
         if (!config.build?.ssr) {
           return;
         }
-        const banner =
-          "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+        const banner = `${createWorkflowBasePathRuntimeCode(basePath)}
+import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }`;
         const rollupOptions = config.build.rollupOptions;
         if (rollupOptions.output == null) {
           rollupOptions.output = {};

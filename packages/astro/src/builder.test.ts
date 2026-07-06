@@ -1,7 +1,7 @@
+import { createBuildOutputApiRootBlockRoutes } from '@workflow/builders';
 import { describe, expect, it } from 'vitest';
 import {
   createAstroBasePathGuard,
-  createAstroRootWorkflowBlockRoutes,
   createAstroWorkflowRoutes,
 } from './builder.js';
 
@@ -24,17 +24,17 @@ describe('createAstroWorkflowRoutes', () => {
   });
 
   it('blocks root workflow routes on Vercel when Astro base is set', () => {
-    expect(createAstroRootWorkflowBlockRoutes('/app/')).toEqual([
+    expect(createBuildOutputApiRootBlockRoutes('/app/')).toEqual([
       {
-        src: '^/\\.well-known/workflow/v1/flow/?$',
+        src: '^/\\.well-known\\/workflow\\/v1\\/flow\\/?$',
         status: 404,
       },
       {
-        src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
+        src: '^/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+?)\\/?$',
         status: 404,
       },
       {
-        src: '^/\\.well-known/workflow/v1/manifest\\.json/?$',
+        src: '^/\\.well-known\\/workflow\\/v1\\/manifest\\.json\\/?$',
         status: 404,
       },
     ]);

@@ -5,6 +5,7 @@ import {
   BaseBuilder,
   createBaseBuilderConfig,
   createBasePathRouteRegexPrefix,
+  createBuildOutputApiRootBlockRoutes,
   NORMALIZE_REQUEST_CODE,
   normalizeWorkflowBasePath,
   VercelBuildOutputAPIBuilder,
@@ -22,25 +23,6 @@ export function createAstroWorkflowRoutes(basePath?: string) {
     {
       src: `${prefix}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
       dest: `${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
-    },
-  ];
-}
-
-export function createAstroRootWorkflowBlockRoutes(basePath?: string) {
-  if (!normalizeWorkflowBasePath(basePath)) return [];
-
-  return [
-    {
-      src: '^/\\.well-known/workflow/v1/flow/?$',
-      status: 404,
-    },
-    {
-      src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
-      status: 404,
-    },
-    {
-      src: '^/\\.well-known/workflow/v1/manifest\\.json/?$',
-      status: 404,
     },
   ];
 }
@@ -250,7 +232,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       insertIndex++;
     }
 
-    const rootBlockRoutes = createAstroRootWorkflowBlockRoutes(
+    const rootBlockRoutes = createBuildOutputApiRootBlockRoutes(
       this.config.basePath
     );
     config.routes.splice(filesystemIndex, 0, ...rootBlockRoutes);

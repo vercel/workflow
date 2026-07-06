@@ -1,9 +1,10 @@
-export { WORKFLOW_ROUTE_BASE } from '@workflow/utils';
+export { setWorkflowBasePath, WORKFLOW_ROUTE_BASE } from '@workflow/utils';
 export type { WorkflowManifest } from './apply-swc-transform.js';
 export { applySwcTransform } from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';
 export {
   createBasePathRouteRegexPrefix,
+  createWorkflowBasePathRuntimeCode,
   joinWorkflowBasePath,
   normalizeWorkflowBasePath,
 } from './base-path.js';
@@ -68,6 +69,7 @@ export type {
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export {
+  createBuildOutputApiRootBlockRoutes,
   getBuildOutputStaticManifestDir,
   VercelBuildOutputAPIBuilder,
 } from './vercel-build-output-api.js';
