@@ -133,14 +133,54 @@ exports.getSchema = function getSchema() {
   );
 }
 
+/**
+ * sharp-shaped fixture: a package whose native addon links shared
+ * libraries shipped in a sibling package declared as an optional
+ * dependency (like @img/sharp-linux-arm64 → @img/sharp-libvips-linux-arm64).
+ */
+async function writeFakeNativeAddon(packageRoot: string): Promise<void> {
+  await write(
+    join(packageRoot, '@fake/native/package.json'),
+    JSON.stringify({
+      name: '@fake/native',
+      version: '1.0.0',
+      main: 'index.js',
+      optionalDependencies: { '@fake/native-libs': '1.0.0' },
+    })
+  );
+  await write(
+    join(packageRoot, '@fake/native/index.js'),
+    `const { readFileSync } = require('fs');
+const path = require('path');
+
+exports.getBinding = function getBinding() {
+  return readFileSync(path.join(__dirname, 'lib/binding.node'), 'utf8');
+};
+`
+  );
+  await write(
+    join(packageRoot, '@fake/native/lib/binding.node'),
+    'fake native binding\n'
+  );
+  await write(
+    join(packageRoot, '@fake/native-libs/package.json'),
+    JSON.stringify({ name: '@fake/native-libs', version: '1.0.0' })
+  );
+  await write(
+    join(packageRoot, '@fake/native-libs/lib/libfake.so.1'),
+    'fake shared library\n'
+  );
+}
+
 async function writeStepUsingFakePrisma(workingDir: string): Promise<void> {
   await write(
     join(workingDir, 'src/workflows/db.ts'),
     `import { getQueryEngine } from 'fake-prisma-client';
+import { getBinding } from '@fake/native';
 
 export async function readEngine(): Promise<string> {
   'use step';
-  return getQueryEngine();
+  return getQueryEngine() + getBinding();
 }
 
 export async function engineWorkflow(): Promise<string> {
@@ -168,6 +208,7 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
     async () => {
       await writeWorkflowRuntimeStub(workingDir);
       await writeFakePrismaClient(join(workingDir, 'node_modules'));
+      await writeFakeNativeAddon(join(workingDir, 'node_modules'));
       await writeStepUsingFakePrisma(workingDir);
 
       await createBuilder(workingDir).build();
@@ -182,6 +223,36 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       expect(
         await readFile(join(clientOutputDir, 'schema.prisma'), 'utf8')
       ).toBe(schemaContents);
+      // The referencing module reads join(__dirname, engineFile), and its
+      // __dirname is the function root once bundled — so the engine is
+      // also copied there (pdfkit/tiktoken-style lookups).
+      expect(
+        await readFile(join(getFlowFuncDir(workingDir), engineFile), 'utf8')
+      ).toBe(engineContents);
+      // Native addon packages ship wholesale: the owning package (incl.
+      // package.json for exports-mapped requires, like sharp's
+      // `@img/sharp-<platform>/sharp.node` → index.cjs) and its declared
+      // dependency packages (sharp's libvips shared libraries).
+      expect(
+        JSON.parse(
+          await readFile(
+            join(
+              getFlowFuncDir(workingDir),
+              'node_modules/@fake/native/package.json'
+            ),
+            'utf8'
+          )
+        ).name
+      ).toBe('@fake/native');
+      expect(
+        await readFile(
+          join(
+            getFlowFuncDir(workingDir),
+            'node_modules/@fake/native-libs/lib/libfake.so.1'
+          ),
+          'utf8'
+        )
+      ).toBe('fake shared library\n');
 
       // The bundle must execute under plain Node (not vitest's module
       // runner): inlined CJS referencing __dirname at module scope (like
@@ -216,6 +287,7 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       );
       await writeFakePrismaClient(storePackageRoot);
       const appNodeModules = join(workingDir, 'node_modules');
+      await writeFakeNativeAddon(appNodeModules);
       // Absolute target: Windows junctions resolve relative targets against
       // process.cwd(), not the link directory.
       symlinkSync(

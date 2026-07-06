@@ -1,5 +1,12 @@
-import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import {
   basename,
   dirname,
@@ -83,15 +90,21 @@ function isRuntimeAsset(
  *   app's own node_modules, or a Prisma client generated into app source)
  *   also keep their app-relative path, which cwd-relative lookups probe
  *   unchanged.
+ * - Assets are also copied at their path relative to each referencing
+ *   module's directory: esbuild rewrites __dirname/import.meta.url of
+ *   inlined modules to the function root, so a module reading
+ *   join(__dirname, 'data/font.afm') probes <functionDir>/data/font.afm
+ *   at runtime (e.g. pdfkit's fonts, tiktoken's wasm). References that
+ *   escape the function root (join(__dirname, '../data')) cannot be
+ *   satisfied and are skipped.
  *
- * Assets outside both (e.g. a monorepo store above the app directory) get
- * only the flattened location; returns an empty list when not even that
- * applies.
+ * Returns an empty list when no location applies.
  */
 function getRuntimeAssetOutputPaths(
   functionDir: string,
   sourcePath: string,
-  workingDir: string
+  workingDir: string,
+  parentDirs: string[]
 ): string[] {
   const outputPaths = new Set<string>();
 
@@ -117,7 +130,87 @@ function getRuntimeAssetOutputPaths(
     outputPaths.add(join(functionDir, appPath));
   }
 
+  for (const parentDir of parentDirs) {
+    const bundleRootPath = resolve(
+      functionDir,
+      relative(parentDir, sourcePath)
+    );
+    const relativeToFunction = relative(functionDir, bundleRootPath);
+    if (
+      relativeToFunction !== '' &&
+      relativeToFunction !== '..' &&
+      !relativeToFunction.startsWith(`..${sep}`) &&
+      !isAbsolute(relativeToFunction)
+    ) {
+      outputPaths.add(bundleRootPath);
+    }
+  }
+
   return [...outputPaths];
+}
+
+/**
+ * The root directory of the package that owns a node_modules file
+ * (handles scoped packages and pnpm store paths).
+ */
+function getOwningPackageDir(sourcePath: string): string | null {
+  const normalized = sourcePath.replace(/\\/g, '/');
+  const marker = '/node_modules/';
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex === -1) return null;
+  const segments = normalized.slice(markerIndex + marker.length).split('/');
+  const packageSegments = segments[0]?.startsWith('@')
+    ? segments.slice(0, 2)
+    : segments.slice(0, 1);
+  if (packageSegments.length === 0 || !packageSegments.at(-1)) return null;
+  return (
+    normalized.slice(0, markerIndex + marker.length) + packageSegments.join('/')
+  );
+}
+
+/**
+ * Native addons are loaded through runtime machinery that bundling can't
+ * inline: sharp requires `@img/sharp-<platform>/sharp.node`, which
+ * resolves through that package's `exports` map to a JS shim that loads
+ * the real binary, which in turn dlopens shared libraries from sibling
+ * packages declared as (optional) dependencies (`@img/sharp-libvips-*`,
+ * linked via an ELF rpath). None of that is visible to JS analysis of the
+ * bundle — so ship the addon's owning package wholesale, plus the
+ * packages its package.json declares as dependencies.
+ */
+function getNativeAddonPackageDirs(addonPath: string): string[] {
+  const packageDir = getOwningPackageDir(addonPath);
+  if (!packageDir) return [];
+
+  let packageJson: {
+    dependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+  };
+  try {
+    packageJson = JSON.parse(
+      readFileSync(join(packageDir, 'package.json'), 'utf8')
+    );
+  } catch {
+    return [packageDir];
+  }
+
+  const marker = '/node_modules/';
+  const normalized = packageDir.replace(/\\/g, '/');
+  const nodeModulesRoot = normalized.slice(
+    0,
+    normalized.lastIndexOf(marker) + marker.length
+  );
+
+  const names = [
+    ...Object.keys(packageJson.dependencies ?? {}),
+    ...Object.keys(packageJson.optionalDependencies ?? {}),
+  ];
+  return [
+    packageDir,
+    ...names
+      .map((name) => join(nodeModulesRoot, name))
+      .filter((dir) => existsSync(dir)),
+  ];
 }
 
 const TRANSPILE_LOADERS: Record<string, 'ts' | 'tsx' | 'jsx'> = {
@@ -299,14 +392,51 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     }
 
     const copied = new Map<string, string>();
+    const visitedAddonDependencyDirs = new Set<string>();
     for (const file of fileList) {
       const reason = reasons.get(file);
       if (!reason || !isRuntimeAsset(file, reason.type)) continue;
 
       // nft returns paths relative to the trace base, but files it cannot
       // relativize (e.g. on another Windows drive) stay absolute.
-      const sourcePath = isAbsolute(file) ? file : join(traceBase, file);
-      await this.copyTracedRuntimeAsset(functionDir, sourcePath, copied);
+      const toAbsolute = (traceFile: string) =>
+        isAbsolute(traceFile) ? traceFile : join(traceBase, traceFile);
+      const sourcePath = toAbsolute(file);
+      // The directories of the modules that referenced this asset — their
+      // __dirname is the function root once bundled.
+      const parentDirs = [...reason.parents].map((parent) =>
+        dirname(toAbsolute(parent))
+      );
+      await this.copyTracedRuntimeAsset(
+        functionDir,
+        sourcePath,
+        parentDirs,
+        copied
+      );
+
+      // Native addons load through runtime machinery bundling can't
+      // inline (exports-mapped requires, JS shims, dlopen'd shared
+      // libraries from dependency packages) — ship the owning package
+      // and its declared dependency packages wholesale.
+      if (sourcePath.endsWith('.node')) {
+        for (const dependencyDir of getNativeAddonPackageDirs(sourcePath)) {
+          if (visitedAddonDependencyDirs.has(dependencyDir)) continue;
+          visitedAddonDependencyDirs.add(dependencyDir);
+          const entries = await readdir(dependencyDir, {
+            recursive: true,
+            withFileTypes: true,
+          }).catch(() => []);
+          for (const entry of entries) {
+            if (!entry.isFile()) continue;
+            await this.copyTracedRuntimeAsset(
+              functionDir,
+              join(entry.parentPath, entry.name),
+              [],
+              copied
+            );
+          }
+        }
+      }
     }
 
     if (copied.size > 0) {
@@ -347,6 +477,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   private async copyTracedRuntimeAsset(
     functionDir: string,
     sourcePath: string,
+    parentDirs: string[],
     copied: Map<string, string>
   ): Promise<void> {
     if (isSecretFile(sourcePath)) {
@@ -363,7 +494,8 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     const outputPaths = getRuntimeAssetOutputPaths(
       functionDir,
       sourcePath,
-      this.config.workingDir
+      this.config.workingDir,
+      parentDirs
     );
     if (outputPaths.length === 0) {
       console.warn(
