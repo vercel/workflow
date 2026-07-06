@@ -1863,12 +1863,7 @@ describe('e2e', () => {
     }
   );
 
-  // Postgres world support lands in the next PR of this stack; drop the
-  // WORKFLOW_TARGET_WORLD clause there.
-  test.skipIf(
-    !!process.env.WORKFLOW_VERCEL_ENV ||
-      process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
-  )(
+  test.skipIf(!!process.env.WORKFLOW_VERCEL_ENV)(
     'startHook rejects duplicate starts before hook materialization',
     { timeout: 60_000 },
     async () => {
