@@ -48,7 +48,7 @@ describe('world-init', () => {
 
   it(
     'getWorldLazy resolves via the registered global instead of falling ' +
-      'through to the dynamic-import branch',
+      'through to an initialization error',
     async () => {
       const { getWorldLazy } = await import('./get-world-lazy.js');
 

@@ -123,9 +123,11 @@ export {
 // filesystem operations into the flow route bundle.
 export {
   createWorld,
+  createWorldFromModule,
   getWorld,
   getWorldHandlers,
   setWorld,
+  type WorldFactoryModule,
 } from './runtime/world.js';
 
 function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {

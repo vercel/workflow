@@ -1,6 +1,12 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { type AstroConfig, createBuildQueue } from '@workflow/builders';
+import {
+  type AstroConfig,
+  createBuildQueue,
+  ensureWorkflowTargetWorldEnv,
+  resolveWorkflowTargetWorldAlias,
+  WORKFLOW_WORLD_TARGET_MODULE,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
@@ -38,7 +44,11 @@ export function workflowPlugin(
           sourcemap: options.sourcemap,
         };
         const vitePlugins = [workflowTransformPlugin()];
-
+        const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+        const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
+          workingDir: process.cwd(),
+          targetWorld: workflowTargetWorld,
+        });
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
           const builder = new LocalBuilder(builderOptions);
@@ -60,6 +70,15 @@ export function workflowPlugin(
         }
         updateConfig({
           vite: {
+            define: {
+              'process.env.WORKFLOW_TARGET_WORLD':
+                JSON.stringify(workflowTargetWorld),
+            },
+            resolve: {
+              alias: {
+                [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
+              },
+            },
             plugins: vitePlugins,
           },
         });

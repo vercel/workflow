@@ -1,5 +1,18 @@
 # @workflow/world-local
 
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- [#2152](https://github.com/vercel/workflow/pull/2152) [`fc5bdcb`](https://github.com/vercel/workflow/commit/fc5bdcb003051815e84f60ee00f5d8d6cc11c663) Thanks [@pranaygp](https://github.com/pranaygp)! - Reduce local sequential-step replay I/O with bounded recent-event and storage-directory caches.
+
+- [#2747](https://github.com/vercel/workflow/pull/2747) [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep local hooks reachable after a crash or restart by rebuilding lost hook cache files from committed hook creation events, preventing active hook tokens from being reused.
+
+- Updated dependencies [[`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399)]:
+  - @workflow/utils@5.0.0-beta.5
+  - @workflow/world@5.0.0-beta.15
+  - @workflow/errors@5.0.0-beta.9
+
 ## 5.0.0-beta.22
 
 ### Patch Changes
