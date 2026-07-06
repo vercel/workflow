@@ -1,13 +1,11 @@
-import type {
-  StreamWriteChannel,
-  StreamWriteChannelHandlers,
-} from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SOCKET_WRITER_CONFIG,
   resolveSocketWriterConfig,
   type SocketWriterConfig,
   StreamSocketWriter,
+  type StreamWriteChannel,
+  type StreamWriteChannelHandlers,
 } from './stream-socket-writer.js';
 
 const frame = (...bytes: number[]) => new Uint8Array(bytes);

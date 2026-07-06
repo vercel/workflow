@@ -1,3 +1,7 @@
+import {
+  aliasSerializationClass,
+  RUN_CLASS_ID,
+} from '../class-serialization.js';
 import { throwNotInWorkflowContext } from '../context-errors.js';
 import type {
   Hook,
@@ -6,10 +10,6 @@ import type {
   Webhook,
   WebhookOptions,
 } from '../create-hook.js';
-import {
-  aliasSerializationClass,
-  RUN_CLASS_ID,
-} from '../class-serialization.js';
 import { Run } from '../runtime/run.js';
 import { WORKFLOW_CREATE_HOOK } from '../symbols.js';
 import { getWorkflowMetadata } from './get-workflow-metadata.js';

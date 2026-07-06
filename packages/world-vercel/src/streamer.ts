@@ -4,13 +4,17 @@ import {
   type StreamChunksResponse,
   type Streamer,
   type StreamInfoResponse,
-  type StreamWriteChannel,
-  type StreamWriteChannelHandlers,
+  type StreamWriteOptions,
 } from '@workflow/world';
 import { WebSocket as UndiciWebSocket } from 'undici';
 import { z } from 'zod';
 import { getStreamDispatcher } from './http-client.js';
 import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
+import {
+  StreamSocketWriter,
+  type StreamWriteChannel,
+  type StreamWriteChannelHandlers,
+} from './stream-socket-writer.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -59,7 +63,7 @@ const getMaxChunksPerRequest = (): number =>
 //    (`createReconnectingFramedStream`) resume from the next chunk rather
 //    than treating the timeout as end-of-stream. Reading from v2 would
 //    silently truncate long-lived streams at the server's 2-minute limit.
-//  - GET .../ws (write channel, `connectWrite`): upgrades to a WebSocket on
+//  - GET .../ws (write channel): upgrades to a WebSocket on
 //    which each binary message is one chunk, persisted + published on arrival
 //    and acked back on the same connection — the write path for framed-v2
 //    streams. The dedicated path also makes the rollout observable: any hit
@@ -160,8 +164,111 @@ const StreamChunksResponseSchema = z.object({
   done: z.boolean(),
 });
 
+/**
+ * Open one WebSocket write channel: upgrade on the dedicated v3 `.../ws`
+ * path, surface JSON acks via `handlers.onAck`, and guarantee `onClose`
+ * fires exactly once however the socket ends.
+ */
+async function openWriteChannel(
+  runId: string,
+  name: string,
+  handlers: StreamWriteChannelHandlers,
+  config?: APIConfig
+): Promise<StreamWriteChannel> {
+  const httpConfig = await getHttpConfig(config);
+  const url = getStreamUrl(name, runId, httpConfig);
+  url.pathname = `${url.pathname}/ws`;
+  url.protocol = 'wss:';
+
+  // undici's WebSocket (unlike the WHATWG global) accepts custom
+  // headers on the upgrade request, so the channel authenticates
+  // exactly like every HTTP call (Authorization + the trusted-OIDC
+  // deployment-protection bypass, both already set by getHttpConfig).
+  // (Plain record: undici's WebSocketInit headers type doesn't accept a
+  // WHATWG Headers instance.)
+  const ws = new UndiciWebSocket(url, {
+    headers: Object.fromEntries(httpConfig.headers),
+  });
+
+  // onClose must fire exactly once, whether the socket errors, is
+  // closed by the server, or closed locally.
+  let closed = false;
+  const emitClose = (event: { code?: number; reason?: string }) => {
+    if (closed) return;
+    closed = true;
+    handlers.onClose(event);
+  };
+
+  ws.addEventListener('message', (event) => {
+    // Acks are JSON text messages `{ index, chunkIndex }`, in order.
+    try {
+      const ack = StreamWriteAckSchema.parse(JSON.parse(String(event.data)));
+      handlers.onAck(ack);
+    } catch {
+      // An unparseable server message means the two sides disagree on
+      // the protocol — fail the channel rather than silently dropping
+      // what might have been an ack.
+      emitClose({ reason: 'unparseable ack from server' });
+      ws.close();
+    }
+  });
+  ws.addEventListener('close', (event) => {
+    emitClose({ code: event.code, reason: event.reason });
+  });
+  ws.addEventListener('error', () => {
+    // 'close' follows 'error' per spec, but emit defensively in case
+    // the socket never completes the close handshake.
+    emitClose({ reason: 'connection error' });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => resolve(), { once: true });
+    ws.addEventListener(
+      'close',
+      (event) =>
+        reject(
+          new Error(
+            `Stream write channel failed to connect: ` +
+              `${event.code ?? ''} ${event.reason ?? ''}`.trim()
+          )
+        ),
+      { once: true }
+    );
+  });
+
+  return {
+    send(chunk: Uint8Array) {
+      ws.send(chunk);
+    },
+    close() {
+      ws.close(1000, 'writer closing');
+    },
+  };
+}
+
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
+  // One ack-driven socket writer per stream written with retransmit-safe
+  // chunks: `writeMulti` feeds it and `close` drains it before sending the
+  // done marker. Keyed per stream (not per caller) — concurrent writers in
+  // one process share a connection, and the server sequences arrivals the
+  // same either way. An entry whose writer failed fatally is dropped so a
+  // retry (a fresh step attempt re-writing the stream) starts over with a
+  // fresh connection and fresh budgets.
+  const socketWriters = new Map<string, StreamSocketWriter>();
+  const socketWriterKey = (runId: string, name: string) => `${runId}\n${name}`;
+  const getSocketWriter = (runId: string, name: string): StreamSocketWriter => {
+    const key = socketWriterKey(runId, name);
+    let writer = socketWriters.get(key);
+    if (!writer) {
+      writer = new StreamSocketWriter({
+        connect: (handlers) => openWriteChannel(runId, name, handlers, config),
+      });
+      socketWriters.set(key, writer);
+    }
+    return writer;
+  };
+
   return {
     streams: {
       async write(
@@ -192,12 +299,36 @@ export function createStreamer(config?: APIConfig): Streamer {
       async writeMulti(
         runId: string | Promise<string>,
         name: string,
-        chunks: (string | Uint8Array)[]
+        chunks: (string | Uint8Array)[],
+        options?: StreamWriteOptions
       ) {
         if (chunks.length === 0) return;
 
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
+
+        // Retransmit-safe chunks (framed with per-writer markers, so readers
+        // deduplicate any resend overlap) go over the long-lived acked
+        // WebSocket channel: each chunk is persisted + published on arrival,
+        // and the writer resends unacknowledged chunks across reconnects.
+        // Resolving here means the chunks are accepted into the writer's
+        // bounded in-flight window (backpressure); durability of everything
+        // written is confirmed when `close` drains the writer.
+        if (options?.retransmitSafe) {
+          const writer = getSocketWriter(resolvedRunId, name);
+          const encoder = new TextEncoder();
+          try {
+            for (const chunk of chunks) {
+              await writer.write(
+                typeof chunk === 'string' ? encoder.encode(chunk) : chunk
+              );
+            }
+          } catch (error) {
+            socketWriters.delete(socketWriterKey(resolvedRunId, name));
+            throw error;
+          }
+          return;
+        }
 
         const httpConfig = await getHttpConfig(config);
 
@@ -233,87 +364,19 @@ export function createStreamer(config?: APIConfig): Streamer {
         }
       },
 
-      async connectWrite(
-        runId: string,
-        name: string,
-        handlers: StreamWriteChannelHandlers
-      ): Promise<StreamWriteChannel> {
-        const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, runId, httpConfig);
-        url.pathname = `${url.pathname}/ws`;
-        url.protocol = 'wss:';
-
-        // undici's WebSocket (unlike the WHATWG global) accepts custom
-        // headers on the upgrade request, so the channel authenticates
-        // exactly like every HTTP call (Authorization + the trusted-OIDC
-        // deployment-protection bypass, both already set by getHttpConfig).
-        // (Plain record: undici's WebSocketInit headers type doesn't accept a
-        // WHATWG Headers instance.)
-        const ws = new UndiciWebSocket(url, {
-          headers: Object.fromEntries(httpConfig.headers),
-        });
-
-        // onClose must fire exactly once, whether the socket errors, is
-        // closed by the server, or closed locally.
-        let closed = false;
-        const emitClose = (event: { code?: number; reason?: string }) => {
-          if (closed) return;
-          closed = true;
-          handlers.onClose(event);
-        };
-
-        ws.addEventListener('message', (event) => {
-          // Acks are JSON text messages `{ index, chunkIndex }`, in order.
-          try {
-            const ack = StreamWriteAckSchema.parse(
-              JSON.parse(String(event.data))
-            );
-            handlers.onAck(ack);
-          } catch {
-            // An unparseable server message means the two sides disagree on
-            // the protocol — fail the channel rather than silently dropping
-            // what might have been an ack.
-            emitClose({ reason: 'unparseable ack from server' });
-            ws.close();
-          }
-        });
-        ws.addEventListener('close', (event) => {
-          emitClose({ code: event.code, reason: event.reason });
-        });
-        ws.addEventListener('error', () => {
-          // 'close' follows 'error' per spec, but emit defensively in case
-          // the socket never completes the close handshake.
-          emitClose({ reason: 'connection error' });
-        });
-
-        await new Promise<void>((resolve, reject) => {
-          ws.addEventListener('open', () => resolve(), { once: true });
-          ws.addEventListener(
-            'close',
-            (event) =>
-              reject(
-                new Error(
-                  `Stream write channel failed to connect: ` +
-                    `${event.code ?? ''} ${event.reason ?? ''}`.trim()
-                )
-              ),
-            { once: true }
-          );
-        });
-
-        return {
-          send(chunk: Uint8Array) {
-            ws.send(chunk);
-          },
-          close() {
-            ws.close(1000, 'writer closing');
-          },
-        };
-      },
-
       async close(runId: string | Promise<string>, name: string) {
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
+
+        // Drain the stream's socket writer first: `close` must resolve only
+        // once every written chunk is durable, and the done marker must never
+        // race in-flight chunks. A drain failure (reconnect budgets
+        // exhausted) rejects the close and leaves the done marker unsent.
+        const writer = socketWriters.get(socketWriterKey(resolvedRunId, name));
+        if (writer) {
+          socketWriters.delete(socketWriterKey(resolvedRunId, name));
+          await writer.close();
+        }
 
         const httpConfig = await getHttpConfig(config);
         httpConfig.headers.set('X-Stream-Done', 'true');

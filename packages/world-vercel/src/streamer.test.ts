@@ -182,7 +182,7 @@ vi.mock('./utils.js', () => ({
 
 /**
  * Fake in place of undici's WebSocket (which supports custom upgrade
- * headers, unlike the WHATWG global — that's why connectWrite uses it).
+ * headers, unlike the WHATWG global — that's why the write channel uses it).
  * Tests drive open/message/close/error events by hand.
  */
 interface FakeSocket {
@@ -405,7 +405,7 @@ describe('writeMulti pagination', () => {
   });
 });
 
-describe('streams.connectWrite (WebSocket write channel)', () => {
+describe('writeMulti over the WebSocket write channel', () => {
   async function getStreamer() {
     const { createStreamer } = await import('./streamer.js');
     return createStreamer();
@@ -413,10 +413,11 @@ describe('streams.connectWrite (WebSocket write channel)', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     fakeSockets.length = 0;
   });
 
-  /** connectWrite awaits config before constructing the socket. */
+  /** The writer connects lazily and awaits config before constructing. */
   async function lastSocket() {
     await new Promise<void>((resolve) => setImmediate(resolve));
     const socket = fakeSockets[fakeSockets.length - 1];
@@ -424,30 +425,28 @@ describe('streams.connectWrite (WebSocket write channel)', () => {
     return socket;
   }
 
-  async function openChannel(handlers?: {
-    onAck?: (ack: { index: number; chunkIndex: number }) => void;
-    onClose?: (event: { code?: number; reason?: string }) => void;
-  }) {
-    const streamer = await getStreamer();
-    const channelPromise = streamer.streams.connectWrite?.('run-9', 'out', {
-      onAck: handlers?.onAck ?? (() => {}),
-      onClose: handlers?.onClose ?? (() => {}),
-    });
-    const socket = await lastSocket();
-    socket.emit('open', {});
-    const channel = await channelPromise;
-    if (!channel) throw new Error('connectWrite not implemented');
-    return { channel, socket };
-  }
-
-  it('upgrades on the v3 /ws path with the auth headers from getHttpConfig', async () => {
+  it('routes retransmit-safe batches over a wss upgrade on the v3 /ws path with auth headers', async () => {
     const { getHttpConfig } = await import('./utils.js');
-    (getHttpConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    (getHttpConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
       baseUrl: 'https://test.example.com',
       headers: new Headers({ Authorization: 'Bearer tok' }),
     });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
 
-    const { socket } = await openChannel();
+    const streamer = await getStreamer();
+    await streamer.streams.writeMulti?.('run-9', 'out', ['a'], {
+      retransmitSafe: true,
+    });
+
+    const socket = await lastSocket();
+    socket.emit('open', {});
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    // No HTTP write: the chunk rides the socket as a binary message.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(socket.sent).toHaveLength(1);
     const url = new URL(String(socket.url));
     // wss on the dedicated write-channel path: any hit here in request logs
     // is a streaming-mode writer.
@@ -455,71 +454,114 @@ describe('streams.connectWrite (WebSocket write channel)', () => {
     expect(url.pathname).toBe('/v3/runs/run-9/stream/out/ws');
     // The upgrade authenticates like every HTTP call (undici WebSocket
     // accepts custom headers, unlike the WHATWG global).
-    expect(
-      (socket.init as { headers: Record<string, string> }).headers
-        .authorization ??
-        (socket.init as { headers: Record<string, string> }).headers
-          .Authorization
-    ).toBe('Bearer tok');
+    const headers = (socket.init as { headers: Record<string, string> })
+      .headers;
+    expect(headers.authorization ?? headers.Authorization).toBe('Bearer tok');
   });
 
-  it('sends chunks and surfaces acks in order', async () => {
-    const acks: { index: number; chunkIndex: number }[] = [];
-    const { channel, socket } = await openChannel({
-      onAck: (ack) => acks.push(ack),
-    });
+  it('close() drains pending acks, closes the channel, then sends the done marker', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
 
-    channel.send(new Uint8Array([1]));
-    channel.send(new Uint8Array([2]));
+    const streamer = await getStreamer();
+    await streamer.streams.writeMulti?.(
+      'run-9',
+      'out',
+      [new Uint8Array([1]), new Uint8Array([2])],
+      { retransmitSafe: true }
+    );
+    const socket = await lastSocket();
+    socket.emit('open', {});
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(socket.sent).toHaveLength(2);
 
+    let closed = false;
+    const closePromise = streamer.streams.close('run-9', 'out').then(() => {
+      closed = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // Nothing acked yet: the done marker must not race in-flight chunks.
+    expect(closed).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
     socket.emit('message', {
-      data: JSON.stringify({ index: 0, chunkIndex: 5 }),
+      data: JSON.stringify({ index: 0, chunkIndex: 0 }),
     });
     socket.emit('message', {
-      data: JSON.stringify({ index: 1, chunkIndex: 6 }),
+      data: JSON.stringify({ index: 1, chunkIndex: 1 }),
     });
-    expect(acks).toEqual([
-      { index: 0, chunkIndex: 5 },
-      { index: 1, chunkIndex: 6 },
+    await closePromise;
+
+    // Drained: channel closed cleanly, then the done PUT went out.
+    expect(socket.closeCalls).toEqual([
+      { code: 1000, reason: 'writer closing' },
     ]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const url = new URL(fetchSpy.mock.calls[0][0] as string);
+    expect(url.pathname).toBe('/v3/runs/run-9/stream/out');
   });
 
-  it('fires onClose exactly once across close and error events', async () => {
-    const closes: { code?: number; reason?: string }[] = [];
-    const { socket } = await openChannel({
-      onClose: (event) => closes.push(event),
-    });
+  it('uses the batched PUT path when no retransmit grant is given', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
 
-    socket.emit('close', { code: 1006, reason: 'cut' });
-    socket.emit('error', {});
-    socket.emit('close', { code: 1006, reason: 'cut again' });
-
-    expect(closes).toEqual([{ code: 1006, reason: 'cut' }]);
-  });
-
-  it('rejects the connect when the socket closes before opening', async () => {
     const streamer = await getStreamer();
-    const channelPromise = streamer.streams.connectWrite?.('run-9', 'out', {
-      onAck: () => {},
-      onClose: () => {},
+    await streamer.streams.writeMulti?.('run-9', 'out', ['a', 'b']);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    // Unmarked chunks cannot be deduplicated by readers, so no socket (which
+    // resends across reconnects) may carry them.
+    expect(fakeSockets).toHaveLength(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects writes once the channel fails fatally, and a retry starts a fresh writer', async () => {
+    // No reconnect budget: the first connection failure is fatal.
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_CONSECUTIVE_RECONNECTS', '0');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('ok')
+    );
+
+    const streamer = await getStreamer();
+    await streamer.streams.writeMulti?.('run-9', 'out', ['a'], {
+      retransmitSafe: true,
     });
     (await lastSocket()).emit('close', { code: 4401, reason: 'unauthorized' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
-    await expect(channelPromise).rejects.toThrow(
-      /failed to connect: 4401 unauthorized/
-    );
+    await expect(
+      streamer.streams.writeMulti?.('run-9', 'out', ['b'], {
+        retransmitSafe: true,
+      })
+    ).rejects.toThrow(/failed/);
+
+    // The failed writer was evicted: the next write opens a fresh channel
+    // (fresh budgets) instead of rejecting forever.
+    await streamer.streams.writeMulti?.('run-9', 'out', ['c'], {
+      retransmitSafe: true,
+    });
+    expect(fakeSockets.length).toBe(2);
   });
 
   it('fails the channel on an unparseable server message', async () => {
-    const closes: { code?: number; reason?: string }[] = [];
-    const { socket } = await openChannel({
-      onClose: (event) => closes.push(event),
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('ok')
+    );
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_CONSECUTIVE_RECONNECTS', '0');
+
+    const streamer = await getStreamer();
+    await streamer.streams.writeMulti?.('run-9', 'out', ['a'], {
+      retransmitSafe: true,
     });
+    const socket = await lastSocket();
+    socket.emit('open', {});
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
+    // An unparseable message means the two sides disagree on the protocol —
+    // the transport closes the socket rather than dropping a possible ack.
     socket.emit('message', { data: 'not json' });
-
-    expect(closes).toEqual([{ reason: 'unparseable ack from server' }]);
     expect(socket.closeCalls).toHaveLength(1);
   });
 });

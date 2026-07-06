@@ -1,6 +1,8 @@
 import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
+import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
+import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
@@ -11,8 +13,6 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
-import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
-import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Run } from '../runtime/run.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 

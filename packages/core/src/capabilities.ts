@@ -68,14 +68,15 @@ export interface RunCapabilities {
    *
    *  - the producer stamps frames as `framed-v2` (both object and byte
    *    streams), and
-   *  - the durable writer sends them over a long-lived ack'd write channel
-   *    (`WorkflowServerWritableStream` socket sink), surviving an unclean
-   *    disconnect by resending unacked frames — the marker is what lets the
-   *    read side deduplicate the persisted-but-unacked overlap.
+   *  - stream writes carry the `retransmitSafe` grant, letting the world
+   *    deliver them over a transport that resends unconfirmed frames across
+   *    reconnects (world-vercel uses a long-lived acknowledged WebSocket
+   *    channel) — the marker is what lets the read side deduplicate the
+   *    persisted-but-unacknowledged overlap.
    *
    * When false (older reader deployment, or an older writer per version-skew
-   * protection), the producer falls back to `framed-v1`/raw and the writer
-   * falls back to per-batch `writeMulti`. The reader must understand the
+   * protection), the producer falls back to `framed-v1`/raw with no
+   * retransmit grant. The reader must understand the
    * marker or it would surface it as garbage inside the payload, so this is
    * capability-gated exactly like {@link framedByteStreams}.
    */

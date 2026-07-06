@@ -243,47 +243,29 @@ describe('step-level getWritable', () => {
 });
 
 describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', () => {
-  /** Chunks that arrived on the world's write channel, in order. */
-  let channelFrames: Uint8Array[];
-  let channelsOpened: number;
+  /** Options each writeMulti flush arrived with, in order. */
+  let writeMultiOptions: unknown[];
 
-  function installWorld(opts: { withConnectWrite: boolean }) {
-    channelFrames = [];
-    channelsOpened = 0;
+  function installWorld() {
+    writeMultiOptions = [];
     writeCalls = [];
     const streams: any = {
       write: vi.fn(async (_r: string, _n: string, chunk: Uint8Array) => {
         writeCalls.push(chunk);
       }),
       writeMulti: vi.fn(
-        async (_r: string, _n: string, chunks: Uint8Array[]) => {
+        async (
+          _r: string,
+          _n: string,
+          chunks: Uint8Array[],
+          options: unknown
+        ) => {
           writeCalls.push(...chunks);
+          writeMultiOptions.push(options);
         }
       ),
       close: vi.fn().mockResolvedValue(undefined),
     };
-    if (opts.withConnectWrite) {
-      streams.connectWrite = vi.fn(
-        async (
-          _r: string,
-          _n: string,
-          handlers: {
-            onAck(ack: { index: number; chunkIndex: number }): void;
-          }
-        ) => {
-          channelsOpened++;
-          let index = 0;
-          return {
-            send(frame: Uint8Array) {
-              channelFrames.push(frame);
-              const i = index++;
-              queueMicrotask(() => handlers.onAck({ index: i, chunkIndex: i }));
-            },
-            close() {},
-          };
-        }
-      );
-    }
     setWorld({ specVersion: SPEC_VERSION_CURRENT, streams } as any);
   }
 
@@ -311,8 +293,8 @@ describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', ()
     return writable;
   }
 
-  it('sends framed-v2 frames over the write channel and round-trips them', async () => {
-    installWorld({ withConnectWrite: true });
+  it('sends marked frames with the retransmit grant and round-trips them', async () => {
+    installWorld();
     const { FRAME_HEADER_SIZE, readFrameMarker } = await import(
       '../serialization/frame-marker.js'
     );
@@ -320,13 +302,16 @@ describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', ()
 
     const writable = await writeThroughGetWritable(['hello', 'world']);
 
-    // The channel carried the frames; the batch path was never used.
-    expect(channelsOpened).toBe(1);
-    expect(writeCalls).toHaveLength(0);
-    expect(channelFrames).toHaveLength(2);
+    // Marked frames always flush through writeMulti, each flush carrying the
+    // retransmit grant (the world may deliver over a resending transport).
+    expect(writeCalls).toHaveLength(2);
+    expect(writeMultiOptions.length).toBeGreaterThan(0);
+    for (const options of writeMultiOptions) {
+      expect(options).toEqual({ retransmitSafe: true });
+    }
 
     // Every frame carries the SAME writerId with increasing seq.
-    const markers = channelFrames.map((f) =>
+    const markers = writeCalls.map((f) =>
       readFrameMarker(f.subarray(FRAME_HEADER_SIZE))
     );
     expect(markers[0].writerId).toEqual(markers[1].writerId);
@@ -352,23 +337,30 @@ describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', ()
       return out;
     })();
     const w = deserialize.writable.getWriter();
-    for (const frame of channelFrames) await w.write(frame);
+    for (const frame of writeCalls) await w.write(frame);
     await w.close();
     expect(await outPromise).toEqual(['hello', 'world']);
   });
 
-  it('still emits framed-v2 markers on the batch path (world without channels)', async () => {
-    installWorld({ withConnectWrite: false });
+  it('still emits framed-v2 markers when the world has no writeMulti', async () => {
+    // Simulate a world with only sequential write() (no batch op).
     const { FRAME_HEADER_SIZE, readFrameMarker } = await import(
       '../serialization/frame-marker.js'
     );
+    const streams: any = {
+      write: vi.fn(async (_r: string, _n: string, chunk: Uint8Array) => {
+        writeCalls.push(chunk);
+      }),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    setWorld({ specVersion: SPEC_VERSION_CURRENT, streams } as any);
+    writeCalls = [];
 
     await writeThroughGetWritable(['solo']);
 
-    // The framing decision is independent of the transport: no channel, so
-    // frames went through write/writeMulti — but they still carry markers
-    // (the ref/descriptor says framed-v2, so readers strip them).
-    expect(channelsOpened).toBe(0);
+    // The framing decision is independent of the delivery mechanism: frames
+    // went through plain write() but still carry markers (the ref/descriptor
+    // says framed-v2, so readers strip them).
     expect(writeCalls.length).toBeGreaterThan(0);
     const marker = readFrameMarker(writeCalls[0].subarray(FRAME_HEADER_SIZE));
     expect(marker.writerId).toHaveLength(8);
@@ -377,15 +369,15 @@ describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', ()
 
   it('emits framed-v1 (no markers) when the override is off and the version gate is below the cutoff', async () => {
     vi.unstubAllEnvs();
-    installWorld({ withConnectWrite: true });
+    installWorld();
     const { getDeserializeStream } = await import('../serialization.js');
 
     await writeThroughGetWritable(['legacy']);
 
     // Dormant: version gate (current dev version < capability cutoff) keeps
-    // the writer on framed-v1 + the batch path, and plain deserialization
-    // reads it — exactly the pre-flip behavior.
-    expect(channelsOpened).toBe(0);
+    // the writer on framed-v1 with no retransmit grant, and plain
+    // deserialization reads it — exactly the pre-flip behavior.
+    expect(writeMultiOptions.every((o) => o === undefined)).toBe(true);
     expect(writeCalls.length).toBeGreaterThan(0);
     const deserialize = getDeserializeStream({}, undefined);
     const readPromise = (async () => {

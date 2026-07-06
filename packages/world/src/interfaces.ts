@@ -35,34 +35,19 @@ import type {
 } from './steps.js';
 
 /**
- * One acknowledgement from a stream write channel. `index` is the 0-based
- * ordinal of the chunk within the channel (send order); `chunkIndex` is the
- * backend index the chunk was persisted under. Acks arrive in send order, so
- * an ack also confirms every earlier chunk on the same channel.
+ * Options for a stream write operation.
  */
-export interface StreamWriteAck {
-  index: number;
-  chunkIndex: number;
-}
-
-/** Callbacks for one stream write channel. */
-export interface StreamWriteChannelHandlers {
-  /** A chunk (and, by ordering, all chunks before it) is durable. */
-  onAck(ack: StreamWriteAck): void;
+export interface StreamWriteOptions {
   /**
-   * The channel closed — fires exactly once, whether the close was clean
-   * (caller-initiated or backend connection bound) or a failure. After it,
-   * nothing more will be acked on this channel.
+   * The caller's chunk encoding lets readers deduplicate retransmitted
+   * chunks (e.g. per-writer frame markers), so the world may deliver the
+   * batch over a transport that resends chunks whose delivery was never
+   * confirmed — such as a long-lived acknowledged connection that replays
+   * unacknowledged chunks after a reconnect. Without this flag a world must
+   * only use delivery mechanisms that never implicitly retry a write, since
+   * a retransmitted chunk would be appended to the stream twice.
    */
-  onClose(event: { code?: number; reason?: string }): void;
-}
-
-/** A live write channel returned by {@link Streamer}'s `connectWrite`. */
-export interface StreamWriteChannel {
-  /** Queue one chunk for delivery. Fire-and-forget; durability is signaled via onAck. */
-  send(chunk: Uint8Array): void;
-  /** Close the channel. Chunks already sent may still be acked before onClose. */
-  close(): void;
+  retransmitSafe?: boolean;
 }
 
 export interface Streamer {
@@ -93,43 +78,23 @@ export interface Streamer {
      *
      * If not implemented, the caller should fall back to sequential write() calls.
      *
+     * Resolving means every chunk in the batch is accepted for durable,
+     * in-order delivery; sequential calls for the same stream are applied in
+     * call order. How a world delivers the batch is its own concern — with
+     * `options.retransmitSafe` it may use a transport that resends
+     * unconfirmed chunks across reconnects (see {@link StreamWriteOptions}).
+     *
      * @param runId - The run ID
      * @param name - The stream name
      * @param chunks - Array of chunks to write, in order
+     * @param options - Delivery options granted by the caller
      */
     writeMulti?(
       runId: string,
       name: string,
-      chunks: (string | Uint8Array)[]
+      chunks: (string | Uint8Array)[],
+      options?: StreamWriteOptions
     ): Promise<void>;
-
-    /**
-     * Open a long-lived write channel to a stream. Each {@link
-     * StreamWriteChannel.send} carries one chunk; the backend persists and
-     * publishes it on arrival and acknowledges it via `handlers.onAck`, in
-     * send order. An acked chunk is durable — the caller can drop it from its
-     * replay buffer immediately, instead of holding everything written until
-     * a whole request completes.
-     *
-     * The channel is not durable: the backend may close it at any time (its
-     * own connection bound, a deploy, a network cut). `handlers.onClose`
-     * fires exactly once per channel; after it, un-acked chunks may or may
-     * not have persisted, and the caller reconnects and resends them (the
-     * caller's framing layer is responsible for making that overlap safe,
-     * e.g. by deduplicating on the read side).
-     *
-     * Optional: worlds without a bidirectional transport omit it, and
-     * callers fall back to {@link writeMulti} / {@link write}.
-     *
-     * @param runId - The run ID
-     * @param name - The stream name
-     * @param handlers - Ack/close callbacks for this channel
-     */
-    connectWrite?(
-      runId: string,
-      name: string,
-      handlers: StreamWriteChannelHandlers
-    ): Promise<StreamWriteChannel>;
 
     close(runId: string, name: string): Promise<void>;
 

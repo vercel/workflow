@@ -17,8 +17,8 @@ import {
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from '../symbols.js';
-import { version as workflowCoreVersion } from '../version.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { type CachedWritable, contextStorage } from './context-storage.js';
 
 /**

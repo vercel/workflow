@@ -70,7 +70,6 @@ import {
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
 import * as stepModule from './serialization/step.js';
-import { StreamSocketWriter } from './serialization/stream-socket-writer.js';
 import {
   type FormatPrefix,
   isFormatPrefix,
@@ -994,17 +993,23 @@ interface StreamSink {
 }
 
 /**
- * Legacy sink: buffer frames and flush every `STREAM_FLUSH_INTERVAL_MS` via
- * `writeMulti` (one short PUT per batch). Used when the world has no write
- * channel (`connectWrite` absent) or the writer isn't framed-v2. `world` is
- * already resolved; `ensureRunReady` orders the first write after the run
- * exists (turbo optimistic start).
+ * The one write sink: buffer frames and flush on `STREAM_FLUSH_INTERVAL_MS`
+ * via the world's `writeMulti`. How a flush is delivered is the world's
+ * concern — when the frames carry framed-v2 per-writer markers
+ * (`retransmitSafe`), a world may carry them over a transport that resends
+ * unconfirmed chunks across reconnects (world-vercel uses a long-lived
+ * acknowledged WebSocket channel), because the markers let readers
+ * deduplicate the overlap. Without markers every world must use
+ * never-implicitly-retried delivery. `world` is already resolved;
+ * `ensureRunReady` orders the first write after the run exists (turbo
+ * optimistic start).
  */
 function createBatchSink(
   world: World,
   runId: string,
   name: string,
-  ensureRunReady: () => Promise<void>
+  ensureRunReady: () => Promise<void>,
+  retransmitSafe: boolean
 ): StreamSink {
   let buffer: Uint8Array[] = [];
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1028,9 +1033,14 @@ function createBatchSink(
     const chunksToFlush = buffer.slice();
     if (
       typeof world.streams.writeMulti === 'function' &&
-      chunksToFlush.length > 1
+      (chunksToFlush.length > 1 || retransmitSafe)
     ) {
-      await world.streams.writeMulti(runId, name, chunksToFlush);
+      await world.streams.writeMulti(
+        runId,
+        name,
+        chunksToFlush,
+        retransmitSafe ? { retransmitSafe } : undefined
+      );
     } else {
       for (const chunk of chunksToFlush) {
         await world.streams.write(runId, name, chunk);
@@ -1096,54 +1106,6 @@ function createBatchSink(
   };
 }
 
-/**
- * Socket sink: drive frames through long-lived write channels via
- * {@link StreamSocketWriter} — each frame is persisted, published, and acked
- * as it arrives, and an unclean channel end is survived by resending the
- * unacked frames on a fresh channel. Selected only when the world supports
- * `connectWrite` and a `writerId` is present: resent frames can duplicate the
- * persisted-but-unacked overlap, and it is the framed-v2 marker (which
- * requires the writerId) that lets the read side deduplicate them.
- */
-function createSocketSink(
-  world: World,
-  runId: string,
-  name: string,
-  ensureRunReady: () => Promise<void>
-): StreamSink {
-  // Presence is checked before this sink is chosen; capture it so the closures
-  // don't need a non-null assertion on every call.
-  const { connectWrite } = world.streams;
-  if (!connectWrite) {
-    throw new WorkflowRuntimeError(
-      'createSocketSink requires a world that supports stream write channels.'
-    );
-  }
-
-  const socketWriter = new StreamSocketWriter({
-    connect: (handlers) => connectWrite(runId, name, handlers),
-    ensureReady: ensureRunReady,
-  });
-
-  return {
-    write: (chunk) => socketWriter.write(chunk),
-    close: async () => {
-      // Wait until every frame is acked (durable) before marking the stream
-      // done — X-Stream-Done must never race in-flight frames.
-      await socketWriter.close();
-      // An empty-stream close never opens a channel, so socketWriter.close()
-      // skips ensureReady - but this close can itself be the first write to a
-      // brand-new stream, so gate X-Stream-Done on the run-ready barrier too
-      // (a no-op once a channel already awaited it in turbo optimistic start).
-      await ensureRunReady();
-      await world.streams.close(runId, name);
-    },
-    abort: (reason) => {
-      socketWriter.abort(reason);
-    },
-  };
-}
-
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   /**
    * @param runReadyBarrier Turbo mode only: a promise that resolves once the
@@ -1154,11 +1116,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
    * flush/close orders the write after the run's creation. `undefined` outside
    * turbo and on the await path, where the run was already durable.
    * @param writerId When present (framed-v2), frames carry a per-writer marker,
-   * so the writer sends over a long-lived ack'd write channel and survives an
-   * unclean disconnect by resending unacked frames (the marker lets readers
-   * deduplicate the overlap) — provided the world supports `connectWrite`.
-   * Absent, or on a world without write channels, the writer uses the legacy
-   * per-batch flush path.
+   * so the world may deliver frames over a transport that resends
+   * unconfirmed frames across reconnects (the marker lets readers
+   * deduplicate the overlap) — world-vercel uses a long-lived acknowledged
+   * WebSocket channel. Absent, every world uses never-implicitly-retried
+   * batch delivery.
    */
   constructor(
     runId: string,
@@ -1192,18 +1154,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
-    // The sink is chosen lazily on first use, once the world is resolved: the
-    // ack-driven socket writer when the world has write channels and frames
-    // are framed-v2 (writerId present), else the legacy per-batch flush.
+    // The sink is created lazily on first use, once the world is resolved.
     // Encryption is handled at the framing level (getSerializeStream), not here.
     let sinkPromise: Promise<StreamSink> | null = null;
     const getSink = (): Promise<StreamSink> => {
       // Promise.resolve tolerates a world resolved synchronously (e.g. test
       // mocks of getWorldLazy that return a plain object, not a promise).
       sinkPromise ??= Promise.resolve(worldPromise).then((world) =>
-        writerId && typeof world.streams.connectWrite === 'function'
-          ? createSocketSink(world, runId, name, ensureRunReady)
-          : createBatchSink(world, runId, name, ensureRunReady)
+        // Frames with per-writer markers (framed-v2) may ride a transport
+        // that resends across reconnects; the world decides which.
+        createBatchSink(world, runId, name, ensureRunReady, Boolean(writerId))
       );
       return sinkPromise;
     };

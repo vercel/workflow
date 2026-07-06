@@ -1,9 +1,9 @@
 // ============================================================================
-// Ack-driven stream writer over a world write channel (WebSocket-backed)
+// Ack-driven stream writer over a WebSocket write channel
 // ============================================================================
 //
 // One writer owns one logical stream and carries it over a sequence of write
-// channels (`Streamer.connectWrite`). Frames are sent as they are produced;
+// channels (WebSocket connections opened by the streamer). Frames are sent as they are produced;
 // the backend persists + publishes each frame on arrival and acks it back on
 // the channel, in order. An acked frame is durable and is dropped from the
 // local replay buffer immediately — memory is bounded by the in-flight window
@@ -24,11 +24,38 @@
 // and resends rather than guessing.
 
 import { WorkflowRuntimeError } from '@workflow/errors';
-import {
-  envNumber,
-  type StreamWriteChannel,
-  type StreamWriteChannelHandlers,
-} from '@workflow/world';
+import { envNumber } from '@workflow/world';
+
+/**
+ * One acknowledgement on a write channel. `index` is the 0-based ordinal of
+ * the chunk within the channel (send order); `chunkIndex` is the backend
+ * index it persisted under. Acks arrive in send order, so an ack also
+ * confirms every earlier chunk on the same channel.
+ */
+export interface StreamWriteAck {
+  index: number;
+  chunkIndex: number;
+}
+
+/** Callbacks for one write channel. */
+export interface StreamWriteChannelHandlers {
+  /** A chunk (and, by ordering, all chunks before it) is durable. */
+  onAck(ack: StreamWriteAck): void;
+  /**
+   * The channel closed — fires exactly once, whether the close was clean
+   * (caller-initiated or backend connection bound) or a failure. After it,
+   * nothing more will be acked on this channel.
+   */
+  onClose(event: { code?: number; reason?: string }): void;
+}
+
+/** A live write channel (one WebSocket connection). */
+export interface StreamWriteChannel {
+  /** Queue one chunk for delivery. Fire-and-forget; durability is signaled via onAck. */
+  send(chunk: Uint8Array): void;
+  /** Close the channel. Chunks already sent may still be acked before onClose. */
+  close(): void;
+}
 
 /** Injected transport + scheduling dependencies (all test-fakeable). */
 export interface SocketWriterDeps {
@@ -128,7 +155,7 @@ interface BufferedFrame {
 }
 
 /**
- * Ack-driven writer over `connectWrite` channels. `write` resolves once the
+ * Ack-driven writer over WebSocket write channels. `write` resolves once the
  * frame is accepted into the in-flight window (backpressure), not when it is
  * durable; `close` resolves only after every written frame has been acked.
  */

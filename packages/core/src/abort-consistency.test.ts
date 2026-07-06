@@ -12,7 +12,7 @@ import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
-import { WorkflowSuspension } from './global.js';
+import type { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowArguments,
