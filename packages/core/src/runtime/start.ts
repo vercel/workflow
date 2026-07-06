@@ -249,12 +249,18 @@ export async function start<TArgs extends unknown[], TResult>(
       // Worlds that don't expose the `streams` API (e.g. minimal test
       // mocks) can't service health checks, so we skip the probe for them.
       let framedByteStreams: boolean;
+      let framedStreamMarkers: boolean;
       let targetSupportsCompression: boolean;
       if (deploymentId === currentDeploymentId) {
         framedByteStreams = true;
+        // Same-deployment target runs this same SDK, so its marker capability
+        // is this SDK's own (still version-gated: dormant below the cutoff).
+        framedStreamMarkers =
+          getRunCapabilities(workflowCoreVersion).framedStreamMarkers;
         targetSupportsCompression = true;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
+        framedStreamMarkers = false;
         targetSupportsCompression = false;
       } else {
         const probe = await healthCheck(world, 'workflow', {
@@ -263,6 +269,7 @@ export async function start<TArgs extends unknown[], TResult>(
         }).catch(() => undefined);
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
+        framedStreamMarkers = capabilities.framedStreamMarkers;
         targetSupportsCompression = capabilities.supportedFormats.has(
           SerializationFormat.GZIP
         );
@@ -349,7 +356,8 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        compression
+        compression,
+        framedStreamMarkers
       );
 
       const executionContext = {

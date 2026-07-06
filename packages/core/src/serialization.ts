@@ -255,9 +255,10 @@ export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam,
   // When provided, frames are framed-v2: a `[writerId][seq]` marker precedes
-  // the format-prefixed payload (see `serialization/frame-marker.ts`), so the
-  // single-request streaming writer can find its own frames in the persisted
-  // tail during recovery. `seq` is per-writer monotonic from 0.
+  // the format-prefixed payload (see `serialization/frame-marker.ts`), so
+  // readers can deduplicate frames that a retransmitting write transport
+  // re-sent after they had in fact persisted. `seq` is per-writer monotonic
+  // from 0.
   writerId?: Uint8Array
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
@@ -401,7 +402,8 @@ export function getDeserializeStream(
         const { writerId, seq } = readFrameMarker(frameData);
         frameData = frameData.slice(FRAME_MARKER_SIZE);
         // Drop replays: a frame whose seq we've already delivered for this
-        // writer was re-sent by recovery after it was already persisted.
+        // writer was resent by the write transport's reconnect after it had
+        // in fact already persisted.
         const key = writerIdKey(writerId);
         const seen = maxSeqByWriter.get(key);
         if (seen !== undefined && seq <= seen) {
@@ -566,10 +568,10 @@ const MAX_FRAME_SIZE = 100_000_000;
  *
  * When `writerId` is provided the stream emits framed-v2 frames: each frame
  * additionally carries a `[writerId][seq]` marker (see
- * `serialization/frame-marker.ts`) so the single-request streaming writer can
- * recognize its own frames in the persisted tail during recovery. `seq` is a
- * per-writer monotonic counter starting at 0; one framer instance backs one
- * logical writer, so the counter spans the whole stream lifetime.
+ * `serialization/frame-marker.ts`) so readers can deduplicate frames that a
+ * retransmitting write transport re-sent after they had in fact persisted.
+ * `seq` is a per-writer monotonic counter starting at 0; one framer instance
+ * backs one logical writer, so the counter spans the whole stream lifetime.
  */
 export function getByteFramingStream(
   writerId?: Uint8Array
@@ -628,9 +630,9 @@ export function getByteUnframingStream(
   framing: 'framed-v1' | 'framed-v2' = 'framed-v1'
 ): TransformStream<Uint8Array, Uint8Array> {
   let buffer = new Uint8Array(0);
-  // framed-v2 only: highest seq already emitted per writerId, so a frame that
-  // recovery re-sent after it was in fact already persisted is dropped rather
-  // than delivered twice. O(number of writers) memory.
+  // framed-v2 only: highest seq already emitted per writerId, so a frame the
+  // write transport's reconnect resent after it had in fact already persisted
+  // is dropped rather than delivered twice. O(number of writers) memory.
   const maxSeqByWriter = new Map<string, bigint>();
 
   function appendToBuffer(data: Uint8Array) {
@@ -1454,7 +1456,12 @@ export function getExternalReducers(
   // first chunk can race `run_started`. Thread the run-ready barrier into that
   // sink so the write orders after the run exists. Undefined outside turbo /
   // on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  // Whether the target run can decode framed-v2 (per-writer markers) — see
+  // `RunCapabilities.framedStreamMarkers`. Upgrades byte-stream framing from
+  // framed-v1 to framed-v2, which also grants the write path a
+  // retransmit-safe delivery (readers dedupe resent frames by marker).
+  framedStreamMarkers = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1476,14 +1483,31 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
+      // Best byte framing the target run can decode: framed-v2 (per-writer
+      // markers, so readers dedupe frames a retransmitting transport re-sent),
+      // else framed-v1 (reconnectable reads), else legacy raw bytes.
+      const framing: ByteStreamFraming | undefined =
+        type === 'bytes'
+          ? framedStreamMarkers
+            ? 'framed-v2'
+            : framedByteStreams
+              ? 'framed-v1'
+              : undefined
+          : undefined;
+      const writerId =
+        framing === 'framed-v2' ? newStableWriterId(global) : undefined;
+
       const writable = new WorkflowServerWritableStream(
         runId,
         name,
-        runReadyBarrier
+        runReadyBarrier,
+        writerId
       );
       if (type === 'bytes') {
-        if (framedByteStreams) {
-          ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
+        if (framing) {
+          ops.push(
+            value.pipeThrough(getByteFramingStream(writerId)).pipeTo(writable)
+          );
         } else {
           ops.push(value.pipeTo(writable));
         }
@@ -1498,7 +1522,8 @@ export function getExternalReducers(
                   runId,
                   cryptoKey,
                   framedByteStreams,
-                  runReadyBarrier
+                  runReadyBarrier,
+                  framedStreamMarkers
                 ),
                 cryptoKey
               )
@@ -1509,7 +1534,7 @@ export function getExternalReducers(
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
-      if (type === 'bytes' && framedByteStreams) s.framing = 'framed-v1';
+      if (framing) s.framing = framing;
       return s;
     },
 
@@ -1704,7 +1729,12 @@ function getStepReducers(
   // after the body but within the same op flush, so its first chunk can race
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  // Whether the target run can decode framed-v2 (per-writer markers) — see
+  // `RunCapabilities.framedStreamMarkers`. Upgrades byte-stream framing from
+  // framed-v1 to framed-v2, which also grants the write path a
+  // retransmit-safe delivery (readers dedupe resent frames by marker).
+  framedStreamMarkers = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1738,17 +1768,30 @@ function getStepReducers(
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
         type = getStreamType(value);
-        framing = type === 'bytes' && framedByteStreams ? 'framed-v1' : framing;
+        // Best byte framing the target run can decode (see the external
+        // reducer): framed-v2 with a fresh writerId, else framed-v1, else raw.
+        if (type === 'bytes') {
+          framing = framedStreamMarkers
+            ? 'framed-v2'
+            : framedByteStreams
+              ? 'framed-v1'
+              : framing;
+        }
+        const writerId =
+          type === 'bytes' && framing === 'framed-v2'
+            ? newStableWriterId(global)
+            : undefined;
 
         const writable = new WorkflowServerWritableStream(
           runId,
           name,
-          runReadyBarrier
+          runReadyBarrier,
+          writerId
         );
         if (type === 'bytes') {
-          if (framing === 'framed-v1') {
+          if (framing === 'framed-v1' || framing === 'framed-v2') {
             ops.push(
-              value.pipeThrough(getByteFramingStream()).pipeTo(writable)
+              value.pipeThrough(getByteFramingStream(writerId)).pipeTo(writable)
             );
           } else {
             ops.push(value.pipeTo(writable));
@@ -1764,7 +1807,8 @@ function getStepReducers(
                     runId,
                     cryptoKey,
                     framedByteStreams,
-                    runReadyBarrier
+                    runReadyBarrier,
+                    framedStreamMarkers
                   ),
                   cryptoKey
                 )
@@ -2867,7 +2911,11 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false
+  compression = false,
+  // Whether the target run can decode framed-v2 markers — see
+  // `RunCapabilities.framedStreamMarkers` (byte streams upgrade to framed-v2
+  // and their writes become retransmit-safe).
+  framedStreamMarkers = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -2881,7 +2929,15 @@ export async function dehydrateWorkflowArguments(
     const result = await clientModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
-        getExternalReducers(global, ops, runId, key, framedByteStreams)
+        getExternalReducers(
+          global,
+          ops,
+          runId,
+          key,
+          framedByteStreams,
+          undefined,
+          framedStreamMarkers
+        )
       ),
       compression,
       compressionStats,
@@ -3076,7 +3132,11 @@ export async function dehydrateStepReturnValue(
   // Turbo optimistic start: order the first chunk of a returned stream after
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  // Whether the target run can decode framed-v2 markers — see
+  // `RunCapabilities.framedStreamMarkers` (byte streams upgrade to framed-v2
+  // and their writes become retransmit-safe).
+  framedStreamMarkers = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3103,7 +3163,8 @@ export async function dehydrateStepReturnValue(
           runId,
           key,
           framedByteStreams,
-          runReadyBarrier
+          runReadyBarrier,
+          framedStreamMarkers
         )
       ),
       compression,

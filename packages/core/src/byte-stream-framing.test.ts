@@ -546,6 +546,68 @@ describe('byte-stream framing end-to-end through dehydrate/hydrate', () => {
     expect(userBytes).toEqual(expected);
   });
 
+  it('round-trips a framed-v2 byte stream: frames carry per-writer markers that the unframer strips', async () => {
+    setWorld(makeMockWorld());
+    const { readFrameMarker } = await import('./serialization/frame-marker.js');
+
+    const original = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])];
+    const expected = original.map((u) => new Uint8Array(u));
+    let i = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      type: 'bytes',
+      pull(c) {
+        if (i < original.length) {
+          c.enqueue(original[i++]);
+        } else {
+          c.close();
+        }
+      },
+    });
+
+    const ops: Promise<void>[] = [];
+    const dehydrated = await dehydrateStepReturnValue(
+      stream,
+      'wrun_test',
+      undefined,
+      ops,
+      globalThis,
+      false,
+      true,
+      false,
+      undefined,
+      // framedStreamMarkers: the target run can decode framed-v2
+      true
+    );
+    await Promise.all(ops);
+
+    // The ref records framed-v2, so the consumer picks the marker-stripping
+    // unframer.
+    const text = new TextDecoder().decode(dehydrated as Uint8Array);
+    expect(text).toContain('framed-v2');
+
+    const name = extractStreamName(dehydrated as Uint8Array);
+    const world = await (await import('./runtime/world.js')).getWorld();
+
+    // Every wire frame carries the same writerId with increasing seq.
+    const wire = await readBytes(await world.streams.get('wrun_test', name));
+    const markers = wire.map((f) =>
+      readFrameMarker(f.subarray(FRAME_HEADER_SIZE))
+    );
+    expect(markers[0].writerId).toEqual(markers[1].writerId);
+    expect(markers.map((m) => m.seq)).toEqual([0n, 1n]);
+
+    // The framed-v2 unframer strips the markers — and drops a frame the
+    // write transport resent (duplicate writerId+seq) instead of delivering
+    // it twice.
+    const replayed = [...wire, wire[wire.length - 1]];
+    const got = await readBytes(
+      readableFromChunks(replayed).pipeThrough(
+        getByteUnframingStream('framed-v2')
+      )
+    );
+    expect(got).toEqual(expected);
+  });
+
   it('round-trips a raw byte stream: producer writes raw, consumer reads raw', async () => {
     setWorld(makeMockWorld());
 

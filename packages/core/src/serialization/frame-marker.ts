@@ -14,15 +14,16 @@
 // by the world transport as part of the opaque chunk and stripped by the
 // reader's unframer before the inner payload reaches the consumer.
 //
-// The marker exists for the single-request streaming writer:
-//
-//  - On recovery after an unclean disconnect, a writer fetches the persisted
-//    stream tail and must locate its OWN frames. Multiple writers may
-//    interleave into one stream (concurrent steps / parent→child forwarding),
-//    so the shared server chunk index is not attributable to one writer — the
-//    `writerId` is. The writer resumes from `max(seq)` it finds for its id.
-//  - The reader can dedupe a frame that recovery re-sent after it had in fact
-//    already been persisted (tracking the max `seq` seen per `writerId`).
+// The marker is what makes a stream's writes safe to deliver over a
+// transport that resends chunks whose delivery was never confirmed (the
+// `retransmitSafe` grant on `writeMulti` — world-vercel's acknowledged
+// WebSocket write channel resends everything unacked after a reconnect,
+// since an unacked chunk may or may not have persisted). Readers track the
+// max `seq` seen per `writerId` and drop any frame at or below it, so a
+// persisted-but-unacknowledged frame that gets resent is delivered exactly
+// once. Dedupe is per writer because multiple writers may interleave into
+// one stream (concurrent steps / parent→child forwarding), so a shared
+// counter could not attribute a resend to its writer.
 //
 // `writerId` identifies one logical writer (one `WorkflowServerWritableStream`
 // instance) for the lifetime of the stream. `seq` is a per-writer monotonic

@@ -120,13 +120,16 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // delays the optimization (safe).
 }> = [
   { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
-  // TODO(release): bump to the actual beta that ships framed-v2 + streaming
-  // writes if a "Version Packages (beta)" PR merges before this lands. Current
-  // dev version is 5.0.0-beta.26, so the next published beta is beta.27. A
-  // too-low cutoff makes new producers write framed-v2 markers to readers that
-  // can't strip them (garbage in the payload); too-high merely delays the
-  // optimization (safe — producer falls back to framed-v1 + per-batch writes).
-  { capability: 'framedStreamMarkers', minVersion: '5.0.0-beta.27' },
+  // TODO(release): MUST be bumped to the first published beta that actually
+  // ships framed-v2 before release (currently the next one, beta.28 —
+  // beta.26 and beta.27 are published WITHOUT marker support). The cutoff is
+  // deliberately at/below the tree's current version on this branch so every
+  // unit and e2e lane exercises the framed-v2 + retransmit-safe write path in
+  // CI. A too-low cutoff in a release makes new producers write framed-v2
+  // markers to readers that can't strip them (garbage in the payload);
+  // too-high merely delays the optimization (safe — producer falls back to
+  // framed-v1 + per-batch writes).
+  { capability: 'framedStreamMarkers', minVersion: '5.0.0-beta.26' },
 ];
 
 /**
@@ -187,19 +190,9 @@ export function getRunCapabilities(
  * the same input — the version of the SDK executing the run (the writer
  * passes its own version; an external reader passes the run's
  * `executionContext.workflowCoreVersion`) — so they always agree.
- *
- * `WORKFLOW_EXPERIMENTAL_STREAM_MARKERS=1` force-enables it so tests/e2e can
- * exercise the marker path before the released version crosses the capability
- * cutoff. Both ends must set it (test-only).
  */
 export function framedStreamMarkersEnabled(
   workflowCoreVersion: string | undefined
 ): boolean {
-  if (
-    typeof process !== 'undefined' &&
-    process.env?.WORKFLOW_EXPERIMENTAL_STREAM_MARKERS === '1'
-  ) {
-    return true;
-  }
   return getRunCapabilities(workflowCoreVersion).framedStreamMarkers;
 }

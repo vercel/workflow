@@ -1,7 +1,6 @@
 ---
 "@workflow/core": minor
 "@workflow/world": minor
-"@workflow/world-vercel": minor
 ---
 
-Stream writes now use a long-lived acknowledged write channel with per-writer frame markers, replacing per-batch requests — lower write overhead, per-chunk durability confirmation, and exactly-once delivery across reconnects.
+Stream chunks now carry per-writer framed-v2 markers so readers deduplicate retransmitted chunks, and stream writes can grant the backend retransmit-safe delivery via `writeMulti` options.

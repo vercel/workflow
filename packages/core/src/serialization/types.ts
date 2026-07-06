@@ -50,10 +50,10 @@ export const SerializationFormat = {
  *   prefix, allowing the reader to identify chunk boundaries and
  *   transparently reconnect on transient stream errors.
  * - `'framed-v2'`: framed-v1 plus a per-writer marker (`writerId` + `seq`)
- *   in each frame header (see `serialization/frame-marker.ts`), enabling the
- *   single-request streaming writer to locate its own frames in the persisted
- *   tail during recovery. Also recorded on object streams, which otherwise
- *   carry no `framing` field.
+ *   in each frame header (see `serialization/frame-marker.ts`), letting
+ *   readers deduplicate frames that a retransmitting write transport
+ *   re-sent after they had in fact persisted. Also recorded on object
+ *   streams, which otherwise carry no `framing` field.
  */
 export type ByteStreamFraming = 'raw' | 'framed-v1' | 'framed-v2';
 

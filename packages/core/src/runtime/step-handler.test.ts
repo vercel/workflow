@@ -129,8 +129,11 @@ vi.mock('./helpers.js', async () => {
   };
 });
 
-// Mock serialization
-vi.mock('../serialization.js', () => ({
+// Mock serialization. Partial: the handler also (transitively) pulls in
+// capabilities.ts, which reads real exports like SerializationFormat, so
+// everything not explicitly stubbed passes through to the real module.
+vi.mock('../serialization.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../serialization.js')>()),
   hydrateStepArguments: vi.fn().mockResolvedValue({
     args: [],
     thisVal: null,

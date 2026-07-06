@@ -4,6 +4,22 @@ import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { setWorld } from '../runtime/world.js';
 import { STREAM_SERVER_DEPLOYMENT_ID_SYMBOL } from '../symbols.js';
 
+// The framed-v2 gate compares the SDK's own version against the capability
+// cutoff, which is at/below the tree's version, so the gate is ON for these
+// tests by default. The version module is mocked with a pass-through getter
+// so individual tests can exercise the dormant (below-cutoff) path.
+const versionState = vi.hoisted(() => ({
+  override: undefined as string | undefined,
+}));
+vi.mock('../version.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../version.js')>();
+  return {
+    get version() {
+      return versionState.override ?? actual.version;
+    },
+  };
+});
+
 // Captures every chunk written to `world.streams.write` / `writeMulti`
 // in arrival order, so tests can assert the on-wire sequence after
 // going through the (de)serialize transforms.
@@ -184,7 +200,9 @@ describe('step-level getWritable', () => {
 
     // Decode the recorded server writes via the matching deserialize
     // stream and confirm chunks arrived in the order we wrote them.
-    const deserialize = getDeserializeStream({}, undefined);
+    // getWritable emits framed-v2 (the capability gate is on), so the
+    // deserializer must strip the per-writer markers.
+    const deserialize = getDeserializeStream({}, undefined, 'framed-v2');
     const decoded: string[] = [];
     const reader = deserialize.readable.getReader();
     const drain = (async () => {
@@ -242,7 +260,7 @@ describe('step-level getWritable', () => {
   });
 });
 
-describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', () => {
+describe('getWritable framed-v2 (version capability gate)', () => {
   /** Options each writeMulti flush arrived with, in order. */
   let writeMultiOptions: unknown[];
 
@@ -269,12 +287,8 @@ describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', ()
     setWorld({ specVersion: SPEC_VERSION_CURRENT, streams } as any);
   }
 
-  beforeEach(() => {
-    vi.stubEnv('WORKFLOW_EXPERIMENTAL_STREAM_MARKERS', '1');
-  });
-
   afterEach(() => {
-    vi.unstubAllEnvs();
+    versionState.override = undefined;
     setWorld(undefined);
     vi.clearAllMocks();
   });
@@ -367,14 +381,14 @@ describe('getWritable framed-v2 flip (WORKFLOW_EXPERIMENTAL_STREAM_MARKERS)', ()
     expect(marker.seq).toBe(0n);
   });
 
-  it('emits framed-v1 (no markers) when the override is off and the version gate is below the cutoff', async () => {
-    vi.unstubAllEnvs();
+  it('emits framed-v1 (no markers) when the SDK version is below the cutoff', async () => {
+    versionState.override = '5.0.0-beta.25';
     installWorld();
     const { getDeserializeStream } = await import('../serialization.js');
 
     await writeThroughGetWritable(['legacy']);
 
-    // Dormant: version gate (current dev version < capability cutoff) keeps
+    // Dormant: version gate (SDK version < capability cutoff) keeps
     // the writer on framed-v1 with no retransmit grant, and plain
     // deserialization reads it — exactly the pre-flip behavior.
     expect(writeMultiOptions.every((o) => o === undefined)).toBe(true);

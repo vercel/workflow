@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   framedStreamMarkersEnabled,
   getRunCapabilities,
@@ -117,19 +117,19 @@ describe('getRunCapabilities', () => {
       // the framed-v1 cutoff must read as unsupported.
       '4.2.0',
       '5.0.0-beta.15',
-      '5.0.0-beta.26',
+      '5.0.0-beta.25',
     ])('is false for pre-framed-v2 version %s', (version) => {
       expect(getRunCapabilities(version).framedStreamMarkers).toBe(false);
     });
 
-    it('is true at the exact cutoff version (5.0.0-beta.27)', () => {
-      expect(getRunCapabilities('5.0.0-beta.27').framedStreamMarkers).toBe(
+    it('is true at the exact cutoff version (5.0.0-beta.26)', () => {
+      expect(getRunCapabilities('5.0.0-beta.26').framedStreamMarkers).toBe(
         true
       );
     });
 
     it.each([
-      '5.0.0-beta.28',
+      '5.0.0-beta.27',
       '5.0.0',
       '5.1.0',
       '6.0.0',
@@ -144,21 +144,10 @@ describe('getRunCapabilities', () => {
       expect(caps.framedStreamMarkers).toBe(false);
     });
 
-    it('framedStreamMarkersEnabled follows the capability and honors the test override', () => {
+    it('framedStreamMarkersEnabled follows the capability', () => {
       expect(framedStreamMarkersEnabled('5.0.0-beta.20')).toBe(false);
-      expect(framedStreamMarkersEnabled('5.0.0-beta.27')).toBe(true);
+      expect(framedStreamMarkersEnabled('5.0.0-beta.26')).toBe(true);
       expect(framedStreamMarkersEnabled(undefined)).toBe(false);
-
-      // WORKFLOW_EXPERIMENTAL_STREAM_MARKERS=1 force-enables so tests/e2e can
-      // exercise the marker path before the released version crosses the
-      // cutoff. Applies regardless of version input (both ends must set it).
-      vi.stubEnv('WORKFLOW_EXPERIMENTAL_STREAM_MARKERS', '1');
-      try {
-        expect(framedStreamMarkersEnabled('5.0.0-beta.20')).toBe(true);
-        expect(framedStreamMarkersEnabled(undefined)).toBe(true);
-      } finally {
-        vi.unstubAllEnvs();
-      }
     });
   });
 });
