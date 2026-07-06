@@ -579,11 +579,20 @@ export function getByteFramingStream(
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       if (chunk.length === 0) return;
-      if (chunk.length > MAX_FRAME_SIZE) {
+      // The on-wire frame length the unframer validates against
+      // MAX_FRAME_SIZE covers everything after the length prefix: for
+      // framed-v2 that includes the FRAME_MARKER_SIZE-byte writer marker, so
+      // the largest user chunk we can emit is correspondingly smaller. Bound
+      // the chunk against the same effective limit the reader enforces so any
+      // chunk the framer accepts can always be decoded.
+      const maxChunkSize = writerId
+        ? MAX_FRAME_SIZE - FRAME_MARKER_SIZE
+        : MAX_FRAME_SIZE;
+      if (chunk.length > maxChunkSize) {
         controller.error(
           new WorkflowRuntimeError(
             `Byte-stream chunk of ${chunk.length} bytes exceeds the maximum ` +
-              `framed chunk size (${MAX_FRAME_SIZE}). Split the data into ` +
+              `framed chunk size (${maxChunkSize}). Split the data into ` +
               `smaller chunks before writing.`,
             { slug: 'serialization-failed' }
           )
