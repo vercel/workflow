@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
@@ -8,6 +9,7 @@ import {
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { VercelBuildOutputConfig } from './types.js';
 import { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
@@ -108,6 +110,10 @@ async function writeFakePrismaClient(packageRoot: string): Promise<void> {
     `const { readFileSync } = require('fs');
 const path = require('path');
 
+// Module-scope __dirname reference, like @prisma/client's runtime — the
+// bundled ESM output must provide it (see getEsmRequireBanner).
+exports.moduleDir = __dirname;
+
 exports.getQueryEngine = function getQueryEngine() {
   return readFileSync(path.join(__dirname, '${engineFile}'), 'utf8');
 };
@@ -183,11 +189,28 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
           await readFile(join(clientOutputDir, 'package.json'), 'utf8')
         ).main
       ).toBe('index.js');
+
+      // The bundle must execute under plain Node (not vitest's module
+      // runner): inlined CJS referencing __dirname at module scope (like
+      // @prisma/client's runtime) relies on the ESM banner shims.
+      const bundleUrl = pathToFileURL(
+        join(getFlowFuncDir(workingDir), 'index.mjs')
+      ).href;
+      const output = execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `const bundle = await import(${JSON.stringify(bundleUrl)}); console.log(typeof bundle.POST);`,
+        ],
+        { encoding: 'utf8' }
+      );
+      expect(output.trim()).toBe('function');
     }
   );
 
   it(
-    'flattens pnpm store paths and copies only node_modules assets',
+    'copies pnpm store assets at flattened and real paths, keeps app assets, never copies secrets',
     { timeout: BUILD_TIMEOUT },
     async () => {
       await writeWorkflowRuntimeStub(workingDir);
@@ -235,17 +258,31 @@ export async function reportWorkflow(): Promise<string> {
       await createBuilder(workingDir).build();
 
       const flowFuncDir = getFlowFuncDir(workingDir);
-      // The engine is reachable at the flat node_modules path Prisma-style
-      // runtime lookups probe, not buried in the pnpm store layout.
+      // The engine is reachable at the flat node_modules path npm-style
+      // runtime lookups probe...
       expect(
         await readFile(
           join(flowFuncDir, 'node_modules/.fake-prisma/client', engineFile),
           'utf8'
         )
       ).toBe(engineContents);
-      // Files outside node_modules are never copied — app data files and
-      // credentials both stay out of the deployed function.
-      expect(existsSync(join(flowFuncDir, 'data/template.txt'))).toBe(false);
+      // ...and at its real store path, which lookups with a baked
+      // generate-time relative path (Prisma under pnpm) probe.
+      expect(
+        await readFile(
+          join(
+            flowFuncDir,
+            'node_modules/.pnpm/fake-prisma-client@1.0.0/node_modules/.fake-prisma/client',
+            engineFile
+          ),
+          'utf8'
+        )
+      ).toBe(engineContents);
+      // App files read at runtime keep their cwd-relative path; credential
+      // files stay out of the deployed function.
+      expect(
+        await readFile(join(flowFuncDir, 'data/template.txt'), 'utf8')
+      ).toBe('template asset\n');
       expect(existsSync(join(flowFuncDir, '.env'))).toBe(false);
     }
   );

@@ -320,10 +320,23 @@ export abstract class BaseBuilder {
    * for Node.js builtins (e.g. debug → require('tty')) break because esbuild's
    * CJS-to-ESM __require shim doesn't have access to a real require function.
    * This banner provides one via createRequire so bundled CJS code works in ESM.
+   *
+   * Same for __filename/__dirname: esbuild leaves them untouched when
+   * inlining CJS modules (e.g. @prisma/client's runtime references
+   * __dirname at module scope), and they don't exist in ES module scope.
+   * The shims point at the bundle location, which is the function root at
+   * runtime.
    */
   private getEsmRequireBanner(format: string): string {
     if (format !== 'esm') return '';
-    return 'import { createRequire as __createRequire } from "node:module";\nvar require = __createRequire(import.meta.url);\n';
+    return (
+      'import { createRequire as __createRequire } from "node:module";\n' +
+      'import { fileURLToPath as __fileURLToPath } from "node:url";\n' +
+      'import { dirname as __pathDirname } from "node:path";\n' +
+      'var require = __createRequire(import.meta.url);\n' +
+      'var __filename = __fileURLToPath(import.meta.url);\n' +
+      'var __dirname = __pathDirname(__filename);\n'
+    );
   }
 
   /**
