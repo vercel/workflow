@@ -1,6 +1,6 @@
 {
-  "lastUpdated": "2026-07-06T21:39:57.177Z",
-  "commit": "0f557d5ae4b5ede07fd371988c6d0afda194555d",
+  "lastUpdated": "2026-07-06T22:57:59.020Z",
+  "commit": "8a766884cf5df20872b6a516008f854f407fe259",
   "branch": "main",
   "type": "e2e",
   "worlds": {
@@ -126,10 +126,10 @@
     },
     "vercel": {
       "status": "passing",
-      "total": 1824,
-      "passed": 1567,
+      "total": 1520,
+      "passed": 1317,
       "failed": 0,
-      "skipped": 257,
+      "skipped": 203,
       "frameworks": {
         "astro": {
           "total": 152,
@@ -137,16 +137,6 @@
           "failed": 0
         },
         "express": {
-          "total": 152,
-          "passed": 125,
-          "failed": 0
-        },
-        "fastify": {
-          "total": 152,
-          "passed": 125,
-          "failed": 0
-        },
-        "hono": {
           "total": 152,
           "passed": 125,
           "failed": 0
@@ -182,7 +172,7 @@
           "failed": 0
         }
       },
-      "progress": 86
+      "progress": 87
     }
   }
 }
