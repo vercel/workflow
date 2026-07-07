@@ -9,8 +9,9 @@ import {
   NavigationMenuLink,
   NavigationMenuList,
 } from '@/components/ui/navigation-menu';
-import { useIsMobile } from '@/hooks/use-mobile';
 import { useVersion } from '@/hooks/geistdocs/use-version';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { buildVersionUrl } from '@/lib/geistdocs/versions';
 import { cn } from '@/lib/utils';
 
 interface DesktopMenuProps {
@@ -24,14 +25,16 @@ export const DesktopMenu = ({ items, className }: DesktopMenuProps) => {
   const { lang } = useParams<{ lang?: string }>();
   const { activeVersion } = useVersion();
 
-  // Prepend the active version prefix to versioned links (/docs and /cookbook)
-  // so the navbar stays in sync with the selected version.
+  // Resolve versioned links so the navbar stays in sync with the selected
+  // version across docs, cookbook, and worlds routes.
   const resolveHref = (href: string) => {
     if (
       !href.startsWith('http') &&
-      (href.startsWith('/docs') || href.startsWith('/cookbook'))
+      (href.startsWith('/docs') ||
+        href.startsWith('/cookbook') ||
+        href.startsWith('/worlds'))
     ) {
-      return `${activeVersion.prefix}${href}`;
+      return buildVersionUrl(href, activeVersion);
     }
     return href;
   };

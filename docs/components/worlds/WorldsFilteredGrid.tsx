@@ -9,6 +9,7 @@ type Filter = 'all' | 'vercel' | 'community' | 'encrypted';
 
 interface WorldsFilteredGridProps {
   worlds: [string, World][];
+  worldsPath: string;
 }
 
 const managedIds = new Set(['vercel']);
@@ -43,7 +44,10 @@ const sections = [
   },
 ] as const;
 
-export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
+export function WorldsFilteredGrid({
+  worlds,
+  worldsPath,
+}: WorldsFilteredGridProps) {
   const [filter, setFilter] = useState<Filter>('all');
 
   const filtered = worlds.filter(([, world]) => {
@@ -124,7 +128,12 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {sectionWorlds.map(([id, world]) => (
-                  <WorldCardSimple key={id} id={id} world={world} />
+                  <WorldCardSimple
+                    key={id}
+                    id={id}
+                    world={world}
+                    worldsPath={worldsPath}
+                  />
                 ))}
               </div>
             </section>

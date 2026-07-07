@@ -100,22 +100,22 @@ const config: NextConfig = {
       // Redirect old world docs to new /worlds routes
       {
         source: '/docs/deploying/world/local-world',
-        destination: '/worlds/local',
+        destination: '/v4/worlds/local',
         permanent: true,
       },
       {
         source: '/docs/deploying/world/postgres-world',
-        destination: '/worlds/postgres',
+        destination: '/v4/worlds/postgres',
         permanent: true,
       },
       {
         source: '/docs/deploying/world/vercel-world',
-        destination: '/worlds/vercel',
+        destination: '/v4/worlds/vercel',
         permanent: true,
       },
       {
         source: '/docs/worlds',
-        destination: '/worlds',
+        destination: '/v4/worlds',
         permanent: true,
       },
       // Foundations "Common Patterns" page was retired in favor of dedicated

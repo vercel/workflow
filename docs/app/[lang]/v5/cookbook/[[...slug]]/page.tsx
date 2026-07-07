@@ -26,7 +26,7 @@ import {
   rewriteCookbookUrlsInText,
 } from '@/lib/geistdocs/cookbook-source';
 import { getLLMText, getPageImage, v5Source } from '@/lib/geistdocs/source';
-import { PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
+import { buildVersionUrl, PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
 
 const VERSION_PREFIX = PRE_RELEASE_VERSION.prefix; // '/v5'
 
@@ -57,7 +57,7 @@ const Page = async ({
     let rewritten = rewriteCookbookUrlForVersion(href, VERSION_PREFIX);
     if (rewritten.startsWith('/docs/'))
       rewritten = `${VERSION_PREFIX}${rewritten}`;
-    return rewritten as T;
+    return buildVersionUrl(rewritten, PRE_RELEASE_VERSION) as T;
   }
   const RelativeLink = createRelativeLink(v5Source, publicPage);
   const V5CookbookLink = (props: ComponentProps<typeof RelativeLink>) => (

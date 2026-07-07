@@ -3,8 +3,9 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { useVersion } from '@/hooks/geistdocs/use-version';
 import { IconArrowUpRight } from '@/components/geistcn-fallbacks/geistcn-assets/icons/icon-arrow-up-right';
+import { useVersion } from '@/hooks/geistdocs/use-version';
+import { buildVersionUrl } from '@/lib/geistdocs/versions';
 import { cn } from '@/lib/utils';
 import { SearchButton } from './search';
 
@@ -84,9 +85,11 @@ export const MobileMenu = ({ items }: MobileMenuProps) => {
   const resolveHref = (href: string) => {
     if (
       !href.startsWith('http') &&
-      (href.startsWith('/docs') || href.startsWith('/cookbook'))
+      (href.startsWith('/docs') ||
+        href.startsWith('/cookbook') ||
+        href.startsWith('/worlds'))
     ) {
-      return `${activeVersion.prefix}${href}`;
+      return buildVersionUrl(href, activeVersion);
     }
     return href;
   };
