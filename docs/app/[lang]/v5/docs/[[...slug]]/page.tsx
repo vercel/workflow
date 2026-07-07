@@ -41,7 +41,6 @@ import {
   getDocsTreeForVersion,
   PRE_RELEASE_VERSION,
 } from '@/lib/geistdocs/version-source';
-import { buildVersionUrl } from '@/lib/geistdocs/versions';
 import { TSDoc } from '@/lib/tsdoc';
 
 const WorldTestingPerformanceNoop = () => null;
@@ -73,13 +72,13 @@ const Page = async ({ params }: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
 
   // Inline MDX links use /docs/... paths (matching the source baseUrl). When
   // browsing under /v5/docs/..., those links would escape to the v4 route.
-  // Rewrite versioned links so inline links stay inside the v5 context,
-  // matching how the sidebar tree is rewritten by rewriteNodeUrls in
+  // Rewrite /docs/... → /v5/docs/... so all inline links stay inside the v5
+  // context, matching how the sidebar tree is rewritten by rewriteNodeUrls in
   // version-source.ts. Card renders its own Link (not the `a` component), so
   // it needs the same rewrite applied separately.
   function v5Href<T>(href: T): T {
-    return typeof href === 'string'
-      ? (buildVersionUrl(href, PRE_RELEASE_VERSION) as T)
+    return typeof href === 'string' && href.startsWith('/docs/')
+      ? (`/v5${href}` as T)
       : href;
   }
   const baseLink = createRelativeLink(v5Source, page);

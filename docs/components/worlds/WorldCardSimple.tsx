@@ -20,16 +20,11 @@ import type { World } from './types';
 interface WorldCardSimpleProps {
   id: string;
   world: World;
-  worldsPath: string;
 }
 
-export function WorldCardSimple({
-  id,
-  world,
-  worldsPath,
-}: WorldCardSimpleProps) {
+export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
   return (
-    <Link href={`${worldsPath}/${id}`} className="block group">
+    <Link href={`/worlds/${id}`} className="block group">
       <Card className="h-full transition-colors cursor-pointer overflow-hidden py-0! gap-2">
         <CardHeader className="px-4 pt-4 pb-0">
           <div className="flex items-start justify-between gap-2">

@@ -35,16 +35,9 @@ import type { World } from './types';
 interface WorldDetailHeroProps {
   id: string;
   world: World;
-  docsPrefix: string;
-  worldsPath: string;
 }
 
-export function WorldDetailHero({
-  id,
-  world,
-  docsPrefix,
-  worldsPath,
-}: WorldDetailHeroProps) {
+export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
   const [copied, setCopied] = useState(false);
 
   const installCommand = `npm i ${world.package}`;
@@ -81,7 +74,7 @@ export function WorldDetailHero({
         <BreadcrumbList>
           <BreadcrumbItem>
             <BreadcrumbLink asChild>
-              <Link href={worldsPath}>Worlds</Link>
+              <Link href="/worlds">Worlds</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator>
@@ -208,7 +201,7 @@ export function WorldDetailHero({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Link
-                  href={`${docsPrefix}/docs/how-it-works/encryption`}
+                  href="/docs/how-it-works/encryption"
                   className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <ShieldCheck className="h-4 w-4 shrink-0 text-blue-900" />

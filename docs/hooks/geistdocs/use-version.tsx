@@ -30,12 +30,6 @@ function persistVersion(version: DocsVersion) {
   }
 }
 
-function getVersionFallback(pathname: string, target: DocsVersion) {
-  if (pathname.includes('/cookbook')) return `${target.prefix}/cookbook`;
-  if (pathname.includes('/worlds')) return `/${target.id}/worlds`;
-  return `${target.prefix}/docs/getting-started`;
-}
-
 interface VersionContextValue {
   activeVersion: DocsVersion;
   switchVersion: (target: DocsVersion) => Promise<void>;
@@ -51,11 +45,9 @@ export const VersionProvider = ({
   const pathname = usePathname();
   const router = useRouter();
 
-  // /docs, /cookbook, and /worlds routes carry version in the URL.
+  // Both /docs and /cookbook routes carry version in the URL.
   const isVersionedPage =
-    pathname.includes('/docs') ||
-    pathname.includes('/cookbook') ||
-    pathname.includes('/worlds');
+    pathname.includes('/docs') || pathname.includes('/cookbook');
   const urlVersion = isVersionedPage ? getVersionFromPathname(pathname) : null;
 
   // Initialize from localStorage; docs pages override this via urlVersion.
@@ -63,14 +55,14 @@ export const VersionProvider = ({
     getStoredVersion()
   );
 
-  // On docs pages the URL is the source of truth - sync it to localStorage
+  // On docs pages the URL is the source of truth — sync it to localStorage
   // so non-docs pages can pick it up after navigation.
   useEffect(() => {
     if (urlVersion && urlVersion.id !== storedVersion.id) {
       setStoredVersion(urlVersion);
       persistVersion(urlVersion);
     }
-  }, [urlVersion, storedVersion.id]);
+  }, [urlVersion?.id]);
 
   const activeVersion = urlVersion ?? storedVersion;
 
@@ -79,7 +71,7 @@ export const VersionProvider = ({
       setStoredVersion(target);
       persistVersion(target);
       if (!isVersionedPage) {
-        // On unversioned pages just update the stored preference.
+        // On worlds and other unversioned pages just update the stored preference.
         return;
       }
 
@@ -92,11 +84,17 @@ export const VersionProvider = ({
       try {
         const res = await fetch(targetUrl, { method: 'HEAD' });
         if (!res.ok) {
-          router.push(getVersionFallback(pathname, target));
+          const fallback = pathname.includes('/cookbook')
+            ? `${target.prefix}/cookbook`
+            : `${target.prefix}/docs/getting-started`;
+          router.push(fallback);
           return;
         }
       } catch {
-        router.push(getVersionFallback(pathname, target));
+        const fallback = pathname.includes('/cookbook')
+          ? `${target.prefix}/cookbook`
+          : `${target.prefix}/docs/getting-started`;
+        router.push(fallback);
         return;
       }
 
