@@ -105,6 +105,15 @@ export function workflowPlugin(
 /**
  * Injects the base path global into SSR build output so runtime URL
  * generation (queue delivery, webhook URLs) includes the base path.
+ *
+ * This is just `setWorkflowBasePath(basePath)` delivered into a server
+ * bundle we don't own the entry point of: Astro has no boot hook or
+ * runtime plugin concept for the compiled server, so a rollup banner is
+ * the supported way to run one statement before anything else. A runtime
+ * env var would be a second user-facing config that can drift from
+ * `config.base`, and a build-time `define` wouldn't reach the read sites:
+ * `@workflow/utils` is externalized (not bundled) in Astro's SSR output,
+ * so only process-wide state set at boot reliably reaches every reader.
  */
 function workflowBasePathPlugin(basePath: string) {
   return {
