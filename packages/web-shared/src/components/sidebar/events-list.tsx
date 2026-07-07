@@ -139,6 +139,7 @@ function EventItem({
   // bare wall-clock time; the exact date/time lives in the hover card below.
   const createdAtMs = new Date(event.createdAt).getTime();
   const timeAgo = useShortTimeAgo(createdAtMs);
+  const occurredAt = parseDateValue(event.occurredAt);
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
