@@ -95,7 +95,7 @@ The `WORKFLOW_VERCEL_*` variables below configure **tooling that talks to the Ve
 
 ### `WORKFLOW_VERCEL_ENV`
 
-The Vercel environment to target. Options: `production`, `preview`, `development`. Default: `production`.
+The Vercel environment to target. Options: `production`, `preview`. Default: `production`.
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
@@ -117,20 +117,24 @@ Vercel team ID.
 
 Custom base URL for the Vercel workflow API proxy. Default: `https://api.vercel.com/v1/workflow`.
 
+### `VERCEL_WORKFLOW_SERVER_URL`
+
+Custom workflow-server URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
+
 ### `VERCEL_QUEUE_MAX_DELAY_SECONDS`
 
 Maximum delay of a single queue message; longer sleeps chain messages. Read inside the deployment. Default: `82800` (23 hours).
 
 ### Programmatic configuration
 
-Options passed to `createVercelWorld()` take precedence over the environment variables above:
+`createVercelWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:
 
 {/*@skip-typecheck: incomplete code sample*/}
 
 ```typescript title="my-world.ts" lineNumbers
 import { createVercelWorld } from "@workflow/world-vercel";
 
-const world = createVercelWorld({
+export default createVercelWorld({
   token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
   projectConfig: {
     projectId: "prj_...",
@@ -138,6 +142,10 @@ const world = createVercelWorld({
     environment: "production",
   },
 });
+```
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
 ## Versioning

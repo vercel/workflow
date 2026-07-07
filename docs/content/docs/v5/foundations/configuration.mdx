@@ -42,7 +42,7 @@ Default: `vercel` when running on Vercel (`VERCEL_DEPLOYMENT_ID` is set), otherw
 
 Each World has its own configuration — connection strings, data directories, auth — documented on its page:
 
-- [Local World configuration](/docs/deploying/world/local-world#configuration) — `WORKFLOW_LOCAL_DATA_DIR`, `WORKFLOW_LOCAL_BASE_URL`, `PORT`, ...
+- [Local World configuration](/docs/deploying/world/local-world#configuration) — `WORKFLOW_LOCAL_DATA_DIR`, `WORKFLOW_LOCAL_BASE_URL`, `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`, ...
 - [Postgres World configuration](/docs/deploying/world/postgres-world#configuration) — `WORKFLOW_POSTGRES_URL`, worker concurrency, pool size, ...
 - [Vercel World configuration](/docs/deploying/world/vercel-world#configuration) — auth token and project targeting for tooling.
 
@@ -79,6 +79,9 @@ Escape hatches you should rarely need; listed for completeness.
 | `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` | Recovery replays before a replay divergence is recorded as corruption. | `3` |
 | `WORKFLOW_DEFERRED_CHECK_DELAY_MS` | Delay before the unconsumed-event check fires. | `100` |
 | `WORKFLOW_LOCK_POLL_INTERVAL_MS` | Poll interval for detecting stream lock release. | `10` |
+| `WORKFLOW_REQUEST_TIMEOUT_MS` | Per-request timeout for Vercel World HTTP calls to workflow-server. | `60000` |
+| `WORKFLOW_MAX_CHUNKS_PER_REQUEST` | Maximum stream chunks written in one Vercel World request; larger batches are split. | `1000` |
+| `WORKFLOW_TEST_LIMIT_OVERRIDES` | Testing-only JSON object forwarded to workflow-server to tighten server-side limits on dedicated test deployments. | unset |
 
 ## Build
 
@@ -102,4 +105,4 @@ The `workflow` CLI and web UI infer their configuration automatically — the da
 | --- | --- | --- |
 | `WORKFLOW_NO_UPDATE_CHECK` | `1` disables the CLI's update check. | check enabled |
 
-Anything not listed on this page or a World page (for example `WORKFLOW_NEXT_PRIVATE_BUILT` or `WORKFLOW_SOCKET_*`) is internal to the SDK — don't set it.
+Anything not listed on this page or a World page (for example `WORKFLOW_NEXT_PRIVATE_BUILT`, `WORKFLOW_ROUTE_BASE`, or `WORKFLOW_SOCKET_*`) is internal to the SDK — don't set it.

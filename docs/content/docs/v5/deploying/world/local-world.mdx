@@ -58,6 +58,10 @@ Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 Maximum number of concurrent queue message handlers. Default: `1000`
 
+### `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY`
+
+Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
+
 ### Programmatic configuration
 
 Options passed to `createLocalWorld()` take precedence over the environment variables above. Export the configured World from a module and point `WORKFLOW_TARGET_WORLD` at that module:

@@ -190,11 +190,13 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 All configuration options can be set via environment variables or programmatically via `createWorld()`.
 
-### `WORKFLOW_POSTGRES_URL` (required)
+### `WORKFLOW_POSTGRES_URL`
 
-PostgreSQL connection string. Falls back to `DATABASE_URL` if not set.
+PostgreSQL connection string used by the runtime World.
 
 Default: `postgres://world:world@localhost:5432/world`
+
+The `bootstrap` migration command also falls back to `DATABASE_URL` when `WORKFLOW_POSTGRES_URL` is unset.
 
 ### `WORKFLOW_POSTGRES_JOB_PREFIX`
 
@@ -219,15 +221,19 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 ```typescript title="my-world.ts" lineNumbers
 import { createWorld } from "@workflow/world-postgres";
 
-const world = createWorld({
-  connectionString: "postgres://user:password@host:5432/database",
+export default createWorld({
+  connectionString: process.env.WORKFLOW_POSTGRES_URL!,
   jobPrefix: "myapp_",
   queueConcurrency: 50,
   maxPoolSize: 52, // overrides WORKFLOW_POSTGRES_MAX_POOL_SIZE
 });
 ```
 
-Options passed to `createWorld()` take precedence over the environment variables above.
+Options passed to `createWorld()` take precedence over the environment variables above. Export the World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="./my-world.ts"
+```
 
 ## How It Works
 
