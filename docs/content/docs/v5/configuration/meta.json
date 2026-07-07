@@ -8,5 +8,5 @@
     "build-and-diagnostics",
     "cli-and-web-ui"
   ],
-  "defaultOpen": true
+  "defaultOpen": false
 }
