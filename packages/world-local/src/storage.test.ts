@@ -7,7 +7,7 @@ import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeJSON } from './fs.js';
-import { hashToken } from './storage/helpers.js';
+import { hashToken, hookDisposeLockPath } from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -2195,6 +2195,85 @@ describe('Storage', () => {
 
         expect(hook2.token).toBe(token);
         expect(hook2.hookId).toBe('hook_2');
+      });
+
+      // Regression test for #2778: a claim whose owning run is terminal can
+      // never become live again — a new claimant must treat it as vacant
+      // instead of recording a hook_conflict against a finished run. The
+      // claim file is rewritten manually to simulate the window where the
+      // run-completion cleanup has not deleted it yet (or crashed).
+      it('should treat a token claim owned by a terminal run as vacant', async () => {
+        const token = 'terminal-owner-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        // Simulate the stale claim surviving the terminal-run cleanup
+        await fs.writeFile(
+          path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`),
+          JSON.stringify({
+            token,
+            hookId: 'hook_1',
+            runId: testRunId,
+            eventId: 'evnt_00000000000000000000000000',
+          })
+        );
+
+        const run2 = await createRun(storage, {
+          deploymentId: 'deployment-456',
+          workflowName: 'another-workflow',
+          input: new Uint8Array(),
+        });
+
+        const result = await storage.events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_created');
+        expect(result.hook?.runId).toBe(run2.runId);
+      });
+
+      // Regression test for #2778: the hook_disposed handler commits the
+      // disposal (dispose lock) before deleting the token claim, so a new
+      // claimant can observe the claim of a hook whose disposal is already
+      // committed. It must treat that claim as vacant — and the event-log
+      // rebuild must not resurrect the half-torn-down hook.
+      it('should treat a token claim of a dispose-committed hook as vacant', async () => {
+        const token = 'disposed-owner-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        // Simulate a disposer that crashed right after committing the
+        // dispose lock, before deleting the claim and hook entity.
+        const lockPath = hookDisposeLockPath(testDir, 'hook_1');
+        await fs.mkdir(path.dirname(lockPath), { recursive: true });
+        await fs.writeFile(lockPath, '');
+
+        const run2 = await createRun(storage, {
+          deploymentId: 'deployment-456',
+          workflowName: 'another-workflow',
+          input: new Uint8Array(),
+        });
+
+        const result = await storage.events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_created');
+        expect(result.hook?.runId).toBe(run2.runId);
       });
 
       it('should enforce token uniqueness across different runs within the same project', async () => {

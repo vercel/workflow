@@ -32,7 +32,11 @@ import {
   writeExclusive,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
-import { hashToken, hookRecoveryMarkerPath } from './helpers.js';
+import {
+  hashToken,
+  hookRecoveryMarkerPath,
+  isHookDisposalCommitted,
+} from './helpers.js';
 
 function isVisibleToTag(fileId: string, tag: string | undefined): boolean {
   return tag ? isUntagged(fileId) || hasTag(fileId, tag) : isUntagged(fileId);
@@ -144,6 +148,18 @@ async function findLiveHookCreatedEvent(
   }
 
   if (liveEvent && (await isTerminalRunCache(basedir, liveEvent.runId, tag))) {
+    return null;
+  }
+
+  // A committed disposal (dispose lock on disk) closes the hook even when
+  // its `hook_disposed` event has not landed in the log yet — the disposer
+  // writes the lock, releases the token claim and hook entity, and only
+  // then appends the event. Rebuilding the caches from the log in that
+  // window would resurrect a claim for a hook that is being torn down.
+  if (
+    liveEvent &&
+    (await isHookDisposalCommitted(basedir, liveEvent.correlationId, tag))
+  ) {
     return null;
   }
 
