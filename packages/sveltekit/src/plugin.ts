@@ -152,9 +152,19 @@ function patchAdapterNodeServerChunks(cwd: string): void {
       // that already declares either identifier (const/let/var, e.g. a
       // CJS-interop shim) would produce a duplicate top-level declaration
       // and crash the server with a SyntaxError at startup.
-      const referencesFilename = /\b__(?:file|dir)name\b/.test(source);
+      //
+      // The `(?![\w$])` lookaheads matter: when adapter-node re-bundles the
+      // intermediate output, rollup renames colliding declarations to e.g.
+      // `__filename$1`. A bare `\b` boundary matches those ($ is not a word
+      // character), which made this skip chunks that declare only a RENAMED
+      // binding while still referencing the bare `__filename` (observed with
+      // the bundled `typescript` compiler pulled in via cosmiconfig — the
+      // server crashed at boot with "__filename is not defined").
+      const referencesFilename = /(?<![\w$])__(?:file|dir)name(?![\w$])/.test(
+        source
+      );
       const declaresOwnBinding =
-        /\b(?:const|let|var)\s+__(?:file|dir)name\b/.test(source);
+        /\b(?:const|let|var)\s+__(?:file|dir)name(?![\w$])/.test(source);
       if (!referencesFilename || declaresOwnBinding) {
         continue;
       }
