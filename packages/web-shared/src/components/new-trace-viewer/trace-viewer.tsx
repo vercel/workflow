@@ -22,6 +22,7 @@ import { Spinner } from '../ui/spinner';
 import { TooltipProvider } from '../ui/tooltip';
 import { TraceDetailPanel } from './components/detail-panel';
 import EventList from './components/event-list';
+import { Minimap } from './components/minimap';
 import { SplitPane } from './components/split-pane';
 import {
   TIMELINE_PADDING_PX,
@@ -33,7 +34,14 @@ import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
 import type { TraceWithMeta } from './types';
-import { computeRootBounds, computeTimeMarkers } from './utils';
+import {
+  clampViewportToRoot,
+  computeRootBounds,
+  computeTimeMarkers,
+  type ViewportRange,
+  wheelDeltaToPixels,
+  wheelZoomScaleFactor,
+} from './utils';
 
 interface NewTraceViewerProps {
   trace: TraceWithMeta;
@@ -46,17 +54,12 @@ const MIN_VIEWPORT_MS = 0.001;
 
 const ZOOM_DEBOUNCE_MS = 150;
 
-interface Viewport {
-  start: number;
-  end: number;
-}
-
-function useAnimatedViewport(initial: Viewport) {
-  const [viewport, setViewportState] = useState<Viewport>(initial);
+function useAnimatedViewport(initial: ViewportRange) {
+  const [viewport, setViewportState] = useState<ViewportRange>(initial);
   const animRef = useRef<{
     raf: number;
-    from: Viewport;
-    to: Viewport;
+    from: ViewportRange;
+    to: ViewportRange;
     start: number;
   } | null>(null);
   const currentRef = useRef(initial);
@@ -71,7 +74,7 @@ function useAnimatedViewport(initial: Viewport) {
   }, []);
 
   const animateTo = useCallback(
-    (target: Viewport) => {
+    (target: ViewportRange) => {
       cancel();
 
       if (reducedMotion) {
@@ -101,7 +104,7 @@ function useAnimatedViewport(initial: Viewport) {
   );
 
   const setViewport = useCallback(
-    (update: Viewport | ((prev: Viewport) => Viewport)) => {
+    (update: ViewportRange | ((prev: ViewportRange) => ViewportRange)) => {
       cancel();
       if (typeof update === 'function') {
         setViewportState((prev) => {
@@ -183,7 +186,7 @@ function NewTraceViewerContent({
     end: root.startTime + root.duration,
   });
 
-  const prevRootRef = useRef<Viewport>({
+  const prevRootRef = useRef<ViewportRange>({
     start: root.startTime,
     end: root.startTime + root.duration,
   });
@@ -224,60 +227,45 @@ function NewTraceViewerContent({
     animateTo({ start: root.startTime, end: root.startTime + root.duration });
   }, [animateTo, root.startTime, root.duration]);
 
+  const clampToRoot = useCallback(
+    (next: ViewportRange): ViewportRange =>
+      clampViewportToRoot(next, root.startTime, root.endTime, MIN_VIEWPORT_MS),
+    [root.startTime, root.endTime]
+  );
+
   // Pan (keeping the current zoom) so `timeMs` is centered in view — used by the
   // off-screen marker indicators to scroll their marker into view.
   const handleRevealTime = useCallback(
     (timeMs: number) => {
-      const rootS = root.startTime;
-      const rootE = root.startTime + root.duration;
       const { start, end } = viewportRef.current;
       const duration = end - start;
-      let newStart = timeMs - duration / 2;
-      let newEnd = timeMs + duration / 2;
-      if (newStart < rootS) {
-        newStart = rootS;
-        newEnd = rootS + duration;
-      }
-      if (newEnd > rootE) {
-        newEnd = rootE;
-        newStart = Math.max(rootS, rootE - duration);
-      }
-      animateTo({ start: newStart, end: newEnd });
+      animateTo(
+        clampToRoot({
+          start: timeMs - duration / 2,
+          end: timeMs + duration / 2,
+        })
+      );
     },
-    [animateTo, root.startTime, root.duration]
+    [animateTo, clampToRoot]
   );
 
   const ZOOM_FACTOR = 0.5;
 
   const zoomBy = useCallback(
     (factor: number) => {
-      const rootS = root.startTime;
-      const rootE = root.startTime + root.duration;
-      const rootD = root.duration;
-
       setViewport((prev) => {
-        const prevDuration = prev.end - prev.start;
         const center = (prev.start + prev.end) / 2;
         const newDuration = Math.max(
           MIN_VIEWPORT_MS,
-          Math.min(rootD, prevDuration * factor)
+          (prev.end - prev.start) * factor
         );
-        let newStart = center - newDuration / 2;
-        let newEnd = center + newDuration / 2;
-
-        if (newStart < rootS) {
-          newStart = rootS;
-          newEnd = rootS + newDuration;
-        }
-        if (newEnd > rootE) {
-          newEnd = rootE;
-          newStart = Math.max(rootS, rootE - newDuration);
-        }
-
-        return { start: newStart, end: newEnd };
+        return clampToRoot({
+          start: center - newDuration / 2,
+          end: center + newDuration / 2,
+        });
       });
     },
-    [setViewport, root.startTime, root.duration]
+    [setViewport, clampToRoot]
   );
 
   const zoomIn = useCallback(() => zoomBy(ZOOM_FACTOR), [zoomBy]);
@@ -294,12 +282,8 @@ function NewTraceViewerContent({
       const spanEnd = getHighResInMs(span.endTime);
       const spanDuration = spanEnd - spanStart;
 
-      const rootS = root.startTime;
-      const rootE = root.startTime + root.duration;
-      const rootD = root.duration;
-
-      if (spanDuration > rootD * 0.8) {
-        animateTo({ start: rootS, end: rootE });
+      if (spanDuration > root.duration * 0.8) {
+        animateTo({ start: root.startTime, end: root.endTime });
         return;
       }
 
@@ -313,20 +297,16 @@ function NewTraceViewerContent({
         newEnd = center + MIN_VIEWPORT_MS / 2;
       }
 
-      if (newStart < rootS) {
-        const duration = newEnd - newStart;
-        newStart = rootS;
-        newEnd = Math.min(rootE, rootS + duration);
-      }
-      if (newEnd > rootE) {
-        const duration = newEnd - newStart;
-        newEnd = rootE;
-        newStart = Math.max(rootS, rootE - duration);
-      }
-
-      animateTo({ start: newStart, end: newEnd });
+      animateTo(clampToRoot({ start: newStart, end: newEnd }));
     },
-    [animateTo, trace.spans, root.startTime, root.duration]
+    [
+      animateTo,
+      trace.spans,
+      root.startTime,
+      root.endTime,
+      root.duration,
+      clampToRoot,
+    ]
   );
 
   // Bring a row into view when keyboard/button navigation lands on a span that
@@ -454,12 +434,7 @@ function NewTraceViewerContent({
 
   useEffect(() => {
     const el = timelineRef.current;
-    if (!el) return;
-
-    const rootS = root.startTime;
-    const rootE = root.startTime + root.duration;
-    const rootD = root.duration;
-    if (rootD <= 0) return;
+    if (!el || root.duration <= 0) return;
 
     const onWheel = (e: WheelEvent): void => {
       const isZoomGesture = e.ctrlKey || e.metaKey;
@@ -473,9 +448,6 @@ function NewTraceViewerContent({
       if (contentWidth <= 0) return;
 
       if (isZoomGesture) {
-        let dy = e.deltaY;
-        if (e.deltaMode === 1) dy *= 16;
-
         const cursorFraction = Math.max(
           0,
           Math.min(
@@ -483,59 +455,37 @@ function NewTraceViewerContent({
             (e.clientX - rect.left - TIMELINE_PADDING_PX) / contentWidth
           )
         );
-        const isMouseWheel = e.deltaMode === 1 || Math.abs(e.deltaY) >= 50;
-        const scaleFactor = 2 ** (dy / (isMouseWheel ? 200 : 60));
+        const scaleFactor = wheelZoomScaleFactor(e);
 
         setViewport((prev) => {
           const prevDuration = prev.end - prev.start;
           const cursorTime = prev.start + cursorFraction * prevDuration;
+          // Clamp the duration before anchoring so the cursor keeps its
+          // fraction even when the zoom hits the min/max bounds.
           const newDuration = Math.max(
             MIN_VIEWPORT_MS,
-            Math.min(rootD, prevDuration * scaleFactor)
+            Math.min(root.duration, prevDuration * scaleFactor)
           );
-
-          let newStart = cursorTime - cursorFraction * newDuration;
-          let newEnd = newStart + newDuration;
-
-          if (newStart < rootS) {
-            newStart = rootS;
-            newEnd = rootS + newDuration;
-          }
-          if (newEnd > rootE) {
-            newEnd = rootE;
-            newStart = Math.max(rootS, rootE - newDuration);
-          }
-
-          return { start: newStart, end: newEnd };
+          return clampToRoot({
+            start: cursorTime - cursorFraction * newDuration,
+            end: cursorTime + (1 - cursorFraction) * newDuration,
+          });
         });
       } else {
-        let dx = e.deltaX;
-        if (e.deltaMode === 1) dx *= 16;
-
+        const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
         setViewport((prev) => {
-          const prevDuration = prev.end - prev.start;
-          const panAmount = (dx / contentWidth) * prevDuration;
-
-          let newStart = prev.start + panAmount;
-          let newEnd = prev.end + panAmount;
-
-          if (newStart < rootS) {
-            newStart = rootS;
-            newEnd = rootS + prevDuration;
-          }
-          if (newEnd > rootE) {
-            newEnd = rootE;
-            newStart = Math.max(rootS, rootE - prevDuration);
-          }
-
-          return { start: newStart, end: newEnd };
+          const panAmount = (dx / contentWidth) * (prev.end - prev.start);
+          return clampToRoot({
+            start: prev.start + panAmount,
+            end: prev.end + panAmount,
+          });
         });
       }
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [root.startTime, root.duration, setViewport]);
+  }, [root.duration, setViewport, clampToRoot]);
 
   return (
     <div
@@ -545,8 +495,16 @@ function NewTraceViewerContent({
     >
       <div
         id="trace-parent"
-        className="flex-1 min-w-0 grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
+        className="flex-1 min-w-0 grid grid-rows-[auto_1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
+        <Minimap
+          spans={trace.spans}
+          root={root}
+          viewport={viewport}
+          minViewportMs={MIN_VIEWPORT_MS}
+          onViewportChange={setViewport}
+          onAnimateTo={animateTo}
+        />
         <SplitPane
           scrollContainerRef={scrollContainerRef}
           startHeader={
@@ -606,6 +564,7 @@ function NewTraceViewerContent({
           {/* biome-ignore lint/a11y/noStaticElementInteractions: timeline hover and wheel gestures are pointer-only annotations */}
           <div
             ref={timelineRef}
+            id="trace-timeline"
             className="block min-h-0 overflow-visible relative"
             onDoubleClick={resetZoom}
             onMouseMove={handleTimelineMouseMove}

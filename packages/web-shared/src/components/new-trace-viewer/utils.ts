@@ -41,6 +41,64 @@ export function getSpanDurationMs(span: Span): number {
   );
 }
 
+export function isSpanErrored(span: Span): boolean {
+  const workflowStatus = (span.attributes.data as Record<string, unknown>)
+    ?.status as string | undefined;
+  return span.status.code === 2 || workflowStatus === 'failed';
+}
+
+// ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+export interface ViewportRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Clamp a candidate viewport to the root extent. The requested duration is
+ * preserved where possible (clamped to [minDurationMs, root duration]), then
+ * the window is shifted back inside the root bounds.
+ */
+export function clampViewportToRoot(
+  next: ViewportRange,
+  rootStart: number,
+  rootEnd: number,
+  minDurationMs: number
+): ViewportRange {
+  const rootDuration = Math.max(rootEnd - rootStart, minDurationMs);
+  const duration = Math.min(
+    rootDuration,
+    Math.max(minDurationMs, next.end - next.start)
+  );
+  const maxStart = rootEnd - duration;
+  const start = Math.min(Math.max(next.start, rootStart), maxStart);
+  return { start, end: start + duration };
+}
+
+// ---------------------------------------------------------------------------
+// Wheel gestures — shared between the timeline and the minimap
+// ---------------------------------------------------------------------------
+
+/** Convert a wheel delta to pixel units (line-mode deltas arrive in lines). */
+export function wheelDeltaToPixels(delta: number, deltaMode: number): number {
+  return deltaMode === 1 ? delta * 16 : delta;
+}
+
+/**
+ * Exponential zoom factor for a wheel gesture. Coarse mouse-wheel steps are
+ * damped harder than trackpad pinches so both feel similar.
+ */
+export function wheelZoomScaleFactor(event: {
+  deltaY: number;
+  deltaMode: number;
+}): number {
+  const dy = wheelDeltaToPixels(event.deltaY, event.deltaMode);
+  const isMouseWheel = event.deltaMode === 1 || Math.abs(event.deltaY) >= 50;
+  return 2 ** (dy / (isMouseWheel ? 200 : 60));
+}
+
 // ---------------------------------------------------------------------------
 // Time markers
 // ---------------------------------------------------------------------------
