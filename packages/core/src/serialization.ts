@@ -1712,7 +1712,12 @@ function setupAbortStreamReader(
             );
           }),
         ]);
-        reader.releaseLock();
+        // Cancel (not just release) so the underlying World stream is torn
+        // down: a polling World (e.g. world-local) otherwise leaks a tail
+        // reader — a 100ms filesystem poll plus emitter listeners — per step
+        // invocation for the whole life of the process, since a signal-bearing
+        // step opens one of these on every revival and never aborts.
+        await reader.cancel().catch(() => {});
         if (result.value && !result.done) {
           try {
             // Hydrate via the same machinery the writer used so the reason

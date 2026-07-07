@@ -22,6 +22,7 @@ import type { CryptoKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
+  cancelAbortReaders,
   dehydrateStepError,
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -607,6 +608,15 @@ export async function executeStep(
         );
       });
       const executionTimeMs = Date.now() - executionStartTime;
+
+      // Tear down any abort-stream readers opened while hydrating the step's
+      // arguments (a serialized AbortSignal opens a real-time abort reader for
+      // the step's duration). Without this the reader's `read()` promise never
+      // settles, so the `ops` flush below always loses the 500ms race and the
+      // step reports `hasPendingOps` — forcing the inline loop to queue a
+      // continuation and paying a full round-trip per signal-bearing step.
+      // The non-inline `step-handler` path already does this after user code.
+      cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
 
       span?.setAttributes({
         ...Attribute.QueueExecutionTimeMs(executionTimeMs),
