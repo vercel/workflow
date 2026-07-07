@@ -10,11 +10,10 @@ import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { WorldDataProvider } from '@/components/worlds/WorldDataProvider';
 import { WorldDetailHero } from '@/components/worlds/WorldDetailHero';
 import { WorldDetailToc } from '@/components/worlds/WorldDetailToc';
-import { WorldDocsVersionPanel } from '@/components/worlds/WorldDocsVersionPanel';
 import { WorldInstructions } from '@/components/worlds/WorldInstructions';
 import { WorldTestingPerformance } from '@/components/worlds/WorldTestingPerformance';
 import { WorldTestingPerformanceMDX } from '@/components/worlds/WorldTestingPerformanceMDX';
-import { source, v5Source } from '@/lib/geistdocs/source';
+import { v5Source } from '@/lib/geistdocs/source';
 import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
 const isPreview = process.env.VERCEL_ENV === 'preview';
@@ -33,19 +32,6 @@ const officialWorldMdxSlugs: Record<string, string[]> = {
 
 interface PageProps {
   params: Promise<{ id: string }>;
-}
-
-type WorldDocsVersion = 'v4' | 'v5';
-
-function versionedHref<T>(href: T, version: WorldDocsVersion): T {
-  if (typeof href !== 'string') return href;
-  if (version === 'v5' && href.startsWith('/docs/')) {
-    return `/v5${href}` as T;
-  }
-  if (href.startsWith('/worlds/')) {
-    return `${href}?version=${version}` as T;
-  }
-  return href;
 }
 
 export async function generateStaticParams() {
@@ -74,51 +60,6 @@ export async function generateMetadata({
   };
 }
 
-function renderOfficialWorldDocs(id: string, version: WorldDocsVersion) {
-  const slugs = officialWorldMdxSlugs[id];
-  const docsSource = version === 'v4' ? source : v5Source;
-  const page = docsSource.getPage(slugs);
-
-  if (!page) {
-    return null;
-  }
-
-  const MDX = page.data.body;
-  const baseLink = createRelativeLink(docsSource, page);
-  function versionedLink(props: ComponentProps<typeof baseLink>) {
-    return baseLink({
-      ...props,
-      href: versionedHref(props.href, version),
-    });
-  }
-  function VersionedCard(props: CardProps) {
-    return <Card {...props} href={versionedHref(props.href, version)} />;
-  }
-
-  return {
-    content: (
-      <MDX
-        components={getMDXComponents({
-          a: versionedLink,
-          Card: VersionedCard,
-          Step,
-          Steps,
-          Tabs,
-          Tab,
-          FluidComputeCallout,
-          WorldTestingPerformance: WorldTestingPerformanceForMDX,
-        })}
-      />
-    ),
-    tocItems: page.data.toc
-      .filter((item) => item.depth === 2)
-      .map((item) => ({
-        id: item.url.slice(1),
-        title: item.title,
-      })),
-  };
-}
-
 export default async function WorldDetailPage({ params }: PageProps) {
   const { id } = await params;
   const data = await getWorldData(id);
@@ -131,11 +72,52 @@ export default async function WorldDetailPage({ params }: PageProps) {
 
   // For official worlds, load MDX content and extract TOC
   const isOfficial = world.type === 'official' && officialWorldMdxSlugs[id];
-  const v4Docs = isOfficial ? renderOfficialWorldDocs(id, 'v4') : null;
-  const v5Docs = isOfficial ? renderOfficialWorldDocs(id, 'v5') : null;
+  let mdxContent: React.ReactNode = null;
   let tocItems: { id: string; title: ReactNode }[] = [];
 
-  if (!isOfficial) {
+  if (isOfficial) {
+    const slugs = officialWorldMdxSlugs[id];
+    const page = v5Source.getPage(slugs);
+
+    if (page) {
+      const MDX = page.data.body;
+      function v5Href<T>(href: T): T {
+        return typeof href === 'string' && href.startsWith('/docs/')
+          ? (`/v5${href}` as T)
+          : href;
+      }
+      const baseLink = createRelativeLink(v5Source, page);
+      function v5Link(props: ComponentProps<typeof baseLink>) {
+        return baseLink({ ...props, href: v5Href(props.href) });
+      }
+      function V5Card(props: CardProps) {
+        return <Card {...props} href={v5Href(props.href)} />;
+      }
+
+      // Extract TOC from MDX headings (only h2s, not h3s)
+      tocItems = page.data.toc
+        .filter((item) => item.depth === 2)
+        .map((item) => ({
+          id: item.url.slice(1), // Remove leading #
+          title: item.title,
+        }));
+
+      mdxContent = (
+        <MDX
+          components={getMDXComponents({
+            a: v5Link,
+            Card: V5Card,
+            Step,
+            Steps,
+            Tabs,
+            Tab,
+            FluidComputeCallout,
+            WorldTestingPerformance: WorldTestingPerformanceForMDX,
+          })}
+        />
+      );
+    }
+  } else {
     // Community worlds use hardcoded TOC
     tocItems = [
       { id: 'installation', title: 'Installation & Usage' },
@@ -152,33 +134,36 @@ export default async function WorldDetailPage({ params }: PageProps) {
             <WorldDetailHero id={id} world={world} />
           </div>
 
-          {isOfficial && v4Docs && v5Docs ? (
-            <WorldDocsVersionPanel
-              id={id}
-              v4Content={v4Docs.content}
-              v4TocItems={v4Docs.tocItems}
-              v5Content={v5Docs.content}
-              v5TocItems={v5Docs.tocItems}
-            />
-          ) : (
-            <div className="relative grid grid-cols-1 lg:grid-cols-[1fr_200px] gap-8 lg:gap-12">
-              <main className="min-w-0">
-                <WorldInstructions id={id} world={world} />
-                <WorldTestingPerformance
-                  worldId={id}
-                  world={world}
-                  meta={meta}
-                  showBenchmarks={isPreview}
-                />
-              </main>
-
-              <aside className="hidden lg:block pt-8 sm:pt-12">
-                <div className="sticky top-24">
-                  <WorldDetailToc items={tocItems} />
+          {/* Content + TOC Grid */}
+          <div className="relative grid grid-cols-1 lg:grid-cols-[1fr_200px] gap-8 lg:gap-12">
+            {/* Main Content */}
+            <main className="min-w-0">
+              {isOfficial && mdxContent ? (
+                // Official worlds: MDX controls the entire content structure
+                <div className="py-8 sm:py-12 prose prose-neutral dark:prose-invert max-w-none">
+                  {mdxContent}
                 </div>
-              </aside>
-            </div>
-          )}
+              ) : (
+                // Community worlds: use template components
+                <>
+                  <WorldInstructions id={id} world={world} />
+                  <WorldTestingPerformance
+                    worldId={id}
+                    world={world}
+                    meta={meta}
+                    showBenchmarks={isPreview}
+                  />
+                </>
+              )}
+            </main>
+
+            {/* TOC Sidebar - sticky on desktop, hidden on mobile */}
+            <aside className="hidden lg:block pt-8 sm:pt-12">
+              <div className="sticky top-24">
+                <WorldDetailToc items={tocItems} />
+              </div>
+            </aside>
+          </div>
         </div>
       </div>
     </WorldDataProvider>
