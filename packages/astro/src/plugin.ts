@@ -128,16 +128,14 @@ function workflowBasePathPlugin(basePath: string) {
         ? rollupOptions.output
         : [rollupOptions.output];
       for (const output of outputs) {
-        output.banner = prependBanner(output.banner, banner);
+        const existing = output.banner;
+        output.banner =
+          existing == null
+            ? banner
+            : typeof existing === 'function'
+              ? async (chunk: unknown) => `${banner}\n${await existing(chunk)}`
+              : `${banner}\n${existing}`;
       }
     },
   };
-}
-
-function prependBanner(existing: any, banner: string) {
-  if (existing == null) return banner;
-  if (typeof existing === 'function') {
-    return async (chunk: unknown) => `${banner}\n${await existing(chunk)}`;
-  }
-  return `${banner}\n${existing}`;
 }

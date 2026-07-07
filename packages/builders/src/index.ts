@@ -4,7 +4,6 @@ export { applySwcTransform } from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';
 export {
   createWorkflowBasePathRuntimeCode,
-  joinWorkflowBasePath,
   normalizeWorkflowBasePath,
 } from './base-path.js';
 export { createBuildQueue } from './build-queue.js';

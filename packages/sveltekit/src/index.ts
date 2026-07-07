@@ -6,7 +6,7 @@ import { SvelteKitBuilder } from './builder.js';
 import { loadSvelteKitBasePath } from './config.js';
 import { stripWorkflowQueueTriggers } from './vc-config.js';
 
-const basePath = await loadSvelteKitBasePath();
+const basePath = await loadSvelteKitBasePath(process.cwd());
 const builder = new SvelteKitBuilder({ basePath });
 
 // This needs to be in the top-level as we need to create these

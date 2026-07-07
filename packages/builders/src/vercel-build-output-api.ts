@@ -2,20 +2,10 @@ import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { WORKFLOW_ROUTE_BASE } from '@workflow/utils';
 import { BaseBuilder } from './base-builder.js';
-import {
-  joinWorkflowBasePath,
-  normalizeWorkflowBasePath,
-} from './base-path.js';
+import { normalizeWorkflowBasePath } from './base-path.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 
 const REGEXP_SPECIAL_CHARS = /[.*+?^${}()|[\]\\]/g;
-
-function createBasePathRouteRegexPrefix(basePath: string | undefined): string {
-  const normalized = normalizeWorkflowBasePath(basePath);
-  return normalized
-    ? `^${normalized.replace(REGEXP_SPECIAL_CHARS, '\\$&')}/`
-    : '^/';
-}
 
 /**
  * Route mapping public webhook URLs onto the dynamic `[token]` function.
@@ -26,10 +16,11 @@ function createBasePathRouteRegexPrefix(basePath: string | undefined): string {
  * The webhook needs a route because `[token]` is a dynamic segment that
  * arbitrary token URLs can't filesystem-match.
  */
-export function createBuildOutputApiWebhookRoute(basePath?: string) {
+export function createBuildOutputApiWebhookRoute(basePath: string | undefined) {
+  const base = normalizeWorkflowBasePath(basePath);
   return {
-    src: `${createBasePathRouteRegexPrefix(basePath)}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
-    dest: `${joinWorkflowBasePath(basePath, WORKFLOW_ROUTE_BASE)}/webhook/[token]`,
+    src: `^${base.replace(REGEXP_SPECIAL_CHARS, '\\$&')}/\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
+    dest: `${base}${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
   };
 }
 
@@ -153,12 +144,13 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       JSON.stringify(buildOutputConfig, null, 2)
     );
 
+    const base = normalizeWorkflowBasePath(this.config.basePath);
     this.logBaseBuilderInfo(`Build Output API created at ${outputDir}`);
     this.logBaseBuilderInfo(
-      `Combined function available at ${joinWorkflowBasePath(this.config.basePath, '/.well-known/workflow/v1/flow')}`
+      `Combined function available at ${base}/.well-known/workflow/v1/flow`
     );
     this.logBaseBuilderInfo(
-      `Webhook function available at ${joinWorkflowBasePath(this.config.basePath, '/.well-known/workflow/v1/webhook/[token]')}`
+      `Webhook function available at ${base}/.well-known/workflow/v1/webhook/[token]`
     );
   }
 }

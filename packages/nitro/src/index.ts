@@ -1,16 +1,10 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   createWorkflowBasePathRuntimeCode,
   ensureWorkflowTargetWorldEnv,
-  joinWorkflowBasePath,
+  normalizeWorkflowBasePath,
   resolveWorkflowCoreRuntimeAlias,
   setWorkflowBasePath,
   WORKFLOW_NODE_COMPAT_BANNER,
@@ -22,7 +16,7 @@ import {
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { dirname, join } from 'pathe';
-import { getNitroBasePath, LocalBuilder, VercelBuilder } from './builders.js';
+import { LocalBuilder, VercelBuilder } from './builders.js';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
@@ -287,7 +281,20 @@ export default {
     // `.vercel/output/config.json`. This path is independent of nitro's own
     // bundle and is only used for nitropack v2 (e.g. Nuxt 4 still uses it).
     const useLegacyVercelBuild = isVercelDeploy && isNitroV2(nitro);
-    addWorkflowBasePathPlugin(nitro);
+    // Set the workflow base path global (read by runtime URL generation:
+    // queue delivery, webhook URLs) in this process, and — when a base path
+    // is configured — in the built server via a plugin that runs before any
+    // user code. Nuxt lowers `app.baseURL` into `baseURL` natively.
+    const basePath = normalizeWorkflowBasePath(nitro.options.baseURL);
+    setWorkflowBasePath(basePath);
+    if (basePath) {
+      nitro.options.plugins ||= [];
+      nitro.options.plugins.unshift(BASE_PATH_VIRTUAL_ID);
+      nitro.options.virtual[BASE_PATH_VIRTUAL_ID] = /* js */ `
+        ${createWorkflowBasePathRuntimeCode(basePath)}
+        export default () => {};
+      `;
+    }
 
     if (useLegacyVercelBuild) {
       nitro.hooks.hook('compiled', async () => {
@@ -383,9 +390,9 @@ export default {
         // path, and the Nitro server inside (mounted below `baseURL`) only
         // serves the base-prefixed route. Root-relative URLs need no
         // handling: Nitro emits a redirect to the base-prefixed URL.
-        if (getNitroBasePath(nitro)) {
+        if (basePath) {
           nitro.hooks.hook('compiled', () => {
-            patchNativeVercelWorkflowRoutes(nitro);
+            patchNativeVercelWorkflowRoutes(nitro, basePath);
           });
         }
 
@@ -438,23 +445,6 @@ export default {
 
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
 const BASE_PATH_VIRTUAL_ID = '#workflow/base-path';
-
-/**
- * Sets the workflow base path global in the Nitro server via a plugin that
- * runs before any user code, so runtime URL generation (queue delivery,
- * webhook URLs) includes the base path.
- */
-function addWorkflowBasePathPlugin(nitro: Nitro) {
-  const basePath = getNitroBasePath(nitro);
-  setWorkflowBasePath(basePath);
-  if (!basePath) return;
-  nitro.options.plugins ||= [];
-  nitro.options.plugins.unshift(BASE_PATH_VIRTUAL_ID);
-  nitro.options.virtual[BASE_PATH_VIRTUAL_ID] = /* js */ `
-    ${createWorkflowBasePathRuntimeCode(basePath)}
-    export default () => {};
-  `;
-}
 
 function addDashboardHandler(nitro: Nitro) {
   const route = '/_workflow';
@@ -784,14 +774,13 @@ export default fromWebHandler(() => new Response("Manifest not found", { status:
   }
 }
 
-function patchNativeVercelWorkflowRoutes(nitro: Nitro) {
+function patchNativeVercelWorkflowRoutes(nitro: Nitro, basePath: string) {
   const outputDir = join(nitro.options.rootDir, '.vercel/output');
   const configPath = join(outputDir, 'config.json');
   const config = JSON.parse(readFileSync(configPath, 'utf-8')) as {
     routes: Array<{ src?: string; dest?: string }>;
   };
-  const basePath = getNitroBasePath(nitro);
-  const workflowPrefix = joinWorkflowBasePath(basePath, WORKFLOW_ROUTE_BASE);
+  const workflowPrefix = `${basePath}${WORKFLOW_ROUTE_BASE}`;
 
   for (const route of config.routes) {
     if (
@@ -816,8 +805,6 @@ function patchNativeVercelWorkflowRoutes(nitro: Nitro) {
     basePath.slice(1),
     flowFuncPath
   );
-  if (existsSync(source)) {
-    mkdirSync(dirname(destination), { recursive: true });
-    renameSync(source, destination);
-  }
+  mkdirSync(dirname(destination), { recursive: true });
+  renameSync(source, destination);
 }

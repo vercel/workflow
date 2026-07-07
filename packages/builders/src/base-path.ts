@@ -32,13 +32,6 @@ export function normalizeWorkflowBasePath(
     : `/${withoutTrailingSlash}`;
 }
 
-export function joinWorkflowBasePath(
-  basePath: string | undefined,
-  path: string
-): string {
-  return `${normalizeWorkflowBasePath(basePath)}${path}`;
-}
-
 /**
  * Statement that sets the runtime base path global — injected into server
  * bundles so runtime URL generation includes the base path. The symbol

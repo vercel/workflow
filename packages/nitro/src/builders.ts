@@ -33,11 +33,6 @@ function getNitroProjectRoot(nitro: Nitro): string {
   return nitro.options.workspaceDir ?? nitro.options.rootDir;
 }
 
-// Nuxt lowers `app.baseURL` into `baseURL` natively, so this covers Nuxt too.
-export function getNitroBasePath(nitro: Nitro): string {
-  return normalizeWorkflowBasePath(nitro.options.baseURL);
-}
-
 function getNitroWorkflowDirs(nitro: Nitro): string[] {
   return nitro.options.workflow?.dirs ?? ['.'];
 }
@@ -52,8 +47,9 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         runtime: nitro.options.workflow?.runtime,
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
-        // `undefined` (not '') when unset so generated routes carry no basePath
-        basePath: getNitroBasePath(nitro) || undefined,
+        // Nuxt lowers `app.baseURL` into `baseURL` natively. `undefined`
+        // (not '') when unset so generated routes carry no basePath.
+        basePath: normalizeWorkflowBasePath(nitro.options.baseURL) || undefined,
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -83,8 +79,9 @@ export class LocalBuilder extends BaseBuilder {
         dirs: getNitroWorkflowDirs(nitro),
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
-        // `undefined` (not '') when unset so generated routes carry no basePath
-        basePath: getNitroBasePath(nitro) || undefined,
+        // Nuxt lowers `app.baseURL` into `baseURL` natively. `undefined`
+        // (not '') when unset so generated routes carry no basePath.
+        basePath: normalizeWorkflowBasePath(nitro.options.baseURL) || undefined,
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });
