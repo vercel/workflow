@@ -41,6 +41,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '~/components/ui/tooltip';
+import {
+  advanceListingWindow,
+  getListingWindow,
+} from '~/lib/client/listing-window';
 import { useTableSelection } from '~/lib/hooks/use-table-selection';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
@@ -259,6 +263,8 @@ interface FilterControlsProps {
   sortOrder: 'asc' | 'desc';
   loading: boolean;
   period: PeriodId;
+  /** Whether the backend supports listing windows (analytics read path). */
+  showPeriodPicker: boolean;
   /** Plan observability lookback in ms; presets beyond it are disabled. */
   planWindowMs: number | undefined;
   planUpgradeAvailable: boolean;
@@ -277,6 +283,7 @@ function FilterControls({
   sortOrder,
   loading,
   period,
+  showPeriodPicker,
   planWindowMs,
   planUpgradeAvailable,
   onWorkflowChange,
@@ -299,48 +306,50 @@ function FilterControls({
         )}
       </div>
       <div className="flex items-center gap-4">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div>
-              <Select
-                value={period}
-                onValueChange={onPeriodChange}
-                disabled={loading}
-              >
-                <SelectTrigger className="w-[150px] h-9">
-                  <SelectValue placeholder="Time window" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PERIOD_PRESETS.map((preset) => {
-                    const beyondPlan =
-                      planWindowMs !== undefined && preset.ms > planWindowMs;
-                    return (
-                      <SelectItem
-                        key={preset.id}
-                        value={preset.id}
-                        disabled={beyondPlan}
-                      >
-                        <div className="flex items-center gap-2">
-                          {preset.label}
-                          {beyondPlan && planUpgradeAvailable && (
-                            <span className="text-xs text-muted-foreground">
-                              Observability Plus
-                            </span>
-                          )}
-                        </div>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>
-            {planUpgradeAvailable
-              ? 'Time window for the runs list. Longer windows require Observability Plus.'
-              : 'Time window for the runs list'}
-          </TooltipContent>
-        </Tooltip>
+        {showPeriodPicker && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div>
+                <Select
+                  value={period}
+                  onValueChange={onPeriodChange}
+                  disabled={loading}
+                >
+                  <SelectTrigger className="w-[150px] h-9">
+                    <SelectValue placeholder="Time window" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PERIOD_PRESETS.map((preset) => {
+                      const beyondPlan =
+                        planWindowMs !== undefined && preset.ms > planWindowMs;
+                      return (
+                        <SelectItem
+                          key={preset.id}
+                          value={preset.id}
+                          disabled={beyondPlan}
+                        >
+                          <div className="flex items-center gap-2">
+                            {preset.label}
+                            {beyondPlan && planUpgradeAvailable && (
+                              <span className="text-xs text-muted-foreground">
+                                Observability Plus
+                              </span>
+                            )}
+                          </div>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              {planUpgradeAvailable
+                ? 'Time window for the runs list. Longer windows require Observability Plus.'
+                : 'Time window for the runs list'}
+            </TooltipContent>
+          </Tooltip>
+        )}
         <Select
           value={workflowNameFilter ?? 'all'}
           onValueChange={onWorkflowChange}
@@ -479,13 +488,30 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     new Set()
   );
 
-  // Freeze the listing window per period selection / refresh so every page
-  // of one list shares the same bounds (a moving `now` would make cursor
-  // pages drift).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: recomputed on period change and refresh by design
-  const windowEndMs = useMemo(() => Date.now(), [period, lastRefreshTime]);
-  const startTime = new Date(windowEndMs - periodPreset.ms).toISOString();
-  const endTime = new Date(windowEndMs).toISOString();
+  // Listing windows only apply to the analytics read path; the runtime
+  // storage APIs have no time filter, so on other backends we omit the
+  // window entirely — this also keeps the SWR cache key stable across the
+  // local backend's empty-data poll.
+  const isVercelBackend = serverConfig.backendId?.includes('vercel') ?? false;
+
+  // Frozen listing window per period so every cursor page shares the same
+  // bounds. Read from a module-scope store (not component state) so the SWR
+  // cache key survives remounts — tab switches remount this component — and
+  // only advances on explicit refresh/reload, keeping cache-key churn
+  // bounded to user-triggered refreshes.
+  const [listingWindow, setListingWindow] = useState(() =>
+    isVercelBackend ? getListingWindow(period, periodPreset.ms) : undefined
+  );
+  useEffect(() => {
+    setListingWindow(
+      isVercelBackend ? getListingWindow(period, periodPreset.ms) : undefined
+    );
+  }, [isVercelBackend, period, periodPreset.ms]);
+  const refreshListingWindow = useCallback(() => {
+    if (isVercelBackend) {
+      setListingWindow(advanceListingWindow(period, periodPreset.ms));
+    }
+  }, [isVercelBackend, period, periodPreset.ms]);
 
   const {
     items: runs,
@@ -501,8 +527,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     sortOrder,
     workflowName: workflowNameFilter === 'all' ? undefined : workflowNameFilter,
     status: status === 'all' ? undefined : status,
-    startTime,
-    endTime,
+    startTime: listingWindow?.startTime,
+    endTime: listingWindow?.endTime,
   });
 
   // Remember the plan window across period changes (a 402 response for an
@@ -570,14 +596,17 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const onReload = useCallback(() => {
     setLastRefreshTime(() => new Date());
     setHasLoadedOnce(false);
+    // Slide the frozen window forward so the reload can see newer runs.
+    refreshListingWindow();
     reload();
-  }, [reload]);
+  }, [reload, refreshListingWindow]);
 
   // Refresh current page without resetting state (prevents layout shift)
   const onRefresh = useCallback(() => {
     setLastRefreshTime(() => new Date());
+    refreshListingWindow();
     refresh();
-  }, [refresh]);
+  }, [refresh, refreshListingWindow]);
 
   // Get selected runs that are cancellable (pending or running)
   const selectedRuns = useMemo(() => {
@@ -714,6 +743,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
         sortOrder={sortOrder}
         loading={loading}
         period={period}
+        showPeriodPicker={isVercelBackend}
         planWindowMs={planWindowMs}
         planUpgradeAvailable={planInfo?.upgradeAvailable ?? false}
         onWorkflowChange={handleWorkflowFilter}
@@ -896,12 +926,14 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
             </>
           )}
         </div>
-        <div>
-          {periodPreset.label}
-          {planInfo?.upgradeAvailable
-            ? ` · plan window ${planInfo.currentLookbackDays} day${planInfo.currentLookbackDays === 1 ? '' : 's'}`
-            : ''}
-        </div>
+        {isVercelBackend && (
+          <div>
+            {periodPreset.label}
+            {planInfo?.upgradeAvailable
+              ? ` · plan window ${planInfo.currentLookbackDays} day${planInfo.currentLookbackDays === 1 ? '' : 's'}`
+              : ''}
+          </div>
+        )}
       </div>
 
       <SelectionBar
