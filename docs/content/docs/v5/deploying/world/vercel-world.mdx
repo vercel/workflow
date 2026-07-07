@@ -89,7 +89,7 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The Vercel World requires no configuration when deployed to Vercel — the platform injects everything the runtime needs (`VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and the deployment encryption key).
+In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs (`VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and the deployment encryption key).
 
 Most users never need to set the `WORKFLOW_VERCEL_*` variables below. They are only overrides for tools running outside Vercel, such as your laptop or CI, when those tools need to inspect or test a remote Vercel Workflow project and cannot infer the project, team, token, or target environment automatically.
 
