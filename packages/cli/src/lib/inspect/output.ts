@@ -23,6 +23,7 @@ import {
   isEncryptedRef,
   isExpiredRef,
 } from './hydration.js';
+import { resolveTimeWindow } from './time-window.js';
 
 /**
  * Create an EncryptionKeyResolver from a World instance.
@@ -620,6 +621,17 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   const resolveData = opts.withData ? 'all' : 'none';
   const status = opts.status as WorkflowRun['status'] | undefined;
 
+  // Resolve --since/--until into an explicit listing window. Only the
+  // analytics read path supports one; the runtime storage APIs have no time
+  // filter. Without the flags the backend applies its default window
+  // (trailing 24h on the Vercel backend).
+  const timeWindow = resolveTimeWindow(opts);
+  if (timeWindow && !useAnalytics) {
+    logger.warn(
+      '--since/--until require the analytics read path and are ignored by this backend.'
+    );
+  }
+
   // Determine which props to show based on withData flag
   const props = opts.withData
     ? WORKFLOW_RUN_LISTED_PROPS
@@ -639,6 +651,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       const runs = await world.analytics.runs.list({
         workflowName: opts.workflowName,
         status,
+        ...(timeWindow ?? {}),
         pagination,
       });
       return {
