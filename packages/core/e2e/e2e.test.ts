@@ -148,9 +148,15 @@ async function waitForHook(
     timeoutMs?: number;
     intervalMs?: number;
     runId?: string;
+    excludeHookId?: string;
   } = {}
 ): Promise<Awaited<ReturnType<typeof getHookByToken>>> {
-  const { timeoutMs = 30_000, intervalMs = 250, runId } = options;
+  const {
+    timeoutMs = 30_000,
+    intervalMs = 250,
+    runId,
+    excludeHookId,
+  } = options;
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown = new Error(
     `waitForHook(${token}) timed out before any attempt`
@@ -165,6 +171,12 @@ async function waitForHook(
       if (runId && hook.runId !== runId) {
         lastError = new Error(
           `waitForHook(${token}) saw runId=${hook.runId}, expected ${runId}`
+        );
+      } else if (excludeHookId && hook.hookId === excludeHookId) {
+        // Same-run token-reuse tests wait for the NEXT hook on the token;
+        // keep polling while the lookup still resolves to the prior hook.
+        lastError = new Error(
+          `waitForHook(${token}) still sees hookId=${hook.hookId}`
         );
       } else {
         return hook;
@@ -2302,6 +2314,42 @@ describe('e2e', () => {
 
       const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
       expect(run2Data.status).toBe('completed');
+    }
+  );
+
+  // Regression test for #2777: recreating a hook with the same token after
+  // dispose() within a single run must not conflict with the run's own
+  // disposed hook.
+  test(
+    'hookTokenReuseLoopWorkflow - same run recreates a hook with the same token after dispose()',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const rounds = 3;
+
+      const run = await start(await e2e('hookTokenReuseLoopWorkflow'), [
+        token,
+        rounds,
+      ]);
+
+      let previousHookId: string | undefined;
+      for (let round = 0; round < rounds; round++) {
+        const hook = await waitForHook(token, {
+          runId: run.runId,
+          excludeHookId: previousHookId,
+        });
+        previousHookId = hook.hookId;
+        await resumeHook(hook, { message: `round-${round}` });
+      }
+
+      const result = await run.returnValue;
+      expect(result).toEqual({
+        received: ['round-0', 'round-1', 'round-2'],
+        conflictRound: null,
+      });
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
     }
   );
 

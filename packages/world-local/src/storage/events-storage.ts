@@ -57,7 +57,9 @@ import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
   hashToken,
+  hookDisposeLockPath,
   hookRecoveryMarkerPath,
+  isHookDisposalCommitted,
   monotonicUlid,
 } from './helpers.js';
 import {
@@ -142,6 +144,46 @@ async function readHookTokenClaim(
     }
     throw error;
   }
+}
+
+/**
+ * Whether a token claim held by another `(runId, hookId)` can never become
+ * live again and may therefore be released by a new claimant:
+ *
+ *   - the claimed hook's disposal is committed (its dispose lock exists —
+ *     the durable release of the claim file just hasn't landed yet, or was
+ *     lost to a crash between the lock write and the claim delete), or
+ *   - the owning run is terminal (the run-completion cleanup releases all
+ *     of the run's claims, but a claimant can observe the claim in the
+ *     window before that cleanup lands — or the cleanup crashed), or
+ *   - the owning run does not exist (a claim can only be written during a
+ *     suspension of an existing run, so an ownerless claim is debris).
+ *
+ * A claim from a mid-creation writer is never releasable: its owning run
+ * exists and is non-terminal, and its dispose lock does not exist.
+ */
+async function isHookTokenClaimReleasable(
+  basedir: string,
+  claim: z.infer<typeof HookTokenClaimSchema>,
+  tag?: string
+): Promise<boolean> {
+  if (
+    claim.hookId &&
+    (await isHookDisposalCommitted(basedir, claim.hookId, tag))
+  ) {
+    return true;
+  }
+  const owningRun = await readJSONWithFallback(
+    basedir,
+    'runs',
+    claim.runId,
+    WorkflowRunSchema,
+    tag
+  );
+  if (!owningRun) {
+    return true;
+  }
+  return isTerminalWorkflowRunStatus(owningRun.status);
 }
 
 async function readHookRecoveryMarker(
@@ -1563,28 +1605,95 @@ export function createEventsStorage(
             'tokens',
             `${hashToken(hookData.token)}.json`
           );
-          // When the claim is absent, the event log is the only durable source
-          // that can distinguish a first hook from a crash-lost token cache.
-          if (!(await readHookTokenClaim(constraintPath))) {
-            await rebuildLiveHookByTokenFromEventLog(
-              basedir,
-              hookData.token,
-              tag
-            );
-          }
           // Persist `eventId` in the claim so concurrent / cross-
           // process retries can converge on a single canonical
           // `hook_created` event path. See the recovery comment
           // below.
-          const tokenClaimed = await writeExclusive(
-            constraintPath,
-            JSON.stringify({
-              token: hookData.token,
-              hookId: data.correlationId,
-              runId: effectiveRunId,
-              eventId,
-            })
-          );
+          const claimContent = JSON.stringify({
+            token: hookData.token,
+            hookId: data.correlationId,
+            runId: effectiveRunId,
+            eventId,
+          });
+
+          // Bounded claim loop. A same-token claim can be observed in the
+          // short window where its release is already committed but the
+          // claim file itself is still on disk (or was just deleted):
+          //
+          //   - the claim vanished between the exclusive-create attempt
+          //     and the ownership read → retry immediately;
+          //   - the claim is held by a disposed hook or a terminal/missing
+          //     run (`isHookTokenClaimReleasable`) → wait briefly for the
+          //     in-flight releaser (the hook_disposed handler or the
+          //     run-completion cleanup) to delete it, then reclaim; if it
+          //     never does (the releaser crashed after committing its
+          //     dispose lock / terminal status), release the stale claim
+          //     ourselves and reclaim.
+          //
+          // Without this, a run claiming a token right after the previous
+          // owner disposed it records a durable, spurious hook_conflict
+          // (issue #2778). A genuinely live claim exits the loop on the
+          // first iteration and falls through to the dedup / conflict
+          // handling below.
+          let tokenClaimed = false;
+          let existingClaim: z.infer<typeof HookTokenClaimSchema> | null = null;
+          let releasableObservations = 0;
+          for (let attempt = 0; attempt < 10; attempt++) {
+            // When the claim is absent, the event log is the only durable
+            // source that can distinguish a first hook from a crash-lost
+            // token cache.
+            if (!(await readHookTokenClaim(constraintPath))) {
+              await rebuildLiveHookByTokenFromEventLog(
+                basedir,
+                hookData.token,
+                tag
+              );
+            }
+            tokenClaimed = await writeExclusive(constraintPath, claimContent);
+            if (tokenClaimed) break;
+
+            existingClaim = await readHookTokenClaim(constraintPath);
+            if (!existingClaim) {
+              continue;
+            }
+            if (
+              existingClaim.runId === effectiveRunId &&
+              existingClaim.hookId === data.correlationId
+            ) {
+              // Our own prior claim — dedup-recovery handling below.
+              break;
+            }
+            if (
+              !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
+            ) {
+              // Genuinely live claim — conflict handling below.
+              break;
+            }
+            releasableObservations++;
+            if (releasableObservations < 3) {
+              // Give the in-flight releaser a moment to delete the claim.
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            } else {
+              // The releaser is not coming. Release the stale claim and
+              // the hook entity it points at, mirroring the hook_disposed
+              // cleanup.
+              await deleteJSON(constraintPath);
+              if (existingClaim.hookId) {
+                await deleteJSON(
+                  taggedPath(basedir, 'hooks', existingClaim.hookId, tag)
+                );
+                await deleteJSON(
+                  hookRecoveryMarkerPath(
+                    basedir,
+                    hookData.token,
+                    existingClaim.runId,
+                    existingClaim.hookId
+                  )
+                );
+              }
+            }
+            existingClaim = null;
+          }
 
           // Recovery shape: the durable record of a successful hook
           // creation is the `hook_created` event in the event log. The
@@ -1624,8 +1733,6 @@ export function createEventsStorage(
           let writeHookEntityWithOverwrite = false;
 
           if (!tokenClaimed) {
-            const existingClaim = await readHookTokenClaim(constraintPath);
-
             if (
               existingClaim?.runId === effectiveRunId &&
               existingClaim.hookId === data.correlationId
@@ -1814,14 +1921,14 @@ export function createEventsStorage(
           // hook_disposed: Deletes hook entity, rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
           // invocations from both disposing the same hook (TOCTOU race).
-          const hookLockName = tag
-            ? `${data.correlationId}.disposed.${tag}`
-            : `${data.correlationId}.disposed`;
-          const lockPath = resolveWithinBase(
+          // The lock doubles as the durable disposal marker consulted by the
+          // hook_created claim path and the event-log rebuild (see
+          // `isHookDisposalCommitted`), which is why it must be written
+          // before any of the destructive deletes below.
+          const lockPath = hookDisposeLockPath(
             basedir,
-            '.locks',
-            'hooks',
-            hookLockName
+            data.correlationId,
+            tag
           );
           const claimed = await writeExclusive(lockPath, '');
           if (!claimed) {
