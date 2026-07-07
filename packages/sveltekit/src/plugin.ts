@@ -7,6 +7,7 @@ import {
   WORKFLOW_NODE_COMPAT_BANNER,
   WORKFLOW_NODE_FILENAME_BANNER,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
+  WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -48,6 +49,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
             alias: {
               [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
               'pg-native': WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
+              typescript: WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS,
             },
           },
         };
