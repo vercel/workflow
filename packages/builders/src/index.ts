@@ -75,7 +75,7 @@ export type {
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export {
-  createBuildOutputApiWorkflowRoutes,
+  createBuildOutputApiWebhookRoute,
   VercelBuildOutputAPIBuilder,
 } from './vercel-build-output-api.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';

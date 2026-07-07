@@ -4,7 +4,7 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
-  createBuildOutputApiWorkflowRoutes,
+  createBuildOutputApiWebhookRoute,
   NORMALIZE_REQUEST_CODE,
   normalizeWorkflowBasePath,
   resolveProjectRoot,
@@ -202,8 +202,8 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         !route.src?.includes('.well-known/workflow')
     );
 
-    // Insert the workflow routes BEFORE `handle: filesystem`: they map the
-    // public workflow URLs onto the function paths, and post-filesystem
+    // Insert the webhook route BEFORE `handle: filesystem`: it maps public
+    // webhook URLs onto the dynamic `[token]` function, and post-filesystem
     // rewrites don't re-check the filesystem (observed as platform 404s on
     // preview deployments).
     let filesystemIndex = config.routes.findIndex(
@@ -215,7 +215,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     config.routes.splice(
       filesystemIndex,
       0,
-      ...createBuildOutputApiWorkflowRoutes(this.config.basePath)
+      createBuildOutputApiWebhookRoute(this.config.basePath)
     );
 
     // Bundles workflows for vercel

@@ -18,25 +18,19 @@ function createBasePathRouteRegexPrefix(basePath: string | undefined): string {
 }
 
 /**
- * Routes that map the public workflow URLs to the workflow functions. The
- * functions live below the base path, so both `src` and `dest` carry it:
- * root-relative URLs match nothing and 404 naturally, mirroring Next.js
- * basePath behavior.
+ * Route mapping public webhook URLs onto the dynamic `[token]` function.
+ * This is the only route the workflow output needs: the flow function is an
+ * exact static path that Vercel serves via filesystem matching (functions
+ * live below the base path, so the public URL is the function path — and
+ * root-relative URLs match nothing, mirroring Next.js basePath behavior).
+ * The webhook needs a route because `[token]` is a dynamic segment that
+ * arbitrary token URLs can't filesystem-match.
  */
-export function createBuildOutputApiWorkflowRoutes(basePath?: string) {
-  const srcPrefix = createBasePathRouteRegexPrefix(basePath);
-  const destPrefix = joinWorkflowBasePath(basePath, WORKFLOW_ROUTE_BASE);
-
-  return [
-    {
-      src: `${srcPrefix}\\.well-known/workflow/v1/flow/?$`,
-      dest: `${destPrefix}/flow`,
-    },
-    {
-      src: `${srcPrefix}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
-      dest: `${destPrefix}/webhook/[token]`,
-    },
-  ];
+export function createBuildOutputApiWebhookRoute(basePath?: string) {
+  return {
+    src: `${createBasePathRouteRegexPrefix(basePath)}\\.well-known/workflow/v1/webhook/([^/]+?)/?$`,
+    dest: `${joinWorkflowBasePath(basePath, WORKFLOW_ROUTE_BASE)}/webhook/[token]`,
+  };
 }
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
@@ -151,7 +145,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create config.json for Build Output API
     const buildOutputConfig = {
       version: 3,
-      routes: createBuildOutputApiWorkflowRoutes(this.config.basePath),
+      routes: [createBuildOutputApiWebhookRoute(this.config.basePath)],
     };
 
     await writeFile(
