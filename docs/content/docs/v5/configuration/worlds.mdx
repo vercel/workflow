@@ -16,16 +16,19 @@ A [World](/docs/deploying) stores workflow state and delivers queue messages.
 ### `WORKFLOW_TARGET_WORLD`
 
 - Surface: environment variable
-- Default: `vercel` on Vercel, otherwise `local`
-- Selects the World module.
+- Default: `local` outside Vercel; automatic Vercel World inside Vercel deployments
+- Selects a non-default World module.
 
-Accepted values:
+Outside Vercel, Workflow defaults to the Local World. On Vercel, leave `WORKFLOW_TARGET_WORLD` unset for the normal case; Workflow detects the Vercel deployment and selects the Vercel World automatically.
+
+Set `WORKFLOW_TARGET_WORLD` only when you want to use a custom or self-hosted World:
 
 - `local` - alias for `@workflow/world-local`.
-- `vercel` - alias for `@workflow/world-vercel`.
 - `@workflow/world-postgres` - Postgres World package.
 - `./my-world.ts` - local module exporting a World, `createWorld()`, or a default factory.
 - Any package specifier - custom World package.
+
+The `vercel` alias exists for manual selection and tooling, but deployed Vercel apps do not need to set it.
 
 Export a configured World from a module when you need factory options instead of pure environment configuration:
 

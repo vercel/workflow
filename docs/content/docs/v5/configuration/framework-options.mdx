@@ -57,8 +57,10 @@ Configure Workflow through the Nitro `workflow` module options.
 ### `workflow.typescriptPlugin`
 
 - Environment override: none
-- Default: `false`
-- Enables the Workflow TypeScript plugin in generated `tsconfig.json`.
+- Default: `false` for raw Nitro, `true` through the Nuxt module
+- Enables the Workflow TypeScript language-service plugin in generated `tsconfig.json`.
+- This affects editor diagnostics and completions. Workflow builds do not require it.
+- Raw Nitro leaves it opt-in because it changes TypeScript editor behavior. Nuxt enables it by default because the Nuxt module owns the generated `tsconfig.json` flow.
 
 ### `workflow.runtime`
 
