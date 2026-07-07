@@ -19,9 +19,6 @@ import { join } from 'pathe';
  * returns undefined.
  */
 type NitroV2ExternalsOptions = { externals?: { external?: unknown[] } };
-// Nitro v3 doesn't type `baseURL` on its options object yet, but honors it
-// (Nuxt lowers `app.baseURL` into it natively).
-type NitroBaseUrlOptions = { baseURL?: string };
 
 function getNitroStringExternals(nitro: Nitro): string[] | undefined {
   const external = (nitro.options as NitroV2ExternalsOptions).externals
@@ -36,9 +33,9 @@ function getNitroProjectRoot(nitro: Nitro): string {
   return nitro.options.workspaceDir ?? nitro.options.rootDir;
 }
 
+// Nuxt lowers `app.baseURL` into `baseURL` natively, so this covers Nuxt too.
 export function getNitroBasePath(nitro: Nitro): string {
-  const options = nitro.options as typeof nitro.options & NitroBaseUrlOptions;
-  return normalizeWorkflowBasePath(options.baseURL);
+  return normalizeWorkflowBasePath(nitro.options.baseURL);
 }
 
 function getNitroWorkflowDirs(nitro: Nitro): string[] {
