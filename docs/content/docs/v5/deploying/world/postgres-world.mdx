@@ -38,7 +38,7 @@ WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
 WORKFLOW_POSTGRES_URL="postgres://user:password@host:5432/database"
 ```
 
-Run the migration script to create the necessary tables in your database. Ensure `WORKFLOW_POSTGRES_URL` is set when running this command:
+Run the migration script to create the necessary tables in your database. Ensure `WORKFLOW_POSTGRES_URL` or `DATABASE_URL` is set when running this command:
 
 <Tabs items={["npm", "pnpm", "Yarn", "Bun"]}>
 
@@ -194,9 +194,9 @@ All configuration options can be set via environment variables or programmatical
 
 PostgreSQL connection string used by the runtime World.
 
-Default: `postgres://world:world@localhost:5432/world`
+Precedence: `WORKFLOW_POSTGRES_URL` > `DATABASE_URL` > `postgres://world:world@localhost:5432/world`
 
-The `bootstrap` migration command also falls back to `DATABASE_URL` when `WORKFLOW_POSTGRES_URL` is unset.
+The `bootstrap` migration command uses the same precedence.
 
 ### `WORKFLOW_POSTGRES_JOB_PREFIX`
 
@@ -222,7 +222,8 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 import { createWorld } from "@workflow/world-postgres";
 
 export default createWorld({
-  connectionString: process.env.WORKFLOW_POSTGRES_URL!,
+  connectionString:
+    process.env.WORKFLOW_POSTGRES_URL ?? process.env.DATABASE_URL!,
   jobPrefix: "myapp_",
   queueConcurrency: 50,
   maxPoolSize: 52, // overrides WORKFLOW_POSTGRES_MAX_POOL_SIZE
