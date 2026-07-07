@@ -210,9 +210,19 @@ This value also bounds how many parent→child workflow polls can be in flight s
 
 ### `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
 
-Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool. Default: `10`
+Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool. Default: the `pg` default (`10`).
 
 For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
+
+### `WORKFLOW_QUEUE_NAMESPACE`
+
+Queue topic namespace shared by build output and the Postgres World. Default: unset.
+
+For example, `custom` changes the queue topic prefixes from `__wkf_workflow_` and `__wkf_step_` to `__custom_wkf_workflow_` and `__custom_wkf_step_`. The value must be lowercase alphanumeric and start with a letter.
+
+### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
+
+Flush interval, in milliseconds, for buffered stream writes. Default: `10`.
 
 ### Programmatic configuration
 
@@ -225,12 +235,16 @@ export default createWorld({
   connectionString:
     process.env.WORKFLOW_POSTGRES_URL ?? process.env.DATABASE_URL!,
   jobPrefix: "myapp_",
+  namespace: "myapp",
   queueConcurrency: 50,
   maxPoolSize: 52, // overrides WORKFLOW_POSTGRES_MAX_POOL_SIZE
+  streamFlushIntervalMs: 10,
 });
 ```
 
 Options passed to `createWorld()` take precedence over the environment variables above. Export the World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
+
+You can also pass an existing `pg.Pool` as `pool` instead of a connection string.
 
 ```bash title=".env"
 WORKFLOW_TARGET_WORLD="./my-world.ts"

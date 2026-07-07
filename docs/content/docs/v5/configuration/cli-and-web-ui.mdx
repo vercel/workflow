@@ -38,6 +38,12 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 - Default: inferred when possible
 - Vercel team ID for `--backend vercel`.
 
+### `WORKFLOW_VERCEL_PROJECT_NAME`
+
+- CLI flag: none
+- Default: inferred when possible
+- Vercel project slug used for dashboard links.
+
 ### `--env` / `-e`
 
 - Environment variable: `WORKFLOW_VERCEL_ENV`
@@ -46,6 +52,12 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 - Accepts `production` or `preview`.
 
 ## Web UI
+
+### `--web` / `-w`
+
+- Environment variable: none
+- Default: disabled
+- Opens the relevant dashboard or web UI instead of printing terminal output.
 
 ### `--webPort`
 
@@ -65,6 +77,44 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 - Default: disabled
 - Uses the local web UI instead of the Vercel dashboard when inspecting Vercel.
 
+### `--url`
+
+- Environment variable: none
+- Default: disabled
+- Prints the dashboard or run deep-link URL instead of opening a browser or starting a local server.
+
+## Output and filtering
+
+### `--json` / `-j`
+
+- Environment variable: none
+- Default: disabled
+- Prints machine-readable JSON where the command supports it.
+
+### `--sort`
+
+- Environment variable: none
+- Default: `desc`
+- Sort order for list commands. Accepts `asc` or `desc`.
+
+### `--limit`
+
+- Environment variable: none
+- Default: `20`
+- Number of items returned per page for list commands.
+
+### `--cursor`
+
+- Environment variable: none
+- Default: unset
+- Pagination cursor for list commands.
+
+### `--interactive` / `-i`
+
+- Environment variable: none
+- Default: disabled
+- Enables keyboard-controlled pagination for supported list commands.
+
 ## Health checks
 
 ### `--port` / `-p`
@@ -75,7 +125,7 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 - Local server port for health checks.
 - The flag writes `WORKFLOW_LOCAL_BASE_URL`.
 
-## Output and updates
+## Verbose logging and updates
 
 ### `--verbose` / `-v`
 

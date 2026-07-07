@@ -89,7 +89,9 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs (`VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and the deployment encryption key).
+In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs, including `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption.
+
+Do not set those platform-provided values yourself.
 
 Most users never need to set the `WORKFLOW_VERCEL_*` variables below. They are only overrides for tools running outside Vercel, such as your laptop or CI, when those tools need to inspect or test a remote Vercel Workflow project and cannot infer the project, team, token, or target environment automatically.
 
@@ -127,7 +129,19 @@ Custom workflow-server URL for direct runtime requests, or for the proxy to forw
 
 Maximum delay, in seconds, that Workflow uses for one Vercel Queues continuation message when implementing `sleep()`. If a workflow sleeps longer than this, the runtime schedules another continuation message when the first one fires, repeating until the sleep's target time is reached. Default: `82800` (23 hours).
 
-Vercel Queues supports longer delays, but messages have a default TTL of 24 hours unless a custom retention window is set. Workflow uses a 23-hour continuation hop to stay safely inside that default.
+Vercel Queues can delay messages for up to 7 days, capped by the message TTL. Because the default TTL is 24 hours, Workflow uses a 23-hour continuation hop to stay safely inside that default.
+
+### `WORKFLOW_REQUEST_TIMEOUT_MS`
+
+Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-server. Default: `60000`. Minimum: `1`.
+
+### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
+
+Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
+
+### `WORKFLOW_TEST_LIMIT_OVERRIDES`
+
+Testing-only JSON object forwarded to workflow-server to tighten server-side limits on dedicated test deployments. Default: unset. Do not set this in production.
 
 ### Programmatic configuration
 

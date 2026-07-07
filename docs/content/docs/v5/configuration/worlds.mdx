@@ -152,6 +152,8 @@ The Vercel World is configured automatically inside Vercel deployments. The plat
 
 Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the `workflow` CLI, the web UI, CI, or tests. The runtime warns if these variables are set in a deployed Vercel function because they do not control runtime configuration there.
 
+Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_KEY` are read by the runtime inside Vercel deployments. Do not set them yourself.
+
 ### `token`
 
 - Environment variable: `WORKFLOW_VERCEL_AUTH_TOKEN`, then `VERCEL_TOKEN`, then Vercel CLI login
@@ -209,7 +211,7 @@ Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They c
 - Maximum delay for one Vercel Queues continuation message when implementing `sleep()`.
 - Longer sleeps schedule another continuation when the first one fires.
 
-`VERCEL_QUEUE_MAX_DELAY_SECONDS` defaults to 23 hours because Vercel Queues messages have a default 24-hour TTL unless a custom retention window is set. Workflow stays inside that default and chains continuation messages for longer sleeps.
+`VERCEL_QUEUE_MAX_DELAY_SECONDS` defaults to 23 hours because Vercel Queues message delays are capped by the message TTL, and the default TTL is 24 hours. Workflow stays inside that default and chains continuation messages for longer sleeps.
 
 ### `WORKFLOW_REQUEST_TIMEOUT_MS`
 

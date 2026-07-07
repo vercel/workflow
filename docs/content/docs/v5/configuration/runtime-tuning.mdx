@@ -63,6 +63,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: disabled
 - Starts inline step bodies before their `step_started` event is confirmed.
 - Use only when step side effects are idempotent.
+- Set `0` or `false` to force it off, including the first-delivery fast path used by `WORKFLOW_TURBO`.
 
 ## Compression and tracing
 
@@ -76,6 +77,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: automatic
 - Forces the write-side codec to `zstd` or `gzip`.
+- Invalid values are ignored. Automatic mode prefers `zstd` when the current Node.js runtime supports it, otherwise it falls back to `gzip`.
 
 ### `WORKFLOW_TRACE_MODE`
 
@@ -122,17 +124,18 @@ These variables are primarily for tests, debugging, or unusual deployments.
 
 - Default: `82800` (23 hours)
 - Longest single queue delay used for `sleep()` continuations.
-- Longer waits chain messages.
+- If a wait is longer than this, Workflow queues one continuation for the maximum delay, then queues another continuation after that message fires, repeating until the wait's target time is reached.
 
 ### `WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS`
 
 - Default: `2`
-- Clock-skew tolerance when resuming waits.
+- Clock-skew tolerance for wait continuations that arrive near their target time.
 
 ### `WORKFLOW_DEFERRED_CHECK_DELAY_MS`
 
 - Default: `100`
 - Delay before the unconsumed-event check fires.
+- Minimum: `10`.
 
 ### `WORKFLOW_LOCK_POLL_INTERVAL_MS`
 

@@ -62,6 +62,10 @@ Maximum number of concurrent queue message handlers. Default: `1000`
 
 Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
 
+### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
+
+Flush interval, in milliseconds, for buffered stream writes. Default: `10`.
+
 ### Programmatic configuration
 
 Options passed to `createWorld()` take precedence over the environment variables above. Export the configured World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
@@ -74,12 +78,16 @@ export default createWorld({
   port: 5173,
   // baseUrl overrides port if set
   baseUrl: "https://local.example.com:3000",
+  recoverActiveRuns: true,
+  streamFlushIntervalMs: 10, // overrides WORKFLOW_STREAM_FLUSH_INTERVAL_MS
 });
 ```
 
 ```bash title=".env"
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
+
+`createWorld()` also accepts `tag`, which scopes local storage files to a suffix. It is mainly used by test harnesses that share one `.workflow-data` directory.
 
 ## Limitations
 
