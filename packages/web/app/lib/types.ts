@@ -62,10 +62,19 @@ export type ServerActionResult<T> =
   | { success: true; data: T }
   | { success: false; error: ServerActionError };
 
+export interface AnalyticsPageInfo {
+  currentLookbackDays: number;
+  maxLookbackDays: number;
+  currentWindowStart: Date | string;
+  maxWindowStart: Date | string;
+  upgradeAvailable: boolean;
+}
+
 export interface PaginatedResult<T> {
   data: T[];
   cursor?: string;
   hasMore: boolean;
+  pageInfo?: AnalyticsPageInfo;
 }
 
 export interface StopSleepResult {

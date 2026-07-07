@@ -1,6 +1,6 @@
 import { start } from '@workflow/core/runtime';
 import { healthCheck } from '@workflow/core/runtime/helpers';
-import type { WorkflowRun, World } from '@workflow/world';
+import type { World } from '@workflow/world';
 import { logger } from '../config/log.js';
 
 interface CLICreateOpts {
@@ -34,20 +34,28 @@ export const startRun = async (
     }
   });
 
-  let run: WorkflowRun | undefined;
+  // Only deployment/spec metadata is needed to start a new run, so this
+  // accepts either a full run record or an analytics (metadata-only) row.
+  let run:
+    | { deploymentId: string; specVersion?: number; workflowName: string }
+    | undefined;
   // If the workflowNameOrRunId is a run ID, get the run
   if (workflowNameOrRunId.startsWith('wrun_')) {
     run = await world.runs.get(workflowNameOrRunId);
   } else {
     // Get the first run for that name, hopefully the newest deployment,
-    // but can't guarantee that.
-    const runList = await world.runs.list({
-      workflowName: workflowNameOrRunId,
-      pagination: {
-        sortOrder: 'desc',
-        limit: 1,
-      },
-    });
+    // but can't guarantee that. This is metadata only, so prefer the
+    // analytics read path when the backend provides one.
+    const runList = world.analytics
+      ? await world.analytics.runs.list({
+          workflowName: workflowNameOrRunId,
+          pagination: { sortOrder: 'desc', limit: 1 },
+        })
+      : await world.runs.list({
+          workflowName: workflowNameOrRunId,
+          pagination: { sortOrder: 'desc', limit: 1 },
+          resolveData: 'none',
+        });
     run = runList.data[0];
   }
 

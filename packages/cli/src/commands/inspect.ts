@@ -3,6 +3,10 @@ import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import type { InspectCLIOptions } from '../lib/config/types.js';
+import {
+  getObservabilityUpgradeRequiredMessage,
+  isObservabilityUpgradeRequiredError,
+} from '../lib/inspect/errors.js';
 import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
 import {
   listEvents,
@@ -35,7 +39,9 @@ export default class Inspect extends BaseCommand {
 
   async catch(error: any) {
     // Check if this is a 403 error from the Vercel backend
-    if (error?.status === 403) {
+    if (isObservabilityUpgradeRequiredError(error)) {
+      logger.error(getObservabilityUpgradeRequiredMessage());
+    } else if (error?.status === 403) {
       const message = VERCEL_403_ERROR_MESSAGE;
       logger.error(message);
     } else if (LOGGING_CONFIG.VERBOSE_MODE) {
@@ -124,7 +130,8 @@ export default class Inspect extends BaseCommand {
       helpLabel: '--status',
     }),
     withData: Flags.boolean({
-      description: 'include full input/output data in list views',
+      description:
+        'include full input/output data in list views (deprecated for list views — use `inspect <resource> <id>` to view payloads)',
       required: false,
       char: 'd',
       default: false,

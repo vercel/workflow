@@ -6,23 +6,17 @@ import {
 } from '@workflow/core/serialization';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type {
-  Event,
-  Hook,
-  ListEventsParams,
-  PaginationOptions,
-  Step,
-  StepWithoutData,
-  WorkflowRun,
-  WorkflowRunWithoutData,
-  World,
-} from '@workflow/world';
+import type { Event, Hook, Step, WorkflowRun, World } from '@workflow/world';
 import chalk from 'chalk';
 
 import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
+import {
+  getObservabilityUpgradeRequiredMessage,
+  isObservabilityUpgradeRequiredError,
+} from './errors.js';
 import {
   type EncryptionKeyResolver,
   hydrateResourceIO,
@@ -53,7 +47,11 @@ function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
   };
 }
 
-import { setupListPagination } from './pagination.js';
+import {
+  type AnalyticsPageInfo,
+  type PageData,
+  setupListPagination,
+} from './pagination.js';
 import { streamToConsole } from './stream.js';
 import {
   formatISODate,
@@ -126,15 +124,13 @@ const WAIT_LISTED_PROPS: (keyof Sleep)[] = [
   'completedAt',
 ];
 
-const STATUS_COLORS: Record<
-  WorkflowRun['status'] | Step['status'],
-  (value: string) => string
-> = {
+const STATUS_COLORS: Record<string, (value: string) => string> = {
   running: chalk.blue,
   completed: chalk.green,
   failed: chalk.red,
   cancelled: chalk.strikethrough.yellow,
   pending: chalk.blue,
+  waiting: chalk.blue,
 };
 
 const isStreamId = (value: string) => {
@@ -143,12 +139,13 @@ const isStreamId = (value: string) => {
 
 const showStatusLegend = () => {
   logger.log('\nStatus Legend:');
-  const statuses: Array<WorkflowRun['status'] | Step['status']> = [
+  const statuses = [
     'running',
     'completed',
     'failed',
     'cancelled',
     'pending',
+    'waiting',
   ];
 
   const legendItems = statuses.map((status) => {
@@ -199,9 +196,25 @@ const extractErrorMessage = (
   return undefined;
 };
 
+const getPageInfo = (result: unknown): AnalyticsPageInfo | undefined => {
+  if (
+    typeof result !== 'object' ||
+    result === null ||
+    !('pageInfo' in result)
+  ) {
+    return undefined;
+  }
+  return (result as { pageInfo?: AnalyticsPageInfo }).pageInfo;
+};
+
 const handleApiError = (error: unknown, backend?: string): boolean => {
   // First check for Vercel access errors
   if (checkAndHandleVercelAccessError(error, backend)) {
+    return true;
+  }
+
+  if (isObservabilityUpgradeRequiredError(error)) {
+    logger.error(getObservabilityUpgradeRequiredMessage());
     return true;
   }
 
@@ -237,6 +250,7 @@ const getStatusText = (status: number): string => {
   const statusTexts: Record<number, string> = {
     400: 'Bad Request',
     401: 'Unauthorized',
+    402: 'Payment Required',
     403: 'Forbidden',
     404: 'Not Found',
     429: 'Too Many Requests',
@@ -331,7 +345,8 @@ export const formatTableValue = (
 
   if (prop === 'status') {
     const status = value as WorkflowRun['status'] | Step['status'];
-    const colorFunc = STATUS_COLORS[status];
+    const colorFunc =
+      STATUS_COLORS[status] ?? ((formatted: string) => formatted);
     const formattedStatus = displaySettings?.abbreviateStatus
       ? formatStatusAbbrev(status, true)
       : status;
@@ -434,6 +449,15 @@ const showTable = (
 const showJson = (data: unknown) => {
   const json = JSON.stringify(data, null, 2);
   process.stdout.write(`${json}\n`);
+};
+
+const showJsonPage = <T>(page: PageData<T>) => {
+  showJson({
+    data: page.data,
+    cursor: page.cursor,
+    hasMore: page.hasMore,
+    ...(page.pageInfo ? { pageInfo: page.pageInfo } : {}),
+  });
 };
 
 /**
@@ -563,6 +587,22 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
   return value;
 };
 
+/**
+ * List views surface metadata only. When the active backend exposes the
+ * optional `world.analytics` read namespace we read list pages from it
+ * (metadata-only — no payload resolution); otherwise we fall back to the
+ * runtime storage APIs with `resolveData: 'none'`.
+ *
+ * `--withData` forces the runtime path so payloads can be resolved into the
+ * table. It is deprecated for list views: view payloads per-resource with
+ * `workflow inspect <resource> <id>`.
+ */
+const warnWithDataDeprecatedForList = (singular: string): void => {
+  logger.warn(
+    `'--withData' is deprecated for list views and will be removed in a future release. Use 'workflow inspect ${singular} <id>' to view payloads for a single ${singular}.`
+  );
+};
+
 export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   const resolveKey = createResolver(world, opts?.decrypt ?? false);
 
@@ -572,7 +612,13 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     );
   }
 
+  if (opts.withData) {
+    warnWithDataDeprecatedForList('run');
+  }
+
+  const useAnalytics = !opts.withData && Boolean(world.analytics);
   const resolveData = opts.withData ? 'all' : 'none';
+  const status = opts.status as WorkflowRun['status'] | undefined;
 
   // Determine which props to show based on withData flag
   const props = opts.withData
@@ -581,23 +627,49 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         (prop) => !WORKFLOW_RUN_IO_PROPS.includes(prop)
       );
 
+  const fetchRunsPage = async (
+    cursor: string | undefined
+  ): Promise<PageData<Record<string, unknown>>> => {
+    const pagination = {
+      sortOrder: opts.sort || 'desc',
+      cursor,
+      limit: opts.limit || DEFAULT_PAGE_SIZE,
+    };
+    if (useAnalytics && world.analytics) {
+      const runs = await world.analytics.runs.list({
+        workflowName: opts.workflowName,
+        status,
+        pagination,
+      });
+      return {
+        data: runs.data as unknown as Record<string, unknown>[],
+        cursor: runs.cursor,
+        hasMore: runs.hasMore,
+        pageInfo: getPageInfo(runs),
+      };
+    }
+    const runs = await world.runs.list({
+      workflowName: opts.workflowName,
+      status,
+      pagination,
+      resolveData,
+    });
+    const data = await Promise.all(
+      runs.data.map((r) => hydrateResourceIO(r, resolveKey))
+    );
+    return {
+      data: data as unknown as Record<string, unknown>[],
+      cursor: runs.cursor,
+      hasMore: runs.hasMore,
+      pageInfo: getPageInfo(runs),
+    };
+  };
+
   // For JSON output, just fetch once and return
   if (opts.json) {
     try {
-      const runs = await world.runs.list({
-        workflowName: opts.workflowName,
-        status: opts.status as any,
-        pagination: {
-          sortOrder: opts.sort || 'desc',
-          cursor: opts.cursor,
-          limit: opts.limit || DEFAULT_PAGE_SIZE,
-        },
-        resolveData,
-      });
-      const runsWithHydratedIO = await Promise.all(
-        runs.data.map((r) => hydrateResourceIO(r, resolveKey))
-      );
-      showJson({ ...runs, data: runsWithHydratedIO });
+      const page = await fetchRunsPage(opts.cursor);
+      showJsonPage(page);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -607,26 +679,12 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     }
   }
 
-  await setupListPagination<WorkflowRun | WorkflowRunWithoutData>({
+  await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
     fetchPage: async (cursor) => {
       try {
-        const runs = await world.runs.list({
-          workflowName: opts.workflowName,
-          status: opts.status as any,
-          pagination: {
-            sortOrder: opts.sort || 'desc',
-            cursor,
-            limit: opts.limit || DEFAULT_PAGE_SIZE,
-          },
-          resolveData,
-        });
-        return {
-          data: runs.data,
-          cursor: runs.cursor,
-          hasMore: runs.hasMore,
-        };
+        return await fetchRunsPage(cursor);
       } catch (error) {
         if (handleApiError(error, opts.backend)) {
           process.exit(1);
@@ -635,10 +693,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (runs) => {
-      const runsWithHydratedIO = await Promise.all(
-        runs.map((r) => hydrateResourceIO(r, resolveKey))
-      );
-      logger.log(showTable(runsWithHydratedIO, props, opts));
+      logger.log(showTable(runs, props, opts));
     },
   });
 };
@@ -726,6 +781,11 @@ export const listSteps = async (
     return;
   }
 
+  if (opts.withData) {
+    warnWithDataDeprecatedForList('step');
+  }
+
+  const useAnalytics = !opts.withData && Boolean(world.analytics);
   const resolveData = opts.withData ? 'all' : 'none';
 
   // Determine which props to show based on withData flag
@@ -733,23 +793,51 @@ export const listSteps = async (
     ? STEP_LISTED_PROPS
     : STEP_LISTED_PROPS.filter((prop) => !STEP_IO_PROPS.includes(prop));
 
+  const fetchStepsPage = async (
+    cursor: string | undefined
+  ): Promise<PageData<Record<string, unknown>>> => {
+    logger.debug(`Fetching steps for run ${runId}`);
+    const pagination = {
+      sortOrder: opts.sort || 'desc',
+      cursor,
+      limit: opts.limit || DEFAULT_PAGE_SIZE,
+    };
+    if (useAnalytics && world.analytics) {
+      const steps = await world.analytics.steps.list({ runId, pagination });
+      const page = {
+        data: steps.data as unknown as Record<string, unknown>[],
+        cursor: steps.cursor,
+        hasMore: steps.hasMore,
+        pageInfo: getPageInfo(steps),
+      };
+      if (cursor || page.data.length > 0 || page.hasMore) {
+        return page;
+      }
+      logger.debug(
+        `No analytics steps found for run ${runId}; falling back to storage`
+      );
+    }
+    const stepChunks = await world.steps.list({
+      runId,
+      pagination,
+      resolveData,
+    });
+    const data = await Promise.all(
+      stepChunks.data.map((s) => hydrateResourceIO(s, resolveKey))
+    );
+    return {
+      data: data as unknown as Record<string, unknown>[],
+      cursor: stepChunks.cursor,
+      hasMore: stepChunks.hasMore,
+      pageInfo: getPageInfo(stepChunks),
+    };
+  };
+
   // For JSON output, just fetch once and return
   if (opts.json) {
-    logger.debug(`Fetching steps for run ${runId}`);
     try {
-      const stepChunks = await world.steps.list({
-        runId,
-        pagination: {
-          sortOrder: opts.sort || 'desc',
-          cursor: opts.cursor,
-          limit: opts.limit || DEFAULT_PAGE_SIZE,
-        },
-        resolveData,
-      });
-      const stepsWithHydratedIO = await Promise.all(
-        stepChunks.data.map((s) => hydrateResourceIO(s, resolveKey))
-      );
-      showJson(stepsWithHydratedIO);
+      const page = await fetchStepsPage(opts.cursor);
+      showJson(page.data);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -759,26 +847,12 @@ export const listSteps = async (
     }
   }
 
-  await setupListPagination<Step | StepWithoutData>({
+  await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
     fetchPage: async (cursor) => {
-      logger.debug(`Fetching steps for run ${runId}`);
       try {
-        const stepChunks = await world.steps.list({
-          runId,
-          pagination: {
-            sortOrder: opts.sort || 'desc',
-            cursor,
-            limit: opts.limit || DEFAULT_PAGE_SIZE,
-          },
-          resolveData,
-        });
-        return {
-          data: stepChunks.data,
-          cursor: stepChunks.cursor,
-          hasMore: stepChunks.hasMore,
-        };
+        return await fetchStepsPage(cursor);
       } catch (error) {
         if (handleApiError(error, opts.backend)) {
           process.exit(1);
@@ -787,10 +861,7 @@ export const listSteps = async (
       }
     },
     displayPage: async (steps) => {
-      const stepsWithHydratedIO = await Promise.all(
-        steps.map((s) => hydrateResourceIO(s, resolveKey))
-      );
-      logger.log(showTable(stepsWithHydratedIO, props, opts));
+      logger.log(showTable(steps, props, opts));
       showInspectInfoBox('step');
     },
   });
@@ -969,46 +1040,70 @@ export const listEvents = async (
     return;
   }
 
+  if (opts.withData) {
+    warnWithDataDeprecatedForList('event');
+  }
+
+  const useAnalytics = !opts.withData && Boolean(world.analytics);
   const correlationIdFilter = opts.hookId || opts.stepId;
-  const params: ListEventsParams = {
-    runId,
-    pagination: {
-      sortOrder: opts.sort || 'desc',
-      cursor: opts.cursor,
-      limit: opts.limit || DEFAULT_PAGE_SIZE,
-    },
-    resolveData: opts.withData ? 'all' : 'none',
-  };
-  const listCall = async (pagination: PaginationOptions) => {
-    const result = await world.events.list({
-      ...params,
-      pagination: { ...params.pagination, ...pagination },
-    });
-    if (correlationIdFilter) {
-      return {
-        ...result,
-        data: result.data.filter(
-          (e) => e.correlationId === correlationIdFilter
-        ),
-      };
-    }
-    return result;
-  };
 
   // Determine which props to show based on withData flag
   const props = opts.withData
     ? EVENT_LISTED_PROPS
     : EVENT_LISTED_PROPS.filter((prop) => !EVENT_IO_PROPS.includes(prop));
 
+  const fetchEventsPage = async (
+    cursor: string | undefined
+  ): Promise<PageData<Record<string, unknown>>> => {
+    logger.debug(`Fetching events for run ${runId}`);
+    const pagination = {
+      sortOrder: opts.sort || 'desc',
+      cursor,
+      limit: opts.limit || DEFAULT_PAGE_SIZE,
+    };
+    if (useAnalytics && world.analytics) {
+      const events = await world.analytics.events.list({
+        runId,
+        correlationId: correlationIdFilter,
+        pagination,
+      });
+      const page = {
+        data: events.data as unknown as Record<string, unknown>[],
+        cursor: events.cursor,
+        hasMore: events.hasMore,
+        pageInfo: getPageInfo(events),
+      };
+      if (cursor || page.data.length > 0 || page.hasMore) {
+        return page;
+      }
+      logger.debug(
+        `No analytics events found for run ${runId}; falling back to storage`
+      );
+    }
+    const result = await world.events.list({
+      runId,
+      pagination,
+      resolveData: opts.withData ? 'all' : 'none',
+    });
+    const filtered = correlationIdFilter
+      ? result.data.filter((e) => e.correlationId === correlationIdFilter)
+      : result.data;
+    const data = await Promise.all(
+      filtered.map((e) => hydrateResourceIO(e, resolveKey))
+    );
+    return {
+      data: data as unknown as Record<string, unknown>[],
+      cursor: result.cursor,
+      hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
+    };
+  };
+
   // For JSON output, just fetch once and return
   if (opts.json) {
-    logger.debug(`Fetching events for run ${runId}`);
     try {
-      const events = await listCall({});
-      const hydratedEvents = await Promise.all(
-        events.data.map((e) => hydrateResourceIO(e, resolveKey))
-      );
-      showJson(hydratedEvents);
+      const page = await fetchEventsPage(opts.cursor);
+      showJson(page.data);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -1018,18 +1113,12 @@ export const listEvents = async (
     }
   }
 
-  await setupListPagination<Event>({
+  await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
     fetchPage: async (cursor) => {
-      logger.debug(`Fetching events for run ${runId}`);
       try {
-        const events = await listCall({ cursor });
-        return {
-          data: events.data,
-          cursor: events.cursor,
-          hasMore: events.hasMore,
-        };
+        return await fetchEventsPage(cursor);
       } catch (error) {
         if (handleApiError(error, opts.backend)) {
           process.exit(1);
@@ -1038,10 +1127,7 @@ export const listEvents = async (
       }
     },
     displayPage: async (events) => {
-      const hydratedEvents = await Promise.all(
-        events.map((e) => hydrateResourceIO(e, resolveKey))
-      );
-      logger.log(showTable(hydratedEvents, props, opts));
+      logger.log(showTable(events, props, opts));
       showInspectInfoBox('event');
     },
   });
@@ -1063,28 +1149,39 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
 
   const runId = opts.runId;
   const resolveData = opts.withData ? 'all' : 'none';
-
-  // For JSON output, just fetch once and return
-  if (opts.json) {
+  // Hooks always read from the runtime storage API. Unlike runs/steps/events,
+  // the analytics read path omits `ownerId` (and the secret hook token used by
+  // resume/copy-token surfaces), so hook listing stays on the canonical APIs.
+  const fetchHooksPage = async (
+    cursor: string | undefined
+  ): Promise<PageData<Record<string, unknown>>> => {
     if (!runId) {
       logger.debug('Fetching all hooks');
     } else {
       logger.debug(`Fetching hooks for run ${runId}`);
     }
+    const pagination = {
+      sortOrder: opts.sort || 'desc',
+      cursor,
+      limit: opts.limit || DEFAULT_PAGE_SIZE,
+    };
+    const hooks = await world.hooks.list({ runId, pagination, resolveData });
+    const data = await Promise.all(
+      hooks.data.map((h) => hydrateResourceIO(h, resolveKey))
+    );
+    return {
+      data: data as unknown as Record<string, unknown>[],
+      cursor: hooks.cursor,
+      hasMore: hooks.hasMore,
+      pageInfo: getPageInfo(hooks),
+    };
+  };
+
+  // For JSON output, just fetch once and return
+  if (opts.json) {
     try {
-      const hooks = await world.hooks.list({
-        runId,
-        pagination: {
-          sortOrder: opts.sort || 'desc',
-          cursor: opts.cursor,
-          limit: opts.limit || DEFAULT_PAGE_SIZE,
-        },
-        resolveData,
-      });
-      const hydratedHooks = await Promise.all(
-        hooks.data.map((h) => hydrateResourceIO(h, resolveKey))
-      );
-      showJson({ ...hooks, data: hydratedHooks });
+      const page = await fetchHooksPage(opts.cursor);
+      showJsonPage(page);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -1095,30 +1192,12 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
   }
 
   // Setup pagination with new mechanism
-  await setupListPagination<Hook>({
+  await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
     fetchPage: async (cursor) => {
-      if (!runId) {
-        logger.debug('Fetching all hooks');
-      } else {
-        logger.debug(`Fetching hooks for run ${runId}`);
-      }
       try {
-        const hooks = await world.hooks.list({
-          runId,
-          pagination: {
-            sortOrder: opts.sort || 'desc',
-            cursor,
-            limit: opts.limit || DEFAULT_PAGE_SIZE,
-          },
-          resolveData,
-        });
-        return {
-          data: hooks.data,
-          cursor: hooks.cursor,
-          hasMore: hooks.hasMore,
-        };
+        return await fetchHooksPage(cursor);
       } catch (error) {
         if (handleApiError(error, opts.backend)) {
           process.exit(1);
@@ -1127,10 +1206,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (hooks) => {
-      const hydratedHooks = await Promise.all(
-        hooks.map((h) => hydrateResourceIO(h, resolveKey))
-      );
-      logger.log(showTable(hydratedHooks, HOOK_LISTED_PROPS, opts));
+      logger.log(showTable(hooks, HOOK_LISTED_PROPS, opts));
       showInspectInfoBox('hook');
     },
   });
@@ -1172,6 +1248,57 @@ export const showHook = async (
   }
 };
 
+/**
+ * List waits/sleeps via the analytics read path. The analytics wait shape is
+ * keyed by `waitId`/`status` rather than the `correlationId`/`eventId` columns
+ * reconstructed from the event stream in the fallback path.
+ */
+const listSleepsViaAnalytics = async (
+  analytics: NonNullable<World['analytics']>,
+  opts: InspectCLIOptions
+): Promise<void> => {
+  const fetchSleepsPage = async (
+    cursor: string | undefined
+  ): Promise<PageData<Record<string, unknown>>> => {
+    const waits = await analytics.waits.list({
+      runId: opts.runId as string,
+      pagination: {
+        sortOrder: opts.sort || 'desc',
+        cursor,
+        limit: opts.limit || DEFAULT_PAGE_SIZE,
+      },
+    });
+
+    return {
+      data: waits.data as unknown as Record<string, unknown>[],
+      cursor: waits.cursor,
+      hasMore: waits.hasMore,
+      pageInfo: getPageInfo(waits),
+    };
+  };
+
+  if (opts.json) {
+    const page = await fetchSleepsPage(opts.cursor);
+    showJson(page.data);
+    return;
+  }
+
+  await setupListPagination<Record<string, unknown>>({
+    initialCursor: opts.cursor,
+    interactive: opts.interactive,
+    fetchPage: fetchSleepsPage,
+    displayPage: async (waits) => {
+      logger.log(
+        showTable(
+          waits,
+          ['waitId', 'status', 'createdAt', 'resumeAt', 'completedAt'],
+          { ...opts, disableRelativeDates: true }
+        )
+      );
+    },
+  });
+};
+
 export const listSleeps = async (
   world: World,
   opts: InspectCLIOptions = {}
@@ -1195,6 +1322,19 @@ export const listSleeps = async (
   }
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when listing sleeps');
+  }
+
+  // Prefer the analytics read path for wait/sleep listing when available.
+  if (world.analytics) {
+    try {
+      await listSleepsViaAnalytics(world.analytics, opts);
+      return;
+    } catch (error) {
+      if (handleApiError(error, opts.backend)) {
+        process.exit(1);
+      }
+      throw error;
+    }
   }
 
   try {
