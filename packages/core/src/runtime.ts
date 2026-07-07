@@ -9,6 +9,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { setWorkflowBasePath } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -293,8 +294,14 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string; routeModuleBodyStartedAt?: number }
+  options?: {
+    namespace?: string;
+    routeModuleBodyStartedAt?: number;
+    basePath?: string;
+  }
 ): (req: Request) => Promise<Response> {
+  setWorkflowBasePath(options?.basePath);
+
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 

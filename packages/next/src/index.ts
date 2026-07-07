@@ -41,6 +41,14 @@ const workflowSerdeComputedPropertyPattern =
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
+const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
+const globalConfig = globalThis as typeof globalThis &
+  Record<symbol, string | undefined>;
+
+// Keep this local: @workflow/next is CommonJS, while @workflow/utils is ESM-only.
+function setWorkflowBasePath(basePath: string | undefined): void {
+  globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
+}
 
 interface WorkflowPatternMatch {
   hasUseWorkflow: boolean;
@@ -386,6 +394,8 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    const workflowBasePath = nextConfig.basePath;
+    setWorkflowBasePath(workflowBasePath);
     nextConfig.env = {
       ...nextConfig.env,
       WORKFLOW_TARGET_WORLD: workflowTargetWorld,
@@ -516,6 +526,7 @@ export function withWorkflow(
             moduleSpecifierRoot: workingDir,
             workingDir,
             distDir,
+            basePath: workflowBasePath,
             diagnosticsDir: `${distDir}/diagnostics`,
             buildTarget: 'next',
             workflowsBundlePath: '', // not used in base

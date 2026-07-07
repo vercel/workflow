@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
+import { setWorkflowBasePath } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, parseQueueName, type QueuePayload } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
@@ -80,6 +81,7 @@ describe('postgres queue http execution', () => {
     vi.useRealTimers();
     delete process.env.WORKFLOW_LOCAL_BASE_URL;
     delete process.env.PORT;
+    setWorkflowBasePath(undefined);
   });
 
   it('uses the workflow http step route when the real runtime step handler would fail in-process with Step not found', async () => {
@@ -360,6 +362,38 @@ describe('postgres queue http execution', () => {
           }),
         })
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('uses basePath for local postgres queue HTTP delivery', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    const port = await getUnusedLoopbackPort();
+    await startWorkflowHttpServer([], port);
+    process.env.PORT = String(port);
+    setWorkflowBasePath('/v2');
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    try {
+      await queue.start();
+
+      const task = getTaskHandler('workflow_steps');
+      const payload = buildMessageData('__wkf_step_test-step', {
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      });
+
+      await expect(task(payload, {} as any)).resolves.toBeUndefined();
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        `http://localhost:${port}/v2/.well-known/workflow/v1/step`,
+        expect.objectContaining({ method: 'POST' })
+      );
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
