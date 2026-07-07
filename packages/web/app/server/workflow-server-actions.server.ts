@@ -594,6 +594,15 @@ export async function fetchRuns(
     limit?: number;
     workflowName?: string;
     status?: WorkflowRunStatus;
+    /**
+     * Optional listing window (ISO timestamps, both required together).
+     * Honored by the analytics read path, where it bounds the backend scan;
+     * the runtime storage APIs have no time filter, so the fallback path
+     * ignores it. Windows outside the plan's observability lookback surface
+     * as a 402 `observability-upgrade-required` error.
+     */
+    startTime?: string;
+    endTime?: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<WorkflowRun>>> {
   const {
@@ -602,6 +611,8 @@ export async function fetchRuns(
     limit = 10,
     workflowName,
     status,
+    startTime,
+    endTime,
   } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
@@ -611,6 +622,7 @@ export async function fetchRuns(
       ? await world.analytics.runs.list({
           ...(workflowName ? { workflowName } : {}),
           ...(status ? { status } : {}),
+          ...(startTime && endTime ? { startTime, endTime } : {}),
           pagination: { cursor, limit, sortOrder },
         })
       : await world.runs.list({

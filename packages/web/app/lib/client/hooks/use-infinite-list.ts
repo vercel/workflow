@@ -139,18 +139,42 @@ export function useWorkflowRunsInfinite(
     status?: WorkflowRunStatus;
     limit?: number;
     sortOrder?: 'asc' | 'desc';
+    /**
+     * Optional listing window (ISO timestamps, both required together).
+     * Callers should freeze the window per selection/refresh so every page
+     * of one list shares the same bounds. Honored on the analytics read
+     * path; windows beyond the plan lookback surface as a 402
+     * `observability-upgrade-required` error.
+     */
+    startTime?: string;
+    endTime?: string;
   }
 ): InfiniteList<WorkflowRun> {
-  const { workflowName, status, limit = 25, sortOrder = 'desc' } = params;
+  const {
+    workflowName,
+    status,
+    limit = 25,
+    sortOrder = 'desc',
+    startTime,
+    endTime,
+  } = params;
 
-  const cacheKey = `workflow-runs:${workflowName ?? ''}:${status ?? ''}:${sortOrder}:${limit}`;
+  const cacheKey = `workflow-runs:${workflowName ?? ''}:${status ?? ''}:${sortOrder}:${limit}:${startTime ?? ''}:${endTime ?? ''}`;
 
   const fetchFn = useCallback(
     (cursor?: string) =>
       unwrapOrThrow(
-        fetchRuns(env, { cursor, sortOrder, limit, workflowName, status })
+        fetchRuns(env, {
+          cursor,
+          sortOrder,
+          limit,
+          workflowName,
+          status,
+          startTime,
+          endTime,
+        })
       ),
-    [env, workflowName, limit, sortOrder, status]
+    [env, workflowName, limit, sortOrder, status, startTime, endTime]
   );
 
   const getItemKey = useCallback((run: WorkflowRun) => run.runId, []);
