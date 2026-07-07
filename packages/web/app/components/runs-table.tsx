@@ -258,7 +258,6 @@ interface FilterControlsProps {
   seenWorkflowNames: Set<string>;
   sortOrder: 'asc' | 'desc';
   loading: boolean;
-  statusFilterRequiresWorkflowNameFilter: boolean;
   period: PeriodId;
   /** Plan observability lookback in ms; presets beyond it are disabled. */
   planWindowMs: number | undefined;
@@ -277,7 +276,6 @@ function FilterControls({
   seenWorkflowNames,
   sortOrder,
   loading,
-  statusFilterRequiresWorkflowNameFilter,
   period,
   planWindowMs,
   planUpgradeAvailable,
@@ -368,11 +366,7 @@ function FilterControls({
               <Select
                 value={status || 'all'}
                 onValueChange={onStatusChange}
-                disabled={
-                  loading ||
-                  (statusFilterRequiresWorkflowNameFilter &&
-                    !workflowNameFilter)
-                }
+                disabled={loading}
               >
                 <SelectTrigger className="w-[140px] h-9">
                   <SelectValue placeholder="Filter by status" />
@@ -395,12 +389,7 @@ function FilterControls({
               </Select>
             </div>
           </TooltipTrigger>
-          <TooltipContent>
-            {statusFilterRequiresWorkflowNameFilter &&
-            workflowNameFilter === 'all'
-              ? 'Select a workflow first to filter by status'
-              : 'Filter runs by status'}
-          </TooltipContent>
+          <TooltipContent>Filter runs by status</TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -484,9 +473,6 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const localDataDirPath = serverConfig.displayInfo?.['local.dataDirPath'];
   const localShortName = serverConfig.displayInfo?.['local.shortName'];
 
-  // TODO: World-vercel doesn't support filtering by status without a workflow name filter
-  const statusFilterRequiresWorkflowNameFilter =
-    serverConfig.backendId?.includes('vercel') || false;
   // TODO: This is a workaround. We should be getting a list of valid workflow names
   // from the manifest.
   const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
@@ -727,9 +713,6 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
         seenWorkflowNames={seenWorkflowNames}
         sortOrder={sortOrder}
         loading={loading}
-        statusFilterRequiresWorkflowNameFilter={
-          statusFilterRequiresWorkflowNameFilter
-        }
         period={period}
         planWindowMs={planWindowMs}
         planUpgradeAvailable={planInfo?.upgradeAvailable ?? false}
