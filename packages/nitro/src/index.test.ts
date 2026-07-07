@@ -1,7 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { describe, expect, it } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
@@ -211,15 +210,23 @@ describe('@workflow/nitro world target bundling', () => {
   it('resolves the configured world target alias from the app root', async () => {
     const previous = process.env.WORKFLOW_TARGET_WORLD;
     process.env.WORKFLOW_TARGET_WORLD = '@workflow/world-postgres';
+    // Fixture app with the world installed, so resolution doesn't depend on
+    // workspace packages having been built (the unit test job builds only
+    // each tested package's own dependency graph, in arbitrary order).
+    const appDir = await mkdtemp(join(tmpdir(), 'workflow-nitro-app-'));
+    const worldDir = join(appDir, 'node_modules/@workflow/world-postgres');
+    await mkdir(join(worldDir, 'dist'), { recursive: true });
+    await writeFile(
+      join(worldDir, 'package.json'),
+      '{"name":"@workflow/world-postgres","main":"./dist/index.js"}'
+    );
+    await writeFile(join(worldDir, 'dist/index.js'), 'module.exports = {};');
+    await writeFile(join(appDir, 'package.json'), '{"name":"app"}');
     try {
       const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
       const nitro = createNitroStub({
         routing: true,
-        // File-relative so the test works regardless of vitest's cwd (the
-        // package test script runs from packages/nitro, not the repo root).
-        rootDir: fileURLToPath(
-          new URL('../../../workbench/express', import.meta.url)
-        ),
+        rootDir: appDir,
       });
       nitro.hooks.hook = (
         name: string,
@@ -233,7 +240,7 @@ describe('@workflow/nitro world target bundling', () => {
       const worldTargetAlias =
         nitro.options.alias['@workflow/core/runtime/world-target'];
       expect(worldTargetAlias.replaceAll('\\', '/')).toContain(
-        '/packages/world-postgres/dist/index.js'
+        '/node_modules/@workflow/world-postgres/dist/index.js'
       );
 
       const config: { plugins: any[] } = { plugins: [] };
@@ -251,6 +258,7 @@ describe('@workflow/nitro world target bundling', () => {
         )
       ).resolves.toEqual({ id: worldTargetAlias, external: false });
     } finally {
+      await rm(appDir, { recursive: true, force: true });
       if (previous == null) {
         delete process.env.WORKFLOW_TARGET_WORLD;
       } else {
