@@ -38,7 +38,7 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The local world works with zero configuration, but you can customize behavior through environment variables or programmatically via `createLocalWorld()`.
+The local world works with zero configuration, but you can customize behavior through environment variables or programmatically via `createWorld()`.
 
 ### `WORKFLOW_LOCAL_DATA_DIR`
 
@@ -64,12 +64,12 @@ Maximum number of seconds a local queue message can stay hidden before the handl
 
 ### Programmatic configuration
 
-Options passed to `createLocalWorld()` take precedence over the environment variables above. Export the configured World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
+Options passed to `createWorld()` take precedence over the environment variables above. Export the configured World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
 
 ```typescript title="my-world.ts" lineNumbers
-import { createLocalWorld } from "@workflow/world-local";
+import { createWorld } from "@workflow/world-local";
 
-export default createLocalWorld({
+export default createWorld({
   dataDir: "./custom-workflow-data",
   port: 5173,
   // baseUrl overrides port if set

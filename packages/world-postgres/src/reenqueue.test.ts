@@ -1,11 +1,6 @@
 import { getWorkflowPort } from '@workflow/utils/get-port';
-import { createLocalWorld } from '@workflow/world-local';
-import {
-  Logger,
-  makeWorkerUtils,
-  run,
-  type WorkerUtils,
-} from 'graphile-worker';
+import { createWorld as createLocalTestWorld } from '@workflow/world-local';
+import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
 import {
@@ -14,7 +9,6 @@ import {
   createRunsStorage,
   createStepsStorage,
 } from './storage.js';
-import { createStreamer } from './streamer.js';
 
 vi.mock('graphile-worker', () => ({
   Logger: class Logger {
@@ -32,7 +26,7 @@ vi.mock('@workflow/world-local', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@workflow/world-local')>();
   return {
     ...actual,
-    createLocalWorld: vi.fn(actual.createLocalWorld),
+    createWorld: vi.fn(actual.createWorld),
   };
 });
 
@@ -98,7 +92,7 @@ describe('re-enqueue active runs on start', () => {
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
     vi.mocked(run).mockResolvedValue(runnerMock as any);
-    vi.mocked(createLocalWorld).mockReturnValue({
+    vi.mocked(createLocalTestWorld).mockReturnValue({
       createQueueHandler,
       close: localWorldClose,
     } as any);

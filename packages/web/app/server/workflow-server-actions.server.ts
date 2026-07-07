@@ -8,7 +8,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import * as workflowRunHelpers from '@workflow/core/runtime';
-import { createWorld } from '@workflow/core/runtime';
+import { createWorld as createRuntimeWorld } from '@workflow/core/runtime';
 import {
   type HealthCheckEndpoint,
   type HealthCheckResult,
@@ -27,7 +27,7 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorld as createVercelBackendWorld } from '@workflow/world-vercel';
 import type { HookListItem, HookTokenResult } from '~/lib/types';
 
 /**
@@ -434,7 +434,7 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
   // and we instantiate the world per-user directly to avoid having to set
   // process.env.
   if (isVercelWorld) {
-    return createVercelWorld({
+    return createVercelBackendWorld({
       token:
         userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
         process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
@@ -473,7 +473,7 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
     return cachedWorld;
   }
 
-  const world = await createWorld();
+  const world = await createRuntimeWorld();
   worldCache.set(cacheKey, world);
   return world;
 }

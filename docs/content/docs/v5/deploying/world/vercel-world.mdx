@@ -129,14 +129,14 @@ Maximum delay of a single queue message; longer sleeps chain messages. Read insi
 
 ### Programmatic configuration
 
-`createVercelWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:
+`createWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:
 
 {/*@skip-typecheck: incomplete code sample*/}
 
 ```typescript title="my-world.ts" lineNumbers
-import { createVercelWorld } from "@workflow/world-vercel";
+import { createWorld } from "@workflow/world-vercel";
 
-export default createVercelWorld({
+export default createWorld({
   token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
   projectConfig: {
     projectId: "prj_...",

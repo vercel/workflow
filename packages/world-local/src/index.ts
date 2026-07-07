@@ -53,7 +53,7 @@ export type LocalWorld = World & {
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
  * @throws {DataDirVersionError} If the data directory version is incompatible
  */
-export function createLocalWorld(args?: Partial<Config>): LocalWorld {
+export function createWorld(args?: Partial<Config>): LocalWorld {
   const definedArgs = args
     ? Object.fromEntries(
         Object.entries(args).filter(([, value]) => value !== undefined)
@@ -189,8 +189,9 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   };
 }
 
-export function createWorld(): LocalWorld {
-  return createLocalWorld({
-    dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
-  });
+/**
+ * @deprecated Use `createWorld()` instead.
+ */
+export function createLocalWorld(args?: Partial<Config>): LocalWorld {
+  return createWorld(args);
 }

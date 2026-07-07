@@ -191,11 +191,11 @@ describe('File tagging', () => {
 
   describe('tagged clear()', () => {
     it('should only delete files with the matching tag', async () => {
-      // Import createLocalWorld to test clear()
-      const { createLocalWorld } = await import('./index.js');
+      // Import createWorld to test clear()
+      const { createWorld } = await import('./index.js');
 
-      const untaggedWorld = createLocalWorld({ dataDir: testDir });
-      const taggedWorld = createLocalWorld({
+      const untaggedWorld = createWorld({ dataDir: testDir });
+      const taggedWorld = createWorld({
         dataDir: testDir,
         tag: 'vitest-0',
       });
@@ -234,10 +234,10 @@ describe('File tagging', () => {
     });
 
     it('should not interfere with other tags', async () => {
-      const { createLocalWorld } = await import('./index.js');
+      const { createWorld } = await import('./index.js');
 
-      const world0 = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
-      const world1 = createLocalWorld({ dataDir: testDir, tag: 'vitest-1' });
+      const world0 = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world1 = createWorld({ dataDir: testDir, tag: 'vitest-1' });
       // Ensure data dir is initialized
       await world0.start?.();
 
@@ -269,9 +269,9 @@ describe('File tagging', () => {
     });
 
     it('should clear events, steps, hooks, and waits', async () => {
-      const { createLocalWorld } = await import('./index.js');
+      const { createWorld } = await import('./index.js');
 
-      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
       await world.start?.();
 
       const run = await createRun(world, {
@@ -309,9 +309,9 @@ describe('File tagging', () => {
     });
 
     it('should clear hook token constraint files', async () => {
-      const { createLocalWorld } = await import('./index.js');
+      const { createWorld } = await import('./index.js');
 
-      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
       await world.start?.();
 
       const run = await createRun(world, {
@@ -355,8 +355,8 @@ describe('File tagging', () => {
 
   describe('untagged clear()', () => {
     it('can write new entities after clearing cached directories', async () => {
-      const { createLocalWorld } = await import('./index.js');
-      const world = createLocalWorld({ dataDir: testDir });
+      const { createWorld } = await import('./index.js');
+      const world = createWorld({ dataDir: testDir });
       await world.start?.();
 
       await createRun(world, {
