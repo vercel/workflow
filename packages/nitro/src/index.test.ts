@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { describe, expect, it } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
@@ -214,7 +215,11 @@ describe('@workflow/nitro world target bundling', () => {
       const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
       const nitro = createNitroStub({
         routing: true,
-        rootDir: `${process.cwd()}/workbench/express`,
+        // File-relative so the test works regardless of vitest's cwd (the
+        // package test script runs from packages/nitro, not the repo root).
+        rootDir: fileURLToPath(
+          new URL('../../../workbench/express', import.meta.url)
+        ),
       });
       nitro.hooks.hook = (
         name: string,
