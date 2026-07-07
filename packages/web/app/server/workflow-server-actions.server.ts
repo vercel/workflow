@@ -511,13 +511,17 @@ async function createWorldForBackend(backendId: string): Promise<World> {
   }
   const mod = (await import(pathToFileURL(worldPath).href)) as {
     createWorld?: () => World | Promise<World>;
+    default?: { createWorld?: () => World | Promise<World> };
   };
-  if (typeof mod.createWorld !== 'function') {
+  // Fall back to default.createWorld for CJS packages whose named exports
+  // aren't statically detectable by cjs-module-lexer.
+  const createWorldFn = mod.createWorld ?? mod.default?.createWorld;
+  if (typeof createWorldFn !== 'function') {
     throw new Error(
       `Workflow backend package "${backendId}" does not export createWorld().`
     );
   }
-  return mod.createWorld();
+  return createWorldFn();
 }
 
 /**
