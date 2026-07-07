@@ -3,6 +3,7 @@ import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import type { ComponentProps, ReactNode } from 'react';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
@@ -13,7 +14,8 @@ import { WorldDetailToc } from '@/components/worlds/WorldDetailToc';
 import { WorldInstructions } from '@/components/worlds/WorldInstructions';
 import { WorldTestingPerformance } from '@/components/worlds/WorldTestingPerformance';
 import { WorldTestingPerformanceMDX } from '@/components/worlds/WorldTestingPerformanceMDX';
-import { v5Source } from '@/lib/geistdocs/source';
+import { source, v5Source } from '@/lib/geistdocs/source';
+import { cn } from '@/lib/utils';
 import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
 const isPreview = process.env.VERCEL_ENV === 'preview';
@@ -32,6 +34,54 @@ const officialWorldMdxSlugs: Record<string, string[]> = {
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<{ version?: string | string[] }>;
+}
+
+type WorldDocsVersion = 'v4' | 'v5';
+
+function getWorldDocsVersion(version: string | string[] | undefined) {
+  return version === 'v4' ? 'v4' : 'v5';
+}
+
+function versionedHref<T>(href: T, version: WorldDocsVersion): T {
+  if (typeof href !== 'string') return href;
+  if (version === 'v5' && href.startsWith('/docs/')) {
+    return `/v5${href}` as T;
+  }
+  if (href.startsWith('/worlds/')) {
+    return `${href}?version=${version}` as T;
+  }
+  return href;
+}
+
+function WorldDocsVersionToggle({
+  activeVersion,
+  id,
+}: {
+  activeVersion: WorldDocsVersion;
+  id: string;
+}) {
+  return (
+    <div className="mt-6 flex justify-end">
+      <fieldset className="inline-flex rounded-md border bg-background-100 p-0.5">
+        <legend className="sr-only">World docs version</legend>
+        {(['v4', 'v5'] as const).map((version) => (
+          <Link
+            key={version}
+            href={`/worlds/${id}?version=${version}`}
+            className={cn(
+              'rounded-sm px-3 py-1.5 font-medium text-sm transition-colors',
+              version === activeVersion
+                ? 'bg-background-200 text-foreground shadow-xs'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {version}
+          </Link>
+        ))}
+      </fieldset>
+    </div>
+  );
 }
 
 export async function generateStaticParams() {
@@ -60,8 +110,13 @@ export async function generateMetadata({
   };
 }
 
-export default async function WorldDetailPage({ params }: PageProps) {
+export default async function WorldDetailPage({
+  params,
+  searchParams,
+}: PageProps) {
   const { id } = await params;
+  const { version } = (await searchParams) ?? {};
+  const docsVersion = getWorldDocsVersion(version);
   const data = await getWorldData(id);
 
   if (!data) {
@@ -77,21 +132,22 @@ export default async function WorldDetailPage({ params }: PageProps) {
 
   if (isOfficial) {
     const slugs = officialWorldMdxSlugs[id];
-    const page = v5Source.getPage(slugs);
+    const docsSource = docsVersion === 'v4' ? source : v5Source;
+    const page = docsSource.getPage(slugs);
 
     if (page) {
       const MDX = page.data.body;
-      function v5Href<T>(href: T): T {
-        return typeof href === 'string' && href.startsWith('/docs/')
-          ? (`/v5${href}` as T)
-          : href;
+      const baseLink = createRelativeLink(docsSource, page);
+      function versionedLink(props: ComponentProps<typeof baseLink>) {
+        return baseLink({
+          ...props,
+          href: versionedHref(props.href, docsVersion),
+        });
       }
-      const baseLink = createRelativeLink(v5Source, page);
-      function v5Link(props: ComponentProps<typeof baseLink>) {
-        return baseLink({ ...props, href: v5Href(props.href) });
-      }
-      function V5Card(props: CardProps) {
-        return <Card {...props} href={v5Href(props.href)} />;
+      function VersionedCard(props: CardProps) {
+        return (
+          <Card {...props} href={versionedHref(props.href, docsVersion)} />
+        );
       }
 
       // Extract TOC from MDX headings (only h2s, not h3s)
@@ -105,8 +161,8 @@ export default async function WorldDetailPage({ params }: PageProps) {
       mdxContent = (
         <MDX
           components={getMDXComponents({
-            a: v5Link,
-            Card: V5Card,
+            a: versionedLink,
+            Card: VersionedCard,
             Step,
             Steps,
             Tabs,
@@ -133,6 +189,9 @@ export default async function WorldDetailPage({ params }: PageProps) {
           <div className="mt-[var(--fd-nav-height)]">
             <WorldDetailHero id={id} world={world} />
           </div>
+          {isOfficial && (
+            <WorldDocsVersionToggle activeVersion={docsVersion} id={id} />
+          )}
 
           {/* Content + TOC Grid */}
           <div className="relative grid grid-cols-1 lg:grid-cols-[1fr_200px] gap-8 lg:gap-12">
