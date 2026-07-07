@@ -28,6 +28,7 @@ import type {
   World,
 } from '@workflow/world';
 import { createVercelWorld } from '@workflow/world-vercel';
+import type { HookListItem, HookTokenResult } from '~/lib/types';
 
 /**
  * Environment variable map for world configuration.
@@ -885,6 +886,11 @@ export async function fetchEventsByCorrelationId(
 /**
  * Fetch paginated list of hooks
  */
+export function hookToListItem(hook: Hook): HookListItem {
+  const { token: _token, ...hookListItem } = hook;
+  return hookListItem;
+}
+
 export async function fetchHooks(
   worldEnv: EnvMap,
   params: {
@@ -893,31 +899,68 @@ export async function fetchHooks(
     sortOrder?: 'asc' | 'desc';
     limit?: number;
   }
-): Promise<ServerActionResult<PaginatedResult<Hook>>> {
+): Promise<ServerActionResult<PaginatedResult<HookListItem>>> {
   const { runId, cursor, sortOrder = 'desc', limit = 10 } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    // Always use the runtime storage API for hooks. Unlike runs/steps, the
-    // hooks table needs the secret `token` (used for the resume action and the
-    // copy-token affordance) and `ownerId`, which the metadata-only analytics
-    // hook rows do not carry.
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one and the run scope required by analytics is present. The hook list is
+    // metadata only — the secret `token` is fetched on demand per hook via
+    // `fetchHookToken` for the copy-token and resume affordances — so the list
+    // never carries it.
+    if (world.analytics && runId) {
+      const result = await world.analytics.hooks.list({
+        runId,
+        pagination: { cursor, limit, sortOrder },
+      });
+      return createResponse({
+        data: result.data as unknown as HookListItem[],
+        cursor: result.cursor ?? undefined,
+        hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
+      });
+    }
     const result = await world.hooks.list({
       ...(runId ? { runId } : {}),
       pagination: { cursor, limit, sortOrder },
       resolveData: 'none',
     });
     return createResponse({
-      data: result.data as unknown as Hook[],
+      data: result.data.map(hookToListItem),
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
       pageInfo: getPageInfo(result),
     });
   } catch (error) {
-    return createServerActionError<PaginatedResult<Hook>>(
+    return createServerActionError<PaginatedResult<HookListItem>>(
       error,
       'world.hooks.list',
       params
     );
+  }
+}
+
+/**
+ * Fetch a single hook's secret token on demand.
+ *
+ * Hook list rows are metadata-only; the token is read from the runtime storage
+ * API one hook at a time, only when the user reveals/copies it or resumes the
+ * hook. This keeps the secret out of bulk list responses.
+ */
+export async function fetchHookToken(
+  worldEnv: EnvMap,
+  runId: string,
+  hookId: string
+): Promise<ServerActionResult<HookTokenResult>> {
+  try {
+    const world = await getWorldFromEnv(worldEnv);
+    const hook = await world.hooks.get(hookId, { resolveData: 'none' });
+    return createResponse({ token: hook.token });
+  } catch (error) {
+    return createServerActionError<HookTokenResult>(error, 'world.hooks.get', {
+      runId,
+      hookId,
+    });
   }
 }
 

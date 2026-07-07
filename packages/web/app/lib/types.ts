@@ -3,6 +3,8 @@
  * This file should NOT import any server-only modules.
  */
 
+import type { Hook } from '@workflow/world';
+
 /**
  * Public configuration info that is safe to send to the client.
  *
@@ -89,6 +91,18 @@ export interface StopSleepOptions {
 export interface ResumeHookResult {
   hookId: string;
   runId: string;
+}
+
+/**
+ * A hook as shown in list views. The secret `token` is omitted: list rows are
+ * metadata-only, and the token is fetched on demand per hook (see
+ * `fetchHookToken`) for the copy-token and resume affordances.
+ */
+export type HookListItem = Omit<Hook, 'token'>;
+
+/** Result of a lazy per-hook token fetch. */
+export interface HookTokenResult {
+  token: string;
 }
 
 export type {
