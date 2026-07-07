@@ -36,6 +36,7 @@ import {
   hashToken,
   hookRecoveryMarkerPath,
   isHookDisposalCommitted,
+  releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 
 function isVisibleToTag(fileId: string, tag: string | undefined): boolean {
@@ -341,18 +342,22 @@ export async function deleteAllHooksForRun(
     const hookPath = path.join(hooksDir, `${file}.json`);
     const hook = await readJSON(hookPath, HookSchema);
     if (hook && hook.runId === runId) {
-      // Delete the token constraint file to free up the token, and
-      // delete the recovery marker (if any) for disk hygiene. The
+      // Release the token claim to free up the token — but only if it
+      // still points at this hook: a claimant may have force-released
+      // the terminal run's stale claim already (see
+      // `isHookTokenClaimReleasable`) and hold a fresh claim of its
+      // own, which an unconditional delete would destroy. Also delete
+      // the recovery marker (if any) for disk hygiene. The
       // marker's filename hash includes `(token, runId, hookId)` so
       // a leaked marker can never corrupt a different lifetime — but
       // cleaning it up here keeps the tokens/ directory from
       // accumulating recovered-hook sidecars over time.
-      const constraintPath = path.join(
-        hooksDir,
-        'tokens',
-        `${hashToken(hook.token)}.json`
+      await releaseHookTokenClaimIfOwnedBy(
+        basedir,
+        hook.token,
+        hook.runId,
+        hook.hookId
       );
-      await deleteJSON(constraintPath);
       await deleteJSON(
         hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
       );

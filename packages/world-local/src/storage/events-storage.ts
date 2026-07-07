@@ -61,6 +61,7 @@ import {
   hookRecoveryMarkerPath,
   isHookDisposalCommitted,
   monotonicUlid,
+  releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
   deleteAllHooksForRun,
@@ -629,7 +630,21 @@ export function createEventsStorage(
       // observe a claim with no matching hook entity — which the
       // crash-recovery path below would misinterpret as a prior crash
       // and incorrectly fall through to a second hook entity write.
-      if (data.eventType === 'hook_created' && runId && data.correlationId) {
+      //
+      // `hook_received` and `hook_disposed` share the same per-hook lock
+      // so a resume's "hook exists and is not disposed, then append"
+      // sequence is atomic with respect to the disposer's "write dispose
+      // lock, delete entity, then append" sequence. Without this, a
+      // resume that passed its existence check before the disposal began
+      // could append its `hook_received` AFTER `hook_disposed` — an
+      // ordering that is journaled durably and makes every subsequent
+      // replay of the owning run diverge at that event
+      // (https://github.com/vercel/workflow/issues/2781).
+      const isHookLifecycleEvent =
+        data.eventType === 'hook_created' ||
+        data.eventType === 'hook_received' ||
+        data.eventType === 'hook_disposed';
+      if (isHookLifecycleEvent && runId && data.correlationId) {
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
@@ -975,6 +990,21 @@ export function createEventsStorage(
           hookEventsRequiringExistence.includes(data.eventType) &&
           data.correlationId
         ) {
+          // A resume must never be journaled after the hook's disposal.
+          // The disposer's durable order is: dispose lock → claim/entity
+          // delete → `hook_disposed` append, so the hook entity can still
+          // exist (or the disposer may have crashed mid-teardown) while
+          // disposal is already committed. Re-validate the dispose lock
+          // here — under the per-hook in-process lock taken above — so
+          // acceptance observes the same order replay will: once disposal
+          // has committed, the resume is rejected exactly like one that
+          // arrived after teardown finished.
+          if (
+            data.eventType === 'hook_received' &&
+            (await isHookDisposalCommitted(basedir, data.correlationId, tag))
+          ) {
+            throw new HookNotFoundError(data.correlationId);
+          }
           const existingHook = await readJSONWithFallback(
             basedir,
             'hooks',
@@ -1951,19 +1981,23 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Delete the token constraint file to free up the token
-            // for reuse, and delete this hook's recovery marker (if
+            // Release the token claim to free up the token for reuse —
+            // but only if it still points at this hook. A claimant that
+            // force-released this hook's stale claim (see
+            // `isHookTokenClaimReleasable`) may already hold a fresh
+            // claim for the token; deleting unconditionally here would
+            // destroy that live claim and transiently break token
+            // uniqueness. Also delete this hook's recovery marker (if
             // any) for disk hygiene. The marker's filename hash
             // includes `(token, runId, hookId)` so different
             // lifetimes never collide, but cleaning up reduces disk
             // leak for hooks that go through the recovery path.
-            const disposedConstraintPath = path.join(
+            await releaseHookTokenClaimIfOwnedBy(
               basedir,
-              'hooks',
-              'tokens',
-              `${hashToken(existingHook.token)}.json`
+              existingHook.token,
+              existingHook.runId,
+              existingHook.hookId
             );
-            await deleteJSON(disposedConstraintPath);
             await deleteJSON(
               hookRecoveryMarkerPath(
                 basedir,
@@ -2082,6 +2116,21 @@ export function createEventsStorage(
         // collision indicates a real bug and EntityConflictError is
         // also the right surface — same shape as step_created's
         // claim-file behavior.
+        // Last-instant re-validation for `hook_received` (see the acceptance
+        // check above). The per-hook in-process lock already serializes
+        // resume vs. dispose within one storage instance; this second check
+        // narrows the cross-instance window (independent lock maps, shared
+        // filesystem) to the single event write below, matching the
+        // module's convention that the on-disk lock file — not the
+        // in-process mutex — is the durable source of truth.
+        if (
+          data.eventType === 'hook_received' &&
+          data.correlationId &&
+          (await isHookDisposalCommitted(basedir, data.correlationId, tag))
+        ) {
+          throw new HookNotFoundError(data.correlationId);
+        }
+
         const compositeKey = `${effectiveRunId}-${eventId}`;
         const eventPath = taggedPath(basedir, 'events', compositeKey, tag);
         // Capture the serialized payload before the write's `await` so the

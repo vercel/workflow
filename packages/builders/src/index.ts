@@ -33,6 +33,7 @@ export {
 } from './node-compat-banner.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 export { WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS } from './optional-pg-native-alias.js';
+export { WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS } from './optional-typescript-alias.js';
 export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,

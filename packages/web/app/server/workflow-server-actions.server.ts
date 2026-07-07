@@ -6,9 +6,10 @@
  */
 
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as workflowRunHelpers from '@workflow/core/runtime';
-import { createWorld } from '@workflow/core/runtime';
 import {
   type HealthCheckEndpoint,
   type HealthCheckResult,
@@ -27,6 +28,7 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
+import { createWorld as createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
 import type { HookListItem, HookTokenResult } from '~/lib/types';
 
@@ -473,9 +475,53 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
     return cachedWorld;
   }
 
-  const world = await createWorld();
+  const world = await createWorldForBackend(backendId);
   worldCache.set(cacheKey, world);
   return world;
+}
+
+/**
+ * Construct the world for the configured backend explicitly.
+ *
+ * `createWorld()` from `@workflow/core/runtime` is a static-injection stub:
+ * framework build plugins alias it to the selected world package when the
+ * user's app is built. The web UI selects its backend at runtime via env,
+ * so it must construct worlds directly (mirroring the CLI's world setup).
+ * The local world is a direct dependency; other world packages (e.g.
+ * `@workflow/world-postgres` or community worlds) are resolved from the
+ * inspected project's directory.
+ */
+async function createWorldForBackend(backendId: string): Promise<World> {
+  if (backendId === 'local' || backendId === '@workflow/world-local') {
+    return createLocalWorld();
+  }
+
+  const cwd = getObservabilityCwd();
+  let worldPath: string;
+  try {
+    worldPath = createRequire(path.join(cwd, 'package.json')).resolve(
+      backendId,
+      { paths: [cwd] }
+    );
+  } catch {
+    throw new Error(
+      `Could not resolve workflow backend package "${backendId}" from "${cwd}". ` +
+        'Make sure the package is installed in the inspected project.'
+    );
+  }
+  const mod = (await import(pathToFileURL(worldPath).href)) as {
+    createWorld?: () => World | Promise<World>;
+    default?: { createWorld?: () => World | Promise<World> };
+  };
+  // Fall back to default.createWorld for CJS packages whose named exports
+  // aren't statically detectable by cjs-module-lexer.
+  const createWorldFn = mod.createWorld ?? mod.default?.createWorld;
+  if (typeof createWorldFn !== 'function') {
+    throw new Error(
+      `Workflow backend package "${backendId}" does not export createWorld().`
+    );
+  }
+  return createWorldFn();
 }
 
 /**

@@ -53,6 +53,50 @@ export async function isHookDisposalCommitted(
 }
 
 /**
+ * Path of the exclusive-create claim file that reserves a hook token.
+ */
+export function hookTokenClaimPath(basedir: string, token: string): string {
+  return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
+}
+
+/**
+ * Release (delete) a token claim only if it still points at the releasing
+ * hook's own `(runId, hookId)`.
+ *
+ * Both in-flight releasers — the `hook_disposed` handler and the
+ * terminal-run `deleteAllHooksForRun` cleanup — read the hook entity and
+ * then delete the claim file. Deleting unconditionally is unsafe across
+ * processes: a releaser that stalls between those two operations can
+ * outlive a force-release of its stale claim (see
+ * `isHookTokenClaimReleasable`) and then delete the NEXT claimant's live
+ * claim, transiently breaking token uniqueness. Re-reading the claim and
+ * matching its identity here shrinks that window from "a stall of any
+ * length" to the adjacent read/delete file ops.
+ *
+ * A claim that is missing, unreadable, or owned by someone else is left
+ * alone — if it is genuinely stale debris, the claimant-side force-release
+ * path reaps it.
+ */
+export async function releaseHookTokenClaimIfOwnedBy(
+  basedir: string,
+  token: string,
+  runId: string,
+  hookId: string
+): Promise<void> {
+  const claimPath = hookTokenClaimPath(basedir, token);
+  let claim: { runId?: unknown; hookId?: unknown };
+  try {
+    claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+  } catch {
+    return;
+  }
+  if (claim.runId !== runId || claim.hookId !== hookId) {
+    return;
+  }
+  await fs.unlink(claimPath).catch(() => {});
+}
+
+/**
  * Compute the path of the recovery-marker sidecar for a specific
  * `(token, runId, hookId)` triple. Identity is encoded in the
  * filename hash so different token lifetimes (e.g. the same token
