@@ -1,0 +1,212 @@
+---
+title: Configuration
+description: Reference for Workflow SDK configuration options, environment variables, and CLI overrides.
+type: conceptual
+summary: Configure framework integrations, Worlds, runtime tuning, builds, and CLI observability.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/workflow-next/with-workflow
+  - /docs/deploying/world/local-world
+  - /docs/deploying/world/postgres-world
+  - /docs/deploying/world/vercel-world
+---
+
+Workflow is configured through typed framework options, World factory options, environment variables, and CLI flags.
+
+When more than one surface controls the same setting, the usual precedence is:
+
+```txt
+explicit option or CLI flag > environment variable > built-in default
+```
+
+Invalid environment variable values do not crash the app. They log a warning and fall back to the default, or to the documented clamp range.
+
+## Framework options
+
+Framework options are read at build or dev-server startup. Use them for settings that belong in source control, such as source-map behavior or framework-specific output paths.
+
+| Integration | Option | Environment override | Default | Description |
+| --- | --- | --- | --- | --- |
+| Next.js `withWorkflow()` | `workflows.local.port` | `PORT` | auto-detected | Local development port used by the Local World. The option writes `PORT` for non-Vercel builds. |
+| Next.js `withWorkflow()` | `workflows.sourcemap` | `WORKFLOW_SOURCEMAP` | `inline` in dev, `false` in production | Source maps for generated workflow bundles. Explicit config wins over the env var. |
+| Nitro module | `workflow.dirs` | none | `["workflows"]` | Directories scanned for workflow files. |
+| Nitro module | `workflow.typescriptPlugin` | none | `false` | Enables the Workflow TypeScript plugin in generated `tsconfig.json`. |
+| Nitro module | `workflow.runtime` | none | framework default | Node.js runtime emitted for Vercel Functions, such as `nodejs22.x` or `nodejs24.x`. |
+| Nitro module | `workflow.sourcemap` | `WORKFLOW_SOURCEMAP` | `inline` in dev, `false` in production | Source maps for generated workflow bundles. |
+| NestJS `WorkflowModule.forRoot()` | `workingDir` | none | `process.cwd()` | Application root used for workflow discovery and bundling. |
+| NestJS `WorkflowModule.forRoot()` | `dirs` | none | `["src"]` | Directories scanned for workflow files. |
+| NestJS `WorkflowModule.forRoot()` | `outDir` | none | `.nestjs/workflow` | Directory for generated workflow bundles. |
+| NestJS `WorkflowModule.forRoot()` | `watch` | none | `false` | Rebuild workflows during development. |
+| NestJS `WorkflowModule.forRoot()` | `moduleType` | none | `es6` | Set to `commonjs` when the Nest app compiles TypeScript to CJS through SWC. |
+| NestJS `WorkflowModule.forRoot()` | `distDir` | none | `dist` | Compiled JavaScript output directory used by the CJS import rewrite. |
+| NestJS `WorkflowModule.forRoot()` | `sourcemap` | `WORKFLOW_SOURCEMAP` | `inline` in dev, `false` in production | Source maps for generated workflow bundles. |
+| NestJS `WorkflowModule.forRoot()` | `skipBuild` | none | `false` | Skips bundle generation when bundles are already pre-built. |
+| Astro `workflowPlugin()` | `sourcemap` | `WORKFLOW_SOURCEMAP` | `inline` in dev, `false` in production | Source maps for generated workflow bundles. |
+| SvelteKit `workflowPlugin()` | `sourcemap` | `WORKFLOW_SOURCEMAP` | `inline` in dev, `false` in production | Source maps for generated workflow bundles. |
+| Rollup `workflowTransformPlugin()` | `exclude` | none | `[]` | Path prefixes skipped by the directive transform. |
+
+### Source maps
+
+`WORKFLOW_SOURCEMAP` accepts `true`, `1`, `inline`, `linked`, `external`, `both`, `false`, and `0`.
+
+| Value | Behavior |
+| --- | --- |
+| `true` / `inline` / `1` | Append an inline base64 source map to each generated bundle. |
+| `linked` | Write a `.map` file and add a `sourceMappingURL` comment. |
+| `external` | Write a `.map` file without adding the comment. |
+| `both` | Emit inline and external source maps. |
+| `false` / `0` | Omit source maps. |
+
+<Callout type="info">
+The legacy `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1` variable still works, but it only affects the final workflow wrapper and webhook bundle. Prefer `WORKFLOW_SOURCEMAP` or a framework `sourcemap` option.
+</Callout>
+
+## World selection
+
+A [World](/docs/deploying) stores workflow state and delivers queue messages.
+
+| Setting | Surface | Default | Description |
+| --- | --- | --- | --- |
+| `WORKFLOW_TARGET_WORLD` | Environment variable | `vercel` on Vercel, otherwise `local` | Selects the World module. |
+
+`WORKFLOW_TARGET_WORLD` accepts aliases, package specifiers, and local module paths:
+
+| Value | World |
+| --- | --- |
+| `local` | Alias for `@workflow/world-local`. |
+| `vercel` | Alias for `@workflow/world-vercel`. |
+| `@workflow/world-postgres` | Postgres World package. |
+| `./my-world.ts` | A local module exporting a World, `createWorld()`, or a default factory. |
+| any package specifier | A custom World package. |
+
+Export a configured World from a module when you need factory options instead of pure environment configuration:
+
+```typescript title="my-world.ts" lineNumbers
+import { createWorld } from "@workflow/world-postgres";
+
+export default createWorld({
+  connectionString: process.env.DATABASE_URL!,
+  jobPrefix: "myapp_",
+});
+```
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="./my-world.ts"
+```
+
+## Local World
+
+The Local World is the default outside Vercel and is intended for development.
+
+| Option | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `dataDir` | `WORKFLOW_LOCAL_DATA_DIR` | `.workflow-data` | Directory where runs, steps, events, hooks, streams, and the local manifest are written. |
+| `baseUrl` | `WORKFLOW_LOCAL_BASE_URL` | inferred from the app port | Full base URL used when queue messages call back into the app. Overrides `port` and `PORT`. |
+| `port` | `PORT` | auto-detected | Local app port used to build the callback URL when `baseUrl` is unset. |
+| none | `WORKFLOW_LOCAL_QUEUE_CONCURRENCY` | `1000` | Maximum number of concurrent local queue message handlers. |
+| none | `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY` | unlimited | Maximum seconds a local queue message stays hidden before the handler rechecks the run. |
+| `recoverActiveRuns` | none | `true` | Re-enqueue pending and running local runs when the World starts. |
+| `tag` | none | unset | Scope local storage files to a tag, mainly for test isolation. |
+| `streamFlushIntervalMs` | `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` | `10` | Flush interval for buffered stream writes. |
+
+## Postgres World
+
+The Postgres World is a self-hosted durable backend for long-running server processes.
+
+| Option | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `connectionString` | `WORKFLOW_POSTGRES_URL`, then `DATABASE_URL` | `postgres://world:world@localhost:5432/world` | PostgreSQL connection string used by the runtime World. The `bootstrap` migration command uses the same precedence. |
+| `pool` | none | new `pg.Pool` | Existing `pg.Pool` to use instead of constructing one from `connectionString`. |
+| `jobPrefix` | `WORKFLOW_POSTGRES_JOB_PREFIX` | `workflow_` | Prefix for Graphile Worker job names. |
+| `queueConcurrency` | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | `50` | Number of concurrent workers polling for jobs. Also bounds concurrent parent-to-child workflow return-value polls. |
+| `maxPoolSize` | `WORKFLOW_POSTGRES_MAX_POOL_SIZE` | `pg` default | Maximum size of the internal `pg.Pool` when the World creates the pool. |
+| `namespace` | `WORKFLOW_QUEUE_NAMESPACE` | none | Queue topic namespace, for example `custom` changes `__wkf_*` topics to `__custom_wkf_*`. |
+| `streamFlushIntervalMs` | `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` | `10` | Flush interval for buffered stream writes. |
+
+## Vercel World
+
+The Vercel World is configured automatically inside Vercel deployments. The platform provides the deployment ID, project ID, request authentication, queue integration, storage, and encryption material.
+
+Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the `workflow` CLI, the web UI, CI, or tests. The runtime warns if these variables are set in a deployed Vercel function because they do not control runtime configuration there.
+
+| Option | Environment variable | CLI flag | Default | Description |
+| --- | --- | --- | --- | --- |
+| `token` | `WORKFLOW_VERCEL_AUTH_TOKEN`, then `VERCEL_TOKEN`, then Vercel CLI login | `--authToken` | inferred when possible | Vercel API token for external tooling. Keep it secret. |
+| `projectConfig.environment` | `WORKFLOW_VERCEL_ENV` | `--env` / `-e` | `production` | Vercel environment targeted by tooling. Accepts `production` or `preview`. |
+| `projectConfig.projectId` | `WORKFLOW_VERCEL_PROJECT` | `--project` | inferred from `.vercel/project.json` when possible | Vercel project ID. |
+| `projectConfig.teamId` | `WORKFLOW_VERCEL_TEAM` | `--team` | inferred from `.vercel/project.json` when possible | Vercel team ID. |
+| none | `WORKFLOW_VERCEL_PROJECT_NAME` | none | inferred when possible | Project slug used for dashboard links. |
+| none | `WORKFLOW_VERCEL_BACKEND_URL` | none | `https://api.vercel.com/v1/workflow` | Workflow API proxy URL for external tooling. |
+| none | `VERCEL_WORKFLOW_SERVER_URL` | none | unset | Direct workflow-server URL override for testing/custom infrastructure. Normal deployments do not need it. |
+| none | `VERCEL_QUEUE_MAX_DELAY_SECONDS` | none | `82800` (23 hours) | Maximum delay for one Vercel Queues continuation message when implementing `sleep()`. Longer sleeps schedule another continuation when the first one fires. |
+| none | `WORKFLOW_REQUEST_TIMEOUT_MS` | none | `60000` | Per-request timeout for Vercel World HTTP calls to workflow-server. |
+| none | `WORKFLOW_MAX_CHUNKS_PER_REQUEST` | none | `1000` | Maximum stream chunks written in one Vercel World request. Larger batches are split. |
+| none | `WORKFLOW_TEST_LIMIT_OVERRIDES` | none | unset | Testing-only JSON object forwarded to workflow-server to tighten server-side limits on dedicated test deployments. |
+
+`VERCEL_QUEUE_MAX_DELAY_SECONDS` defaults to 23 hours because Vercel Queues messages have a default 24-hour TTL unless a custom retention window is set. Workflow stays inside that default and chains continuation messages for longer sleeps.
+
+## Runtime tuning
+
+These variables are read where workflows execute. Set them on the deployment or dev server.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `WORKFLOW_REPLAY_TIMEOUT_MS` | `240000`, clamped to `30000`-`780000` | Charged time budget for replay/orchestration work in one handler invocation: loading events, re-running the workflow function, resolving suspensions, and scheduling follow-up work. Time spent inside inline `"use step"` bodies is excluded; steps are bounded by the platform function duration instead. |
+| `WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES` | `3` | Queue deliveries that may hit the replay timeout before the run is failed with `REPLAY_TIMEOUT`. |
+| `WORKFLOW_MAX_QUEUE_DELIVERIES` | `48` | Delivery attempts before a run or step is failed gracefully. Can only be lowered. |
+| `WORKFLOW_V2_TIMEOUT_MS` | `120000` | Wall-clock guard for the inline replay loop. Once elapsed, the handler requeues the workflow instead of continuing to run more inline work. |
+| `WORKFLOW_MAX_INLINE_STEPS` | `3`, clamped to `1`-`16` | Number of newly-created steps one invocation runs inline in parallel before queueing the rest. |
+| `WORKFLOW_TURBO` | enabled | Fast path for a run's first delivery. Set `0` or `false` to disable. |
+| `WORKFLOW_OPTIMISTIC_INLINE_START` | disabled | Starts inline step bodies before their `step_started` event is confirmed. Use only when step side effects are idempotent. |
+| `WORKFLOW_TRACE_MODE` | `linked` | OpenTelemetry span topology for runs. Accepts `linked` or `continuous`. |
+| `WORKFLOW_DISABLE_COMPRESSION` | compression enabled | Set `1` to disable compression when writing payloads. Reads still decompress existing payloads. |
+| `WORKFLOW_COMPRESSION_CODEC` | automatic | Force the write-side codec to `zstd` or `gzip`. |
+| `WORKFLOW_QUEUE_NAMESPACE` | none | Queue topic namespace shared by build output and Worlds. Must match `^[a-z][a-z0-9]*$` and be set consistently at build and runtime. |
+| `DEBUG` | unset | Debug log filter with wildcards and negation, such as `workflow:*` or `workflow:*,-workflow:telemetry:*`. |
+
+For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPLAY_TIMEOUT_MS=300000`, because the replay budget is paused while the step body runs.
+
+### Advanced tuning
+
+These escape hatches are primarily for tests, debugging, or unusual deployments.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` | `10` | Stream write buffering interval. Also available as `streamFlushIntervalMs` on Worlds that expose it. |
+| `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS` | `50` | Consecutive reconnect cap for framed stream readers. |
+| `WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS` | `1000` | Total reconnect cap per stream session. |
+| `WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS` | `82800` (23 hours) | Longest single queue delay used for `sleep()` continuations. Longer waits chain messages. |
+| `WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS` | `2` | Clock-skew tolerance when resuming waits. |
+| `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` | `3` | Recovery replays before replay divergence is recorded as corruption. |
+| `WORKFLOW_DEFERRED_CHECK_DELAY_MS` | `100` | Delay before the unconsumed-event check fires. |
+| `WORKFLOW_LOCK_POLL_INTERVAL_MS` | `10` | Poll interval for detecting stream lock release. |
+
+## Build and diagnostics
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `WORKFLOW_PUBLIC_MANIFEST` | disabled | Set `1` to expose the workflow manifest at `/.well-known/workflow/v1/manifest.json`. |
+| `WORKFLOW_DEV_HMR_LOGS` | disabled | Set `1` to log workflow rebuild activity during `next dev`. |
+
+## CLI and web UI
+
+The `workflow` CLI uses flags first, then environment variables, then defaults or local inference. Vercel project and auth settings can often be inferred from `.vercel/project.json` and your Vercel CLI login.
+
+| CLI flag | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `--backend` / `-b` | `WORKFLOW_TARGET_WORLD` | `local` | Backend to inspect: `local`, `vercel`, or a World package. |
+| `--authToken` / `-a` | `WORKFLOW_VERCEL_AUTH_TOKEN` | Vercel CLI login | Vercel token for `--backend vercel`. |
+| `--project` | `WORKFLOW_VERCEL_PROJECT` | inferred when possible | Vercel project ID for `--backend vercel`. |
+| `--team` | `WORKFLOW_VERCEL_TEAM` | inferred when possible | Vercel team ID for `--backend vercel`. |
+| `--env` / `-e` | `WORKFLOW_VERCEL_ENV` | `production` | Vercel environment for `--backend vercel`; `production` or `preview`. |
+| `--webPort` | `WORKFLOW_WEB_PORT` | `3456` | Port for the local web UI server. |
+| `--noBrowser` | `WORKFLOW_DISABLE_BROWSER_OPEN` | browser opens | Prevents the CLI from opening a browser for web UI commands. |
+| `--localUi` | `WORKFLOW_LOCAL_UI` | disabled | Use the local web UI instead of the Vercel dashboard when inspecting Vercel. |
+| `--port` / `-p` on `workflow health` | `WORKFLOW_LOCAL_BASE_URL`, then `PORT` | `3000` when neither is set | Local server port for health checks. The flag writes `WORKFLOW_LOCAL_BASE_URL`. |
+| `--verbose` / `-v` | `DEBUG` | disabled | Enables verbose CLI output. |
+| none | `WORKFLOW_NO_UPDATE_CHECK` | update check enabled | Set `1` to disable the CLI update check. |
+| none | `WORKFLOW_OBSERVABILITY_CWD` | `process.cwd()` | Working directory used by observability tooling to find `.vercel`, `.workflow-data`, and manifests. |
+| none | `WORKFLOW_MANIFEST_PATH` | inferred | Explicit path to the workflow manifest for the web UI. |
+
+Anything not listed on this page or a World page, such as `WORKFLOW_NEXT_PRIVATE_BUILT`, `WORKFLOW_NODE_COMPAT_BANNER`, or `WORKFLOW_SOCKET_*`, is internal to the SDK.

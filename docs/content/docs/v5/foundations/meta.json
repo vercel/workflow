@@ -9,7 +9,6 @@
     "cancellation",
     "serialization",
     "idempotency",
-    "configuration",
     "versioning"
   ],
   "defaultOpen": true
