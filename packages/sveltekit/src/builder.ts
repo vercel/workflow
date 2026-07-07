@@ -8,10 +8,14 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   BaseBuilder,
+  createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  resolveProjectRoot,
   type SvelteKitConfig,
 } from '@workflow/builders';
 
@@ -23,25 +27,42 @@ const SVELTEKIT_VIRTUAL_MODULES = [
 ];
 
 export class SvelteKitBuilder extends BaseBuilder {
-  constructor(config?: Partial<SvelteKitConfig>) {
-    const workingDir = config?.workingDir || process.cwd();
+  #routesDir: string | undefined;
 
+  constructor(config: Partial<SvelteKitConfig> & { routesDir?: string } = {}) {
+    const workingDir = resolve(config.workingDir || process.cwd());
+    const dirs = config.dirs ?? [
+      'workflows',
+      'src/workflows',
+      'routes',
+      'src/routes',
+    ];
+    const projectRoot = config.projectRoot ?? resolveProjectRoot(workingDir);
+    const routesDir = config.routesDir
+      ? resolve(workingDir, config.routesDir)
+      : undefined;
     super({
+      ...createBaseBuilderConfig({
+        workingDir,
+        projectRoot,
+        dirs,
+        watch: config.watch,
+        externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
+        sourcemap: config.sourcemap,
+      }),
       ...config,
-      dirs: ['workflows', 'src/workflows', 'routes', 'src/routes'],
+      dirs,
       buildTarget: 'sveltekit' as const,
-      stepsBundlePath: '', // unused in base
-      workflowsBundlePath: '', // unused in base
-      webhookBundlePath: '', // unused in base
       workingDir,
+      projectRoot,
+      moduleSpecifierRoot: config.moduleSpecifierRoot ?? workingDir,
       externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
-      sourcemap: config?.sourcemap,
     });
+    this.#routesDir = routesDir;
   }
 
   override async build(): Promise<void> {
-    // Find SvelteKit routes directory (src/routes or routes)
-    const routesDir = await this.findRoutesDirectory();
+    const routesDir = await this.loadRoutesDirectory();
     const workflowGeneratedDir = join(routesDir, '.well-known/workflow/v1');
 
     // Ensure output directories exist
@@ -172,34 +193,37 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
     await writeFile(webhookRouteFile, webhookRouteContent);
   }
 
-  private async findRoutesDirectory(): Promise<string> {
-    const routesDir = resolve(this.config.workingDir, 'src/routes');
-    const rootRoutesDir = resolve(this.config.workingDir, 'routes');
+  private async loadRoutesDirectory(): Promise<string> {
+    const routesDir =
+      this.#routesDir ?? (await loadSvelteKitRoutesDir(this.config.workingDir));
+    await assertDirectory(routesDir);
+    return routesDir;
+  }
+}
 
-    // Try src/routes first (standard SvelteKit convention)
-    try {
-      await access(routesDir, constants.F_OK);
-      const routesStats = await stat(routesDir);
-      if (!routesStats.isDirectory()) {
-        throw new Error(`Path exists but is not a directory: ${routesDir}`);
-      }
-      return routesDir;
-    } catch {
-      // Try routes as fallback
-      try {
-        await access(rootRoutesDir, constants.F_OK);
-        const rootRoutesStats = await stat(rootRoutesDir);
-        if (!rootRoutesStats.isDirectory()) {
-          throw new Error(
-            `Path exists but is not a directory: ${rootRoutesDir}`
-          );
-        }
-        return rootRoutesDir;
-      } catch {
-        throw new Error(
-          'Could not find SvelteKit routes directory. Expected either "src/routes" or "routes" to exist.'
-        );
-      }
-    }
+export async function loadSvelteKitRoutesDir(
+  workingDir: string
+): Promise<string> {
+  const require = createRequire(join(workingDir, 'package.json'));
+  const packageJsonPath = require.resolve('@sveltejs/kit/package.json');
+  const loaderPath = join(dirname(packageJsonPath), 'src/core/config/index.js');
+
+  // SvelteKit's internal config loader
+  const { load_config } = await import(pathToFileURL(loaderPath).href);
+  const config = await load_config({ cwd: workingDir });
+  const routesDir = config.kit?.files?.routes;
+  if (routesDir == null || typeof routesDir !== 'string') {
+    throw new Error(
+      'Expected SvelteKit config loader to return kit.files.routes as a string.'
+    );
+  }
+  return routesDir;
+}
+
+async function assertDirectory(path: string): Promise<void> {
+  await access(path, constants.F_OK);
+  const stats = await stat(path);
+  if (!stats.isDirectory()) {
+    throw new Error(`Path exists but is not a directory: ${path}`);
   }
 }

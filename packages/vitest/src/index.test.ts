@@ -174,31 +174,32 @@ describe('@workflow/vitest', () => {
     const dataDir = path.resolve('/tmp/workflow-vitest-data');
     const outDir = path.resolve('/tmp/workflow-vitest-out');
     const cwd = path.resolve('/repo/app');
+    const provide = vi.fn();
 
     const { workflow } = await loadModule();
-    const plugins = workflow({ cwd, rootDir, dataDir, outDir });
+    const plugins = workflow({ rootDir, dataDir, outDir });
 
-    expect(workflowTransformPlugin).toHaveBeenCalledWith({
-      exclude: [outDir + '/'],
-    });
-
-    const vitestPlugin = plugins[1];
+    const vitestPlugin = plugins[1] as any;
     expect(vitestPlugin.name).toBe('workflow:vitest');
-    const config = vitestPlugin.config?.() as {
-      test: {
-        provide: Record<string, unknown>;
-      };
-    };
+    vitestPlugin.configureVitest({
+      project: {
+        config: { root: cwd },
+        provide,
+      },
+    });
 
     expect(process.env.WORKFLOW_VITEST_CWD).toBeUndefined();
     expect(process.env.WORKFLOW_VITEST_ROOT_DIR).toBeUndefined();
     expect(process.env.WORKFLOW_VITEST_DATA_DIR).toBeUndefined();
     expect(process.env.WORKFLOW_VITEST_OUT_DIR).toBeUndefined();
-    expect(config.test.provide.__workflowVitestOptions).toEqual({
+    expect(provide).toHaveBeenCalledWith('__workflowVitestOptions', {
       cwd,
       rootDir,
       dataDir,
       outDir,
+    });
+    expect(workflowTransformPlugin).toHaveBeenCalledWith({
+      exclude: [`${outDir}/`],
     });
   });
 
@@ -215,16 +216,14 @@ describe('@workflow/vitest', () => {
 
     const { setup } = await import('./global-setup.js');
     await setup({
-      config: {
-        provide: {
-          __workflowVitestOptions: {
-            cwd,
-            rootDir,
-            dataDir,
-            outDir,
-          },
+      getProvidedContext: () => ({
+        __workflowVitestOptions: {
+          cwd,
+          rootDir,
+          dataDir,
+          outDir,
         },
-      },
+      }),
     } as any);
 
     expect(buildWorkflowTests).toHaveBeenCalledWith({

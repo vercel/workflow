@@ -167,8 +167,8 @@ export interface HookOptions {
    * Whether this hook can be resumed via the public webhook endpoint.
    *
    * When `true`, the hook can be triggered by sending an HTTP request to the
-   * public `/.well-known/workflow/v1/webhook/{token}` URL. This is automatically
-   * set when using `createWebhook()`.
+   * public workflow webhook URL. This is automatically set when using
+   * `createWebhook()`.
    *
    * When `false` (the default), the hook can only be resumed server-side
    * via `resumeHook()`.

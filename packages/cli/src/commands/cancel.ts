@@ -2,10 +2,15 @@ import readline from 'node:readline';
 import { Args, Flags } from '@oclif/core';
 import { cancelRun } from '@workflow/core/runtime';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
+import type { WorkflowRun } from '@workflow/world';
 import chalk from 'chalk';
 import Table from 'easy-table';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
+import {
+  getObservabilityUpgradeRequiredMessage,
+  isObservabilityUpgradeRequiredError,
+} from '../lib/inspect/errors.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
 
@@ -23,7 +28,10 @@ export default class Cancel extends BaseCommand {
   ];
 
   async catch(error: any) {
-    if (LOGGING_CONFIG.VERBOSE_MODE) {
+    if (isObservabilityUpgradeRequiredError(error)) {
+      logger.error(getObservabilityUpgradeRequiredMessage());
+      process.exit(1);
+    } else if (LOGGING_CONFIG.VERBOSE_MODE) {
       console.error(error);
     }
     throw error;
@@ -99,13 +107,30 @@ export default class Cancel extends BaseCommand {
       process.exit(1);
     }
 
-    // Fetch matching runs
-    const runs = await world.runs.list({
-      status: flags.status as any,
-      workflowName: flags.workflowName,
-      pagination: { limit: flags.limit || 50 },
-      resolveData: 'none',
-    });
+    // Fetch matching runs. Only metadata is needed to display and cancel, so
+    // prefer the analytics read path when the backend provides one.
+    const status = flags.status as WorkflowRun['status'] | undefined;
+    const runList = world.analytics
+      ? await world.analytics.runs.list({
+          status,
+          workflowName: flags.workflowName,
+          pagination: { limit: flags.limit || 50 },
+        })
+      : await world.runs.list({
+          status,
+          workflowName: flags.workflowName,
+          pagination: { limit: flags.limit || 50 },
+          resolveData: 'none',
+        });
+    const runs = {
+      data: runList.data.map((run) => ({
+        runId: run.runId,
+        workflowName: run.workflowName,
+        status: run.status,
+        startedAt: run.startedAt,
+      })),
+      hasMore: runList.hasMore,
+    };
 
     if (runs.data.length === 0) {
       logger.warn('No matching runs found.');

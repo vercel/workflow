@@ -8,7 +8,11 @@ import {
   TooEarlyError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { pluralize, stepDisplayName } from '@workflow/utils';
+import {
+  createWorkflowBaseUrl,
+  pluralize,
+  stepDisplayName,
+} from '@workflow/utils';
 import type { Event, SerializedData, Step, World } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
@@ -563,7 +567,11 @@ export async function executeStep(
 
       const args = hydratedInput.args;
       const thisVal = hydratedInput.thisVal ?? null;
-      const port = isVercel ? undefined : await getPortLazy();
+      const workflowBaseUrl = createWorkflowBaseUrl(
+        isVercel
+          ? `https://${process.env.VERCEL_URL}`
+          : `http://localhost:${(await getPortLazy()) ?? 3000}`
+      );
 
       const executionStartTime = Date.now();
       result = await trace('step.execute', {}, async () => {
@@ -579,9 +587,7 @@ export async function executeStep(
               workflowName,
               workflowRunId,
               workflowStartedAt: new Date(+workflowStartedAt),
-              url: isVercel
-                ? `https://${process.env.VERCEL_URL}`
-                : `http://localhost:${port ?? 3000}`,
+              url: workflowBaseUrl,
               features: { encryption: !!encryptionKey },
             },
             workflowDeploymentId: params.workflowDeploymentId,
