@@ -139,10 +139,6 @@ Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-se
 
 Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
 
-### `WORKFLOW_TEST_LIMIT_OVERRIDES`
-
-Testing-only JSON object forwarded to workflow-server to tighten server-side limits on dedicated test deployments. Default: unset. Do not set this in production.
-
 ### Programmatic configuration
 
 `createWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:

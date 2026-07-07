@@ -313,6 +313,7 @@ describe('withWorkflow builder config', () => {
         webpackConfig?.resolve?.alias?.['@workflow/core/runtime/world-target']
       ).toBe(join(testDir, 'my-world.ts'));
     } finally {
+      process.chdir(originalCwd);
       rmSync(testDir, { recursive: true, force: true });
     }
   });
