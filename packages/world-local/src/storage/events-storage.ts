@@ -61,6 +61,7 @@ import {
   hookRecoveryMarkerPath,
   isHookDisposalCommitted,
   monotonicUlid,
+  releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
   deleteAllHooksForRun,
@@ -1980,19 +1981,23 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Delete the token constraint file to free up the token
-            // for reuse, and delete this hook's recovery marker (if
+            // Release the token claim to free up the token for reuse —
+            // but only if it still points at this hook. A claimant that
+            // force-released this hook's stale claim (see
+            // `isHookTokenClaimReleasable`) may already hold a fresh
+            // claim for the token; deleting unconditionally here would
+            // destroy that live claim and transiently break token
+            // uniqueness. Also delete this hook's recovery marker (if
             // any) for disk hygiene. The marker's filename hash
             // includes `(token, runId, hookId)` so different
             // lifetimes never collide, but cleaning up reduces disk
             // leak for hooks that go through the recovery path.
-            const disposedConstraintPath = path.join(
+            await releaseHookTokenClaimIfOwnedBy(
               basedir,
-              'hooks',
-              'tokens',
-              `${hashToken(existingHook.token)}.json`
+              existingHook.token,
+              existingHook.runId,
+              existingHook.hookId
             );
-            await deleteJSON(disposedConstraintPath);
             await deleteJSON(
               hookRecoveryMarkerPath(
                 basedir,

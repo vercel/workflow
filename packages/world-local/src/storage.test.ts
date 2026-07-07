@@ -2276,6 +2276,78 @@ describe('Storage', () => {
         expect(result.hook?.runId).toBe(run2.runId);
       });
 
+      // Regression tests for the #2779 follow-up: a releaser (hook_disposed
+      // handler or terminal-run cleanup) that stalls between reading the
+      // hook entity and deleting the claim can outlive a force-release of
+      // its stale claim — its deferred delete must not destroy the NEXT
+      // claimant's live claim. The claim file is rewritten manually to
+      // simulate the takeover happening during the stall.
+      it('hook_disposed should not release a token claim it no longer owns', async () => {
+        const token = 'stolen-claim-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_old',
+          token,
+        });
+
+        // Simulate a force-release + re-claim by a new claimant while the
+        // disposer is stalled: the claim now points at (run2, hook_new).
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
+        );
+        const newClaim = {
+          token,
+          hookId: 'hook_new',
+          runId: 'wrun_someother_run',
+          eventId: 'evnt_00000000000000000000000001',
+        };
+        await fs.writeFile(claimPath, JSON.stringify(newClaim));
+
+        // The stalled disposer's release lands now — it must skip the
+        // deletion because the claim belongs to someone else.
+        await disposeHook(storage, testRunId, 'hook_old');
+
+        const claimAfter = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+        expect(claimAfter).toEqual(newClaim);
+      });
+
+      it('terminal-run hook cleanup should not release a token claim it no longer owns', async () => {
+        const token = 'stolen-claim-token-terminal';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_old',
+          token,
+        });
+
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
+        );
+        const newClaim = {
+          token,
+          hookId: 'hook_new',
+          runId: 'wrun_someother_run',
+          eventId: 'evnt_00000000000000000000000001',
+        };
+        await fs.writeFile(claimPath, JSON.stringify(newClaim));
+
+        // Completing the run triggers deleteAllHooksForRun, which reads
+        // hook_old's entity and releases its claim — it must skip the
+        // deletion because the claim belongs to someone else.
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        const claimAfter = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+        expect(claimAfter).toEqual(newClaim);
+      });
+
       it('should enforce token uniqueness across different runs within the same project', async () => {
         // Create a second run
         const run2 = await createRun(storage, {
