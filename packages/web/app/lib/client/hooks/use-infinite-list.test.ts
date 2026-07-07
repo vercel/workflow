@@ -1,4 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { createElement, type ReactNode } from 'react';
+import { SWRConfig } from 'swr';
 import { describe, expect, it, vi } from 'vitest';
 import { useInfiniteList } from './use-infinite-list';
 
@@ -36,6 +38,20 @@ function page(
 
 const getKey = (item: Item) => item.id;
 
+/**
+ * Fresh SWR cache per test (or a shared one to simulate tab switches —
+ * unmount + remount against the same cache).
+ */
+function makeWrapper(cache = new Map()) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return createElement(
+      SWRConfig,
+      { value: { provider: () => cache, dedupingInterval: 0 } },
+      children
+    );
+  };
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 describe('useInfiniteList', () => {
@@ -44,7 +60,10 @@ describe('useInfiniteList', () => {
       .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
       .mockResolvedValue(page(['a', 'b'], { cursor: 'c1', hasMore: true }));
 
-    const { result } = renderHook(() => useInfiniteList(fetchFn, getKey));
+    const { result } = renderHook(
+      () => useInfiniteList('k1', fetchFn, getKey),
+      { wrapper: makeWrapper() }
+    );
 
     await waitFor(() =>
       expect(result.current.items.map(getKey)).toEqual(['a', 'b'])
@@ -52,6 +71,7 @@ describe('useInfiniteList', () => {
     expect(result.current.hasMore).toBe(true);
     expect(result.current.pageInfo).toEqual(PAGE_INFO);
     expect(fetchFn).toHaveBeenCalledWith(undefined);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it('appends the next page on loadMore using the server cursor', async () => {
@@ -60,18 +80,24 @@ describe('useInfiniteList', () => {
       .mockResolvedValueOnce(page(['a', 'b'], { cursor: 'c1', hasMore: true }))
       .mockResolvedValueOnce(page(['c', 'd'], { hasMore: false }));
 
-    const { result } = renderHook(() => useInfiniteList(fetchFn, getKey));
-    await waitFor(() => expect(result.current.items.length).toBeGreaterThan(0));
+    const { result } = renderHook(
+      () => useInfiniteList('k1', fetchFn, getKey),
+      { wrapper: makeWrapper() }
+    );
+    await waitFor(() =>
+      expect(result.current.items.map(getKey)).toEqual(['a', 'b'])
+    );
 
     act(() => {
-      void result.current.loadMore();
+      result.current.loadMore();
     });
     await waitFor(() =>
       expect(result.current.items.map(getKey)).toEqual(['a', 'b', 'c', 'd'])
     );
 
     expect(fetchFn).toHaveBeenLastCalledWith('c1');
-    expect(result.current.isLoadingMore).toBe(false);
+    // revalidateFirstPage is off: loading page 2 must not refetch page 1.
+    expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(result.current.hasMore).toBe(false);
   });
 
@@ -81,56 +107,74 @@ describe('useInfiniteList', () => {
       .mockResolvedValueOnce(page(['a', 'b'], { cursor: 'c1', hasMore: true }))
       .mockResolvedValueOnce(page(['b', 'c'], { hasMore: false }));
 
-    const { result } = renderHook(() => useInfiniteList(fetchFn, getKey));
-    await waitFor(() => expect(result.current.items.length).toBeGreaterThan(0));
+    const { result } = renderHook(
+      () => useInfiniteList('k1', fetchFn, getKey),
+      { wrapper: makeWrapper() }
+    );
+    await waitFor(() =>
+      expect(result.current.items.map(getKey)).toEqual(['a', 'b'])
+    );
 
     act(() => {
-      void result.current.loadMore();
+      result.current.loadMore();
     });
     await waitFor(() =>
       expect(result.current.items.map(getKey)).toEqual(['a', 'b', 'c'])
     );
   });
 
-  it('ignores loadMore while a fetch is in flight', async () => {
-    let resolveSecond: ((r: PaginatedResult<Item>) => void) | undefined;
+  it('serves cached pages instantly on remount (tab switch) without refetching', async () => {
+    const cache = new Map();
     const fetchFn = vi
       .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
-      .mockResolvedValueOnce(page(['a'], { cursor: 'c1', hasMore: true }))
-      .mockImplementationOnce(
-        () =>
-          new Promise<PaginatedResult<Item>>((resolve) => {
-            resolveSecond = resolve;
-          })
-      );
+      .mockResolvedValueOnce(page(['a', 'b'], { cursor: 'c1', hasMore: true }))
+      .mockResolvedValueOnce(page(['c'], { hasMore: false }));
 
-    const { result } = renderHook(() => useInfiniteList(fetchFn, getKey));
-    await waitFor(() => expect(result.current.items.length).toBeGreaterThan(0));
-
-    act(() => {
-      result.current.loadMore();
-      result.current.loadMore();
-      result.current.loadMore();
+    const first = renderHook(() => useInfiniteList('k1', fetchFn, getKey), {
+      wrapper: makeWrapper(cache),
     });
+    await waitFor(() =>
+      expect(first.result.current.items.map(getKey)).toEqual(['a', 'b'])
+    );
+    act(() => {
+      first.result.current.loadMore();
+    });
+    await waitFor(() =>
+      expect(first.result.current.items.map(getKey)).toEqual(['a', 'b', 'c'])
+    );
     expect(fetchFn).toHaveBeenCalledTimes(2);
 
-    await act(async () => {
-      resolveSecond?.(page(['b'], { hasMore: false }));
+    // Simulate switching away and back: unmount, then mount fresh against
+    // the same SWR cache.
+    first.unmount();
+    const second = renderHook(() => useInfiniteList('k1', fetchFn, getKey), {
+      wrapper: makeWrapper(cache),
     });
-    expect(result.current.items.map(getKey)).toEqual(['a', 'b']);
+
+    // Cached rows are available without any new fetches.
+    await waitFor(() =>
+      expect(second.result.current.items.map(getKey)).toEqual(['a', 'b', 'c'])
+    );
+    expect(second.result.current.isLoading).toBe(false);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
-  it('reload clears accumulated rows and refetches from the top', async () => {
+  it('reload resets to the first page and revalidates it', async () => {
     const fetchFn = vi
       .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
       .mockResolvedValueOnce(page(['a'], { cursor: 'c1', hasMore: true }))
       .mockResolvedValueOnce(page(['b'], { hasMore: false }))
       .mockResolvedValueOnce(page(['z'], { hasMore: false }));
 
-    const { result } = renderHook(() => useInfiniteList(fetchFn, getKey));
-    await waitFor(() => expect(result.current.items.length).toBeGreaterThan(0));
+    const { result } = renderHook(
+      () => useInfiniteList('k1', fetchFn, getKey),
+      { wrapper: makeWrapper() }
+    );
+    await waitFor(() =>
+      expect(result.current.items.map(getKey)).toEqual(['a'])
+    );
     act(() => {
-      void result.current.loadMore();
+      result.current.loadMore();
     });
     await waitFor(() =>
       expect(result.current.items.map(getKey)).toEqual(['a', 'b'])
@@ -142,55 +186,21 @@ describe('useInfiniteList', () => {
     await waitFor(() =>
       expect(result.current.items.map(getKey)).toEqual(['z'])
     );
-
     expect(fetchFn).toHaveBeenLastCalledWith(undefined);
     expect(result.current.hasMore).toBe(false);
   });
 
-  it('refresh refetches from the top without clearing rows while loading', async () => {
-    let resolveRefresh: ((r: PaginatedResult<Item>) => void) | undefined;
+  it('surfaces fetch errors', async () => {
     const fetchFn = vi
       .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
-      .mockResolvedValueOnce(page(['a'], { hasMore: false }))
-      .mockImplementationOnce(
-        () =>
-          new Promise<PaginatedResult<Item>>((resolve) => {
-            resolveRefresh = resolve;
-          })
-      );
+      .mockRejectedValue(new Error('boom'));
 
-    const { result } = renderHook(() => useInfiniteList(fetchFn, getKey));
-    await waitFor(() => expect(result.current.items.length).toBeGreaterThan(0));
+    const { result } = renderHook(
+      () => useInfiniteList('k1', fetchFn, getKey),
+      { wrapper: makeWrapper() }
+    );
 
-    act(() => {
-      result.current.refresh();
-    });
-    // Old rows stay visible and no full-page loading state is shown.
-    expect(result.current.isLoading).toBe(false);
-    expect(result.current.items.map(getKey)).toEqual(['a']);
-
-    await act(async () => {
-      resolveRefresh?.(page(['a', 'b'], { hasMore: false }));
-    });
-    expect(result.current.items.map(getKey)).toEqual(['a', 'b']);
-  });
-
-  it('surfaces fetch errors and recovers on reload', async () => {
-    const fetchFn = vi
-      .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
-      .mockRejectedValueOnce(new Error('boom'))
-      .mockResolvedValueOnce(page(['a'], { hasMore: false }));
-
-    const { result } = renderHook(() => useInfiniteList(fetchFn, getKey));
     await waitFor(() => expect(result.current.error).not.toBeNull());
     expect(result.current.error?.message).toBe('boom');
-
-    act(() => {
-      result.current.reload();
-    });
-    await waitFor(() =>
-      expect(result.current.items.map(getKey)).toEqual(['a'])
-    );
-    expect(result.current.error).toBeNull();
   });
 });

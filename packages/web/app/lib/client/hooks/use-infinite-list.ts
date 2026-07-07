@@ -1,5 +1,6 @@
 import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useMemo } from 'react';
+import useSWRInfinite from 'swr/infinite';
 import {
   unwrapOrThrow,
   WorkflowWebAPIError,
@@ -8,171 +9,128 @@ import { fetchRuns } from '~/lib/rpc-client';
 import type { AnalyticsPageInfo, EnvMap, PaginatedResult } from '~/lib/types';
 
 export interface InfiniteList<T> {
-  /** All rows accumulated so far, in fetch order. */
+  /** All rows accumulated so far, in fetch order (deduped by item key). */
   items: T[];
   error: Error | null;
-  /** True while the first page (or a full reload) is loading. */
+  /** True while the first page is loading and no cached data is available. */
   isLoading: boolean;
   /** True while a subsequent page is being appended. */
   isLoadingMore: boolean;
   hasMore: boolean;
   /** Fetch the next page and append it. No-op while a fetch is in flight. */
   loadMore: () => void;
-  /** Clear accumulated rows and refetch from the top (shows the loading state). */
+  /** Reset to the first page and revalidate it. */
   reload: () => void;
-  /**
-   * Refetch from the top while keeping current rows visible until data
-   * arrives (prevents flicker for poll-style refreshes).
-   */
+  /** Alias of reload — cached rows stay visible while revalidating. */
   refresh: () => void;
-  /** Analytics window metadata from the most recent first-page response. */
+  /** Analytics window metadata from the first page response. */
   pageInfo?: AnalyticsPageInfo;
 }
 
 /**
- * Cursor-based infinite list: accumulates pages into a flat array.
+ * Cursor-based infinite list backed by SWR's global cache.
  *
- * Unlike `usePaginatedList` (page-at-a-time prev/next), each `loadMore`
- * fetches only the next page via the server cursor and appends it, deduped
- * by `getItemKey` so cursor drift on live data cannot produce duplicate rows.
+ * Pages are keyed by `[cacheKey, cursor]`, so switching tabs (unmount +
+ * remount) restores previously fetched pages instantly instead of refetching.
+ * Revalidation is deliberately conservative — analytics list queries can be
+ * expensive (ClickHouse) — so cached pages are NOT refetched on remount or
+ * when loading further pages (`revalidateFirstPage: false`,
+ * `revalidateIfStale: false`). Freshness comes from explicit `reload()`/
+ * `refresh()` calls (the Refresh button and the tab-visibility auto-reload).
  *
- * Callers should memoize `fetchFn` with useCallback; a `fetchFn` identity
- * change (i.e. filter/sort params changed) resets the list and refetches.
+ * Rows are deduped by `getItemKey` when pages are flattened, so cursor drift
+ * on live data cannot produce duplicate rows.
  */
 export function useInfiniteList<T>(
+  cacheKey: string,
   fetchFn: (cursor?: string) => Promise<PaginatedResult<T>>,
   getItemKey: (item: T) => string
 ): InfiniteList<T> {
-  const [items, setItems] = useState<T[]>([]);
-  const [pageInfo, setPageInfo] = useState<AnalyticsPageInfo | undefined>(
-    undefined
-  );
-  const [error, setError] = useState<Error | null>(null);
-  // Initial isLoading is false so SSR and client hydration agree; the mount
-  // effect sets it to true when the first fetch starts on the client.
-  const [isLoading, setIsLoading] = useState(false);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-
-  const cursorRef = useRef<string | undefined>(undefined);
-  const seenKeysRef = useRef<Set<string>>(new Set());
-  const inFlightRef = useRef(false);
-  // Bumped on every reset; in-flight responses from an older generation are
-  // discarded so a reload during a fetch cannot interleave stale rows.
-  const generationRef = useRef(0);
-
-  const getItemKeyRef = useRef(getItemKey);
-  useEffect(() => {
-    getItemKeyRef.current = getItemKey;
-  }, [getItemKey]);
-
-  const toError = (err: unknown): Error =>
-    err instanceof Error
-      ? err
-      : new WorkflowWebAPIError(String(err), { layer: 'client' });
-
-  const fetchFirstPage = useCallback(
-    async (opts: { showLoading: boolean }) => {
-      const generation = ++generationRef.current;
-      inFlightRef.current = true;
-      if (opts.showLoading) {
-        setIsLoading(true);
-      }
-      setError(null);
-      try {
-        const result = await fetchFn(undefined);
-        if (generation !== generationRef.current) return;
-        cursorRef.current = result.cursor;
-        seenKeysRef.current = new Set(result.data.map(getItemKeyRef.current));
-        setItems(result.data);
-        setHasMore(result.hasMore && Boolean(result.cursor));
-        setPageInfo(result.pageInfo);
-      } catch (err) {
-        if (generation !== generationRef.current) return;
-        setError(toError(err));
-      } finally {
-        if (generation === generationRef.current) {
-          inFlightRef.current = false;
-          setIsLoading(false);
-          setIsLoadingMore(false);
-        }
-      }
+  const getKey = useCallback(
+    (
+      _index: number,
+      prev: PaginatedResult<T> | null
+    ): [string, string | null] | null => {
+      if (prev && (!prev.hasMore || !prev.cursor)) return null;
+      return [cacheKey, prev?.cursor ?? null];
     },
-    [fetchFn]
+    [cacheKey]
   );
 
-  const loadMore = useCallback(async () => {
-    if (inFlightRef.current || !cursorRef.current) return;
-    const generation = generationRef.current;
-    inFlightRef.current = true;
-    setIsLoadingMore(true);
-    try {
-      const result = await fetchFn(cursorRef.current);
-      if (generation !== generationRef.current) return;
-      cursorRef.current = result.cursor;
-      const fresh = result.data.filter(
-        (item) => !seenKeysRef.current.has(getItemKeyRef.current(item))
-      );
-      for (const item of fresh) {
-        seenKeysRef.current.add(getItemKeyRef.current(item));
-      }
-      if (fresh.length > 0) {
-        setItems((prev) => [...prev, ...fresh]);
-      }
-      setHasMore(result.hasMore && Boolean(result.cursor));
-    } catch (err) {
-      if (generation !== generationRef.current) return;
-      setError(toError(err));
-    } finally {
-      if (generation === generationRef.current) {
-        inFlightRef.current = false;
-        setIsLoadingMore(false);
+  const {
+    data: pages,
+    error,
+    isLoading,
+    isValidating,
+    size,
+    setSize,
+    mutate,
+  } = useSWRInfinite<PaginatedResult<T>>(
+    getKey,
+    ([, cursor]: [string, string | null]) => fetchFn(cursor ?? undefined),
+    {
+      revalidateFirstPage: false,
+      revalidateIfStale: false,
+      revalidateOnFocus: false,
+      keepPreviousData: true,
+    }
+  );
+
+  const items = useMemo(() => {
+    if (!pages) return [];
+    const seen = new Set<string>();
+    const result: T[] = [];
+    for (const page of pages) {
+      for (const item of page.data) {
+        const key = getItemKey(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(item);
       }
     }
-  }, [fetchFn]);
+    return result;
+  }, [pages, getItemKey]);
 
-  // Initial load, and reset + refetch whenever fetchFn identity changes
-  // (filters / sort order changed).
-  useEffect(() => {
-    cursorRef.current = undefined;
-    seenKeysRef.current = new Set();
-    setItems([]);
-    setHasMore(false);
-    fetchFirstPage({ showLoading: true });
-  }, [fetchFirstPage]);
+  const lastPage = pages?.[pages.length - 1];
+  const hasMore = Boolean(lastPage?.hasMore && lastPage?.cursor);
+  // A further page has been requested but its data hasn't arrived yet.
+  const isLoadingMore = size > 0 && Boolean(pages) && pages!.length < size;
+
+  const loadMore = useCallback(() => {
+    if (isValidating || !hasMore) return;
+    void setSize((s) => s + 1);
+  }, [isValidating, hasMore, setSize]);
 
   const reload = useCallback(() => {
-    cursorRef.current = undefined;
-    seenKeysRef.current = new Set();
-    setItems([]);
-    setHasMore(false);
-    fetchFirstPage({ showLoading: true });
-  }, [fetchFirstPage]);
+    void setSize(1);
+    void mutate();
+  }, [setSize, mutate]);
 
-  const refresh = useCallback(() => {
-    cursorRef.current = undefined;
-    fetchFirstPage({ showLoading: false });
-  }, [fetchFirstPage]);
+  const normalizedError: Error | null = error
+    ? error instanceof Error
+      ? error
+      : new WorkflowWebAPIError(String(error), { layer: 'client' })
+    : null;
 
   return {
     items,
-    error,
+    error: normalizedError,
     isLoading,
     isLoadingMore,
     hasMore,
     loadMore,
     reload,
-    refresh,
-    pageInfo,
+    refresh: reload,
+    pageInfo: pages?.[0]?.pageInfo,
   };
 }
 
 /**
  * Infinite-scrolling list of workflow runs.
  *
- * Pages are larger than the prev/next views (25 rows) since rows accumulate;
- * with the ClickHouse-backed analytics read path this keeps the number of
- * round-trips low while scrolling.
+ * Pages are larger than the old prev/next views (25 rows) since rows
+ * accumulate; with the ClickHouse-backed analytics read path this keeps the
+ * number of round-trips low while scrolling.
  */
 export function useWorkflowRunsInfinite(
   env: EnvMap,
@@ -185,6 +143,8 @@ export function useWorkflowRunsInfinite(
 ): InfiniteList<WorkflowRun> {
   const { workflowName, status, limit = 25, sortOrder = 'desc' } = params;
 
+  const cacheKey = `workflow-runs:${workflowName ?? ''}:${status ?? ''}:${sortOrder}:${limit}`;
+
   const fetchFn = useCallback(
     (cursor?: string) =>
       unwrapOrThrow(
@@ -193,5 +153,7 @@ export function useWorkflowRunsInfinite(
     [env, workflowName, limit, sortOrder, status]
   );
 
-  return useInfiniteList(fetchFn, (run) => run.runId);
+  const getItemKey = useCallback((run: WorkflowRun) => run.runId, []);
+
+  return useInfiniteList(cacheKey, fetchFn, getItemKey);
 }
