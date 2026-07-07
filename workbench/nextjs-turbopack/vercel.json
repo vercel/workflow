@@ -12,6 +12,9 @@
     },
     "app/api/e2e-region-implicit/fra1/route.ts": {
       "regions": ["fra1"]
+    },
+    "app/api/e2e-stream-read/sfo1/route.ts": {
+      "regions": ["sfo1"]
     }
   }
 }

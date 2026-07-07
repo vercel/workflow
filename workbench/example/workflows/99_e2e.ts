@@ -3667,3 +3667,39 @@ async function regionProbeStep(): Promise<string | null> {
   'use step';
   return process.env.VERCEL_REGION ?? null;
 }
+
+async function writeCrossRegionStreamChunks(
+  writable: WritableStream,
+  chunkCount: number
+) {
+  'use step';
+  const writer = writable.getWriter();
+  for (let i = 0; i < chunkCount; i++) {
+    await writer.write(new TextEncoder().encode(`chunk-${i}`));
+  }
+  writer.releaseLock();
+}
+
+async function closeCrossRegionStream(writable: WritableStream) {
+  'use step';
+  await writable.close();
+}
+
+/**
+ * Cross-region stream visibility probe (see
+ * packages/core/e2e/e2e-region.test.ts).
+ *
+ * Writes `chunkCount` chunks to the default output stream, then holds the
+ * stream OPEN for 45 seconds before closing. The hold-open window is the
+ * point: completed streams are the easy case, so a cross-region reader
+ * must observe the chunks while the stream is still IN PROGRESS to
+ * actually exercise cross-region visibility.
+ */
+export async function crossRegionStreamWorkflow(chunkCount: number) {
+  'use workflow';
+  const writable = getWritable();
+  await writeCrossRegionStreamChunks(writable, chunkCount);
+  await sleep('45s');
+  await closeCrossRegionStream(writable);
+  return 'done';
+}

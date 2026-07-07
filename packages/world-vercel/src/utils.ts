@@ -31,8 +31,13 @@ import { version } from './version.js';
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
+ *
+ * BRANCH-ONLY (revert to '' before merge): pointed at a multi-region
+ * backend preview so this PR's e2e runs validate region routing and
+ * cross-region stream visibility end-to-end.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-fix-stream-state-electrodb-ownership.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.

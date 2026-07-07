@@ -33,6 +33,14 @@ import {
  *      call `start()` with NO region option — `createRunId` derives the
  *      tag from the minting function's `VERCEL_REGION`.
  *
+ * A third configuration covers cross-region STREAM visibility: a
+ * workflow started in iad1 writes stream chunks and holds the stream
+ * open, while a workbench route pinned to sfo1 reads it mid-stream. The
+ * reader executes in a region that served none of the stream's writes,
+ * so chunk visibility cannot come from region-local state — it must
+ * come from the backend's cross-region stream metadata, and it must be
+ * correct while the stream is still in progress.
+ *
  * Requires the workbench app to be deployed multi-region
  * (workbench/nextjs-turbopack vercel.json). Runs as its own CI job
  * (e2e-vercel-multi-region in tests.yml) against nextjs-turbopack only.
@@ -141,15 +149,25 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
     // These starts publish through the api.vercel.com token proxy; the
     // per-send region rides the x-vercel-queue-region header so the flow
     // message lands on the region's VQS dataplane.
-    test.each(
-      REGIONS
-    )('start({ region: %s }) mints a tagged run ID and executes there', async (region) => {
-      const label = `e2e-explicit-${region}`;
-      const run = await start<RegionProbeResult>(await regionProbe(), [label], {
-        region,
-      });
-      await expectRunInRegion(run, region, label);
-    });
+    test.each(REGIONS)(
+      'start({ region: %s }) mints a tagged run ID and executes there',
+      // Generous timeout: the first case in this file absorbs every cold
+      // start at once (fresh workbench instances in up to three regions
+      // plus a cold backend preview) and has been observed just over the
+      // 60s default.
+      { timeout: 120_000 },
+      async (region) => {
+        const label = `e2e-explicit-${region}`;
+        const run = await start<RegionProbeResult>(
+          await regionProbe(),
+          [label],
+          {
+            region,
+          }
+        );
+        await expectRunInRegion(run, region, label);
+      }
+    );
 
     test('concurrent starts across all regions stay isolated', async () => {
       // Concurrent traffic touching multiple regions in one process must
@@ -169,6 +187,67 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
         await expectRunInRegion(run, region, label);
       }
     });
+  });
+
+  describe('cross-region stream visibility', () => {
+    test(
+      'an sfo1 reader sees chunks of an IN-PROGRESS iad1 stream',
+      { timeout: 120_000 },
+      async () => {
+        const CHUNKS = 5;
+        const probe = await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/99_e2e.ts',
+          'crossRegionStreamWorkflow'
+        );
+        // Writer executes in iad1; after writing the chunks the workflow
+        // holds the stream open for 45s — the window in which the
+        // cross-region read below must see the chunks.
+        const run = await start<string>(probe, [CHUNKS], { region: 'iad1' });
+
+        // Wait until the writer has produced every chunk. This read runs
+        // from the test process via the api.vercel.com proxy (iad1-side),
+        // so it does not depend on the cross-region path under test.
+        await expect
+          .poll(async () => run.getReadable().getTailIndex(), {
+            timeout: 60_000,
+            interval: 1_000,
+          })
+          .toBe(CHUNKS - 1);
+
+        // The run must still be in progress: durable stream state only
+        // becomes trivially visible at completion, so reading now is what
+        // distinguishes the fixed behavior from the broken one.
+        const world = await getWorld();
+        expect((await world.runs.get(run.runId)).status).toBe('running');
+
+        // Cross-region read: the sfo1-pinned route executes in a region
+        // that served none of the stream's writes, so the chunk count it
+        // reports must come from cross-region stream metadata.
+        const url = new URL('/api/e2e-stream-read/sfo1', deploymentUrl);
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(await getTrustedSourcesHeaders()),
+          },
+          body: JSON.stringify({ runId: run.runId }),
+        });
+        expect(res.ok).toBe(true);
+        const body = (await res.json()) as {
+          tailIndex: number;
+          readRegion: string | null;
+        };
+        // If the route isn't actually executing in sfo1 the assertion
+        // below tests nothing — fail loudly instead.
+        expect(body.readRegion).toBe('sfo1');
+        expect(body.tailIndex).toBe(CHUNKS - 1);
+
+        // Let the workflow finish (closes the stream) so the run doesn't
+        // dangle past the suite.
+        expect(await run.returnValue).toBe('done');
+      }
+    );
   });
 
   describe('implicit region: region-pinned routes without a region option', () => {
