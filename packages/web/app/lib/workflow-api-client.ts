@@ -16,6 +16,11 @@
 
 export type { ResumeHookResult } from '~/lib/types';
 export {
+  useInfiniteList,
+  useWorkflowRunsInfinite,
+} from './client/hooks/use-infinite-list';
+export { useLoadMoreOnScroll } from './client/hooks/use-load-more-on-scroll';
+export {
   usePaginatedList,
   useWorkflowHooks,
   useWorkflowRuns,

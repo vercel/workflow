@@ -4,8 +4,6 @@ import {
   AlertCircle,
   ArrowDownAZ,
   ArrowUpAZ,
-  ChevronLeft,
-  ChevronRight,
   Loader2,
   MoreHorizontal,
   RefreshCw,
@@ -51,7 +49,8 @@ import {
   getErrorMessage,
   getErrorTitle,
   reenqueueRun,
-  useWorkflowRuns,
+  useLoadMoreOnScroll,
+  useWorkflowRunsInfinite,
 } from '~/lib/workflow-api-client';
 import { useServerConfig } from '~/lib/world-config-context';
 import { CopyableText } from './display-utils/copyable-text';
@@ -394,19 +393,28 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   );
 
   const {
-    data,
+    items: runs,
     error,
-    nextPage,
-    previousPage,
-    hasNextPage,
-    hasPreviousPage,
+    isLoading,
+    isLoadingMore,
+    hasMore,
+    loadMore,
     reload,
     refresh,
-    pageInfo,
-  } = useWorkflowRuns(env, {
+    pageInfo: analyticsPageInfo,
+  } = useWorkflowRunsInfinite(env, {
     sortOrder,
     workflowName: workflowNameFilter === 'all' ? undefined : workflowNameFilter,
     status: status === 'all' ? undefined : status,
+  });
+
+  // Scroll container doubles as the IntersectionObserver root so the
+  // sentinel's rootMargin prefetch is measured against the table viewport.
+  const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
+  const sentinelRef = useLoadMoreOnScroll(loadMore, {
+    hasMore,
+    isLoadingMore,
+    root: scrollRoot,
   });
 
   // Multi-select functionality
@@ -414,19 +422,17 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     getItemId: (run) => run.runId,
   });
 
-  const runs = data.data ?? [];
-
   // Bulk action states
   const [isBulkCancelling, setIsBulkCancelling] = useState(false);
   const [isBulkReenqueuing, setIsBulkReenqueuing] = useState(false);
 
   const isLocalAndHasMissingData =
-    isLocal && (!localDataDirPath || !data?.data?.length);
+    isLocal && (!localDataDirPath || !runs.length);
 
   // Track seen workflow names from loaded data
   useEffect(() => {
-    if (data.data && data.data.length > 0) {
-      const newNames = new Set(data.data.map((run) => run.workflowName));
+    if (runs.length > 0) {
+      const newNames = new Set(runs.map((run) => run.workflowName));
       setSeenWorkflowNames((prev) => {
         const updated = new Set(prev);
         for (const name of newNames) {
@@ -435,9 +441,9 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
         return updated;
       });
     }
-  }, [data.data]);
+  }, [runs]);
 
-  const loading = data.isLoading;
+  const loading = isLoading;
 
   // Track when we've completed the initial load
   useEffect(() => {
@@ -609,7 +615,10 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
       />
 
       <Card className="overflow-hidden mt-4 bg-background">
-        <CardContent className="p-0 max-h-[calc(100vh-280px)] overflow-auto">
+        <CardContent
+          ref={setScrollRoot}
+          className="p-0 max-h-[calc(100vh-280px)] overflow-auto"
+        >
           <Table>
             <TableHeader>
               <TableRow>
@@ -665,7 +674,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                     </div>
                   </TableCell>
                 </TableRow>
-              ) : !data.data || data.data.length === 0 ? (
+              ) : runs.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="h-[400px]">
                     <div className="text-sm text-center text-muted-foreground flex flex-col items-center justify-center gap-3 h-full">
@@ -750,33 +759,39 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                   </TableRow>
                 ))
               )}
+              {isLoadingMore && (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-3">
+                    <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading more runs…
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
+          {/* Infinite-scroll sentinel: observed against the scroll container
+              so the next page is fetched before the user reaches the end. */}
+          <div ref={sentinelRef} aria-hidden className="h-px" />
         </CardContent>
       </Card>
 
-      <div className="flex items-center justify-between mt-4">
-        <div className="text-sm text-muted-foreground">{pageInfo}</div>
-        <div className="flex gap-2 items-center">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={previousPage}
-            disabled={!hasPreviousPage}
-          >
-            <ChevronLeft />
-            Previous
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={nextPage}
-            disabled={!hasNextPage}
-          >
-            Next
-            <ChevronRight />
-          </Button>
+      <div className="flex items-center justify-between mt-4 text-sm text-muted-foreground">
+        <div>
+          {runs.length > 0 && (
+            <>
+              Showing {runs.length} run{runs.length === 1 ? '' : 's'}
+              {!hasMore && !loading ? ' · end of list' : ''}
+            </>
+          )}
         </div>
+        {analyticsPageInfo?.currentLookbackDays !== undefined && (
+          <div>
+            Runs from the last {analyticsPageInfo.currentLookbackDays} day
+            {analyticsPageInfo.currentLookbackDays === 1 ? '' : 's'}
+          </div>
+        )}
       </div>
 
       <SelectionBar
