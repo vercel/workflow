@@ -1,5 +1,34 @@
 # @workflow/astro
 
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2725](https://github.com/vercel/workflow/pull/2725) [`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Share framework project root detection across Astro, Next.js, and SvelteKit.
+
+- Updated dependencies [[`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`7615d99`](https://github.com/vercel/workflow/commit/7615d999f1f72a1d2cbe36ba414155140195d014)]:
+  - @workflow/builders@5.0.0-beta.27
+  - @workflow/rollup@5.0.0-beta.27
+  - @workflow/vite@5.0.0-beta.27
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.26
+  - @workflow/rollup@5.0.0-beta.26
+  - @workflow/vite@5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- Updated dependencies [[`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3)]:
+  - @workflow/builders@5.0.0-beta.25
+  - @workflow/rollup@5.0.0-beta.25
+  - @workflow/vite@5.0.0-beta.25
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

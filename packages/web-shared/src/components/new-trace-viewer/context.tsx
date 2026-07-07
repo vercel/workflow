@@ -14,6 +14,8 @@ import type { Span } from './types';
 interface ActiveSpanContextValue {
   activeSpanId: string | null;
   activeSpan: Span | null;
+  /** The full span list the selection lives in (ordered as rendered). */
+  spans: Span[];
   setActiveSpan: (spanId: string) => void;
   clearActiveSpan: () => void;
 }
@@ -67,10 +69,11 @@ export function ActiveSpanProvider({
     () => ({
       activeSpanId,
       activeSpan,
+      spans,
       setActiveSpan,
       clearActiveSpan,
     }),
-    [activeSpanId, activeSpan, setActiveSpan, clearActiveSpan]
+    [activeSpanId, activeSpan, spans, setActiveSpan, clearActiveSpan]
   );
 
   return (

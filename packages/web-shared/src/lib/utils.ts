@@ -74,25 +74,20 @@ export function formatDuration(ms: number, compact = false): string {
   return parts.join(' ');
 }
 
-// Locale-aware formatter that always renders exactly two fraction digits.
-// Used for the seconds component of precise durations so values are never
-// snapped to a whole second (and thousands separators stay correct).
-const preciseSecondsFormatter = new Intl.NumberFormat(undefined, {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-
 /**
  * Formats a duration in milliseconds without snapping to whole seconds.
  *
- * Unlike {@link formatDuration}, this never rounds a sub-minute value up to
- * the next whole second (e.g. 1626ms renders as "1.63s", not "2s").
+ * Unlike {@link formatDuration}, this keeps sub-second detail, so 1626ms
+ * renders as "1.63s" rather than "2s". `fractionDigits` sets both the number of
+ * decimals on the seconds component (trailing zeros trimmed, so 2000ms is "2s"
+ * and 1500ms is "1.5s") and the rounding granularity — the default of 2 rounds
+ * to 10ms; the timeline ruler passes fewer digits to match its tick step.
  *
  * - < 1s: shows whole milliseconds (e.g. "626ms")
- * - 1s – 1m: shows seconds with two decimals (e.g. "1.63s", "45.20s")
- * - >= 1m: decomposes into d/h/m with two-decimal seconds (e.g. "1m 13.45s")
+ * - 1s – 1m: shows seconds with trimmed decimals (e.g. "1.63s", "1.5s", "45s")
+ * - >= 1m: decomposes into d/h/m with trimmed-decimal seconds (e.g. "1m 13.45s")
  */
-export function formatDurationPrecise(ms: number): string {
+export function formatDurationPrecise(ms: number, fractionDigits = 2): string {
   if (ms === 0) {
     return '0s';
   }
@@ -104,10 +99,11 @@ export function formatDurationPrecise(ms: number): string {
     }
   }
 
-  const normalizedMs = Math.round(ms / 10) * 10;
+  const granularityMs = MS_IN_SECOND / 10 ** fractionDigits;
+  const normalizedMs = Math.round(ms / granularityMs) * granularityMs;
 
   if (normalizedMs < MS_IN_MINUTE) {
-    return `${preciseSecondsFormatter.format(normalizedMs / MS_IN_SECOND)}s`;
+    return `${Number((normalizedMs / MS_IN_SECOND).toFixed(fractionDigits))}s`;
   }
 
   const days = Math.floor(normalizedMs / MS_IN_DAY);
@@ -126,7 +122,7 @@ export function formatDurationPrecise(ms: number): string {
   if (minutes > 0) {
     parts.push(`${minutes}m`);
   }
-  parts.push(`${preciseSecondsFormatter.format(seconds)}s`);
+  parts.push(`${Number(seconds.toFixed(fractionDigits))}s`);
 
   return parts.join(' ');
 }

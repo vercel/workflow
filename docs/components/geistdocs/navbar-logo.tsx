@@ -25,7 +25,7 @@ const OSS_PRODUCT_LINKS: {
   logo: ComponentType<{ height: number }>;
   height: number;
 }[] = [
-  { href: 'https://eve.dev/docs', logo: LogoEve, height: 12 },
+  { href: 'https://eve.dev', logo: LogoEve, height: 12 },
   { href: 'https://ai-sdk.dev/', logo: LogoAiSdk, height: 12 },
   { href: 'https://flags-sdk.dev/', logo: LogoFlagsSdk, height: 20 },
   { href: 'https://chat-sdk.dev/', logo: LogoChatSdk, height: 20 },

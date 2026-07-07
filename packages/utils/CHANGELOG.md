@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#2678](https://github.com/vercel/workflow/pull/2678) [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475) Thanks [@ijjk](https://github.com/ijjk)! - Filter Windows netstat output by PID column when detecting local workflow ports.
+
 ## 5.0.0-beta.4
 
 ### Minor Changes

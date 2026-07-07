@@ -68,6 +68,19 @@ vi.mock('./runtime/world.js', () => ({
   setWorld: vi.fn(),
 }));
 
+vi.mock('./runtime/get-world-lazy.js', () => ({
+  getWorldLazy: vi.fn(() => ({
+    writeToStream: vi.fn((name: string, _runId: string, data: Uint8Array) => {
+      mockStreamReads.writeLog.push({ name, data });
+      return Promise.resolve();
+    }),
+    closeStream: vi.fn((name: string) => {
+      mockStreamReads.closeLog.push(name);
+      return Promise.resolve();
+    }),
+  })),
+}));
+
 // Mock resume-hook
 vi.mock('./runtime/resume-hook.js', () => ({
   resumeHook: mockResumeHook,

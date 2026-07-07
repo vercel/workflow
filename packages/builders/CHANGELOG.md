@@ -1,5 +1,37 @@
 # @workflow/builders
 
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2725](https://github.com/vercel/workflow/pull/2725) [`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Share framework project root detection across Astro, Next.js, and SvelteKit.
+
+- [#2678](https://github.com/vercel/workflow/pull/2678) [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475) Thanks [@ijjk](https://github.com/ijjk)! - Speed up Next.js workflow dev rebuilds, ignore commented imports during HMR discovery, and avoid Turbopack resolving custom-world dynamic imports.
+
+- [#2702](https://github.com/vercel/workflow/pull/2702) [`7615d99`](https://github.com/vercel/workflow/commit/7615d999f1f72a1d2cbe36ba414155140195d014) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix workflow graph extraction when transformed step proxies include pure annotations.
+
+- Updated dependencies [[`5a23159`](https://github.com/vercel/workflow/commit/5a231598e41ce7cd46b647c9aaaa900e55ad3c35), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8)]:
+  - @workflow/core@5.0.0-beta.27
+  - @workflow/utils@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.9
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [[`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528)]:
+  - @workflow/core@5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2594](https://github.com/vercel/workflow/pull/2594) [`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3) Thanks [@ijjk](https://github.com/ijjk)! - Fix fast workflow discovery for JS files imported through basenames like `./hello.step`.
+
+- Updated dependencies [[`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e)]:
+  - @workflow/core@5.0.0-beta.25
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

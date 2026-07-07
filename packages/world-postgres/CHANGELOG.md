@@ -1,5 +1,34 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.21
+
+### Minor Changes
+
+- [#2705](https://github.com/vercel/workflow/pull/2705) [`97b8469`](https://github.com/vercel/workflow/commit/97b846902087fd2f7e8d5fd708a20eb175e4d636) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Move Workflow Postgres enum types into the workflow schema.
+
+### Patch Changes
+
+- [#2714](https://github.com/vercel/workflow/pull/2714) [`dd36e26`](https://github.com/vercel/workflow/commit/dd36e269624ab3ebfe7c38cff7dc312c4621c698) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix Postgres step lifecycle event ordering so a late concurrent step_started is no longer logged after step_completed.
+
+- Updated dependencies [[`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`fc5bdcb`](https://github.com/vercel/workflow/commit/fc5bdcb003051815e84f60ee00f5d8d6cc11c663), [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399)]:
+  - @workflow/utils@5.0.0-beta.5
+  - @workflow/world-local@5.0.0-beta.23
+  - @workflow/world@5.0.0-beta.15
+  - @workflow/errors@5.0.0-beta.9
+
+## 5.0.0-beta.20
+
+### Patch Changes
+
+- [#2644](https://github.com/vercel/workflow/pull/2644) [`361ce23`](https://github.com/vercel/workflow/commit/361ce23b0f55833dab48889f4734c24cd8e373bf) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Rename the Postgres setup command to `bootstrap`.
+
+- [#2657](https://github.com/vercel/workflow/pull/2657) [`5718df8`](https://github.com/vercel/workflow/commit/5718df8721d76d8ee7088478c858e9e8862a332b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Defer loopback worker startup
+
+- Updated dependencies [[`5977694`](https://github.com/vercel/workflow/commit/59776946a095c56c68254dcb0761d5dec48ccdf6), [`d4e6c5b`](https://github.com/vercel/workflow/commit/d4e6c5ba34a1a3df0e07cc1891837e1435a697a8), [`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/world-local@5.0.0-beta.22
+  - @workflow/world@5.0.0-beta.14
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.19
 
 ### Patch Changes

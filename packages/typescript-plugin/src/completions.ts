@@ -1,5 +1,5 @@
 import type ts from 'typescript/lib/tsserverlibrary';
-import { getDirective, WORKFLOW_HOOKS } from './utils';
+import { getDirective, isDirectiveFunctionLike, WORKFLOW_HOOKS } from './utils';
 
 export function enhanceCompletions(
   fileName: string,
@@ -20,7 +20,7 @@ export function enhanceCompletions(
   const enclosingFunction = findEnclosingFunction(node, tsLib);
   if (!enclosingFunction) return prior;
 
-  const directive = getDirective(enclosingFunction, sourceFile, tsLib);
+  const directive = getDirective(enclosingFunction, tsLib);
 
   // If we're in a workflow function, add workflow hooks to completions
   if (directive === 'use workflow') {
@@ -64,11 +64,7 @@ function findEnclosingFunction(
 ): ts.FunctionLikeDeclaration | undefined {
   let current: ts.Node | undefined = node;
   while (current) {
-    if (
-      tsLib.isFunctionDeclaration(current) ||
-      tsLib.isArrowFunction(current) ||
-      tsLib.isFunctionExpression(current)
-    ) {
+    if (isDirectiveFunctionLike(current, tsLib)) {
       return current;
     }
     current = current.parent;

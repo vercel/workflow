@@ -1,5 +1,41 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.23
+
+### Minor Changes
+
+- [#2234](https://github.com/vercel/workflow/pull/2234) [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add an optional metadata-only `world.analytics` namespace for observability reads (runs, steps, events, hooks, waits). Implemented by `@workflow/world-vercel`; payload-bearing fields remain on the canonical runtime storage APIs.
+
+- [#2718](https://github.com/vercel/workflow/pull/2718) [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Make runtime tuning constants (timeouts, retry counts, stream buffering/reconnect) configurable via `WORKFLOW_*` environment variables, and forward `WORKFLOW_TEST_LIMIT_OVERRIDES` to the backend as a request header so a deployment can tighten server-side limits for testing.
+
+### Patch Changes
+
+- [#2680](https://github.com/vercel/workflow/pull/2680) [`89f4726`](https://github.com/vercel/workflow/commit/89f4726b7308b02e8898c1e564b2c94272df6f4f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decompress gzip- and zstd-prefixed serialized data returned from Vercel Workflow storage, and route OSS web hydration through the async WASM-capable path for compressed payloads.
+
+- Updated dependencies [[`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399)]:
+  - @workflow/world@5.0.0-beta.15
+  - @workflow/errors@5.0.0-beta.9
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [`897aac9`](https://github.com/vercel/workflow/commit/897aac979f2984dfa424f9ba3147b7dc82319a22) - Retry transient transport failures (e.g. `UND_ERR_REQ_RETRY`, `ECONNRESET`, socket timeouts, 5xx) in-process for idempotent-on-retry event POSTs, so a brief network blip after a step completes no longer re-executes the step. `step_started`, `step_retrying`, and `hook_received` are excluded as they are not safe to blindly retry.
+
+- [`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115) - Treat transient world-vercel transport failures as retryable, surfacing them as a `TRANSPORT` type `WorkflowWorldError`, to be retried by the queue instead of failing the run.
+
+- [`1dcdafd`](https://github.com/vercel/workflow/commit/1dcdafd422c870ec1b7dcbba8b0e733c1b6bbb14) - Unify world-vercel HTTP request handling into a shared core and extend OTEL client spans + debug logging to the v4 events, stream, and Vercel-API request paths.
+
+## 5.0.0-beta.21
+
+### Patch Changes
+
+- [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60) - Enable HTTP/2 for the events API and stream write requests.
+
+- Updated dependencies [[`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/world@5.0.0-beta.14
+  - @workflow/errors@5.0.0-beta.8
+
 ## 5.0.0-beta.20
 
 ### Patch Changes

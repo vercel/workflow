@@ -1,5 +1,49 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.27
+
+### Minor Changes
+
+- [#2773](https://github.com/vercel/workflow/pull/2773) [`19577b8`](https://github.com/vercel/workflow/commit/19577b8d058c24c763b91a2c5ec317e50222cf8c) Thanks [@mitul-s](https://github.com/mitul-s)! - Make the span detail panel in the new trace viewer user-resizable: drag its left border (double-click to reset), with the width persisted across sessions.
+
+### Patch Changes
+
+- [#2695](https://github.com/vercel/workflow/pull/2695) [`ce0bbb1`](https://github.com/vercel/workflow/commit/ce0bbb119856d7d3ad9298d6cb9c8f9aaee8e44e) Thanks [@mitul-s](https://github.com/mitul-s)! - Use Unicode ellipsis character (…) instead of three dots (...) in middle-truncate component.
+
+- [#2604](https://github.com/vercel/workflow/pull/2604) [`53ecc57`](https://github.com/vercel/workflow/commit/53ecc57e4c3c76fa611d2e65c3e513346bc7c53d) Thanks [@mitul-s](https://github.com/mitul-s)! - Align the detail panel top info rows with the Attributes section styling, group them in a collapsible Metadata section, and render values in monospace.
+
+- [#2694](https://github.com/vercel/workflow/pull/2694) [`6080b8e`](https://github.com/vercel/workflow/commit/6080b8ecdf11b60cb63747a183cc39876a863dc9) Thanks [@mitul-s](https://github.com/mitul-s)! - Add arrow key support on trace viewer
+
+- [#2680](https://github.com/vercel/workflow/pull/2680) [`89f4726`](https://github.com/vercel/workflow/commit/89f4726b7308b02e8898c1e564b2c94272df6f4f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decompress gzip- and zstd-prefixed serialized data returned from Vercel Workflow storage, and route OSS web hydration through the async WASM-capable path for compressed payloads.
+
+- Updated dependencies [[`5a23159`](https://github.com/vercel/workflow/commit/5a231598e41ce7cd46b647c9aaaa900e55ad3c35), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399)]:
+  - @workflow/core@5.0.0-beta.27
+  - @workflow/utils@5.0.0-beta.5
+  - @workflow/world@5.0.0-beta.15
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [[`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528)]:
+  - @workflow/core@5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2619](https://github.com/vercel/workflow/pull/2619) [`8c12132`](https://github.com/vercel/workflow/commit/8c12132d73fee22d80bead6e773c734688d13fba) Thanks [@mitul-s](https://github.com/mitul-s)! - Extend `cn` with custom tailwind-merge class groups for the design-system typography and material utilities, and move it to its own `lib/cn` module.
+
+- [#2637](https://github.com/vercel/workflow/pull/2637) [`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix the run trace detail panel flickering its Input/Output sections when navigating between spans. Span detail is now driven by a single selection-derived state machine (`useSelectedSpanDetail`) whose loading state stays in phase with the selected span, replacing the fetch flag that lagged selection by a few renders.
+
+- [#2613](https://github.com/vercel/workflow/pull/2613) [`148d474`](https://github.com/vercel/workflow/commit/148d4743e504d97e31cb333864bf4b22c6f49e5b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Use workflow event occurrence timestamps for span timing, span detail lifecycle fields, and event row display when available.
+
+- [#2614](https://github.com/vercel/workflow/pull/2614) [`a9a1d99`](https://github.com/vercel/workflow/commit/a9a1d991774b01357d5e150585cdd8c8185cb4b4) Thanks [@mitul-s](https://github.com/mitul-s)! - Remove the drop shadow from the off-screen marker indicator button in the trace viewer.
+
+- Updated dependencies [[`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e), [`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/core@5.0.0-beta.25
+  - @workflow/world@5.0.0-beta.14
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

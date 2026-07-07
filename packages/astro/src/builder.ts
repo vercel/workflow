@@ -5,6 +5,7 @@ import {
   BaseBuilder,
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 
@@ -20,24 +21,33 @@ const WORKFLOW_ROUTES = [
 ];
 
 export class LocalBuilder extends BaseBuilder {
-  constructor(options?: {
-    sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
-  }) {
+  #pagesDir: string;
+
+  constructor(options: Partial<AstroConfig> = {}) {
+    const config = resolveAstroBuilderConfig(options);
     super({
-      dirs: ['src/pages', 'src/workflows'],
+      ...createBaseBuilderConfig({
+        workingDir: config.workingDir,
+        projectRoot: config.projectRoot,
+        dirs: config.dirs,
+        sourcemap: options.sourcemap,
+      }),
+      ...options,
+      dirs: config.dirs,
       buildTarget: 'astro' as const,
-      stepsBundlePath: '', // unused in base
-      workflowsBundlePath: '', // unused in base
-      webhookBundlePath: '', // unused in base
-      workingDir: process.cwd(),
+      workingDir: config.workingDir,
+      projectRoot: config.projectRoot,
+      moduleSpecifierRoot: options.moduleSpecifierRoot ?? config.workingDir,
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
-      sourcemap: options?.sourcemap,
     });
+    this.#pagesDir = config.pagesDir;
   }
 
   override async build(): Promise<void> {
-    const pagesDir = resolve(this.config.workingDir, 'src/pages');
-    const workflowGeneratedDir = join(pagesDir, '.well-known/workflow/v1');
+    const workflowGeneratedDir = join(
+      this.#pagesDir,
+      '.well-known/workflow/v1'
+    );
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
@@ -162,16 +172,22 @@ export const prerender = false;`
 }
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
-  constructor(config?: Partial<AstroConfig>) {
-    const workingDir = config?.workingDir || process.cwd();
+  constructor(options: Partial<AstroConfig> = {}) {
+    const config = resolveAstroBuilderConfig(options);
     super({
       ...createBaseBuilderConfig({
-        workingDir,
-        dirs: ['src/pages', 'src/workflows'],
-        runtime: config?.runtime,
-        sourcemap: config?.sourcemap,
+        workingDir: config.workingDir,
+        projectRoot: config.projectRoot,
+        dirs: config.dirs,
+        runtime: options.runtime,
+        sourcemap: options.sourcemap,
       }),
+      ...options,
+      dirs: config.dirs,
       buildTarget: 'vercel-build-output-api',
+      workingDir: config.workingDir,
+      projectRoot: config.projectRoot,
+      moduleSpecifierRoot: options.moduleSpecifierRoot ?? config.workingDir,
       debugFilePrefix: '_',
     });
   }
@@ -213,4 +229,22 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     // Use old astro config with updated routes
     await writeFile(configPath, JSON.stringify(config, null, 2));
   }
+}
+
+function resolveAstroBuilderConfig(options: Partial<AstroConfig> = {}): {
+  workingDir: string;
+  pagesDir: string;
+  dirs: string[];
+  projectRoot: string;
+} {
+  const workingDir = resolve(options.workingDir ?? process.cwd());
+  const dirs = options.dirs ?? ['src/pages', 'src/workflows'];
+  const pagesDir = resolve(workingDir, dirs[0]);
+
+  return {
+    workingDir,
+    pagesDir,
+    dirs,
+    projectRoot: options.projectRoot ?? resolveProjectRoot(workingDir),
+  };
 }

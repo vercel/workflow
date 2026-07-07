@@ -1,5 +1,38 @@
 # @workflow/vitest
 
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2726](https://github.com/vercel/workflow/pull/2726) [`5faffbc`](https://github.com/vercel/workflow/commit/5faffbce95cd39ab7711e8d6225d8940b4f8ea1b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Derive the Workflow Vitest cwd from the resolved Vitest project root.
+
+- Updated dependencies [[`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d), [`5a23159`](https://github.com/vercel/workflow/commit/5a231598e41ce7cd46b647c9aaaa900e55ad3c35), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`7615d99`](https://github.com/vercel/workflow/commit/7615d999f1f72a1d2cbe36ba414155140195d014), [`fc5bdcb`](https://github.com/vercel/workflow/commit/fc5bdcb003051815e84f60ee00f5d8d6cc11c663), [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399)]:
+  - @workflow/builders@5.0.0-beta.27
+  - @workflow/core@5.0.0-beta.27
+  - @workflow/world-local@5.0.0-beta.23
+  - @workflow/world@5.0.0-beta.15
+  - @workflow/rollup@5.0.0-beta.27
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [[`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528)]:
+  - @workflow/core@5.0.0-beta.26
+  - @workflow/builders@5.0.0-beta.26
+  - @workflow/rollup@5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- Updated dependencies [[`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3), [`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e), [`5977694`](https://github.com/vercel/workflow/commit/59776946a095c56c68254dcb0761d5dec48ccdf6), [`d4e6c5b`](https://github.com/vercel/workflow/commit/d4e6c5ba34a1a3df0e07cc1891837e1435a697a8), [`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/builders@5.0.0-beta.25
+  - @workflow/core@5.0.0-beta.25
+  - @workflow/world-local@5.0.0-beta.22
+  - @workflow/world@5.0.0-beta.14
+  - @workflow/rollup@5.0.0-beta.25
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

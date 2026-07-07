@@ -1,3 +1,4 @@
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { setWorld } from '../runtime/world.js';
@@ -32,6 +33,7 @@ describe('step-level getWritable', () => {
   beforeEach(() => {
     writeCalls = [];
     const mockWorld = {
+      specVersion: SPEC_VERSION_CURRENT,
       streams: {
         write: vi.fn(
           async (_runId: string, _name: string, chunk: Uint8Array) => {

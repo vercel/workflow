@@ -6,7 +6,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import type { Event, World } from '@workflow/world';
+import { type Event, SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock version module to avoid missing generated file
@@ -47,6 +47,7 @@ function createMockWorld(
   const events = overrides.events ?? [];
 
   return {
+    specVersion: SPEC_VERSION_CURRENT,
     runs: {
       get: vi.fn().mockResolvedValue(run),
     },
@@ -322,6 +323,7 @@ describe('Run.returnValue when run.status === "failed"', () => {
 
   function makeFailedRunWorld(error: Uint8Array, errorCode?: string): World {
     return {
+      specVersion: SPEC_VERSION_CURRENT,
       runs: {
         get: vi.fn().mockResolvedValue({
           runId: 'wrun_failed',

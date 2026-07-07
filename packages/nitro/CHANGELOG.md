@@ -1,5 +1,46 @@
 # @workflow/nitro
 
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2722](https://github.com/vercel/workflow/pull/2722) [`923ddd9`](https://github.com/vercel/workflow/commit/923ddd98d9c93b533b2fd3f3bd62e7f4b8a490c8) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Pass configured Nitro workflow scan directories through to Workflow builders.
+
+- [#2713](https://github.com/vercel/workflow/pull/2713) [`3077b8a`](https://github.com/vercel/workflow/commit/3077b8a8034c61b85ced46166f53c1532fddfd65) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Use Nitro's workspace root for workflow module resolution so Nitro and Nuxt monorepo apps can import sibling workspace packages without extra config.
+
+- Updated dependencies [[`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d), [`5a23159`](https://github.com/vercel/workflow/commit/5a231598e41ce7cd46b647c9aaaa900e55ad3c35), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`7615d99`](https://github.com/vercel/workflow/commit/7615d999f1f72a1d2cbe36ba414155140195d014), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`89f4726`](https://github.com/vercel/workflow/commit/89f4726b7308b02e8898c1e564b2c94272df6f4f)]:
+  - @workflow/builders@5.0.0-beta.27
+  - @workflow/core@5.0.0-beta.27
+  - @workflow/web@5.0.0-beta.27
+  - @workflow/rollup@5.0.0-beta.27
+  - @workflow/vite@5.0.0-beta.27
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [[`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528)]:
+  - @workflow/core@5.0.0-beta.26
+  - @workflow/web@5.0.0-beta.26
+  - @workflow/builders@5.0.0-beta.26
+  - @workflow/rollup@5.0.0-beta.26
+  - @workflow/vite@5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2572](https://github.com/vercel/workflow/pull/2572) [`6f4dd0e`](https://github.com/vercel/workflow/commit/6f4dd0e7169c5b3eb48e920a2e86e61450a565d3) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Reload rebuilt step bundles during Vite development.
+
+- [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60) - Fix HTTP/2 requests failing in production builds (Vite/Nitro, TanStack Start) where undici's bundled `node:http2` could not load and fell back to a stub.
+
+- Updated dependencies [[`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b), [`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3), [`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e), [`7c1e2a2`](https://github.com/vercel/workflow/commit/7c1e2a2c7e837ef76bafc771811c8f320d8c4053)]:
+  - @workflow/web@5.0.0-beta.25
+  - @workflow/builders@5.0.0-beta.25
+  - @workflow/core@5.0.0-beta.25
+  - @workflow/rollup@5.0.0-beta.25
+  - @workflow/vite@5.0.0-beta.25
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

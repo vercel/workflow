@@ -314,6 +314,104 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
+  it('redelivers (does NOT fail the run) when event listing hits a transient TRANSPORT error', async () => {
+    const createdEvents: unknown[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_events_transport',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_events_transport',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    // The firewall in front of workflow-server returned 429→503 during an
+    // attack; the RetryAgent exhausted its retries and surfaced
+    // UND_ERR_REQ_RETRY, which world-vercel maps to a TRANSPORT error.
+    const transportError = new WorkflowWorldError(
+      'GET /v3/runs/wrun_events_transport/events transport failure after 1234ms (UND_ERR_REQ_RETRY)',
+      { code: 'TRANSPORT' }
+    );
+
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType !== 'run_started') {
+        createdEvents.push(data);
+      }
+      return data.eventType === 'run_started'
+        ? { run: workflowRun }
+        : {
+            event: {
+              eventId: `event-${createdEvents.length}`,
+              runId: workflowRun.runId,
+              createdAt: new Date(),
+              ...data,
+            },
+          };
+    });
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) => {
+          return async () => {
+            // The real createQueueHandler catches and applies a retry
+            // directive; here we let the throw escape so the test can assert
+            // the delivery rejects (which triggers redelivery in production).
+            await handler(
+              {
+                runId: workflowRun.runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              },
+              {
+                requestId: 'req_test',
+                attempt: 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_test',
+              }
+            );
+            return new Response(null, { status: 204 });
+          };
+        }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => {
+          throw transportError;
+        }),
+      },
+      runs: {
+        get: vi.fn(async () => workflowRun),
+      },
+      queue: vi.fn(),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handler = workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    );
+
+    // The transient transport failure must bubble out of the handler so the
+    // queue redelivers — not be swallowed into a run_failed event.
+    await expect(handler(new Request('https://example.test'))).rejects.toBe(
+      transportError
+    );
+
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
+    );
+  });
+
   it('records run_failed when run_started response parsing fails', async () => {
     const createdEvents: unknown[] = [];
     const parseError = new WorkflowWorldError(

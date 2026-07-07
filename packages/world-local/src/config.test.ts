@@ -1,3 +1,4 @@
+import { setWorkflowBasePath } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveBaseUrl } from './config';
 
@@ -15,6 +16,7 @@ describe('resolveBaseUrl', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+    setWorkflowBasePath(undefined);
     vi.clearAllMocks();
   });
 
@@ -180,6 +182,20 @@ describe('resolveBaseUrl', () => {
       const result = await resolveBaseUrl({});
 
       expect(result).toBe('http://localhost:3000');
+    });
+
+    it('should probe and return local URLs under the workflow base path', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(3000);
+      delete process.env.PORT;
+      setWorkflowBasePath('/v2');
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:3000/v2');
+      expect(getWorkflowPort).toHaveBeenCalledWith({
+        endpoint: '/v2/.well-known/workflow/v1/flow?__health',
+      });
     });
 
     it('should throw error when auto-detection fails', async () => {

@@ -1,5 +1,37 @@
 # @workflow/next
 
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2725](https://github.com/vercel/workflow/pull/2725) [`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Share framework project root detection across Astro, Next.js, and SvelteKit.
+
+- [#2678](https://github.com/vercel/workflow/pull/2678) [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475) Thanks [@ijjk](https://github.com/ijjk)! - Speed up Next.js workflow dev rebuilds, ignore commented imports during HMR discovery, and avoid Turbopack resolving custom-world dynamic imports.
+
+- [#2729](https://github.com/vercel/workflow/pull/2729) [`7eabc1f`](https://github.com/vercel/workflow/commit/7eabc1f4c68af51eb99c23135ea3945b43842dbd) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Derive the workflow builder project root from Next.js workspace root configuration.
+
+- [#2693](https://github.com/vercel/workflow/pull/2693) [`24f3707`](https://github.com/vercel/workflow/commit/24f370773d1d64b8383eb07537a01d63a7ad37db) Thanks [@ijjk](https://github.com/ijjk)! - Disable Workflow loader source-map emission for node_modules files to avoid noisy SWC input source-map warnings.
+
+- Updated dependencies [[`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d), [`5a23159`](https://github.com/vercel/workflow/commit/5a231598e41ce7cd46b647c9aaaa900e55ad3c35), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`7615d99`](https://github.com/vercel/workflow/commit/7615d999f1f72a1d2cbe36ba414155140195d014), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8)]:
+  - @workflow/builders@5.0.0-beta.27
+  - @workflow/core@5.0.0-beta.27
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [[`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528)]:
+  - @workflow/core@5.0.0-beta.26
+  - @workflow/builders@5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- Updated dependencies [[`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3), [`b180270`](https://github.com/vercel/workflow/commit/b1802700e42955ae31105a8c4adce87e7965a219), [`1ea2b4e`](https://github.com/vercel/workflow/commit/1ea2b4ef77dea8ce2845867e53cf1c51a8544e6e)]:
+  - @workflow/builders@5.0.0-beta.25
+  - @workflow/core@5.0.0-beta.25
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

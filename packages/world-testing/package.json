@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-testing",
-  "version": "5.0.0-beta.24",
+  "version": "5.0.0-beta.27",
   "description": "Testing utilities and World implementation for Workflow SDK",
   "main": "dist/src/index.mjs",
   "files": [
@@ -25,7 +25,9 @@
     "@hono/node-server": "1.19.13",
     "@workflow/cli": "workspace:*",
     "@workflow/core": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
+    "@workflow/world-local": "workspace:*",
     "chalk": "5.6.2",
     "hono": "4.12.25",
     "jsonlines": "0.1.1",
