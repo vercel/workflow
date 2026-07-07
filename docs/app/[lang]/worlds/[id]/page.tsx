@@ -1,9 +1,10 @@
+import { Card, type CardProps } from 'fumadocs-ui/components/card';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { WorldDataProvider } from '@/components/worlds/WorldDataProvider';
@@ -12,7 +13,7 @@ import { WorldDetailToc } from '@/components/worlds/WorldDetailToc';
 import { WorldInstructions } from '@/components/worlds/WorldInstructions';
 import { WorldTestingPerformance } from '@/components/worlds/WorldTestingPerformance';
 import { WorldTestingPerformanceMDX } from '@/components/worlds/WorldTestingPerformanceMDX';
-import { source } from '@/lib/geistdocs/source';
+import { v5Source } from '@/lib/geistdocs/source';
 import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
 const isPreview = process.env.VERCEL_ENV === 'preview';
@@ -76,10 +77,22 @@ export default async function WorldDetailPage({ params }: PageProps) {
 
   if (isOfficial) {
     const slugs = officialWorldMdxSlugs[id];
-    const page = source.getPage(slugs);
+    const page = v5Source.getPage(slugs);
 
     if (page) {
       const MDX = page.data.body;
+      function v5Href<T>(href: T): T {
+        return typeof href === 'string' && href.startsWith('/docs/')
+          ? (`/v5${href}` as T)
+          : href;
+      }
+      const baseLink = createRelativeLink(v5Source, page);
+      function v5Link(props: ComponentProps<typeof baseLink>) {
+        return baseLink({ ...props, href: v5Href(props.href) });
+      }
+      function V5Card(props: CardProps) {
+        return <Card {...props} href={v5Href(props.href)} />;
+      }
 
       // Extract TOC from MDX headings (only h2s, not h3s)
       tocItems = page.data.toc
@@ -92,7 +105,8 @@ export default async function WorldDetailPage({ params }: PageProps) {
       mdxContent = (
         <MDX
           components={getMDXComponents({
-            a: createRelativeLink(source, page),
+            a: v5Link,
+            Card: V5Card,
             Step,
             Steps,
             Tabs,
