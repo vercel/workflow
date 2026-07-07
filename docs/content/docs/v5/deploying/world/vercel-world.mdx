@@ -125,7 +125,9 @@ Custom workflow-server URL for direct runtime requests, or for the proxy to forw
 
 ### `VERCEL_QUEUE_MAX_DELAY_SECONDS`
 
-Maximum delay of a single queue message; longer sleeps chain messages. Read inside the deployment. Default: `82800` (23 hours).
+Maximum delay, in seconds, that Workflow uses for one Vercel Queues continuation message when implementing `sleep()`. If a workflow sleeps longer than this, the runtime schedules another continuation message when the first one fires, repeating until the sleep's target time is reached. Default: `82800` (23 hours).
+
+Vercel Queues supports longer delays, but messages have a default TTL of 24 hours unless a custom retention window is set. Workflow uses a 23-hour continuation hop to stay safely inside that default.
 
 ### Programmatic configuration
 
