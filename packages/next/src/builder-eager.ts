@@ -50,6 +50,7 @@ export async function getNextBuilderEager(
   class NextBuilder extends BaseBuilderClass {
     protected declare config: BuilderNextConfig & {
       pageExtensions: NonNullable<ProjectNextConfig['pageExtensions']>;
+      distDir: string;
     };
 
     async build() {
@@ -171,10 +172,15 @@ export async function getNextBuilderEager(
           '/.well-known/workflow/',
         ];
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
+        const normalizedDistDir = normalizePath(this.config.distDir);
         ignoredPathFragments.push(normalizedGeneratedDir);
 
         const hasIgnoredPathFragment = (normalizedPath: string) => {
-          if (normalizedPath.startsWith(normalizedGeneratedDir)) {
+          if (
+            normalizedPath.startsWith(normalizedGeneratedDir) ||
+            normalizedPath === normalizedDistDir ||
+            normalizedPath.startsWith(`${normalizedDistDir}/`)
+          ) {
             return true;
           }
           for (const fragment of ignoredPathFragments) {
