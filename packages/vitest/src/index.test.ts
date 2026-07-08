@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const createLocalWorld = vi.fn();
+const createWorld = vi.fn();
 const initDataDir = vi.fn();
 const setWorld = vi.fn();
 const workflowTransformPlugin = vi.fn((options) => ({
@@ -45,7 +45,7 @@ vi.mock('@workflow/rollup', () => ({
 }));
 
 vi.mock('@workflow/world-local', () => ({
-  createLocalWorld,
+  createWorld,
   initDataDir,
 }));
 
@@ -139,7 +139,7 @@ describe('@workflow/vitest', () => {
 
     process.env.VITEST_POOL_ID = '7';
     const mockWorld = createMockWorld();
-    createLocalWorld.mockReturnValue(mockWorld);
+    createWorld.mockReturnValue(mockWorld);
 
     const { setupWorkflowTests } = await loadModule();
     await setupWorkflowTests({
@@ -147,7 +147,7 @@ describe('@workflow/vitest', () => {
       outDir,
     });
 
-    expect(createLocalWorld).toHaveBeenCalledWith({
+    expect(createWorld).toHaveBeenCalledWith({
       dataDir,
       recoverActiveRuns: false,
       tag: 'vitest-7',

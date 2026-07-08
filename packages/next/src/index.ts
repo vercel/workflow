@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
   ensureWorkflowTargetWorldEnv,
+  isWorkflowTargetWorldPath,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
   resolveWorkflowTargetWorldAlias,
@@ -405,8 +406,12 @@ export function withWorkflow(
       workingDir,
       targetWorld: workflowTargetWorld,
     });
+    const workflowTargetWorldIsPath =
+      isWorkflowTargetWorldPath(workflowTargetWorld);
     const workflowTargetWorldTranspilePackages =
-      workflowTargetWorld === VERCEL_WORLD_PACKAGE ? [] : [workflowTargetWorld];
+      workflowTargetWorld === VERCEL_WORLD_PACKAGE || workflowTargetWorldIsPath
+        ? []
+        : [workflowTargetWorld];
     nextConfig.serverExternalPackages = [
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
@@ -482,7 +487,9 @@ export function withWorkflow(
     }
     nextConfig.turbopack.resolveAlias = {
       ...((nextConfig.turbopack.resolveAlias as Record<string, unknown>) || {}),
-      [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorld,
+      [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldIsPath
+        ? workflowTargetWorldWebpackAlias
+        : workflowTargetWorld,
     };
     const existingRules = nextConfig.turbopack.rules as any;
     const nextVersion = resolveNextVersion(workingDir);

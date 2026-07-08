@@ -37,7 +37,8 @@
   },
   "dependencies": {
     "@workflow/world-local": "workspace:*",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "swr": "^2.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

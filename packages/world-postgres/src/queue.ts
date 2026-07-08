@@ -20,7 +20,7 @@ import {
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
+import { createWorld } from '@workflow/world-local';
 import {
   Logger,
   makeWorkerUtils,
@@ -93,7 +93,7 @@ export function createQueue(
   pool: Pool
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  const localWorld = createLocalWorld({ dataDir: undefined, port });
+  const localWorld = createWorld({ dataDir: undefined, port });
 
   // JSON transport that preserves Uint8Array values via a tagged
   // envelope ({ __type: 'Uint8Array', data: '<base64>' }).  Required

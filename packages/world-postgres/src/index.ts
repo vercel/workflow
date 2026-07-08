@@ -30,11 +30,17 @@ function getDefaultMaxPoolSize(): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function getDefaultConnectionString(): string {
+  return (
+    process.env.WORKFLOW_POSTGRES_URL ||
+    process.env.DATABASE_URL ||
+    'postgres://world:world@localhost:5432/world'
+  );
+}
+
 export function createWorld(
   config: PostgresWorldConfig = {
-    connectionString:
-      process.env.WORKFLOW_POSTGRES_URL ||
-      'postgres://world:world@localhost:5432/world',
+    connectionString: getDefaultConnectionString(),
     jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
@@ -45,9 +51,7 @@ export function createWorld(
   const pool =
     config.pool ||
     new Pool({
-      connectionString:
-        config.connectionString ||
-        'postgres://world:world@localhost:5432/world',
+      connectionString: config.connectionString || getDefaultConnectionString(),
       ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
     });
 

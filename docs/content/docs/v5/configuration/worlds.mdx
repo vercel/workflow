@@ -1,0 +1,228 @@
+---
+title: Worlds
+description: Configure the Workflow backend that stores runs and delivers queue messages.
+type: reference
+summary: Select and configure Local, Postgres, Vercel, or custom Worlds.
+related:
+  - /docs/deploying/world/local-world
+  - /docs/deploying/world/postgres-world
+  - /docs/deploying/world/vercel-world
+---
+
+A [World](/docs/deploying) stores workflow state and delivers queue messages.
+
+## Selecting a World
+
+### `WORKFLOW_TARGET_WORLD`
+
+- Surface: environment variable
+- Default: `local` outside Vercel; automatic Vercel World inside Vercel deployments
+- Selects a non-default World module.
+
+Outside Vercel, Workflow defaults to the Local World. On Vercel, leave `WORKFLOW_TARGET_WORLD` unset for the normal case; Workflow detects the Vercel deployment and selects the Vercel World automatically.
+
+Set `WORKFLOW_TARGET_WORLD` only when you want to use a custom or self-hosted World:
+
+- `local` - alias for `@workflow/world-local`.
+- `@workflow/world-postgres` - Postgres World package.
+- `./my-world.ts` - local module exporting a World, `createWorld()`, or a default factory.
+- Any package specifier - custom World package.
+
+The `vercel` alias exists for manual selection and tooling, but deployed Vercel apps do not need to set it.
+
+Export a configured World from a module when you need factory options instead of pure environment configuration:
+
+```typescript title="my-world.ts" lineNumbers
+import { createWorld } from "@workflow/world-postgres";
+
+export default createWorld({
+  connectionString: process.env.DATABASE_URL!,
+  jobPrefix: "myapp_",
+});
+```
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="./my-world.ts"
+```
+
+## Local World
+
+The Local World is the default outside Vercel and is intended for development.
+
+### `dataDir`
+
+- Environment variable: `WORKFLOW_LOCAL_DATA_DIR`
+- Default: `.workflow-data`
+- Directory where runs, steps, events, hooks, streams, and the local manifest are written.
+
+### `baseUrl`
+
+- Environment variable: `WORKFLOW_LOCAL_BASE_URL`
+- Default: inferred from the app port
+- Full base URL used when queue messages call back into the app.
+- Overrides `port` and `PORT`.
+
+### `port`
+
+- Environment variable: `PORT`
+- Default: auto-detected
+- Local app port used to build the callback URL when `baseUrl` is unset.
+
+### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
+
+- Factory option: none
+- Default: `1000`
+- Maximum number of concurrent local queue message handlers.
+
+### `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY`
+
+- Factory option: none
+- Default: unlimited
+- Maximum seconds a local queue message stays hidden before the handler rechecks the run.
+
+### `recoverActiveRuns`
+
+- Environment variable: none
+- Default: `true`
+- Re-enqueues pending and running local runs when the World starts.
+
+### `tag`
+
+- Environment variable: none
+- Default: unset
+- Scopes local storage files to a tag, mainly for test isolation.
+
+### `streamFlushIntervalMs`
+
+- Environment variable fallback: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
+- Default: `10`
+- Flush interval for buffered stream writes. The World option wins when set.
+
+## Postgres World
+
+The Postgres World is a self-hosted durable backend for long-running server processes.
+
+### `connectionString`
+
+- Environment variable: `WORKFLOW_POSTGRES_URL`, then `DATABASE_URL`
+- Default: `postgres://world:world@localhost:5432/world`
+- PostgreSQL connection string used by the runtime World.
+- The `bootstrap` migration command uses the same precedence.
+
+### `pool`
+
+- Environment variable: none
+- Default: new `pg.Pool`
+- Existing `pg.Pool` to use instead of constructing one from `connectionString`.
+
+### `jobPrefix`
+
+- Environment variable: `WORKFLOW_POSTGRES_JOB_PREFIX`
+- Default: `workflow_`
+- Prefix for Graphile Worker job names.
+
+### `queueConcurrency`
+
+- Environment variable: `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
+- Default: `50`
+- Number of concurrent workers polling for jobs.
+- Also bounds concurrent parent-to-child workflow return-value polls.
+
+### `maxPoolSize`
+
+- Environment variable: `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
+- Default: `pg` default
+- Maximum size of the internal `pg.Pool` when the World creates the pool.
+
+### `namespace`
+
+- Environment variable fallback: `WORKFLOW_QUEUE_NAMESPACE`
+- Default: none
+- Queue topic namespace. For example, `custom` changes `__wkf_*` topics to `__custom_wkf_*`.
+
+### `streamFlushIntervalMs`
+
+- Environment variable fallback: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
+- Default: `10`
+- Flush interval for buffered stream writes. The World option wins when set.
+
+## Vercel World
+
+The Vercel World is configured automatically inside Vercel deployments. The platform provides the deployment ID, project ID, request authentication, queue integration, storage, and encryption material.
+
+Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the `workflow` CLI, the web UI, CI, or tests. The runtime warns if these variables are set in a deployed Vercel function because they do not control runtime configuration there.
+
+Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_KEY` are read by the runtime inside Vercel deployments. Do not set them yourself.
+
+### `token`
+
+- Environment variable: `WORKFLOW_VERCEL_AUTH_TOKEN`, then `VERCEL_TOKEN`, then Vercel CLI login
+- CLI flag: `--authToken`
+- Default: inferred when possible
+- Vercel API token for external tooling. Keep it secret.
+
+### `projectConfig.environment`
+
+- Environment variable: `WORKFLOW_VERCEL_ENV`
+- CLI flag: `--env` or `-e`
+- Default: `production`
+- Vercel environment targeted by tooling. Accepts `production` or `preview`.
+
+### `projectConfig.projectId`
+
+- Environment variable: `WORKFLOW_VERCEL_PROJECT`
+- CLI flag: `--project`
+- Default: inferred from `.vercel/project.json` when possible
+- Vercel project ID.
+
+### `projectConfig.teamId`
+
+- Environment variable: `WORKFLOW_VERCEL_TEAM`
+- CLI flag: `--team`
+- Default: inferred from `.vercel/project.json` when possible
+- Vercel team ID.
+
+### `WORKFLOW_VERCEL_PROJECT_NAME`
+
+- Factory option: none
+- CLI flag: none
+- Default: inferred when possible
+- Project slug used for dashboard links.
+
+### `WORKFLOW_VERCEL_BACKEND_URL`
+
+- Factory option: none
+- CLI flag: none
+- Default: `https://api.vercel.com/v1/workflow`
+- Workflow API proxy URL for external tooling.
+
+### `VERCEL_WORKFLOW_SERVER_URL`
+
+- Factory option: none
+- CLI flag: none
+- Default: unset
+- Direct workflow-server URL override for testing or custom infrastructure. Normal deployments do not need it.
+
+### `VERCEL_QUEUE_MAX_DELAY_SECONDS`
+
+- Factory option: none
+- CLI flag: none
+- Default: `82800` (23 hours)
+- Maximum delay for one Vercel Queues continuation message when implementing `sleep()`.
+- Longer sleeps schedule another continuation when the first one fires.
+
+`VERCEL_QUEUE_MAX_DELAY_SECONDS` defaults to 23 hours because Vercel Queues message delays are capped by the message TTL, and the default TTL is 24 hours. Workflow stays inside that default and chains continuation messages for longer sleeps.
+
+### `WORKFLOW_REQUEST_TIMEOUT_MS`
+
+- Factory option: none
+- CLI flag: none
+- Default: `60000`
+- Per-request timeout for Vercel World HTTP calls to workflow-server.
+
+### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
+
+- Factory option: none
+- CLI flag: none
+- Default: `1000`
+- Maximum stream chunks written in one Vercel World request. Larger batches are split.
