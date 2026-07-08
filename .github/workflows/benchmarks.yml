@@ -5,9 +5,15 @@ name: Performance Benchmarks
 # workbench app and posts the results as a sticky PR comment. Re-runs update
 # the same comment; previous results stay available in a collapsed history
 # section (state is embedded in the comment body itself).
+#
+# Runs on pushes to main (against the production deployment) purely to produce
+# baseline artifacts; PR runs download the most recent main baseline and show
+# avg-latency deltas against it in the comment.
 
 on:
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch: # Allow manual triggers
 
@@ -193,6 +199,19 @@ jobs:
           path: benchmark-results
           merge-multiple: true
 
+      # Baseline for the avg-delta column: results from the most recent
+      # successful run of this workflow on main.
+      - name: Download baseline results from main
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        with:
+          workflow: benchmarks.yml
+          branch: main
+          name: bench-results-.*
+          name_is_regexp: true
+          path: baseline-results
+          if_no_artifact_found: warn
+
       - name: Find existing benchmark comment
         uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
         id: find-comment
@@ -222,6 +241,7 @@ jobs:
           node .github/scripts/render-benchmark-comment.mjs \
             --status "$BENCH_STATUS" \
             --results-dir benchmark-results \
+            --baseline-dir baseline-results \
             --previous-body "$RUNNER_TEMP/previous-comment.md" \
             --commit "$HEAD_SHA" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
