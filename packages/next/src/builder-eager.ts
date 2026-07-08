@@ -153,7 +153,9 @@ export async function getNextBuilderEager() {
           '/.well-known/workflow/',
         ];
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
-        const normalizedDistDir = normalizePath(this.config.distDir);
+        const normalizedDistDir = normalizePath(
+          resolve(this.config.workingDir, this.config.distDir)
+        );
         ignoredPathFragments.push(normalizedGeneratedDir);
 
         // There is a node.js bug on MacOS which causes closing file watchers to be really slow.
