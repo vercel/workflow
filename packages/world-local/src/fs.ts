@@ -607,10 +607,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   }
 
   // 4. Load files with bounded concurrency and collect valid items.
-  // Reads are independent (ordering is restored by the sort below), so
-  // batching them cuts the wall-clock cost of large listings — replaying
-  // a long run's events was previously bottlenecked on thousands of
-  // strictly sequential open/read/parse round-trips.
+  // Reads are independent; ordering is restored by the sort below.
   const readConcurrency = 32;
   const validItems: T[] = [];
 

@@ -94,19 +94,14 @@ async function isTerminalRunCache(
 }
 
 /**
- * Find the live `hook_created` event for a token or hookId, using the
- * durable hook indexes instead of scanning the entire global event
- * log (which grew with total history and made every first-time hook
- * creation slower over time).
+ * Find the live `hook_created` event for a token or hookId via the
+ * durable hook indexes (instead of scanning the whole event log).
  *
- * The newest matching indexed event is subjected to the same two
- * liveness checks the historical full scan applied. Those checks also
- * subsume the scan's in-log closure replay (`hook_disposed` /
- * terminal run events): the dispose lock is durably written before
- * the `hook_disposed` event is appended, and the run entity is
- * durably terminal before any terminal run event is appended — and
- * neither is ever deleted — so any closure visible in the log is
- * also visible to these checks.
+ * The liveness checks below subsume the old scan's in-log closure
+ * replay: the dispose lock is written before `hook_disposed` is
+ * appended, the run entity is terminal before any terminal run event
+ * is appended, and neither is ever deleted — so any closure visible
+ * in the log is also visible to these checks.
  */
 async function findLiveHookCreatedEvent(
   basedir: string,
@@ -162,9 +157,7 @@ async function restoreHookCachesFromEvent(
       eventId: event.eventId,
     })
   );
-  // Marker before entity: run-termination cleanup discovers hooks via
-  // by-run markers, so the marker must be durable no later than the
-  // entity it indexes (a dangling marker is skipped harmlessly).
+  // Marker before entity (see hook-index.ts crash-ordering invariant).
   await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
   await writeExclusive(
     taggedPath(basedir, 'hooks', hook.hookId, tag),
@@ -210,18 +203,12 @@ export function createHooksStorage(
   basedir: string,
   tag?: string
 ): Storage['hooks'] {
-  // Minimal read shape for the token-claim fast path below. The full
-  // claim schema (with `eventId` semantics) lives in events-storage;
-  // here we only need the pointer back to the hook entity.
   const TokenClaimPointerSchema = z.object({
     hookId: z.string().optional(),
   });
 
-  // Helper function to find a hook by token (shared between getByToken)
   async function findHookByToken(token: string): Promise<Hook | null> {
-    // Fast path: the token claim file is keyed by sha256(token) and
-    // points at the owning hookId — an O(1) lookup that avoids reading
-    // every live hook entity in the world.
+    // Fast path: the token claim file points at the owning hookId.
     let claim: z.infer<typeof TokenClaimPointerSchema> | null = null;
     try {
       claim = await readJSON(
@@ -229,7 +216,6 @@ export function createHooksStorage(
         TokenClaimPointerSchema
       );
     } catch (error) {
-      // A corrupt claim file falls through to the exhaustive scan.
       if (!(error instanceof SyntaxError || error instanceof z.ZodError)) {
         throw error;
       }
@@ -247,17 +233,14 @@ export function createHooksStorage(
           return { ...hook, isWebhook: hook.isWebhook ?? true };
         }
       } catch (error) {
-        // A claim containing an unsafe hookId cannot point at a real
-        // entity written by this storage layer — fall through.
         if (!UnsafeEntityIdError.is(error)) {
           throw error;
         }
       }
     }
 
-    // Slow path: exhaustive scan over live hook entities. Kept for
-    // legacy states (e.g. a crash-lost or manually removed claim file
-    // while the entity is still on disk).
+    // Slow path for legacy states (e.g. a lost claim file while the
+    // entity is still on disk).
     const hooksDir = path.join(basedir, 'hooks');
     const files = await listJSONFiles(hooksDir);
 
@@ -361,10 +344,7 @@ export async function deleteAllHooksForRun(
   runId: string
 ): Promise<void> {
   // Discover this run's hooks via by-run markers (a prefix readdir)
-  // instead of reading every live hook entity in the world — the old
-  // exhaustive scan made every run termination O(total live hooks).
-  // `ensureHookIndexes` backfills markers for hooks created by older
-  // versions of this package.
+  // instead of reading every live hook entity in the world.
   await ensureHookIndexes(basedir);
 
   for (const marker of await listHookByRunMarkers(basedir, runId)) {
@@ -383,16 +363,9 @@ export async function deleteAllHooksForRun(
         }
       }
       if (hook && hookPath && hook.runId === runId) {
-        // Release the token claim to free up the token — but only if it
-        // still points at this hook: a claimant may have force-released
-        // the terminal run's stale claim already (see
-        // `isHookTokenClaimReleasable`) and hold a fresh claim of its
-        // own, which an unconditional delete would destroy. Also delete
-        // the recovery marker (if any) for disk hygiene. The
-        // marker's filename hash includes `(token, runId, hookId)` so
-        // a leaked marker can never corrupt a different lifetime — but
-        // cleaning it up here keeps the tokens/ directory from
-        // accumulating recovered-hook sidecars over time.
+        // Release the claim only if it still points at this hook — a
+        // claimant may already hold a fresh claim for the token (see
+        // `isHookTokenClaimReleasable`).
         await releaseHookTokenClaimIfOwnedBy(
           basedir,
           hook.token,
@@ -405,8 +378,6 @@ export async function deleteAllHooksForRun(
         await deleteJSON(hookPath);
       }
     }
-    // Always reap the marker itself — including unreadable debris and
-    // markers whose entity is already gone.
     await deleteHookByRunMarkerFile(basedir, marker.fileId);
   }
 }

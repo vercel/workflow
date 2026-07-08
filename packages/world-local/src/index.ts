@@ -144,9 +144,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           })
         );
 
-        // Delete tagged entity files across all directories.
-        // `hooks/by-run` markers are flat tagged files; `token-index` /
-        // `id-index` entries are handled below (nested per-key dirs).
+        // Delete tagged entity files across all directories
         const entityDirs = [
           'runs',
           'steps',
@@ -165,9 +163,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             );
           })
         );
-        // Delete tagged hook-index entries. These live in nested
-        // per-key directories (hooks/token-index/<hash>/…,
-        // hooks/id-index/<hookId>/…), so walk each subdirectory.
+        // Delete tagged hook-index entries (nested per-key directories)
         for (const indexDir of ['token-index', 'id-index']) {
           const fullIndexDir = path.join(basedir, 'hooks', indexDir);
           let keyDirEntries: import('node:fs').Dirent[];

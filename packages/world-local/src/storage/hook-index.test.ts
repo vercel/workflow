@@ -44,11 +44,7 @@ describe('hook indexes', () => {
     }
   }
 
-  /**
-   * Simulate a data directory created by a pre-index version of this
-   * package: remove all index state and forget the in-process ensure
-   * cache so the next index consumer runs the one-time backfill.
-   */
+  /** Remove all index state, as if created by a pre-index version. */
   async function simulateLegacyDataDir(): Promise<void> {
     await fs.rm(path.join(testDir, 'hooks', 'token-index'), {
       recursive: true,
@@ -187,7 +183,6 @@ describe('hook indexes', () => {
       });
       expect(created.event.eventType).toBe('hook_created');
 
-      // Pre-index data dir plus a crash-lost claim + entity.
       await simulateLegacyDataDir();
       await fs.unlink(
         path.join(
@@ -199,8 +194,7 @@ describe('hook indexes', () => {
       );
       await fs.unlink(path.join(testDir, 'hooks', 'hook_legacy_rebuild.json'));
 
-      // hooks.get triggers the one-time backfill, then rebuilds the
-      // entity + claim from the indexed hook_created event.
+      // hooks.get triggers the backfill, then rebuilds entity + claim.
       await expect(
         storage.hooks.get('hook_legacy_rebuild')
       ).resolves.toMatchObject({
@@ -271,11 +265,8 @@ describe('hook indexes', () => {
     it('hook creation cost does not scale with unrelated event history', async () => {
       const runId = await newRun();
 
-      // Seed a large foreign event history directly on disk. These
-      // files exist only to blow up the size of the global events/
-      // directory — the indexed hook paths must never read them.
-      // (Before the index, every first-time hook creation read and
-      // parsed every one of these files.)
+      // Seed a large foreign event history that the indexed hook
+      // paths must never read.
       const eventsDir = path.join(testDir, 'events');
       const seededRun = 'wrun_01SEEDED0000000000000000000';
       await Promise.all(
@@ -312,11 +303,8 @@ describe('hook indexes', () => {
       }
       const elapsedMs = performance.now() - start;
 
-      // Indexed hook creation is a handful of small file operations
-      // (~ms each). The pre-index implementation read all 2000 seeded
-      // events per creation (~40k reads for this loop), which took
-      // multiple seconds. The generous bound keeps slow CI green while
-      // still failing decisively on an accidental O(history) regression.
+      // Generous bound: the pre-index implementation took multiple
+      // seconds here (~40k event reads); the indexed path takes ~ms.
       expect(elapsedMs).toBeLessThan(2000);
     });
   });

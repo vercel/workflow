@@ -1,6 +1,5 @@
-import type { Queue } from './queue.js';
 import type { Storage } from './interfaces.js';
-import type { ValidQueueName } from './queue.js';
+import type { Queue, ValidQueueName } from './queue.js';
 
 /**
  * Re-enqueue all active (pending/running) workflow runs so they resume
@@ -24,10 +23,8 @@ export async function reenqueueActiveRuns(
       const page = await runs.list({
         status,
         resolveData: 'none',
-        // A larger page size keeps the number of list round-trips small.
-        // This matters most for world-local, where each page pays a
-        // directory scan: with the default page size of 20, recovering
-        // over a large accumulated run history costs O(N²/20) work.
+        // Large pages keep list round-trips (each a full directory
+        // scan in world-local) small over large run histories.
         pagination: { cursor, limit: 200 },
       });
       for (const run of page.data) {
