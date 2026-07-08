@@ -3,6 +3,7 @@ import {
   SerializationError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
@@ -20,7 +21,7 @@ import {
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
-// world.ts module (and its dynamic-import behaviour) into the flow route.
+// host world module into the flow route.
 // See `packages/core/src/runtime/get-world-lazy.ts` and the
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
 // `docs/content/docs/changelog/eager-processing.mdx`.
@@ -604,6 +605,17 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
  */
 export const FRAMED_STREAM_MAX_RECONNECTS = 50;
 
+/** Effective consecutive-reconnect cap. Override: `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`. */
+const getFramedStreamMaxReconnects = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS',
+    FRAMED_STREAM_MAX_RECONNECTS,
+    {
+      integer: true,
+      min: 1,
+    }
+  );
+
 /**
  * Absolute backstop on total reconnects for a single session, independent of
  * progress. The consecutive cap above resets on forward progress, which is
@@ -616,6 +628,14 @@ export const FRAMED_STREAM_MAX_RECONNECTS = 50;
  * with legitimate long-lived streams.
  */
 export const FRAMED_STREAM_MAX_TOTAL_RECONNECTS = 1000;
+
+/** Effective total-reconnect backstop. Override: `WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS`. */
+const getFramedStreamMaxTotalReconnects = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS',
+    FRAMED_STREAM_MAX_TOTAL_RECONNECTS,
+    { integer: true, min: 1 }
+  );
 
 /**
  * Wraps the length-prefix-framed byte stream from `world.streams.get` with
@@ -676,17 +696,19 @@ export function createReconnectingFramedStream(
     // count it against the budget and try again rather than treating it as
     // fatal. Only budget exhaustion (a server that stays down) terminates the
     // stream.
+    const maxReconnects = getFramedStreamMaxReconnects();
+    const maxTotalReconnects = getFramedStreamMaxTotalReconnects();
     for (;;) {
       reconnectCount++;
       totalReconnectCount++;
-      if (reconnectCount > FRAMED_STREAM_MAX_RECONNECTS) {
+      if (reconnectCount > maxReconnects) {
         throw new Error(
-          `Stream "${name}" exceeded maximum reconnection attempts (${FRAMED_STREAM_MAX_RECONNECTS})`
+          `Stream "${name}" exceeded maximum reconnection attempts (${maxReconnects})`
         );
       }
-      if (totalReconnectCount > FRAMED_STREAM_MAX_TOTAL_RECONNECTS) {
+      if (totalReconnectCount > maxTotalReconnects) {
         throw new Error(
-          `Stream "${name}" exceeded maximum total reconnection attempts (${FRAMED_STREAM_MAX_TOTAL_RECONNECTS})`
+          `Stream "${name}" exceeded maximum total reconnection attempts (${maxTotalReconnects})`
         );
       }
       try {
@@ -794,6 +816,15 @@ export function createReconnectingFramedStream(
  */
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
+/**
+ * Effective default stream-flush interval (a `world.streamFlushIntervalMs`
+ * still takes precedence). Override: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
+ */
+const getStreamFlushIntervalMs = (): number =>
+  envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', STREAM_FLUSH_INTERVAL_MS, {
+    integer: true,
+  });
+
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   /**
    * @param runReadyBarrier Turbo mode only: a promise that resolves once the
@@ -859,7 +890,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // Cache the flush interval from the world on first use
       if (resolvedFlushIntervalMs === undefined) {
         resolvedFlushIntervalMs =
-          world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+          world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
       }
       // Use writeMulti if available for batch writes
       if (
@@ -899,7 +930,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
             for (const w of currentWaiters) w.reject(err);
           }
         );
-      }, resolvedFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
+      }, resolvedFlushIntervalMs ?? getStreamFlushIntervalMs());
     };
 
     super({
@@ -1681,8 +1712,17 @@ function setupAbortStreamReader(
             );
           }),
         ]);
-        reader.releaseLock();
         if (result.value && !result.done) {
+          // An abort packet arrived: propagate it as fast as possible. Release
+          // the lock (synchronous) rather than cancelling here — on a
+          // service-backed World `reader.cancel()` can do a network round-trip,
+          // and awaiting it before `controller.abort()` would delay (or, if it
+          // hangs, drop) real-time abort delivery to the in-flight step.
+          try {
+            reader.releaseLock();
+          } catch {
+            // Reader may already be released; ignore.
+          }
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
@@ -1699,6 +1739,16 @@ function setupAbortStreamReader(
           } catch {
             controller.abort();
           }
+        } else {
+          // The step finished (or the reader was cancelled) without an abort.
+          // Cancel — not just release — so the underlying World stream is torn
+          // down: a polling World (e.g. world-local) otherwise leaks a tail
+          // reader (a 100ms filesystem poll plus emitter listeners) per step
+          // invocation for the life of the process, since a signal-bearing step
+          // opens one of these on every revival and usually never aborts. Fire
+          // and forget: a service-backed World's cancel may hit the network,
+          // and this path must not block the step's ops-settle window.
+          void reader.cancel().catch(() => {});
         }
       } catch {
         // Stream read failed — signal won't propagate in real-time,

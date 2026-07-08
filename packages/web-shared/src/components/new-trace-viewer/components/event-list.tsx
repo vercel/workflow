@@ -1,7 +1,6 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
-import type { Span } from '../types';
 import { formatDurationPrecise } from '../../trace-viewer/util/timing';
 import {
   SleepIcon,
@@ -10,7 +9,8 @@ import {
   WorkflowIcon,
 } from '../icons';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
-import { getSpanDurationMs } from '../utils';
+import type { Span } from '../types';
+import { getSpanDurationMs, isSpanErrored } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
@@ -53,9 +53,7 @@ const EventRow = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getSpanDurationMs(span);
-  const workflowStatus = (span.attributes.data as Record<string, unknown>)
-    ?.status as string | undefined;
-  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
+  const isErrored = isSpanErrored(span);
   const { icon: Icon, className: tagClassName } = getEventStyle(
     span.resource,
     isErrored

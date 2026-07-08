@@ -1,6 +1,7 @@
 import { types } from 'node:util';
 import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
@@ -5486,6 +5487,7 @@ describe('runWorkflow', () => {
         event: { eventType: 'hook_created' as const },
       }));
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         events: { create },
         streams: { write: vi.fn(), close: vi.fn() },
       } as any);
@@ -5533,6 +5535,7 @@ describe('runWorkflow', () => {
         event: { eventType: 'wait_created' as const },
       }));
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         events: { create },
         streams: { write: vi.fn(), close: vi.fn() },
       } as any);
@@ -5572,6 +5575,7 @@ describe('runWorkflow', () => {
         event: { eventType: 'hook_created' as const },
       }));
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         events: { create },
         streams: { write: vi.fn(), close: vi.fn() },
       } as any);
@@ -5601,6 +5605,7 @@ describe('runWorkflow', () => {
         event: { eventType: 'hook_created' as const },
       }));
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         events: { create },
         streams: { write: vi.fn(), close: vi.fn() },
       } as any);

@@ -191,11 +191,11 @@ describe('File tagging', () => {
 
   describe('tagged clear()', () => {
     it('should only delete files with the matching tag', async () => {
-      // Import createLocalWorld to test clear()
-      const { createLocalWorld } = await import('./index.js');
+      // Import createWorld to test clear()
+      const { createWorld } = await import('./index.js');
 
-      const untaggedWorld = createLocalWorld({ dataDir: testDir });
-      const taggedWorld = createLocalWorld({
+      const untaggedWorld = createWorld({ dataDir: testDir });
+      const taggedWorld = createWorld({
         dataDir: testDir,
         tag: 'vitest-0',
       });
@@ -234,10 +234,10 @@ describe('File tagging', () => {
     });
 
     it('should not interfere with other tags', async () => {
-      const { createLocalWorld } = await import('./index.js');
+      const { createWorld } = await import('./index.js');
 
-      const world0 = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
-      const world1 = createLocalWorld({ dataDir: testDir, tag: 'vitest-1' });
+      const world0 = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world1 = createWorld({ dataDir: testDir, tag: 'vitest-1' });
       // Ensure data dir is initialized
       await world0.start?.();
 
@@ -269,9 +269,9 @@ describe('File tagging', () => {
     });
 
     it('should clear events, steps, hooks, and waits', async () => {
-      const { createLocalWorld } = await import('./index.js');
+      const { createWorld } = await import('./index.js');
 
-      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
       await world.start?.();
 
       const run = await createRun(world, {
@@ -309,9 +309,9 @@ describe('File tagging', () => {
     });
 
     it('should clear hook token constraint files', async () => {
-      const { createLocalWorld } = await import('./index.js');
+      const { createWorld } = await import('./index.js');
 
-      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
       await world.start?.();
 
       const run = await createRun(world, {
@@ -349,6 +349,70 @@ describe('File tagging', () => {
       const constraintsAfter = await fs.readdir(tokensDir);
       expect(constraintsAfter).toHaveLength(0);
 
+      await world.close?.();
+    });
+
+    it('should clear tagged stream chunks in the sharded layout', async () => {
+      const { createLocalWorld } = await import('./index.js');
+
+      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      await world.start?.();
+
+      const run = await createRun(world, {
+        deploymentId: 'dep-1',
+        workflowName: 'stream-wf',
+        input: new Uint8Array(),
+      });
+      await updateRun(world, run.runId, 'run_started');
+
+      // Chunks land under a per-stream subdirectory as `<chunkId>.vitest-0.bin`.
+      await world.streams.write(run.runId, 'strm_a', 'hello');
+      await world.streams.write(run.runId, 'strm_b', 'world');
+
+      const chunksDir = path.join(testDir, 'streams', 'chunks');
+      const streamADir = path.join(chunksDir, 'strm_a');
+      const taggedBin = (files: string[]) =>
+        files.filter((f) => f.endsWith('.vitest-0.bin'));
+      const readOrEmpty = (d: string) =>
+        fs.readdir(d).catch(() => [] as string[]);
+      expect(taggedBin(await fs.readdir(streamADir))).toHaveLength(1);
+
+      await world.clear();
+
+      // Regression: the tag-scoped clear previously listed only the top-level
+      // chunks dir, which after sharding holds only subdirectories, so tagged
+      // chunk files leaked across test sessions.
+      expect(taggedBin(await readOrEmpty(streamADir))).toHaveLength(0);
+      expect(
+        taggedBin(await readOrEmpty(path.join(chunksDir, 'strm_b')))
+      ).toHaveLength(0);
+
+      await world.close?.();
+    });
+  });
+
+  describe('untagged clear()', () => {
+    it('can write new entities after clearing cached directories', async () => {
+      const { createWorld } = await import('./index.js');
+      const world = createWorld({ dataDir: testDir });
+      await world.start?.();
+
+      await createRun(world, {
+        deploymentId: 'dep-before-clear',
+        workflowName: 'before-clear',
+        input: new Uint8Array(),
+      });
+      await world.clear();
+
+      const run = await createRun(world, {
+        deploymentId: 'dep-after-clear',
+        workflowName: 'after-clear',
+        input: new Uint8Array(),
+      });
+
+      expect((await world.runs.get(run.runId)).workflowName).toBe(
+        'after-clear'
+      );
       await world.close?.();
     });
   });

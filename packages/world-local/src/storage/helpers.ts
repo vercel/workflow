@@ -1,13 +1,99 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { monotonicFactory } from 'ulid';
-import { stripTag, ulidToDate } from '../fs.js';
+import { resolveWithinBase, stripTag, ulidToDate } from '../fs.js';
 
 /**
  * Hash a hook token to produce a filesystem-safe constraint filename.
  */
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Path of the exclusive-create lock file that commits a hook's disposal.
+ * The `hook_disposed` handler writes this lock BEFORE deleting the token
+ * claim and hook entity (and before appending the event to the log), so
+ * its existence is the earliest durable evidence that the hook can never
+ * be live again.
+ */
+export function hookDisposeLockPath(
+  basedir: string,
+  hookId: string,
+  tag?: string
+): string {
+  const name = tag ? `${hookId}.disposed.${tag}` : `${hookId}.disposed`;
+  return resolveWithinBase(basedir, '.locks', 'hooks', name);
+}
+
+/**
+ * Whether a hook's disposal has been committed (its dispose lock exists).
+ * Mirrors event visibility for tagged worlds: an untagged lock is visible
+ * to every tag, a tagged lock only to its own tag.
+ */
+export async function isHookDisposalCommitted(
+  basedir: string,
+  hookId: string,
+  tag?: string
+): Promise<boolean> {
+  const candidates = [hookDisposeLockPath(basedir, hookId)];
+  if (tag) {
+    candidates.push(hookDisposeLockPath(basedir, hookId, tag));
+  }
+  for (const lockPath of candidates) {
+    try {
+      await fs.access(lockPath);
+      return true;
+    } catch {
+      // lock not present at this path
+    }
+  }
+  return false;
+}
+
+/**
+ * Path of the exclusive-create claim file that reserves a hook token.
+ */
+export function hookTokenClaimPath(basedir: string, token: string): string {
+  return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
+}
+
+/**
+ * Release (delete) a token claim only if it still points at the releasing
+ * hook's own `(runId, hookId)`.
+ *
+ * Both in-flight releasers — the `hook_disposed` handler and the
+ * terminal-run `deleteAllHooksForRun` cleanup — read the hook entity and
+ * then delete the claim file. Deleting unconditionally is unsafe across
+ * processes: a releaser that stalls between those two operations can
+ * outlive a force-release of its stale claim (see
+ * `isHookTokenClaimReleasable`) and then delete the NEXT claimant's live
+ * claim, transiently breaking token uniqueness. Re-reading the claim and
+ * matching its identity here shrinks that window from "a stall of any
+ * length" to the adjacent read/delete file ops.
+ *
+ * A claim that is missing, unreadable, or owned by someone else is left
+ * alone — if it is genuinely stale debris, the claimant-side force-release
+ * path reaps it.
+ */
+export async function releaseHookTokenClaimIfOwnedBy(
+  basedir: string,
+  token: string,
+  runId: string,
+  hookId: string
+): Promise<void> {
+  const claimPath = hookTokenClaimPath(basedir, token);
+  let claim: { runId?: unknown; hookId?: unknown };
+  try {
+    claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+  } catch {
+    return;
+  }
+  if (claim.runId !== runId || claim.hookId !== hookId) {
+    return;
+  }
+  await fs.unlink(claimPath).catch(() => {});
 }
 
 /**

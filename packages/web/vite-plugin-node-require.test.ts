@@ -3,6 +3,8 @@ import { build, type Plugin, type Rollup } from 'vite';
 import { describe, expect, test } from 'vitest';
 import { nodeRequireBanner } from './vite-plugin-node-require';
 
+const BUILD_TEST_TIMEOUT_MS = 30_000;
+
 // A virtual entry so the build needs no real files on disk. The body is
 // irrelevant — we only care about the banner the plugin prepends to the chunk.
 function virtualEntry(): Plugin {
@@ -48,22 +50,34 @@ describe('nodeRequireBanner', () => {
   // back to a stub with no `http2.connect`, and every HTTP/2 request (the v4
   // events API + stream writes) breaks — silently degrading observability
   // reads. See vite-plugin-node-require.ts for the full mechanism.
-  test('injects the global-require shim into the SSR server build', async () => {
-    // rollup may re-quote / reflow the banner, so assert on its semantic parts
-    // rather than the exact source string.
-    const code = await buildChunkCode({ ssr: true, withPlugin: true });
-    expect(code).toContain('__wkfCreateRequire');
-    expect(code).toContain('globalThis.require');
-    expect(code).toMatch(/createRequire[\s\S]*from ['"]node:module['"]/);
-  });
+  test(
+    'injects the global-require shim into the SSR server build',
+    async () => {
+      // rollup may re-quote / reflow the banner, so assert on its semantic parts
+      // rather than the exact source string.
+      const code = await buildChunkCode({ ssr: true, withPlugin: true });
+      expect(code).toContain('__wkfCreateRequire');
+      expect(code).toContain('globalThis.require');
+      expect(code).toMatch(/createRequire[\s\S]*from ['"]node:module['"]/);
+    },
+    BUILD_TEST_TIMEOUT_MS
+  );
 
-  test('does not inject the shim into the client/browser build', async () => {
-    const code = await buildChunkCode({ ssr: false, withPlugin: true });
-    expect(code).not.toContain('__wkfCreateRequire');
-  });
+  test(
+    'does not inject the shim into the client/browser build',
+    async () => {
+      const code = await buildChunkCode({ ssr: false, withPlugin: true });
+      expect(code).not.toContain('__wkfCreateRequire');
+    },
+    BUILD_TEST_TIMEOUT_MS
+  );
 
-  test('the SSR build has no shim without the plugin (guards the assertion)', async () => {
-    const code = await buildChunkCode({ ssr: true, withPlugin: false });
-    expect(code).not.toContain('__wkfCreateRequire');
-  });
+  test(
+    'the SSR build has no shim without the plugin (guards the assertion)',
+    async () => {
+      const code = await buildChunkCode({ ssr: true, withPlugin: false });
+      expect(code).not.toContain('__wkfCreateRequire');
+    },
+    BUILD_TEST_TIMEOUT_MS
+  );
 });

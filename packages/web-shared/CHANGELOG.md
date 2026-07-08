@@ -1,5 +1,41 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.28
+
+### Minor Changes
+
+- [#2800](https://github.com/vercel/workflow/pull/2800) [`caac565`](https://github.com/vercel/workflow/commit/caac5654022a017b8daf2119ed33d4b88bae5963) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a minimap to the new trace viewer: a full-run span density strip with a glass viewport brush supporting pan, edge-resize, click-to-jump, drag-to-select zoom, wheel gestures, and keyboard panning.
+
+### Patch Changes
+
+- [#2775](https://github.com/vercel/workflow/pull/2775) [`8a76688`](https://github.com/vercel/workflow/commit/8a766884cf5df20872b6a516008f854f407fe259) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix duplicate sub-second tick labels on the trace viewer timeline ruler, and trim trailing zeros from precise duration labels ("2.00s" → "2s").
+
+- Updated dependencies [[`7637196`](https://github.com/vercel/workflow/commit/7637196cf0f605ce62243bf8c7762a26153dcd36), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`e7e5a0e`](https://github.com/vercel/workflow/commit/e7e5a0e56d10778554b0ea23d0d66ff9feb66bd9), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216)]:
+  - @workflow/core@5.0.0-beta.28
+  - @workflow/utils@5.0.0-beta.6
+  - @workflow/world@5.0.0-beta.16
+
+## 5.0.0-beta.27
+
+### Minor Changes
+
+- [#2773](https://github.com/vercel/workflow/pull/2773) [`19577b8`](https://github.com/vercel/workflow/commit/19577b8d058c24c763b91a2c5ec317e50222cf8c) Thanks [@mitul-s](https://github.com/mitul-s)! - Make the span detail panel in the new trace viewer user-resizable: drag its left border (double-click to reset), with the width persisted across sessions.
+
+### Patch Changes
+
+- [#2695](https://github.com/vercel/workflow/pull/2695) [`ce0bbb1`](https://github.com/vercel/workflow/commit/ce0bbb119856d7d3ad9298d6cb9c8f9aaee8e44e) Thanks [@mitul-s](https://github.com/mitul-s)! - Use Unicode ellipsis character (…) instead of three dots (...) in middle-truncate component.
+
+- [#2604](https://github.com/vercel/workflow/pull/2604) [`53ecc57`](https://github.com/vercel/workflow/commit/53ecc57e4c3c76fa611d2e65c3e513346bc7c53d) Thanks [@mitul-s](https://github.com/mitul-s)! - Align the detail panel top info rows with the Attributes section styling, group them in a collapsible Metadata section, and render values in monospace.
+
+- [#2694](https://github.com/vercel/workflow/pull/2694) [`6080b8e`](https://github.com/vercel/workflow/commit/6080b8ecdf11b60cb63747a183cc39876a863dc9) Thanks [@mitul-s](https://github.com/mitul-s)! - Add arrow key support on trace viewer
+
+- [#2680](https://github.com/vercel/workflow/pull/2680) [`89f4726`](https://github.com/vercel/workflow/commit/89f4726b7308b02e8898c1e564b2c94272df6f4f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decompress gzip- and zstd-prefixed serialized data returned from Vercel Workflow storage, and route OSS web hydration through the async WASM-capable path for compressed payloads.
+
+- Updated dependencies [[`5a23159`](https://github.com/vercel/workflow/commit/5a231598e41ce7cd46b647c9aaaa900e55ad3c35), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399)]:
+  - @workflow/core@5.0.0-beta.27
+  - @workflow/utils@5.0.0-beta.5
+  - @workflow/world@5.0.0-beta.15
+
 ## 5.0.0-beta.26
 
 ### Patch Changes

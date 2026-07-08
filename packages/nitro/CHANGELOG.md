@@ -1,5 +1,33 @@
 # @workflow/nitro
 
+## 5.0.0-beta.28
+
+### Patch Changes
+
+- [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Statically inject the configured world package into host bundles instead of selecting worlds dynamically at runtime.
+
+- Updated dependencies [[`2ca34ac`](https://github.com/vercel/workflow/commit/2ca34ac69c5c201ef85a61fe3a10cc75ca3c22c4), [`7637196`](https://github.com/vercel/workflow/commit/7637196cf0f605ce62243bf8c7762a26153dcd36), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`e7e5a0e`](https://github.com/vercel/workflow/commit/e7e5a0e56d10778554b0ea23d0d66ff9feb66bd9), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`1518c48`](https://github.com/vercel/workflow/commit/1518c4860822986436711ec14b1b5b16192fefb5), [`ae51f45`](https://github.com/vercel/workflow/commit/ae51f45166298e855885330b2f1d4e1f8d729faa), [`cdfac39`](https://github.com/vercel/workflow/commit/cdfac39e07e2d15c95f7ab9ff8d244b8677931bd), [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216)]:
+  - @workflow/builders@5.0.0-beta.28
+  - @workflow/core@5.0.0-beta.28
+  - @workflow/rollup@5.0.0-beta.28
+  - @workflow/web@5.0.0-beta.28
+  - @workflow/vite@5.0.0-beta.28
+
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2722](https://github.com/vercel/workflow/pull/2722) [`923ddd9`](https://github.com/vercel/workflow/commit/923ddd98d9c93b533b2fd3f3bd62e7f4b8a490c8) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Pass configured Nitro workflow scan directories through to Workflow builders.
+
+- [#2713](https://github.com/vercel/workflow/pull/2713) [`3077b8a`](https://github.com/vercel/workflow/commit/3077b8a8034c61b85ced46166f53c1532fddfd65) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Use Nitro's workspace root for workflow module resolution so Nitro and Nuxt monorepo apps can import sibling workspace packages without extra config.
+
+- Updated dependencies [[`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d), [`5a23159`](https://github.com/vercel/workflow/commit/5a231598e41ce7cd46b647c9aaaa900e55ad3c35), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`7615d99`](https://github.com/vercel/workflow/commit/7615d999f1f72a1d2cbe36ba414155140195d014), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`89f4726`](https://github.com/vercel/workflow/commit/89f4726b7308b02e8898c1e564b2c94272df6f4f)]:
+  - @workflow/builders@5.0.0-beta.27
+  - @workflow/core@5.0.0-beta.27
+  - @workflow/web@5.0.0-beta.27
+  - @workflow/rollup@5.0.0-beta.27
+  - @workflow/vite@5.0.0-beta.27
+
 ## 5.0.0-beta.26
 
 ### Patch Changes

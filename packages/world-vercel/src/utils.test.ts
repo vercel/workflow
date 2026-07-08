@@ -72,10 +72,23 @@ describe('getHeaders', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
+    delete process.env.WORKFLOW_TEST_LIMIT_OVERRIDES;
   });
 
   afterEach(() => {
     process.env = originalEnv;
+  });
+
+  it('omits x-workflow-test-limit-overrides when WORKFLOW_TEST_LIMIT_OVERRIDES is unset', () => {
+    const headers = getHeaders(undefined, { usingProxy: false });
+    expect(headers.get('x-workflow-test-limit-overrides')).toBeNull();
+  });
+
+  it('forwards WORKFLOW_TEST_LIMIT_OVERRIDES verbatim as x-workflow-test-limit-overrides', () => {
+    const overrides = '{"STREAM_MAX_DURATION_MS":5000}';
+    process.env.WORKFLOW_TEST_LIMIT_OVERRIDES = overrides;
+    const headers = getHeaders(undefined, { usingProxy: false });
+    expect(headers.get('x-workflow-test-limit-overrides')).toBe(overrides);
   });
 
   it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {
@@ -303,6 +316,34 @@ describe('makeRequest body-parse retry', () => {
         schema,
       })
     ).rejects.toThrow('x-vercel-id=sfo1::req-deny; x-vercel-mitigated=deny');
+  });
+
+  it('maps workflow-server error fields onto WorkflowWorldError.code', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'observability-upgrade-required',
+          message: 'run is outside the current observability lookback window',
+        }),
+        {
+          status: 402,
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const rejection = await makeRequest({
+      endpoint: '/v2/analytics/runs/wrun_test',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection).toMatchObject({
+      name: 'WorkflowWorldError',
+      status: 402,
+      code: 'observability-upgrade-required',
+    });
   });
 
   it('maps a firewall challenge (429 + x-vercel-mitigated: challenge) to a retryable TRANSPORT error, not ThrottleError', async () => {

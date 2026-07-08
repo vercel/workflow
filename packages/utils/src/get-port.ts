@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { parseWindowsNetstatPortsForPid } from './get-port-internals.js';
+import { WORKFLOW_ROUTE_BASE } from './workflow-routes.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -215,7 +216,7 @@ export async function getPort(): Promise<number | undefined> {
 
 // Configuration for HTTP probing
 const PROBE_TIMEOUT_MS = 500;
-const PROBE_ENDPOINT = '/.well-known/workflow/v1/flow?__health';
+const PROBE_ENDPOINT = `${WORKFLOW_ROUTE_BASE}/flow?__health`;
 
 export interface ProbeOptions {
   endpoint?: string;

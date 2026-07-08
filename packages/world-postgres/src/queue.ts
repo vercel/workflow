@@ -1,4 +1,9 @@
 import type { Transport } from '@vercel/queue';
+import {
+  createWorkflowBaseUrl,
+  createWorkflowHealthEndpoint,
+  createWorkflowUrl,
+} from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   getQueuePrefixKind,
@@ -54,8 +59,6 @@ const REGISTRATION_WAIT_MS = 500;
 const REGISTRATION_WAIT_POLL_MS = 25;
 // Delay before a job with no available executor is redelivered.
 const DEFERRED_EXECUTION_DELAY_SECONDS = 1;
-const FLOW_HEALTH_PATH = '/.well-known/workflow/v1/flow?__health';
-const STEP_HEALTH_PATH = '/.well-known/workflow/v1/step?__health';
 const GraphileHelpers = z.object({
   job: z.object({
     attempts: z.number().int().positive(),
@@ -179,10 +182,17 @@ export function createQueue(
       : `${jobPrefix}steps`;
   }
 
-  function getHealthPath(queuePrefix: QueuePrefix): string {
-    return getQueuePrefixKind(queuePrefix) === 'workflow'
-      ? FLOW_HEALTH_PATH
-      : STEP_HEALTH_PATH;
+  function getHealthUrl(baseUrl: string, queuePrefix: QueuePrefix): string {
+    const kind = getQueuePrefixKind(queuePrefix);
+    const url = new URL(
+      createWorkflowUrl(baseUrl, {
+        type: kind === 'workflow' ? 'health' : 'step',
+      })
+    );
+    if (kind === 'step') {
+      url.search = '__health';
+    }
+    return url.toString();
   }
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
@@ -193,10 +203,10 @@ export function createQueue(
   const completedMessages = new Set<string>();
   const inflightMessages = new Map<string, Promise<void>>();
   const inflightWorkflowRuns = new Map<string, Promise<QueueExecutionResult>>();
-  // Remote health paths (against WORKFLOW_LOCAL_BASE_URL) that have responded
+  // Remote queue prefixes (against WORKFLOW_LOCAL_BASE_URL) that have responded
   // healthy at least once. Sticky: a route that later fails simply fails the
   // job, which graphile retries.
-  const healthyRemotePaths = new Set<string>();
+  const healthyRemotePrefixes = new Set<QueuePrefix>();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let startPromise: Promise<void> | null = null;
@@ -343,7 +353,7 @@ export function createQueue(
     const pathname =
       parseQueueName(queueName).kind === 'workflow' ? 'flow' : 'step';
     const response = await fetch(
-      `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+      createWorkflowUrl(baseUrl, { type: pathname }),
       {
         method: 'POST',
         duplex: 'half',
@@ -586,7 +596,9 @@ export function createQueue(
    */
   function hasWorkflowExecutor(): boolean {
     if (getRegisteredHandler(workflowPrefix)) return true;
-    return hasRemoteQueueFallback() && healthyRemotePaths.has(FLOW_HEALTH_PATH);
+    return (
+      hasRemoteQueueFallback() && healthyRemotePrefixes.has(workflowPrefix)
+    );
   }
 
   /**
@@ -601,15 +613,14 @@ export function createQueue(
     const handler = getRegisteredHandler(queuePrefix);
     if (handler) return { type: 'direct', handler };
 
-    const healthPath = getHealthPath(queuePrefix);
     const fallbackBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
     if (fallbackBaseUrl) {
       const baseUrl = normalizeBaseUrl(fallbackBaseUrl);
       if (
-        healthyRemotePaths.has(healthPath) ||
-        (await probeHealthPath(baseUrl, healthPath))
+        healthyRemotePrefixes.has(queuePrefix) ||
+        (await probeHealthUrl(getHealthUrl(baseUrl, queuePrefix)))
       ) {
-        healthyRemotePaths.add(healthPath);
+        healthyRemotePrefixes.add(queuePrefix);
         return { type: 'http', baseUrl };
       }
       return undefined;
@@ -618,7 +629,7 @@ export function createQueue(
     // Same-process bootstrap: the POST health probe loads a lazy route
     // module, whose module init registers the direct handler moments later.
     const baseUrl = await resolveWorkflowBaseUrl();
-    if (baseUrl && (await probeHealthPath(baseUrl, healthPath))) {
+    if (baseUrl && (await probeHealthUrl(getHealthUrl(baseUrl, queuePrefix)))) {
       const lateHandler = await waitForRegisteredHandler(queuePrefix);
       if (lateHandler) return { type: 'direct', handler: lateHandler };
     }
@@ -802,9 +813,11 @@ export function createQueue(
   async function probeFlowRoute(): Promise<void> {
     const baseUrl = await resolveWorkflowBaseUrl();
     if (!baseUrl) return;
-    const flowHealthy = await probeHealthPath(baseUrl, FLOW_HEALTH_PATH);
+    const flowHealthy = await probeHealthUrl(
+      getHealthUrl(baseUrl, workflowPrefix)
+    );
     if (flowHealthy && hasRemoteQueueFallback()) {
-      healthyRemotePaths.add(FLOW_HEALTH_PATH);
+      healthyRemotePrefixes.add(workflowPrefix);
     }
   }
 
@@ -824,10 +837,7 @@ export function createQueue(
     });
   }
 
-  async function probeHealthPath(
-    baseUrl: string,
-    path: string
-  ): Promise<boolean> {
+  async function probeHealthUrl(url: string): Promise<boolean> {
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -835,7 +845,7 @@ export function createQueue(
     );
     timeout.unref?.();
     try {
-      const response = await fetch(`${baseUrl}${path}`, {
+      const response = await fetch(url, {
         method: 'POST',
         signal: controller.signal,
       });
@@ -857,10 +867,14 @@ export function createQueue(
       return normalizeBaseUrl(process.env.WORKFLOW_LOCAL_BASE_URL);
     }
     if (process.env.PORT) {
-      return `http://localhost:${process.env.PORT}`;
+      return createWorkflowBaseUrl(`http://localhost:${process.env.PORT}`);
     }
-    const port = await getWorkflowPort();
-    return typeof port === 'number' ? `http://localhost:${port}` : undefined;
+    const port = await getWorkflowPort({
+      endpoint: createWorkflowHealthEndpoint(),
+    });
+    return typeof port === 'number'
+      ? createWorkflowBaseUrl(`http://localhost:${port}`)
+      : undefined;
   }
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
@@ -932,7 +946,7 @@ export function createQueue(
         workerUtils = null;
       }
       startPromise = null;
-      healthyRemotePaths.clear();
+      healthyRemotePrefixes.clear();
       for (const { prefix, handler } of ownedHandlers) {
         const handlers = registeredHandlers.get(prefix);
         if (!handlers) continue;

@@ -1,4 +1,5 @@
 import { JsonTransport } from '@vercel/queue';
+import { setWorkflowBasePath } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, parseQueueName, type QueuePayload } from '@workflow/world';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
@@ -50,6 +51,9 @@ describe('postgres queue direct execution', () => {
     vi.unstubAllEnvs();
     vi.useRealTimers();
     await Promise.all(createdQueues.splice(0).map((queue) => queue.close()));
+    delete process.env.WORKFLOW_LOCAL_BASE_URL;
+    delete process.env.PORT;
+    setWorkflowBasePath(undefined);
   });
 
   it('does not start consuming Graphile jobs before a handler is registered', async () => {
@@ -944,6 +948,32 @@ describe('postgres queue direct execution', () => {
     await Promise.all([first, second]);
 
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses basePath for local postgres queue health probes', async () => {
+    vi.mocked(getWorkflowPort).mockResolvedValue(3000);
+    setWorkflowBasePath('/v2');
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/flow?__health')) {
+        queue.createQueueHandler('__wkf_workflow_', async () => undefined);
+      }
+      return new Response(null, { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await queue.start();
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:3000/v2/.well-known/workflow/v1/flow?__health',
+        expect.objectContaining({ method: 'POST' })
+      );
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+    expect(getWorkflowPort).toHaveBeenCalledWith({
+      endpoint: '/v2/.well-known/workflow/v1/flow?__health',
+    });
   });
 
   it('queues producer delays and headers in graphile job metadata', async () => {

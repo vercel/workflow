@@ -19,6 +19,10 @@ export type InspectCLIOptions = {
   limit?: number;
   workflowName?: string;
   status?: string;
+  /** Listing window start: relative duration (12h, 7d) or timestamp (runs only) */
+  since?: string;
+  /** Listing window end: relative duration or timestamp; requires --since */
+  until?: string;
   withData?: boolean;
   backend?: string;
   disableRelativeDates?: boolean;

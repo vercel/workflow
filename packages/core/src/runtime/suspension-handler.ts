@@ -216,11 +216,30 @@ export async function handleSuspension({
     (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
   );
 
-  // Split hooks by what actions they need
   const hooksNeedingCreation = allHookItems.filter(
     (item) => !item.hasCreatedEvent
   );
-  const hooksNeedingDisposal = allHookItems.filter((item) => item.disposed);
+
+  // Group hook items that need work by token, preserving queue-insertion
+  // (workflow code) order within each token. Operations on one token must
+  // apply in code order: a dispose() of an earlier hook releases the token
+  // before a later same-token hook's creation is validated — otherwise the
+  // new hook records a spurious hook_conflict against the run's own
+  // disposed hook — while a hook created and disposed within the same
+  // suspension is still created before it is disposed. Different tokens
+  // have no claim interaction, so token groups are processed in parallel.
+  const hookItemsByToken = new Map<string, HookInvocationQueueItem[]>();
+  for (const item of allHookItems) {
+    if (item.hasCreatedEvent && !item.disposed) {
+      continue; // already committed and still live — nothing to do
+    }
+    const group = hookItemsByToken.get(item.token);
+    if (group) {
+      group.push(item);
+    } else {
+      hookItemsByToken.set(item.token, [item]);
+    }
+  }
 
   // Resolve encryption key for this run
   const rawKey = await world.getEncryptionKeyForRun?.(run);
@@ -231,107 +250,105 @@ export async function handleSuspension({
   const compression =
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
-  // Build and process hook_created events (same as V1)
-  const hookEvents = await Promise.all(
-    hooksNeedingCreation.map(async (queueItem) => {
-      const hookMetadata: SerializedData | undefined =
-        typeof queueItem.metadata === 'undefined'
-          ? undefined
-          : ((await dehydrateStepArguments(
-              queueItem.metadata,
-              runId,
-              encryptionKey,
-              suspension.globalThis,
-              false,
-              compression
-            )) as SerializedData);
-      return {
-        queueItem,
-        hookEvent: {
-          eventType: 'hook_created' as const,
-          specVersion: SPEC_VERSION_CURRENT,
+  async function disposeHook(
+    queueItem: HookInvocationQueueItem
+  ): Promise<void> {
+    const hookDisposedEvent: CreateEventRequest = {
+      eventType: 'hook_disposed' as const,
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: queueItem.correlationId,
+      eventData: {
+        token: queueItem.token,
+      },
+    };
+    try {
+      await world.events.create(runId, hookDisposedEvent, { requestId });
+    } catch (err) {
+      if (EntityConflictError.is(err)) {
+        // Hook was already disposed by a concurrent invocation — safe to skip
+        runtimeLogger.info(
+          'Hook already disposed, skipping duplicate disposal',
+          {
+            workflowRunId: runId,
+            correlationId: queueItem.correlationId,
+            message: err.message,
+          }
+        );
+      } else if (RunExpiredError.is(err)) {
+        runtimeLogger.info(
+          'Workflow run already completed, skipping hook disposal',
+          {
+            workflowRunId: runId,
+            correlationId: queueItem.correlationId,
+            message: err.message,
+          }
+        );
+      } else if (HookNotFoundError.is(err)) {
+        // Hook may have already been disposed or never created
+        runtimeLogger.info('Hook not found for disposal, continuing', {
+          workflowRunId: runId,
           correlationId: queueItem.correlationId,
-          eventData: {
-            token: queueItem.token,
-            metadata: hookMetadata,
-            isWebhook: queueItem.isWebhook ?? false,
-            ...(queueItem.isSystem && { isSystem: true }),
-          },
-        },
-      };
-    })
-  );
+          message: err.message,
+        });
+      } else {
+        throw err;
+      }
+    }
+  }
 
   // Process hooks first to prevent race conditions with webhook receivers.
-  // All hook creations run in parallel.
   // Track any hook conflicts that occur — these are returned to the caller
   // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
   let hasAwaitedHookCreation = false;
 
-  if (hookEvents.length > 0) {
-    await ensureRunReady();
-    const results = await Promise.all(
-      hookEvents.map(({ hookEvent, queueItem }) =>
-        createHookEvent({
-          world,
-          runId,
-          hookEvent,
-          queueItem,
-          requestId,
-        })
-      )
-    );
-    hasHookConflict = results.some((result) => result.hasHookConflict);
-    hasAwaitedHookCreation = results.some(
-      (result) => result.hasAwaitedHookCreation
-    );
-  }
-
-  // Process hook disposals — these release hook tokens for reuse by other workflows.
-  if (hooksNeedingDisposal.length > 0) {
+  if (hookItemsByToken.size > 0) {
     await ensureRunReady();
     await Promise.all(
-      hooksNeedingDisposal.map(async (queueItem) => {
-        const hookDisposedEvent: CreateEventRequest = {
-          eventType: 'hook_disposed' as const,
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: queueItem.correlationId,
-          eventData: {
-            token: queueItem.token,
-          },
-        };
-        try {
-          await world.events.create(runId, hookDisposedEvent, { requestId });
-        } catch (err) {
-          if (EntityConflictError.is(err)) {
-            // Hook was already disposed by a concurrent invocation — safe to skip
-            runtimeLogger.info(
-              'Hook already disposed, skipping duplicate disposal',
-              {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              }
-            );
-          } else if (RunExpiredError.is(err)) {
-            runtimeLogger.info(
-              'Workflow run already completed, skipping hook disposal',
-              {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              }
-            );
-          } else if (HookNotFoundError.is(err)) {
-            // Hook may have already been disposed or never created
-            runtimeLogger.info('Hook not found for disposal, continuing', {
-              workflowRunId: runId,
+      [...hookItemsByToken.values()].map(async (items) => {
+        for (const queueItem of items) {
+          let creationConflicted = false;
+
+          if (!queueItem.hasCreatedEvent) {
+            const hookMetadata: SerializedData | undefined =
+              typeof queueItem.metadata === 'undefined'
+                ? undefined
+                : ((await dehydrateStepArguments(
+                    queueItem.metadata,
+                    runId,
+                    encryptionKey,
+                    suspension.globalThis,
+                    false,
+                    compression
+                  )) as SerializedData);
+            const hookEvent: CreateEventRequest = {
+              eventType: 'hook_created' as const,
+              specVersion: SPEC_VERSION_CURRENT,
               correlationId: queueItem.correlationId,
-              message: err.message,
+              eventData: {
+                token: queueItem.token,
+                metadata: hookMetadata,
+                isWebhook: queueItem.isWebhook ?? false,
+                ...(queueItem.isSystem && { isSystem: true }),
+              },
+            };
+            const result = await createHookEvent({
+              world,
+              runId,
+              hookEvent,
+              queueItem,
+              requestId,
             });
-          } else {
-            throw err;
+            hasHookConflict ||= result.hasHookConflict;
+            hasAwaitedHookCreation ||= result.hasAwaitedHookCreation;
+            creationConflicted = result.hasHookConflict;
+          }
+
+          // Dispose after creation for hooks born and disposed within this
+          // batch. A hook whose creation conflicted was never created, so
+          // there is nothing to dispose.
+          if (queueItem.disposed && !creationConflicted) {
+            await disposeHook(queueItem);
           }
         }
       })
@@ -654,7 +671,7 @@ export async function handleSuspension({
     hasHookConflict,
     hasAwaitedHookCreation,
     hasAttributeEvents: attributeItems.length > 0,
-    hasHookEvents: hookEvents.length > 0,
+    hasHookEvents: hooksNeedingCreation.length > 0,
   };
 }
 

@@ -6,7 +6,6 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
-  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
@@ -26,6 +25,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
+import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
 /**
  * Timeout for the cross-deployment capability probe done before
@@ -204,7 +204,8 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
-      const world = opts?.world ?? (await getWorldLazy());
+      const world = opts.world ?? (await getWorldLazy());
+      assertWorldSupportsRuntimeProtocol(world);
       const currentDeploymentId = await world.getDeploymentId();
       let deploymentId = opts.deploymentId ?? currentDeploymentId;
 
@@ -276,14 +277,9 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      // Use world-declared specVersion when available (our worlds set this),
-      // otherwise fall back to the safe baseline that community worlds handle.
-      // Community worlds built against older @workflow/world reject runs with
-      // specVersion > their SPEC_VERSION_CURRENT via requiresNewerWorld().
-      const specVersion =
-        opts.specVersion ??
-        world.specVersion ??
-        SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
+      // Default new runs to the configured world's spec version. The world
+      // itself has already been checked against this runtime's spec version.
+      const specVersion = opts.specVersion ?? world.specVersion;
       const v1Compat = isLegacySpecVersion(specVersion);
       const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;

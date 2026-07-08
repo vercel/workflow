@@ -1,5 +1,7 @@
+import { getWorkflowPort } from '@workflow/utils/get-port';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Pool } from 'pg';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
 import {
   createEventsStorage,
@@ -14,6 +16,18 @@ vi.mock('graphile-worker', () => ({
   run: vi.fn(),
 }));
 
+vi.mock('pg', () => ({
+  Pool: vi.fn(function Pool() {
+    return {
+      query: vi.fn(async () => ({ rows: [{ exists: false }] })),
+      end: vi.fn(),
+    };
+  }),
+}));
+
+vi.mock('@workflow/utils/get-port', () => ({
+  getWorkflowPort: vi.fn(),
+}));
 vi.mock('./storage.js', () => ({
   createRunsStorage: vi.fn(),
   createEventsStorage: vi.fn(),
@@ -70,6 +84,7 @@ describe('re-enqueue active runs on start', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
+    vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
     vi.mocked(run).mockResolvedValue({ stop: vi.fn() } as any);
     vi.mocked(createEventsStorage).mockReturnValue({} as any);
     vi.mocked(createHooksStorage).mockReturnValue({} as any);
@@ -79,6 +94,41 @@ describe('re-enqueue active runs on start', () => {
     mockRunsList({});
   });
 
+  afterEach(async () => {
+    delete process.env.WORKFLOW_LOCAL_BASE_URL;
+    delete process.env.WORKFLOW_POSTGRES_URL;
+    delete process.env.DATABASE_URL;
+    delete process.env.PORT;
+  });
+
+  it('falls back to DATABASE_URL when WORKFLOW_POSTGRES_URL is unset', async () => {
+    process.env.DATABASE_URL = 'postgres://database-url';
+
+    const world = createWorld();
+
+    expect(Pool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionString: 'postgres://database-url',
+      })
+    );
+
+    await world.close();
+  });
+
+  it('prefers WORKFLOW_POSTGRES_URL over DATABASE_URL', async () => {
+    process.env.WORKFLOW_POSTGRES_URL = 'postgres://workflow-postgres-url';
+    process.env.DATABASE_URL = 'postgres://database-url';
+
+    const world = createWorld();
+
+    expect(Pool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionString: 'postgres://workflow-postgres-url',
+      })
+    );
+
+    await world.close();
+  });
   it('re-enqueues active runs via graphile-worker on start', async () => {
     mockRunsList({
       pending: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
