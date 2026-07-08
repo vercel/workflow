@@ -18,6 +18,7 @@ import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
+import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -143,12 +144,15 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           })
         );
 
-        // Delete tagged entity files across all directories
+        // Delete tagged entity files across all directories.
+        // `hooks/by-run` markers are flat tagged files; `token-index` /
+        // `id-index` entries are handled below (nested per-key dirs).
         const entityDirs = [
           'runs',
           'steps',
           'events',
           'hooks',
+          'hooks/by-run',
           'waits',
           'streams/runs',
         ];
@@ -161,6 +165,31 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             );
           })
         );
+        // Delete tagged hook-index entries. These live in nested
+        // per-key directories (hooks/token-index/<hash>/…,
+        // hooks/id-index/<hookId>/…), so walk each subdirectory.
+        for (const indexDir of ['token-index', 'id-index']) {
+          const fullIndexDir = path.join(basedir, 'hooks', indexDir);
+          let keyDirEntries: import('node:fs').Dirent[];
+          try {
+            keyDirEntries = await fs.readdir(fullIndexDir, {
+              withFileTypes: true,
+            });
+          } catch {
+            keyDirEntries = [];
+          }
+          await Promise.all(
+            keyDirEntries
+              .filter((entry) => entry.isDirectory())
+              .map(async (entry) => {
+                const keyDir = path.join(fullIndexDir, entry.name);
+                const taggedEntryFiles = await listTaggedFiles(keyDir, tag);
+                await Promise.all(
+                  taggedEntryFiles.map((f) => deleteJSON(path.join(keyDir, f)))
+                );
+              })
+          );
+        }
         // Clean up lock files used for atomic terminal-state guards
         await fs
           .rm(path.join(basedir, '.locks'), { recursive: true, force: true })
@@ -201,6 +230,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       } else {
         // `rm()` removes directories that the write path may have cached.
         clearCreatedFilesCache();
+        resetHookIndexEnsureCache();
         await rm(mergedConfig.dataDir, { recursive: true, force: true });
         await initDataDir(mergedConfig.dataDir);
       }

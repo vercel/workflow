@@ -64,6 +64,11 @@ import {
   releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
+  deleteHookByRunMarker,
+  writeHookByRunMarker,
+  writeHookCreatedIndexEntries,
+} from './hook-index.js';
+import {
   deleteAllHooksForRun,
   rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
@@ -311,6 +316,19 @@ async function repairHookEntityFromPersistedEvent(
     isWebhook: eventData.isWebhook ?? true,
     isSystem: eventData.isSystem ?? false,
   };
+  // This path can repair events published by pre-index writers, so
+  // (idempotently) index the persisted event and write the by-run
+  // marker before the entity — cleanup and rebuilds discover hooks
+  // through these indexes.
+  await writeHookCreatedIndexEntries(
+    basedir,
+    eventData.token,
+    runId,
+    hookId,
+    persistedEventId,
+    tag
+  );
+  await writeHookByRunMarker(basedir, runId, hookId, tag);
   await writeExclusive(
     taggedPath(basedir, 'hooks', hookId, tag),
     JSON.stringify(hook, jsonReplacer, 2)
@@ -1960,6 +1978,26 @@ export function createEventsStorage(
           hookEntityWriteOptions = writeHookEntityWithOverwrite
             ? { overwrite: true }
             : undefined;
+
+          // Durably index this hook_created event by token and hookId
+          // BEFORE the outer event publish commits. Rebuild paths
+          // (crash recovery, cache restoration, token-uniqueness
+          // checks) consult these indexes instead of scanning the
+          // entire global event log; writing them first means a crash
+          // can only leave a dangling entry pointing at an event that
+          // never landed (skipped by readers), never a committed event
+          // that the indexes cannot see. `eventId` is final here — the
+          // dedup-recovery branch above already reassigned it to the
+          // canonical id when applicable, in which case the entries
+          // are byte-identical no-ops.
+          await writeHookCreatedIndexEntries(
+            basedir,
+            hookData.token,
+            effectiveRunId,
+            data.correlationId,
+            eventId,
+            tag
+          );
         } else if (data.eventType === 'hook_disposed') {
           // hook_disposed: Deletes hook entity, rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
@@ -2021,6 +2059,14 @@ export function createEventsStorage(
             );
           }
           await deleteJSON(hookPath);
+          // Reap the by-run marker alongside the entity so terminal-run
+          // cleanup doesn't re-process disposed hooks.
+          await deleteHookByRunMarker(
+            basedir,
+            effectiveRunId,
+            data.correlationId,
+            tag
+          );
         } else if (data.eventType === 'wait_created' && 'eventData' in data) {
           // wait_created: Creates wait entity with status 'waiting'.
           // Atomic claim on a per-(runId, correlationId) constraint file
@@ -2190,6 +2236,11 @@ export function createEventsStorage(
         // The branch sets `hookEntityWriteOptions` iff this event
         // type writes an entity.
         if (hook && data.eventType === 'hook_created') {
+          // Marker before entity: run-termination cleanup discovers
+          // hooks via by-run markers, so the marker must be durable no
+          // later than the entity (a dangling marker is harmless — the
+          // cleanup skips markers whose entity is missing).
+          await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
           await writeJSON(
             taggedPath(basedir, 'hooks', hook.hookId, tag),
             hook,
