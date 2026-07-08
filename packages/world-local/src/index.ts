@@ -165,17 +165,36 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         await fs
           .rm(path.join(basedir, '.locks'), { recursive: true, force: true })
           .catch(() => {});
-        // Delete tagged stream chunks (.{tag}.bin files)
+        // Delete tagged stream chunks (.{tag}.bin files). Chunks are sharded
+        // one directory per stream (streams/chunks/<streamName>/<chunkId>.{tag}.bin),
+        // so iterate each per-stream directory — the top-level chunks dir now
+        // holds only subdirectories, so listing it directly would match nothing
+        // and silently leak tagged chunk files across test sessions.
         const chunksDir = path.join(basedir, 'streams', 'chunks');
-        const taggedBinFiles = await listTaggedFilesByExtension(
-          chunksDir,
-          tag,
-          '.bin'
-        );
+        let streamDirEntries: import('node:fs').Dirent[];
+        try {
+          streamDirEntries = await fs.readdir(chunksDir, {
+            withFileTypes: true,
+          });
+        } catch {
+          streamDirEntries = [];
+        }
         await Promise.all(
-          taggedBinFiles.map((f) =>
-            fs.unlink(path.join(chunksDir, f)).catch(() => {})
-          )
+          streamDirEntries
+            .filter((entry) => entry.isDirectory())
+            .map(async (entry) => {
+              const streamChunkDir = path.join(chunksDir, entry.name);
+              const taggedBinFiles = await listTaggedFilesByExtension(
+                streamChunkDir,
+                tag,
+                '.bin'
+              );
+              await Promise.all(
+                taggedBinFiles.map((f) =>
+                  fs.unlink(path.join(streamChunkDir, f)).catch(() => {})
+                )
+              );
+            })
         );
         // Clear the in-memory write cache so deleted paths are forgotten
         clearCreatedFilesCache();

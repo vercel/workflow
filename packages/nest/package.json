@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nest",
-  "version": "5.0.0-beta.27",
+  "version": "5.0.0-beta.28",
   "description": "NestJS integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -58,8 +58,8 @@
     }
   },
   "devDependencies": {
-    "@nestjs/common": "^11.1.17",
-    "@nestjs/core": "^11.1.17",
+    "@nestjs/common": "^11.1.27",
+    "@nestjs/core": "^11.1.27",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "typescript": "catalog:",

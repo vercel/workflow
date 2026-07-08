@@ -351,6 +351,44 @@ describe('File tagging', () => {
 
       await world.close?.();
     });
+
+    it('should clear tagged stream chunks in the sharded layout', async () => {
+      const { createLocalWorld } = await import('./index.js');
+
+      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      await world.start?.();
+
+      const run = await createRun(world, {
+        deploymentId: 'dep-1',
+        workflowName: 'stream-wf',
+        input: new Uint8Array(),
+      });
+      await updateRun(world, run.runId, 'run_started');
+
+      // Chunks land under a per-stream subdirectory as `<chunkId>.vitest-0.bin`.
+      await world.streams.write(run.runId, 'strm_a', 'hello');
+      await world.streams.write(run.runId, 'strm_b', 'world');
+
+      const chunksDir = path.join(testDir, 'streams', 'chunks');
+      const streamADir = path.join(chunksDir, 'strm_a');
+      const taggedBin = (files: string[]) =>
+        files.filter((f) => f.endsWith('.vitest-0.bin'));
+      const readOrEmpty = (d: string) =>
+        fs.readdir(d).catch(() => [] as string[]);
+      expect(taggedBin(await fs.readdir(streamADir))).toHaveLength(1);
+
+      await world.clear();
+
+      // Regression: the tag-scoped clear previously listed only the top-level
+      // chunks dir, which after sharding holds only subdirectories, so tagged
+      // chunk files leaked across test sessions.
+      expect(taggedBin(await readOrEmpty(streamADir))).toHaveLength(0);
+      expect(
+        taggedBin(await readOrEmpty(path.join(chunksDir, 'strm_b')))
+      ).toHaveLength(0);
+
+      await world.close?.();
+    });
   });
 
   describe('untagged clear()', () => {
