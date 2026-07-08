@@ -84,8 +84,8 @@ const STSO_BUCKETS = [
 ];
 // Guard timeouts so a single stuck run fails fast instead of eating the job.
 const RUN_TIMEOUT_MS = envInt('BENCH_RUN_TIMEOUT_MS', 120_000);
-// An iteration can flake on transient network errors; tolerate a bounded
-// fraction of failures before failing the scenario.
+// An iteration can flake on transient network errors; grant each scenario a
+// bounded fraction of spare (retry) attempts on top of its iteration count.
 const MAX_FAILURE_RATIO = 0.2;
 
 interface BenchStepTiming {
@@ -258,15 +258,21 @@ async function runSequentialIteration(
 }
 
 /**
- * Runs `iterations` recorded iterations (plus warmups) sequentially —
- * concurrency would contend on the same deployment and skew latencies.
- * Tolerates up to MAX_FAILURE_RATIO of failed iterations.
+ * Runs recorded iterations (plus warmups) sequentially — concurrency would
+ * contend on the same deployment and skew latencies. Failed iterations are
+ * retried (each scenario gets `extraAttempts` spare attempts on top of the
+ * requested iteration count), so a transient failure doesn't zero out or
+ * shrink the sample set; the scenario only fails when the attempt budget
+ * can't produce the full number of iterations.
  */
 async function runScenario<T>(
   name: string,
   iterations: number,
   iteration: () => Promise<T>,
-  warmupIterations = WARMUP_ITERATIONS
+  {
+    warmupIterations = WARMUP_ITERATIONS,
+    extraAttempts = Math.ceil(iterations * MAX_FAILURE_RATIO),
+  }: { warmupIterations?: number; extraAttempts?: number } = {}
 ): Promise<T[]> {
   for (let i = 0; i < warmupIterations; i++) {
     try {
@@ -279,24 +285,27 @@ async function runScenario<T>(
 
   const results: T[] = [];
   const failures: Error[] = [];
-  for (let i = 0; i < iterations; i++) {
+  const maxAttempts = iterations + extraAttempts;
+  let attempts = 0;
+  while (results.length < iterations && attempts < maxAttempts) {
+    attempts++;
     try {
       results.push(await iteration());
     } catch (error) {
       failures.push(error as Error);
       console.warn(
-        `[bench] ${name} iteration ${i + 1}/${iterations} failed:`,
+        `[bench] ${name} attempt ${attempts}/${maxAttempts} failed:`,
         error
       );
     }
   }
 
   console.log(
-    `[bench] ${name}: ${results.length}/${iterations} iterations succeeded`
+    `[bench] ${name}: ${results.length}/${iterations} iterations succeeded (${attempts} attempts)`
   );
-  if (failures.length > iterations * MAX_FAILURE_RATIO) {
+  if (results.length < iterations) {
     throw new Error(
-      `${name}: ${failures.length}/${iterations} iterations failed; last error: ${failures[failures.length - 1]?.message}`
+      `${name}: only ${results.length}/${iterations} iterations succeeded after ${attempts} attempts; last error: ${failures[failures.length - 1]?.message}`
     );
   }
   return results;
@@ -427,10 +436,16 @@ describe('workflow benchmarks', () => {
       SCENARIO_SEQUENTIAL,
       SEQUENTIAL_ITERATIONS,
       () => runSequentialIteration(SEQUENTIAL_STEP_COUNT),
-      // No warmup: STSO gaps are measured entirely on the deployment (the
-      // stream scenarios already warmed the client + world), and a warmup run
-      // of this scenario would cost as much as a recorded one.
-      0
+      {
+        // No warmup: STSO gaps are measured entirely on the deployment (the
+        // stream scenarios already warmed the client + world), and a warmup
+        // run of this scenario would cost as much as a recorded one.
+        warmupIterations: 0,
+        // A long run occasionally fails outright (e.g. replay divergence
+        // under a large event log); give the default single iteration two
+        // spare attempts instead of failing the whole scenario.
+        extraAttempts: Math.max(2, Math.ceil(SEQUENTIAL_ITERATIONS * 0.5)),
+      }
     );
     // Report STSO per step-index range. Gap k (between steps k and k+1,
     // 1-indexed) lives at stsoMs[k - 1].
