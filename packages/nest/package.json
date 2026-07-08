@@ -58,8 +58,8 @@
     }
   },
   "devDependencies": {
-    "@nestjs/common": "^11.1.17",
-    "@nestjs/core": "^11.1.17",
+    "@nestjs/common": "^11.1.27",
+    "@nestjs/core": "^11.1.27",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "typescript": "catalog:",
