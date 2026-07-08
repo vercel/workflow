@@ -54,6 +54,14 @@ async function runWorkflowHandlerWithEvents(
     createdEvents?: unknown[];
     queuedMessages?: unknown[];
     replayDivergence?: { eventId: string; count: number };
+    /**
+     * Make created events visible to subsequent events.list calls (appended
+     * to `events`), like a real World. Needed for flows where the handler
+     * makes in-process progress over its own writes (e.g. an attr_set
+     * resolved by the next replay iteration). Off by default so tests that
+     * pin the log's contents keep full control.
+     */
+    dynamicEventLog?: boolean;
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
@@ -67,14 +75,16 @@ async function runWorkflowHandlerWithEvents(
       };
     }
 
-    return {
-      event: {
-        eventId: `event-${createdEvents.length}`,
-        runId: workflowRun.runId,
-        createdAt: new Date(),
-        ...data,
-      },
+    const event = {
+      eventId: `event-${createdEvents.length}`,
+      runId: workflowRun.runId,
+      createdAt: new Date(),
+      ...data,
     };
+    if (options.dynamicEventLog) {
+      events.push(event as Event);
+    }
+    return { event };
   });
 
   setWorld({
@@ -719,55 +729,36 @@ describe('workflowEntrypoint replay guards', () => {
         return "attribute won";
       }${getWorkflowTransformCode('workflow')}`;
 
-    const firstAttemptEvents: any[] = [];
-    const firstAttemptMessages: unknown[] = [];
+    const createdEvents: any[] = [];
+    const queuedMessages: unknown[] = [];
     await runWorkflowHandlerWithEvents(workflowCode, workflowRun, [], {
-      createdEvents: firstAttemptEvents,
-      queuedMessages: firstAttemptMessages,
+      createdEvents,
+      queuedMessages,
+      dynamicEventLog: true,
     });
 
-    expect(firstAttemptEvents).toContainEqual(
+    expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'attr_set' })
     );
-    // Under lazy inline start the step that loses the attribute race is NOT
-    // eagerly created: its step_created is deferred for a lazy step_started
-    // that never fires, because the attr_set event triggers an immediate
-    // re-invocation before any step executes. So no step_created is written on
-    // this attempt — strictly less event-log garbage than the eager model,
-    // and correct because the step loses the race and is abandoned on replay.
-    expect(firstAttemptEvents).not.toContainEqual(
-      expect.objectContaining({ eventType: 'step_created' })
-    );
-    expect(firstAttemptMessages).toEqual([]);
-
-    const replayEvents = firstAttemptEvents
-      .filter(
-        (event) =>
-          event.eventType === 'attr_set' || event.eventType === 'step_created'
-      )
-      .map((event, index) => ({
-        ...event,
-        eventId: `event-${index}`,
-        runId: workflowRun.runId,
-        createdAt: new Date('2024-01-01T00:00:01.000Z'),
-      })) as Event[];
-    const replayCreatedEvents: unknown[] = [];
-    const replayQueuedMessages: unknown[] = [];
-
-    await runWorkflowHandlerWithEvents(
-      workflowCode,
-      workflowRun,
-      replayEvents,
-      {
-        createdEvents: replayCreatedEvents,
-        queuedMessages: replayQueuedMessages,
-      }
-    );
-
-    expect(replayCreatedEvents).toContainEqual(
+    // The attr_set suspension skips step processing and resolves through an
+    // in-process replay, where the durable attribute event wins the race —
+    // so the run completes within this same delivery, with no queue
+    // interaction.
+    expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'run_completed' })
     );
-    expect(replayQueuedMessages).toEqual([]);
+    expect(queuedMessages).toEqual([]);
+    // Under lazy inline start the step that loses the attribute race is NOT
+    // eagerly created: its step_created is deferred for a lazy step_started
+    // that never fires, because the attribute-resolving replay decides the
+    // race before any step executes. So the losing step leaves no events at
+    // all — strictly less event-log garbage than the eager model.
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'step_created' })
+    );
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'step_started' })
+    );
   });
 
   it('fails the run when the World rejects an attr_set event as invalid', async () => {
@@ -1797,6 +1788,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       startedAt: new Date(),
       deploymentId: 'test-deployment',
     };
+    const queued: unknown[] = [];
 
     const eventsCreate = vi.fn(async (_runId: string, data: any) => {
       if (data.eventType === 'run_started') {
@@ -1877,7 +1869,10 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
         })),
       },
       runs: { get: vi.fn(async () => runEntity) },
-      queue: vi.fn(async () => ({ messageId: null })),
+      queue: vi.fn(async (_queueName: string, message: unknown) => {
+        queued.push(message);
+        return { messageId: null };
+      }),
       getEncryptionKeyForRun: vi.fn(async () => undefined),
     } as any);
 
@@ -1889,7 +1884,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     const stepCompleted = eventsCreate.mock.calls
       .map((c) => c[1] as any)
       .filter((d) => d.eventType === 'step_completed');
-    return { stepCompleted, eventsCreate };
+    return { stepCompleted, eventsCreate, queued };
   }
 
   it('attaches ttfs to the first step and stso to the next back-to-back step (turbo)', async () => {
@@ -1950,45 +1945,74 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(stepCompleted[0].eventData.optimizations).toBeUndefined();
   });
 
-  it('reports ttfs across a pre-step setAttributes, ending the measurement at the attr write', async () => {
-    // A workflow-body setAttributes before the first step: the attribute
-    // suspension re-invokes through the queue before any step runs (see the
-    // hasAttributeEvents branch in the orchestrator), so the first step
-    // executes in a LATER invocation whose log already holds the attr_set.
-    // TTFS must still be reported, anchored run-creation → the attr write
-    // (the setAttributes call's duration — including the queue hop — is
-    // subtracted by ending the measurement there).
-    const attrThenStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepOne");
-      const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
-      async function workflow() {
-        await setAttributes([{ key: "k", value: "v" }]);
-        return await s1();
-      }${latXform('workflow')}`;
+  const attrThenStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepOne");
+    const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+    async function workflow() {
+      await setAttributes([{ key: "k", value: "v" }]);
+      return await s1();
+    }${latXform('workflow')}`;
 
+  it('reports ttfs across a pre-step setAttributes, resolved in-process without a re-invoke', async () => {
+    // A workflow-body setAttributes before the first step resolves through
+    // an in-process replay: the same delivery commits attr_set, replays, and
+    // runs the step — no queue interaction. TTFS ends at the attr write, so
+    // the setAttributes call's duration is subtracted; here that detour is
+    // milliseconds, keeping ttfs ≈ the run's ULID backdate.
+    const backdateMs = 10_000;
+    const before = Date.now();
+    const first = await driveLatency({
+      runId: makeLatencyRunId(backdateMs),
+      source: attrThenStepWorkflow,
+    });
+    const elapsed = Date.now() - before;
+
+    // Everything happened in this one delivery: attr committed, step run,
+    // and nothing was enqueued (no re-invoke, no step dispatch).
+    const attrCreates = first.eventsCreate.mock.calls
+      .map((c) => c[1] as any)
+      .filter((d) => d.eventType === 'attr_set');
+    expect(attrCreates).toHaveLength(1);
+    expect(first.stepCompleted).toHaveLength(1);
+    expect(first.queued).toEqual([]);
+
+    const { ttfs, stso, optimizations } = first.stepCompleted[0].eventData;
+    expect(ttfs).toBeGreaterThanOrEqual(backdateMs);
+    expect(ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
+    expect(stso).toBeUndefined();
+    // The attr detour does not end turbo: no resume invocation source
+    // exists, so the forced-optimistic fast path stays engaged.
+    expect(optimizations).toEqual([
+      'turbo',
+      'lazyStepStart',
+      'optimisticStart',
+    ]);
+  });
+
+  it('reports ttfs when a redelivery lands after a committed pre-step attr_set, ending the measurement at the attr write', async () => {
     // Both measurement endpoints are values this test controls (the run-id
     // ULID timestamp and the crafted attr occurredAt), so the expected ttfs
     // is exact — no wall-clock slack that a slow CI runner could exceed.
     const runCreatedAtMs = Date.now() - 10_000;
     const runId = `wrun_${ulid(runCreatedAtMs)}`;
 
-    // Invocation 1 (first delivery): commits attr_set and re-invokes —
-    // no step may run yet.
-    const first = await driveLatency({ runId, source: attrThenStepWorkflow });
-    expect(first.stepCompleted).toHaveLength(0);
-    const attrCreates = first.eventsCreate.mock.calls
+    // Harvest a replay-consumable attr_set by driving the workflow once:
+    // its correlationId is a deterministic replay ULID, so only an event
+    // captured from a real drive of the SAME run id resolves the
+    // setAttributes call on the next drive's replay.
+    const harvest = await driveLatency({
+      runId,
+      source: attrThenStepWorkflow,
+    });
+    const attrCreates = harvest.eventsCreate.mock.calls
       .map((c) => c[1] as any)
       .filter((d) => d.eventType === 'attr_set');
     expect(attrCreates).toHaveLength(1);
-    expect(
-      first.eventsCreate.mock.calls.some(
-        (c) => (c[1] as any).eventType === 'step_started'
-      )
-    ).toBe(false);
 
-    // Invocation 2 (queue continuation, no runInput): replays over the
-    // durable attr_set — stamped as written 7s after run creation — and runs
-    // the step. The measurement must end at the attr write: exactly 7s, NOT
-    // the full wall-clock distance to now (10s+).
+    // Simulate a redelivery landing after the attr_set was committed but
+    // before the first step ran: a fresh world seeded with only the attr
+    // event, stamped as written 7s after run creation. The measurement must
+    // end at the attr write: exactly 7s, NOT the full wall-clock distance
+    // to now (10s+).
     const attrOccurredAt = new Date(runCreatedAtMs + 7_000);
     const attrEvent = {
       ...attrCreates[0],
@@ -1998,14 +2022,14 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       occurredAt: attrOccurredAt,
     } as Event;
 
-    const second = await driveLatency({
+    const redelivery = await driveLatency({
       runId,
       source: attrThenStepWorkflow,
       seedEvents: [attrEvent],
       withRunInput: false,
     });
-    expect(second.stepCompleted).toHaveLength(1);
-    const { ttfs, stso, optimizations } = second.stepCompleted[0].eventData;
+    expect(redelivery.stepCompleted).toHaveLength(1);
+    const { ttfs, stso, optimizations } = redelivery.stepCompleted[0].eventData;
     // ULID time encoding is millisecond-exact, so this is deterministic.
     expect(ttfs).toBe(+attrOccurredAt - runCreatedAtMs);
     expect(stso).toBeUndefined();

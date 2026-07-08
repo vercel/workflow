@@ -24,6 +24,7 @@ const BASE = {
   invocationStartedClean: true,
   runCreatedAtMs: 1_000,
   preStepBlockingMs: 0,
+  preStepBlockingBeforeAttrMs: undefined,
   suspensionHasWaits: false,
   suspensionCreatedHooks: false,
   turbo: false,
@@ -107,7 +108,7 @@ describe('computeStepLatencyTracking', () => {
     });
   });
 
-  it('disqualifies TTFS when both a hook_created and an attr_set precede the step (hook time unmeasurable across the attr re-invoke)', () => {
+  it('subtracts only pre-attr hook time when a hook and an attr both precede the step', () => {
     const tracking = computeStepLatencyTracking({
       ...BASE,
       events: [
@@ -115,8 +116,35 @@ describe('computeStepLatencyTracking', () => {
         makeEvent('hook_created'),
         makeEvent('attr_set', { occurredAt: new Date(3_000) }),
       ],
+      // Live accumulator includes a hook written AFTER the attr suspension —
+      // outside the attr-anchored measurement window.
+      preStepBlockingMs: 90,
+      preStepBlockingBeforeAttrMs: 40,
     });
-    expect(tracking).toBeUndefined();
+    expect(tracking).toEqual({
+      ttfsAnchorMs: 1_000,
+      preStepBlockingMs: 40,
+      preStepAttrStartMs: 3_000,
+      turbo: false,
+    });
+  });
+
+  it('subtracts no hook time when the attr_set came from a redelivery snapshot (no pre-attr snapshot)', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [
+        makeEvent('run_started'),
+        makeEvent('attr_set', { occurredAt: new Date(3_000) }),
+      ],
+      preStepBlockingMs: 90,
+      preStepBlockingBeforeAttrMs: undefined,
+    });
+    expect(tracking).toEqual({
+      ttfsAnchorMs: 1_000,
+      preStepBlockingMs: 0,
+      preStepAttrStartMs: 3_000,
+      turbo: false,
+    });
   });
 
   it('disqualifies TTFS when the invocation did not start clean (events written by an earlier invocation)', () => {

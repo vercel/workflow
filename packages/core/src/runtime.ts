@@ -548,6 +548,13 @@ export function workflowEntrypoint(
                   // the first step ran, accumulated across suspension passes
                   // and subtracted from TTFS.
                   let preStepBlockingMs = 0;
+                  // Snapshot of the accumulator as of the suspension that
+                  // wrote the run's first attr_set (whose hook phase ran
+                  // before its attr writes). When a pre-step setAttributes
+                  // ends the TTFS measurement at the attr write, only hook
+                  // time from BEFORE that point may be subtracted — later
+                  // hook writes fall outside the measured window.
+                  let preStepBlockingBeforeAttrMs: number | undefined;
 
                   // Turbo mode fast-paths the very first delivery of the very
                   // first invocation, where it is provably safe to: background
@@ -559,8 +566,11 @@ export function workflowEntrypoint(
                   // delivery; `incomingStepId` would mark a background-step
                   // invocation and `replayDivergence` a recovery replay — both
                   // ineligible. The single-handler guarantee that makes forced
-                  // optimistic start safe ends once a hook/wait/attr is created,
-                  // so turbo exits at that point (see `forceOptimisticStart`).
+                  // optimistic start safe ends once a hook or wait is created
+                  // (they introduce resume invocations), so turbo exits at that
+                  // point (see `forceOptimisticStart`). Workflow attribute
+                  // writes introduce no such invocation source — they resolve
+                  // via an in-process replay and don't end turbo.
                   const turbo =
                     isTurboEnabled() &&
                     runInput !== undefined &&
@@ -600,7 +610,7 @@ export function workflowEntrypoint(
                   // (e.g. graphile-worker) a reschedule comes back as delivery
                   // attempt 1 — so turbo re-engages, skips the event-log load
                   // again, replays against an empty log, never observes the
-                  // hook/attr event this invocation just wrote, and re-suspends
+                  // hook event this invocation just wrote, and re-suspends
                   // forever (the run wedges). Under turbo we instead enqueue an
                   // explicit continuation that carries NO `runInput`, so the
                   // next delivery is a normal (non-turbo) load-and-replay that
@@ -1257,11 +1267,10 @@ export function workflowEntrypoint(
                       // invocation's first snapshot. Waits completed above
                       // would already disqualify via the event-type check, so
                       // evaluating after the wait pass is equivalent.
-                      // attr_set is permitted: an attribute suspension
-                      // re-invokes before steps run, so the invocation that
-                      // executes the first step loads the attr events — the
-                      // detour is subtracted via preStepAttrStartMs (see
-                      // runtime/step-latency.ts).
+                      // attr_set is permitted: a redelivery can land after a
+                      // committed pre-step attr_set, and the detour it marks
+                      // is subtracted via preStepAttrStartMs regardless of
+                      // which invocation wrote it (see runtime/step-latency.ts).
                       invocationStartedClean ??= events.every(
                         (e) =>
                           e.eventType === 'run_created' ||
@@ -1449,6 +1458,12 @@ export function workflowEntrypoint(
                           return;
                         }
                         preStepBlockingMs += suspensionResult.hookCreationMs;
+                        if (
+                          suspensionResult.hasAttributeEvents &&
+                          preStepBlockingBeforeAttrMs === undefined
+                        ) {
+                          preStepBlockingBeforeAttrMs = preStepBlockingMs;
+                        }
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
@@ -1466,13 +1481,22 @@ export function workflowEntrypoint(
                           return await reinvoke(0);
                         }
 
-                        // Native workflow attribute events are resolved through
-                        // replay. Re-invoke before processing pending steps:
-                        // in Promise.race([setAttributes(), step()]), the
-                        // durable attribute event can win without executing
-                        // the losing step.
+                        // Native workflow attribute events are resolved
+                        // through replay: the next loop iteration reloads the
+                        // log (now holding the just-committed attr_set) and
+                        // replays, resolving the setAttributes promise. Skip
+                        // step processing for this pass so that replay decides
+                        // races first — in Promise.race([setAttributes(),
+                        // step()]), the durable attribute event must be able
+                        // to win without executing the losing step. The replay
+                        // happens in-process rather than via a queue
+                        // re-invocation: unlike hooks and waits, an attr_set
+                        // introduces no out-of-band invocation source that the
+                        // handler would need to yield the message for, so
+                        // paying a delivery round-trip here would only add
+                        // latency before the workflow's next step.
                         if (suspensionResult.hasAttributeEvents) {
-                          return await reinvoke(0);
+                          continue;
                         }
 
                         const pendingSteps = suspensionResult.pendingSteps;
@@ -1652,14 +1676,17 @@ export function workflowEntrypoint(
 
                         // Turbo mode forces optimistic inline start for this
                         // batch — but only while the run is still "clean" (a pure
-                        // step suspension). The moment a hook or wait (or attr) is
+                        // step suspension). The moment a hook or wait is
                         // created, later resume/parallel invocations become
                         // possible, so the single-handler guarantee that makes
                         // forced optimistic start safe no longer holds — turbo
                         // exits and the steps take the normal (env-gated)
-                        // await-then-run path. The hook-conflict / attr cases
-                        // already returned early above and the awaited-hook case
-                        // emptied lazyInlineSteps; the checks below are defensive.
+                        // await-then-run path. The hook-conflict case already
+                        // returned early above, the attr case continued into a
+                        // fresh replay (so a batch-scheduling suspension never
+                        // carries attr events), and the awaited-hook case
+                        // emptied lazyInlineSteps; the checks below are
+                        // defensive.
                         //
                         // The `suspensionResult.*` flags only reflect what THIS
                         // batch created, so they do not catch a hook/wait opened
@@ -1699,6 +1726,7 @@ export function workflowEntrypoint(
                             runIdCreatedAt(runId) ??
                             (turbo ? undefined : +workflowRun.createdAt),
                           preStepBlockingMs,
+                          preStepBlockingBeforeAttrMs,
                           // This suspension's own hook/wait writes are not in
                           // cachedEvents yet, so report them explicitly.
                           suspensionHasWaits:

@@ -69,7 +69,7 @@ This intersects with the inline-delta optimization. The delta returned on the `s
 
 ### Pre-emption by attributes / hook conflicts
 
-When `attr_set` events or a hook conflict force an immediate re-invocation, the handler returns *before* the dispatch loop. The deferred step is therefore **neither created nor queued** on that pass; it is recreated and run on the re-invocation (where it is still a lazy candidate).
+When `attr_set` events force an immediate in-process replay, or a hook conflict forces a re-invocation, the handler skips the dispatch loop for that pass. The deferred step is therefore **neither created nor queued** on that pass; it is recreated and run on the following replay (where it is still a lazy candidate).
 
 This is a small behavioral improvement: previously the eager `step_created` left an orphan "created but never started" event when a step lost an attribute/hook race (e.g. `Promise.race([setAttributes(), step()])` where the attribute write wins and completes the run). With deferral, a step that loses the race is never created at all — less event-log garbage.
 
