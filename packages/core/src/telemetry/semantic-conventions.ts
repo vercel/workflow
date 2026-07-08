@@ -179,6 +179,29 @@ export const StepTracePropagated = SemanticConvention<boolean>(
   'step.trace.propagated'
 );
 
+/**
+ * Client-measured time-to-first-step latency in milliseconds: run creation →
+ * this step's body beginning to execute, minus pre-step hook-creation time.
+ * Only present on the run's first step execution when it qualified for
+ * measurement (see runtime/step-latency.ts).
+ */
+export const StepTtfsMs = SemanticConvention<number>('step.ttfs_ms');
+
+/**
+ * Client-measured step-to-step overhead in milliseconds: the previous step's
+ * terminal event → this step's body beginning to execute. Only present when
+ * the two steps ran back-to-back.
+ */
+export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
+
+/**
+ * Runtime startup-latency optimizations active for the ttfs/stso measurement
+ * (e.g. 'turbo', 'lazyStepStart', 'optimisticStart').
+ */
+export const StepLatencyOptimizations = SemanticConvention<string[]>(
+  'step.latency_optimizations'
+);
+
 /** Whether the step was skipped during execution */
 export const StepSkipped = SemanticConvention<boolean>('step.skipped');
 

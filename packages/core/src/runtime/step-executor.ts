@@ -611,6 +611,21 @@ export async function executeStep(
         lazyStepStart: params.lazyStepInput !== undefined,
         optimisticStart,
       });
+      if (latencyEventData) {
+        // Mirror the latency telemetry onto the step span so traces show
+        // TTFS/STSO alongside the flame graph, not just Datadog metrics.
+        span?.setAttributes({
+          ...(latencyEventData.ttfs !== undefined
+            ? Attribute.StepTtfsMs(latencyEventData.ttfs)
+            : {}),
+          ...(latencyEventData.stso !== undefined
+            ? Attribute.StepStsoMs(latencyEventData.stso)
+            : {}),
+          ...Attribute.StepLatencyOptimizations(
+            latencyEventData.optimizations ?? []
+          ),
+        });
+      }
       try {
         result = await trace('step.execute', {}, async () => {
           return await contextStorage.run(
