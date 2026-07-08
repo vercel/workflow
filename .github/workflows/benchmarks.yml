@@ -200,17 +200,34 @@ jobs:
           merge-multiple: true
 
       # Baseline for the avg-delta column: results from the most recent
-      # successful run of this workflow on main.
+      # successful run of this workflow on main. Uses gh (first-party) rather
+      # than a third-party cross-run artifact action. Filtering to push /
+      # workflow_dispatch events matters for more than tidiness: it excludes
+      # artifacts uploaded by fork PR runs, whose head branch can also be
+      # named "main" (artifact poisoning).
       - name: Download baseline results from main
         continue-on-error: true
-        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
-        with:
-          workflow: benchmarks.yml
-          branch: main
-          name: bench-results-.*
-          name_is_regexp: true
-          path: baseline-results
-          if_no_artifact_found: warn
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow benchmarks.yml \
+            --branch main \
+            --status success \
+            --limit 20 \
+            --json databaseId,event \
+            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].databaseId // empty')
+          if [ -z "$run_id" ]; then
+            echo "No successful benchmark run found on main; skipping baseline"
+            exit 0
+          fi
+          echo "Using baseline artifacts from run $run_id"
+          gh run download "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'bench-results-*' \
+            --dir baseline-results \
+            || echo "Run $run_id has no benchmark artifacts; skipping baseline"
 
       - name: Find existing benchmark comment
         uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
