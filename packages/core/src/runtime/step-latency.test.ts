@@ -236,21 +236,24 @@ describe('computeStepLatencyEventData', () => {
     });
   });
 
-  it('ends ttfs at the pre-step attr write instead of the step code start', () => {
+  it('ends ttfs at the pre-step attr write instead of the step code start, still subtracting pre-attr hook time', () => {
     const data = computeStepLatencyEventData({
       tracking: {
         ttfsAnchorMs: 1_000,
-        preStepBlockingMs: 0,
+        // Hook time from before the attr write (computeStepLatencyTracking
+        // guarantees this excludes post-attr hook writes) — inside the
+        // measured window, so it must still be subtracted.
+        preStepBlockingMs: 40,
         preStepAttrStartMs: 3_000,
         turbo: false,
       },
-      // Includes the setAttributes re-invoke round-trip — must be excluded.
+      // Includes the setAttributes detour — must be excluded.
       stepCodeStartedAtMs: 60_000,
       attempt: 1,
       lazyStepStart: true,
       optimisticStart: false,
     });
-    expect(data).toEqual({ ttfs: 2_000, optimizations: ['lazyStepStart'] });
+    expect(data).toEqual({ ttfs: 1_960, optimizations: ['lazyStepStart'] });
   });
 
   it('computes stso against the previous step terminal timestamp', () => {
