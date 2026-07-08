@@ -573,9 +573,7 @@ export const EventSchema = AllEventsSchema.and(
 
 // Inferred types
 export type Event = z.infer<typeof EventSchema>;
-export type AnyPersistedEvent = z.infer<typeof AllEventsSchema>;
-export type EventOfType<T extends EventType> = Event &
-  Extract<AnyPersistedEvent, { eventType: T }>;
+export type EventOfType<T extends EventType> = Extract<Event, { eventType: T }>;
 export type EventRequestOfType<T extends EventType> = Extract<
   AnyEventRequest,
   { eventType: T }
@@ -590,6 +588,27 @@ export type HookConflictEvent = z.infer<typeof HookConflictEventSchema>;
  * @internal Use CreateEventRequest or RunCreatedEventRequest instead.
  */
 export type AnyEventRequest = z.infer<typeof CreateEventSchema>;
+
+type ChildEntityCreationEventRequest =
+  | EventRequestOfType<ChildEntityCreationEventType>
+  | (EventRequestOfType<'step_started'> & {
+      eventData: {
+        stepName: string;
+        input: unknown;
+      };
+    });
+
+/** Includes lazy step_started requests that create their step on demand. */
+export function isChildEntityCreationEvent(
+  event: AnyEventRequest
+): event is ChildEntityCreationEventRequest {
+  if (isChildEntityCreationEventType(event.eventType)) return true;
+  return (
+    event.eventType === 'step_started' &&
+    event.eventData?.stepName !== undefined &&
+    event.eventData.input !== undefined
+  );
+}
 
 /**
  * Event request for creating a new workflow run.

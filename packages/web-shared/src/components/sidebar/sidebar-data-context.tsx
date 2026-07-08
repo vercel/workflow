@@ -14,10 +14,7 @@ export interface SidebarDataContextValue {
     runId: string,
     correlationId: string
   ) => Promise<{ stoppedCount: number }>;
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   onResolveHook?: (
     hookToken: string,
     payload: unknown,

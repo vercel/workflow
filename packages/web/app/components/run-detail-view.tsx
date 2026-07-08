@@ -10,7 +10,7 @@ import {
   StreamViewer,
   stepEventsToStepEntity,
 } from '@workflow/web-shared';
-import type { Event, WorkflowRun } from '@workflow/world';
+import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
 import {
   AlertCircle,
   GitBranch,
@@ -123,7 +123,7 @@ function GraphTabContent({
     if (!allEvents) return [];
     const stepEventsMap = new Map<string, Event[]>();
     for (const event of allEvents) {
-      if (event.eventType.startsWith('step_') && event.correlationId) {
+      if (isStepEventType(event.eventType) && event.correlationId) {
         const existing = stepEventsMap.get(event.correlationId);
         if (existing) {
           existing.push(event);
@@ -313,27 +313,6 @@ export function RunDetailView({
     [env]
   );
 
-  // Callback for sidebar EventsList — takes (correlationId, eventId)
-  const handleLoadSidebarEventData = useCallback(
-    async (_correlationId: string, eventId: string) => {
-      const { error, result } = await unwrapServerActionResult(
-        fetchEvent(env, runId, eventId, 'all')
-      );
-      if (error) {
-        throw error;
-      }
-      const fullEvent = await hydrateResourceIOAsync(
-        result,
-        encryptionKeyRef.current ?? undefined
-      );
-      if ('eventData' in fullEvent) {
-        return fullEvent.eventData;
-      }
-      return null;
-    },
-    [env, runId]
-  );
-
   // Only show graph tab for local backend
   const isLocalBackend =
     serverConfig.backendId === 'local' ||
@@ -415,7 +394,7 @@ export function RunDetailView({
       onStreamClick: handleStreamClick,
       onRunClick: handleRunRefClick,
       onWakeUpSleep: handleWakeUpSleep,
-      onLoadEventData: handleLoadSidebarEventData,
+      onLoadEventData: handleLoadEventData,
       onResolveHook: handleResolveHook,
       encryptionKey: encryptionKey ?? undefined,
       onDecrypt: handleDecrypt,
@@ -429,7 +408,7 @@ export function RunDetailView({
       handleStreamClick,
       handleRunRefClick,
       handleWakeUpSleep,
-      handleLoadSidebarEventData,
+      handleLoadEventData,
       handleResolveHook,
       encryptionKey,
       handleDecrypt,

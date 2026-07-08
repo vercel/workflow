@@ -80,10 +80,7 @@ export function EntityDetailPanel({
     correlationId: string
   ) => Promise<{ stoppedCount: number }>;
   /** Callback to load event data for a specific event (lazy loading) */
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   /** Callback to resolve a hook with a payload. */
   onResolveHook?: (
     hookToken: string,

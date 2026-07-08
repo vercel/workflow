@@ -23,7 +23,7 @@ import {
   applyAttributeChanges,
   EventSchema,
   HookSchema,
-  isChildEntityCreationEventType,
+  isChildEntityCreationEvent,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isLegacySpecVersion,
@@ -842,13 +842,9 @@ export function createEventsStorage(
         // below). This mirrors the resilient run_started path. Detect it here
         // so the entity-creation terminal-run guard treats it like a creation
         // and the "step must exist" ordering guard doesn't reject it.
+        const createsChildEntity = isChildEntityCreationEvent(data);
         const lazyStepStart =
-          data.eventType === 'step_started' &&
-          'eventData' in data &&
-          !!data.eventData &&
-          typeof (data.eventData as { stepName?: unknown }).stepName ===
-            'string' &&
-          (data.eventData as { input?: unknown }).input !== undefined;
+          createsChildEntity && data.eventType === 'step_started';
 
         // Run terminal state validation
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
@@ -893,7 +889,7 @@ export function createEventsStorage(
           // step_started creates a step, so it is rejected here too — a bare
           // (non-lazy) step_started falls through to the step-validation
           // block below, which uses RunExpiredError for terminal runs.
-          if (isChildEntityCreationEventType(data.eventType) || lazyStepStart) {
+          if (createsChildEntity) {
             throw new EntityConflictError(
               `Cannot create new entities on run in terminal state "${currentRun.status}"`
             );
@@ -1019,13 +1015,11 @@ export function createEventsStorage(
         // check (packages/core/src/step.ts).
         if (
           lazyStepStart &&
-          'eventData' in event &&
-          (event as { eventData?: Record<string, unknown> }).eventData
+          event.eventType === 'step_started' &&
+          event.eventData
         ) {
-          const { input: _strippedInput, ...rest } = (
-            event as { eventData: Record<string, unknown> }
-          ).eventData;
-          (event as { eventData: Record<string, unknown> }).eventData = rest;
+          const { input: _strippedInput, ...eventData } = event.eventData;
+          event = { ...event, eventData };
         }
 
         // Track entity created/updated for EventResult
@@ -1358,10 +1352,7 @@ export function createEventsStorage(
           // synthetic step_created event keeps replay correct (the client step
           // consumer marks hasCreatedEvent only when it observes that event).
           if (!validatedStep && lazyStepStart) {
-            const lazyData = data.eventData as {
-              stepName: string;
-              input: any;
-            };
+            const lazyData = data.eventData;
             const stepCreatedLockName = tag
               ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
               : `${effectiveRunId}-${data.correlationId}.created`;
