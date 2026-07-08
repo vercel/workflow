@@ -5,7 +5,7 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useCallback, useContext, useMemo, useState } from 'react';
+import { useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import {
@@ -148,16 +148,24 @@ const conversationTabs = [
 function ConversationWithTabs({
   conversation,
   args,
+  defaultOpen,
+  onOpenChange,
 }: {
   conversation: ModelMessage[];
   args: unknown[];
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [activeTab, setActiveTab] = useState<'conversation' | 'json'>(
     'conversation'
   );
 
   return (
-    <Collapsible label="Input">
+    <Collapsible
+      label="Input"
+      defaultOpen={defaultOpen}
+      onOpenChange={onOpenChange}
+    >
       <TabbedContainer
         tabs={conversationTabs}
         activeTab={activeTab}
@@ -382,6 +390,8 @@ const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
 
 interface DisplayContext {
   stepName?: string;
+  sectionOpen?: boolean;
+  onSectionOpenChange?: (open: boolean) => void;
 }
 
 const attributeToDisplayFn: Record<
@@ -457,7 +467,11 @@ const attributeToDisplayFn: Record<
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
       return (
-        <Collapsible label="Input">
+        <Collapsible
+          label="Input"
+          defaultOpen={context?.sectionOpen}
+          onOpenChange={context?.onSectionOpenChange}
+        >
           <EncryptedFieldBlock />
         </Collapsible>
       );
@@ -480,7 +494,12 @@ const attributeToDisplayFn: Record<
         if (conversation && conversation.length > 0) {
           return (
             <>
-              <ConversationWithTabs conversation={conversation} args={args} />
+              <ConversationWithTabs
+                conversation={conversation}
+                args={args}
+                defaultOpen={context?.sectionOpen}
+                onOpenChange={context?.onSectionOpenChange}
+              />
               {hasClosureVars && (
                 <Collapsible label="Closure Variables">
                   {JsonBlock(closureVars)}
@@ -503,7 +522,11 @@ const attributeToDisplayFn: Record<
 
       return (
         <>
-          <Collapsible label="Input">
+          <Collapsible
+            label="Input"
+            defaultOpen={context?.sectionOpen}
+            onOpenChange={context?.onSectionOpenChange}
+          >
             {Array.isArray(args)
               ? args.map((v, i) => (
                   <div className="mt-2 first:mt-0" key={i}>
@@ -529,7 +552,11 @@ const attributeToDisplayFn: Record<
       return <Collapsible label="Input (no data)" disabled />;
     }
     return (
-      <Collapsible label="Input">
+      <Collapsible
+        label="Input"
+        defaultOpen={context?.sectionOpen}
+        onOpenChange={context?.onSectionOpenChange}
+      >
         {Array.isArray(value)
           ? value.map((v, i) => (
               <div className="mt-2 first:mt-0" key={i}>
@@ -540,17 +567,29 @@ const attributeToDisplayFn: Record<
       </Collapsible>
     );
   },
-  output: (value: unknown) => {
+  output: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
       return (
-        <Collapsible label="Output">
+        <Collapsible
+          label="Output"
+          defaultOpen={context?.sectionOpen}
+          onOpenChange={context?.onSectionOpenChange}
+        >
           <EncryptedFieldBlock />
         </Collapsible>
       );
     }
     if (!hasDisplayContent(value)) return null;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return <Collapsible label="Output">{JsonBlock(value)}</Collapsible>;
+    return (
+      <Collapsible
+        label="Output"
+        defaultOpen={context?.sectionOpen}
+        onOpenChange={context?.onSectionOpenChange}
+      >
+        {JsonBlock(value)}
+      </Collapsible>
+    );
   },
   error: (value: unknown) => {
     if (isEncryptedMarker(value)) {
@@ -642,6 +681,12 @@ const copyableBasicAttributes = new Set<AttributeKey>([
   'moduleSpecifier',
 ]);
 
+const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
+  input: 'Input',
+  output: 'Output',
+  eventData: 'Event Data',
+};
+
 export const AttributeBlock = ({
   attribute,
   value,
@@ -656,20 +701,19 @@ export const AttributeBlock = ({
   context?: DisplayContext;
 }) => {
   const decryptCtx = useContext(DecryptClickContext);
-  const isExpandableLoadingTarget =
-    attribute === 'input' ||
-    attribute === 'output' ||
-    attribute === 'eventData';
-  if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
-    const label =
-      attribute === 'eventData'
-        ? 'Event Data'
-        : attribute === 'output'
-          ? 'Output'
-          : 'Input';
+  const sectionOpenRef = useRef(false);
+  const handleSectionOpenChange = useCallback((open: boolean) => {
+    sectionOpenRef.current = open;
+  }, []);
+  const label = loadingSectionLabels[attribute as AttributeKey];
+  if (isLoading && label && !hasDisplayContent(value)) {
     if (decryptCtx?.hasEncryptedData) {
       return (
-        <Collapsible label={label} defaultOpen={attribute === 'eventData'}>
+        <Collapsible
+          label={label}
+          defaultOpen={attribute === 'eventData' || sectionOpenRef.current}
+          onOpenChange={handleSectionOpenChange}
+        >
           <EncryptedFieldBlock />
         </Collapsible>
       );
@@ -682,7 +726,11 @@ export const AttributeBlock = ({
   if (!displayFn) {
     return null;
   }
-  const displayValue = displayFn(value, context);
+  const displayValue = displayFn(value, {
+    ...context,
+    sectionOpen: sectionOpenRef.current,
+    onSectionOpenChange: handleSectionOpenChange,
+  });
   if (!displayValue) {
     return null;
   }
