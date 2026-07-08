@@ -1,3 +1,4 @@
+import { IconWorkflow } from '@vercel/geistdocs/assets/icons/icon-workflow';
 import { defineConfig, type GeistdocsNavItem } from '@vercel/geistdocs/config';
 import {
   agent,
@@ -59,11 +60,13 @@ export const config = defineConfig({
         label: 'v5 (Pre-release)',
         description: 'Workflow 5.x',
         routePrefix: '/v5',
+        icon: <IconWorkflow size={20} />,
       },
       {
         id: 'v4',
         label: 'v4 (Latest)',
         description: 'Workflow 4.x',
+        icon: <IconWorkflow size={20} />,
       },
     ],
   },

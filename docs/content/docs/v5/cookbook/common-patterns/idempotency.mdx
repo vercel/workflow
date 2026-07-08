@@ -5,6 +5,10 @@ type: guide
 summary: Use step IDs for retry-safe external calls, and use deterministic hook tokens when duplicate requests must route to one active workflow.
 ---
 
+<CopyPrompt
+  text="Make this workflow's side effects idempotent. For retry-safe external calls, read the deterministic step ID inside the &quot;use step&quot; function with `getStepMetadata()` from `workflow` and pass `stepId` as the idempotency key to the external API (for example Stripe's `Idempotency-Key` header) so step retries deduplicate. For duplicate workflow starts, derive a deterministic hook token from the domain key (for example `order:${orderId}`): in the API route, look up the active hook with `getHookByToken(token)` from `workflow/api` — catching `HookNotFoundError` from `workflow/errors` — and reuse its `runId`, otherwise call `start(...)`; inside the workflow, create the hook with the same token and check `await hook.getConflict()` before duplicate-sensitive work. Verify retried steps deduplicate, duplicate starts reuse the active run, and conflicts are handled."
+/>
+
 Use idempotency when a retry or duplicate request should not repeat the underlying work. In Workflow, there are two common patterns: use the step ID for retry-safe external calls, and use hook tokens to coordinate duplicate workflow starts.
 
 ## When to use this
