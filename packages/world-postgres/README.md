@@ -153,7 +153,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - `world.start()` initializes Graphile utilities and migrations before re-enqueueing active runs
 - Graphile workers start after migrations; each job resolves its handler at execution time, so later registrations are picked up without a restart
-- Jobs whose route has not registered yet probe its health endpoint and are durably replaced with a short-delay job until registration catches up
+- Jobs whose route has not registered yet probe its health endpoint; unavailable routes are durably deferred, while healthy routes remain available as an HTTP compatibility fallback
 - The generated HTTP routes still accept queue-shaped requests, and explicit `WORKFLOW_LOCAL_BASE_URL` worker processes use those routes as a remote fallback
 
 ## Development

@@ -188,6 +188,31 @@ describe('Postgres queue', () => {
     expect(workerUtils.addJob).not.toHaveBeenCalled();
   });
 
+  it('uses HTTP when a healthy local route does not register a handler', async () => {
+    vi.mocked(getWorkflowPort).mockResolvedValue(3000);
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith('?__health')
+        ? new Response(null, { status: 200 })
+        : Response.json({ ok: true })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const queue = buildQueue(pool);
+    await queue.start();
+
+    await getTask('workflow_flows')(
+      buildMessageData('__wkf_workflow_test-workflow', {
+        runId: 'wrun_01ABC',
+      }),
+      jobHelpers(1)
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:3000/.well-known/workflow/v1/flow',
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(workerUtils.addJob).not.toHaveBeenCalled();
+  });
+
   it('durably defers a delivery while no executor is available', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));

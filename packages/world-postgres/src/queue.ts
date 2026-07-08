@@ -293,7 +293,7 @@ export function createQueue(
     const registeredHandler = getRegisteredHandler(prefix);
     return registeredHandler
       ? { type: 'direct', handler: registeredHandler }
-      : { type: 'unavailable' };
+      : { type: 'http', baseUrl };
   }
 
   async function executeOverHttp(
