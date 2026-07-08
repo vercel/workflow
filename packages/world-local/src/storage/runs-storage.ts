@@ -87,7 +87,10 @@ export function createRunsStorage(
           return true;
         },
         sortOrder: params?.pagination?.sortOrder ?? 'desc',
-        limit: params?.pagination?.limit,
+        // Each page pays a full directory scan, so larger default pages
+        // keep unpaginated consumers (e.g. startup recovery) cheap over
+        // large run histories.
+        limit: params?.pagination?.limit ?? 200,
         cursor: params?.pagination?.cursor,
         getCreatedAt: getObjectCreatedAt('wrun'),
         getId: (run) => run.runId,
