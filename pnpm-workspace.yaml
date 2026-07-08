@@ -37,4 +37,9 @@ minimumReleaseAgeExclude:
 onlyBuiltDependencies:
   - esbuild
 
+overrides:
+  rfc6902: 5.1.2
+  devalue: 5.8.1
+  '@sveltejs/acorn-typescript': 1.0.10
+
 savePrefix: ''
