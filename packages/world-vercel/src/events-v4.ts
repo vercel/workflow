@@ -81,6 +81,9 @@ export interface CreateEventV4Input {
   error?: unknown;
   /** Companion stack string for step_failed / step_retrying. */
   stack?: string;
+  /** run_cancelled's optional free-text cancellation reason. Small plaintext
+   *  metadata, capped at 512 chars by the @workflow/world schema. */
+  cancelReason?: string;
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
@@ -138,6 +141,7 @@ function buildPostFrameMeta(
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.error !== undefined) meta.error = input.error;
   if (input.stack !== undefined) meta.stack = input.stack;
+  if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
   }

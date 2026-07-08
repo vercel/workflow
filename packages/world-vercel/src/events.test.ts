@@ -173,6 +173,27 @@ describe('splitEventDataForV4 structured errors', () => {
     expect(meta.stack).toBeUndefined();
   });
 
+  it('carries the run_cancelled cancelReason in the frame meta, not the payload', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_cancelled',
+      specVersion: 4,
+      eventData: { cancelReason: 'superseded by newer run' },
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.cancelReason).toBe('superseded by newer run');
+  });
+
+  it('omits cancelReason from meta when run_cancelled carries no reason', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_cancelled',
+      specVersion: 4,
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.cancelReason).toBeUndefined();
+  });
+
   it('keeps an already-dehydrated (Uint8Array) error on the body path', () => {
     // A runtime that DOES dehydrate errors hands the split a Uint8Array;
     // it must stream as the opaque frame body, untouched, with no meta.error.

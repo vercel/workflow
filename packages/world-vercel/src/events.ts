@@ -198,6 +198,7 @@ interface SplitEventData {
      * object instead.
      */
     stack?: string;
+    cancelReason?: string;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
   };
@@ -223,6 +224,7 @@ type MetaSourceField =
   // hook_created webhook flag (renamed to hookIsWebhook on the wire)
   | 'isWebhook'
   | 'errorCode'
+  | 'cancelReason'
   // step_failed / step_retrying error stack (sibling of the message string)
   | 'stack'
   | 'executionContext';
@@ -323,6 +325,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // error object, so there is no top-level `stack` to lift there.
   if (typeof eventData.stack === 'string') {
     meta.stack = eventData.stack;
+  }
+  // run_cancelled optionally carries a free-text cancellation reason. Small
+  // plaintext metadata, so it rides in the frame meta like errorCode.
+  if (typeof eventData.cancelReason === 'string') {
+    meta.cancelReason = eventData.cancelReason;
   }
   if (
     eventData.executionContext !== undefined &&

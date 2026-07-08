@@ -1,4 +1,5 @@
 export {
+  type CancelRunOptions,
   type Event,
   getHookByToken,
   getRun,
