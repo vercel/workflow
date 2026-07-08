@@ -146,8 +146,17 @@ export function loadResults(resultsDir) {
 
 function formatMs(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  const rounded = Math.abs(value) >= 100 ? Math.round(value) : value;
-  return `${rounded} ms`;
+  return `${Math.abs(value) >= 100 ? Math.round(value) : value}`;
+}
+
+/**
+ * Formats a percentile cell, marking it 🟢/🔴 against its target when one is
+ * defined for this row.
+ */
+function formatCell(value, target) {
+  const formatted = formatMs(value);
+  if (formatted === '—' || typeof target !== 'number') return formatted;
+  return `${formatted} ${value <= target ? '🟢' : '🔴'}`;
 }
 
 function shortCommit(commit) {
@@ -161,8 +170,8 @@ function metricSortKey(row) {
 
 function renderResultTable(result) {
   const lines = [
-    '| Metric | Scenario | Avg | P50 | P90 | P99 | Samples |',
-    '|--------|----------|----:|----:|----:|----:|--------:|',
+    '| Metric | Scenario | Avg (ms) | P75 (ms) | P90 (ms) | P99 (ms) | Samples |',
+    '|--------|----------|---------:|---------:|---------:|---------:|--------:|',
   ];
   const rows = [...result.metrics].sort(
     (a, b) => metricSortKey(a) - metricSortKey(b)
@@ -171,8 +180,9 @@ function renderResultTable(result) {
     const label = METRIC_LABELS[row.metric];
     // Abbreviations only — the definitions live in the comment footer.
     const name = label ? `**${label.name}**` : row.metric;
+    const targets = row.targets ?? {};
     lines.push(
-      `| ${name} | ${row.scenario} | ${formatMs(row.avg)} | ${formatMs(row.p50)} | ${formatMs(row.p90)} | ${formatMs(row.p99)} | ${row.samples} |`
+      `| ${name} | ${row.scenario} | ${formatMs(row.avg)} | ${formatCell(row.p75, targets.p75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)} | ${row.samples} |`
     );
   }
   return lines.join('\n');
@@ -201,12 +211,54 @@ function renderEntry(entry, { heading }) {
   return lines.join('\n');
 }
 
-function renderFooter() {
+/** Scenario legend, emitted by the benchmark runner alongside the metrics. */
+function buildScenarioLegend(results) {
+  const scenarios = new Map();
+  for (const result of results) {
+    for (const { name, description } of result.scenarios ?? []) {
+      if (!scenarios.has(name)) scenarios.set(name, description);
+    }
+  }
+  return [...scenarios]
+    .map(([name, description]) => `**${name}**: ${description}`)
+    .join(' · ');
+}
+
+/** Targets legend, derived from the per-row targets in the results. */
+function buildTargetsLegend(results) {
+  const targets = new Map();
+  for (const result of results) {
+    for (const row of result.metrics ?? []) {
+      if (!row.targets) continue;
+      const label = METRIC_LABELS[row.metric]?.name ?? row.metric;
+      const range = row.scenario.match(/\(\d+-\d+\)$/)?.[0];
+      const key = range ? `${label} ${range}` : label;
+      targets.set(
+        key,
+        `${key} ${row.targets.p75 ?? '—'}/${row.targets.p90 ?? '—'}/${row.targets.p99 ?? '—'}`
+      );
+    }
+  }
+  return [...targets.values()].join(' · ');
+}
+
+function renderFooter(entries) {
+  const results = entries.flatMap((entry) => entry.results ?? []);
   const definitions = METRIC_ORDER.map(
     (id) => `**${METRIC_LABELS[id].name}**: ${METRIC_LABELS[id].description}`
   ).join(' · ');
+  const scenarioLegend = buildScenarioLegend(results);
+  const targetsLegend = buildTargetsLegend(results);
+
   return [
-    `<sub>${definitions}</sub>`,
+    `<sub>Metrics — ${definitions}</sub>`,
+    ...(scenarioLegend ? ['', `<sub>Scenarios — ${scenarioLegend}</sub>`] : []),
+    ...(targetsLegend
+      ? [
+          '',
+          `<sub>🟢/🔴 mark percentiles within/above target. Targets (p75/p90/p99, ms) — ${targetsLegend}</sub>`,
+        ]
+      : []),
     '',
     '<sub>TTFS/WO compare client vs deployment clocks and SL compares the step runner’s clock vs the client’s (NTP-synced in CI). WO ends at the last step body exit, the closest observable proxy for the final step-completion request.</sub>',
   ].join('\n');
@@ -286,7 +338,7 @@ export function renderComment({
       ...renderBanner({ status, commit, runUrl, entries, results }),
       ...renderLatest(entries[0], status),
       ...renderHistorySection(entries.slice(1, 1 + historyCount)),
-      renderFooter(),
+      renderFooter(entries.slice(0, 1)),
       '',
       encodeHistory(entries),
     ].join('\n');

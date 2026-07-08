@@ -19,46 +19,65 @@ function sampleResult(overrides = {}) {
     commit: 'abcdef1234567890',
     config: {
       streamIterations: 30,
-      sequentialIterations: 5,
-      sequentialStepCount: 100,
+      sequentialIterations: 1,
+      sequentialStepCount: 1020,
       warmupIterations: 2,
     },
+    scenarios: [
+      { name: 'stream', description: 'one streaming step in turbo mode' },
+      { name: '1020 steps', description: 'trivial sequential steps' },
+    ],
     metrics: [
       {
         metric: 'ttfs',
-        scenario: '1 step + stream (turbo)',
+        scenario: 'stream',
         unit: 'ms',
         avg: 412.3,
-        p50: 398,
+        p75: 398,
         p90: 512,
         p99: 634,
         min: 320,
         max: 700,
         samples: 30,
+        targets: { p75: 200, p90: 300, p99: 600 },
       },
       {
         metric: 'sl',
-        scenario: '1 step + stream (turbo)',
+        scenario: 'stream',
         unit: 'ms',
         avg: 55.1,
-        p50: 50,
-        p90: 80,
+        p75: 48,
+        p90: 55,
         p99: 120,
         min: 30,
         max: 130,
         samples: 30,
+        targets: { p75: 50, p90: 60, p99: 125 },
       },
       {
         metric: 'stso',
-        scenario: '1020 sequential steps (steps 20-120)',
+        scenario: '1020 steps (101-120)',
         unit: 'ms',
         avg: 91,
-        p50: 85,
+        p75: 85,
         p90: 120,
         p99: 200,
         min: 60,
         max: 250,
-        samples: 495,
+        samples: 19,
+        targets: { p75: 30, p90: 45, p99: 90 },
+      },
+      {
+        metric: 'wo',
+        scenario: 'stream',
+        unit: 'ms',
+        avg: 1200,
+        p75: 1100,
+        p90: 1500,
+        p99: 1900,
+        min: 900,
+        max: 2000,
+        samples: 30,
       },
     ],
     ...overrides,
@@ -79,13 +98,34 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.match(body, /## 📊 Workflow Benchmarks/);
   assert.match(body, /\*\*TTFS\*\*/);
   assert.match(body, /\*\*SL\*\*/);
-  assert.match(body, /1 step \+ stream \(turbo\)/);
-  assert.match(body, /1020 sequential steps \(steps 20-120\)/);
+  assert.match(body, /\| stream \|/);
+  assert.match(body, /1020 steps \(101-120\)/);
+  // "ms" lives in the column headers, not in the cells
+  assert.match(
+    body,
+    /\| Avg \(ms\) \| P75 \(ms\) \| P90 \(ms\) \| P99 \(ms\) \|/
+  );
+  assert.doesNotMatch(body, /\d ms \|/);
   // Metric definitions live in the footer, not in the table rows
   assert.doesNotMatch(body, /\| \*\*TTFS\*\* <sub>/);
-  assert.match(body, /<sub>\*\*TTFS\*\*: time to first step body execution/);
+  assert.match(
+    body,
+    /<sub>Metrics — \*\*TTFS\*\*: time to first step body execution/
+  );
   assert.match(body, /\*\*SL\*\*: stream latency/);
-  assert.match(body, /398 ms/);
+  // Scenario legend from the runner-provided descriptions
+  assert.match(
+    body,
+    /<sub>Scenarios — \*\*stream\*\*: one streaming step in turbo mode/
+  );
+  // Threshold marks: TTFS p75 398 > 200 → 🔴; SL p75 48 <= 50 → 🟢; WO unmarked
+  assert.match(body, /398 🔴/);
+  assert.match(body, /48 🟢/);
+  assert.match(body, /\| 1100 \|/);
+  // Targets legend derived from row targets
+  assert.match(body, /Targets \(p75\/p90\/p99, ms\) — TTFS 200\/300\/600/);
+  assert.match(body, /STSO \(101-120\) 30\/45\/90/);
+  assert.match(body, /SL 50\/60\/125/);
   assert.match(body, /commit `abcdef1`/);
   // No previous results yet
   assert.doesNotMatch(body, /Previous results/);
@@ -93,7 +133,7 @@ test('renders a completed run with a table and embedded history', async () => {
   const history = extractHistory(body);
   assert.strictEqual(history.length, 1);
   assert.strictEqual(history[0].commit, 'abcdef1234567890');
-  assert.strictEqual(history[0].results[0].metrics.length, 3);
+  assert.strictEqual(history[0].results[0].metrics.length, 4);
 });
 
 test('collapses previous results on re-runs', async () => {
@@ -143,7 +183,7 @@ test('running status preserves previous results and history', async () => {
   assert.match(running, /Benchmarks are running for `2222222`/);
   assert.match(running, /Results below are from a previous run/);
   // Previous results still rendered and history unchanged
-  assert.match(running, /398 ms/);
+  assert.match(running, /398 🔴/);
   const history = extractHistory(running);
   assert.strictEqual(history.length, 1);
   assert.strictEqual(history[0].commit, '1111111aaaaaaa');
@@ -217,7 +257,7 @@ test('CLI renders results from a directory and previous body file', async () => 
     firstOut,
   ]);
   const first = fs.readFileSync(firstOut, 'utf8');
-  assert.match(first, /398 ms/);
+  assert.match(first, /398 🔴/);
 
   const secondOut = path.join(dir, 'comment2.md');
   execFileSync(process.execPath, [

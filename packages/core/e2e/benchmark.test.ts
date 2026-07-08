@@ -2,7 +2,7 @@
  * Benchmark runner measuring the workflow runtime's core latency metrics
  * against a deployed workbench app.
  *
- * Metrics (all in milliseconds, reported as avg/p50/p90/p99):
+ * Metrics (all in milliseconds, reported as avg/p75/p90/p99):
  *
  * - TTFS  (time to first step): client-side timestamp taken when `start()` is
  *          called (the run_created request) → first step body execution.
@@ -73,14 +73,18 @@ const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 1);
 const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 1020);
 const WARMUP_ITERATIONS = envInt('BENCH_WARMUP_ITERATIONS', 2, 0);
 
-// STSO percentiles are reported per step-index range: the gap between steps k
-// and k+1 falls into the bucket where `from <= k < to`. Early gaps capture
-// first-invocation behavior; late gaps capture steady state with a large
-// event log.
+// Per-metric latency targets (ms) rendered as 🟢/🔴 marks in the PR comment.
+const TTFS_TARGETS = { p75: 200, p90: 300, p99: 600 };
+const SL_TARGETS = { p75: 50, p90: 60, p99: 125 };
+
+// STSO percentiles are reported for sampled step-index windows: the gap
+// between steps k and k+1 counts toward the window where `from <= k < to`.
+// The early window captures first-invocation behavior; the later ones capture
+// steady state with an increasingly large event log.
 const STSO_BUCKETS = [
-  { from: 1, to: 20 },
-  { from: 20, to: 120 },
-  { from: 120, to: 1020 },
+  { from: 1, to: 20, targets: { p75: 20, p90: 30, p99: 60 } },
+  { from: 101, to: 120, targets: { p75: 30, p90: 45, p99: 90 } },
+  { from: 1001, to: 1020, targets: { p75: 40, p90: 60, p99: 120 } },
 ];
 // Guard timeouts so a single stuck run fails fast instead of eating the job.
 const RUN_TIMEOUT_MS = envInt('BENCH_RUN_TIMEOUT_MS', 120_000);
@@ -317,12 +321,18 @@ async function runScenario<T>(
 
 interface MetricStats {
   avg: number;
-  p50: number;
+  p75: number;
   p90: number;
   p99: number;
   min: number;
   max: number;
   samples: number;
+}
+
+interface MetricTargets {
+  p75?: number;
+  p90?: number;
+  p99?: number;
 }
 
 function computeStats(samples: number[]): MetricStats {
@@ -337,7 +347,7 @@ function computeStats(samples: number[]): MetricStats {
   const round = (v: number) => Math.round(v * 10) / 10;
   return {
     avg: round(sorted.reduce((sum, v) => sum + v, 0) / sorted.length),
-    p50: round(percentile(50)),
+    p75: round(percentile(75)),
     p90: round(percentile(90)),
     p99: round(percentile(99)),
     min: round(sorted[0]),
@@ -349,16 +359,29 @@ function computeStats(samples: number[]): MetricStats {
 interface MetricRow extends MetricStats {
   /** Short metric id: ttfs | stso | wo | sl */
   metric: string;
-  /** Human-readable scenario label */
+  /** Short scenario label; explained via scenario descriptions in the output */
   scenario: string;
   unit: 'ms';
+  /** Latency targets rendered as pass/fail marks in the PR comment */
+  targets?: MetricTargets;
 }
 
 const metricRows: MetricRow[] = [];
 
-function recordMetric(metric: string, scenario: string, samples: number[]) {
+function recordMetric(
+  metric: string,
+  scenario: string,
+  samples: number[],
+  targets?: MetricTargets
+) {
   if (samples.length === 0) return;
-  metricRows.push({ metric, scenario, unit: 'ms', ...computeStats(samples) });
+  metricRows.push({
+    metric,
+    scenario,
+    unit: 'ms',
+    targets,
+    ...computeStats(samples),
+  });
 }
 
 function getBackend(): string {
@@ -372,9 +395,27 @@ function getBackend(): string {
   return 'local';
 }
 
-const SCENARIO_TURBO_STREAM = '1 step + stream (turbo)';
-const SCENARIO_HOOK_STREAM = 'hook + 1 step + stream (non-turbo)';
-const SCENARIO_SEQUENTIAL = `${SEQUENTIAL_STEP_COUNT} sequential steps`;
+// Short scenario labels for the results table; the descriptions are rendered
+// as a legend at the bottom of the PR comment.
+const SCENARIO_TURBO_STREAM = 'stream';
+const SCENARIO_HOOK_STREAM = 'hook + stream';
+const SCENARIO_SEQUENTIAL = `${SEQUENTIAL_STEP_COUNT} steps`;
+const SCENARIO_DESCRIPTIONS = [
+  {
+    name: SCENARIO_TURBO_STREAM,
+    description:
+      'one step that streams chunks back to the client; no hooks, so the run stays in turbo mode',
+  },
+  {
+    name: SCENARIO_HOOK_STREAM,
+    description:
+      'registers a hook before the same streaming step, which exits turbo mode',
+  },
+  {
+    name: SCENARIO_SEQUENTIAL,
+    description: `${SEQUENTIAL_STEP_COUNT} trivial sequential steps; STSO is measured between consecutive steps in the given step ranges`,
+  },
+];
 
 describe('workflow benchmarks', () => {
   test(
@@ -389,12 +430,14 @@ describe('workflow benchmarks', () => {
       recordMetric(
         'ttfs',
         SCENARIO_TURBO_STREAM,
-        results.map((r) => r.ttfsMs)
+        results.map((r) => r.ttfsMs),
+        TTFS_TARGETS
       );
       recordMetric(
         'sl',
         SCENARIO_TURBO_STREAM,
-        results.map((r) => r.slMs)
+        results.map((r) => r.slMs),
+        SL_TARGETS
       );
       recordMetric(
         'wo',
@@ -416,12 +459,14 @@ describe('workflow benchmarks', () => {
       recordMetric(
         'ttfs',
         SCENARIO_HOOK_STREAM,
-        results.map((r) => r.ttfsMs)
+        results.map((r) => r.ttfsMs),
+        TTFS_TARGETS
       );
       recordMetric(
         'sl',
         SCENARIO_HOOK_STREAM,
-        results.map((r) => r.slMs)
+        results.map((r) => r.slMs),
+        SL_TARGETS
       );
       recordMetric(
         'wo',
@@ -447,14 +492,15 @@ describe('workflow benchmarks', () => {
         extraAttempts: Math.max(2, Math.ceil(SEQUENTIAL_ITERATIONS * 0.5)),
       }
     );
-    // Report STSO per step-index range. Gap k (between steps k and k+1,
+    // Report STSO per step-index window. Gap k (between steps k and k+1,
     // 1-indexed) lives at stsoMs[k - 1].
-    for (const { from, to } of STSO_BUCKETS) {
+    for (const { from, to, targets } of STSO_BUCKETS) {
       if (from >= SEQUENTIAL_STEP_COUNT) continue;
       recordMetric(
         'stso',
-        `${SCENARIO_SEQUENTIAL} (steps ${from}-${Math.min(to, SEQUENTIAL_STEP_COUNT)})`,
-        results.flatMap((r) => r.stsoMs.slice(from - 1, to - 1))
+        `${SCENARIO_SEQUENTIAL} (${from}-${Math.min(to, SEQUENTIAL_STEP_COUNT)})`,
+        results.flatMap((r) => r.stsoMs.slice(from - 1, to - 1)),
+        targets
       );
     }
   });
@@ -483,16 +529,17 @@ describe('workflow benchmarks', () => {
         sequentialStepCount: SEQUENTIAL_STEP_COUNT,
         warmupIterations: WARMUP_ITERATIONS,
       },
+      scenarios: SCENARIO_DESCRIPTIONS,
       metrics: metricRows,
     };
     fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
     console.log(`[bench] Results written to ${outputPath}`);
     console.table(
-      metricRows.map(({ metric, scenario, avg, p50, p90, p99, samples }) => ({
+      metricRows.map(({ metric, scenario, avg, p75, p90, p99, samples }) => ({
         metric,
         scenario,
         avg,
-        p50,
+        p75,
         p90,
         p99,
         samples,
