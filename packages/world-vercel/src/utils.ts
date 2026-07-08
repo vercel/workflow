@@ -32,12 +32,12 @@ import { version } from './version.js';
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  *
- * BRANCH-ONLY (revert to '' before merge): pointed at a multi-region
- * backend preview so this PR's e2e runs validate region routing and
- * cross-region stream visibility end-to-end.
+ * BRANCH-ONLY (revert to '' before merge, lint enforces): pointed at an
+ * all-regions backend preview so this PR's e2e validates region routing
+ * and execution across every provisioned region.
  */
 export const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-git-fix-stream-state-electrodb-ownership.vercel.sh';
+  'https://workflow-server-git-feat-multi-region-serving-all-regions.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.

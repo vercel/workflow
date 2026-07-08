@@ -445,7 +445,9 @@ jobs:
     # (workbench/nextjs-turbopack/vercel.json pins iad1+sfo1+fra1).
     name: E2E Vercel Multi-Region Tests (nextjs-turbopack)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 19 regions: the implicit-route cases pay one cold start each,
+    # sequentially.
+    timeout-minutes: 35
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:

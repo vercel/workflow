@@ -51,7 +51,33 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
-/** Regions the workbench app is deployed to (workbench vercel.json). */
+/**
+ * All provisioned regions (mirrors the backend's routable set and the
+ * workbench vercel.json). The original trio is exercised with detailed
+ * per-region cases; the full set is covered by concurrent batches to
+ * keep suite runtime sane (one cold-start window instead of nineteen).
+ */
+const ALL_REGIONS = [
+  'iad1',
+  'arn1',
+  'bom1',
+  'cdg1',
+  'cle1',
+  'cpt1',
+  'dub1',
+  'fra1',
+  'gru1',
+  'hkg1',
+  'hnd1',
+  'icn1',
+  'kix1',
+  'lhr1',
+  'pdx1',
+  'sfo1',
+  'sin1',
+  'syd1',
+  'yul1',
+] as const;
 const REGIONS = ['iad1', 'sfo1', 'fra1'] as const;
 
 interface RegionProbeResult {
@@ -187,6 +213,35 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
         await expectRunInRegion(run, region, label);
       }
     });
+
+    test(
+      'every provisioned region executes and completes a tagged run',
+      // One cold start per region happens inside this single test —
+      // budget generously.
+      { timeout: 300_000 },
+      async () => {
+        const probe = await regionProbe();
+        const runs = await Promise.all(
+          ALL_REGIONS.map((region) => {
+            const label = `e2e-all-${region}`;
+            return start<RegionProbeResult>(probe, [label], { region }).then(
+              (run) => ({ region, label, run })
+            );
+          })
+        );
+        const failures: string[] = [];
+        for (const { region, label, run } of runs) {
+          try {
+            await expectRunInRegion(run, region, label);
+          } catch (err) {
+            failures.push(`${region}: ${err}`);
+          }
+        }
+        // Aggregate so a single region's failure reports alongside the
+        // full pass/fail picture rather than masking the rest.
+        expect(failures, failures.join('\n')).toEqual([]);
+      }
+    );
   });
 
   describe('cross-region stream visibility', () => {
@@ -254,18 +309,20 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
     // Each route executes in exactly one region (per-function `regions`
     // in the workbench vercel.json); its start() call passes no region,
     // so createRunId falls back to the function's VERCEL_REGION.
-    test.each(
-      REGIONS
-    )('/api/e2e-region-implicit/%s mints a run tagged with its VERCEL_REGION', async (region) => {
-      const label = `e2e-implicit-${region}`;
-      const { run, startedInRegion } = await startImplicitRegionProbe(
-        region,
-        label
-      );
-      // The pinned route itself must be executing in its region —
-      // otherwise the implicit-tagging assertion below tests nothing.
-      expect(startedInRegion).toBe(region);
-      await expectRunInRegion(run, region, label);
-    });
+    test.each(ALL_REGIONS)(
+      '/api/e2e-region-implicit/%s mints a run tagged with its VERCEL_REGION',
+      { timeout: 120_000 },
+      async (region) => {
+        const label = `e2e-implicit-${region}`;
+        const { run, startedInRegion } = await startImplicitRegionProbe(
+          region,
+          label
+        );
+        // The pinned route itself must be executing in its region —
+        // otherwise the implicit-tagging assertion below tests nothing.
+        expect(startedInRegion).toBe(region);
+        await expectRunInRegion(run, region, label);
+      }
+    );
   });
 });
