@@ -1,14 +1,14 @@
 {
-  "lastUpdated": "2026-07-08T22:38:40.428Z",
-  "commit": "79a9813f25eb907809fcd329accb76ac4d274480",
+  "lastUpdated": "2026-07-08T23:02:01.359Z",
+  "commit": "f2f4b9d29f3c9ce3b310f41a26f5ed82e8b9c817",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
-      "status": "partial",
+      "status": "passing",
       "total": 4284,
-      "passed": 3764,
-      "failed": 1,
+      "passed": 3765,
+      "failed": 0,
       "skipped": 519,
       "frameworks": {
         "astro": {
@@ -48,8 +48,8 @@
         },
         "nuxt": {
           "total": 306,
-          "passed": 255,
-          "failed": 1
+          "passed": 256,
+          "failed": 0
         },
         "sveltekit": {
           "total": 306,
@@ -127,19 +127,19 @@
     "vercel": {
       "status": "partial",
       "total": 1836,
-      "passed": 1576,
-      "failed": 3,
+      "passed": 1572,
+      "failed": 7,
       "skipped": 257,
       "frameworks": {
         "astro": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
+          "passed": 125,
+          "failed": 1
         },
         "express": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
+          "passed": 125,
+          "failed": 1
         },
         "fastify": {
           "total": 153,
@@ -158,8 +158,8 @@
         },
         "nextjs-webpack": {
           "total": 153,
-          "passed": 150,
-          "failed": 0
+          "passed": 149,
+          "failed": 1
         },
         "nitro": {
           "total": 153,
@@ -168,8 +168,8 @@
         },
         "nuxt": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
+          "passed": 125,
+          "failed": 1
         },
         "sveltekit": {
           "total": 153,
