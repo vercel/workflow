@@ -226,13 +226,18 @@ export function computeStepLatencyEventData(params: {
   // write instead of the step's code start — the remainder is the duration
   // of the setAttributes call (resolved via re-invoke), which is subtracted
   // rather than disqualifying the sample.
+  const attrDetour = tracking.preStepAttrStartMs !== undefined;
   const ttfsEndMs = tracking.preStepAttrStartMs ?? params.stepCodeStartedAtMs;
+  // `preStepBlockingMs` measures hook writes committed by the invocation that
+  // schedules the first step. In an attr detour the measurement window ends
+  // at the first attr write (in an EARLIER invocation), so any hook writes
+  // this invocation reports happened strictly AFTER the window closed —
+  // subtracting them would contaminate the metric. Only subtract when there
+  // is no attr detour and the hook writes fall inside the window.
+  const preStepBlockingMs = attrDetour ? 0 : (tracking.preStepBlockingMs ?? 0);
   const ttfs =
     tracking.ttfsAnchorMs !== undefined
-      ? Math.max(
-          0,
-          ttfsEndMs - tracking.ttfsAnchorMs - (tracking.preStepBlockingMs ?? 0)
-        )
+      ? Math.max(0, ttfsEndMs - tracking.ttfsAnchorMs - preStepBlockingMs)
       : undefined;
   const stso =
     tracking.prevStepEndMs !== undefined
