@@ -732,6 +732,7 @@ export const AttributeBlock = ({
 export const AttributePanel = ({
   data,
   moduleSpecifier,
+  moduleSourceUrl,
   isLoading,
   error,
   expiredAt,
@@ -743,6 +744,7 @@ export const AttributePanel = ({
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
+  moduleSourceUrl?: string;
   isLoading?: boolean;
   error?: Error;
   expiredAt?: string | Date;
@@ -876,6 +878,11 @@ export const AttributePanel = ({
                           value={displayValue}
                           copyText={
                             isCopyableBasicAttribute ? displayValue : undefined
+                          }
+                          href={
+                            attribute === 'moduleSpecifier'
+                              ? moduleSourceUrl
+                              : undefined
                           }
                         />
                       );
