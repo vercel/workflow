@@ -208,9 +208,14 @@ export async function loadSvelteKitRoutesDir(
   const packageJsonPath = require.resolve('@sveltejs/kit/package.json');
   const loaderPath = join(dirname(packageJsonPath), 'src/core/config/index.js');
 
-  // SvelteKit's internal config loader
-  const { load_config } = await import(pathToFileURL(loaderPath).href);
-  const config = await load_config({ cwd: workingDir });
+  const configModule = await import(pathToFileURL(loaderPath).href);
+  // SvelteKit 2.62+ `load_config()` resolves Vite config first. Calling it
+  // while `workflow/sveltekit` is imported from vite.config.ts recursively
+  // reloads vite.config.ts and leaves this top-level build unresolved.
+  const config =
+    configModule.load_svelte_config != null
+      ? await configModule.load_svelte_config(workingDir)
+      : await configModule.load_config({ cwd: workingDir });
   const routesDir = config.kit?.files?.routes;
   if (routesDir == null || typeof routesDir !== 'string') {
     throw new Error(

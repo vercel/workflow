@@ -43,6 +43,10 @@ export function createAnalytics(config?: APIConfig): Analytics {
         if (params.status) {
           searchParams.set('status', params.status);
         }
+        if (params.startTime && params.endTime) {
+          searchParams.set('startTime', params.startTime);
+          searchParams.set('endTime', params.endTime);
+        }
         appendPagination(searchParams, params.pagination);
 
         return makeRequest({

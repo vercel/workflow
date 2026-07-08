@@ -61,8 +61,8 @@ import { envNumber } from '@workflow/world';
 
 /**
  * Maximum `delaySeconds` for a single wait-continuation message. Waits
- * longer than this are chained across multiple hops. 23 hours: VQS
- * messages have a 24h retention limit; the 1h buffer mirrors
+ * longer than this are chained across multiple hops. 23 hours leaves a 1h
+ * buffer under Vercel Queues' default 24h message TTL and mirrors
  * world-vercel's `MAX_DELAY_SECONDS`.
  */
 export const WAIT_CONTINUATION_MAX_DELAY_SECONDS = 82_800;

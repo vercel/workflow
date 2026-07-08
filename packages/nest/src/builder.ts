@@ -1,8 +1,9 @@
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
   ensureWorkflowTargetWorldEnv,
+  isWorkflowTargetWorldPath,
 } from '@workflow/builders';
 import { join } from 'pathe';
 import { rewriteTsImportsInContent } from './cjs-rewrite.js';
@@ -66,7 +67,10 @@ export class NestLocalBuilder extends BaseBuilder {
     const dirs = options.dirs ?? ['src'];
     const targetWorld = ensureWorkflowTargetWorldEnv();
     const externalPackages =
-      targetWorld === '@workflow/world-local' ? [] : [targetWorld];
+      targetWorld === '@workflow/world-local' ||
+      isWorkflowTargetWorldPath(targetWorld)
+        ? []
+        : [targetWorld];
     super({
       ...createBaseBuilderConfig({
         workingDir,

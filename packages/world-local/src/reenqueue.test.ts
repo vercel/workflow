@@ -1,8 +1,8 @@
+import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { rm } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLocalWorld, type LocalWorld } from './index.js';
+import { createWorld } from './index.js';
 import { createRun, updateRun } from './test-helpers.js';
 
 // Mock node:timers/promises so the queue's setTimeout resolves immediately
@@ -23,7 +23,7 @@ describe('re-enqueue active runs on start', () => {
 
   it('re-enqueues pending and running runs after restart', async () => {
     // Phase 1: create a world and populate it with runs in various states
-    const world1 = createLocalWorld({ dataDir });
+    const world1 = createWorld({ dataDir });
     await world1.start();
 
     const pendingRun = await createRun(world1, {
@@ -63,7 +63,7 @@ describe('re-enqueue active runs on start', () => {
 
     // Phase 2: create a new world (simulating restart), register a handler
     // to capture enqueued messages
-    const world2 = createLocalWorld({ dataDir });
+    const world2 = createWorld({ dataDir });
     const receivedRunIds: string[] = [];
     world2.registerHandler('__wkf_workflow_', async (req) => {
       const body = await req.json();
@@ -88,7 +88,7 @@ describe('re-enqueue active runs on start', () => {
 
   it('does nothing when there are no active runs', async () => {
     // Create a world with only completed runs
-    const world1 = createLocalWorld({ dataDir });
+    const world1 = createWorld({ dataDir });
     await world1.start();
 
     const run = await createRun(world1, {
@@ -104,7 +104,7 @@ describe('re-enqueue active runs on start', () => {
     await world1.close();
 
     // Restart — handler should not be called
-    const world2 = createLocalWorld({ dataDir });
+    const world2 = createWorld({ dataDir });
     const receivedRunIds: string[] = [];
     world2.registerHandler('__wkf_workflow_', async (req) => {
       const body = await req.json();
@@ -122,7 +122,7 @@ describe('re-enqueue active runs on start', () => {
   });
 
   it('only re-enqueues runs for the matching tag', async () => {
-    const world0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    const world0 = createWorld({ dataDir, tag: 'vitest-0' });
     await world0.start();
 
     const run0 = await createRun(world0, {
@@ -131,7 +131,7 @@ describe('re-enqueue active runs on start', () => {
       input: new Uint8Array([1]),
     });
 
-    const world1 = createLocalWorld({ dataDir, tag: 'vitest-1' });
+    const world1 = createWorld({ dataDir, tag: 'vitest-1' });
     const run1 = await createRun(world1, {
       deploymentId: 'dpl_1',
       workflowName: 'taggedWorkflow1',
@@ -141,7 +141,7 @@ describe('re-enqueue active runs on start', () => {
     await world0.close();
     await world1.close();
 
-    const restartedWorld0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    const restartedWorld0 = createWorld({ dataDir, tag: 'vitest-0' });
     const receivedRunIds: string[] = [];
     restartedWorld0.registerHandler('__wkf_workflow_', async (req) => {
       const body = await req.json();
@@ -164,7 +164,7 @@ describe('re-enqueue active runs on start', () => {
     // A vitest harness (tagged world) leaves an active run in the shared
     // data directory. createRun leaves the run in `pending`, which recovery
     // would otherwise pick up.
-    const taggedWorld = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    const taggedWorld = createWorld({ dataDir, tag: 'vitest-0' });
     const taggedRun = await createRun(taggedWorld, {
       deploymentId: 'dpl_1',
       workflowName: 'taggedWorkflow',
@@ -174,7 +174,7 @@ describe('re-enqueue active runs on start', () => {
 
     // An untagged run that recovery SHOULD pick up, to prove the filter
     // isn't simply dropping everything.
-    const untaggedWorld = createLocalWorld({ dataDir });
+    const untaggedWorld = createWorld({ dataDir });
     const untaggedRun = await createRun(untaggedWorld, {
       deploymentId: 'dpl_1',
       workflowName: 'untaggedWorkflow',
@@ -183,7 +183,7 @@ describe('re-enqueue active runs on start', () => {
     await untaggedWorld.close();
 
     // A normal dev server boots untagged on the same data dir.
-    const devWorld = createLocalWorld({ dataDir });
+    const devWorld = createWorld({ dataDir });
     const receivedRunIds: string[] = [];
     devWorld.registerHandler('__wkf_workflow_', async (req) => {
       const body = await req.json();
@@ -204,9 +204,9 @@ describe('re-enqueue active runs on start', () => {
   });
 
   it('keeps tag filtering when recovery paginates across multiple pages', async () => {
-    const world0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
-    const world1 = createLocalWorld({ dataDir, tag: 'vitest-1' });
-    const untaggedWorld = createLocalWorld({ dataDir });
+    const world0 = createWorld({ dataDir, tag: 'vitest-0' });
+    const world1 = createWorld({ dataDir, tag: 'vitest-1' });
+    const untaggedWorld = createWorld({ dataDir });
 
     await world0.start();
     await world1.start();
@@ -246,7 +246,7 @@ describe('re-enqueue active runs on start', () => {
     await world1.close();
     await untaggedWorld.close();
 
-    const restartedWorld0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    const restartedWorld0 = createWorld({ dataDir, tag: 'vitest-0' });
     const receivedRunIds: string[] = [];
     restartedWorld0.registerHandler('__wkf_workflow_', async (req) => {
       const body = await req.json();
@@ -269,7 +269,7 @@ describe('re-enqueue active runs on start', () => {
   });
 
   it('skips startup recovery when recoverActiveRuns is false', async () => {
-    const world1 = createLocalWorld({ dataDir });
+    const world1 = createWorld({ dataDir });
     await world1.start();
 
     const run = await createRun(world1, {
@@ -280,7 +280,7 @@ describe('re-enqueue active runs on start', () => {
 
     await world1.close();
 
-    const world2 = createLocalWorld({ dataDir, recoverActiveRuns: false });
+    const world2 = createWorld({ dataDir, recoverActiveRuns: false });
     const receivedRunIds: string[] = [];
     world2.registerHandler('__wkf_workflow_', async (req) => {
       const body = await req.json();
@@ -298,7 +298,7 @@ describe('re-enqueue active runs on start', () => {
   });
 
   it('does nothing on first start with empty data dir', async () => {
-    const world = createLocalWorld({ dataDir });
+    const world = createWorld({ dataDir });
     const receivedRunIds: string[] = [];
     world.registerHandler('__wkf_workflow_', async (req) => {
       const body = await req.json();

@@ -29,7 +29,7 @@ import type {
   World,
 } from '@workflow/world';
 import { createWorld as createLocalWorld } from '@workflow/world-local';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorld as createVercelBackendWorld } from '@workflow/world-vercel';
 import type { HookListItem, HookTokenResult } from '~/lib/types';
 
 /**
@@ -436,7 +436,7 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
   // and we instantiate the world per-user directly to avoid having to set
   // process.env.
   if (isVercelWorld) {
-    return createVercelWorld({
+    return createVercelBackendWorld({
       token:
         userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
         process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
@@ -640,6 +640,15 @@ export async function fetchRuns(
     limit?: number;
     workflowName?: string;
     status?: WorkflowRunStatus;
+    /**
+     * Optional listing window (ISO timestamps, both required together).
+     * Honored by the analytics read path, where it bounds the backend scan;
+     * the runtime storage APIs have no time filter, so the fallback path
+     * ignores it. Windows outside the plan's observability lookback surface
+     * as a 402 `observability-upgrade-required` error.
+     */
+    startTime?: string;
+    endTime?: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<WorkflowRun>>> {
   const {
@@ -648,6 +657,8 @@ export async function fetchRuns(
     limit = 10,
     workflowName,
     status,
+    startTime,
+    endTime,
   } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
@@ -657,6 +668,7 @@ export async function fetchRuns(
       ? await world.analytics.runs.list({
           ...(workflowName ? { workflowName } : {}),
           ...(status ? { status } : {}),
+          ...(startTime && endTime ? { startTime, endTime } : {}),
           pagination: { cursor, limit, sortOrder },
         })
       : await world.runs.list({

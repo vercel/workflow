@@ -2,6 +2,7 @@ import { start } from '@workflow/core/runtime';
 import { healthCheck } from '@workflow/core/runtime/helpers';
 import type { World } from '@workflow/world';
 import { logger } from '../config/log.js';
+import { planWindowStartFromResponse } from './time-window.js';
 
 interface CLICreateOpts {
   json?: boolean;
@@ -57,6 +58,23 @@ export const startRun = async (
           resolveData: 'none',
         });
     run = runList.data[0];
+
+    // The analytics backend defaults its listing to a recent window
+    // (trailing 24h on the Vercel backend). When the name wasn't found
+    // there, retry across the plan's whole observability window using the
+    // window bounds from the response's page metadata.
+    if (!run && world.analytics) {
+      const windowStart = planWindowStartFromResponse(runList);
+      if (windowStart) {
+        const widened = await world.analytics.runs.list({
+          workflowName: workflowNameOrRunId,
+          startTime: windowStart,
+          endTime: new Date().toISOString(),
+          pagination: { sortOrder: 'desc', limit: 1 },
+        });
+        run = widened.data[0];
+      }
+    }
   }
 
   if (!run) {
