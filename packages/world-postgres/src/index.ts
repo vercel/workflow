@@ -30,6 +30,17 @@ function getDefaultMaxPoolSize(): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function getDefaultQueueConcurrency(): number {
+  return (
+    parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
+    50
+  );
+}
+
+function getRecommendedMaxPoolSize(queueConcurrency: number): number {
+  return Math.max(10, queueConcurrency + 2);
+}
+
 function getDefaultConnectionString(): string {
   return (
     process.env.WORKFLOW_POSTGRES_URL ||
@@ -38,25 +49,49 @@ function getDefaultConnectionString(): string {
   );
 }
 
-export function createWorld(
-  config: PostgresWorldConfig = {
-    connectionString: getDefaultConnectionString(),
-    jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
-    queueConcurrency:
-      parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
-      50,
+function resolveConfig(config?: PostgresWorldConfig): PostgresWorldConfig {
+  const queueConcurrency =
+    config?.queueConcurrency ?? getDefaultQueueConcurrency();
+  const baseConfig = {
+    jobPrefix: config?.jobPrefix ?? process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
+    namespace: config?.namespace,
+    queueConcurrency,
+    streamFlushIntervalMs: config?.streamFlushIntervalMs,
+  };
+
+  if (config?.pool) {
+    return {
+      ...baseConfig,
+      pool: config.pool,
+    };
   }
+
+  return {
+    ...baseConfig,
+    connectionString: config?.connectionString ?? getDefaultConnectionString(),
+    maxPoolSize: config?.maxPoolSize,
+  };
+}
+
+export function createWorld(
+  config?: PostgresWorldConfig
 ): World & { start(): Promise<void> } {
-  const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
+  const resolvedConfig = resolveConfig(config);
+  const maxPoolSize =
+    resolvedConfig.pool !== undefined
+      ? undefined
+      : (resolvedConfig.maxPoolSize ??
+        getDefaultMaxPoolSize() ??
+        getRecommendedMaxPoolSize(resolvedConfig.queueConcurrency ?? 50));
   const pool =
-    config.pool ||
+    resolvedConfig.pool ||
     new Pool({
-      connectionString: config.connectionString || getDefaultConnectionString(),
+      connectionString: resolvedConfig.connectionString,
       ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
     });
 
   const drizzle = createClient(pool);
-  const queue = createQueue(config, pool);
+  const queue = createQueue(resolvedConfig, pool);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(pool, drizzle);
 
@@ -65,8 +100,8 @@ export function createWorld(
     ...storage,
     ...streamer,
     ...queue,
-    ...(config.streamFlushIntervalMs !== undefined && {
-      streamFlushIntervalMs: config.streamFlushIntervalMs,
+    ...(resolvedConfig.streamFlushIntervalMs !== undefined && {
+      streamFlushIntervalMs: resolvedConfig.streamFlushIntervalMs,
     }),
     async start() {
       await queue.start();
@@ -75,7 +110,7 @@ export function createWorld(
     async close() {
       await streamer.close();
       await queue.close();
-      if (pool !== config.pool) {
+      if (pool !== resolvedConfig.pool) {
         await pool.end();
       }
     },

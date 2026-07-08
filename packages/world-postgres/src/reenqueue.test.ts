@@ -119,6 +119,56 @@ describe('re-enqueue active runs on start', () => {
     delete process.env.WORKFLOW_POSTGRES_URL;
     delete process.env.DATABASE_URL;
     delete process.env.PORT;
+    delete process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY;
+    delete process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE;
+  });
+
+  it('sizes the default pool above the default worker concurrency', async () => {
+    const world = createWorld();
+
+    expect(Pool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        max: 52,
+      })
+    );
+
+    await world.close();
+  });
+
+  it('sizes the default pool from WORKFLOW_POSTGRES_WORKER_CONCURRENCY', async () => {
+    process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY = '12';
+
+    const world = createWorld({ connectionString: 'postgres://test' });
+
+    expect(Pool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionString: 'postgres://test',
+        max: 14,
+      })
+    );
+    await world.start();
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        concurrency: 12,
+      })
+    );
+
+    await world.close();
+  });
+
+  it('prefers WORKFLOW_POSTGRES_MAX_POOL_SIZE over the concurrency-based default', async () => {
+    process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY = '12';
+    process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE = '20';
+
+    const world = createWorld();
+
+    expect(Pool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        max: 20,
+      })
+    );
+
+    await world.close();
   });
 
   it('falls back to DATABASE_URL when WORKFLOW_POSTGRES_URL is unset', async () => {

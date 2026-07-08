@@ -131,7 +131,7 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 ### `maxPoolSize`
 
 - Environment variable: `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
-- Default: `pg` default
+- Default: `max(10, queueConcurrency + 2)`, which is `52` when `queueConcurrency` is `50`
 - Maximum size of the internal `pg.Pool` when the World creates the pool.
 
 ### `namespace`

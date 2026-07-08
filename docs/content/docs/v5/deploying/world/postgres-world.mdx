@@ -210,9 +210,9 @@ This value also bounds how many parent→child workflow polls can be in flight s
 
 ### `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
 
-Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool. Default: the `pg` default (`10`).
+Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool. Default: `max(10, queueConcurrency + 2)`, which is `52` when `queueConcurrency` is `50`.
 
-For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
+Precedence: `createWorld({ maxPoolSize })` > `WORKFLOW_POSTGRES_MAX_POOL_SIZE` > `max(10, queueConcurrency + 2)`.
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
 
