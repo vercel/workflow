@@ -28,6 +28,7 @@ export { useWorkflowTraceViewerData } from './client/hooks/use-trace-viewer';
 export { useWorkflowStreams } from './client/hooks/use-workflow-streams';
 export {
   cancelRun,
+  fetchHookToken,
   recreateRun,
   reenqueueRun,
   resumeHook,
@@ -35,6 +36,7 @@ export {
 } from './client/workflow-actions';
 export {
   getErrorMessage,
+  getErrorTitle,
   unwrapServerActionResult,
   WorkflowWebAPIError,
 } from './client/workflow-errors';

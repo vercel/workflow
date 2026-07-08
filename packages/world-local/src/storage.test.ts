@@ -7,7 +7,7 @@ import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeJSON } from './fs.js';
-import { hashToken } from './storage/helpers.js';
+import { hashToken, hookDisposeLockPath } from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -2197,6 +2197,157 @@ describe('Storage', () => {
         expect(hook2.hookId).toBe('hook_2');
       });
 
+      // Regression test for #2778: a claim whose owning run is terminal can
+      // never become live again — a new claimant must treat it as vacant
+      // instead of recording a hook_conflict against a finished run. The
+      // claim file is rewritten manually to simulate the window where the
+      // run-completion cleanup has not deleted it yet (or crashed).
+      it('should treat a token claim owned by a terminal run as vacant', async () => {
+        const token = 'terminal-owner-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        // Simulate the stale claim surviving the terminal-run cleanup
+        await fs.writeFile(
+          path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`),
+          JSON.stringify({
+            token,
+            hookId: 'hook_1',
+            runId: testRunId,
+            eventId: 'evnt_00000000000000000000000000',
+          })
+        );
+
+        const run2 = await createRun(storage, {
+          deploymentId: 'deployment-456',
+          workflowName: 'another-workflow',
+          input: new Uint8Array(),
+        });
+
+        const result = await storage.events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_created');
+        expect(result.hook?.runId).toBe(run2.runId);
+      });
+
+      // Regression test for #2778: the hook_disposed handler commits the
+      // disposal (dispose lock) before deleting the token claim, so a new
+      // claimant can observe the claim of a hook whose disposal is already
+      // committed. It must treat that claim as vacant — and the event-log
+      // rebuild must not resurrect the half-torn-down hook.
+      it('should treat a token claim of a dispose-committed hook as vacant', async () => {
+        const token = 'disposed-owner-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        // Simulate a disposer that crashed right after committing the
+        // dispose lock, before deleting the claim and hook entity.
+        const lockPath = hookDisposeLockPath(testDir, 'hook_1');
+        await fs.mkdir(path.dirname(lockPath), { recursive: true });
+        await fs.writeFile(lockPath, '');
+
+        const run2 = await createRun(storage, {
+          deploymentId: 'deployment-456',
+          workflowName: 'another-workflow',
+          input: new Uint8Array(),
+        });
+
+        const result = await storage.events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_created');
+        expect(result.hook?.runId).toBe(run2.runId);
+      });
+
+      // Regression tests for the #2779 follow-up: a releaser (hook_disposed
+      // handler or terminal-run cleanup) that stalls between reading the
+      // hook entity and deleting the claim can outlive a force-release of
+      // its stale claim — its deferred delete must not destroy the NEXT
+      // claimant's live claim. The claim file is rewritten manually to
+      // simulate the takeover happening during the stall.
+      it('hook_disposed should not release a token claim it no longer owns', async () => {
+        const token = 'stolen-claim-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_old',
+          token,
+        });
+
+        // Simulate a force-release + re-claim by a new claimant while the
+        // disposer is stalled: the claim now points at (run2, hook_new).
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
+        );
+        const newClaim = {
+          token,
+          hookId: 'hook_new',
+          runId: 'wrun_someother_run',
+          eventId: 'evnt_00000000000000000000000001',
+        };
+        await fs.writeFile(claimPath, JSON.stringify(newClaim));
+
+        // The stalled disposer's release lands now — it must skip the
+        // deletion because the claim belongs to someone else.
+        await disposeHook(storage, testRunId, 'hook_old');
+
+        const claimAfter = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+        expect(claimAfter).toEqual(newClaim);
+      });
+
+      it('terminal-run hook cleanup should not release a token claim it no longer owns', async () => {
+        const token = 'stolen-claim-token-terminal';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_old',
+          token,
+        });
+
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
+        );
+        const newClaim = {
+          token,
+          hookId: 'hook_new',
+          runId: 'wrun_someother_run',
+          eventId: 'evnt_00000000000000000000000001',
+        };
+        await fs.writeFile(claimPath, JSON.stringify(newClaim));
+
+        // Completing the run triggers deleteAllHooksForRun, which reads
+        // hook_old's entity and releases its claim — it must skip the
+        // deletion because the claim belongs to someone else.
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        const claimAfter = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+        expect(claimAfter).toEqual(newClaim);
+      });
+
       it('should enforce token uniqueness across different runs within the same project', async () => {
         // Create a second run
         const run2 = await createRun(storage, {
@@ -2797,6 +2948,87 @@ describe('Storage', () => {
         (e) => e.eventType === 'hook_disposed'
       );
       expect(hookDisposedEvents).toHaveLength(1);
+    });
+
+    // Regression tests for #2781: a resume racing the hook's disposal must
+    // never be journaled after hook_disposed — once that order is in the
+    // log, every replay of the owning run diverges at the post-disposal
+    // hook_received and the run escalates to CorruptedEventLogError.
+    describe('hook_received vs. hook_disposed ordering (#2781)', () => {
+      it('should reject hook_received once disposal has committed, even while the hook entity still exists', async () => {
+        await createHook(storage, testRunId, {
+          hookId: 'hook_mid_teardown',
+          token: 'mid-teardown-token',
+        });
+
+        // Simulate a disposer mid-teardown (or crashed): the dispose lock
+        // is durably committed but the hook entity has not been deleted
+        // yet. The entity-existence check alone would accept the resume.
+        const lockPath = hookDisposeLockPath(testDir, 'hook_mid_teardown');
+        await fs.mkdir(path.dirname(lockPath), { recursive: true });
+        await fs.writeFile(lockPath, '');
+
+        await expect(
+          storage.events.create(testRunId, {
+            eventType: 'hook_received',
+            correlationId: 'hook_mid_teardown',
+            eventData: { payload: new Uint8Array([1]) },
+          })
+        ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+
+        const events = await storage.events.list({
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(
+          events.data.filter((e) => e.eventType === 'hook_received')
+        ).toHaveLength(0);
+      });
+
+      it('should never journal hook_received after hook_disposed when resume races disposal', async () => {
+        // Each round races one resume against the hook's disposal. Both
+        // outcomes are valid — the resume lands before the disposal, or it
+        // is rejected — but the journal must never contain hook_received
+        // ordered after hook_disposed for the same hook.
+        for (let round = 0; round < 20; round++) {
+          const hookId = `hook_race_2781_${round}`;
+          await createHook(storage, testRunId, {
+            hookId,
+            token: `race-2781-token-${round}`,
+          });
+
+          const [resume] = await Promise.allSettled([
+            storage.events.create(testRunId, {
+              eventType: 'hook_received',
+              correlationId: hookId,
+              eventData: { payload: new Uint8Array([round]) },
+            }),
+            disposeHook(storage, testRunId, hookId),
+          ]);
+
+          if (resume.status === 'rejected') {
+            expect((resume.reason as { name?: string }).name).toBe(
+              'HookNotFoundError'
+            );
+          }
+
+          const events = await storage.events.listByCorrelationId({
+            correlationId: hookId,
+            pagination: {},
+          });
+          const types = events.data.map((e) => e.eventType);
+          const disposedIndex = types.indexOf('hook_disposed');
+          expect(disposedIndex).toBeGreaterThan(-1);
+          expect(types.lastIndexOf('hook_received')).toBeLessThan(
+            disposedIndex
+          );
+          // A fulfilled resume must actually be in the log (before the
+          // disposal), a rejected one must not be journaled at all.
+          expect(types.filter((t) => t === 'hook_received')).toHaveLength(
+            resume.status === 'fulfilled' ? 1 : 0
+          );
+        }
+      });
     });
   });
 

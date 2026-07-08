@@ -44,15 +44,16 @@ import {
   TooltipTrigger,
 } from '~/components/ui/tooltip';
 import { useTableSelection } from '~/lib/hooks/use-table-selection';
+import { fetchEvents, fetchRun } from '~/lib/rpc-client';
+import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
   getErrorMessage,
+  getErrorTitle,
   reenqueueRun,
   useWorkflowRuns,
 } from '~/lib/workflow-api-client';
 import { useServerConfig } from '~/lib/world-config-context';
-import type { EnvMap } from '~/lib/types';
-import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { SelectionBar } from './display-utils/selection-bar';
@@ -646,7 +647,9 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                     <div className="flex items-center justify-center h-full">
                       <Alert variant="destructive" className="max-w-md">
                         <AlertCircle className="h-4 w-4" />
-                        <AlertTitle>Error loading runs</AlertTitle>
+                        <AlertTitle>
+                          {getErrorTitle(error, 'Error loading runs')}
+                        </AlertTitle>
                         <AlertDescription>
                           {getErrorMessage(error)}
                         </AlertDescription>

@@ -60,6 +60,9 @@ interface BaseWorkflowConfig {
   // artifact locations.
   distDir?: string;
 
+  // Optional route prefix for apps deployed below the origin root.
+  basePath?: string;
+
   // Suppress informational logs emitted by createWorkflowsBundle()
   // (e.g. intermediate/final workflow bundle timing logs).
   suppressCreateWorkflowsBundleLogs?: boolean;

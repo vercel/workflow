@@ -1037,6 +1037,9 @@ importers:
 
   packages/web:
     dependencies:
+      '@workflow/world-local':
+        specifier: workspace:*
+        version: link:../world-local
       express:
         specifier: ^5.2.1
         version: 5.2.1

@@ -32,7 +32,12 @@ import {
   writeExclusive,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
-import { hashToken, hookRecoveryMarkerPath } from './helpers.js';
+import {
+  hashToken,
+  hookRecoveryMarkerPath,
+  isHookDisposalCommitted,
+  releaseHookTokenClaimIfOwnedBy,
+} from './helpers.js';
 
 function isVisibleToTag(fileId: string, tag: string | undefined): boolean {
   return tag ? isUntagged(fileId) || hasTag(fileId, tag) : isUntagged(fileId);
@@ -141,6 +146,18 @@ async function findLiveHookCreatedEvent(
   }
 
   if (liveEvent && (await isTerminalRunCache(basedir, liveEvent.runId, tag))) {
+    return null;
+  }
+
+  // A committed disposal (dispose lock on disk) closes the hook even when
+  // its `hook_disposed` event has not landed in the log yet — the disposer
+  // writes the lock, releases the token claim and hook entity, and only
+  // then appends the event. Rebuilding the caches from the log in that
+  // window would resurrect a claim for a hook that is being torn down.
+  if (
+    liveEvent &&
+    (await isHookDisposalCommitted(basedir, liveEvent.correlationId, tag))
+  ) {
     return null;
   }
 
@@ -322,18 +339,22 @@ export async function deleteAllHooksForRun(
     const hookPath = path.join(hooksDir, `${file}.json`);
     const hook = await readJSON(hookPath, HookSchema);
     if (hook && hook.runId === runId) {
-      // Delete the token constraint file to free up the token, and
-      // delete the recovery marker (if any) for disk hygiene. The
+      // Release the token claim to free up the token — but only if it
+      // still points at this hook: a claimant may have force-released
+      // the terminal run's stale claim already (see
+      // `isHookTokenClaimReleasable`) and hold a fresh claim of its
+      // own, which an unconditional delete would destroy. Also delete
+      // the recovery marker (if any) for disk hygiene. The
       // marker's filename hash includes `(token, runId, hookId)` so
       // a leaked marker can never corrupt a different lifetime — but
       // cleaning it up here keeps the tokens/ directory from
       // accumulating recovered-hook sidecars over time.
-      const constraintPath = path.join(
-        hooksDir,
-        'tokens',
-        `${hashToken(hook.token)}.json`
+      await releaseHookTokenClaimIfOwnedBy(
+        basedir,
+        hook.token,
+        hook.runId,
+        hook.hookId
       );
-      await deleteJSON(constraintPath);
       await deleteJSON(
         hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
       );
