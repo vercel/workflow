@@ -51,7 +51,9 @@ import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
+import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { executeStep } from './runtime/step-executor.js';
+import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
@@ -533,6 +535,19 @@ export function workflowEntrypoint(
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
                   let preloadedEventsCursor: string | null | undefined;
+
+                  // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
+                  // Whether this invocation's FIRST event snapshot contained
+                  // nothing beyond run_created/run_started: anything else was
+                  // written by an earlier invocation, whose contribution to
+                  // time-to-first-step (including the queue hop back here)
+                  // cannot be measured wall-clock, so TTFS is not reported.
+                  // Set once, on the first iteration's loaded snapshot.
+                  let invocationStartedClean: boolean | undefined;
+                  // Wall-clock ms spent committing hook_created events before
+                  // the first step ran, accumulated across suspension passes
+                  // and subtracted from TTFS.
+                  let preStepBlockingMs = 0;
 
                   // Turbo mode fast-paths the very first delivery of the very
                   // first invocation, where it is provably safe to: background
@@ -1238,6 +1253,16 @@ export function workflowEntrypoint(
                       // Update cache reference (may have been set for first time)
                       cachedEvents = events;
 
+                      // Latency telemetry: judge TTFS eligibility against the
+                      // invocation's first snapshot. Waits completed above
+                      // would already disqualify via the event-type check, so
+                      // evaluating after the wait pass is equivalent.
+                      invocationStartedClean ??= events.every(
+                        (e) =>
+                          e.eventType === 'run_created' ||
+                          e.eventType === 'run_started'
+                      );
+
                       // Snapshot the cursor as it stands for this iteration's
                       // event log, before any inline writes (step_created via
                       // handleSuspension, step_started/step_completed via
@@ -1417,6 +1442,7 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        preStepBlockingMs += suspensionResult.hookCreationMs;
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
@@ -1652,13 +1678,38 @@ export function workflowEntrypoint(
                         // bounded by the platform's function maxDuration, not the
                         // replay timeout — so the budget check at the top of the
                         // next loop iteration doesn't charge the step bodies.
+                        // Latency telemetry: decide whether this batch's first
+                        // step qualifies for TTFS/STSO measurement. Only the
+                        // batch's first step carries the tracking so a
+                        // parallel batch emits one sample per scheduling gap,
+                        // not one per sibling. Turbo's synthesized run
+                        // snapshot has a local-clock createdAt, so under
+                        // turbo only the run-id ULID timestamp is trusted.
+                        const latencyTracking = computeStepLatencyTracking({
+                          events: cachedEvents ?? [],
+                          invocationStartedClean:
+                            invocationStartedClean === true,
+                          runCreatedAtMs:
+                            runIdCreatedAt(runId) ??
+                            (turbo ? undefined : +workflowRun.createdAt),
+                          preStepBlockingMs,
+                          // This suspension's own hook/wait writes are not in
+                          // cachedEvents yet, so report them explicitly.
+                          suspensionHasWaits:
+                            err.waitCount > 0 ||
+                            suspensionResult.waitTimeout !== undefined,
+                          suspensionCreatedHooks:
+                            err.hookCount > 0 || suspensionResult.hasHookEvents,
+                          turbo,
+                        });
+
                         replayBudget.pause();
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
                         >[];
                         try {
                           stepResults = await Promise.all(
-                            lazyInlineSteps.map((s) =>
+                            lazyInlineSteps.map((s, stepIndex) =>
                               executeStep({
                                 world,
                                 workflowRunId: runId,
@@ -1678,6 +1729,9 @@ export function workflowEntrypoint(
                                 // are undefined/false outside turbo.
                                 forceOptimisticStart,
                                 runReadyBarrier,
+                                ...(stepIndex === 0 && latencyTracking
+                                  ? { latencyTracking }
+                                  : {}),
                                 ...(requestInlineDelta && preInlineWriteCursor
                                   ? {
                                       inlineDeltaSinceCursor:

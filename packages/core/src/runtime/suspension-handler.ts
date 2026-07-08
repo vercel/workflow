@@ -103,6 +103,13 @@ export interface SuspensionHandlerResult {
    * inline start (a hook introduces later resume invocations that could race).
    */
   hasHookEvents: boolean;
+  /**
+   * Wall-clock ms spent committing this suspension's `hook_created` events
+   * (0 when it created none). The caller accumulates this across iterations
+   * and subtracts it from the TTFS latency measurement, so time spent
+   * durably creating the user's hooks doesn't count as runtime overhead.
+   */
+  hookCreationMs: number;
 }
 
 async function createHookEvent({
@@ -301,8 +308,10 @@ export async function handleSuspension({
   // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
   let hasAwaitedHookCreation = false;
+  let hookCreationMs = 0;
 
   if (hookItemsByToken.size > 0) {
+    const hookPhaseStart = Date.now();
     await ensureRunReady();
     await Promise.all(
       [...hookItemsByToken.values()].map(async (items) => {
@@ -353,6 +362,7 @@ export async function handleSuspension({
         }
       })
     );
+    hookCreationMs = Date.now() - hookPhaseStart;
   }
 
   // Process abort requests — resume the hook with abort payload and write stream packet
@@ -672,6 +682,7 @@ export async function handleSuspension({
     hasAwaitedHookCreation,
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
+    hookCreationMs,
   };
 }
 

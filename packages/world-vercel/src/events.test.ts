@@ -225,6 +225,54 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(started.payload).toBeInstanceOf(Uint8Array);
     expect(started.meta.input).toBeUndefined();
   });
+
+  it('carries latency telemetry (ttfs/stso/optimizations) in the frame meta on step terminal events', () => {
+    const completed = splitEventDataForV4({
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        result: new TextEncoder().encode('"ok"'),
+        ttfs: 123,
+        optimizations: ['turbo', 'lazyStepStart'],
+      },
+    } as AnyEventRequest);
+    expect(completed.meta.ttfs).toBe(123);
+    expect(completed.meta.stso).toBeUndefined();
+    expect(completed.meta.optimizations).toEqual(['turbo', 'lazyStepStart']);
+
+    const failed = splitEventDataForV4({
+      eventType: 'step_failed',
+      correlationId: 'step_2',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        error: new TextEncoder().encode('"boom"'),
+        stso: 45,
+        optimizations: [],
+      },
+    } as AnyEventRequest);
+    expect(failed.meta.stso).toBe(45);
+    expect(failed.meta.ttfs).toBeUndefined();
+    expect(failed.meta.optimizations).toEqual([]);
+
+    // Malformed values (non-number, non-string-array) are dropped, not sent.
+    const malformed = splitEventDataForV4({
+      eventType: 'step_completed',
+      correlationId: 'step_3',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        result: new TextEncoder().encode('"ok"'),
+        ttfs: 'fast',
+        optimizations: [1, 2],
+      },
+    } as unknown as AnyEventRequest);
+    expect(malformed.meta.ttfs).toBeUndefined();
+    expect(malformed.meta.optimizations).toBeUndefined();
+  });
 });
 
 describe('createWorkflowRunEvent response coercion', () => {

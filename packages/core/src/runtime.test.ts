@@ -8,6 +8,7 @@ import {
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
 } from '@workflow/world';
+import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
@@ -1721,5 +1722,222 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(order.indexOf('step_started_called')).toBeLessThan(
       order.indexOf('body')
     );
+  });
+});
+
+describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
+  const ORIG_TURBO = process.env.WORKFLOW_TURBO;
+
+  beforeEach(() => {
+    delete process.env.WORKFLOW_TURBO;
+  });
+  afterEach(() => {
+    if (ORIG_TURBO === undefined) delete process.env.WORKFLOW_TURBO;
+    else process.env.WORKFLOW_TURBO = ORIG_TURBO;
+    setWorld(undefined);
+    vi.clearAllMocks();
+    waitUntilPromises.length = 0;
+  });
+
+  registerStepFunction('latStepOne', async () => undefined);
+  registerStepFunction('latStepTwo', async () => undefined);
+
+  const latXform = (name: string) =>
+    `;globalThis.__private_workflows = new Map();
+     globalThis.__private_workflows.set(${JSON.stringify(name)}, ${name});`;
+
+  const twoStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepOne");
+    const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepTwo");
+    async function workflow() { await s1(); return await s2(); }${latXform('workflow')}`;
+
+  // The first step races a long sleep: the suspension that schedules the
+  // step also creates a wait, which must disqualify the measurement.
+  const stepRacingSleepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepOne");
+    const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+    async function workflow() {
+      const [r] = await Promise.all([s1(), sleep('1h')]);
+      return r;
+    }${latXform('workflow')}`;
+
+  /** Backdated `wrun_` ULID so a real TTFS (≈ backdateMs) is computable. */
+  function makeLatencyRunId(backdateMs: number): string {
+    return `wrun_${ulid(Date.now() - backdateMs)}`;
+  }
+
+  async function driveLatency(opts: {
+    runId: string;
+    source: string;
+    attempt?: number;
+  }) {
+    const { runId, source } = opts;
+    const durable: Event[] = [];
+    let seq = 0;
+    const rec = (data: any): Event => {
+      seq += 1;
+      const e = {
+        eventId: `e-${seq}`,
+        runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durable.push(e);
+      return e;
+    };
+    const runEntity: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date(Date.now() - 60_000),
+      updatedAt: new Date(),
+      startedAt: new Date(),
+      deploymentId: 'test-deployment',
+    };
+
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        return { run: runEntity, events: [] as Event[] };
+      }
+      if (data.eventType === 'step_started') {
+        const d = data.eventData as { stepName?: string; input?: unknown };
+        if (d?.input !== undefined) {
+          rec({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: { stepName: d.stepName, input: d.input },
+          });
+        }
+        return {
+          event: rec(data),
+          step: {
+            runId,
+            stepId: data.correlationId,
+            stepName: d?.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: d?.input,
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(d?.input !== undefined ? { stepCreated: true } : {}),
+        };
+      }
+      return { event: rec(data) };
+    });
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
+          async () => {
+            await handler(
+              {
+                runId,
+                requestedAt: new Date(),
+                runInput: {
+                  input: await dehydrateWorkflowArguments(
+                    [],
+                    runId,
+                    undefined,
+                    []
+                  ),
+                  deploymentId: 'test-deployment',
+                  workflowName: 'workflow',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  executionContext: {},
+                },
+              },
+              {
+                requestId: 'req_latency',
+                attempt: opts.attempt ?? 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_latency',
+              }
+            );
+            return new Response(null, { status: 204 });
+          }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durable],
+          hasMore: false,
+          cursor: 'cursor_latency',
+        })),
+      },
+      runs: { get: vi.fn(async () => runEntity) },
+      queue: vi.fn(async () => ({ messageId: null })),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const res = (await workflowEntrypoint(source)(
+      new Request('https://example.test')
+    )) as Response;
+    expect(res.status).toBe(204);
+
+    const stepCompleted = eventsCreate.mock.calls
+      .map((c) => c[1] as any)
+      .filter((d) => d.eventType === 'step_completed');
+    return { stepCompleted };
+  }
+
+  it('attaches ttfs to the first step and stso to the next back-to-back step (turbo)', async () => {
+    const backdateMs = 5_000;
+    const before = Date.now();
+    const { stepCompleted } = await driveLatency({
+      runId: makeLatencyRunId(backdateMs),
+      source: twoStepWorkflow,
+    });
+    const elapsed = Date.now() - before;
+    expect(stepCompleted).toHaveLength(2);
+
+    const [first, second] = stepCompleted;
+    // First step: TTFS anchored at the run-id ULID timestamp, no STSO.
+    expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
+    expect(first.eventData.ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
+    expect(first.eventData.stso).toBeUndefined();
+    expect(first.eventData.optimizations).toEqual([
+      'turbo',
+      'lazyStepStart',
+      'optimisticStart',
+    ]);
+
+    // Second step ran back-to-back with the first: STSO only, and far
+    // smaller than the TTFS anchor distance (it measures the scheduling
+    // gap, not run age).
+    expect(second.eventData.ttfs).toBeUndefined();
+    expect(second.eventData.stso).toBeGreaterThanOrEqual(0);
+    expect(second.eventData.stso).toBeLessThanOrEqual(elapsed);
+    expect(second.eventData.optimizations).toEqual([
+      'turbo',
+      'lazyStepStart',
+      'optimisticStart',
+    ]);
+  });
+
+  it('still reports ttfs without turbo (redelivery), minus turbo-only optimization flags', async () => {
+    const backdateMs = 5_000;
+    const { stepCompleted } = await driveLatency({
+      runId: makeLatencyRunId(backdateMs),
+      source: twoStepWorkflow,
+      attempt: 2, // redelivery → turbo off, awaited run_started path
+    });
+    expect(stepCompleted).toHaveLength(2);
+    const [first] = stepCompleted;
+    expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
+    expect(first.eventData.optimizations).toEqual(['lazyStepStart']);
+  });
+
+  it('reports nothing when the first step is scheduled alongside a wait', async () => {
+    const { stepCompleted } = await driveLatency({
+      runId: makeLatencyRunId(5_000),
+      source: stepRacingSleepWorkflow,
+    });
+    expect(stepCompleted).toHaveLength(1);
+    expect(stepCompleted[0].eventData.ttfs).toBeUndefined();
+    expect(stepCompleted[0].eventData.stso).toBeUndefined();
+    expect(stepCompleted[0].eventData.optimizations).toBeUndefined();
   });
 });
