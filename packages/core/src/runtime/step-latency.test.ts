@@ -59,7 +59,6 @@ describe('computeStepLatencyTracking', () => {
     'hook_received',
     'wait_created',
     'wait_completed',
-    'attr_set',
     'step_created',
     'step_started',
     'step_retrying',
@@ -82,6 +81,42 @@ describe('computeStepLatencyTracking', () => {
       preStepBlockingMs: 42,
       turbo: false,
     });
+  });
+
+  it('keeps TTFS eligible across a pre-step attr_set, ending the measurement at the first attr write', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [
+        makeEvent('run_started'),
+        makeEvent('attr_set', {
+          createdAt: new Date(3_100),
+          occurredAt: new Date(3_000),
+        }),
+        makeEvent('attr_set', {
+          createdAt: new Date(4_000),
+          occurredAt: new Date(3_900),
+        }),
+      ],
+    });
+    expect(tracking).toEqual({
+      ttfsAnchorMs: 1_000,
+      preStepBlockingMs: 0,
+      // Earliest attr write wins; occurredAt preferred over createdAt.
+      preStepAttrStartMs: 3_000,
+      turbo: false,
+    });
+  });
+
+  it('disqualifies TTFS when both a hook_created and an attr_set precede the step (hook time unmeasurable across the attr re-invoke)', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [
+        makeEvent('run_started'),
+        makeEvent('hook_created'),
+        makeEvent('attr_set', { occurredAt: new Date(3_000) }),
+      ],
+    });
+    expect(tracking).toBeUndefined();
   });
 
   it('disqualifies TTFS when the invocation did not start clean (events written by an earlier invocation)', () => {
@@ -171,6 +206,23 @@ describe('computeStepLatencyEventData', () => {
       ttfs: 800,
       optimizations: ['turbo', 'lazyStepStart', 'optimisticStart'],
     });
+  });
+
+  it('ends ttfs at the pre-step attr write instead of the step code start', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        ttfsAnchorMs: 1_000,
+        preStepBlockingMs: 0,
+        preStepAttrStartMs: 3_000,
+        turbo: false,
+      },
+      // Includes the setAttributes re-invoke round-trip — must be excluded.
+      stepCodeStartedAtMs: 60_000,
+      attempt: 1,
+      lazyStepStart: true,
+      optimisticStart: false,
+    });
+    expect(data).toEqual({ ttfs: 2_000, optimizations: ['lazyStepStart'] });
   });
 
   it('computes stso against the previous step terminal timestamp', () => {

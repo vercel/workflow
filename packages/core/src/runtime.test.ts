@@ -1768,10 +1768,14 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     runId: string;
     source: string;
     attempt?: number;
+    /** Pre-existing durable log (an earlier invocation's writes). */
+    seedEvents?: Event[];
+    /** false simulates a queue continuation delivery (no runInput → no turbo). */
+    withRunInput?: boolean;
   }) {
     const { runId, source } = opts;
-    const durable: Event[] = [];
-    let seq = 0;
+    const durable: Event[] = [...(opts.seedEvents ?? [])];
+    let seq = durable.length;
     const rec = (data: any): Event => {
       seq += 1;
       const e = {
@@ -1796,7 +1800,8 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
 
     const eventsCreate = vi.fn(async (_runId: string, data: any) => {
       if (data.eventType === 'run_started') {
-        return { run: runEntity, events: [] as Event[] };
+        // Preload mirrors the real server: the durable log as of now.
+        return { run: runEntity, events: [...durable] };
       }
       if (data.eventType === 'step_started') {
         const d = data.eventData as { stepName?: string; input?: unknown };
@@ -1836,18 +1841,22 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
               {
                 runId,
                 requestedAt: new Date(),
-                runInput: {
-                  input: await dehydrateWorkflowArguments(
-                    [],
-                    runId,
-                    undefined,
-                    []
-                  ),
-                  deploymentId: 'test-deployment',
-                  workflowName: 'workflow',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  executionContext: {},
-                },
+                ...(opts.withRunInput === false
+                  ? {}
+                  : {
+                      runInput: {
+                        input: await dehydrateWorkflowArguments(
+                          [],
+                          runId,
+                          undefined,
+                          []
+                        ),
+                        deploymentId: 'test-deployment',
+                        workflowName: 'workflow',
+                        specVersion: SPEC_VERSION_CURRENT,
+                        executionContext: {},
+                      },
+                    }),
               },
               {
                 requestId: 'req_latency',
@@ -1880,7 +1889,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     const stepCompleted = eventsCreate.mock.calls
       .map((c) => c[1] as any)
       .filter((d) => d.eventType === 'step_completed');
-    return { stepCompleted };
+    return { stepCompleted, eventsCreate };
   }
 
   it('attaches ttfs to the first step and stso to the next back-to-back step (turbo)', async () => {
@@ -1939,5 +1948,66 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(stepCompleted[0].eventData.ttfs).toBeUndefined();
     expect(stepCompleted[0].eventData.stso).toBeUndefined();
     expect(stepCompleted[0].eventData.optimizations).toBeUndefined();
+  });
+
+  it('reports ttfs across a pre-step setAttributes, ending the measurement at the attr write', async () => {
+    // A workflow-body setAttributes before the first step: the attribute
+    // suspension re-invokes through the queue before any step runs (see the
+    // hasAttributeEvents branch in the orchestrator), so the first step
+    // executes in a LATER invocation whose log already holds the attr_set.
+    // TTFS must still be reported, anchored run-creation → the attr write
+    // (the setAttributes call's duration — including the queue hop — is
+    // subtracted by ending the measurement there).
+    const attrThenStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepOne");
+      const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+      async function workflow() {
+        await setAttributes([{ key: "k", value: "v" }]);
+        return await s1();
+      }${latXform('workflow')}`;
+
+    const runBackdateMs = 10_000;
+    const runId = makeLatencyRunId(runBackdateMs);
+
+    // Invocation 1 (first delivery): commits attr_set and re-invokes —
+    // no step may run yet.
+    const first = await driveLatency({ runId, source: attrThenStepWorkflow });
+    expect(first.stepCompleted).toHaveLength(0);
+    const attrCreates = first.eventsCreate.mock.calls
+      .map((c) => c[1] as any)
+      .filter((d) => d.eventType === 'attr_set');
+    expect(attrCreates).toHaveLength(1);
+    expect(
+      first.eventsCreate.mock.calls.some(
+        (c) => (c[1] as any).eventType === 'step_started'
+      )
+    ).toBe(false);
+
+    // Invocation 2 (queue continuation, no runInput): replays over the
+    // durable attr_set — stamped as written 7s after run creation — and runs
+    // the step. The measurement must end at the attr write: ~7s, NOT the
+    // full wall-clock distance to now (~10s+).
+    const attrWriteBackdateMs = 3_000;
+    const attrEvent = {
+      ...attrCreates[0],
+      eventId: 'e-attr-1',
+      runId,
+      createdAt: new Date(Date.now() - attrWriteBackdateMs),
+      occurredAt: new Date(Date.now() - attrWriteBackdateMs),
+    } as Event;
+
+    const second = await driveLatency({
+      runId,
+      source: attrThenStepWorkflow,
+      seedEvents: [attrEvent],
+      withRunInput: false,
+    });
+    expect(second.stepCompleted).toHaveLength(1);
+    const { ttfs, stso, optimizations } = second.stepCompleted[0].eventData;
+    const expectedTtfs = runBackdateMs - attrWriteBackdateMs;
+    expect(ttfs).toBeGreaterThanOrEqual(expectedTtfs - 100);
+    expect(ttfs).toBeLessThanOrEqual(expectedTtfs + 1_000);
+    expect(stso).toBeUndefined();
+    // Continuation delivery is not turbo.
+    expect(optimizations).toEqual(['lazyStepStart']);
   });
 });

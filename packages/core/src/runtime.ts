@@ -1257,10 +1257,16 @@ export function workflowEntrypoint(
                       // invocation's first snapshot. Waits completed above
                       // would already disqualify via the event-type check, so
                       // evaluating after the wait pass is equivalent.
+                      // attr_set is permitted: an attribute suspension
+                      // re-invokes before steps run, so the invocation that
+                      // executes the first step loads the attr events — the
+                      // detour is subtracted via preStepAttrStartMs (see
+                      // runtime/step-latency.ts).
                       invocationStartedClean ??= events.every(
                         (e) =>
                           e.eventType === 'run_created' ||
-                          e.eventType === 'run_started'
+                          e.eventType === 'run_started' ||
+                          e.eventType === 'attr_set'
                       );
 
                       // Snapshot the cursor as it stands for this iteration's

@@ -29,6 +29,18 @@ export interface StepLatencyTracking {
    */
   preStepBlockingMs?: number;
   /**
+   * Epoch ms the first pre-step `attr_set` write began (its client-stamped
+   * `occurredAt`, falling back to `createdAt`). When present, the TTFS
+   * measurement ENDS here instead of at the step's code start: a
+   * workflow-body `experimental_setAttributes` before the first step
+   * resolves through an immediate re-invoke (see the `hasAttributeEvents`
+   * branch in runtime.ts), so everything from this write until the step body
+   * runs is the duration of the setAttributes call — which is subtracted by
+   * ending the measurement at the point where the step would otherwise have
+   * been scheduled.
+   */
+  preStepAttrStartMs?: number;
+  /**
    * Epoch ms the previous step's terminal event was recorded (its
    * client-stamped `occurredAt`, falling back to `createdAt`). Present only
    * when the step qualifies for STSO.
@@ -53,14 +65,17 @@ export interface StepLatencyEventData {
  * - `hook_received` / `wait_created` / `wait_completed` mean the run's path to
  *   the first step depended on user-driven timing (a webhook arriving, a
  *   sleep elapsing), so the measurement would not reflect runtime overhead.
- * - `attr_set` (workflow-body `experimental_setAttributes`) forces a re-invoke
- *   through the queue before steps run, a detour whose duration spans
- *   invocations and cannot be measured wall-clock — so it disqualifies rather
- *   than subtracts.
  *
- * `hook_created` is deliberately absent: a fire-and-forget `createHook()`
- * before the first step commits in the same invocation, whose measured
- * duration is subtracted via {@link StepLatencyTracking.preStepBlockingMs}.
+ * Deliberately absent, with their cost subtracted instead:
+ *
+ * - `hook_created`: a fire-and-forget `createHook()` before the first step
+ *   commits in the same invocation, whose measured duration is subtracted via
+ *   {@link StepLatencyTracking.preStepBlockingMs}.
+ * - `attr_set` (workflow-body `experimental_setAttributes`): resolves through
+ *   an immediate re-invoke before steps run, so its duration spans
+ *   invocations. Subtracted by ending the measurement at the first attr
+ *   write's timestamp instead — see
+ *   {@link StepLatencyTracking.preStepAttrStartMs}.
  */
 const TTFS_DISQUALIFYING_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set(
   [
@@ -72,7 +87,6 @@ const TTFS_DISQUALIFYING_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set(
     'hook_received',
     'wait_created',
     'wait_completed',
-    'attr_set',
   ]
 );
 
@@ -88,9 +102,12 @@ export function computeStepLatencyTracking(params: {
   events: Event[];
   /**
    * Whether this invocation's initial event load contained nothing beyond
-   * run_created/run_started. Pre-existing hook/attr events were written by an
-   * earlier invocation, so the time they added (including the queue hop back
-   * to this invocation) is unmeasurable and disqualifies TTFS.
+   * run_created/run_started/attr_set. Pre-existing hook events were written
+   * by an earlier invocation, so the time they added (including the queue
+   * hop back to this invocation) is unmeasurable and disqualifies TTFS.
+   * attr_set is permitted: an attribute suspension re-invokes before steps
+   * run, so the invocation that executes the first step legitimately loads
+   * the attr events — their detour is subtracted via `preStepAttrStartMs`.
    */
   invocationStartedClean: boolean;
   /** Epoch ms of run creation, if recoverable. Absent disqualifies TTFS. */
@@ -120,12 +137,30 @@ export function computeStepLatencyTracking(params: {
     params.invocationStartedClean &&
     params.runCreatedAtMs !== undefined &&
     !params.suspensionHasWaits;
+  let preStepAttrStartMs: number | undefined;
   if (ttfsEligible) {
+    let sawHookCreated = false;
     for (const event of events) {
       if (TTFS_DISQUALIFYING_EVENT_TYPES.has(event.eventType)) {
         ttfsEligible = false;
         break;
       }
+      if (event.eventType === 'hook_created') {
+        sawHookCreated = true;
+      } else if (event.eventType === 'attr_set') {
+        const attrStartMs = +(event.occurredAt ?? event.createdAt);
+        preStepAttrStartMs =
+          preStepAttrStartMs === undefined
+            ? attrStartMs
+            : Math.min(preStepAttrStartMs, attrStartMs);
+      }
+    }
+    // Hooks before an attr detour were committed by an EARLIER invocation
+    // (the attr re-invoke moved the first step to this one), so their write
+    // time is not in this invocation's preStepBlockingMs accumulator and
+    // would contaminate the measurement — disqualify the combination.
+    if (sawHookCreated && preStepAttrStartMs !== undefined) {
+      ttfsEligible = false;
     }
   }
 
@@ -154,6 +189,7 @@ export function computeStepLatencyTracking(params: {
       ? {
           ttfsAnchorMs: params.runCreatedAtMs,
           preStepBlockingMs: params.preStepBlockingMs,
+          ...(preStepAttrStartMs !== undefined ? { preStepAttrStartMs } : {}),
         }
       : {}),
     ...(prevStepEndMs !== undefined ? { prevStepEndMs } : {}),
@@ -185,13 +221,17 @@ export function computeStepLatencyEventData(params: {
 
   // Clamp at 0: cross-invocation timestamps can come from another machine's
   // clock, so small skews must not produce negative durations.
+  //
+  // A pre-step setAttributes detour ends the measurement at the first attr
+  // write instead of the step's code start — the remainder is the duration
+  // of the setAttributes call (resolved via re-invoke), which is subtracted
+  // rather than disqualifying the sample.
+  const ttfsEndMs = tracking.preStepAttrStartMs ?? params.stepCodeStartedAtMs;
   const ttfs =
     tracking.ttfsAnchorMs !== undefined
       ? Math.max(
           0,
-          params.stepCodeStartedAtMs -
-            tracking.ttfsAnchorMs -
-            (tracking.preStepBlockingMs ?? 0)
+          ttfsEndMs - tracking.ttfsAnchorMs - (tracking.preStepBlockingMs ?? 0)
         )
       : undefined;
   const stso =
