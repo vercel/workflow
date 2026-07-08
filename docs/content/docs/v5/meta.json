@@ -3,7 +3,6 @@
     "---",
     "getting-started",
     "foundations",
-    "configuration",
     "how-it-works",
     "observability",
     "ai",
@@ -11,6 +10,7 @@
     "deploying",
     "errors",
     "migration-guides",
+    "configuration",
     "api-reference"
   ]
 }
