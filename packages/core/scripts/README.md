@@ -53,18 +53,21 @@ microbenchmark numbers hold for every backend.
 
 ## 3. End-to-end runtime (local + vercel)
 
-The end-to-end harness already in the repo drives the stress workflows in
+The end-to-end benchmark runner (`packages/core/e2e/benchmark.test.ts`)
+drives the scenario workflows in
 `workbench/example/workflows/97_bench.ts` through a real World and records
-per-run `executionTimeMs` (`completedAt − createdAt`) to
-`bench-timings-<app>-<backend>.json`:
+core latency metrics — TTFS (time to first step), STSO (step-to-step
+overhead), WO (workflow overhead), and SL (stream latency) — reported as
+`avg`/`p50`/`p90`/`p99` and written to `bench-results-<app>-<backend>.json`.
+It requires `DEPLOYMENT_URL` (the running app) and `APP_NAME` (used in the
+output filename). Iteration counts are tunable via `BENCH_*` env vars (see
+the file header).
 
 ```bash
 # Local world (nextjs-turbopack dev server on :3000)
 cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev &
-pnpm bench:local                       # from repo root
-
-# Full suite incl. 1000-step / 1000-concurrent / 500×10KB cases
-BENCHMARK_FULL_SUITE=true pnpm bench:local
+# from repo root
+DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack pnpm bench
 ```
 
 To measure the compression delta, run the harness twice and diff the
@@ -75,14 +78,17 @@ bench runner (compression off, everything else identical):
 ```bash
 # compression OFF baseline
 WORKFLOW_DISABLE_COMPRESSION=1 pnpm dev &          # in the workbench
-WORKFLOW_DISABLE_COMPRESSION=1 pnpm bench:local    # from repo root
-mv bench-timings-nextjs-turbopack-local.json bench-timings-...-off.json
+# from repo root
+WORKFLOW_DISABLE_COMPRESSION=1 \
+  DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack pnpm bench
+mv bench-results-nextjs-turbopack-local.json bench-results-...-off.json
 ```
 
-For **Vercel**, the same harness targets a deployment when the Vercel env
+For **Vercel**, the same runner targets a deployment when the Vercel env
 vars from `CLAUDE.md` are set (`WORKFLOW_VERCEL_ENV`, `VERCEL_DEPLOYMENT_ID`,
 `WORKFLOW_VERCEL_AUTH_TOKEN`, `WORKFLOW_VERCEL_PROJECT`, `VERCEL_OIDC_TOKEN`,
-etc.); it then writes `bench-timings-<app>-vercel.json`. The
-`WORKFLOW_DISABLE_COMPRESSION=1` kill switch must be set on the deployment
-(an env var on the Vercel project) for the off baseline, since compression
-runs server-side in the step/workflow handlers there.
+etc.); the backend is then detected as `vercel` and it writes
+`bench-results-<app>-vercel.json`. The `WORKFLOW_DISABLE_COMPRESSION=1` kill
+switch must be set on the deployment (an env var on the Vercel project) for
+the off baseline, since compression runs server-side in the step/workflow
+handlers there.

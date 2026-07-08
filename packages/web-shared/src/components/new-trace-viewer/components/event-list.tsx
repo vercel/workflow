@@ -112,7 +112,7 @@ const EventList = ({
       ref={listRef}
       id="event-list"
       role="tree"
-      className="block min-h-0 overflow-visible divide-y divide-gray-alpha-400 border-b border-gray-alpha-400"
+      className="block min-h-0 overflow-visible divide-y divide-gray-400 border-b border-gray-400"
       style={{
         paddingTop: start * ROW_HEIGHT_PX,
         paddingBottom: (spans.length - end) * ROW_HEIGHT_PX,
