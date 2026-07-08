@@ -33,6 +33,23 @@ export function TraceViewerSkeleton() {
     >
       <span className="sr-only">Loading trace…</span>
 
+      {/* Minimap strip: thin density lines tracing the same shape as the bars */}
+      <div className="relative h-10 min-h-10 shrink-0 border-b border-gray-alpha-400">
+        <div className="absolute inset-x-4 top-[6px]">
+          {ROWS.map((row, index) => (
+            <Skeleton
+              key={row.id}
+              className="absolute h-[3px] rounded-full"
+              style={{
+                left: `${row.off}%`,
+                width: `${row.bar}%`,
+                top: index * 3.5,
+              }}
+            />
+          ))}
+        </div>
+      </div>
+
       {/* Header row: search header | divider | timeline header */}
       <div
         className="shrink-0 grid"

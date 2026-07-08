@@ -35,4 +35,14 @@ describe('NestLocalBuilder', () => {
       '@workflow/world-postgres'
     );
   });
+
+  test('bundles relative target world modules', () => {
+    process.env.WORKFLOW_TARGET_WORLD = './my-world.ts';
+
+    const builder = new NestLocalBuilder();
+
+    expect(getBuilderConfig(builder).externalPackages).not.toContain(
+      './my-world.ts'
+    );
+  });
 });

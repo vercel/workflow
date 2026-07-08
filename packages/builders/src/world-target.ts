@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { isAbsolute, join, win32 } from 'node:path';
 import {
   getWorldImport,
   normalizeWorkflowTargetWorldImport,
@@ -16,6 +16,15 @@ export {
 } from '@workflow/utils';
 
 export type WorkflowWorldTargetEnvironment = Record<string, string | undefined>;
+
+export function isWorkflowTargetWorldPath(targetWorld: string): boolean {
+  return (
+    targetWorld.startsWith('./') ||
+    targetWorld.startsWith('../') ||
+    isAbsolute(targetWorld) ||
+    win32.isAbsolute(targetWorld)
+  );
+}
 
 export function ensureWorkflowTargetWorldEnv(
   env: WorkflowWorldTargetEnvironment = process.env

@@ -18,6 +18,8 @@ import type {
   EnvMap,
   HealthCheckEndpoint,
   HealthCheckResult,
+  HookListItem,
+  HookTokenResult,
   PaginatedResult,
   ResumeHookResult,
   ServerActionResult,
@@ -68,6 +70,8 @@ export async function fetchRuns(
     limit?: number;
     workflowName?: string;
     status?: WorkflowRunStatus;
+    startTime?: string;
+    endTime?: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<WorkflowRun>>> {
   return rpc('fetchRuns', { worldEnv, params });
@@ -149,8 +153,16 @@ export async function fetchHooks(
     sortOrder?: 'asc' | 'desc';
     limit?: number;
   }
-): Promise<ServerActionResult<PaginatedResult<Hook>>> {
+): Promise<ServerActionResult<PaginatedResult<HookListItem>>> {
   return rpc('fetchHooks', { worldEnv, params });
+}
+
+export async function fetchHookToken(
+  worldEnv: EnvMap,
+  runId: string,
+  hookId: string
+): Promise<ServerActionResult<HookTokenResult>> {
+  return rpc('fetchHookToken', { worldEnv, runId, hookId });
 }
 
 export async function fetchHook(

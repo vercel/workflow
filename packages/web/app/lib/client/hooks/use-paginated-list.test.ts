@@ -13,6 +13,7 @@ vi.mock('~/lib/rpc-client', () => ({
 
 import type { Hook, WorkflowRun } from '@workflow/world';
 import { fetchHooks, fetchRuns } from '~/lib/rpc-client';
+import type { AnalyticsPageInfo } from '~/lib/types';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -45,12 +46,28 @@ const HOOK: Hook = {
   environment: 'development',
 };
 
+const PAGE_INFO: AnalyticsPageInfo = {
+  currentLookbackDays: 2,
+  maxLookbackDays: 30,
+  currentWindowStart: new Date('2026-06-28T00:00:00.000Z'),
+  maxWindowStart: new Date('2026-06-01T00:00:00.000Z'),
+  upgradeAvailable: true,
+};
+
 /** Resolved PaginatedResult for usePaginatedList's fetchFn */
-function page<T>(data: T[], opts: { cursor?: string; hasMore?: boolean } = {}) {
+function page<T>(
+  data: T[],
+  opts: {
+    cursor?: string;
+    hasMore?: boolean;
+    pageInfo?: AnalyticsPageInfo;
+  } = {}
+) {
   return Promise.resolve({
     data,
     cursor: opts.cursor,
     hasMore: opts.hasMore ?? false,
+    pageInfo: opts.pageInfo,
   });
 }
 
@@ -88,6 +105,18 @@ describe('usePaginatedList', () => {
 
     expect(result.current.data.data).toEqual(['a', 'b']);
     expect(result.current.error).toBeNull();
+  });
+
+  it('preserves analytics page metadata from the current page', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockReturnValue(page(['a'], { pageInfo: PAGE_INFO }));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    expect(result.current.analyticsPageInfo).toEqual(PAGE_INFO);
+    expect(result.current.data.pageInfo).toEqual(PAGE_INFO);
   });
 
   it('shows error when fetch throws', async () => {

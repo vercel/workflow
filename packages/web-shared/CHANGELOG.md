@@ -1,5 +1,20 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.28
+
+### Minor Changes
+
+- [#2800](https://github.com/vercel/workflow/pull/2800) [`caac565`](https://github.com/vercel/workflow/commit/caac5654022a017b8daf2119ed33d4b88bae5963) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a minimap to the new trace viewer: a full-run span density strip with a glass viewport brush supporting pan, edge-resize, click-to-jump, drag-to-select zoom, wheel gestures, and keyboard panning.
+
+### Patch Changes
+
+- [#2775](https://github.com/vercel/workflow/pull/2775) [`8a76688`](https://github.com/vercel/workflow/commit/8a766884cf5df20872b6a516008f854f407fe259) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix duplicate sub-second tick labels on the trace viewer timeline ruler, and trim trailing zeros from precise duration labels ("2.00s" → "2s").
+
+- Updated dependencies [[`7637196`](https://github.com/vercel/workflow/commit/7637196cf0f605ce62243bf8c7762a26153dcd36), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`e7e5a0e`](https://github.com/vercel/workflow/commit/e7e5a0e56d10778554b0ea23d0d66ff9feb66bd9), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216)]:
+  - @workflow/core@5.0.0-beta.28
+  - @workflow/utils@5.0.0-beta.6
+  - @workflow/world@5.0.0-beta.16
+
 ## 5.0.0-beta.27
 
 ### Minor Changes

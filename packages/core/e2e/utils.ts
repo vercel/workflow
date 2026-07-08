@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorkflowUrl } from '@workflow/utils';
+import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import { createWorld as createPostgresWorld } from '../../world-postgres/src/index.js';
@@ -373,7 +374,7 @@ export async function fetchManifest(
   const forceRefresh = options?.forceRefresh ?? false;
   if (cachedManifest && !forceRefresh) return cachedManifest;
 
-  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
+  const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
   const res = await fetch(url, {
     headers: await getTrustedSourcesHeaders(),
   });
@@ -508,7 +509,7 @@ export function setupWorld(deploymentUrl: string): void {
     // Build the Vercel world explicitly with the CI-provided config rather than relying on
     // createWorld() reading these env vars (which no longer happens at runtime).
     setWorld(
-      createVercelWorld({
+      createVercelTestWorld({
         token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
         projectConfig: {
           environment: process.env.WORKFLOW_VERCEL_ENV || undefined,

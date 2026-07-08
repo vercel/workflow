@@ -53,10 +53,11 @@ describe('createWorkflowEntrypointOptionsCode', () => {
     expect(
       createWorkflowEntrypointOptionsCode({
         namespace: 'custom',
+        basePath: '/v2',
         routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
       })
     ).toBe(
-      ', { namespace: "custom", routeModuleBodyStartedAt: workflowRouteModuleBodyStartedAt }'
+      ', { namespace: "custom", basePath: "/v2", routeModuleBodyStartedAt: workflowRouteModuleBodyStartedAt }'
     );
   });
 });

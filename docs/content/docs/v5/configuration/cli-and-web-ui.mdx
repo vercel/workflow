@@ -1,0 +1,154 @@
+---
+title: CLI and Web UI
+description: CLI flags and environment variables for inspecting local, Postgres, and Vercel Workflow runs.
+type: reference
+summary: Configure workflow inspect, workflow web, workflow health, and observability tooling.
+related:
+  - /docs/observability
+  - /docs/configuration/worlds
+---
+
+The `workflow` CLI uses flags first, then environment variables, then defaults or local inference.
+
+Vercel project and auth settings can often be inferred from `.vercel/project.json` and your Vercel CLI login.
+
+## Target backend
+
+### `--backend` / `-b`
+
+- Environment variable: `WORKFLOW_TARGET_WORLD`
+- Default: `local`
+- Backend to inspect: `local`, `vercel`, or a World package.
+
+### `--authToken` / `-a`
+
+- Environment variable: `WORKFLOW_VERCEL_AUTH_TOKEN`
+- Default: Vercel CLI login
+- Vercel token for `--backend vercel`.
+
+### `--project`
+
+- Environment variable: `WORKFLOW_VERCEL_PROJECT`
+- Default: inferred when possible
+- Vercel project ID for `--backend vercel`.
+
+### `--team`
+
+- Environment variable: `WORKFLOW_VERCEL_TEAM`
+- Default: inferred when possible
+- Vercel team ID for `--backend vercel`.
+
+### `WORKFLOW_VERCEL_PROJECT_NAME`
+
+- CLI flag: none
+- Default: inferred when possible
+- Vercel project slug used for dashboard links.
+
+### `--env` / `-e`
+
+- Environment variable: `WORKFLOW_VERCEL_ENV`
+- Default: `production`
+- Vercel environment for `--backend vercel`.
+- Accepts `production` or `preview`.
+
+## Web UI
+
+### `--web` / `-w`
+
+- Environment variable: none
+- Default: disabled
+- Opens the relevant dashboard or web UI instead of printing terminal output.
+
+### `--webPort`
+
+- Environment variable: `WORKFLOW_WEB_PORT`
+- Default: `3456`
+- Port for the local web UI server.
+
+### `--noBrowser`
+
+- Environment variable: `WORKFLOW_DISABLE_BROWSER_OPEN`
+- Default: browser opens
+- Prevents the CLI from opening a browser for web UI commands.
+
+### `--localUi`
+
+- Environment variable: `WORKFLOW_LOCAL_UI`
+- Default: disabled
+- Uses the local web UI instead of the Vercel dashboard when inspecting Vercel.
+
+### `--url`
+
+- Environment variable: none
+- Default: disabled
+- Prints the dashboard or run deep-link URL instead of opening a browser or starting a local server.
+
+## Output and filtering
+
+### `--json` / `-j`
+
+- Environment variable: none
+- Default: disabled
+- Prints machine-readable JSON where the command supports it.
+
+### `--sort`
+
+- Environment variable: none
+- Default: `desc`
+- Sort order for list commands. Accepts `asc` or `desc`.
+
+### `--limit`
+
+- Environment variable: none
+- Default: `20`
+- Number of items returned per page for list commands.
+
+### `--cursor`
+
+- Environment variable: none
+- Default: unset
+- Pagination cursor for list commands.
+
+### `--interactive` / `-i`
+
+- Environment variable: none
+- Default: disabled
+- Enables keyboard-controlled pagination for supported list commands.
+
+## Health checks
+
+### `--port` / `-p`
+
+- Command: `workflow health`
+- Environment variable: `WORKFLOW_LOCAL_BASE_URL`, then `PORT`
+- Default: `3000` when neither env var is set
+- Local server port for health checks.
+- The flag writes `WORKFLOW_LOCAL_BASE_URL`.
+
+## Verbose logging and updates
+
+### `--verbose` / `-v`
+
+- Environment variable: `DEBUG`
+- Default: disabled
+- Enables verbose CLI output.
+
+### `WORKFLOW_NO_UPDATE_CHECK`
+
+- CLI flag: none
+- Default: update check enabled
+- Set `1` to disable the CLI update check.
+
+## Observability paths
+
+### `WORKFLOW_OBSERVABILITY_CWD`
+
+- CLI flag: none
+- Default: `process.cwd()`
+- Working directory used by observability tooling to find `.vercel`, `.workflow-data`, and manifests.
+
+### `WORKFLOW_MANIFEST_PATH`
+
+- CLI flag: none
+- Default: inferred
+- Explicit path to the workflow manifest for the web UI.

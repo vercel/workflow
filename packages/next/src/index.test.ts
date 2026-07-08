@@ -71,7 +71,6 @@ describe('withWorkflow builder config', () => {
     builderConfigs.length = 0;
     getNextBuilderMock.mockClear();
     prewarmWorkflowSwcPluginCacheMock.mockClear();
-
     if (!hadLoaderStub) {
       writeFileSync(loaderStubPath, 'module.exports = {};\n', 'utf-8');
     }
@@ -173,6 +172,21 @@ describe('withWorkflow builder config', () => {
     });
   });
 
+  it('passes Next basePath to the workflow builder', async () => {
+    const config = withWorkflow({
+      basePath: '/v2',
+    });
+
+    await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      basePath: '/v2',
+    });
+  });
+
   it('externalizes the built-in Vercel world while preserving user externals', async () => {
     const config = withWorkflow({
       serverExternalPackages: ['@node-rs/xxhash'],
@@ -253,6 +267,55 @@ describe('withWorkflow builder config', () => {
     expect(
       webpackConfig?.resolve?.alias?.['@workflow/core/runtime/world-target']
     ).toMatch(/packages[\\/]world-vercel[\\/]dist[\\/]index\.js$/);
+  });
+
+  it('aliases relative workflow target modules without treating them as packages', async () => {
+    const testDir = mkdtempSync(join(realTmpDir, 'workflow-next-target-'));
+    try {
+      writeFile(
+        join(testDir, 'my-world.ts'),
+        'export function createWorld() {}'
+      );
+      process.chdir(testDir);
+      process.env.WORKFLOW_TARGET_WORLD = './my-world.ts';
+
+      const config = withWorkflow({
+        transpilePackages: ['user-package'],
+        turbopack: {
+          resolveAlias: {
+            existing: 'existing-target',
+          },
+        } as any,
+      });
+
+      const nextConfig = await config('phase-production-build', {
+        defaultConfig: {},
+      });
+      const webpackConfig = nextConfig.webpack?.(
+        {
+          externals: [],
+          module: {
+            rules: [],
+          },
+        },
+        {} as any
+      );
+
+      expect(process.env.WORKFLOW_TARGET_WORLD).toBe('./my-world.ts');
+      expect(nextConfig.transpilePackages).toContain('user-package');
+      expect(nextConfig.transpilePackages).not.toContain('./my-world.ts');
+      expect(
+        (nextConfig.turbopack?.resolveAlias as any)?.[
+          '@workflow/core/runtime/world-target'
+        ]
+      ).toBe(join(testDir, 'my-world.ts'));
+      expect(
+        webpackConfig?.resolve?.alias?.['@workflow/core/runtime/world-target']
+      ).toBe(join(testDir, 'my-world.ts'));
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   it('defaults local builds to the local world package and data directory', () => {

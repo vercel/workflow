@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.0-beta.16
+
+### Patch Changes
+
+- [#2812](https://github.com/vercel/workflow/pull/2812) [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Support `startTime`/`endTime` on `world.analytics.runs.list` to bound the listing window.
+
 ## 5.0.0-beta.15
 
 ### Minor Changes

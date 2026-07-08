@@ -7,7 +7,7 @@ import { setWorld } from '@workflow/core/runtime';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Event, Hook } from '@workflow/world';
 import {
-  createLocalWorld,
+  createWorld,
   initDataDir,
   type LocalWorld,
 } from '@workflow/world-local';
@@ -201,7 +201,7 @@ export async function setupWorkflowTests(
   // deletes files matching the worker's tag. Recovery stays disabled because
   // tests expect a clean world and register direct handlers after setup begins.
   const poolId = process.env.VITEST_POOL_ID ?? '0';
-  world = createLocalWorld({
+  world = createWorld({
     dataDir,
     recoverActiveRuns: false,
     tag: `vitest-${poolId}`,
