@@ -618,7 +618,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
 
   const useAnalytics = !opts.withData && Boolean(world.analytics);
   const resolveData = opts.withData ? 'all' : 'none';
-  const status = opts.status as WorkflowRun['status'] | undefined;
+  const status = opts.status;
 
   // Determine which props to show based on withData flag
   const props = opts.withData

@@ -16,11 +16,7 @@ import {
   type Revivers,
   serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
-import { getEventDataRefFields as getWorldEventDataRefFields } from '@workflow/world';
-
-export function getEventDataRefFields(eventType: string): readonly string[] {
-  return getWorldEventDataRefFields(eventType);
-}
+import { getEventDataRefFields } from '@workflow/world';
 
 // Re-export types and utilities that consumers need
 export {

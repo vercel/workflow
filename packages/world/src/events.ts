@@ -30,7 +30,7 @@ export const EventTypeSchema = z.enum([
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 
-export const RunEventTypeSchema = EventTypeSchema.extract([
+const RunEventTypeSchema = EventTypeSchema.extract([
   'run_created',
   'run_started',
   'run_completed',
@@ -58,7 +58,7 @@ export function isTerminalRunEventType(
   return TERMINAL_RUN_EVENT_TYPES.includes(eventType as TerminalRunEventType);
 }
 
-export const StepEventTypeSchema = EventTypeSchema.extract([
+const StepEventTypeSchema = EventTypeSchema.extract([
   'step_created',
   'step_completed',
   'step_failed',
@@ -72,7 +72,7 @@ export function isStepEventType(eventType: string): eventType is StepEventType {
   return STEP_EVENT_TYPES.includes(eventType as StepEventType);
 }
 
-export const TerminalStepEventTypeSchema = EventTypeSchema.extract([
+const TerminalStepEventTypeSchema = EventTypeSchema.extract([
   'step_completed',
   'step_failed',
 ] as const);
@@ -85,7 +85,7 @@ export function isTerminalStepEventType(
   return TERMINAL_STEP_EVENT_TYPES.includes(eventType as TerminalStepEventType);
 }
 
-export const HookLifecycleEventTypeSchema = EventTypeSchema.extract([
+const HookLifecycleEventTypeSchema = EventTypeSchema.extract([
   'hook_created',
   'hook_received',
   'hook_disposed',
@@ -103,7 +103,7 @@ export function isHookLifecycleEventType(
   );
 }
 
-export const HookEventRequiringExistenceTypeSchema = EventTypeSchema.extract([
+const HookEventRequiringExistenceTypeSchema = EventTypeSchema.extract([
   'hook_disposed',
   'hook_received',
 ] as const);
@@ -121,7 +121,7 @@ export function isHookEventRequiringExistence(
   );
 }
 
-export const WaitEventTypeSchema = EventTypeSchema.extract([
+const WaitEventTypeSchema = EventTypeSchema.extract([
   'wait_created',
   'wait_completed',
 ] as const);
@@ -132,7 +132,7 @@ export function isWaitEventType(eventType: string): eventType is WaitEventType {
   return WAIT_EVENT_TYPES.includes(eventType as WaitEventType);
 }
 
-export const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
+const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
   'step_created',
   'hook_created',
   'wait_created',
@@ -149,29 +149,6 @@ export function isChildEntityCreationEventType(
   return CHILD_ENTITY_CREATION_EVENT_TYPES.includes(
     eventType as ChildEntityCreationEventType
   );
-}
-
-/**
- * Fields within eventData that hold ref/payload data per event type.
- * When resolveData is 'none', only these fields are stripped — all other
- * metadata (stepName, workflowName, etc.) is preserved.
- */
-export const EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
-  run_created: ['input'],
-  run_started: ['input'],
-  run_completed: ['output'],
-  run_failed: ['error'],
-  step_created: ['input'],
-  step_started: ['input'],
-  step_completed: ['result'],
-  step_failed: ['error'],
-  step_retrying: ['error'],
-  hook_created: ['metadata'],
-  hook_received: ['payload'],
-} satisfies Partial<Record<EventType, string[]>>;
-
-export function getEventDataRefFields(eventType: string): readonly string[] {
-  return EVENT_DATA_REF_FIELDS[eventType] ?? [];
 }
 
 /**
@@ -193,10 +170,23 @@ export const EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE = {
   hook_received: 'payload',
 } as const satisfies Partial<Record<EventType, string>>;
 
-export type EventDataPayloadEventType =
-  keyof typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE;
 export type EventDataPayloadField =
-  (typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE)[EventDataPayloadEventType];
+  (typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE)[keyof typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE];
+
+/**
+ * Fields within eventData that hold ref/payload data per event type.
+ * When resolveData is 'none', only these fields are stripped — all other
+ * metadata (stepName, workflowName, etc.) is preserved.
+ */
+export const EVENT_DATA_REF_FIELDS = Object.fromEntries(
+  Object.entries(EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE).map(
+    ([eventType, field]) => [eventType, [field]]
+  )
+) as Record<string, readonly EventDataPayloadField[]>;
+
+export function getEventDataRefFields(eventType: string): readonly string[] {
+  return EVENT_DATA_REF_FIELDS[eventType] ?? [];
+}
 
 export function getEventDataPayloadField(
   eventType: string

@@ -1,12 +1,8 @@
 'use client';
 
-import type { Event } from '@workflow/world';
+import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import {
-  getEventDataRefFields,
-  hasEncryptedFields,
-  isExpiredMarker,
-} from '../../lib/hydration';
+import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
 import {
   Collapsible,
   CollapsibleContent,

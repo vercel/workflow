@@ -282,7 +282,9 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     sort: flags.sort as 'asc' | 'desc' | undefined,
     limit: flags.limit,
     workflowName: flags.workflowName,
-    status: flags.status,
+    status: flags.status
+      ? WorkflowRunStatusSchema.parse(flags.status)
+      : undefined,
     withData: flags.withData,
     decrypt: flags.decrypt,
     backend: flags.backend,

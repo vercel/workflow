@@ -25,6 +25,7 @@ import {
   HookSchema,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
+  isHookLifecycleEventType,
   isLegacySpecVersion,
   isStepEventType,
   isTerminalRunEventType,
@@ -638,11 +639,11 @@ export function createEventsStorage(
       // ordering that is journaled durably and makes every subsequent
       // replay of the owning run diverge at that event
       // (https://github.com/vercel/workflow/issues/2781).
-      const isHookLifecycleEvent =
-        data.eventType === 'hook_created' ||
-        data.eventType === 'hook_received' ||
-        data.eventType === 'hook_disposed';
-      if (isHookLifecycleEvent && runId && data.correlationId) {
+      if (
+        isHookLifecycleEventType(data.eventType) &&
+        runId &&
+        data.correlationId
+      ) {
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;

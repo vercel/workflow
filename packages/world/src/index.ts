@@ -29,7 +29,6 @@ export type * from './events.js';
 export {
   BaseEventSchema,
   CHILD_ENTITY_CREATION_EVENT_TYPES,
-  ChildEntityCreationEventTypeSchema,
   CreateEventSchema,
   EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE,
   EVENT_DATA_REF_FIELDS,
@@ -39,8 +38,6 @@ export {
   getEventDataRefFields,
   HOOK_EVENTS_REQUIRING_EXISTENCE,
   HOOK_LIFECYCLE_EVENT_TYPES,
-  HookEventRequiringExistenceTypeSchema,
-  HookLifecycleEventTypeSchema,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
@@ -50,16 +47,12 @@ export {
   isTerminalStepEventType,
   isWaitEventType,
   RUN_EVENT_TYPES,
-  RunEventTypeSchema,
   stripEventDataRefs,
   STEP_EVENT_TYPES,
-  StepEventTypeSchema,
   TERMINAL_RUN_EVENT_TYPES,
   TERMINAL_STEP_EVENT_TYPES,
   TerminalRunEventTypeSchema,
-  TerminalStepEventTypeSchema,
   WAIT_EVENT_TYPES,
-  WaitEventTypeSchema,
 } from './events.js';
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
