@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createWorkflowUrl } from '@workflow/utils';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { bench, describe } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import { createWorld as createPostgresWorld } from '../../world-postgres/src/index.js';
@@ -34,7 +34,7 @@ if (isLocalDeployment()) {
   }
   // Build the Vercel world explicitly with CI-provided config
   setWorld(
-    createVercelWorld({
+    createVercelTestWorld({
       token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
       projectConfig: {
         environment: process.env.WORKFLOW_VERCEL_ENV || undefined,

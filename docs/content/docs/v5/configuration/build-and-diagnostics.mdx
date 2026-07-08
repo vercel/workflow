@@ -1,0 +1,51 @@
+---
+title: Build and Diagnostics
+description: Build-time environment variables for manifests, source maps, and development diagnostics.
+type: reference
+summary: Configure generated bundles and build-time diagnostics.
+related:
+  - /docs/configuration/framework-options
+  - /docs/api-reference/workflow-next/with-workflow
+---
+
+Build and diagnostics variables are read by the compiler, builders, and framework integrations when your app is built or when the dev server starts.
+
+## Source maps
+
+### `WORKFLOW_SOURCEMAP`
+
+- Framework option: `sourcemap` where supported
+- Default: `inline` in development, `false` in production
+- Controls source maps for generated workflow bundles.
+- Explicit framework config wins over this environment variable.
+
+Accepted values:
+
+- `true`, `inline`, or `1` - append an inline base64 source map to each generated bundle.
+- `linked` - write a `.map` file and add a `sourceMappingURL` comment.
+- `external` - write a `.map` file without adding the comment.
+- `both` - emit inline and external source maps.
+- `false` or `0` - omit source maps.
+
+### `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING`
+
+- Default: disabled
+- Legacy source-map toggle kept for compatibility.
+- Only affects the final workflow wrapper and webhook bundle.
+- Prefer `WORKFLOW_SOURCEMAP` or a framework `sourcemap` option.
+
+## Manifests
+
+### `WORKFLOW_PUBLIC_MANIFEST`
+
+- Default: disabled
+- Set `1` to expose the workflow manifest at `/.well-known/workflow/v1/manifest.json`.
+- Useful for e2e tests and tools that need to discover workflows over HTTP.
+
+## Development diagnostics
+
+### `WORKFLOW_DEV_HMR_LOGS`
+
+- Default: disabled
+- Set `1` to log workflow rebuild activity during `next dev`.
+- Useful for diagnosing watch and HMR issues.

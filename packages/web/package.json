@@ -36,7 +36,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "express": "^5.2.1"
+    "@workflow/world-local": "workspace:*",
+    "express": "^5.2.1",
+    "swr": "^2.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

@@ -1,10 +1,17 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
+  isWorkflowTargetWorldPath,
   normalizeWorkflowTargetWorldImport,
   resolveWorkflowCoreRuntimeAlias,
   resolveWorkflowTargetWorldAlias,
@@ -73,6 +80,31 @@ describe('workflow world target', () => {
     } finally {
       rmSync(testDir, { recursive: true, force: true });
     }
+  });
+
+  it('resolves relative module files from the working directory', () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'workflow-world-target-'));
+    const worldFile = join(testDir, 'my-world.ts');
+    writeFileSync(worldFile, 'export function createWorld() {}');
+
+    const alias = resolveWorkflowTargetWorldAlias({
+      workingDir: testDir,
+      targetWorld: './my-world.ts',
+    });
+
+    try {
+      expect(alias).toBe(realpathSync(worldFile));
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects path-like target worlds', () => {
+    expect(isWorkflowTargetWorldPath('./my-world.ts')).toBe(true);
+    expect(isWorkflowTargetWorldPath('../my-world.ts')).toBe(true);
+    expect(isWorkflowTargetWorldPath('/tmp/my-world.ts')).toBe(true);
+    expect(isWorkflowTargetWorldPath('C:\\repo\\my-world.ts')).toBe(true);
+    expect(isWorkflowTargetWorldPath('@workflow/world-postgres')).toBe(false);
   });
 
   it('keeps unresolved custom aliases externalizable', () => {

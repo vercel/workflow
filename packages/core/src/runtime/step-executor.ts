@@ -22,6 +22,7 @@ import type { CryptoKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
+  cancelAbortReaders,
   dehydrateStepError,
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -573,40 +574,72 @@ export async function executeStep(
           : `http://localhost:${(await getPortLazy()) ?? 3000}`
       );
 
+      // --- User code execution ---
+      // Wrap only stepFn.apply() (user step code) so cleanup below runs on
+      // BOTH success and failure. A user-code throw is captured here and
+      // re-raised after cancelAbortReaders, so it still flows to the outer
+      // catch (step_failed/step_retrying) — but the abort-stream reader is
+      // torn down first. Without this, a throwing/retrying signal-bearing
+      // step would leak a real-time abort reader per attempt.
+      let userCodeError: unknown;
+      let userCodeFailed = false;
+
       const executionStartTime = Date.now();
-      result = await trace('step.execute', {}, async () => {
-        return await contextStorage.run(
-          {
-            stepMetadata: {
-              stepName,
-              stepId,
-              stepStartedAt: new Date(+stepStartedAt),
-              attempt,
+      try {
+        result = await trace('step.execute', {}, async () => {
+          return await contextStorage.run(
+            {
+              stepMetadata: {
+                stepName,
+                stepId,
+                stepStartedAt: new Date(+stepStartedAt),
+                attempt,
+              },
+              workflowMetadata: {
+                workflowName,
+                workflowRunId,
+                workflowStartedAt: new Date(+workflowStartedAt),
+                url: workflowBaseUrl,
+                features: { encryption: !!encryptionKey },
+              },
+              workflowDeploymentId: params.workflowDeploymentId,
+              ops,
+              preCompletionOps,
+              closureVars: hydratedInput.closureVars,
+              encryptionKey,
+              // Turbo optimistic start runs this body before `run_started` is
+              // durable. Expose the barrier so a direct step-body world write
+              // (e.g. `experimental_setAttributes`) can order itself after the
+              // run exists. Undefined on the await path (run already durable).
+              runReadyBarrier: optimisticStart
+                ? params.runReadyBarrier
+                : undefined,
             },
-            workflowMetadata: {
-              workflowName,
-              workflowRunId,
-              workflowStartedAt: new Date(+workflowStartedAt),
-              url: workflowBaseUrl,
-              features: { encryption: !!encryptionKey },
-            },
-            workflowDeploymentId: params.workflowDeploymentId,
-            ops,
-            preCompletionOps,
-            closureVars: hydratedInput.closureVars,
-            encryptionKey,
-            // Turbo optimistic start runs this body before `run_started` is
-            // durable. Expose the barrier so a direct step-body world write
-            // (e.g. `experimental_setAttributes`) can order itself after the
-            // run exists. Undefined on the await path (run already durable).
-            runReadyBarrier: optimisticStart
-              ? params.runReadyBarrier
-              : undefined,
-          },
-          () => stepFn.apply(thisVal, args)
-        );
-      });
+            () => stepFn.apply(thisVal, args)
+          );
+        });
+      } catch (err) {
+        userCodeError = err;
+        userCodeFailed = true;
+      }
       const executionTimeMs = Date.now() - executionStartTime;
+
+      // Tear down any abort-stream readers opened while hydrating the step's
+      // arguments (a serialized AbortSignal opens a real-time abort reader for
+      // the step's duration). Without this the reader's `read()` promise never
+      // settles, so the `ops` flush below always loses the 500ms race and the
+      // step reports `hasPendingOps` — forcing the inline loop to queue a
+      // continuation and paying a full round-trip per signal-bearing step.
+      // The non-inline `step-handler` path already does this after user code.
+      // Runs unconditionally (success or failure) so a throwing step doesn't
+      // leak the reader.
+      cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
+
+      // Re-raise a user-code failure now that cleanup has run; the outer
+      // catch maps it to step_failed/step_retrying.
+      if (userCodeFailed) {
+        throw userCodeError;
+      }
 
       span?.setAttributes({
         ...Attribute.QueueExecutionTimeMs(executionTimeMs),
