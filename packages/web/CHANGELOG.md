@@ -1,5 +1,24 @@
 # @workflow/web
 
+## 5.0.0-beta.28
+
+### Patch Changes
+
+- [#2647](https://github.com/vercel/workflow/pull/2647) [`1518c48`](https://github.com/vercel/workflow/commit/1518c4860822986436711ec14b1b5b16192fefb5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The runs, steps, and events observability list views now read from the
+  metadata-only `world.analytics` namespace when the configured backend provides
+  one, and fall back to the runtime storage APIs otherwise. Event payloads are
+  still loaded lazily per event on the runtime path. Hooks listing, detail views,
+  payload resolution, streams, and mutations are unchanged.
+
+- [#2652](https://github.com/vercel/workflow/pull/2652) [`ae51f45`](https://github.com/vercel/workflow/commit/ae51f45166298e855885330b2f1d4e1f8d729faa) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The hooks list now reads from the metadata-only `world.analytics` namespace when the backend provides one (falling back to the runtime storage APIs otherwise). A hook's secret token is no longer included in list rows — it is fetched one hook at a time via `world.hooks.get` only when the user copies the token or resumes the hook.
+
+- [#2804](https://github.com/vercel/workflow/pull/2804) [`cdfac39`](https://github.com/vercel/workflow/commit/cdfac39e07e2d15c95f7ab9ff8d244b8677931bd) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix `workflow web` for local and postgres backends after static world-target injection. The web server now constructs the local world directly and resolves other world packages from the inspected project, instead of calling the `createWorld()` static-injection stub (which throws when no build plugin aliased it).
+
+- [#2812](https://github.com/vercel/workflow/pull/2812) [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Runs list: infinite scroll with SWR-cached pages (tab switches no longer refetch), a plan-aware time-window picker (default 24h), and status filtering without requiring a workflow filter.
+
+- Updated dependencies [[`c1d29f1`](https://github.com/vercel/workflow/commit/c1d29f14ca01e2219c5ccbaa4e9f62f9349dd75e), [`c1d29f1`](https://github.com/vercel/workflow/commit/c1d29f14ca01e2219c5ccbaa4e9f62f9349dd75e), [`7637196`](https://github.com/vercel/workflow/commit/7637196cf0f605ce62243bf8c7762a26153dcd36), [`e7e5a0e`](https://github.com/vercel/workflow/commit/e7e5a0e56d10778554b0ea23d0d66ff9feb66bd9), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216)]:
+  - @workflow/world-local@5.0.0-beta.24
+
 ## 5.0.0-beta.27
 
 ### Patch Changes

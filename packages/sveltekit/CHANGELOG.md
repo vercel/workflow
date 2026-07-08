@@ -1,5 +1,20 @@
 # @workflow/sveltekit
 
+## 5.0.0-beta.28
+
+### Patch Changes
+
+- [#2799](https://github.com/vercel/workflow/pull/2799) [`2ca34ac`](https://github.com/vercel/workflow/commit/2ca34ac69c5c201ef85a61fe3a10cc75ca3c22c4) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix SvelteKit production server crash at boot if a world package pulls cosmiconfig into the server bundle.
+
+- [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Statically inject the configured world package into host bundles instead of selecting worlds dynamically at runtime.
+
+- [#2802](https://github.com/vercel/workflow/pull/2802) [`aae47b9`](https://github.com/vercel/workflow/commit/aae47b9fddc871832938a6cd17dbc5d31c3d50af) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Avoid recursively loading Vite config while resolving SvelteKit routes during workflow plugin import.
+
+- Updated dependencies [[`2ca34ac`](https://github.com/vercel/workflow/commit/2ca34ac69c5c201ef85a61fe3a10cc75ca3c22c4), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216)]:
+  - @workflow/builders@5.0.0-beta.28
+  - @workflow/rollup@5.0.0-beta.28
+  - @workflow/vite@5.0.0-beta.28
+
 ## 5.0.0-beta.27
 
 ### Patch Changes
