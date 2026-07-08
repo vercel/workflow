@@ -27,6 +27,7 @@ export async function getNextBuilderEager() {
   class NextBuilder extends BaseBuilderClass {
     protected declare config: BuilderNextConfig & {
       pageExtensions: NonNullable<ProjectNextConfig['pageExtensions']>;
+      distDir: string;
     };
 
     async build() {
@@ -152,6 +153,7 @@ export async function getNextBuilderEager() {
           '/.well-known/workflow/',
         ];
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
+        const normalizedDistDir = normalizePath(this.config.distDir);
         ignoredPathFragments.push(normalizedGeneratedDir);
 
         // There is a node.js bug on MacOS which causes closing file watchers to be really slow.
@@ -169,7 +171,11 @@ export async function getNextBuilderEager() {
             if (extension && !watchableExtensions.has(extension)) {
               return true;
             }
-            if (normalizedPath.startsWith(normalizedGeneratedDir)) {
+            if (
+              normalizedPath.startsWith(normalizedGeneratedDir) ||
+              normalizedPath === normalizedDistDir ||
+              normalizedPath.startsWith(`${normalizedDistDir}/`)
+            ) {
               return true;
             }
             for (const fragment of ignoredPathFragments) {
