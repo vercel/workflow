@@ -37,6 +37,14 @@ export interface StopSleepOptions {
   correlationIds?: string[];
 }
 
+export interface CancelRunOptions {
+  /**
+   * Optional free-text reason for the cancellation (max 512 chars), recorded
+   * on the run_cancelled event and surfaced in the run detail view.
+   */
+  cancelReason?: string;
+}
+
 const normalizeWorkflowArgs = (args: unknown): unknown[] => {
   return Array.isArray(args) ? args : [args];
 };
@@ -86,13 +94,13 @@ export async function recreateRunFromExisting(
 /**
  * Cancel a workflow run.
  *
- * @param reason - Optional free-text reason for the cancellation (max 512
- *   chars), recorded on the run_cancelled event.
+ * @param options - Optional cancellation settings. `cancelReason` records a
+ *   free-text reason (max 512 chars) on the run_cancelled event.
  */
 export async function cancelRun(
   world: World,
   runId: string,
-  reason?: string
+  options?: CancelRunOptions
 ): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
@@ -101,7 +109,9 @@ export async function cancelRun(
     const eventRequest = {
       eventType: 'run_cancelled' as const,
       specVersion,
-      ...(reason !== undefined ? { eventData: { cancelReason: reason } } : {}),
+      ...(options?.cancelReason !== undefined
+        ? { eventData: { cancelReason: options.cancelReason } }
+        : {}),
     };
     await world.events.create(runId, eventRequest, { v1Compat: compatMode });
   } catch (err) {

@@ -172,7 +172,7 @@ const { stoppedCount } = await run.wakeUp({
 
 ### Cancel a Run
 
-Cancel a workflow run. You can pass an optional free-text reason (up to 512 characters) that is recorded on the run's cancellation event and shown in the run detail view:
+Cancel a workflow run. You can pass an optional free-text `cancelReason` (up to 512 characters) that is recorded on the run's cancellation event and shown in the run detail view:
 
 ```typescript lineNumbers
 import { getRun } from "workflow/api";
@@ -181,13 +181,13 @@ export async function POST(req: Request) {
   const { runId } = await req.json();
   const run = getRun(runId);
 
-  await run.cancel("Superseded by a newer submission"); // [!code highlight]
+  await run.cancel({ cancelReason: "Superseded by a newer submission" }); // [!code highlight]
 
   return Response.json({ cancelled: true });
 }
 ```
 
-The reason is optional — `await run.cancel()` cancels the run without recording one.
+The options object is optional — `await run.cancel()` cancels the run without recording a reason.
 
 ## Related Functions
 

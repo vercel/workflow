@@ -100,6 +100,7 @@ export {
   type WorkflowReadableStreamOptions,
 } from './runtime/run.js';
 export {
+  type CancelRunOptions,
   cancelRun,
   listStreams,
   type ReadStreamOptions,
