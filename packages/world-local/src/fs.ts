@@ -606,33 +606,46 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     });
   }
 
-  // 4. Load files individually and collect valid items
+  // 4. Load files with bounded concurrency and collect valid items.
+  // Reads are independent; ordering is restored by the sort below.
+  const readConcurrency = 32;
   const validItems: T[] = [];
 
-  for (const fileId of candidateFileIds) {
-    const filePath = path.join(resolvedDirectory, `${fileId}.json`);
-    let item: T | null = null;
-    try {
-      const cachedItem = cachedItems?.get(filePath);
-      item =
-        cachedItem === undefined
-          ? await readJSON(filePath, schema)
-          : structuredClone(cachedItem);
-    } catch (error: unknown) {
-      // We don't expect zod errors to happen, but if the JSON does get malformed,
-      // we skip the item. Preferably, we'd have a way to mark items as malformed,
-      // so that the UI can display them as such, with richer messaging. In the meantime,
-      // we just log a warning and skip the item.
-      if (error instanceof z.ZodError) {
-        console.warn(
-          `Skipping item ${fileId} due to malformed JSON: ${error.message}`
-        );
-        continue;
-      }
-      throw error;
-    }
+  for (
+    let batchStart = 0;
+    batchStart < candidateFileIds.length;
+    batchStart += readConcurrency
+  ) {
+    const batch = candidateFileIds.slice(
+      batchStart,
+      batchStart + readConcurrency
+    );
+    const loadedBatch = await Promise.all(
+      batch.map(async (fileId): Promise<T | null> => {
+        const filePath = path.join(resolvedDirectory, `${fileId}.json`);
+        try {
+          const cachedItem = cachedItems?.get(filePath);
+          return cachedItem === undefined
+            ? await readJSON(filePath, schema)
+            : structuredClone(cachedItem);
+        } catch (error: unknown) {
+          // We don't expect zod errors to happen, but if the JSON does get malformed,
+          // we skip the item. Preferably, we'd have a way to mark items as malformed,
+          // so that the UI can display them as such, with richer messaging. In the meantime,
+          // we just log a warning and skip the item.
+          if (error instanceof z.ZodError) {
+            console.warn(
+              `Skipping item ${fileId} due to malformed JSON: ${error.message}`
+            );
+            return null;
+          }
+          throw error;
+        }
+      })
+    );
 
-    if (item) {
+    for (const item of loadedBatch) {
+      if (!item) continue;
       // Apply custom filter early if provided
       if (filter && !filter(item)) continue;
 

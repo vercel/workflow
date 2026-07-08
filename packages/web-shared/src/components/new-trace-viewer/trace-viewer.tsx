@@ -87,8 +87,8 @@ function useAnimatedViewport(initial: ViewportRange) {
       const anim = { raf: 0, from, to: target, start: performance.now() };
 
       const tick = () => {
-        const t = Math.min((performance.now() - anim.start) / 150, 1);
-        const e = 1 - (1 - t) * (1 - t);
+        const t = Math.min((performance.now() - anim.start) / 240, 1);
+        const e = t < 0.5 ? 8 * t * t * t * t : 1 - (-2 * t + 2) ** 4 / 2;
         setViewportState({
           start: anim.from.start + (anim.to.start - anim.from.start) * e,
           end: anim.from.end + (anim.to.end - anim.from.end) * e,
