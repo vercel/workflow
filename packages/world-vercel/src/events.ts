@@ -73,10 +73,12 @@ import {
 function validateWorkflowRunIdTimestamp(id: string): string | null {
   const raw = id.startsWith('wrun_') ? id.slice('wrun_'.length) : id;
   try {
-    // world-vercel run IDs may carry region metadata in the ULID tag bit;
-    // the shared @workflow/world validator intentionally knows nothing
-    // about that encoding. Decode first so the timestamp validator sees
-    // the original untagged ULID.
+    // world-vercel run IDs may carry region metadata in tagged form; the
+    // shared @workflow/world validator intentionally knows nothing about
+    // that encoding. `decode()` clears the tag bit (the top bit of the
+    // 48-bit timestamp field) so the timestamp validator reads the true
+    // timestamp; the region/version metadata bits remain in the
+    // randomness section, which the validator doesn't inspect.
     return validateUlidTimestamp(`wrun_${decodeRunId(raw).ulid}`, 'wrun_');
   } catch {
     return validateUlidTimestamp(id, 'wrun_');

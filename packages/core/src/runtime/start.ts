@@ -75,7 +75,8 @@ export interface StartOptionsBase {
    * run ID and routes the initial workflow message to the matching
    * regional queue. When omitted, the world falls back to its own
    * default (for `world-vercel`: the `VERCEL_REGION` environment
-   * variable, then the `unknown` sentinel).
+   * variable, then the server-side default region `iad1` — a concrete,
+   * routable region is always chosen).
    *
    * Worlds without a regional dimension ignore this field.
    */

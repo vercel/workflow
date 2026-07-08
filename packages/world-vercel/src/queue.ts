@@ -222,7 +222,7 @@ function regionFromTaggedRunId(runId: string | undefined): string | undefined {
  * The `opts.region` override and `VERCEL_REGION` are arbitrary strings, so
  * each is validated against the known region table and ignored (falling
  * through to the next source) when it isn't a routable region code. This keeps
- * a bad override — e.g. `start({ runIdInput: { region: 'xyz9' } })` — from
+ * a bad override — e.g. `start({ region: 'xyz9' })` — from
  * clobbering the payload-derived region with an undeliverable destination.
  */
 function resolveTargetRegion(
