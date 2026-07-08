@@ -10,33 +10,35 @@
  *          (a hook was registered before the step).
  * - STSO  (step-to-step overhead): gap between consecutive step body
  *          executions (`steps[i].start - steps[i-1].end`) in a workflow with
- *          many trivial sequential steps.
+ *          many trivial sequential steps. Reported per step-index range
+ *          (see STSO_BUCKETS) because early steps behave differently from
+ *          late ones (first-invocation fast paths, growing event log).
  * - WO    (workflow overhead): total time the run spends outside of step
  *          bodies, from the client-side `start()` timestamp to the end of the
  *          last step body (the moment just before the final step_completed
  *          request is sent): `(lastStep.end - clientStart) - Σ(step durations)`.
- * - SO    (stream latency): time between a step writing the first chunk to
+ * - SL    (stream latency): time between a step writing the first chunk to
  *          the workflow's default output stream and that chunk becoming
  *          visible to a reader attached via `run.getReadable()`.
  *
  * Scenarios (defined in workbench/example/workflows/97_bench.ts):
  *
- * 1. benchStreamWorkflow          — 1 streaming step, turbo mode → TTFS + SO
- * 2. benchSequentialStepsWorkflow — 100 trivial sequential steps → STSO + WO
- * 3. benchHookStreamWorkflow      — hook + 1 streaming step, non-turbo → TTFS + SO
+ * 1. benchStreamWorkflow          — 1 streaming step, turbo mode → TTFS + SL + WO
+ * 2. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO
+ * 3. benchHookStreamWorkflow      — hook + 1 streaming step, non-turbo → TTFS + SL + WO
  *
  * Each scenario runs many iterations (env-tunable, see BENCH_* below) so the
  * percentiles are computed from real samples.
  *
  * The backend is selected exactly like the e2e tests (setupWorld): Vercel when
  * WORKFLOW_VERCEL_ENV is set, Postgres when WORKFLOW_TARGET_WORLD is
- * @workflow/world-postgres, local filesystem otherwise. Note that SO requires
+ * @workflow/world-postgres, local filesystem otherwise. Note that SL requires
  * `run.getReadable()` to work from a separate process, which the local world's
  * in-process streamer does not support — CI currently runs this file against
  * Vercel only.
  *
  * TTFS and WO compare a client-side clock against the deployment's clock, and
- * SO compares the step runner's clock against the client's; both machines are
+ * SL compares the step runner's clock against the client's; both machines are
  * NTP-synced in CI, so skew is small relative to the measured values.
  */
 
@@ -63,13 +65,23 @@ const envInt = (name: string, fallback: number, min = 1): number => {
   return value;
 };
 
-// Iteration counts. Stream scenarios yield one TTFS/SO/WO sample per
-// iteration; the sequential scenario yields (stepCount - 1) STSO samples and
-// one WO sample per iteration.
+// Iteration counts. Stream scenarios yield one TTFS/SL/WO sample per
+// iteration; the sequential scenario yields (stepCount - 1) STSO samples per
+// iteration, so a single long run already provides solid percentiles.
 const STREAM_ITERATIONS = envInt('BENCH_STREAM_ITERATIONS', 30);
-const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 5);
-const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 100);
+const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 1);
+const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 1020);
 const WARMUP_ITERATIONS = envInt('BENCH_WARMUP_ITERATIONS', 2, 0);
+
+// STSO percentiles are reported per step-index range: the gap between steps k
+// and k+1 falls into the bucket where `from <= k < to`. Early gaps capture
+// first-invocation behavior; late gaps capture steady state with a large
+// event log.
+const STSO_BUCKETS = [
+  { from: 1, to: 20 },
+  { from: 20, to: 120 },
+  { from: 120, to: 1020 },
+];
 // Guard timeouts so a single stuck run fails fast instead of eating the job.
 const RUN_TIMEOUT_MS = envInt('BENCH_RUN_TIMEOUT_MS', 120_000);
 // An iteration can flake on transient network errors; tolerate a bounded
@@ -90,13 +102,13 @@ interface StreamIterationResult {
   runId: string;
   ttfsMs: number;
   woMs: number;
-  soMs: number;
+  slMs: number;
 }
 
 interface SequentialIterationResult {
   runId: string;
+  /** stsoMs[i] is the gap between steps i+1 and i+2 (1-indexed). */
   stsoMs: number[];
-  woMs: number;
 }
 
 const benchWf = (fn: string) =>
@@ -164,10 +176,10 @@ async function runStreamIteration(
       .getReadable<BenchStreamChunk>()
       .getReader() as ReadableStreamDefaultReader<BenchStreamChunk>;
 
-    let soMs: number | undefined;
+    let slMs: number | undefined;
     let chunksSeen = 0;
     // Drain the whole stream (the step closes it); the first chunk yields the
-    // SO sample. Intentionally no reader.cancel() — leave the reader behind on
+    // SL sample. Intentionally no reader.cancel() — leave the reader behind on
     // timeout instead (cancellation of in-flight world streams can hang).
     await withTimeout(
       (async () => {
@@ -181,7 +193,7 @@ async function runStreamIteration(
                 `Malformed stream chunk: ${JSON.stringify(value)?.slice(0, 200)}`
               );
             }
-            soMs = readAt - value.writtenAt;
+            slMs = readAt - value.writtenAt;
           }
           chunksSeen++;
         }
@@ -189,7 +201,7 @@ async function runStreamIteration(
       RUN_TIMEOUT_MS,
       `${workflowFn} stream read (run ${run.runId})`
     );
-    if (soMs === undefined) {
+    if (slMs === undefined) {
       throw new Error(`Run ${run.runId} produced no stream chunks`);
     }
 
@@ -204,7 +216,7 @@ async function runStreamIteration(
       runId: run.runId,
       ttfsMs: steps[0].start - clientStart,
       woMs: workflowOverheadMs(clientStart, steps),
-      soMs,
+      slMs,
     };
   } catch (error) {
     (error as Error).message += ` (run ${run.runId})`;
@@ -216,7 +228,6 @@ async function runSequentialIteration(
   stepCount: number
 ): Promise<SequentialIterationResult> {
   const wf = await benchWf('benchSequentialStepsWorkflow');
-  const clientStart = Date.now();
   const run = await start(wf, [stepCount]);
   try {
     const returnValue = await withTimeout(
@@ -239,7 +250,6 @@ async function runSequentialIteration(
     return {
       runId: run.runId,
       stsoMs,
-      woMs: workflowOverheadMs(clientStart, steps),
     };
   } catch (error) {
     (error as Error).message += ` (run ${run.runId})`;
@@ -255,9 +265,10 @@ async function runSequentialIteration(
 async function runScenario<T>(
   name: string,
   iterations: number,
-  iteration: () => Promise<T>
+  iteration: () => Promise<T>,
+  warmupIterations = WARMUP_ITERATIONS
 ): Promise<T[]> {
-  for (let i = 0; i < WARMUP_ITERATIONS; i++) {
+  for (let i = 0; i < warmupIterations; i++) {
     try {
       await iteration();
     } catch (error) {
@@ -327,7 +338,7 @@ function computeStats(samples: number[]): MetricStats {
 }
 
 interface MetricRow extends MetricStats {
-  /** Short metric id: ttfs | stso | wo | so */
+  /** Short metric id: ttfs | stso | wo | sl */
   metric: string;
   /** Human-readable scenario label */
   scenario: string;
@@ -372,9 +383,9 @@ describe('workflow benchmarks', () => {
         results.map((r) => r.ttfsMs)
       );
       recordMetric(
-        'so',
+        'sl',
         SCENARIO_TURBO_STREAM,
-        results.map((r) => r.soMs)
+        results.map((r) => r.slMs)
       );
       recordMetric(
         'wo',
@@ -399,9 +410,9 @@ describe('workflow benchmarks', () => {
         results.map((r) => r.ttfsMs)
       );
       recordMetric(
-        'so',
+        'sl',
         SCENARIO_HOOK_STREAM,
-        results.map((r) => r.soMs)
+        results.map((r) => r.slMs)
       );
       recordMetric(
         'wo',
@@ -411,22 +422,26 @@ describe('workflow benchmarks', () => {
     }
   );
 
-  test('scenario: sequential steps', { timeout: 45 * 60_000 }, async () => {
+  test('scenario: sequential steps', { timeout: 60 * 60_000 }, async () => {
     const results = await runScenario(
       SCENARIO_SEQUENTIAL,
       SEQUENTIAL_ITERATIONS,
-      () => runSequentialIteration(SEQUENTIAL_STEP_COUNT)
+      () => runSequentialIteration(SEQUENTIAL_STEP_COUNT),
+      // No warmup: STSO gaps are measured entirely on the deployment (the
+      // stream scenarios already warmed the client + world), and a warmup run
+      // of this scenario would cost as much as a recorded one.
+      0
     );
-    recordMetric(
-      'stso',
-      SCENARIO_SEQUENTIAL,
-      results.flatMap((r) => r.stsoMs)
-    );
-    recordMetric(
-      'wo',
-      SCENARIO_SEQUENTIAL,
-      results.map((r) => r.woMs)
-    );
+    // Report STSO per step-index range. Gap k (between steps k and k+1,
+    // 1-indexed) lives at stsoMs[k - 1].
+    for (const { from, to } of STSO_BUCKETS) {
+      if (from >= SEQUENTIAL_STEP_COUNT) continue;
+      recordMetric(
+        'stso',
+        `${SCENARIO_SEQUENTIAL} (steps ${from}-${Math.min(to, SEQUENTIAL_STEP_COUNT)})`,
+        results.flatMap((r) => r.stsoMs.slice(from - 1, to - 1))
+      );
+    }
   });
 
   afterAll(() => {

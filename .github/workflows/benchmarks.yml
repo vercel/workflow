@@ -1,6 +1,6 @@
 name: Performance Benchmarks
 
-# Measures the workflow runtime's core latency metrics (TTFS, STSO, WO, SO —
+# Measures the workflow runtime's core latency metrics (TTFS, STSO, WO, SL —
 # see packages/core/e2e/benchmark.test.ts for definitions) against a deployed
 # workbench app and posts the results as a sticky PR comment. Re-runs update
 # the same comment; previous results stay available in a collapsed history
@@ -90,7 +90,7 @@ jobs:
   # `world: postgres` / `world: local` and gate the Vercel-specific steps —
   # the runner (packages/core/e2e/benchmark.test.ts) already selects its
   # backend from the same env vars as the e2e tests. Note that the stream
-  # latency (SO) metric requires `run.getReadable()` to work from the test
+  # latency (SL) metric requires `run.getReadable()` to work from the test
   # process, which the local world's in-process streamer does not support.
   benchmark:
     name: Benchmark (${{ matrix.target.world }}, ${{ matrix.target.app }})

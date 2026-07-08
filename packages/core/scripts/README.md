@@ -57,7 +57,7 @@ The end-to-end benchmark runner (`packages/core/e2e/benchmark.test.ts`)
 drives the scenario workflows in
 `workbench/example/workflows/97_bench.ts` through a real World and records
 core latency metrics — TTFS (time to first step), STSO (step-to-step
-overhead), WO (workflow overhead), and SO (stream latency) — reported as
+overhead), WO (workflow overhead), and SL (stream latency) — reported as
 `avg`/`p50`/`p90`/`p99` and written to `bench-results-<app>-<backend>.json`.
 It requires `DEPLOYMENT_URL` (the running app) and `APP_NAME` (used in the
 output filename). Iteration counts are tunable via `BENCH_*` env vars (see

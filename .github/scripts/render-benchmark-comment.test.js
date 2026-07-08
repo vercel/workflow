@@ -37,7 +37,7 @@ function sampleResult(overrides = {}) {
         samples: 30,
       },
       {
-        metric: 'so',
+        metric: 'sl',
         scenario: '1 step + stream (turbo)',
         unit: 'ms',
         avg: 55.1,
@@ -50,7 +50,7 @@ function sampleResult(overrides = {}) {
       },
       {
         metric: 'stso',
-        scenario: '100 sequential steps',
+        scenario: '1020 sequential steps (steps 20-120)',
         unit: 'ms',
         avg: 91,
         p50: 85,
@@ -78,7 +78,13 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.match(body, /<!-- benchmark-results -->/);
   assert.match(body, /## 📊 Workflow Benchmarks/);
   assert.match(body, /\*\*TTFS\*\*/);
+  assert.match(body, /\*\*SL\*\*/);
   assert.match(body, /1 step \+ stream \(turbo\)/);
+  assert.match(body, /1020 sequential steps \(steps 20-120\)/);
+  // Metric definitions live in the footer, not in the table rows
+  assert.doesNotMatch(body, /\| \*\*TTFS\*\* <sub>/);
+  assert.match(body, /<sub>\*\*TTFS\*\*: time to first step body execution/);
+  assert.match(body, /\*\*SL\*\*: stream latency/);
   assert.match(body, /398 ms/);
   assert.match(body, /commit `abcdef1`/);
   // No previous results yet

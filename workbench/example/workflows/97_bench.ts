@@ -9,7 +9,7 @@
 //   time-to-first-step (TTFS), step-to-step overhead (STSO), and workflow
 //   overhead (WO).
 // - Streaming steps embed `writtenAt` into every chunk written to the default
-//   output stream so a reader can compute stream latency (SO) as
+//   output stream so a reader can compute stream latency (SL) as
 //   `readTime - writtenAt` without needing a shared clock with the runner
 //   process beyond NTP.
 
@@ -55,7 +55,7 @@ async function timedStreamingStep(chunks: number): Promise<BenchStepTiming> {
  * Scenario 1: one step that streams data back to a reader.
  *
  * No hooks are created, so the first invocation runs in turbo mode. Used to
- * measure TTFS (turbo) and SO (turbo).
+ * measure TTFS (turbo) and SL (turbo).
  */
 export async function benchStreamWorkflow(): Promise<{
   steps: BenchStepTiming[];
@@ -67,7 +67,7 @@ export async function benchStreamWorkflow(): Promise<{
 
 /**
  * Scenario 2: N trivial sequential steps. Used to measure STSO (the gap
- * between consecutive step body executions) and WO.
+ * between consecutive step body executions), reported per step-index range.
  */
 export async function benchSequentialStepsWorkflow(count: number): Promise<{
   steps: BenchStepTiming[];
@@ -85,7 +85,7 @@ export async function benchSequentialStepsWorkflow(count: number): Promise<{
  *
  * The fire-and-forget hook is never awaited — its `hook_created` event at the
  * first suspension makes the runtime exit turbo mode, so this scenario
- * measures the non-turbo TTFS and SO paths (contrast with
+ * measures the non-turbo TTFS and SL paths (contrast with
  * {@link benchStreamWorkflow}).
  */
 export async function benchHookStreamWorkflow(): Promise<{

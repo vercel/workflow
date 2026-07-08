@@ -27,15 +27,22 @@ const MAX_HISTORY_ENTRIES = 10;
 const MAX_COMMENT_CHARS = 60_000;
 
 const METRIC_LABELS = {
-  ttfs: { name: 'TTFS', description: 'time to first step execution' },
-  stso: { name: 'STSO', description: 'step-to-step overhead' },
-  wo: { name: 'WO', description: 'workflow overhead (time outside steps)' },
-  so: {
-    name: 'SO',
-    description: 'stream latency (chunk write → visible to reader)',
+  ttfs: { name: 'TTFS', description: 'time to first step body execution' },
+  stso: {
+    name: 'STSO',
+    description: 'step-to-step overhead (gap between consecutive step bodies)',
+  },
+  wo: {
+    name: 'WO',
+    description:
+      'workflow overhead (time outside step bodies, client start → last step body exit)',
+  },
+  sl: {
+    name: 'SL',
+    description: 'stream latency (first chunk write → visible to the reader)',
   },
 };
-const METRIC_ORDER = ['ttfs', 'stso', 'wo', 'so'];
+const METRIC_ORDER = ['ttfs', 'stso', 'wo', 'sl'];
 
 export function parseArgs(argv) {
   const args = {
@@ -160,15 +167,10 @@ function renderResultTable(result) {
   const rows = [...result.metrics].sort(
     (a, b) => metricSortKey(a) - metricSortKey(b)
   );
-  let lastMetric;
   for (const row of rows) {
     const label = METRIC_LABELS[row.metric];
-    const name = label
-      ? row.metric === lastMetric
-        ? `**${label.name}**`
-        : `**${label.name}** <sub>${label.description}</sub>`
-      : row.metric;
-    lastMetric = row.metric;
+    // Abbreviations only — the definitions live in the comment footer.
+    const name = label ? `**${label.name}**` : row.metric;
     lines.push(
       `| ${name} | ${row.scenario} | ${formatMs(row.avg)} | ${formatMs(row.p50)} | ${formatMs(row.p90)} | ${formatMs(row.p99)} | ${row.samples} |`
     );
@@ -197,6 +199,17 @@ function renderEntry(entry, { heading }) {
     lines.push(renderResultTable(result), '');
   }
   return lines.join('\n');
+}
+
+function renderFooter() {
+  const definitions = METRIC_ORDER.map(
+    (id) => `**${METRIC_LABELS[id].name}**: ${METRIC_LABELS[id].description}`
+  ).join(' · ');
+  return [
+    `<sub>${definitions}</sub>`,
+    '',
+    '<sub>TTFS/WO compare client vs deployment clocks and SL compares the step runner’s clock vs the client’s (NTP-synced in CI). WO ends at the last step body exit, the closest observable proxy for the final step-completion request.</sub>',
+  ].join('\n');
 }
 
 function renderBanner({ status, commit, runUrl, entries, results }) {
@@ -273,7 +286,7 @@ export function renderComment({
       ...renderBanner({ status, commit, runUrl, entries, results }),
       ...renderLatest(entries[0], status),
       ...renderHistorySection(entries.slice(1, 1 + historyCount)),
-      '<sub>TTFS/WO compare client vs deployment clocks and SO compares step-runner vs client clocks (NTP-synced in CI). WO ends at the last step body exit, the closest observable proxy for the final step-completion request.</sub>',
+      renderFooter(),
       '',
       encodeHistory(entries),
     ].join('\n');
