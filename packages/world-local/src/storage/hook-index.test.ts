@@ -262,50 +262,67 @@ describe('hook indexes', () => {
   });
 
   describe('performance', () => {
-    it('hook creation cost does not scale with unrelated event history', async () => {
-      const runId = await newRun();
+    it(
+      'hook creation cost does not scale with unrelated event history',
+      { timeout: 120_000 },
+      async () => {
+        const runId = await newRun();
+        const HOOKS = 10;
 
-      // Seed a large foreign event history that the indexed hook
-      // paths must never read.
-      const eventsDir = path.join(testDir, 'events');
-      const seededRun = 'wrun_01SEEDED0000000000000000000';
-      await Promise.all(
-        Array.from({ length: 2000 }, (_, i) =>
-          fs.writeFile(
-            path.join(
-              eventsDir,
-              `${seededRun}-evnt_${String(i).padStart(26, '0')}.json`
-            ),
-            JSON.stringify({
-              runId: seededRun,
-              eventId: `evnt_${String(i).padStart(26, '0')}`,
-              eventType: 'step_started',
-              correlationId: `step_${i}`,
-              createdAt: new Date().toISOString(),
-              specVersion: 2,
-            })
-          )
-        )
-      );
+        async function timeHookCreations(prefix: string): Promise<number> {
+          const start = performance.now();
+          for (let i = 0; i < HOOKS; i++) {
+            await createHook(storage, runId, {
+              hookId: `hook_${prefix}_${i}`,
+              token: `${prefix}-token-${i}`,
+            });
+          }
+          return performance.now() - start;
+        }
 
-      // Trigger (and exclude from measurement) the one-time backfill.
-      await createHook(storage, runId, {
-        hookId: 'hook_perf_warmup',
-        token: 'perf-warmup-token',
-      });
+        // Baseline on an empty history (also completes the backfill).
+        const baselineMs = await timeHookCreations('baseline');
 
-      const start = performance.now();
-      for (let i = 0; i < 20; i++) {
-        await createHook(storage, runId, {
-          hookId: `hook_perf_${i}`,
-          token: `perf-token-${i}`,
-        });
+        // Seed a large foreign event history that the indexed hook
+        // paths must never read.
+        const eventsDir = path.join(testDir, 'events');
+        const seededRun = 'wrun_01SEEDED0000000000000000000';
+        const seedCount = 1000;
+        const seedConcurrency = 50;
+        for (let start = 0; start < seedCount; start += seedConcurrency) {
+          await Promise.all(
+            Array.from(
+              { length: Math.min(seedConcurrency, seedCount - start) },
+              (_, i) => {
+                const n = start + i;
+                return fs.writeFile(
+                  path.join(
+                    eventsDir,
+                    `${seededRun}-evnt_${String(n).padStart(26, '0')}.json`
+                  ),
+                  JSON.stringify({
+                    runId: seededRun,
+                    eventId: `evnt_${String(n).padStart(26, '0')}`,
+                    eventType: 'step_started',
+                    correlationId: `step_${n}`,
+                    createdAt: new Date().toISOString(),
+                    specVersion: 2,
+                  })
+                );
+              }
+            )
+          );
+        }
+
+        const seededMs = await timeHookCreations('seeded');
+
+        // Machine-speed independent: the pre-index implementation read
+        // every seeded event per creation (~10k reads here), inflating
+        // the seeded measurement by orders of magnitude relative to the
+        // baseline. The generous ratio + constant absorbs fs jitter on
+        // slow CI runners (notably Windows).
+        expect(seededMs).toBeLessThan(baselineMs * 5 + 1000);
       }
-      const elapsedMs = performance.now() - start;
-
-      // Generous bound: the pre-index implementation took multiple
-      // seconds here (~40k event reads); the indexed path takes ~ms.
-      expect(elapsedMs).toBeLessThan(2000);
-    });
+    );
   });
 });
