@@ -786,7 +786,7 @@ describe('getCustomDiagnostics', () => {
   });
 
   describe('Error 9009: Direct workflow function invocation', () => {
-    it('warns when calling workflow function directly from another workflow', () => {
+    it('does not warn when calling workflow function directly from another workflow', () => {
       const source = `
         export async function myWorkflow() {
           'use workflow';
@@ -803,10 +803,60 @@ describe('getCustomDiagnostics', () => {
       const { program } = createTestProgram(source);
       const diagnostics = getCustomDiagnostics('test.ts', program, ts);
 
-      expectDiagnostic(diagnostics, {
-        code: 9009,
-        messageIncludes: 'start()',
-      });
+      expectNoDiagnostic(diagnostics, 9009);
+    });
+
+    it('does not warn when calling imported workflow function from another workflow', () => {
+      const { program } = createTestProgram(
+        [
+          {
+            fileName: 'child.ts',
+            source: `
+              export async function childWorkflow() {
+                'use workflow';
+                return 123;
+              }
+            `,
+          },
+          {
+            fileName: 'parent.ts',
+            source: `
+              import { childWorkflow } from './child';
+
+              export async function parentWorkflow() {
+                'use workflow';
+                return await childWorkflow();
+              }
+            `,
+          },
+        ],
+        'parent.ts'
+      );
+
+      const diagnostics = getCustomDiagnostics('parent.ts', program, ts);
+
+      expectNoDiagnostic(diagnostics, 9009);
+    });
+
+    it('does not warn when static workflow method calls workflow function directly', () => {
+      const source = `
+        export async function childWorkflow() {
+          'use workflow';
+          return 123;
+        }
+
+        class ParentWorkflow {
+          static async run() {
+            'use workflow';
+            return await childWorkflow();
+          }
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectNoDiagnostic(diagnostics, 9009);
     });
 
     it('warns when calling workflow function directly from API route', () => {
@@ -841,6 +891,59 @@ describe('getCustomDiagnostics', () => {
         export async function regularFunction() {
           const result = await myWorkflow();
           return result;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9009,
+        messageIncludes: 'workflow/api',
+      });
+    });
+
+    it('warns when calling workflow function directly from step function', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workflow';
+          return 123;
+        }
+
+        export async function myStep() {
+          'use step';
+          const result = await myWorkflow();
+          return result;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9009,
+        messageIncludes: 'workflow/api',
+      });
+    });
+
+    it('warns when calling workflow function directly from step getter nested in a workflow', () => {
+      const source = `
+        export async function childWorkflow() {
+          'use workflow';
+          return 123;
+        }
+
+        export async function parentWorkflow() {
+          'use workflow';
+
+          class Sensor {
+            get reading() {
+              'use step';
+              return childWorkflow();
+            }
+          }
+
+          return await new Sensor().reading;
         }
       `;
 

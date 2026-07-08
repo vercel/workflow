@@ -1,5 +1,7 @@
 import type { ServerInit } from '@sveltejs/kit';
 import { registerOTel } from '@vercel/otel';
+import { createWorld as createPostgresWorld } from '@workflow/world-postgres';
+import { setWorld } from 'workflow/runtime';
 
 registerOTel({
   serviceName: 'example-sveltekit',
@@ -22,8 +24,8 @@ export const init: ServerInit = async () => {
   // Start the Postgres World
   // Needed since we test this in CI
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    const { getWorld } = await import('workflow/runtime');
-    const world = await getWorld();
+    const world = await createPostgresWorld();
+    setWorld(world);
     if (world.start) {
       console.log('Starting World workers...');
       await world.start();

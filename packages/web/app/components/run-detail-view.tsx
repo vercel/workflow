@@ -56,6 +56,8 @@ import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
   fetchSpanDetailResource,
+  getErrorMessage,
+  getErrorTitle,
   recreateRun,
   resumeHook,
   unwrapServerActionResult,
@@ -203,7 +205,6 @@ type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
 export function RunDetailView({
   runId,
-  // TODO: This should open the right sidebar within the trace viewer
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const navigate = useNavigate();
@@ -508,8 +509,10 @@ export function RunDetailView({
     return (
       <Alert variant="destructive" className="m-4">
         <AlertCircle className="h-4 w-4" />
-        <AlertTitle>Error loading workflow run</AlertTitle>
-        <AlertDescription>{error.message}</AlertDescription>
+        <AlertTitle>
+          {getErrorTitle(error, 'Error loading workflow run')}
+        </AlertTitle>
+        <AlertDescription>{getErrorMessage(error)}</AlertDescription>
       </Alert>
     );
   }

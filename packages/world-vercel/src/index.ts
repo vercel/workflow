@@ -20,7 +20,7 @@ export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
 
-export function createVercelWorld(config?: APIConfig): World {
+export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
   const projectId =
@@ -53,4 +53,11 @@ export function createVercelWorld(config?: APIConfig): World {
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
   };
+}
+
+/**
+ * @deprecated Use `createWorld()` instead.
+ */
+export function createVercelWorld(config?: APIConfig): World {
+  return createWorld(config);
 }

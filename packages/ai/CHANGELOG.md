@@ -1,5 +1,16 @@
 # @workflow/ai
 
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2730](https://github.com/vercel/workflow/pull/2730) [`0f02af4`](https://github.com/vercel/workflow/commit/0f02af4cfb1c6529fc9c9d726d720b5d31cc51af) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Continue DurableAgent tool loops whenever a model step contains tool calls, regardless of the reported finish reason.
+
+- [#2699](https://github.com/vercel/workflow/pull/2699) [`654f959`](https://github.com/vercel/workflow/commit/654f95911b6260df56cd77a41ae82864461c7f2c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - DurableAgent now recovers from invalid tool-call input by returning the validation error to the model instead of aborting the stream.
+
+- Updated dependencies [[`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475)]:
+  - workflow@5.0.0-beta.27
+
 ## 5.0.0-beta.12
 
 ### Minor Changes

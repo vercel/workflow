@@ -1,0 +1,32 @@
+---
+title: Configuration
+description: Reference for Workflow SDK configuration options, environment variables, and CLI overrides.
+type: conceptual
+summary: Configure framework integrations, Worlds, runtime tuning, builds, and CLI observability.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/configuration/framework-options
+  - /docs/configuration/worlds
+  - /docs/configuration/runtime-tuning
+  - /docs/configuration/build-and-diagnostics
+  - /docs/configuration/cli-and-web-ui
+---
+
+Workflow SDK is configured through typed framework options, World factory options, environment variables, and CLI flags.
+
+When more than one surface controls the same setting, the usual precedence is:
+
+```txt
+explicit option or CLI flag > environment variable > built-in default
+```
+
+Invalid environment variable values do not crash the app. They log a warning and fall back to the default, or to the documented clamp range.
+
+## Configuration areas
+
+- [Framework options](/docs/configuration/framework-options) - build-time and dev-server options for Next.js, Nitro, NestJS, Astro, SvelteKit, and Rollup.
+- [Worlds](/docs/configuration/worlds) - `WORKFLOW_TARGET_WORLD`, Local World, Postgres World, and Vercel World configuration.
+- [Runtime tuning](/docs/configuration/runtime-tuning) - replay budgets, inline execution, queue delivery limits, compression, tracing, and advanced runtime escape hatches.
+- [Build and diagnostics](/docs/configuration/build-and-diagnostics) - public manifests, HMR logs, and source-map controls.
+- [CLI and web UI](/docs/configuration/cli-and-web-ui) - `workflow inspect`, `workflow web`, `workflow health`, and observability environment overrides.

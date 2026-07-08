@@ -1,5 +1,6 @@
 'use client';
 
+import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
@@ -62,6 +63,7 @@ export function EntityDetailPanel({
   isDecrypting = false,
   selectedSpan,
   showSeparateEventOccurrenceTimestamps = false,
+  getModuleSourceUrl,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -95,6 +97,10 @@ export function EntityDetailPanel({
   selectedSpan: SelectedSpanInfo | null;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  getModuleSourceUrl?: (info: {
+    moduleSpecifier: string;
+    deploymentId: string;
+  }) => string | undefined;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -277,6 +283,21 @@ export function EntityDetailPanel({
     return undefined;
   }, [displayData, run.workflowName]);
 
+  const moduleSourceUrl = useMemo(() => {
+    if (!getModuleSourceUrl || !moduleSpecifier) return undefined;
+    const parsed =
+      parseStepName(moduleSpecifier) ?? parseWorkflowName(moduleSpecifier);
+    if (!parsed) return undefined;
+    const dataDeploymentId = displayData.deploymentId;
+    return getModuleSourceUrl({
+      moduleSpecifier: parsed.moduleSpecifier,
+      deploymentId:
+        typeof dataDeploymentId === 'string'
+          ? dataDeploymentId
+          : run.deploymentId,
+    });
+  }, [getModuleSourceUrl, moduleSpecifier, displayData, run.deploymentId]);
+
   if (!selectedSpan || !resource || !resourceId) {
     return null;
   }
@@ -360,6 +381,7 @@ export function EntityDetailPanel({
           <AttributePanel
             data={displayData}
             moduleSpecifier={moduleSpecifier}
+            moduleSourceUrl={moduleSourceUrl}
             expiredAt={run.expiredAt}
             isLoading={loading}
             error={error ?? undefined}

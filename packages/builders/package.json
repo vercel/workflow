@@ -1,6 +1,6 @@
 {
   "name": "@workflow/builders",
-  "version": "5.0.0-beta.26",
+  "version": "5.0.0-beta.28",
   "description": "Shared builder infrastructure for Workflow SDK",
   "type": "module",
   "main": "./dist/index.js",
@@ -45,6 +45,8 @@
     "@workflow/errors": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/utils": "workspace:*",
+    "@workflow/world-local": "workspace:*",
+    "@workflow/world-vercel": "workspace:*",
     "builtin-modules": "5.0.0",
     "chalk": "5.6.2",
     "enhanced-resolve": "catalog:",

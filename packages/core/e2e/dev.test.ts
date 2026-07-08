@@ -70,10 +70,18 @@ export function createDevTests(config?: DevTestConfig) {
       appPath,
       'app/.well-known/workflow/v1/manifest.json'
     );
-    // Next canary webpack can queue Workflow rediscovery behind route
+    // Next canary and Windows can queue Workflow rediscovery behind route
     // compilation long enough that the default budget races test cleanup.
-    const hmrRediscoveryTimeoutMs = finalConfig.canary ? 180_000 : 50_000;
-    const hmrTestTimeoutMs = finalConfig.canary ? 210_000 : 70_000;
+    const hmrRediscoveryTimeoutMs = finalConfig.canary
+      ? 180_000
+      : process.platform === 'win32'
+        ? 120_000
+        : 50_000;
+    const hmrTestTimeoutMs = finalConfig.canary
+      ? 210_000
+      : process.platform === 'win32'
+        ? 140_000
+        : 70_000;
     const flowRouteHmrFuzzTimeoutMs = finalConfig.canary ? 480_000 : 240_000;
     const readManifestStepFunctionNames = async (): Promise<string[]> => {
       const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
@@ -387,7 +395,7 @@ export async function hmrPageWorkflow() {
 
         await pollUntil({
           description: 'page-defined workflow to appear in manifest',
-          timeoutMs: 50_000,
+          timeoutMs: hmrRediscoveryTimeoutMs,
           intervalMs: 500,
           check: async () => {
             await prewarm();
@@ -737,7 +745,7 @@ ${apiFileContent}`
 
     test.runIf(process.env.APP_NAME === 'nextjs-turbopack')(
       'should not log source map warnings for workflow node_modules imports',
-      { timeout: 70_000 },
+      { timeout: hmrTestTimeoutMs },
       async () => {
         const packageDir = path.join(
           appPath,
@@ -808,7 +816,7 @@ ${apiFileContent}`
         await pollUntil({
           description:
             'generated workflow to include sourceMapWarningFixtureWorkflow',
-          timeoutMs: 50_000,
+          timeoutMs: hmrRediscoveryTimeoutMs,
           check: async () => {
             if (usesNextFlowRoute) {
               const manifestFunctionNames =

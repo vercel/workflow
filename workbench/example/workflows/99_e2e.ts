@@ -911,6 +911,39 @@ export async function hookDisposeTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
+/**
+ * Workflow for testing same-run hook token recreation: each iteration
+ * recreates a hook with the same token after disposing the previous one.
+ *
+ * Regression workflow for issue #2777 — the disposal must be flushed
+ * before the next hook's creation is validated, otherwise the second
+ * round records a spurious conflict against the run's own disposed hook.
+ */
+export async function hookTokenReuseLoopWorkflow(
+  token: string,
+  rounds: number
+) {
+  'use workflow';
+
+  const received: string[] = [];
+  for (let round = 0; round < rounds; round++) {
+    const hook = createHook<{ message: string }>({ token });
+
+    const conflict = await hook.getConflict();
+    if (conflict) {
+      return { received, conflictRound: round };
+    }
+
+    const payload = await hook;
+    received.push(payload.message);
+    hook.dispose();
+  }
+
+  return { received, conflictRound: null };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function stepFunctionPassingWorkflow() {
   'use workflow';
   // Pass a step function reference to another step (without closure vars)

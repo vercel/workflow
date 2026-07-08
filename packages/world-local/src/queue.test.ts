@@ -1,3 +1,4 @@
+import { setWorkflowBasePath } from '@workflow/utils';
 import type { StepInvokePayload } from '@workflow/world';
 import { MessageId, ValidQueueName } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -48,6 +49,7 @@ describe('queue timeout re-enqueue', () => {
 
   afterEach(async () => {
     await localQueue.close();
+    setWorkflowBasePath(undefined);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -165,6 +167,24 @@ describe('queue timeout re-enqueue', () => {
     });
   });
 
+  it('uses basePath when delivering to direct in-process handlers', async () => {
+    await localQueue.close();
+    localQueue = createQueue({});
+    setWorkflowBasePath('/v2');
+    const handler = vi.fn(async () => Response.json({ ok: true }));
+
+    localQueue.registerHandler('__wkf_step_', handler);
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    expect(handler.mock.calls[0]?.[0].url).toBe(
+      'http://localhost/v2/.well-known/workflow/v1/step'
+    );
+  });
+
   it('queue retries immediately when handler returns timeoutSeconds: 0', async () => {
     const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
     vi.mocked(mockSetTimeout).mockClear();
@@ -262,7 +282,7 @@ describe('queue delaySeconds', () => {
     // Real-ish sleep: never resolves, rejects with AbortError on signal
     // abort — mirrors node:timers/promises semantics for long delays.
     vi.mocked(mockSetTimeout).mockImplementationOnce(
-      (_delay?: number, value?: unknown, opts?: { signal?: AbortSignal }) =>
+      (_delay?: number, _value?: unknown, opts?: { signal?: AbortSignal }) =>
         new Promise((_resolve, reject) => {
           opts?.signal?.addEventListener('abort', () => {
             const err = new Error('The operation was aborted');

@@ -50,6 +50,7 @@ export async function getNextBuilderEager(
   class NextBuilder extends BaseBuilderClass {
     protected declare config: BuilderNextConfig & {
       pageExtensions: NonNullable<ProjectNextConfig['pageExtensions']>;
+      distDir: string;
     };
 
     async build() {
@@ -127,6 +128,8 @@ export async function getNextBuilderEager(
           interimBundleCtx: combinedResult.interimBundleCtx,
           bundleFinal: combinedResult.bundleFinal,
         };
+        let workflowInterimBundleText =
+          combinedResult.workflowInterimBundleText;
         let discoveredEntries = combinedResult.discoveredEntries;
         let stepsManifest = combinedResult.stepsManifest;
         let workflowsManifest = combinedResult.workflowsManifest;
@@ -169,10 +172,15 @@ export async function getNextBuilderEager(
           '/.well-known/workflow/',
         ];
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
+        const normalizedDistDir = normalizePath(this.config.distDir);
         ignoredPathFragments.push(normalizedGeneratedDir);
 
         const hasIgnoredPathFragment = (normalizedPath: string) => {
-          if (normalizedPath.startsWith(normalizedGeneratedDir)) {
+          if (
+            normalizedPath.startsWith(normalizedGeneratedDir) ||
+            normalizedPath === normalizedDistDir ||
+            normalizedPath.startsWith(`${normalizedDistDir}/`)
+          ) {
             return true;
           }
           for (const fragment of ignoredPathFragments) {
@@ -240,6 +248,7 @@ export async function getNextBuilderEager(
             );
           }
 
+          workflowInterimBundleText = workflowOutput;
           await workflowsCtx.bundleFinal(workflowOutput);
           await writeManifest(mergeCombinedManifest(stepsManifest));
         };
@@ -257,6 +266,7 @@ export async function getNextBuilderEager(
           discoveredEntries = newCombined.discoveredEntries;
           stepsManifest = newCombined.stepsManifest;
           workflowsManifest = newCombined.workflowsManifest;
+          workflowInterimBundleText = newCombined.workflowInterimBundleText;
 
           if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
             throw new Error(
@@ -398,6 +408,27 @@ export async function getNextBuilderEager(
           addedFiles.length > 0 ||
           modifiedFiles.length > 0 ||
           removedFiles.length > 0;
+        const stepExecutionFilesChanged = (fileChanges: FileChanges) => {
+          const stepEntryFiles = [...discoveredEntries.discoveredSteps].map(
+            normalizePath
+          );
+          if (stepEntryFiles.length === 0) {
+            return false;
+          }
+          const changedFiles = unique([
+            ...fileChanges.modifiedFiles,
+            ...fileChanges.addedFiles,
+            ...fileChanges.removedFiles,
+          ]).map(normalizePath);
+
+          return changedFiles.some(
+            (changedFile) =>
+              stepEntryFiles.includes(changedFile) ||
+              stepEntryFiles.some((stepFile) =>
+                parentHasChild(stepFile, changedFile)
+              )
+          );
+        };
         const logDevHmr = (...args: unknown[]) => {
           if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
             console.log(...args);
@@ -436,6 +467,17 @@ export async function getNextBuilderEager(
             logDevHmr('workflow dev hmr: skip');
             for (const [file, snapshot] of decision.snapshots || []) {
               sourceSnapshots.set(file, snapshot);
+            }
+            if (
+              !stepsCtx &&
+              workflowInterimBundleText &&
+              stepExecutionFilesChanged(fileChanges)
+            ) {
+              // Source step registrations keep stable imports, so Turbopack
+              // can leave the generated flow route cached after a
+              // step-body-only edit. Refresh the route wrapper without
+              // rediscovering entries or rebuilding the workflow VM.
+              await workflowsCtx.bundleFinal(workflowInterimBundleText);
             }
             return;
           }

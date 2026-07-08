@@ -23,7 +23,10 @@ import {
   applySwcTransform,
   type WorkflowManifest,
 } from './apply-swc-transform.js';
-import { createWorkflowEntrypointOptionsCode } from './constants.js';
+import {
+  createWorkflowEntrypointOptionsCode,
+  createWorkflowRouteHandlersCode,
+} from './constants.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
   type DiscoveredEntries,
@@ -40,6 +43,10 @@ import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
+import {
+  createWorkflowWorldTargetEsbuildPlugin,
+  ensureWorkflowTargetWorldEnv,
+} from './world-target.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
@@ -235,6 +242,7 @@ export abstract class BaseBuilder {
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
 
   constructor(config: WorkflowConfig) {
+    ensureWorkflowTargetWorldEnv();
     this.config = config;
   }
 
@@ -244,6 +252,13 @@ export abstract class BaseBuilder {
 
   protected get moduleSpecifierRoot(): string {
     return this.config.moduleSpecifierRoot || this.transformProjectRoot;
+  }
+
+  private createWorkflowWorldTargetPlugin(): esbuild.Plugin {
+    return createWorkflowWorldTargetEsbuildPlugin({
+      workingDir: this.config.workingDir,
+      externalPackages: this.config.externalPackages,
+    });
   }
 
   protected logBaseBuilderInfo(...args: unknown[]): void {
@@ -289,6 +304,46 @@ export abstract class BaseBuilder {
     if (!this.config.suppressCreateManifestLogs) {
       this.logBaseBuilderInfo(...args);
     }
+  }
+
+  private async filterExistingFilesForWatch(
+    files: string[],
+    label: string
+  ): Promise<string[]> {
+    if (!this.config.watch || files.length === 0) {
+      return files;
+    }
+
+    let missingCount = 0;
+    const existingFiles = (
+      await Promise.all(
+        files.map(async (file) => {
+          try {
+            await stat(file);
+            return file;
+          } catch (error) {
+            const code =
+              error && typeof error === 'object' && 'code' in error
+                ? (error as NodeJS.ErrnoException).code
+                : undefined;
+            if (code === 'ENOENT') {
+              missingCount++;
+              return undefined;
+            }
+            throw error;
+          }
+        })
+      )
+    ).filter((file): file is string => Boolean(file));
+
+    if (missingCount === 0) {
+      return files;
+    }
+
+    this.logBaseBuilderInfo(
+      `Skipped ${missingCount} missing ${label} during watch rebuild`
+    );
+    return existingFiles;
   }
 
   /**
@@ -528,7 +583,11 @@ export abstract class BaseBuilder {
     outdir: string,
     tsconfigPath?: string
   ): Promise<DiscoveredEntries> {
-    const previousResult = this.discoveredEntries.get(inputs);
+    const effectiveInputs = await this.filterExistingFilesForWatch(
+      inputs,
+      'input files'
+    );
+    const previousResult = this.discoveredEntries.get(effectiveInputs);
 
     if (previousResult) {
       return previousResult;
@@ -554,8 +613,8 @@ export abstract class BaseBuilder {
       '@workflow/core/runtime/run'
     ).catch(() => undefined);
     const entryPoints = resolvedWorkflowRuntime
-      ? [...inputs, resolvedWorkflowRuntime]
-      : inputs;
+      ? [...effectiveInputs, resolvedWorkflowRuntime]
+      : effectiveInputs;
 
     const effectiveTsconfigPath =
       tsconfigPath ?? (await this.findTsConfigPath());
@@ -575,7 +634,7 @@ export abstract class BaseBuilder {
     // Warn about external packages that contain workflow code
     await this.warnAboutExternalWorkflowPackages();
 
-    this.discoveredEntries.set(inputs, state);
+    this.discoveredEntries.set(effectiveInputs, state);
     return state;
   }
 
@@ -804,9 +863,18 @@ export abstract class BaseBuilder {
     const discovered =
       discoveredEntries ??
       (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
-    const stepFiles = [...discovered.discoveredSteps].sort();
-    const workflowFiles = [...discovered.discoveredWorkflows].sort();
-    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
+    const stepFiles = await this.filterExistingFilesForWatch(
+      [...discovered.discoveredSteps].sort(),
+      'step files'
+    );
+    const workflowFiles = await this.filterExistingFilesForWatch(
+      [...discovered.discoveredWorkflows].sort(),
+      'workflow files'
+    );
+    const serdeFiles = await this.filterExistingFilesForWatch(
+      [...discovered.discoveredSerdeFiles].sort(),
+      'serde files'
+    );
     const stepFilesSet = new Set(stepFiles);
     const serdeOnlyFiles = serdeFiles.filter((f) => !stepFilesSet.has(f));
 
@@ -950,9 +1018,18 @@ export const __steps_registered = true;
     const discovered =
       discoveredEntries ??
       (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
-    const stepFiles = [...discovered.discoveredSteps].sort();
-    const workflowFiles = [...discovered.discoveredWorkflows].sort();
-    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
+    const stepFiles = await this.filterExistingFilesForWatch(
+      [...discovered.discoveredSteps].sort(),
+      'step files'
+    );
+    const workflowFiles = await this.filterExistingFilesForWatch(
+      [...discovered.discoveredWorkflows].sort(),
+      'workflow files'
+    );
+    const serdeFiles = await this.filterExistingFilesForWatch(
+      [...discovered.discoveredSerdeFiles].sort(),
+      'serde files'
+    );
 
     // Include serde files that aren't already step files for cross-context class registration.
     // Classes need to be registered in the step bundle so they can be deserialized
@@ -1270,8 +1347,14 @@ export const __steps_registered = true;
     const discovered =
       discoveredEntries ??
       (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
-    const workflowFiles = [...discovered.discoveredWorkflows].sort();
-    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
+    const workflowFiles = await this.filterExistingFilesForWatch(
+      [...discovered.discoveredWorkflows].sort(),
+      'workflow files'
+    );
+    const serdeFiles = await this.filterExistingFilesForWatch(
+      [...discovered.discoveredSerdeFiles].sort(),
+      'serde files'
+    );
 
     // Include serde files that aren't already workflow files for cross-context class registration.
     // Classes need to be registered in the workflow bundle so they can be deserialized
@@ -1516,6 +1599,7 @@ export const __steps_registered = true;
 
       const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
         {
+          basePath: this.config.basePath,
           routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
         }
       );
@@ -1530,7 +1614,7 @@ import { workflowEntrypoint } from 'workflow/runtime';
 const workflowRouteModuleBodyStartedAt = Date.now();
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {
@@ -1572,6 +1656,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
           write: true,
           keepNames: true,
           minify: false,
+          plugins: [this.createWorkflowWorldTargetPlugin()],
           external: ['@aws-sdk/credential-provider-web-identity'],
         });
 
@@ -1655,6 +1740,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     manifest: WorkflowManifest;
     stepsContext?: esbuild.BuildContext;
     interimBundleCtx?: esbuild.BuildContext;
+    workflowInterimBundleText?: string;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
     discoveredEntries: DiscoveredEntries;
     stepsManifest: WorkflowManifest;
@@ -1726,6 +1812,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     const stepsRelativePath = `./${basename(stepsOutfile).replace(/\\/g, '/')}`;
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
     const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
+      basePath: this.config.basePath,
       routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
     });
 
@@ -1741,7 +1828,7 @@ void __steps_registered;
 
 const workflowCode = \`${escapedVMCode}\`;
 
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
     if (!bundleFinalOutput) {
       await this.writeGeneratedFile(flowOutfile, combinedFunctionCode);
@@ -1774,6 +1861,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         keepNames: true,
         minify: false,
         define: importMetaDefine,
+        plugins: [this.createWorkflowWorldTargetPlugin()],
         external: ['@aws-sdk/credential-provider-web-identity'],
       });
       this.logEsbuildMessages(finalResult, 'combined bundle', true);
@@ -1797,15 +1885,19 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     };
 
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
+    let combinedRouteWriteId = 0;
     const combinedBundleFinal = async (interimBundleText: string) => {
+      combinedRouteWriteId++;
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
       const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
         {
+          basePath: this.config.basePath,
           routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
         }
       );
       const code = `// biome-ignore-all lint: generated file
 /* eslint-disable */
+// workflow route refresh ${combinedRouteWriteId}
 import { __steps_registered } from '${stepsRelativePath}';
 import { workflowEntrypoint } from 'workflow/runtime';
 
@@ -1815,7 +1907,7 @@ void __steps_registered;
 
 const workflowCode = \`${escaped}\`;
 
-export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});`;
+${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
       const outputDir = dirname(flowOutfile);
       await mkdir(outputDir, { recursive: true });
@@ -1827,6 +1919,7 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
         manifest,
         stepsContext,
         interimBundleCtx: workflowsResult.interimBundleCtx,
+        workflowInterimBundleText: workflowVMCode,
         bundleFinal: combinedBundleFinal,
         discoveredEntries: effectiveDiscoveredEntries,
         stepsManifest,
@@ -1867,7 +1960,10 @@ export const POST = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCo
     const outputDir = dirname(this.config.clientBundlePath);
     await mkdir(outputDir, { recursive: true });
 
-    const inputFiles = await this.getInputFiles();
+    const inputFiles = await this.filterExistingFilesForWatch(
+      await this.getInputFiles(),
+      'client input files'
+    );
 
     // Discover serde files from the input files' dependency tree for cross-context class registration.
     // Classes need to be registered in the client bundle so they can be serialized
@@ -2065,6 +2161,7 @@ export const OPTIONS = handler;`;
       ],
       sourcemap: this.resolveSourcemap(EMIT_SOURCEMAPS_FOR_DEBUGGING),
       mainFields: ['module', 'main'],
+      plugins: [this.createWorkflowWorldTargetPlugin()],
       // Don't externalize anything - bundle everything including workflow packages
       external: [],
     });
