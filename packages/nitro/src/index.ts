@@ -1,4 +1,3 @@
-import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -782,13 +781,16 @@ function patchNativeVercelWorkflowRoutes(nitro: Nitro, basePath: string) {
   const webhookRoutes = config.routes.filter((route) =>
     route.src?.startsWith(`${workflowPrefix}/webhook/`)
   );
-  assert(flowRoutes.length > 0, 'Missing Nitro workflow flow route');
+  if (flowRoutes.length === 0) {
+    throw new Error('Missing Nitro workflow flow route');
+  }
   const [webhookRoute] = webhookRoutes;
-  assert(webhookRoute, 'Missing Nitro workflow webhook route');
-  assert(
-    webhookRoutes.every((route) => route.dest === webhookRoute.dest),
-    'Nitro emitted conflicting workflow webhook routes'
-  );
+  if (!webhookRoute) {
+    throw new Error('Missing Nitro workflow webhook route');
+  }
+  if (webhookRoutes.some((route) => route.dest !== webhookRoute.dest)) {
+    throw new Error('Nitro emitted conflicting workflow webhook routes');
+  }
   config.routes = config.routes.filter(
     (route) => !flowRoutes.includes(route) && !webhookRoutes.includes(route)
   );
@@ -800,7 +802,9 @@ function patchNativeVercelWorkflowRoutes(nitro: Nitro, basePath: string) {
   const filesystemIndex = config.routes.findIndex(
     (route) => route.handle === 'filesystem'
   );
-  assert(filesystemIndex !== -1, 'Missing Nitro filesystem handler');
+  if (filesystemIndex === -1) {
+    throw new Error('Missing Nitro filesystem handler');
+  }
   config.routes.splice(filesystemIndex, 0, webhookRoute);
 
   writeFileSync(configPath, JSON.stringify(config, null, 2));

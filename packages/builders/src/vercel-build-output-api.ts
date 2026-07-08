@@ -26,10 +26,6 @@ export function createBuildOutputApiWebhookRoute(basePath: string | undefined) {
 }
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
-  protected createWebhookRoute() {
-    return createBuildOutputApiWebhookRoute(this.config.basePath);
-  }
-
   async build(): Promise<void> {
     const outputDir = resolve(this.config.workingDir, '.vercel/output');
     const functionsDir = join(outputDir, 'functions');
@@ -141,7 +137,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create config.json for Build Output API
     const buildOutputConfig = {
       version: 3,
-      routes: [this.createWebhookRoute()],
+      routes: [createBuildOutputApiWebhookRoute(this.config.basePath)],
     };
 
     await writeFile(

@@ -1,10 +1,10 @@
-import assert from 'node:assert/strict';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
+  createBuildOutputApiWebhookRoute,
   NORMALIZE_REQUEST_CODE,
   normalizeWorkflowBasePath,
   resolveProjectRoot,
@@ -209,11 +209,16 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     const filesystemIndex = config.routes.findIndex(
       (route: { handle?: string }) => route.handle === 'filesystem'
     );
-    assert(
-      filesystemIndex !== -1,
-      'Expected Astro Vercel output to contain a filesystem handler'
+    if (filesystemIndex === -1) {
+      throw new Error(
+        'Expected Astro Vercel output to contain a filesystem handler'
+      );
+    }
+    config.routes.splice(
+      filesystemIndex,
+      0,
+      createBuildOutputApiWebhookRoute(this.config.basePath)
     );
-    config.routes.splice(filesystemIndex, 0, this.createWebhookRoute());
 
     // Bundles workflows for vercel
     await super.build();

@@ -1,4 +1,3 @@
-import assert from 'node:assert/strict';
 import { constants } from 'node:fs';
 import {
   access,
@@ -222,10 +221,11 @@ export async function loadSvelteKitConfig(
       ? await configModule.load_svelte_config(workingDir)
       : await configModule.load_config({ cwd: workingDir });
   const routesDir = config.kit?.files?.routes;
-  assert(
-    typeof routesDir === 'string',
-    'Expected SvelteKit config loader to return kit.files.routes as a string.'
-  );
+  if (typeof routesDir !== 'string') {
+    throw new Error(
+      'Expected SvelteKit config loader to return kit.files.routes as a string.'
+    );
+  }
   return {
     basePath: normalizeWorkflowBasePath(config.kit?.paths?.base),
     routesDir,
