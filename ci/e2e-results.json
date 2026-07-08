@@ -1,6 +1,6 @@
 {
-  "lastUpdated": "2026-07-08T00:03:01.139Z",
-  "commit": "c1d29f14ca01e2219c5ccbaa4e9f62f9349dd75e",
+  "lastUpdated": "2026-07-08T01:16:35.619Z",
+  "commit": "49a50e83d94656e1df123df1f27258fa7f1d3216",
   "branch": "main",
   "type": "e2e",
   "worlds": {
@@ -66,8 +66,8 @@
     },
     "postgres": {
       "status": "passing",
-      "total": 1836,
-      "passed": 1567,
+      "total": 2142,
+      "passed": 1873,
       "failed": 0,
       "skipped": 269,
       "frameworks": {
@@ -92,13 +92,13 @@
           "failed": 0
         },
         "nextjs-turbopack": {
-          "total": 153,
-          "passed": 134,
+          "total": 306,
+          "passed": 287,
           "failed": 0
         },
         "nextjs-webpack": {
-          "total": 153,
-          "passed": 134,
+          "total": 306,
+          "passed": 287,
           "failed": 0
         },
         "nitro": {
@@ -122,19 +122,19 @@
           "failed": 0
         }
       },
-      "progress": 85
+      "progress": 87
     },
     "vercel": {
       "status": "partial",
       "total": 1836,
-      "passed": 1572,
-      "failed": 7,
+      "passed": 1573,
+      "failed": 6,
       "skipped": 257,
       "frameworks": {
         "astro": {
           "total": 153,
-          "passed": 125,
-          "failed": 1
+          "passed": 124,
+          "failed": 2
         },
         "express": {
           "total": 153,
@@ -148,8 +148,8 @@
         },
         "hono": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
+          "passed": 125,
+          "failed": 1
         },
         "nextjs-turbopack": {
           "total": 153,
@@ -168,13 +168,13 @@
         },
         "nuxt": {
           "total": 153,
-          "passed": 125,
-          "failed": 1
+          "passed": 126,
+          "failed": 0
         },
         "sveltekit": {
           "total": 153,
-          "passed": 144,
-          "failed": 1
+          "passed": 145,
+          "failed": 0
         },
         "vite": {
           "total": 153,
