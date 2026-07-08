@@ -223,6 +223,16 @@ export async function ensureHookIndexes(basedir: string): Promise<void> {
   return pending;
 }
 
+async function forEachConcurrent<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  for (let start = 0; start < items.length; start += concurrency) {
+    await Promise.all(items.slice(start, start + concurrency).map(fn));
+  }
+}
+
 async function ensureHookIndexesImpl(basedir: string): Promise<void> {
   const markerPath = path.join(basedir, 'hooks', INDEX_COMPLETE_MARKER);
   try {
@@ -233,30 +243,34 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
   }
 
   const eventsDir = path.join(basedir, 'events');
-  for (const fileId of await listJSONFiles(eventsDir)) {
-    const event = await readEventLenient(
-      path.join(eventsDir, `${fileId}.json`)
-    );
-    if (!event || event.eventType !== 'hook_created') continue;
-    if (typeof event.correlationId !== 'string') continue;
-    const token = (event.eventData as { token?: unknown } | undefined)?.token;
-    if (typeof token !== 'string') continue;
-    try {
-      await writeHookCreatedIndexEntries(
-        basedir,
-        token,
-        event.runId,
-        event.correlationId,
-        event.eventId,
-        tagOf(fileId)
+  await forEachConcurrent(
+    await listJSONFiles(eventsDir),
+    32,
+    async (fileId) => {
+      const event = await readEventLenient(
+        path.join(eventsDir, `${fileId}.json`)
       );
-    } catch {
-      // Unsafe ids cannot have been written by this storage layer; skip.
+      if (!event || event.eventType !== 'hook_created') return;
+      if (typeof event.correlationId !== 'string') return;
+      const token = (event.eventData as { token?: unknown } | undefined)?.token;
+      if (typeof token !== 'string') return;
+      try {
+        await writeHookCreatedIndexEntries(
+          basedir,
+          token,
+          event.runId,
+          event.correlationId,
+          event.eventId,
+          tagOf(fileId)
+        );
+      } catch {
+        // Unsafe ids cannot have been written by this storage layer; skip.
+      }
     }
-  }
+  );
 
   const hooksDir = path.join(basedir, 'hooks');
-  for (const fileId of await listJSONFiles(hooksDir)) {
+  await forEachConcurrent(await listJSONFiles(hooksDir), 32, async (fileId) => {
     let hook: z.infer<typeof HookSchema> | null = null;
     try {
       hook = await readJSON(path.join(hooksDir, `${fileId}.json`), HookSchema);
@@ -265,7 +279,7 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
         throw error;
       }
     }
-    if (!hook) continue;
+    if (!hook) return;
     try {
       await writeHookByRunMarker(
         basedir,
@@ -276,7 +290,7 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     } catch {
       // Unsafe ids cannot have been written by this storage layer; skip.
     }
-  }
+  });
 
   await writeExclusive(markerPath, '');
 }
