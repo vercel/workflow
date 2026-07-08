@@ -109,6 +109,29 @@ export const BaseEventSchema = z.object({
 // Note: Serialized data fields use SerializedDataSchema to support both:
 // - specVersion >= 2: Uint8Array (binary devalue format)
 // - specVersion 1: any (legacy JSON format)
+// Client-measured latency telemetry carried on a step's terminal event so a
+// backend can emit latency metrics without extra event-log queries. All three
+// fields are populated together by the runtime, only on the terminal event of
+// a first-attempt step execution that qualified for measurement (see
+// `@workflow/core` runtime/step-latency.ts). Backends may consume these for
+// metrics and are not required to persist them.
+const stepLatencyTelemetryFields = {
+  // Time-to-first-step: milliseconds from run creation until the run's first
+  // step body began executing, minus time spent committing hook_created
+  // events. Only reported when nothing else (hooks received, waits,
+  // attributes, other steps) happened before the first step.
+  ttfs: z.number().optional(),
+  // Step-to-step overhead: milliseconds between the previous step's terminal
+  // event and this step's body beginning to execute. Only reported when the
+  // two steps ran back-to-back (the previous event-log entry is a
+  // step_completed/step_failed).
+  stso: z.number().optional(),
+  // Names of the runtime's optional startup-latency optimizations that were
+  // active for this measurement (e.g. 'turbo', 'lazyStepStart',
+  // 'optimisticStart'), so latency metrics can be segmented by them.
+  optimizations: z.array(z.string()).optional(),
+};
+
 const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),
@@ -119,6 +142,7 @@ const StepCompletedEventSchema = BaseEventSchema.extend({
     // Optional: older runtimes omit it and the backend falls back to a read.
     workflowName: z.string().optional(),
     result: SerializedDataSchema,
+    ...stepLatencyTelemetryFields,
   }),
 });
 
@@ -130,6 +154,7 @@ const StepFailedEventSchema = BaseEventSchema.extend({
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
+    ...stepLatencyTelemetryFields,
   }),
 });
 
