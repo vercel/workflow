@@ -10,7 +10,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "start": "vite preview",
-    "prepare": "svelte-kit sync || echo ''",
+    "prepare": "node -e \"if (!process.env.CI) process.exit(1)\" || svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
   },
