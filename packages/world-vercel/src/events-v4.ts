@@ -129,6 +129,9 @@ export interface CreateEventV4Input {
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
   errorCode?: string;
+  /** run_cancelled's optional free-text cancellation reason. Small plaintext
+   *  metadata, capped at 512 chars by the @workflow/world schema. */
+  cancelReason?: string;
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
@@ -215,6 +218,7 @@ function buildPostFrameMeta(
     meta.hookIsWebhook = input.hookIsWebhook;
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
+  if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
   }

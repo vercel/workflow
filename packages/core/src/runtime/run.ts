@@ -160,13 +160,17 @@ export class Run<TResult> {
 
   /**
    * Cancels the workflow run.
+   *
+   * @param reason - Optional free-text reason for the cancellation (max 512
+   *   chars), recorded on the run_cancelled event.
    */
-  async cancel(): Promise<void> {
+  async cancel(reason?: string): Promise<void> {
     'use step';
     const world = await this.#lazyWorldPromise;
     await world.events.create(this.runId, {
       eventType: 'run_cancelled',
       specVersion: SPEC_VERSION_CURRENT,
+      ...(reason !== undefined ? { eventData: { cancelReason: reason } } : {}),
     });
   }
 

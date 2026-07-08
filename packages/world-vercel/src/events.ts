@@ -180,6 +180,7 @@ interface SplitEventData {
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
     errorCode?: string;
+    cancelReason?: string;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
@@ -213,6 +214,7 @@ type MetaSourceField =
   | 'isWebhook'
   | 'isSystem'
   | 'errorCode'
+  | 'cancelReason'
   | 'executionContext'
   | 'attributes'
   | 'changes'
@@ -307,6 +309,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
+  }
+  // run_cancelled optionally carries a free-text cancellation reason. Small
+  // plaintext metadata, so it rides in the frame meta like errorCode.
+  if (typeof eventData.cancelReason === 'string') {
+    meta.cancelReason = eventData.cancelReason;
   }
   if (
     eventData.executionContext !== undefined &&

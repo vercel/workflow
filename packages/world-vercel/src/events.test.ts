@@ -225,6 +225,27 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(started.payload).toBeInstanceOf(Uint8Array);
     expect(started.meta.input).toBeUndefined();
   });
+
+  it('carries the run_cancelled cancelReason in the frame meta, not the payload', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_cancelled',
+      specVersion: 4,
+      eventData: { cancelReason: 'superseded by newer run' },
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.cancelReason).toBe('superseded by newer run');
+  });
+
+  it('omits cancelReason from meta when run_cancelled carries no reason', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_cancelled',
+      specVersion: 4,
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.cancelReason).toBeUndefined();
+  });
 });
 
 describe('createWorkflowRunEvent response coercion', () => {

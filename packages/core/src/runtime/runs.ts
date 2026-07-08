@@ -85,17 +85,25 @@ export async function recreateRunFromExisting(
 
 /**
  * Cancel a workflow run.
+ *
+ * @param reason - Optional free-text reason for the cancellation (max 512
+ *   chars), recorded on the run_cancelled event.
  */
-export async function cancelRun(world: World, runId: string): Promise<void> {
+export async function cancelRun(
+  world: World,
+  runId: string,
+  reason?: string
+): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
     const specVersion = run.specVersion ?? SPEC_VERSION_LEGACY;
     const compatMode = isLegacySpecVersion(specVersion);
-    const eventData = {
+    const eventRequest = {
       eventType: 'run_cancelled' as const,
       specVersion,
+      ...(reason !== undefined ? { eventData: { cancelReason: reason } } : {}),
     };
-    await world.events.create(runId, eventData, { v1Compat: compatMode });
+    await world.events.create(runId, eventRequest, { v1Compat: compatMode });
   } catch (err) {
     throw new Error(
       `Failed to cancel run ${runId}: ${err instanceof Error ? err.message : String(err)}`,

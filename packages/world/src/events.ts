@@ -368,6 +368,14 @@ const RunFailedEventSchema = BaseEventSchema.extend({
  */
 const RunCancelledEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_cancelled'),
+  eventData: z
+    .object({
+      // Optional free-text reason for the cancellation. Kept as small
+      // plaintext metadata (like run_failed's errorCode) so it survives
+      // resolveData: 'none' and can be displayed without decryption.
+      cancelReason: z.string().max(512).optional(),
+    })
+    .optional(),
 });
 
 // Discriminated union for user-creatable events (requests to world.events.create)
