@@ -35,9 +35,9 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 
 Call `world.start()` to initialize graphile-worker utilities and migrations. Startup can durably enqueue work before the application HTTP listener is accepting connections.
 
-Graphile workers begin consuming jobs after the generated workflow route registers its queue handler. When a job arrives, the worker deserializes the queue payload, resolves the handler registered for the job's queue at execution time, calls it directly in-process, and awaits completion before acknowledging the Graphile job. Resolving per job means handlers registered later (for example a lazily loaded step route) are picked up without restarting the worker.
+Graphile workers begin consuming after migrations finish. When a job arrives, the worker deserializes the queue payload, resolves the handler registered for that queue, calls it directly in-process, and awaits completion before acknowledging the Graphile job. Resolving per job means handlers registered later are picked up without restarting the worker.
 
-If `world.start()` runs before the generated route module has loaded, the queue probes `/.well-known/workflow/v1/flow?__health` in the background. That probe lets the application finish binding its HTTP listener, then loads the route so it can register the in-process handler. A job whose queue has no handler yet triggers the same probe for its route and is durably re-added with a short delay, so it executes once registration catches up.
+If a job arrives before its generated route module has loaded, the job probes that route's health endpoint. When the application is not listening yet, or the route has not registered its handler, the worker durably replaces the job with a short-delay job before acknowledging the current delivery.
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
 

@@ -7,6 +7,10 @@ import {
   type WorldFactoryModule,
 } from '@workflow/core/runtime';
 import { getWorldImport } from '@workflow/utils';
+import {
+  getQueuePrefixKind,
+  WorkflowInvokePayloadSchema,
+} from '@workflow/world';
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld, setWorld } from 'workflow/runtime';
@@ -22,6 +26,9 @@ if (!process.env.WORKFLOW_TARGET_WORLD) {
   );
   process.exit(1);
 }
+
+// Track flow handler invocations per run for testing inline execution.
+const flowInvocationCounts = new Map<string, number>();
 
 function normalizeTargetWorldSpecifier(targetWorld: string): string {
   if (targetWorld.startsWith('./') || targetWorld.startsWith('../')) {
@@ -39,7 +46,35 @@ async function initializeTestWorld() {
   const mod = (await import(
     normalizeTargetWorldSpecifier(targetWorld)
   )) as WorldFactoryModule;
-  setWorld(await createWorldFromModule(mod));
+  const world = await createWorldFromModule(mod);
+  switch (world.queueDeliveryMode) {
+    case 'http':
+      break;
+    case 'in-process': {
+      const createQueueHandler = world.createQueueHandler.bind(world);
+      world.createQueueHandler = (prefix, handler) =>
+        createQueueHandler(prefix, async (message, metadata) => {
+          if (getQueuePrefixKind(prefix) === 'workflow') {
+            const payload = WorkflowInvokePayloadSchema.safeParse(message);
+            if (payload.success) {
+              flowInvocationCounts.set(
+                payload.data.runId,
+                (flowInvocationCounts.get(payload.data.runId) ?? 0) + 1
+              );
+            }
+          }
+          return handler(message, metadata);
+        });
+      break;
+    }
+    default:
+      assertNever(world.queueDeliveryMode);
+  }
+  setWorld(world);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unknown queue delivery mode: ${String(value)}`);
 }
 
 await initializeTestWorld();
@@ -68,9 +103,6 @@ const Invoke = z
       workflow: manifest.workflows[file][workflow],
     };
   });
-
-// Track flow handler invocations per run for testing inline execution
-const flowInvocationCounts = new Map<string, number>();
 
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {

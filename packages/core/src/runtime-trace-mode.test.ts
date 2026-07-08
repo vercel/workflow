@@ -125,6 +125,7 @@ async function driveHandler(opts: {
 
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
+    queueDeliveryMode: 'http',
     createQueueHandler: vi.fn(
       (
         _prefix: string,
@@ -352,6 +353,7 @@ describe('workflowEntrypoint trace modes', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      queueDeliveryMode: 'http',
       createQueueHandler: vi.fn(
         (
           _prefix: string,

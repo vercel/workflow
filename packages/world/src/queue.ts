@@ -189,13 +189,10 @@ export interface Queue {
   getDeploymentId(): Promise<string>;
 
   /**
-   * When true, this queue executes messages by invoking the handlers
-   * registered via `createQueueHandler` directly in-process, instead of
-   * delivering them over HTTP. Route entrypoints register their handlers
-   * proactively (as soon as the world is available) for such worlds, so
-   * the queue can execute jobs without waiting for a first HTTP request.
+   * How this queue delivers messages to handlers registered with
+   * `createQueueHandler`.
    */
-  readonly inProcessQueueHandlers?: boolean;
+  readonly queueDeliveryMode: 'http' | 'in-process';
 
   /**
    * Enqueues a message to the specified queue.

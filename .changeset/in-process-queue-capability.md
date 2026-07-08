@@ -1,5 +1,7 @@
 ---
-"@workflow/world": minor
+"@workflow/world": major
+"@workflow/world-local": patch
+"@workflow/world-vercel": patch
 ---
 
-Add optional `inProcessQueueHandlers` capability to the `Queue` interface, letting worlds declare that their queue executes messages via in-process registered handlers so route entrypoints register proactively.
+Require queues to declare whether they deliver handlers over HTTP or in-process.

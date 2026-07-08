@@ -2079,46 +2079,24 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  const loadWorldHandlers = async (
-    withSpan: boolean
-  ): Promise<WorldHandlers> => {
-    // In-process-queue worlds need the full world instance so the queue
-    // handler registers against the same queue that consumes the jobs.
-    const inProcessQueueWorld = getInProcessQueueWorld();
-    if (inProcessQueueWorld) {
-      return inProcessQueueWorld;
-    }
-    if (withSpan) {
-      return trace('workflow.route.get_world_handlers', async () =>
-        getWorldHandlers()
-      );
-    }
-    return getWorldHandlers();
+  const registerHandler = (world: WorldHandlers) => {
+    handlerPromise ??= Promise.resolve(handler(world));
   };
 
-  const getHandler = (
-    withInitTrace: boolean,
-    worldHandlers?: WorldHandlers
-  ) => {
-    if (!handlerPromise) {
-      handlerPromise = (async () => {
-        return handler(
-          worldHandlers ?? (await loadWorldHandlers(withInitTrace))
-        );
-      })().catch((err) => {
-        handlerPromise = undefined;
-        throw err;
-      });
-    }
+  const getHandler = () => {
+    handlerPromise ??= (async () => {
+      const world =
+        getInProcessQueueWorld() ??
+        (await trace('workflow.route.get_world_handlers', getWorldHandlers));
+      return handler(world);
+    })();
     return handlerPromise;
   };
 
   // Worlds whose queue consumes in-process handlers need this entrypoint's
   // handler registered before any HTTP request arrives. Fires immediately
   // when such a world is already cached, or as soon as one is created.
-  onceInProcessQueueWorld((world) => {
-    void getHandler(false, world).catch(() => {});
-  });
+  onceInProcessQueueWorld(registerHandler);
 
   return withHealthCheck(async (req) => {
     invocationCount += 1;
@@ -2145,10 +2123,8 @@ export function workflowEntrypoint(
       },
       async (span) => {
         const routeHandler = handlerCached
-          ? await getHandler(true)
-          : await trace('workflow.route.init', async () => {
-              return getHandler(true);
-            });
+          ? await getHandler()
+          : await trace('workflow.route.init', getHandler);
 
         const response = await routeHandler(req);
         if (response instanceof Response) {

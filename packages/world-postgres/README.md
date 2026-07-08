@@ -152,8 +152,8 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - `world.start()` initializes Graphile utilities and migrations before re-enqueueing active runs
-- Graphile workers start consuming after the generated workflow route registers its queue handler; each job resolves its handler at execution time, so later registrations are picked up without a restart
-- If startup runs before the workflow route module has loaded, the queue probes its health route until the app listener is ready and the route can register its handler; jobs whose queue has no handler yet are durably re-added with a short delay
+- Graphile workers start after migrations; each job resolves its handler at execution time, so later registrations are picked up without a restart
+- Jobs whose route has not registered yet probe its health endpoint and are durably replaced with a short-delay job until registration catches up
 - The generated HTTP routes still accept queue-shaped requests, and explicit `WORKFLOW_LOCAL_BASE_URL` worker processes use those routes as a remote fallback
 
 ## Development

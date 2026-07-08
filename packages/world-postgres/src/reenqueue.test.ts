@@ -149,7 +149,7 @@ describe('re-enqueue active runs on start', () => {
       expect.objectContaining({ id: 'wfB' }),
       expect.anything()
     );
-    expect(run).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(1);
 
     await world.close();
   });

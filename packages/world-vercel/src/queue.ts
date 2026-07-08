@@ -354,5 +354,10 @@ export function createQueue(config?: APIConfig): Queue {
     return deploymentId;
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  return {
+    queueDeliveryMode: 'http',
+    queue,
+    createQueueHandler,
+    getDeploymentId,
+  };
 }

@@ -29,5 +29,5 @@ if (process.platform === 'win32') {
   });
 
   test('smoke', () => {});
-  createTestSuite('./dist/index.js', { directQueueExecution: true });
+  createTestSuite('./dist/index.js');
 }

@@ -5,7 +5,6 @@ import {
   getWorkflowQueueName,
   healthCheck,
   loadWorkflowRunEvents,
-  withHealthCheck,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -223,23 +222,6 @@ describe('healthCheck response parsing', () => {
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBeUndefined();
     expect(result.workflowCoreVersion).toBeUndefined();
-  });
-});
-
-describe('withHealthCheck', () => {
-  it('preserves the legacy spec-version argument', async () => {
-    const handler = vi.fn(async () => new Response(null, { status: 404 }));
-    const route = withHealthCheck(handler, 3);
-
-    const response = await route(
-      new Request('https://example.test/.well-known/workflow/v1/flow?__health')
-    );
-
-    await expect(response.json()).resolves.toMatchObject({
-      healthy: true,
-      specVersion: 3,
-    });
-    expect(handler).not.toHaveBeenCalled();
   });
 });
 

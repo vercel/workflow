@@ -67,6 +67,7 @@ import {
   getInProcessQueueWorld,
   getWorld,
   getWorldHandlers,
+  onceInProcessQueueWorld,
   type WorldHandlers,
 } from './world.js';
 
@@ -1179,37 +1180,19 @@ let stepHandlerPromise:
   | Promise<(req: Request) => Promise<Response>>
   | undefined;
 
-async function loadStepWorldHandlers() {
-  return getInProcessQueueWorld() ?? (await getWorldHandlers());
+function registerStepHandler(world: WorldHandlers) {
+  stepHandlerPromise ??= Promise.resolve(stepHandler(world));
 }
 
-async function getStepHandler(worldHandlers?: WorldHandlers) {
-  if (!stepHandlerPromise) {
-    stepHandlerPromise = (async () =>
-      stepHandler(worldHandlers ?? (await loadStepWorldHandlers())))().catch(
-      (err) => {
-        stepHandlerPromise = undefined;
-        throw err;
-      }
-    );
-  }
+function getStepHandler() {
+  stepHandlerPromise ??= (async () =>
+    stepHandler(getInProcessQueueWorld() ?? (await getWorldHandlers())))();
   return stepHandlerPromise;
 }
 
+onceInProcessQueueWorld(registerStepHandler);
+
 export const stepEntrypoint: (req: Request) => Promise<Response> =
-  /* @__PURE__ */ withHealthCheck(
-    async (req) => {
-      return (await getStepHandler())(req);
-    },
-    {
-      // In-process-queue worlds POST this health path to warm the step
-      // route; register the step queue handler in response so their queue
-      // can execute step jobs directly.
-      onPostHealthCheck: () => {
-        const world = getInProcessQueueWorld();
-        if (world) {
-          void getStepHandler(world).catch(() => {});
-        }
-      },
-    }
-  );
+  /* @__PURE__ */ withHealthCheck(async (req) => {
+    return (await getStepHandler())(req);
+  });

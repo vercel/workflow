@@ -417,6 +417,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   };
 
   return {
+    queueDeliveryMode: 'http',
     queue,
     createQueueHandler,
     getDeploymentId,

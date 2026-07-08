@@ -6,7 +6,7 @@ import { setWorld } from './world.js';
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
-describe('stepEntrypoint health probes', () => {
+describe('stepEntrypoint registration', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();
@@ -23,6 +23,7 @@ describe('stepEntrypoint health probes', () => {
     );
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      queueDeliveryMode: 'http',
       createQueueHandler,
     } as any);
 
@@ -37,7 +38,7 @@ describe('stepEntrypoint health probes', () => {
     expect(createQueueHandler).not.toHaveBeenCalled();
   });
 
-  it('registers the step queue handler during POST health probes for in-process queue worlds', async () => {
+  it('registers the step queue handler when an in-process world becomes available', async () => {
     const createQueueHandler = vi.fn(
       (
         _prefix: string,
@@ -48,7 +49,7 @@ describe('stepEntrypoint health probes', () => {
     );
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      inProcessQueueHandlers: true,
+      queueDeliveryMode: 'in-process',
       createQueueHandler,
     } as any);
 

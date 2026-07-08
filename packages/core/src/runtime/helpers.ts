@@ -535,25 +535,14 @@ const HEALTH_CHECK_CORS_HEADERS = {
  * Wraps a request/response handler and adds a health check "mode"
  * based on the presence of a `__health` query parameter.
  */
-type HealthCheckRouteOptions = {
-  worldSpecVersion?: number;
-  onPostHealthCheck?: () => void;
-};
-
 export function withHealthCheck(
   handler: (req: Request) => Promise<Response>,
-  options: number | HealthCheckRouteOptions = {}
+  worldSpecVersion?: number
 ): (req: Request) => Promise<Response> {
-  const healthCheckOptions =
-    typeof options === 'number' ? { worldSpecVersion: options } : options;
-
   return async (req: Request) => {
     const url = new URL(req.url);
     const isHealthCheck = url.searchParams.has('__health');
     if (isHealthCheck) {
-      if (req.method === 'POST') {
-        healthCheckOptions.onPostHealthCheck?.();
-      }
       // Handle CORS preflight for health check
       if (req.method === 'OPTIONS') {
         return new Response(null, {
@@ -565,8 +554,7 @@ export function withHealthCheck(
         JSON.stringify({
           healthy: true,
           endpoint: url.pathname,
-          specVersion:
-            healthCheckOptions.worldSpecVersion ?? SPEC_VERSION_CURRENT,
+          specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
           workflowCoreVersion,
         }),
         {

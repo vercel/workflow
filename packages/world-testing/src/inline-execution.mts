@@ -1,5 +1,5 @@
-import { hydrateWorkflowReturnValue } from '@workflow/core/serialization';
 import { expect, test, vi } from 'vitest';
+import { hydrateWorkflowReturnValue } from '@workflow/core/serialization';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
@@ -13,11 +13,7 @@ import { createFetcher, startServer } from './util.mjs';
  *   embedded harness observes the background step and continuation separately
  * - Hook + resume: 2 invocations (hook requires external resume)
  */
-export function inlineExecution(
-  world: string,
-  options?: { directQueueExecution?: boolean }
-) {
-  const directQueueExecution = options?.directQueueExecution === true;
+export function inlineExecution(world: string) {
   test(
     'sequential steps complete in a single flow invocation',
     { timeout: 30_000 },
@@ -46,7 +42,7 @@ export function inlineExecution(
       expect(output).toBe(20);
 
       const count = await server.getFlowInvocationCount(result.runId);
-      expect(count).toBe(directQueueExecution ? 0 : 1);
+      expect(count).toBe(1);
     }
   );
 
@@ -78,7 +74,7 @@ export function inlineExecution(
       expect(output).toBe('hello world');
 
       const count = await server.getFlowInvocationCount(result.runId);
-      expect(count).toBe(directQueueExecution ? 0 : 1);
+      expect(count).toBe(1);
     }
   );
 
@@ -112,7 +108,7 @@ export function inlineExecution(
       // Invocation 1: replay → sleep → return {timeoutSeconds}
       // Invocation 2: sleep completed → replay → step inline → complete
       const count = await server.getFlowInvocationCount(result.runId);
-      expect(count).toBe(directQueueExecution ? 0 : 2);
+      expect(count).toBe(2);
     }
   );
 
@@ -149,7 +145,7 @@ export function inlineExecution(
       // With higher queue concurrency, the background step's continuation may
       // also race with the inline handler's loop, adding a 3rd no-op invocation.
       const count = await server.getFlowInvocationCount(result.runId);
-      expect(count).toBeGreaterThanOrEqual(directQueueExecution ? 0 : 1);
+      expect(count).toBeGreaterThanOrEqual(1);
       expect(count).toBeLessThanOrEqual(3);
     }
   );
@@ -189,7 +185,7 @@ export function inlineExecution(
       expect(output).toBe('done');
 
       const invocations = await server.getFlowInvocationCount(result.runId);
-      expect(invocations).toBe(directQueueExecution ? 0 : 1);
+      expect(invocations).toBe(1);
     }
   );
 

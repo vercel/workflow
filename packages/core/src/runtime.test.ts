@@ -11,12 +11,16 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
-import { setWorld } from './runtime/world.js';
+import { setWorld as setRuntimeWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from './serialization.js';
+
+function setWorld(world: Parameters<typeof setRuntimeWorld>[0]) {
+  setRuntimeWorld(world ? { queueDeliveryMode: 'http', ...world } : undefined);
+}
 
 // Capture every promise handed to `waitUntil` so tests can assert that
 // progress-critical sends are never registered on a detached, unconsumed
@@ -147,7 +151,7 @@ describe('workflowEntrypoint replay guards', () => {
     );
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      inProcessQueueHandlers: true,
+      queueDeliveryMode: 'in-process',
       createQueueHandler,
     } as any);
 
@@ -184,7 +188,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      inProcessQueueHandlers: true,
+      queueDeliveryMode: 'in-process',
       createQueueHandler,
     } as any);
 

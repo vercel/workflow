@@ -94,15 +94,26 @@ function getCachedWorld(): World | undefined {
   return globalSymbols[WorldCache] ?? globalSymbols[StubbedWorldCache];
 }
 
+function usesInProcessQueue(world: World): boolean {
+  switch (world.queueDeliveryMode) {
+    case 'http':
+      return false;
+    case 'in-process':
+      return true;
+    default:
+      return assertNever(world.queueDeliveryMode);
+  }
+}
+
 /**
  * Returns the current world when its queue executes messages by invoking
- * queue handlers registered in-process (`world.inProcessQueueHandlers`).
+ * queue handlers registered in-process.
  * Such worlds need route entrypoints to register their handlers proactively
  * instead of waiting for a first HTTP request. Never creates a world.
  */
 export function getInProcessQueueWorld(): World | undefined {
   const world = getCachedWorld();
-  return world?.inProcessQueueHandlers ? world : undefined;
+  return world && usesInProcessQueue(world) ? world : undefined;
 }
 
 function notifyWorldAvailable(world: World | undefined) {
@@ -120,19 +131,23 @@ function notifyWorldAvailable(world: World | undefined) {
  * set lives on globalThis, like the world caches). Never creates a world.
  */
 export function onceInProcessQueueWorld(listener: (world: World) => void) {
-  const world = getInProcessQueueWorld();
+  const world = getCachedWorld();
   if (world) {
-    listener(world);
+    if (usesInProcessQueue(world)) listener(world);
     return;
   }
   globalSymbols[WorldAvailableListeners] ??= new Set();
   const listeners = globalSymbols[WorldAvailableListeners];
   const onAvailable = (candidate: World) => {
-    if (!candidate.inProcessQueueHandlers) return;
+    if (!usesInProcessQueue(candidate)) return;
     listeners.delete(onAvailable);
     listener(candidate);
   };
   listeners.add(onAvailable);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unknown queue delivery mode: ${String(value)}`);
 }
 
 /**
