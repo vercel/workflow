@@ -23,9 +23,7 @@ const SPLIT_PANE_START_ID = 'trace-split-start';
 export interface SplitPaneProps {
   children: ReactNode;
   className?: string;
-  /** Fixed (non-scrolling) header rendered above the start pane. */
   startHeader?: ReactNode;
-  /** Fixed (non-scrolling) header rendered above the end pane. */
   endHeader?: ReactNode;
   scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }
@@ -43,10 +41,6 @@ export function SplitPane({
   }
   const [start, end] = parts;
 
-  // `startPx` is the user's preferred width; the rendered width is derived by
-  // clamping against the live container width (same model as the detail
-  // panel), so shrinking the container compresses the pane without destroying
-  // the preference, and re-growing restores it.
   const [startPx, setStartPx] = useState(DEFAULT_START_PX);
   const containerRef = useRef<HTMLDivElement>(null);
   const startRef = useRef<HTMLDivElement>(null);
@@ -69,8 +63,6 @@ export function SplitPane({
     return Math.min(maxPx, Math.max(MIN_PX, px));
   }, []);
 
-  // The gutter sits on the start pane's right edge, so dragging the border
-  // (position="right") sets the start pane's width directly. The owner clamps.
   const handleWidthChange = useCallback(
     (next: number) => setStartPx(clampPx(next)),
     [clampPx]
@@ -80,8 +72,6 @@ export function SplitPane({
     [clampPx]
   );
 
-  // Floor applied last so the start column can never collapse below MIN_PX
-  // (which would produce an invalid negative grid track on tiny containers).
   const effectiveStartPx =
     containerWidth > 0
       ? Math.max(MIN_PX, Math.min(containerWidth - MIN_PX - GUTTER_PX, startPx))
@@ -114,10 +104,6 @@ export function SplitPane({
         <div ref={startRef} id={SPLIT_PANE_START_ID} className="min-w-0">
           {start}
         </div>
-        {/* Gutter: the always-visible 1px divider with the shared DraggableBorder
-            overlaid on it — same drag handle (wide hit strip, hover/focus/drag
-            highlight, double-click reset, keyboard resize) as the detail panel.
-            isolate + z-20 keeps the overflowing hit strip above both panes. */}
         <div className="relative z-20 isolate flex shrink-0 justify-center">
           <span
             className="pointer-events-none relative z-10 h-full w-px shrink-0 bg-gray-alpha-400"
