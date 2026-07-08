@@ -56,9 +56,9 @@ import {
 import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
-  hashToken,
   hookDisposeLockPath,
   hookRecoveryMarkerPath,
+  hookTokenClaimPath,
   isHookDisposalCommitted,
   monotonicUlid,
   releaseHookTokenClaimIfOwnedBy,
@@ -1629,12 +1629,7 @@ export function createEventsStorage(
 
           // Atomically claim the token using an exclusive-create constraint file.
           // This avoids the TOCTOU race of the previous read-all-then-check approach.
-          const constraintPath = path.join(
-            basedir,
-            'hooks',
-            'tokens',
-            `${hashToken(hookData.token)}.json`
-          );
+          const constraintPath = hookTokenClaimPath(basedir, hookData.token);
           // Persist `eventId` in the claim so concurrent / cross-
           // process retries can converge on a single canonical
           // `hook_created` event path. See the recovery comment
@@ -1668,6 +1663,13 @@ export function createEventsStorage(
           let tokenClaimed = false;
           let existingClaim: z.infer<typeof HookTokenClaimSchema> | null = null;
           let releasableObservations = 0;
+          // A claim file that exists (exclusive-create keeps failing) but never
+          // parses is debris: `writeExclusive` writes atomically, so a live
+          // claim is always valid JSON — an unparseable one at the canonical
+          // path is a corrupt/partial leftover. The releaser leaves it alone
+          // (ownership is undeterminable), so nothing else reaps it and it would
+          // block the token forever. Force-delete it after a few observations.
+          let unparseableObservations = 0;
           for (let attempt = 0; attempt < 10; attempt++) {
             // When the claim is absent, the event log is the only durable
             // source that can distinguish a first hook from a crash-lost
@@ -1684,6 +1686,17 @@ export function createEventsStorage(
 
             existingClaim = await readHookTokenClaim(constraintPath);
             if (!existingClaim) {
+              // The claim either vanished (raced a releaser between the
+              // exclusive-create attempt and this read → retry resolves it) or
+              // exists but is unparseable. `readHookTokenClaim` can't tell them
+              // apart, so count consecutive misses; once we're confident it is
+              // not a transient race, delete the (presumed corrupt) file so the
+              // token isn't blocked forever. `deleteJSON` is a no-op if it was
+              // in fact a vanished-claim race.
+              unparseableObservations++;
+              if (unparseableObservations >= 3) {
+                await deleteJSON(constraintPath);
+              }
               continue;
             }
             if (

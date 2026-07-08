@@ -129,6 +129,22 @@ export default class Inspect extends BaseCommand {
       helpGroup: 'Filtering',
       helpLabel: '--status',
     }),
+    since: Flags.string({
+      description:
+        'list runs active since a relative duration (30m, 12h, 7d, 2w) or timestamp; defaults to the backend window (only for runs)',
+      required: false,
+      helpGroup: 'Filtering',
+      helpLabel: '--since',
+      helpValue: 'DURATION|TIMESTAMP',
+    }),
+    until: Flags.string({
+      description:
+        'end of the --since listing window, as a relative duration or timestamp; defaults to now (only for runs)',
+      required: false,
+      helpGroup: 'Filtering',
+      helpLabel: '--until',
+      helpValue: 'DURATION|TIMESTAMP',
+    }),
     withData: Flags.boolean({
       description:
         'include full input/output data in list views (deprecated for list views — use `inspect <resource> <id>` to view payloads)',
@@ -282,6 +298,8 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     limit: flags.limit,
     workflowName: flags.workflowName,
     status: flags.status,
+    since: flags.since,
+    until: flags.until,
     withData: flags.withData,
     decrypt: flags.decrypt,
     backend: flags.backend,

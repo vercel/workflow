@@ -3,7 +3,7 @@ import { JsonTransport } from '@vercel/queue';
 import { setWorkflowBasePath } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, parseQueueName, type QueuePayload } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
+import { createWorld } from '@workflow/world-local';
 import {
   makeWorkerUtils,
   type Runner,
@@ -36,7 +36,7 @@ vi.mock('@workflow/world-local', async (importOriginal) => {
 
   return {
     ...actual,
-    createLocalWorld: vi.fn(actual.createLocalWorld),
+    createWorld: vi.fn(actual.createWorld),
   };
 });
 
@@ -62,7 +62,7 @@ describe('postgres queue http execution', () => {
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
     vi.mocked(run).mockResolvedValue(runnerMock as unknown as Runner);
-    vi.mocked(createLocalWorld).mockReturnValue({
+    vi.mocked(createWorld).mockReturnValue({
       createQueueHandler,
       close: localWorldClose,
     } as any);

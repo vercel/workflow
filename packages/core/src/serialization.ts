@@ -1712,8 +1712,17 @@ function setupAbortStreamReader(
             );
           }),
         ]);
-        reader.releaseLock();
         if (result.value && !result.done) {
+          // An abort packet arrived: propagate it as fast as possible. Release
+          // the lock (synchronous) rather than cancelling here — on a
+          // service-backed World `reader.cancel()` can do a network round-trip,
+          // and awaiting it before `controller.abort()` would delay (or, if it
+          // hangs, drop) real-time abort delivery to the in-flight step.
+          try {
+            reader.releaseLock();
+          } catch {
+            // Reader may already be released; ignore.
+          }
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
@@ -1730,6 +1739,16 @@ function setupAbortStreamReader(
           } catch {
             controller.abort();
           }
+        } else {
+          // The step finished (or the reader was cancelled) without an abort.
+          // Cancel — not just release — so the underlying World stream is torn
+          // down: a polling World (e.g. world-local) otherwise leaks a tail
+          // reader (a 100ms filesystem poll plus emitter listeners) per step
+          // invocation for the life of the process, since a signal-bearing step
+          // opens one of these on every revival and usually never aborts. Fire
+          // and forget: a service-backed World's cancel may hit the network,
+          // and this path must not block the step's ops-settle window.
+          void reader.cancel().catch(() => {});
         }
       } catch {
         // Stream read failed — signal won't propagate in real-time,

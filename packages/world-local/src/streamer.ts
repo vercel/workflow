@@ -87,18 +87,34 @@ function addChunkFilesByExtension(
 }
 
 /**
+ * Resolve the per-stream chunk directory. Chunks are sharded one directory
+ * per stream (`streams/chunks/<streamName>/`) so that listing a stream's
+ * chunks costs O(chunks in that stream) rather than O(chunks in the whole
+ * world). A tail reader polling for new chunks would otherwise `readdir` the
+ * entire global chunks directory every 100ms — see vercel/workflow#2797.
+ */
+function chunkDirForStream(chunksBaseDir: string, name: string): string {
+  // Name becomes a path segment below; validate it can't escape chunksBaseDir.
+  assertSafeEntityId('streamName', name);
+  return path.join(chunksBaseDir, name);
+}
+
+/**
  * List chunk files for a stream, sorted chronologically (ULID order).
- * Returns both the sorted file names and a map of file → extension for
- * resolving the full path. Handles tagged and legacy (.json) formats.
+ * Returns the sorted chunk keys (each key is the chunk ULID), a map of
+ * key → extension for resolving the full path, and the per-stream directory
+ * the files live in. Handles tagged and legacy (.json) formats.
+ *
+ * Files are stored per-stream (`<chunkDir>/<chunkId><tagSuffix>.bin`), so the
+ * key returned here is already the chunk id — no stream-name prefix to strip.
  */
 async function listChunkFilesForStream(
-  chunksDir: string,
+  chunksBaseDir: string,
   name: string,
   tag?: string
-): Promise<{ files: string[]; extMap: Map<string, string> }> {
-  // Name is used as a filename prefix below; validate it can't escape chunksDir.
-  assertSafeEntityId('streamName', name);
-  const entries = await listChunkEntries(chunksDir);
+): Promise<{ files: string[]; extMap: Map<string, string>; dir: string }> {
+  const dir = chunkDirForStream(chunksBaseDir, name);
+  const entries = await listChunkEntries(dir);
   const extMap = new Map<string, string>();
   addChunkFilesByExtension(extMap, entries, '.json');
   addChunkFilesByExtension(
@@ -114,11 +130,9 @@ async function listChunkFilesForStream(
     addChunkFilesByExtension(extMap, entries, taggedExtension);
   }
 
-  const files = [...extMap.keys()]
-    .filter((file) => file.startsWith(`${name}-`))
-    .sort();
+  const files = [...extMap.keys()].sort();
 
-  return { files, extMap };
+  return { files, extMap, dir };
 }
 
 export function createStreamer(basedir: string, tag?: string): Streamer {
@@ -212,10 +226,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         });
 
         const chunkPath = path.join(
-          basedir,
-          'streams',
-          'chunks',
-          `${name}-${chunkId}${tagSuffix}.bin`
+          chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+          `${chunkId}${tagSuffix}.bin`
         );
 
         await write(chunkPath, serialized);
@@ -260,10 +272,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           });
 
           const chunkPath = path.join(
-            basedir,
-            'streams',
-            'chunks',
-            `${name}-${chunkId}${tagSuffix}.bin`
+            chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+            `${chunkId}${tagSuffix}.bin`
           );
 
           await write(chunkPath, serialized);
@@ -298,10 +308,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Register this stream for the run (in case write wasn't called)
         await registerStreamForRun(runId, name);
         const chunkPath = path.join(
-          basedir,
-          'streams',
-          'chunks',
-          `${name}-${chunkId}${tagSuffix}.bin`
+          chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+          `${chunkId}${tagSuffix}.bin`
         );
 
         await write(
@@ -330,9 +338,12 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         options?: GetChunksOptions
       ): Promise<StreamChunksResponse> {
         const limit = options?.limit ?? 100;
-        const chunksDir = path.join(basedir, 'streams', 'chunks');
-        const { files: chunkFiles, extMap: fileExtMap } =
-          await listChunkFilesForStream(chunksDir, name, tag);
+        const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
+        const {
+          files: chunkFiles,
+          extMap: fileExtMap,
+          dir: chunksDir,
+        } = await listChunkFilesForStream(chunksBaseDir, name, tag);
 
         // Decode cursor
         let startIndex = 0;
@@ -408,9 +419,12 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
       },
 
       async getInfo(_runId: string, name: string): Promise<StreamInfoResponse> {
-        const chunksDir = path.join(basedir, 'streams', 'chunks');
-        const { files: chunkFiles, extMap: fileExtMap } =
-          await listChunkFilesForStream(chunksDir, name, tag);
+        const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
+        const {
+          files: chunkFiles,
+          extMap: fileExtMap,
+          dir: chunksDir,
+        } = await listChunkFilesForStream(chunksBaseDir, name, tag);
 
         // Read only the EOF marker byte because metadata never needs payloads.
         let streamDone = false;
@@ -432,9 +446,19 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
       },
 
       async get(_runId: string, name: string, startIndex = 0) {
-        const chunksDir = path.join(basedir, 'streams', 'chunks');
-        let removeListeners = () => {};
+        const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
+        // Tears down everything the reader holds open: both emitter listeners
+        // and the filesystem poll interval. Assigned once listeners are wired
+        // up in start(); called on cancel() and on terminal (EOF/close) paths.
+        // Kept robust (unconditional) so a cancel() while still reading from
+        // disk can't leak a listener/poll — a signal-bearing step opens one of
+        // these readers per invocation, so any leak accumulates fast.
+        let teardown = () => {};
         let pollInterval: ReturnType<typeof setInterval> | null = null;
+        // Set when the controller is closed/cancelled; guards against
+        // enqueue-after-close in the polling callback when teardown fires
+        // mid-iteration.
+        let streamClosed = false;
 
         return new ReadableStream<Uint8Array>({
           async start(controller) {
@@ -448,9 +472,6 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             let isReadingFromDisk = true;
             // Buffer close event if it arrives during disk reading
             let pendingClose = false;
-            // Set when the controller is closed; guards against enqueue-after-close
-            // in the polling callback when closeListener fires mid-iteration.
-            let streamClosed = false;
 
             const chunkListener = (event: {
               streamName: string;
@@ -489,27 +510,35 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               }
               // Remove listeners before closing
               streamClosed = true;
-              streamEmitter.off(`chunk:${name}` as const, chunkListener);
-              streamEmitter.off(`close:${name}` as const, closeListener);
-              if (pollInterval) {
-                clearInterval(pollInterval);
-                pollInterval = null;
-              }
+              teardown();
               try {
                 controller.close();
               } catch {
                 // Ignore if controller is already closed (e.g., from cancel() or EOF)
               }
             };
-            removeListeners = closeListener;
+            // Tear down listeners and the poll unconditionally. Unlike
+            // closeListener this never defers on isReadingFromDisk, so cancel()
+            // reliably releases the reader even mid-disk-read.
+            teardown = () => {
+              streamEmitter.off(`chunk:${name}` as const, chunkListener);
+              streamEmitter.off(`close:${name}` as const, closeListener);
+              if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
+            };
 
             // Set up listeners FIRST to avoid missing events
             streamEmitter.on(`chunk:${name}` as const, chunkListener);
             streamEmitter.on(`close:${name}` as const, closeListener);
 
             // Now load existing chunks from disk.
-            const { files: chunkFiles, extMap: fileExtMap } =
-              await listChunkFilesForStream(chunksDir, name, tag);
+            const {
+              files: chunkFiles,
+              extMap: fileExtMap,
+              dir: chunksDir,
+            } = await listChunkFilesForStream(chunksBaseDir, name, tag);
 
             // Resolve negative startIndex relative to the number of data chunks
             // (excluding the trailing EOF marker chunk, if present).
@@ -540,12 +569,9 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             let isComplete = false;
             for (let i = resolvedStartIndex; i < chunkFiles.length; i++) {
               const file = chunkFiles[i];
-              // Extract chunk ID from filename: "streamName-chunkId" or "streamName-chunkId.tag"
-              const rawChunkId = file.substring(name.length + 1);
-              // Strip tag suffix (e.g., "chnk_ULID.vitest-0" → "chnk_ULID")
-              const chunkId = tag
-                ? rawChunkId.replace(`.${tag}`, '')
-                : rawChunkId;
+              // Files are sharded per stream, so the key is already the chunk id
+              // (no stream-name prefix, tag suffix already stripped).
+              const chunkId = file;
 
               // Skip if already delivered via event
               if (deliveredChunkIds.has(chunkId)) {
@@ -581,7 +607,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             }
 
             if (isComplete) {
-              removeListeners();
+              streamClosed = true;
+              teardown();
               try {
                 controller.close();
               } catch {
@@ -592,8 +619,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
             // Process any pending close event that arrived during disk reading
             if (pendingClose) {
-              streamEmitter.off(`chunk:${name}` as const, chunkListener);
-              streamEmitter.off(`close:${name}` as const, closeListener);
+              streamClosed = true;
+              teardown();
               try {
                 controller.close();
               } catch {
@@ -608,12 +635,17 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               i < resolvedStartIndex && i < chunkFiles.length;
               i++
             ) {
-              const file = chunkFiles[i];
-              const rawChunkId = file.substring(name.length + 1);
-              const chunkId = tag
-                ? rawChunkId.replace(`.${tag}`, '')
-                : rawChunkId;
-              deliveredChunkIds.add(chunkId);
+              // Files are sharded per stream: the key is already the chunk id.
+              deliveredChunkIds.add(chunkFiles[i]);
+            }
+
+            // If the reader was already cancelled/closed while we were reading
+            // from disk above (start() yields at every await), don't arm the
+            // poll — cancel()'s teardown ran before this point and would leave
+            // the freshly-created interval orphaned.
+            if (streamClosed) {
+              teardown();
+              return;
             }
 
             // Start filesystem polling for cross-process streaming support.
@@ -626,13 +658,11 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               isPolling = true;
               try {
                 const { files: currentFiles, extMap: currentExtMap } =
-                  await listChunkFilesForStream(chunksDir, name, tag);
+                  await listChunkFilesForStream(chunksBaseDir, name, tag);
 
                 for (const file of currentFiles) {
-                  const rawChunkId = file.substring(name.length + 1);
-                  const chunkId = tag
-                    ? rawChunkId.replace(`.${tag}`, '')
-                    : rawChunkId;
+                  // Files are sharded per stream: the key is already the chunk id.
+                  const chunkId = file;
 
                   if (deliveredChunkIds.has(chunkId)) continue;
                   deliveredChunkIds.add(chunkId);
@@ -644,12 +674,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
                   if (chunk?.eof === true) {
                     streamClosed = true;
-                    if (pollInterval) {
-                      clearInterval(pollInterval);
-                      pollInterval = null;
-                    }
-                    streamEmitter.off(`chunk:${name}` as const, chunkListener);
-                    streamEmitter.off(`close:${name}` as const, closeListener);
+                    teardown();
                     try {
                       controller.close();
                     } catch {
@@ -679,11 +704,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           },
 
           cancel() {
-            removeListeners();
-            if (pollInterval) {
-              clearInterval(pollInterval);
-              pollInterval = null;
-            }
+            streamClosed = true;
+            teardown();
           },
         });
       },

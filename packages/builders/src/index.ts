@@ -75,6 +75,7 @@ export {
   createWorkflowWorldTargetEsbuildPlugin,
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
+  isWorkflowTargetWorldPath,
   normalizeWorkflowTargetWorldImport,
   resolveWorkflowCoreRuntimeAlias,
   resolveWorkflowTargetWorldAlias,

@@ -12,9 +12,9 @@ HTTP requests (including the queue) default to a shared undici `RetryAgent` that
 
 ```ts
 import { Agent } from 'undici';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorld } from '@workflow/world-vercel';
 import { setWorld } from '@workflow/core/runtime';
 
-setWorld(createVercelWorld({ dispatcher: new Agent({ connections: 16 }) }));
+setWorld(createWorld({ dispatcher: new Agent({ connections: 16 }) }));
 ```
 

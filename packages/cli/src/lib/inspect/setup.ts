@@ -4,8 +4,8 @@ import { pathToFileURL } from 'node:url';
 import { setWorld } from '@workflow/core/runtime';
 import { isVercelWorldTarget } from '@workflow/utils';
 import type { World } from '@workflow/world';
-import { createWorld as createLocalWorld } from '@workflow/world-local';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorld as createLocalCliWorld } from '@workflow/world-local';
+import { createWorld as createVercelCliWorld } from '@workflow/world-vercel';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
@@ -122,7 +122,7 @@ export const setupCliWorld = async (
   if (vercelEnvVars) {
     // Build the Vercel world directly from the inferred config, rather than
     // relying on createWorld() reading process.env.
-    world = createVercelWorld({
+    world = createVercelCliWorld({
       token: vercelEnvVars.token,
       projectConfig: {
         environment: vercelEnvVars.environment,
@@ -135,7 +135,7 @@ export const setupCliWorld = async (
     flags.backend === 'local' ||
     flags.backend === '@workflow/world-local'
   ) {
-    world = createLocalWorld();
+    world = createLocalCliWorld();
   } else {
     world = await createDynamicCliWorld(flags.backend);
   }

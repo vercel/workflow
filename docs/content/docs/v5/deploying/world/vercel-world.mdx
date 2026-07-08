@@ -89,44 +89,77 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The Vercel World requires no configuration when deployed to Vercel. For advanced use cases, you can override settings programmatically via `createVercelWorld()`.
+In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs, including `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption.
+
+Do not set those platform-provided values yourself.
+
+Most users never need to set the `WORKFLOW_VERCEL_*` variables below. They are only overrides for tools running outside Vercel, such as your laptop or CI, when those tools need to inspect or test a remote Vercel Workflow project and cannot infer the project, team, token, or target environment automatically.
+
+For example, you might set them when running `workflow inspect runs --backend vercel` from CI without an interactive `vercel login`, or when running tests against a specific preview deployment. In normal local development, the CLI infers these values from your `.vercel` directory and Vercel CLI login. In a deployed Vercel function, these variables have no effect on runtime configuration, and the runtime warns if they are set there.
 
 ### `WORKFLOW_VERCEL_ENV`
 
-The Vercel environment to use. Options: `production`, `preview`, `development`. Automatically detected.
+The Vercel environment to target. Options: `production`, `preview`. Default: `production`.
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
-Authentication token for API requests. Automatically detected.
+Vercel API authentication token (secret — keep it in your environment, not in code). Falls back to `VERCEL_TOKEN`, then to your Vercel CLI login.
 
 ### `WORKFLOW_VERCEL_PROJECT`
 
-Vercel project ID for API requests. Automatically detected.
+Vercel project ID (`prj_...`).
+
+### `WORKFLOW_VERCEL_PROJECT_NAME`
+
+Vercel project name/slug, used for dashboard links.
 
 ### `WORKFLOW_VERCEL_TEAM`
 
-Vercel team ID for API requests. Automatically detected.
+Vercel team ID.
 
 ### `WORKFLOW_VERCEL_BACKEND_URL`
 
-Custom base URL for the Vercel workflow API. Automatically detected.
+Custom base URL for the Vercel workflow API proxy. Default: `https://api.vercel.com/v1/workflow`.
+
+### `VERCEL_WORKFLOW_SERVER_URL`
+
+Custom workflow-server URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
+
+### `VERCEL_QUEUE_MAX_DELAY_SECONDS`
+
+Maximum delay, in seconds, that Workflow uses for one Vercel Queues continuation message when implementing `sleep()`. If a workflow sleeps longer than this, the runtime schedules another continuation message when the first one fires, repeating until the sleep's target time is reached. Default: `82800` (23 hours).
+
+Vercel Queues can delay messages for up to 7 days, capped by the message TTL. Because the default TTL is 24 hours, Workflow uses a 23-hour continuation hop to stay safely inside that default.
+
+### `WORKFLOW_REQUEST_TIMEOUT_MS`
+
+Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-server. Default: `60000`. Minimum: `1`.
+
+### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
+
+Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
 
 ### Programmatic configuration
 
+`createWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:
+
 {/*@skip-typecheck: incomplete code sample*/}
 
-```typescript title="workflow.config.ts" lineNumbers
-import { createVercelWorld } from "@workflow/world-vercel";
+```typescript title="my-world.ts" lineNumbers
+import { createWorld } from "@workflow/world-vercel";
 
-const world = createVercelWorld({
+export default createWorld({
   token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-  baseUrl: "https://api.vercel.com/v1/workflow",
   projectConfig: {
-    projectId: "my-project",
-    teamId: "my-team",
+    projectId: "prj_...",
+    teamId: "team_...",
     environment: "production",
   },
 });
+```
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
 ## Versioning
