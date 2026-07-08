@@ -2118,18 +2118,27 @@ describe('Storage', () => {
         expect(result.hook).toBeUndefined();
       });
 
-      it('should return hook_conflict event when the token claim cannot provide a run ID', async () => {
-        const token = 'legacy-duplicate-test-token';
+      it('reaps an unparseable claim of a live hook and recovers the real conflict from the event log', async () => {
+        // A corrupt claim file whose hook is still live must not be trusted as
+        // debris and stolen — but it also must not block the token forever.
+        // The claimant loop reaps the unparseable file after a few observations
+        // (nothing else deletes it — the releaser can't determine ownership),
+        // then rebuilds the live hook's claim from the event log, so the
+        // duplicate still conflicts and now carries the real conflicting run.
+        const token = 'corrupt-claim-live-hook-token';
 
         await createHook(storage, testRunId, {
           hookId: 'hook_1',
           token,
         });
 
-        await fs.writeFile(
-          path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`),
-          '{'
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
         );
+        await fs.writeFile(claimPath, '{');
 
         const result = await storage.events.create(testRunId, {
           eventType: 'hook_created',
@@ -2139,10 +2148,46 @@ describe('Storage', () => {
 
         expect(result.event.eventType).toBe('hook_conflict');
         expect((result.event as any).eventData.token).toBe(token);
-        expect(
-          (result.event as any).eventData.conflictingRunId
-        ).toBeUndefined();
+        // Recovered from the event log rather than the unreadable claim.
+        expect((result.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(result.hook).toBeUndefined();
+
+        // The corrupt file was replaced by the live hook's real, parseable claim.
+        const restored = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+        expect(restored).toMatchObject({
+          token,
+          hookId: 'hook_1',
+          runId: testRunId,
+        });
+      });
+
+      it('reaps an unparseable orphan claim so a new hook can reuse the token (#2808)', async () => {
+        // Regression for the "unparseable claim blocks its token indefinitely"
+        // gap: a corrupt claim with no live hook behind it (genuine debris —
+        // e.g. a partial/corrupted write) is never reaped by the releaser
+        // (ownership is undeterminable). The claimant loop must delete it after
+        // N observations so the token becomes claimable again.
+        const token = 'corrupt-orphan-claim-token';
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
+        );
+        await fs.mkdir(path.dirname(claimPath), { recursive: true });
+        await fs.writeFile(claimPath, 'not-json{');
+
+        const result = await storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_new',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_created');
+        expect(result.hook?.token).toBe(token);
+        expect(result.hook?.hookId).toBe('hook_new');
       });
 
       it('should allow multiple hooks with different tokens for the same run', async () => {
@@ -2985,50 +3030,12 @@ describe('Storage', () => {
         ).toHaveLength(0);
       });
 
-      it('should never journal hook_received after hook_disposed when resume races disposal', async () => {
-        // Each round races one resume against the hook's disposal. Both
-        // outcomes are valid — the resume lands before the disposal, or it
-        // is rejected — but the journal must never contain hook_received
-        // ordered after hook_disposed for the same hook.
-        for (let round = 0; round < 20; round++) {
-          const hookId = `hook_race_2781_${round}`;
-          await createHook(storage, testRunId, {
-            hookId,
-            token: `race-2781-token-${round}`,
-          });
-
-          const [resume] = await Promise.allSettled([
-            storage.events.create(testRunId, {
-              eventType: 'hook_received',
-              correlationId: hookId,
-              eventData: { payload: new Uint8Array([round]) },
-            }),
-            disposeHook(storage, testRunId, hookId),
-          ]);
-
-          if (resume.status === 'rejected') {
-            expect((resume.reason as { name?: string }).name).toBe(
-              'HookNotFoundError'
-            );
-          }
-
-          const events = await storage.events.listByCorrelationId({
-            correlationId: hookId,
-            pagination: {},
-          });
-          const types = events.data.map((e) => e.eventType);
-          const disposedIndex = types.indexOf('hook_disposed');
-          expect(disposedIndex).toBeGreaterThan(-1);
-          expect(types.lastIndexOf('hook_received')).toBeLessThan(
-            disposedIndex
-          );
-          // A fulfilled resume must actually be in the log (before the
-          // disposal), a rejected one must not be journaled at all.
-          expect(types.filter((t) => t === 'hook_received')).toHaveLength(
-            resume.status === 'fulfilled' ? 1 : 0
-          );
-        }
-      });
+      // NOTE: a 20-round "race resume against disposal" soak test previously
+      // lived here. It was removed as a regression guard: because both
+      // orderings (resume-before-disposal and rejected-resume) are valid, the
+      // loop passed even with the ordering fix reverted, so it was a soak, not
+      // a deterministic guard. The mid-teardown test above (which forces the
+      // committed-dispose-lock state) is the real regression guard for #2781.
     });
   });
 
