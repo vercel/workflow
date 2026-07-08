@@ -97,6 +97,7 @@ function createMatrixEntry(name, project, config, overrides = {}) {
 const matrix = {
   app: [],
 };
+const basePathE2E = { localProdBasePath: '/app' };
 
 for (const app of [
   {
@@ -119,13 +120,19 @@ for (const app of [
 }
 
 matrix.app.push(
-  createMatrixEntry('nitro', 'workbench-nitro-workflow', DEV_TEST_CONFIGS.nitro)
+  createMatrixEntry(
+    'nitro',
+    'workbench-nitro-workflow',
+    DEV_TEST_CONFIGS.nitro,
+    basePathE2E
+  )
 );
 matrix.app.push(
   createMatrixEntry(
     'sveltekit',
     'workbench-sveltekit-workflow',
-    DEV_TEST_CONFIGS.sveltekit
+    DEV_TEST_CONFIGS.sveltekit,
+    basePathE2E
   )
 );
 matrix.app.push(
@@ -155,7 +162,12 @@ matrix.app.push(
   createMatrixEntry('nest', 'workbench-nest-workflow', DEV_TEST_CONFIGS.nest)
 );
 matrix.app.push(
-  createMatrixEntry('astro', 'workbench-astro-workflow', DEV_TEST_CONFIGS.astro)
+  createMatrixEntry(
+    'astro',
+    'workbench-astro-workflow',
+    DEV_TEST_CONFIGS.astro,
+    basePathE2E
+  )
 );
 
 matrix.app.push({

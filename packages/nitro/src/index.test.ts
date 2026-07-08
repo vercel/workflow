@@ -443,7 +443,7 @@ describe('@workflow/nitro Vercel functionRules', () => {
 });
 
 describe('@workflow/nitro Vercel output patching with baseURL', () => {
-  it('repoints base-prefixed flow/webhook routes at the catch-all server and moves the flow function below the base path', async () => {
+  it('moves the flow function and preserves the routed webhook function', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-nitro-'));
     try {
       const rootDir = join(dir, 'app');
@@ -459,6 +459,10 @@ describe('@workflow/nitro Vercel output patching with baseURL', () => {
           version: 3,
           routes: [
             { handle: 'filesystem' },
+            {
+              src: '/app/.well-known/workflow/v1/flow',
+              dest: '/.well-known/workflow/v1/flow',
+            },
             {
               src: '/app/.well-known/workflow/v1/flow',
               dest: '/.well-known/workflow/v1/flow',
@@ -493,21 +497,23 @@ describe('@workflow/nitro Vercel output patching with baseURL', () => {
       const config = JSON.parse(
         await readFile(join(rootDir, '.vercel/output/config.json'), 'utf-8')
       );
-      expect(config.routes[0]).toMatchObject({ handle: 'filesystem' });
-      // Flow + webhook repointed at the catch-all server function; the
-      // manifest route resolves natively and stays untouched.
-      expect(config.routes[1]).toMatchObject({
-        src: '/app/.well-known/workflow/v1/flow',
-        dest: '/__server',
-      });
-      expect(config.routes[2]).toMatchObject({
+      // The webhook rewrite runs before filesystem matching and still targets
+      // its configured route function. Flow rewrites are unnecessary once the
+      // exact flow function is moved below the base path.
+      expect(config.routes[0]).toMatchObject({
         src: '/app/.well-known/workflow/v1/webhook/(?<token>[^/]+)',
-        dest: '/__server',
+        dest: '/.well-known/workflow/v1/webhook/[token]',
       });
-      expect(config.routes[3]).toMatchObject({
+      expect(config.routes[1]).toMatchObject({ handle: 'filesystem' });
+      expect(config.routes[2]).toMatchObject({
         src: '/app/.well-known/workflow/v1/manifest.json',
         dest: '/.well-known/workflow/v1/manifest.json',
       });
+      expect(config.routes).not.toContainEqual(
+        expect.objectContaining({
+          src: '/app/.well-known/workflow/v1/flow',
+        })
+      );
 
       // Flow function moved below the base path so queue triggers (which
       // invoke a function at its directory path) hit the mounted route.

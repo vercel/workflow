@@ -74,10 +74,7 @@ export type {
   WorkflowConfig,
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';
-export {
-  createBuildOutputApiWebhookRoute,
-  VercelBuildOutputAPIBuilder,
-} from './vercel-build-output-api.js';
+export { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 export {
   createWorkflowWorldTargetEsbuildPlugin,

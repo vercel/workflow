@@ -1,10 +1,10 @@
+import assert from 'node:assert/strict';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
-  createBuildOutputApiWebhookRoute,
   NORMALIZE_REQUEST_CODE,
   normalizeWorkflowBasePath,
   resolveProjectRoot,
@@ -206,17 +206,14 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     // webhook URLs onto the dynamic `[token]` function, and post-filesystem
     // rewrites don't re-check the filesystem (observed as platform 404s on
     // preview deployments).
-    let filesystemIndex = config.routes.findIndex(
-      (route: any) => route.handle === 'filesystem'
+    const filesystemIndex = config.routes.findIndex(
+      (route: { handle?: string }) => route.handle === 'filesystem'
     );
-    if (filesystemIndex === -1) {
-      filesystemIndex = 0;
-    }
-    config.routes.splice(
-      filesystemIndex,
-      0,
-      createBuildOutputApiWebhookRoute(this.config.basePath)
+    assert(
+      filesystemIndex !== -1,
+      'Expected Astro Vercel output to contain a filesystem handler'
     );
+    config.routes.splice(filesystemIndex, 0, this.createWebhookRoute());
 
     // Bundles workflows for vercel
     await super.build();

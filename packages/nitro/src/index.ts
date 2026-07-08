@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -380,16 +381,10 @@ export default {
         nitro.options.vercel ??= {};
         nitro.options.vercel.functionRules ??= {};
 
-        // With a baseURL, Nitro's generated Build Output routes rewrite the
-        // base-prefixed flow/webhook URLs to root-relative dests that
-        // Vercel's router fails to resolve to the per-route functions
-        // (observed as platform 404s on preview deployments) — repoint
-        // them at the catch-all server function, which serves the same
-        // handlers. The flow function itself is moved below the base path:
-        // Vercel queue triggers invoke a function at its function-directory
-        // path, and the Nitro server inside (mounted below `baseURL`) only
-        // serves the base-prefixed route. Root-relative URLs need no
-        // handling: Nitro emits a redirect to the base-prefixed URL.
+        // With a baseURL, move the flow function below the base path and put
+        // the dynamic webhook rewrite before filesystem matching. Vercel then
+        // reaches both dedicated functions instead of missing post-filesystem
+        // rewrites. Root-relative URLs need no special handling.
         if (basePath) {
           nitro.hooks.hook('compiled', () => {
             patchNativeVercelWorkflowRoutes(nitro, basePath);
@@ -778,25 +773,42 @@ function patchNativeVercelWorkflowRoutes(nitro: Nitro, basePath: string) {
   const outputDir = join(nitro.options.rootDir, '.vercel/output');
   const configPath = join(outputDir, 'config.json');
   const config = JSON.parse(readFileSync(configPath, 'utf-8')) as {
-    routes: Array<{ src?: string; dest?: string }>;
+    routes: Array<{ src?: string; dest?: string; handle?: string }>;
   };
   const workflowPrefix = `${basePath}${WORKFLOW_ROUTE_BASE}`;
+  const flowRoutes = config.routes.filter(
+    (route) => route.src === `${workflowPrefix}/flow`
+  );
+  const webhookRoutes = config.routes.filter((route) =>
+    route.src?.startsWith(`${workflowPrefix}/webhook/`)
+  );
+  assert(flowRoutes.length > 0, 'Missing Nitro workflow flow route');
+  const [webhookRoute] = webhookRoutes;
+  assert(webhookRoute, 'Missing Nitro workflow webhook route');
+  assert(
+    webhookRoutes.every((route) => route.dest === webhookRoute.dest),
+    'Nitro emitted conflicting workflow webhook routes'
+  );
+  config.routes = config.routes.filter(
+    (route) => !flowRoutes.includes(route) && !webhookRoutes.includes(route)
+  );
 
-  for (const route of config.routes) {
-    if (
-      route.src === `${workflowPrefix}/flow` ||
-      route.src?.startsWith(`${workflowPrefix}/webhook/`)
-    ) {
-      route.dest = '/__server';
-    }
-  }
+  // The relocated flow function is an exact filesystem match, so its rewrites
+  // are unnecessary. The dynamic webhook still needs a rewrite; place it
+  // before filesystem matching so it resolves to its configured route function
+  // instead of bypassing that function through the catch-all server.
+  const filesystemIndex = config.routes.findIndex(
+    (route) => route.handle === 'filesystem'
+  );
+  assert(filesystemIndex !== -1, 'Missing Nitro filesystem handler');
+  config.routes.splice(filesystemIndex, 0, webhookRoute);
 
   writeFileSync(configPath, JSON.stringify(config, null, 2));
 
   // Move the flow function below the base path: queue triggers invoke a
   // function at its function-directory path, and the Nitro server inside
-  // only serves the base-prefixed route. HTTP traffic is unaffected — the
-  // routes above already point at the catch-all server function.
+  // only serves the base-prefixed route. HTTP traffic reaches the relocated
+  // function directly through filesystem matching.
   const flowFuncPath = `${WORKFLOW_ROUTE_BASE}/flow.func`;
   const source = join(outputDir, 'functions', flowFuncPath);
   const destination = join(

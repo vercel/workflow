@@ -125,13 +125,22 @@ export function isLocalDeployment(): boolean {
  * into base path testing via `WORKFLOW_E2E_BASE_PATH` — so the whole suite
  * exercises the base-path deployment without dedicated tests.
  */
-export function getDeploymentUrl(): string {
+export function getDeploymentUrl(pathname = ''): string {
   const deploymentUrl = process.env.DEPLOYMENT_URL;
   if (!deploymentUrl) {
     throw new Error('`DEPLOYMENT_URL` environment variable is not set');
   }
-  const basePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(/\/+$/, '');
-  return basePath ? new URL(basePath, deploymentUrl).toString() : deploymentUrl;
+  const basePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(
+    /^\/+|\/+$/g,
+    ''
+  );
+  if (!basePath && !pathname) {
+    return deploymentUrl;
+  }
+  const routePath = [basePath, pathname.replace(/^\/+/, '')]
+    .filter(Boolean)
+    .join('/');
+  return new URL(`/${routePath}`, deploymentUrl).toString();
 }
 
 /**

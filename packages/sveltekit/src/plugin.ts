@@ -15,8 +15,7 @@ import {
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Plugin } from 'vite';
-import { SvelteKitBuilder } from './builder.js';
-import { loadSvelteKitBasePath } from './config.js';
+import { loadSvelteKitConfig, SvelteKitBuilder } from './builder.js';
 
 export interface WorkflowPluginOptions {
   /**
@@ -84,7 +83,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
       // bundled lib that, on seeing `require`, does `require()` of an ESM-only
       // dependency on a Node version without `require(ESM)` support.
       async configResolved(config) {
-        const basePath = await loadSvelteKitBasePath(config.root);
+        const { basePath, routesDir } = await loadSvelteKitConfig(config.root);
         setWorkflowBasePath(basePath);
 
         if (config.command === 'serve') {
@@ -92,6 +91,7 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
             workingDir: config.root,
             sourcemap: options.sourcemap,
             basePath,
+            routesDir,
           });
         }
 

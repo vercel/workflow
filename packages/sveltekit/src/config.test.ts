@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadSvelteKitBasePath } from './config.js';
+import { loadSvelteKitConfig } from './builder.js';
 
-describe('loadSvelteKitBasePath', () => {
+describe('loadSvelteKitConfig', () => {
   const roots: string[] = [];
 
   afterEach(() => {
@@ -13,14 +13,21 @@ describe('loadSvelteKitBasePath', () => {
     }
   });
 
-  it('reads and normalizes kit.paths.base from svelte config', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'workflow-sveltekit-base-'));
+  it('loads routes and base path from a TypeScript config', async () => {
+    const root = mkdtempSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'config-test-')
+    );
     roots.push(root);
+    const routesDir = join(root, 'src/routes');
+    mkdirSync(routesDir, { recursive: true });
     writeFileSync(
-      join(root, 'svelte.config.mjs'),
-      'export default { kit: { paths: { base: "/app/" } } };'
+      join(root, 'svelte.config.ts'),
+      `export default { kit: { files: { routes: ${JSON.stringify(routesDir)} }, paths: { base: '/app' } } };`
     );
 
-    await expect(loadSvelteKitBasePath(root)).resolves.toBe('/app');
+    await expect(loadSvelteKitConfig(root)).resolves.toEqual({
+      basePath: '/app',
+      routesDir,
+    });
   });
 });

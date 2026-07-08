@@ -249,7 +249,7 @@ async function startWorkflowViaHttp(
   args: any[],
   endpoint: string
 ): Promise<Run<any>> {
-  const url = new URL(endpoint, deploymentUrl);
+  const url = new URL(getDeploymentUrl(endpoint));
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;
   const workflowFile =
@@ -1683,7 +1683,7 @@ describe('e2e', () => {
     { timeout: 60_000 },
     async () => {
       // Call the API route that directly calls a step function (no workflow context)
-      const url = new URL('/api/test-direct-step-call', deploymentUrl);
+      const url = new URL(getDeploymentUrl('/api/test-direct-step-call'));
       const res = await fetch(url, {
         method: 'POST',
         headers: {

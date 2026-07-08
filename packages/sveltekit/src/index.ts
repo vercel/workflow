@@ -2,12 +2,11 @@ import path from 'node:path';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import fs from 'fs-extra';
 
-import { SvelteKitBuilder } from './builder.js';
-import { loadSvelteKitBasePath } from './config.js';
+import { loadSvelteKitConfig, SvelteKitBuilder } from './builder.js';
 import { stripWorkflowQueueTriggers } from './vc-config.js';
 
-const basePath = await loadSvelteKitBasePath(process.cwd());
-const builder = new SvelteKitBuilder({ basePath });
+const { basePath, routesDir } = await loadSvelteKitConfig(process.cwd());
+const builder = new SvelteKitBuilder({ basePath, routesDir });
 
 // This needs to be in the top-level as we need to create these
 // entries before svelte plugin is started or the entries are
