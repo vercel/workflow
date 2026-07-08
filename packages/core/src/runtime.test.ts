@@ -1965,8 +1965,11 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
         return await s1();
       }${latXform('workflow')}`;
 
-    const runBackdateMs = 10_000;
-    const runId = makeLatencyRunId(runBackdateMs);
+    // Both measurement endpoints are values this test controls (the run-id
+    // ULID timestamp and the crafted attr occurredAt), so the expected ttfs
+    // is exact — no wall-clock slack that a slow CI runner could exceed.
+    const runCreatedAtMs = Date.now() - 10_000;
+    const runId = `wrun_${ulid(runCreatedAtMs)}`;
 
     // Invocation 1 (first delivery): commits attr_set and re-invokes —
     // no step may run yet.
@@ -1984,15 +1987,15 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
 
     // Invocation 2 (queue continuation, no runInput): replays over the
     // durable attr_set — stamped as written 7s after run creation — and runs
-    // the step. The measurement must end at the attr write: ~7s, NOT the
-    // full wall-clock distance to now (~10s+).
-    const attrWriteBackdateMs = 3_000;
+    // the step. The measurement must end at the attr write: exactly 7s, NOT
+    // the full wall-clock distance to now (10s+).
+    const attrOccurredAt = new Date(runCreatedAtMs + 7_000);
     const attrEvent = {
       ...attrCreates[0],
       eventId: 'e-attr-1',
       runId,
-      createdAt: new Date(Date.now() - attrWriteBackdateMs),
-      occurredAt: new Date(Date.now() - attrWriteBackdateMs),
+      createdAt: attrOccurredAt,
+      occurredAt: attrOccurredAt,
     } as Event;
 
     const second = await driveLatency({
@@ -2003,9 +2006,8 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     });
     expect(second.stepCompleted).toHaveLength(1);
     const { ttfs, stso, optimizations } = second.stepCompleted[0].eventData;
-    const expectedTtfs = runBackdateMs - attrWriteBackdateMs;
-    expect(ttfs).toBeGreaterThanOrEqual(expectedTtfs - 100);
-    expect(ttfs).toBeLessThanOrEqual(expectedTtfs + 1_000);
+    // ULID time encoding is millisecond-exact, so this is deterministic.
+    expect(ttfs).toBe(+attrOccurredAt - runCreatedAtMs);
     expect(stso).toBeUndefined();
     // Continuation delivery is not turbo.
     expect(optimizations).toEqual(['lazyStepStart']);
